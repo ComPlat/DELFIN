@@ -82,8 +82,8 @@ def _click(refs, name):
     ('CONTROL.txt', ['Recalc', 'Smart Recalc']),
     ('stage_OCCUPIER.txt', ['Override']),
     ('stage.inp', ['Recalc']),
-    ('stage.out', ['Print Mode', 'MO Plot', 'Print NMR']),
-    ('huge.out', ['Print Mode', 'MO Plot', 'Print NMR']),
+    ('stage.out', ['Print Mode', 'MO Plot', 'Print NMR', 'Spin Density']),
+    ('huge.out', ['Print Mode', 'MO Plot', 'Print NMR', 'Spin Density']),
     # RMSD rides along: a single-frame xyz is what it aligns against.
     ('single.xyz', ['Build Batch from XYZ', 'Calc NMR', 'Calc CENSO/ANMR',
                     'hyperpol_xtb', 'tadf_xtb', 'RMSD']),

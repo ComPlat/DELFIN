@@ -21,6 +21,7 @@ from delfin.agent import pricing as _pricing
 from delfin.agent import turn_context
 from delfin.agent.harness_rows import HarnessText
 from delfin.dashboard.chat_markdown import render as _render_markdown
+from delfin.messenger.dashboard import gate as _messenger_gate, serialized_gate as _serialized_gate
 
 
 _PLAN_HINT_VERBS = re.compile(
@@ -1334,7 +1335,8 @@ _AGENT_CSS = """\
    which an update does not replace. */
 .delfin-agent-chat-host > .widget-html-content { display: none; }
 .delfin-agent-chat-host > .delfin-agent-chat { display: flex;
-    flex-direction: column; min-height: 100%; }
+    flex-direction: column; min-height: 100%; box-sizing: border-box;
+    width: 100%; flex-shrink: 0; }
 /* Return to the newest output. Sticky rather than absolute: the chat is its
    own scrollport, so an absolutely placed control would ride away with the
    content instead of staying within reach. Hidden while the reader is
@@ -2676,7 +2678,7 @@ def resolve_office_workspace(configured) -> Path | None:
 # a directory "always", approve every staged diff, schedule autonomous
 # loops, delete memories or write a user-wide memory.
 _USER_ONLY_SLASH_COMMANDS = frozenset({
-    "/perms", "/perm-cycle",
+    "/sync", "/perms", "/perm-cycle",
     "/grant", "/hooks", "/mcp", "/approve", "/reject",
     "/loop", "/auto", "/forget", "/profile", "/session", "/init",
     "/undo", "/undo-file", "/git",
@@ -2730,7 +2732,7 @@ def _awaiting_user_answer(state: dict) -> bool:
 # dispatcher. Kept at module scope so a test can drive the same routing
 # decision the send path makes.
 _BUILTIN_SLASH_PREFIXES = frozenset({
-    "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
+    "/sync", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
     "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
     "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
     "/memories", "/memorize", "/tidy", "/remember", "/forget", "/plans", "/plan", "/hooks",
@@ -3074,6 +3076,7 @@ def _md_to_html(text: str) -> str:
 # - has_args: True means the command takes arguments — palette adds a trailing
 #   space so the user starts typing immediately
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
+    ("Session", "/sync", "SimpleX für diese Sitzung on|off|status", True),
     # Session
     ("Session", "/help", "Show this help", False),
     ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),
@@ -8813,14 +8816,8 @@ def create_tab(ctx):
             // own record while it waits to be looked at.
             if (!c.clientHeight) return;
             var st = stateFor(c);
-            var max = c.scrollHeight - c.clientHeight;
-            // An offset past the end belongs to a longer transcript than the
-            // one now shown -- the conversation was swapped, so start at the
-            // end rather than somewhere arbitrary in the middle of it.
-            if (!st.follow && st.top > max) {
-                st.follow = true;
-                st.unseen = false;
-            }
+            // A reflow or a temporarily shorter streaming message is not
+            // permission to resume following. Session changes/reset own that.
             if (st.follow) {
                 // At the end: come along with the agent. This is the half
                 // that is wanted and is unchanged.
@@ -8913,22 +8910,41 @@ def create_tab(ctx):
         function readerInput() {
             inputUntil = Date.now() + 300;
         }
+        function pauseForReader(e) {
+            var c = e.target && e.target.closest
+                ? e.target.closest('.delfin-agent-chat-host') : null;
+            if (!c) return;
+            var st = stateFor(c);
+            st.auto = false;
+            if (st.timer) clearTimeout(st.timer);
+            st.follow = false;
+            st.top = c.scrollTop;
+            st.mark = c.scrollHeight;
+            paint(c, st);
+        }
         function onChat(e) {
             return !!(e.target && e.target.closest
                       && e.target.closest('.delfin-agent-chat-host'));
         }
         document.addEventListener('wheel', function(e) {
-            if (onChat(e)) readerInput();
+            if (onChat(e)) {
+                readerInput();
+                // Stop before the browser scroll event: a streaming update
+                // can otherwise reach the end first and swallow that event.
+                if (e.deltaY < 0) pauseForReader(e);
+                else stateFor(e.target.closest('.delfin-agent-chat-host')).auto = false;
+            }
         }, {capture: true, passive: true});
         document.addEventListener('touchmove', function(e) {
-            if (onChat(e)) readerInput();
+            if (onChat(e)) { readerInput(); pauseForReader(e); }
         }, {capture: true, passive: true});
         document.addEventListener('keydown', function(e) {
             if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key))
                 readerInput();
+            if (/^(PageUp|ArrowUp|Home)$/.test(e.key)) pauseForReader(e);
         }, true);
         document.addEventListener('pointerdown', function(e) {
-            if (onChat(e)) { pressed = true; readerInput(); }
+            if (onChat(e)) { pressed = true; readerInput(); pauseForReader(e); }
         }, true);
         function released() {
             if (pressed) { pressed = false; readerInput(); }
@@ -8945,6 +8961,7 @@ def create_tab(ctx):
             if (!c || !c.classList ||
                 !c.classList.contains('delfin-agent-chat-host')) return;
             var st = stateFor(c);
+            var previousTop = st.top;
             st.top = c.scrollTop;
             if (st.auto) { st.auto = false; return; }
             // Following, moved, and not by the reader: back to the end in
@@ -8956,7 +8973,11 @@ def create_tab(ctx):
                 st.top = c.scrollTop;
                 return;
             }
-            var end = atEnd(c);
+            // Once deliberately paused, even a small upward wheel gesture
+            // must stick. The generous tolerance only applies while following.
+            var end = atEnd(c) && (st.follow ||
+                (!pressed && c.scrollTop > previousTop &&
+                 c.scrollHeight - c.scrollTop - c.clientHeight <= 1));
             if (end === st.follow) return;
             st.follow = end;
             if (end) { st.unseen = false; } else { st.mark = c.scrollHeight; }
@@ -9898,9 +9919,11 @@ def create_tab(ctx):
         multi = bool(args.get("multiSelect", False))
         ev = _th.Event()
         result = {"answers": []}
-        state["_ask_user_event"] = ev
-        state["_ask_user_result"] = result
-        state["_ask_user_args"] = dict(args or {})
+        with _messenger_gate(state):
+            state["_ask_user_event"] = ev
+            state["_ask_user_result"] = result
+            state["_ask_user_args"] = dict(args or {})
+            state["_ask_user_deadline"] = time.monotonic() + 300
         from html import escape as _esc
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
@@ -10044,6 +10067,7 @@ def create_tab(ctx):
             return {"answers": [], "timed_out": True}
         return result
 
+    @_serialized_gate(state)
     def _close_ask_user_modal(ev) -> None:
         """Take the question widget off screen and forget the question.
 
@@ -10060,6 +10084,7 @@ def create_tab(ctx):
         state["_ask_user_result"] = None
         state["_ask_user_args"] = None
 
+    @_serialized_gate(state)
     def _answer_ask_from_chat(text: str) -> bool:
         """A chat line sent while ask_user_question waits is its answer.
 
@@ -10097,10 +10122,11 @@ def create_tab(ctx):
         import threading as _th
         ev = _th.Event()
         result: dict = {"approved": False, "new_mode": "default"}
-        state["_plan_approval_event"] = ev
-        state["_plan_approval_result"] = result
-        # Stash the plan body so the accept-handler can persist it.
-        state["_pending_plan_body"] = plan
+        with _messenger_gate(state):
+            state["_plan_approval_event"] = ev
+            state["_plan_approval_result"] = result
+            state["_plan_approval_deadline"] = time.monotonic() + 180
+            state["_pending_plan_body"] = plan
         # Surface the plan so the user sees what they're approving.
         # Name the controls as they are actually labelled: this told the
         # user to click "Plan akzeptieren" and to switch the "Mode-Chip",
@@ -10129,14 +10155,16 @@ def create_tab(ctx):
         with awaiting_person(lambda: state.get("engine"), APPROVAL):
             _paint_activity()
             got = ev.wait(timeout=180)   # 3 min
-        if not got:
-            result["timed_out"] = True
+        with _messenger_gate(state):
+            if not got and not ev.is_set():
+                result["timed_out"] = True
         return result
 
     # Hook into the existing _on_plan_accept: register a second on_click
     # handler that signals any pending exit_plan_mode tool call. The
     # original handler (registered earlier) still does its UI/mode work
     # — both fire on click.
+    @_serialized_gate(state)
     def _on_plan_accept_phase5(_btn):
         ev = state.get("_plan_approval_event")
         result = state.get("_plan_approval_result")
@@ -10804,6 +10832,8 @@ def create_tab(ctx):
             # of them raises rather than quietly winning.
             estate = dict(engine.export_state())
             estate["session_id"] = engine.session_id
+            if engine.session_id in state.get("_messenger_titles", {}):
+                estate["title"] = state["_messenger_titles"][engine.session_id]
             save_session(
                 chat_messages=state["chat_messages"],
                 cycle_history=state.get("_cycle_history", []),
@@ -10865,6 +10895,7 @@ def create_tab(ctx):
         except Exception:
             pass  # non-critical — don't break the chat
 
+    @_serialized_gate(state)
     def _load_saved_session(session_id):
         """Load a saved session and restore engine + UI state."""
         # One conversation, one view: two sessions holding the same one would
@@ -11162,6 +11193,7 @@ def create_tab(ctx):
         _update_status()
         _update_button_states()
 
+        state.setdefault("_messenger_titles", {})[session_id] = data.get("title", "")
         title = data.get("title", "")[:50] or session_id[:12]
         _record_cycle_event("session", "Session restored", title)
         _append_system_message(f"Session restored: {title}")
@@ -11284,6 +11316,7 @@ def create_tab(ctx):
             return "api"
         return "cli"  # will error at runtime
 
+    @_serialized_gate(state)
     def _hand_state_to(engine, data: dict, *, mode: str, session_id: str) -> None:
         """The one place a saved or carried state reaches an engine.
 
@@ -13522,11 +13555,50 @@ def create_tab(ctx):
 
     # -- event handlers ----------------------------------------------------
 
+    def _messenger_command(args):
+        from delfin.messenger import activation
+        from delfin.messenger.dashboard import DashboardSession
+        engine = _ensure_engine()
+        sid = str(getattr(engine, "session_id", "") or state.get("active_session_id") or "")
+        if not sid:
+            return "Zuerst eine Sitzung starten, dann /sync eingeben."
+        adapters = state.setdefault("_messenger_adapters", {})
+        if args.strip().lower() in {"off", "status"}:
+            return activation.configure(sid, args)
+        if args.strip().lower() not in {"", "on"}:
+            return activation.configure(sid, args)
+        if sid not in adapters:
+            def answer_detected_question(text):
+                if input_textarea.value.strip() or not state.get("_pending_question"):
+                    return False
+                input_textarea.value = "Antwort auf deine Rückfrage: " + text
+                _on_send(None)
+                return not state.get("_pending_question")
+            def send(text):
+                if input_textarea.value.strip() or _awaiting_user_answer(state):
+                    return False
+                input_textarea.value = text
+                _on_send(None)
+                return True
+            adapter = DashboardSession(sid, state, send=send,
+                stop=lambda: _on_stop(None), answer=_answer_ask_from_chat,
+                plan=lambda yes: _handle_slash_command("/plan approve" if yes else "/plan reject"),
+                approval=lambda yes: _on_approve(None) if yes else _on_deny(None),
+                question=answer_detected_question)
+            adapters[sid] = activation.LocalSession(sid, adapter)
+        return activation.configure(sid, args, endpoint=str(adapters[sid].path))
+
     def _handle_slash_command(text: str) -> bool:
         """Handle slash commands. Returns True if handled."""
         import subprocess as _sp
 
         cmd = text.lower().strip()
+        if cmd == "/sync" or cmd.startswith("/sync "):
+            if state.get("_on_its_own"):
+                _append_system_message("SimpleX kann nur von dir in dieser Sitzung aktiviert werden.")
+            else:
+                _append_system_message(_messenger_command(text[5:].strip()))
+            return True
 
         # -- Global safety: zone-based permission check (all modes) ----------
         tier = _command_tier(cmd)
@@ -14798,34 +14870,38 @@ def create_tab(ctx):
         # tool call. The user can read the plan in chat and unblock the
         # session without restarting.
         if cmd in ("/plan approve", "/plan reject"):
-            ev = state.get("_plan_approval_event")
-            result = state.get("_plan_approval_result")
-            if ev is None or result is None:
-                _append_system_message(
-                    "No plan is currently awaiting approval. "
-                    "Switch to /mode plan and ask the agent to draft a plan."
-                )
+            with _messenger_gate(state):
+                ev = state.get("_plan_approval_event")
+                result = state.get("_plan_approval_result")
+                if ev is None or result is None:
+                    _append_system_message(
+                        "No plan is currently awaiting approval. "
+                        "Switch to /mode plan and ask the agent to draft a plan."
+                    )
+                    return True
+                # Same shared logic as the 'Plan akzeptieren' button so the
+                # two paths are functionally identical (persist + perm flip).
+                for _m in _finalize_plan_decision(
+                    state,
+                    approved=(cmd == "/plan approve"),
+                    repo_root=ctx.repo_dir or ".",
+                ):
+                    _append_system_message(_m)
+                if cmd == "/plan approve":
+                    _append_system_message(
+                        "✅ Plan approved via /plan approve fallback. "
+                        "Mode flipped to acceptEdits — the agent can now "
+                        "execute the plan."
+                    )
+                else:
+                    _append_system_message(
+                        "🚫 Plan rejected via /plan reject fallback."
+                    )
+                state["_kit_plan_has_response"] = False
+                _refresh_plan_accept_btn()
+                _set_wait_chip("")
+                ev.set()
                 return True
-            # Same shared logic as the 'Plan akzeptieren' button so the
-            # two paths are functionally identical (persist + perm flip).
-            for _m in _finalize_plan_decision(
-                state,
-                approved=(cmd == "/plan approve"),
-                repo_root=ctx.repo_dir or ".",
-            ):
-                _append_system_message(_m)
-            if cmd == "/plan approve":
-                _append_system_message(
-                    "✅ Plan approved via /plan approve fallback. "
-                    "Mode flipped to acceptEdits — the agent can now "
-                    "execute the plan."
-                )
-            else:
-                _append_system_message(
-                    "🚫 Plan rejected via /plan reject fallback."
-                )
-            ev.set()
-            return True
 
         # /bugs — browse the bug-report archive and close the optimisation
         # loop by scaffolding a regression benchmark task from a report.
@@ -19287,6 +19363,7 @@ def create_tab(ctx):
         else:
             _append_system_message("Could not find a user message to retry.")
 
+    @_serialized_gate(state)
     def _request_confirmation(action_id, description, callback):
         """Show confirmation prompt for destructive dashboard operations.
 
@@ -19322,6 +19399,7 @@ def create_tab(ctx):
         # Needs confirmation
         _request_confirmation(action_id, description, callback)
 
+    @_serialized_gate(state)
     def _show_approval_prompt(tool_name, detail):
         """Show approval request inline in chat + approval buttons."""
         state["_pending_approval"] = {"tool": tool_name, "detail": detail}
@@ -19349,6 +19427,7 @@ def create_tab(ctx):
         deny_btn.layout.display = "inline-flex"
         approval_row.layout.display = "flex"
 
+    @_serialized_gate(state)
     def _hide_approval():
         """Hide approval UI."""
         approve_btn.layout.display = "none"
@@ -19360,6 +19439,7 @@ def create_tab(ctx):
             _set_active_gate()
             _update_status()
 
+    @_serialized_gate(state)
     def _on_approve(button):
         """User approves a blocked operation.
 
@@ -19487,6 +19567,7 @@ def create_tab(ctx):
         input_textarea.value = f"Yes, proceed with: {readable}"
         _on_send(None)
 
+    @_serialized_gate(state)
     def _on_deny(button):
         """User denies a blocked operation."""
         # Dashboard action denial
@@ -19507,6 +19588,7 @@ def create_tab(ctx):
     # -- Interactive question detection & UI ------------------------------------
 
 
+    @_serialized_gate(state)
     def _show_question_ui(question_info: dict):
         """Show interactive widgets based on detected question type.
 
@@ -19613,6 +19695,7 @@ def create_tab(ctx):
         input_textarea.value = answer
         _on_send(None)
 
+    @_serialized_gate(state)
     def _hide_question_ui():
         """Hide question UI and reset state."""
         question_row.layout.display = "none"
@@ -24165,6 +24248,8 @@ def create_tab(ctx):
         if state.get("_closed"):
             return
         state["_closed"] = True
+        for adapter in state.pop("_messenger_adapters", {}).values():
+            adapter.close()
         # Auto mode ends with its session, with its report.
         _auto_end = state.get("_auto")
         if _auto_end is not None and getattr(_auto_end, "enabled", False):

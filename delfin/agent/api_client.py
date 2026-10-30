@@ -1707,6 +1707,32 @@ _SYSTEM_INFO_FILES: frozenset[str] = frozenset({
 })
 
 
+#: Programs that hand the REST of their words to another program to run.
+#: The first non-option, non-`NAME=value` word is the REAL command word,
+#: and its path must not be scanned as a read -- executing a program is
+#: not reading it. Each value lists the option spellings that take a
+#: SEPARATE value (skipped together with that value while the wrapper's
+#: options are walked); a flag or a self-contained `-n5`/`--x=5` needs no
+#: entry. `timeout` is the one with two leading positionals (DURATION
+#: then COMMAND); every other wrapper's first bare word is its program.
+#:
+#: The wrappers' own operands that ARE files (``env -C /dir``) are not
+#: touched here: only the command-word index is skipped, so the wrapper's
+#: file-like operands and every following argument are still scanned.
+_COMMAND_WORD_WRAPPERS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "-P",
+                      "--default-signal", "--block-signal", "--list-signal"}),
+    "timeout": frozenset({"-k", "--kill-after", "-s", "--signal"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata",
+                         "-p", "--pid"}),
+    "taskset": frozenset({"-c", "--cpu-list"}),
+    "nohup": frozenset(),
+    "setsid": frozenset(),
+    "command": frozenset(),
+}
+
+
 def _home_expanded(word: str) -> str:
     home = str(Path.home())
     for spelling in ("${HOME}", "$HOME"):
@@ -1828,6 +1854,62 @@ def _script_argument_index(prog: str, args: list) -> Optional[int]:
     return None
 
 
+def _executed_command_index(prog: str, args: list) -> Optional[int]:
+    """Index in *args* of the program the wrapper `prog` delegates to.
+
+    A delegating wrapper (``env``, ``timeout``, ``nice``, …) hands the
+    rest of its words to another program to run. That inner program is
+    a simple command's command word: its PATH must not be scanned as a
+    read -- executing a program is not reading it (2026-10-29: a venv
+    interpreter run under ``env X=1`` was asked about as an
+    outside-workspace read). Returns the index of that word so the caller
+    can skip exactly it, leaving every sibling argument -- the wrapper's
+    own operands and the program's following arguments -- scanned as
+    before. ``--`` ends the wrapper's options. ``timeout`` has a leading
+    DURATION positional before its COMMAND, so its program is the second
+    bare word; every other wrapper's first bare word is the program.
+    Returns None when `prog` is not a delegation wrapper, or when no bare
+    word occupies the command-word slot (a wrapper with only options or
+    only a duration leaves nothing to skip).
+    """
+    value_opts = _COMMAND_WORD_WRAPPERS.get(prog)
+    if value_opts is None:
+        return None
+    # How many bare words precede the program: timeout's DURATION, and
+    # taskset's MASK unless -c/--cpu-list gave the CPU list as an option
+    # value. taskset -p works on an existing pid and runs no program.
+    leading = 1 if prog == "timeout" else 0
+    if prog == "taskset":
+        if any(a in ("-p", "--pid") or (a.startswith("-") and not a.startswith("--")
+                                        and "p" in a[1:]) for a in args):
+            return None
+        if not any(a in ("-c", "--cpu-list") or a.startswith("--cpu-list=")
+                   for a in args):
+            leading = 1
+    positional = 0
+    skip = False
+    options_done = False
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if not options_done and a == "--":
+            options_done = True     # every later word is positional
+            continue
+        if not options_done and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+            continue               # env's NAME=value, not the program
+        if options_done or not a.startswith("-"):
+            if positional == leading:
+                return i
+            positional += 1
+            continue               # the DURATION or MASK, not yet the program
+        opt = a.split("=", 1)[0]
+        if opt in value_opts and "=" not in a:
+            skip = True            # the option takes a separate value
+        # a value-less flag, or a self-contained -n5 / --x=5: nothing to skip
+    return None
+
+
 def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                         _depth: int = 0) -> list[str]:
     """Paths a shell command would read, for the outside-read gate.
@@ -1924,6 +2006,21 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 out.extend(_bash_outside_reads(
                     args[i + 1], here, _depth + 1))
             return
+        # `env -S "STRING"` (--split-string) splits STRING into a new command
+        # line, like `sh -c`: judge that line, with the words after it.
+        if prog == "env" and _depth < 3:
+            for i, a in enumerate(args):
+                split = None
+                if a in ("-S", "--split-string") and i + 1 < len(args):
+                    split, tail = args[i + 1], args[i + 2:]
+                elif a.startswith("--split-string="):
+                    split, tail = a.split("=", 1)[1], args[i + 1:]
+                elif a.startswith("-S") and len(a) > 2:
+                    split, tail = a[2:], args[i + 1:]
+                if split is not None:
+                    line = " ".join([split] + [shlex.quote(t) for t in tail])
+                    out.extend(_bash_outside_reads(line, here, _depth + 1))
+                    return
         # Input redirection reads, whatever the program.
         for i, a in enumerate(args):
             if a == "<" and i + 1 < len(args):
@@ -1933,13 +2030,17 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
         if prog in _BASH_NO_FILE_PROGRAMS:
             return
         script_at = _script_argument_index(prog, args)
+        # A delegating wrapper's program word (env X=1 prog, timeout 20
+        # prog, nice prog) is the command word of a simple command: its
+        # path is not a read, whatever position the shell resolved it to.
+        cmd_at = _executed_command_index(prog, args)
         skip_next = False
         for i, a in enumerate(args):
             if skip_next:
                 skip_next = False
                 continue
-            if i == script_at:
-                continue    # the program's script or pattern, not a file
+            if i == script_at or i == cmd_at:
+                continue    # the program's script/pattern or command word, not a file
             if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
                 skip_next = True    # the redirection's own target
                 continue
@@ -1966,7 +2067,7 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
 
     try:
         import shlex
-        for segment in _shell_segments(cmd):
+        for segment in _shell_segments(_strip_heredoc_bodies(cmd)):
             segment = segment.strip()
             if not segment:
                 continue
@@ -4589,12 +4690,33 @@ def _links_to_a_secret(perms: Any, rel: str, base: Any = None) -> bool:
         return False
 
 
+def _is_run_hidden(resolved: Path) -> bool:
+    """Whether ``resolved`` is, or lies beneath, a path the run hides from
+    its cage (``DELFIN_CAGE_HIDE``). Without the variable nothing is hidden
+    and nothing can fail; with it, an error counts as hidden (fails closed
+    only where hiding was asked for)."""
+    if not str(os.environ.get("DELFIN_CAGE_HIDE") or "").strip():
+        return False
+    try:
+        from delfin.agent.sandbox import run_hidden_paths
+        for h in run_hidden_paths():
+            hp = Path(h)
+            if resolved == hp or hp in resolved.parents:
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def _is_secret_path(perms: Any, path: Path) -> bool:
     """Whether ``path`` matches the secret deny list, tested the way
     ``_check_read_access`` tests it: relative to the readable root it lies
-    in, else absolute. Fails closed."""
+    in, else absolute -- or is hidden from the run (``DELFIN_CAGE_HIDE``).
+    Fails closed."""
     try:
         resolved = Path(path).expanduser().resolve()
+        if _is_run_hidden(resolved):
+            return True
         in_root = perms.find_readable_root_for(resolved)
         if in_root is not None:
             try:
@@ -8430,6 +8552,11 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # The account key and the pins beside it (trust_store): DELFIN's own
     # processes outside agent sessions read them, no agent route does.
     "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
+    "messenger_sessions", "messenger_sessions/**",
+    "**/messenger_sessions", "**/messenger_sessions/**",
+    # The user's schedules: written and confirmed by the user only.
+    "user_schedules", "user_schedules/**",
+    "**/user_schedules", "**/user_schedules/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -8934,6 +9061,62 @@ def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
     return cmd[i:], len(cmd)
 
 
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """``cmd`` with every here-document body (and its ``<<tag`` token) gone.
+
+    A heredoc body is DATA -- the program the interpreter runs, or file
+    content delivered to cat/tee -- never a shell argument of the outer
+    command. When the read scan shlex-split it together with the command
+    line, a string in the body was asked about as an outside-workspace
+    read: ``python - <<'PY' … '/agent' … PY`` asked about the nonexistent
+    /agent, and a body carrying ``'/'`` asked about the filesystem root --
+    approving the second would have opened the whole filesystem for the
+    session (2026-10-29). Blanked so the read scan never sees it.
+
+    Only the body lines and the ``<<tag`` token are removed. The REST of
+    the redirect's own line is kept verbatim: ``cat <<EOF > /outside/x``
+    must still let the write gate see ``/outside/x``, and
+    ``python - <<'PY'; cat /outside/secret`` must still let the read scan
+    see ``/outside/secret``. Blanking the whole ``<<tag … tag`` span would
+    hide both -- a new hole. When there is no newline at all the body is
+    empty (``cat <<EOF > /outside/x`` in one line), so only the token is
+    removed and ``/outside/x`` stays. Position is preserved so upstream
+    offset-based annotations keep their meaning. Here-strings (``<<<``)
+    need no terminator and are left as they are.
+    """
+    out: list[str] = []
+    i, n = 0, len(cmd)
+    while i < n:
+        if cmd[i:i + 3] == "<<<":
+            # A here-STRING needs no terminator and is ordinary text here;
+            # stepping one or two of its three `<<` would let the rest be
+            # re-read as a heredoc named after the string's first word.
+            out.append(cmd[i:i + 3])
+            i += 3
+            continue
+        if cmd[i:i + 2] == "<<":
+            consumed = _consume_heredoc(cmd, i)
+            if consumed is None:
+                out.append(cmd[i])
+                i += 1
+                continue
+            _, end = consumed
+            m = _HEREDOC_START_RE.match(cmd, i)
+            token_end = m.end() if m is not None else i + 2
+            nl = cmd.find("\n", token_end, end)
+            out.append(" " * (token_end - i))      # the <<TAG token
+            if nl == -1:
+                out.append(cmd[token_end:end])     # one line, no body: keep it all
+            else:
+                out.append(cmd[token_end:nl + 1])  # the redirect line's own words
+                out.append(" " * (end - (nl + 1))) # blank the body lines
+            i = end
+            continue
+        out.append(cmd[i])
+        i += 1
+    return "".join(out)
+
+
 def _lines_from(text: str, start: int):
     """(offset, line) for each line of *text* from *start*, no newlines."""
     pos = start
@@ -9352,6 +9535,18 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # The classifier's resolved model ids, set by the client's
+    # ``_attach_classifier_runner`` (model_capabilities): ``classifier_model``
+    # is the PRIMARY, asked first; ``classifier_confirm_models`` the ALLOW-
+    # confirmation chain of other families, in bench order (see the "allow
+    # needs two families" rule in _classifier_second_opinion). Empty tuple =
+    # the primary decides alone (no second family served, or an explicit
+    # configured model). Leaves both unset for callers that drive
+    # _classifier_second_opinion directly (tests), which then use a single
+    # cfg["model"] -- the old behaviour. Dataclass fields so a sub-agent's
+    # copy (dataclasses.replace) carries the same models.
+    classifier_model: Optional[str] = None
+    classifier_confirm_models: tuple = ()
     # Keys of actions the USER approved in a second-opinion dialog: not
     # asked again in this session (see _classifier_second_opinion).
     classifier_user_allowed: set = field(default_factory=set)
@@ -9798,6 +9993,9 @@ class KitToolPermissions:
         session has no business reading either, and "reachable" is what
         every read gate is built on.
         """
+        # The session scratch dir is NOT a file-tool root: it is private
+        # shell-state (TMPDIR for caged commands); the file tools use the
+        # workspace, so a locked scope reaches only the workspace.
         if self.scope_locked:
             return (self.workspace,)
         return (self.all_workspace_roots()
@@ -12394,8 +12592,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "cron_create",
             "description": (
-                "Create a recurring invocation on a fixed ``every_seconds`` "
-                "interval (no cron expressions). Survives restarts."
+                "Recurring run every every_seconds; or ``at`` "
+                "('daily 07:30', cron): proposed to the user."
             ),
             "parameters": {
                 "type": "object",
@@ -12403,6 +12601,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "every_seconds": {
                         "type": "integer",
                         "minimum": 60,
+                    },
+                    "at": {
+                        "type": "string",
                     },
                     "prompt": {
                         "type": "string",
@@ -12414,7 +12615,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "boolean",
                     },
                 },
-                "required": ["every_seconds", "prompt"],
+                "required": ["prompt"],
             },
         },
     },
@@ -15172,8 +15373,13 @@ def _classifier_settings() -> Optional[dict]:
         return None
     from . import action_classifier as _ac
     rules = cfg.get("user_rules")
+    # ``explicit_model``: the user actually set agent.classifier.model. When
+    # false the model is the default and the classifier is moved onto a fast
+    # model from a family different from the session's (model_capabilities).
+    explicit_model = bool(str(cfg.get("model") or "").strip())
     return {
         "model": str(cfg.get("model") or "").strip() or _ac.DEFAULT_MODEL,
+        "explicit_model": explicit_model,
         "broad": broad,
         "rules": [str(r) for r in rules if str(r or "").strip()][:20]
         if isinstance(rules, (list, tuple)) else [],
@@ -20770,7 +20976,8 @@ class _DocToolExecutor:
         return None
 
     def _check_read_access(
-        self, perms: "KitToolPermissions", path: Path, label: str = ""
+        self, perms: "KitToolPermissions", path: Path, label: str = "",
+        command: str = "",
     ) -> Optional[str]:
         """Gate read-style tools (read_file, grep_file).
 
@@ -20786,6 +20993,13 @@ class _DocToolExecutor:
             resolved = path.expanduser().resolve()
         except Exception:
             resolved = path
+
+        # A path the run hides from its cage (DELFIN_CAGE_HIDE) is refused
+        # like a secret: no root, grant or confirmation reaches it.
+        if _is_run_hidden(Path(resolved)):
+            _record_gate_refusal("run_hidden", "", str(label or resolved))
+            return (f"read denied: '{label or resolved}' is hidden from this "
+                    "run (DELFIN_CAGE_HIDE).")
 
         # Build the string we test against deny-globs: workspace-relative
         # when possible (so globs like ".env" match), else absolute. READS are
@@ -20910,10 +21124,20 @@ class _DocToolExecutor:
         _grant_dir = resolved if _is_dir else resolved.parent
         _grantable = _is_grantable_read_dir(_grant_dir)
         _what = "directory" if _is_dir else "file"
+        # A shell command's read names the command too: the path alone does
+        # not say what the yes lets run. Masked like a tool result, cut to
+        # 400 characters.
+        _cmd_line = ""
+        if command:
+            _shown = _redact_tool_result(str(command))
+            if len(_shown) > 400:
+                _shown = _shown[:400] + " …"
+            _cmd_line = f"It is read by this shell command:\n  {_shown}\n\n"
         preview = (
             "[OUTSIDE-WORKSPACE READ]\n"
             f"The agent wants to read a {_what} outside the allowed roots:\n"
             f"  {resolved}\n\n"
+            + _cmd_line
             + (("Approving allows READING this file and other files in\n"
                 if not _is_dir else
                 "Approving allows READING the files in\n")
@@ -20998,8 +21222,25 @@ class _DocToolExecutor:
         nothing more, and the reason arrived -- if at all -- as a message
         after the turn that needed it.
         """
+        changed = cls._changed_to(perms)
+        if changed:
+            return (" The user did not drop the task: they changed the command. "
+                    "Run the changed command below next, exactly as written and "
+                    "with the same tool; it is approved once as written, and any "
+                    "other change is asked again.\nChanged command:\n" + changed)
         why = cls._refusal_reason(perms)
         return f" The user said why: {why}" if why else ""
+
+    @staticmethod
+    def _changed_to(perms: "KitToolPermissions") -> str:
+        """The command the user changed THIS refusal's dialog to, or ""
+        (``TerminalConfirmBroker.last_changed_to``; read like the reason)."""
+        try:
+            return str(getattr(
+                getattr(perms.confirm_callback, "__self__", None),
+                "last_changed_to", "") or "")
+        except Exception:
+            return ""
 
     @staticmethod
     def _refuse_write(perms: "KitToolPermissions", path: str, name: str,
@@ -21105,8 +21346,35 @@ class _DocToolExecutor:
             _self = getattr(perms.confirm_callback, "__self__", None)
             if _self is not None:
                 _self.last_refusal_reason = ""
+                if hasattr(_self, "last_changed_to"):
+                    _self.last_changed_to = ""
         except Exception:
             pass
+
+    @staticmethod
+    def _shell_write_command_line(name: str, args: dict,
+                                  rel_str: str) -> str:
+        """A bash write request seen whole: the command and the file.
+
+        A shell request targeting a protected/calc/store file reached an
+        approval whose body was only the guard's warning text -- the
+        command lived elsewhere on the record and `approvals show` did
+        not print it, so an approval one could not read was one one
+        could not give. This line names the command (credentials masked,
+        cut to 400 characters with a marker when cut) and the file it
+        would write, exactly as the outside-read preview of a shell read
+        does. Empty for any non-shell tool: a write tool shows its diff
+        instead.
+        """
+        if name != "bash":
+            return ""
+        _cmd = str(args.get("command") or "").strip()
+        _shown = _redact_tool_result(_cmd) if _cmd else ""
+        if len(_shown) > 400:
+            _shown = _shown[:400] + " …"
+        return (
+            f"It would be run as:\n  {_shown}\n\n"
+            f"It writes:\n  {rel_str}\n\n")
 
     def _gate_write_path(
         self, path_arg: str, perms: "KitToolPermissions",
@@ -21303,12 +21571,16 @@ class _DocToolExecutor:
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
+            # A bash request names the command and the file it would
+            # write; a write tool shows its diff instead ("" for bash).
+            _shell_line = self._shell_write_command_line(name, args, rel_str)
             if _is_gitcfg:
                 preview = (
                     "[GIT CONFIGURATION FILE]\n"
                     "git reads this file as configuration: it can name a "
                     "filter, diff driver or hook program that the next "
                     "git status or git add runs.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif _is_store:
@@ -21317,6 +21589,7 @@ class _DocToolExecutor:
                     "Later sessions are shown this file: shared lessons or "
                     "stored memory. Approving lets the agent change what "
                     "they are told.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_protected:
@@ -21325,6 +21598,7 @@ class _DocToolExecutor:
                     "This file is part of the agent's own safety layer.\n"
                     "Approving this will let the agent rewrite the code that "
                     "controls its own permissions.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_calc:
@@ -21332,6 +21606,7 @@ class _DocToolExecutor:
                     "[CALC EDIT — STORED CALCULATION]\n"
                     "This file is under calc (an active/stored calculation). "
                     "Approving this lets the agent modify it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             else:
@@ -21339,6 +21614,7 @@ class _DocToolExecutor:
                     "[REFUSED EARLIER]\n"
                     "You refused a write to this file earlier in this "
                     "session. This is a different change to it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
@@ -21480,7 +21756,7 @@ class _DocToolExecutor:
         if state.get("turn") != turn:
             state.clear()
             state.update(turn=turn, allowed=set(), refused=set(),
-                         refusals=0, calls=[], stalled=False)
+                         refusals=0, calls=[], stalled_models=set())
         # The lockout holds at every point that reaches this method, in
         # every scope: after three refusals an auto-allowed command or an
         # auto-accepted edit waits for the user too. No model call.
@@ -21592,30 +21868,76 @@ class _DocToolExecutor:
         failed: list = []
         called: list = []
 
+        # The classifier's models. ``_primary`` decides first; its own
+        # refuse/ask stands at once, and an ALLOW is confirmed by a model of
+        # another family (``_confirm``, in bench order) -- "allow needs two
+        # families". cfg["model"] is the configured or default; perms carried
+        # the client's independence choice (model_capabilities). Tests and
+        # direct drivers leave perms unset and fall back to a single model
+        # (no confirmation) -- the old behaviour.
+        _primary = str(getattr(perms, "classifier_model", None)
+                       or cfg.get("model") or _ac.DEFAULT_MODEL)
+        _confirm = tuple(getattr(perms, "classifier_confirm_models", None)
+                         or ())
+        # A confirm slot identical to the primary is not a second opinion:
+        # it would only re-ask the same family. Drop it.
+        _confirm = tuple(c for c in _confirm if c != _primary)
+
+        # Effective decision chain: the primary, then the confirm families.
+        # A model stalled within the probe window is skipped, so one slow
+        # model does not latch every action of the turn -- the next usable
+        # model (the confirm family) takes over. All _CLASSIFIER_MODELS are
+        # different families, so a promoted confirm is still "another family"
+        # than the one that allowed.
+        _last_attempt = health.get("last_attempt_at")
+        _recent = (_last_attempt is not None and _classifier_clock()
+                   - _last_attempt < _CLASSIFIER_PROBE_INTERVAL_S)
+        _stalled = state.setdefault("stalled_models", set())
+        _chain = []
+        for _m in [_primary] + list(_confirm):
+            if _m in _chain or (_recent and _m in _stalled):
+                continue
+            _chain.append(_m)
+        # The first usable model is asked first; an ALLOW is confirmed by a
+        # latter one. Empty chain (everything latched) falls back to asking
+        # the primary, whose _bounded then raises -> on_error (ask/refuse).
+        _ask = _chain[0] if _chain else _primary
+        _confirms = _chain[1:] if _chain else ()
+
         def _bounded(prompt: str, model: str) -> str:
-            # The runner is the client's; the bound is the gate's, so a
-            # runner that hangs cannot hold an action for minutes. After
-            # one timeout in a turn, or while the watcher is down, the
-            # model is not waited for again until the probe interval has
-            # passed: the error behaviour applies at once (user rules and
-            # the claim guard still run, they need no model).
+            # Exactly ONE model per call (the primary, or one step of the
+            # confirmation chain, chosen by the caller). The runner is the
+            # client's; the bound is the gate's, so a runner that hangs cannot
+            # hold an action for minutes. A stall latches only THIS model
+            # (``state["stalled_models"]``), probed again after
+            # _CLASSIFIER_PROBE_INTERVAL_S, so one slow model does not block
+            # the others.
+            #
+            # ``_reasons`` is local: merged into the outer ``failed`` only
+            # when this single call gave no verdict, so a successful verdict
+            # never records a watcher failure.
+            _reasons: list = []
             last = health.get("last_attempt_at")
             recent = (last is not None and _classifier_clock() - last
                       < _CLASSIFIER_PROBE_INTERVAL_S)
-            if (health.get("down") or state.get("stalled")) and recent:
-                failed.append("down" if health.get("down") else "stalled")
-                raise TimeoutError(
-                    "no verdict: the watcher is down" if health.get("down")
-                    else "no verdict: the model timed out earlier in this "
-                    "turn")
+            if (health.get("down") or model in state.setdefault(
+                    "stalled_models", set())) and recent:
+                _reasons.append("down" if health.get("down") else "stalled")
+                failed.extend(_reasons)
+                raise TimeoutError("model latched this turn")
             for attempt in (1, 2):
                 health["last_attempt_at"] = _classifier_clock()
                 called.append(attempt)
                 box: dict = {}
 
-                def _work() -> None:
+                def _work(box=box, m=model) -> None:
+                    # Bind the worker'S OWN box and model: a timed-out thread
+                    # for an earlier model keeps running, and when it finishes
+                    # it must write its OWN box, not the current model's.
+                    # Late binding would let model A's late answer -- or A's
+                    # exception -- land in model B's result.
                     try:
-                        box["out"] = runner(prompt, model)
+                        box["out"] = runner(prompt, m)
                     except BaseException as exc:      # noqa: BLE001
                         box["exc"] = exc
 
@@ -21625,20 +21947,23 @@ class _DocToolExecutor:
                 wait_s = _classifier_timeout_s()
                 worker.join(wait_s)
                 if worker.is_alive():
-                    failed.append("timeout")
-                    state["stalled"] = True
-                    raise TimeoutError(
-                        f"no verdict within {wait_s:.0f} s")
+                    state.setdefault("stalled_models", set()).add(model)
+                    _reasons.append("timeout")
+                    break  # this model timed out; no verdict
                 if "exc" in box:
                     if attempt == 1:
                         # One short retry: a dropped connection or a 502
                         # from the proxy is usually gone a moment later.
                         time.sleep(_CLASSIFIER_RETRY_DELAY_S)
                         continue
-                    failed.append(type(box["exc"]).__name__)
+                    _reasons.append(type(box["exc"]).__name__)
+                    failed.extend(_reasons)
+                    # The model's own error, so the watcher's status names
+                    # the real cause (ConnectionError, not "no verdict").
                     raise box["exc"]
                 return str(box.get("out") or "")
-            raise TimeoutError("no verdict")      # pragma: no cover
+            failed.extend(_reasons)
+            raise TimeoutError("no verdict")
 
         # The watcher failing. An action that leaves the workspace asks,
         # or is refused when nobody can be asked: the second look was the
@@ -21661,11 +21986,46 @@ class _DocToolExecutor:
                 verdict = (_ac.screen(screened, context, cfg["rules"])
                            or _ac.Verdict(
                                "allow", "screened without the model."))
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # A screened verdict is not a model's opinion: it is a
+                # deterministic allow (or a user rule), so no second-family
+                # confirmation is owed for it.
             else:
                 verdict = _ac.judge(
-                    action, context, model=cfg["model"], runner=_bounded,
+                    action, context, model=_ask, runner=_bounded,
                     rules=cfg["rules"], default_on_error=on_error)
-            decision, reason = verdict.decision, str(verdict.reason or "")
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # "allow needs two families": the first model's own refuse/ask
+                # stands (decision is not "allow"), but an ALLOW is confirmed
+                # by a model of another family before it is granted. Gate the
+                # confirmation on the ORIGINAL _confirm (a second family is
+                # served at all) and iterate the usable _confirms. A confirm
+                # that gives no verdict (latched, timed out, failed) is
+                # skipped for the next; if NONE does, the allow is NOT granted
+                # -- it asks (or refuses when nobody can be asked). Never
+                # allowed on one vote when a second family was available; a
+                # lone allow stands only when _confirm was empty from the
+                # start (one family served, today's behaviour).
+                if decision == "allow" and _confirm:
+                    confirmed = False
+                    for cm in _confirms:
+                        vc = _ac.judge(
+                            action, context, model=cm, runner=_bounded,
+                            rules=cfg["rules"], default_on_error=on_error)
+                        if str(vc.reason or "").startswith(_ac.ERROR_PREFIX):
+                            continue  # this confirm gave no verdict; try next
+                        decision, reason = (vc.decision,
+                                            str(vc.reason or ""))
+                        confirmed = True
+                        break
+                    if not confirmed:
+                        # A second family was available but never gave a firm
+                        # verdict: not allowed on one vote.
+                        decision = "ask" if can_ask else "refuse"
+                        reason = ("the confirming model could not answer, so "
+                                  "the action needs two families to allow and "
+                                  "asks.")
+                        failed.append("no-confirmation")
         except Exception as exc:
             failed.append(type(exc).__name__)
             decision, reason = on_error, f"classifier error: {exc}"
@@ -24364,7 +24724,7 @@ class _DocToolExecutor:
                         "not make the write run. Grant the directory via "
                         "--add-dir / extra_workspace_dirs to make it work."
                     )})
-                err = self._check_read_access(perms, path)
+                err = self._check_read_access(perms, path, command=cmd)
                 if err is not None:
                     return json.dumps({"error": (
                         f"blocked: this command would print '{target}'. {err}"
@@ -26492,6 +26852,8 @@ class _DocToolExecutor:
                     "id": ent.id,
                     "fires_at_epoch": ent.next_fire_at,
                 })
+            if name == "cron_create" and str(arguments.get("at", "") or "").strip():
+                return _propose_user_schedule(arguments, _ws)
             if name == "cron_create":
                 ent = sch.schedule_interval(
                     every_seconds=int(arguments.get("every_seconds", 0)),
@@ -28479,6 +28841,35 @@ def _private_tmp_dir() -> str:
     return _PRIVATE_TMP
 
 
+_SESSION_SCRATCH: Optional[str] = None
+
+
+def _session_scratch_dir() -> str:
+    """The session's persistent scratch directory, 0700, private to it.
+
+    /tmp inside a cage is fresh for every command, so a file one command
+    writes there is gone for the next, and the file tools cannot reach it
+    either. The scratch dir sits under this process's own private temp
+    directory (:func:`_private_tmp_dir`), so it inherits three properties
+    for free: 0700, never shared with another session (one process = one
+    session), and pruned when the session ends (the atexit rmtree of the
+    parent). It is exported as TMPDIR/TMP/TEMP in every cage layer and
+    bound read-write into each one, and it is on the file tools' writable
+    and readable root lists -- see KitToolPermissions.all_workspace_roots.
+    /tmp itself stays private and fresh; nothing else becomes writable.
+    """
+    global _SESSION_SCRATCH
+    if _SESSION_SCRATCH and Path(_SESSION_SCRATCH).is_dir():
+        return _SESSION_SCRATCH
+    # Created the way _private_tmp_dir is: tempfile.mkdtemp, mode 0700,
+    # inside this process's private tmp dir -- private per-process state,
+    # never a user path.
+    import tempfile
+    _SESSION_SCRATCH = tempfile.mkdtemp(prefix="scratch-",
+                                        dir=_private_tmp_dir())
+    return _SESSION_SCRATCH
+
+
 def _home_secret_paths() -> list[str]:
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -28495,6 +28886,12 @@ def _home_secret_paths() -> list[str]:
     try:
         from delfin.agent.sandbox import runtime_masked_dirs
         out += [d for d in runtime_masked_dirs() if d not in out]
+    except Exception:
+        pass
+    # The run's own hidden paths (DELFIN_CAGE_HIDE).
+    try:
+        from delfin.agent.sandbox import run_hidden_paths
+        out += [d for d in run_hidden_paths() if d not in out]
     except Exception:
         pass
     return out
@@ -28837,7 +29234,17 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                  for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
-    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"] + [
+    # TMPDIR/TMP/TEMP point at the session scratch dir. The scratch dir is
+    # writable here because it lies under _private_tmp_dir(), which is in
+    # the profile's write roots (roots + [tmp] below); it is NOT one of
+    # all_workspace_roots. The private tmp dir is the fallback when the
+    # scratch dir could not be built. Package cache dirs stay under it.
+    try:
+        _scratch = _session_scratch_dir()
+    except Exception:
+        _scratch = ""
+    env_prefix = ["/usr/bin/env", f"TMPDIR={_scratch or tmp}",
+                  f"TMP={_scratch or tmp}", f"TEMP={_scratch or tmp}"] + [
         f"{k}={tmp}/{sub}" for k, sub in _package_cache_dirs()]
     port = 0
     if mode == "proxy":
@@ -28885,7 +29292,25 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
     # refuses the command; an unattended run proceeds on Landlock alone.
     net_args, _proxy_dir = _sandbox_network_args(perms)
     argv += net_args
-    argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
+    # The session scratch dir: writable, and TMPDIR points at it (the
+    # helper maps the in-cage path; it equals the host path here).
+    # landlock_exec.main keeps the LAST --tmpdir (tmpdir = value, which it
+    # also adds to the write roots), so there must be exactly ONE --tmpdir
+    # and it must be the scratch dir; the private tmp dir stays a write
+    # root of its own (--write) so its non-scratch uses still work, but is
+    # no longer the TMPDIR target.
+    try:
+        scratch = _session_scratch_dir()
+        argv += ["--write", scratch, "--tmpdir", scratch]
+    except Exception:
+        scratch = None
+        # Keep the TMPDIR invariant when the scratch dir cannot be made:
+        # exactly one --tmpdir, falling back to the private tmp dir (what
+        # this argv had before the scratch work), so landlock_exec still
+        # controls TMPDIR/TMP/TEMP for every program in the cage.
+        argv += ["--tmpdir", _private_tmp_dir()]
+    argv += ["--write", _private_tmp_dir(), "--strict",
+             "1" if strict else "0", "--"]
     return argv + plain
 
 
@@ -28948,6 +29373,16 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # The session scratch dir: where the commands of THIS session keep
+    # files they need across commands and the file tools must find. It
+    # replaces TMPDIR/TMP/TEMP so nothing points at the fresh per-cage
+    # /tmp; paths are absolute so a child that chdirs stays correct.
+    try:
+        _scratch = _session_scratch_dir()
+        for _t in ("TMPDIR", "TMP", "TEMP"):
+            env[_t] = _scratch
+    except Exception:
+        pass
     # Every process an agent session starts says so: `delfin-agent
     # approvals approve` and the answer functions refuse under it
     # (approval_guard), and a nested DELFIN ignores DELFIN_CLASSIFIER=off
@@ -30128,10 +30563,24 @@ def _bash_isolation_argv(
         # The host's TMPDIR (a cluster scratch path) is read-only under the
         # "/" bind; the cage's own /tmp is the writable one. Landlock and
         # Seatbelt set their private directory the same way.
+        # The session scratch dir is the exception: it is bound read-write
+        # and TMPDIR points AT it, so a file one command of this session
+        # writes there is visible to the next and to the file tools. The
+        # path inside the cage equals the host path because "/" is bound
+        # at itself; _bind-try keeps a cage from failing should the
+        # directory have been pruned between build and run.
         "--setenv", "TMPDIR", "/tmp",
         "--setenv", "TMP", "/tmp",
         "--setenv", "TEMP", "/tmp",
     ]
+    try:
+        _scratch = _session_scratch_dir()
+        args += ["--bind-try", _scratch, _scratch]
+        args += ["--setenv", "TMPDIR", _scratch,
+                 "--setenv", "TMP", _scratch,
+                 "--setenv", "TEMP", _scratch]
+    except Exception:
+        pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
     for rel in _HOME_SECRET_DIRS:
@@ -30228,6 +30677,12 @@ def _bash_isolation_argv(
             args += ["--tmpfs", d]
     except Exception:
         pass
+    # The run's own hidden paths (DELFIN_CAGE_HIDE), after every bind.
+    try:
+        from delfin.agent.sandbox import _bwrap_hide_args, run_hidden_paths
+        args += _bwrap_hide_args(run_hidden_paths())
+    except Exception:
+        pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
@@ -30319,6 +30774,44 @@ def _test_run_argv(argv: list[str], perms, report_dir) -> list[str]:
                                 extra_write=(report_dir,))
 
 
+#: Proposals waiting for the user at once; more are refused.
+_MAX_OPEN_PROPOSALS = 5
+
+
+def _propose_user_schedule(arguments: dict, workspace: str) -> str:
+    """``cron_create`` with ``at``: a user schedule PROPOSED, not made.
+
+    Input: ``at`` (the time as the user would write it), ``prompt`` (the
+    task), the session's workspace. Output: the proposal's number and how
+    the user confirms it. It never runs before the user's ``ok``
+    (``schedules.take_due`` checks the confirmation hash), and at most
+    ``_MAX_OPEN_PROPOSALS`` wait at once."""
+    from . import schedules
+    task = str(arguments.get("prompt", "") or "").strip()
+    when = str(arguments.get("at", "") or "").strip()
+    if not task:
+        return json.dumps({"error": "prompt is required: it is the task the schedule runs"})
+    try:
+        open_ones = [e for e in schedules.entries()
+                     if not e["confirmed"] and e.get("created_by") == "agent"]
+        if len(open_ones) >= _MAX_OPEN_PROPOSALS:
+            return json.dumps({"error": (
+                f"{len(open_ones)} proposals already wait for the user's ok; "
+                "ask them to confirm or delete those first")})
+        spec = schedules.parse_when(when)
+        entry = schedules.add(f"{spec['text']} {task}", workspace=workspace or os.getcwd(),
+                              created_by="agent", confirm=False)
+    except schedules.ScheduleError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({
+        "status": "proposed", "id": entry["id"], "when": entry["when"],
+        "tz": entry["tz"], "next": schedules.describe_next(entry),
+        "note": (f"Not active until the user confirms it: `/schedule ok {entry['id']}` "
+                 f"in a session, `delfin-agent schedule ok {entry['id']}`, or "
+                 f"`ok {entry['id']}` in the phone's schedules chat. Tell the user."),
+    })
+
+
 def _schedule_is_mine(sch: Any, entry_id: str, session_id: str) -> bool:
     """Whether a schedule entry belongs to the asking session.
 
@@ -30349,6 +30842,19 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # bad request. On long KIT runs in a field report (vLLM behind an Open-WebUI proxy) a
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
 _STREAM_RETRY_MAX = 3
+
+# How many times a single turn may switch to another model because KIT does
+# not serve the one it asked for (either "Model not found" or "…temporarily
+# unavailable"). A headless run is ONE long turn that can ask several models;
+# bounding the count keeps a roster where nothing answers from looping forever,
+# while still letting the run get past one or two down models.
+_MODEL_FALLBACK_MAX = 3
+
+# The short pause before resending a model that reported itself "temporarily
+# unavailable": one retry on the same model, then the switch. Long enough to
+# ride out a blip, short enough to not hold the turn for the real outage's
+# whole hour.
+_MODEL_UNAVAILABLE_RETRY_S = 1.5
 
 # A request that produced no byte for this long was not a hiccup: the KIT
 # gateway answers 504 at 600 s when the model has not started, and the
@@ -30462,8 +30968,53 @@ def _is_transient_api_error(exc: Exception) -> bool:
     # without ever retrying a genuine bad request.
     low = msg.lower()
     if any(marker in low for marker in _INFRA_EXHAUSTION_MARKERS):
+        # ...except a MODEL that is itself unavailable: that is a property
+        # of the model, fixed by switching to another family KIT serves,
+        # not of the gateway. "Model 'X' is temporarily unavailable" is
+        # NOT gateway exhaustion; "_is_model_unavailable_error" decides it
+        # and the switch path handles it. (The gateway-wide "service
+        # temporarily unavailable" has no model scope and stays here.)
+        if _is_model_unavailable_error(exc):
+            return False
         return True
     return False
+
+
+_MODEL_UNAVAILABLE_PHRASES = (
+    "is temporarily unavailable",
+    "is currently unavailable",
+    "is temporarily down",
+    "is not available",
+)
+
+
+def _is_model_unavailable_error(exc: Exception) -> bool:
+    """Whether a 400 says the MODEL (not the gateway) is unavailable.
+
+    Measured 2026-10-29 for about an hour: KIT answered every request to one
+    model with "Model 'glm-5.3-flash' is temporarily unavailable. Please try
+    again later." That is a property of the model, fixed by switching to the
+    next family KIT serves — NOT gateway exhaustion ("too many connections",
+    "service temporarily unavailable"), which switching would not fix. This
+    deliberately tells the two apart: a model-unavailability NAMES the model
+    (the word "model" near a down-phrase, or a quoted model id), a gateway
+    message does not.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int) and status != 400:
+        return False
+    low = str(exc).lower()
+    if not any(p in low for p in _MODEL_UNAVAILABLE_PHRASES):
+        return False
+    # The message must name a model to be a MODEL unavailability. The word
+    # "model" in a scope that picks one out ("Model 'X' is …", "the model X
+    # is …"), or a quoted id next to an availability word, both count. The
+    # gateway's own "service temporarily unavailable" names no model.
+    if "model'" in low or 'model"' in low or " the model " in low:
+        return True
+    if low.strip().startswith("model ") or " model " in low:
+        return True
+    return "'" in low and "available" in low
 
 
 _MODEL_NOT_FOUND_HINTS = (
@@ -30482,17 +31033,24 @@ def _is_model_not_found_error(exc: Exception) -> bool:
 
 
 def _kit_fallback_model(current: str, provider: str, base_url: str = "",
-                        api_key: str = "") -> str:
+                        api_key: str = "", already_left: set = ()) -> str:
     """The best KIT model to continue on when ``current`` is not served, or
     "" (not a KIT session). The ranked roster's first entry the endpoint
     lists; when the listing cannot be read, the first ranked entry that is
-    not ``current`` -- it was the ranking that named ``current`` too."""
+    neither ``current`` nor in ``already_left``. ``already_left`` collects
+    the models this turn has already left behind, so a turn that bounced
+    A->B after only A was excluded does not hand the rank slot back to A
+    (A->B->A until the switch budget ran out). Only ``kit.*`` models in
+    ``_KIT_PREFERENCE`` are ever returned -- never the paid ``azure.*``,
+    ``google.*``, ``alias.*`` or ``standard-*`` routes, and no embedding,
+    reranker, speech or image models."""
     if str(provider or "").lower() != "kit":
         return ""
     try:
         from . import model_capabilities as _mc
         served = _mc.kit_models_served(base_url, api_key, fetch=True)
-        ranked = [m for m in _mc._KIT_PREFERENCE if m != current]
+        skip = set(already_left or ()) | {current}
+        ranked = [m for m in _mc._KIT_PREFERENCE if m not in skip]
         if served:
             return next((m for m in ranked if m in served), "")
         return ranked[0] if ranked else ""
@@ -30680,6 +31238,27 @@ def _infer_provider_from_base_url(base_url: str) -> str:
     if "ki-toolbox" in u or "kit.edu" in u:
         return "kit"
     return "openai"
+
+
+class _GateRound:
+    """Mutable outcome holder for one gate-guarded request round.
+
+    The round body fills ``first_byte_s`` (seconds to first byte on success)
+    and ``exception`` (the transient error that triggered a congested retry);
+    the request-``finally`` in ``OpenAIClient.stream_message`` reports both to
+    the shared adaptive limit and releases the slot on every exit path.
+    ``gate`` is the live ``endpoint_gate.EndpointGate`` (None when disabled).
+    Kept a plain mutable class so the round body can set fields without a
+    reporting protocol.
+    """
+
+    __slots__ = ("gate", "first_byte_s", "exception", "wait_notice")
+
+    def __init__(self) -> None:
+        self.gate = None
+        self.first_byte_s = None
+        self.exception = None
+        self.wait_notice = ""
 
 
 class OpenAIClient(_BaseClient):
@@ -31245,6 +31824,42 @@ class OpenAIClient(_BaseClient):
         try:
             permissions.classifier_runner = self._classifier_complete
         except Exception:
+            return
+        # Resolve the classifier's models from the served roster once. The
+        # classifier must be independent of the session's model (a slow one
+        # with many agents latched every action to a human, 2026-10-29). The
+        # client is the only place with both the session model and the
+        # endpoint, so it stows the resolved ids here. Cached roster only
+        # (no fetch): re-attaching on every set_permissions must not spend a
+        # /v1/models round trip each time.
+        try:
+            from . import model_capabilities as _mc
+            from .action_classifier import DEFAULT_MODEL as _default_cls
+            cfg = _classifier_settings() or {}
+            base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
+            api_key = getattr(self, "_api_key", "") or ""
+            served = _mc.kit_models_served(base_url, api_key)
+            model = getattr(self, "model", "") or ""
+            cfg_model = str(cfg.get("model") or _default_cls)
+            explicit = bool(cfg.get("explicit_model"))
+            primary = _mc.classifier_choice(
+                served=served, session_model=model,
+                cfg_model=cfg_model, cfg_explicit=explicit)
+            permissions.classifier_model = primary
+            if explicit:
+                # An explicitly configured classifier model decides alone:
+                # the user chose it, and no roster pick second-guesses it.
+                permissions.classifier_confirm_models = ()
+            else:
+                # The ALLOW-confirmation chain: bench models of a family
+                # other than the primary's, so an allow needs two families.
+                permissions.classifier_confirm_models = (
+                    _mc.classifier_confirmation(
+                        served=served, primary=primary,
+                        cfg_model=cfg_model))
+        except Exception:
+            # A roster that could not be asked leaves the configured default:
+            # the old behaviour, never a missing classifier.
             pass
 
     def _attach_subagent_runner(
@@ -31881,7 +32496,17 @@ class OpenAIClient(_BaseClient):
             except Exception:
                 pass
         _stream_attempt = 0    # transient-API-error retries (reset per response)
-        _model_fallback_done = False   # once per turn: see _kit_fallback_model
+        # The model-switch budget for THIS turn (both "Model not found" and
+        # "…temporarily unavailable"). A headless run is one long turn, so
+        # "once per turn" meant a single flapping model stood the whole run
+        # still; bounded, not unlimited. Reset at each new turn, never mid-turn.
+        _model_fallback_count = 0
+        # The one switch-collection per turn, read by turn_metrics and by a
+        # headless `chat -p --output-format json` result (repl.TURN_KEYS).
+        self._turn_model_switches: list[dict] = []
+        # "At most one short retry" guard for a model that reports itself
+        # unavailable, reset at the start of each new round below.
+        _mod_unav_retried = False
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
@@ -32304,8 +32929,24 @@ class OpenAIClient(_BaseClient):
                 _cq.put(True)
 
             _ct = _threading_mod.Thread(target=_spawn_create, daemon=True)
-            _ct.start()
             try:
+                # Host-wide per-endpoint concurrency gate (endpoint_gate):
+                # acquire one slot for this round and release it in the single
+                # `finally` below, so no exit path -- success, retry `continue`,
+                # re-raise, a consumer closing the generator mid-round
+                # (GeneratorExit), KeyboardInterrupt -- leaves it held.
+                _gslot = _GateRound()
+                try:
+                    from .endpoint_gate import for_client as _gslot_for
+                    _gslot.gate = _gslot_for(self._base_url, self.model)
+                except Exception:
+                    _gslot.gate = None
+                if _gslot.gate is not None:
+                    _gslot.gate.acquire()
+                if _gslot.gate is not None and _gslot.gate.wait_notice:
+                    yield StreamEvent(type="notice", text=(
+                        f"⚠️ {_gslot.gate.wait_notice}\n"))
+                _ct.start()
                 # Watch the first byte instead of parking in it: emit a
                 # visible "waiting for the model … Ns" indicator while the
                 # endpoint has not answered, and abandon the round on the
@@ -32400,6 +33041,11 @@ class OpenAIClient(_BaseClient):
                             finish_reason = choice.finish_reason
                 finally:
                     stream.close()
+                # A response was streamed to the end: record its first-byte
+                # time on the holder so the `finally` below reports a quick
+                # success to the shared adaptive limit.
+                if _round_ttft is not None:
+                    _gslot.first_byte_s = _round_ttft - _round_t0
             except Exception as _stream_exc:
                 if self._stop_was_requested():
                     # The transport was cut on purpose (signal_stop): the
@@ -32439,40 +33085,101 @@ class OpenAIClient(_BaseClient):
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
                             _stream_attempt, _STREAM_RETRY_MAX, _delay))
+                        # A congestion signal triggered this retry: report it
+                        # and free the slot BEFORE the backoff, so another
+                        # session can use the endpoint while this round waits.
+                        # The gate is then cleared on the holder, so the
+                        # round's `finally` neither reports it a second time
+                        # nor releases again; the next round takes a new slot.
+                        if _gslot.gate is not None:
+                            try:
+                                from . import endpoint_gate as _endpoint_gate
+                                _endpoint_gate.report_result(
+                                    _gslot.gate, exception=_stream_exc,
+                                    first_byte_s=None)
+                            except Exception:
+                                pass
+                            _gslot.gate.release()
+                            _gslot.gate = None
                         time.sleep(_delay)
                         continue
-                    # The endpoint does not serve the model (a KIT roster
-                    # change): once per turn, the best KIT model it serves
-                    # takes over, said in the stream, and the round is sent
-                    # again. Measured 2026-10-19: kit.glm-5.3 answered
-                    # "400 - Model not found" with no explanation.
-                    if (_is_model_not_found_error(_stream_exc)
-                            and not _model_fallback_done):
-                        _model_fallback_done = True
+                    # The endpoint does not serve the model — either it is not
+                    # on the KIT roster AT ALL ("Model not found", measured
+                    # 2026-10-19: kit.glm-5.3 answered "400 - Model not found")
+                    # or it is TEMPORARILY unavailable ("Model 'X' is
+                    # temporarily unavailable", measured 2026-10-29 for about
+                    # an hour, ten agents stood still). Both are properties
+                    # of the MODEL, not of the gateway: the best KIT model it
+                    # serves takes over, said in the stream, and the round is
+                    # sent again. A headless run is one long turn, so the
+                    # switch is allowed up to _MODEL_FALLBACK_MAX times per
+                    # turn, never a loop. An unavailable model gets at most
+                    # ONE short retry on itself first (a blip); a "Model not
+                    # found" is definitive and switches at once.
+                    _is_unavail = _is_model_unavailable_error(_stream_exc)
+                    _is_missing = _is_model_not_found_error(_stream_exc)
+                    if (_is_unavail or _is_missing) \
+                            and _model_fallback_count < _MODEL_FALLBACK_MAX:
+                        if _is_unavail and not _mod_unav_retried:
+                            _mod_unav_retried = True
+                            yield StreamEvent(type="notice", text=(
+                                f"\n⏳ The endpoint says `{self.model}` is "
+                                "temporarily unavailable; trying it once more "
+                                "briefly before switching models.\n"))
+                            time.sleep(_MODEL_UNAVAILABLE_RETRY_S)
+                            continue
+                        _mod_unav_retried = False
+                        _model_fallback_count += 1
                         _old_model = self.model
                         _alt = _kit_fallback_model(
                             _old_model, getattr(self, "_provider", ""),
                             str(getattr(self, "_base_url", "") or ""),
-                            str(getattr(self, "_api_key", "") or ""))
+                            str(getattr(self, "_api_key", "") or ""),
+                            already_left={s.get("before", "") for s in
+                                          self._turn_model_switches})
                         if _alt:
                             self.model = _alt
                             kwargs["model"] = _alt
+                            self._turn_model_switches.append({
+                                "before": _old_model, "after": _alt,
+                                "reason": ("model unavailable" if _is_unavail
+                                           else "model not found")})
                             _text_chunks = []
                             _tool_calls = {}
                             _round_in = 0
                             finish_reason = None
-                            yield StreamEvent(type="notice", text=(
-                                f"\n⚠️ KIT does not serve `{_old_model}` right "
-                                "now (\"Model not found\"). This session "
-                                f"continues on `{_alt}`, the best KIT model it "
-                                "serves; /model or the dashboard's model menu "
-                                "picks another.\n"))
+                            if _is_unavail:
+                                yield StreamEvent(type="notice", text=(
+                                    f"\n⚠️ KIT is not serving `{_old_model}` "
+                                    "right now (\"temporarily unavailable\"). "
+                                    f"This session continues on `{_alt}`, the "
+                                    "best KIT model it serves; /model or the "
+                                    "dashboard's model menu picks another.\n"))
+                            else:
+                                yield StreamEvent(type="notice", text=(
+                                    f"\n⚠️ KIT does not serve `{_old_model}` "
+                                    "right now (\"Model not found\"). This "
+                                    f"session continues on `{_alt}`, the best "
+                                    "KIT model it serves; /model or the "
+                                    "dashboard's model menu picks another.\n"))
                             continue
+                        # No alternative model to continue on.
                         yield StreamEvent(type="notice", text=(
                             f"\n⚠️ The endpoint does not serve `{_old_model}` "
-                            "(\"Model not found\"). Pick a model it serves: "
-                            "/model lists them in the terminal, the model menu "
-                            "in the dashboard.\n"))
+                            f"(\"{'temporarily unavailable' if _is_unavail else 'Model not found'}\") "
+                            "and no other KIT model is ranked for it. Pick a "
+                            "model it serves: /model lists them in the "
+                            "terminal, the model menu in the dashboard.\n"))
+                    elif (_is_unavail or _is_missing) \
+                            and _model_fallback_count >= _MODEL_FALLBACK_MAX:
+                        # The model-switch budget for this turn is spent:
+                        # switching again cannot help (every ranked model is
+                        # gone or down). End like any unfixable model error
+                        # rather than loop.
+                        yield StreamEvent(type="notice", text=(
+                            f"\n⚠️ `{self.model}` is unavailable and the "
+                            "model-switch budget for this turn is used up. "
+                            "No KIT model answered; try again later.\n"))
                     # Context-window overflow is deterministic — retrying the
                     # same request just fails again. End the turn cleanly with a
                     # terminal stop instead of crashing the generator (which
@@ -32512,6 +33219,23 @@ class OpenAIClient(_BaseClient):
                 _tool_calls.update(_calls)
                 if _fin:
                     finish_reason = _fin
+
+            finally:
+                # Single release point for this round's slot, and one report
+                # to the shared adaptive limit. Runs on EVERY exit path of
+                # the request -- success, the retry/stop/fallback branches
+                # above, and an exception re-raise -- so a slot is never
+                # leaked for the rest of the turn. report_result swallows its
+                # own errors; release is idempotent when nothing was acquired.
+                if _gslot.gate is not None:
+                    try:
+                        from . import endpoint_gate as _endpoint_gate
+                        _endpoint_gate.report_result(
+                            _gslot.gate, exception=_gslot.exception,
+                            first_byte_s=_gslot.first_byte_s)
+                    except Exception:
+                        pass
+                    _gslot.gate.release()
 
             # A stream that ended having produced no ANSWER. Not an error
             # and not a refusal: finish_reason says stop, and no content
@@ -32600,6 +33324,8 @@ class OpenAIClient(_BaseClient):
                         input_tokens=_round_in, cached_tokens=_round_cached,
                         output_tokens=_round_out, tool_calls=len(_tool_calls),
                         finish_reason=str(finish_reason or ""),
+                        model_switches=list(getattr(
+                            self, "_turn_model_switches", []) or []),
                         **_prompt_fingerprints(
                             api_messages,
                             int(getattr(self, "_turn_rows_base", 0) or 0)))

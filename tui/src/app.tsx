@@ -332,7 +332,9 @@ export function App(props: AppProps): JSX.Element {
    *  A shell line ("!") is a command, never an answer. */
   const sendTyped = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     const asked = agents.state.open ? undefined : session()?.pending[0]
-    if (asked && !how && shellLead(text) < 0) {
+    // Session routing must remain switchable while a question is waiting.
+    // /sync is a local control, never the text answer to that question.
+    if (asked && !how && shellLead(text) < 0 && !/^\/sync(?:\s|$)/i.test(text.trim())) {
       const took = approval.submitText(asked, text)
       if (took === "reflex") {
         say("sent as the question opened: not taken as its answer -- enter again to answer with it")
@@ -724,7 +726,8 @@ export function App(props: AppProps): JSX.Element {
   setFullPreviewKey(props.keymap.label("details") || props.keymap.label("expand"))
   const approval = createApprovalUi({ reply, say, lastKey: () => typingAt,
                                       pauseMs: props.answerPauseMs, clickPauseMs: props.clickPauseMs,
-                                      release: (text) => composer.insert(text) })
+                                      release: (text) => composer.insert(text),
+                                      prefill: (text) => composer.insert(text) })
   // The question's own state starts when it appears (its typeahead pause
   // counts from then), and ends with it.
   createEffect(() => {

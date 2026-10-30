@@ -297,14 +297,16 @@ def test_the_switch_reads_the_setting_and_one_process_can_override(monkeypatch):
     assert A._classifier_settings() is None
     monkeypatch.setenv("DELFIN_CLASSIFIER", "on")
     assert A._classifier_settings() == {
-        "model": "kit.x", "rules": ["never allow git push"], "broad": False}
+        "model": "kit.x", "explicit_model": True,
+        "rules": ["never allow git push"], "broad": False}
     monkeypatch.setenv("DELFIN_CLASSIFIER", "all")
     assert A._classifier_settings()["broad"] is True
     monkeypatch.setattr(US, "load_settings", lambda: {})
     monkeypatch.delenv("DELFIN_CLASSIFIER")
     from delfin.agent import action_classifier as ac
     assert A._classifier_settings() == {
-        "model": ac.DEFAULT_MODEL, "rules": [], "broad": False}
+        "model": ac.DEFAULT_MODEL, "explicit_model": False,
+        "rules": [], "broad": False}
     monkeypatch.setattr(US, "load_settings", lambda: {
         "agent": {"classifier": {"scope": "all"}}})
     assert A._classifier_settings()["broad"] is True

@@ -927,6 +927,12 @@ def chat_namespace(args: argparse.Namespace, workspace: Path) -> argparse.Namesp
         argv.append("--continue")
     if args.fork_session:
         argv.append("--fork-session")
+    if getattr(args, "unattended", False):
+        argv.append("--unattended")
+    for flag, value in (("--max-budget-usd", getattr(args, "max_budget_usd", 0.0)),
+                        ("--max-run-seconds", getattr(args, "max_run_seconds", 0.0))):
+        if value and float(value) > 0:
+            argv += [flag, str(float(value))]
     for path in args.add_dir:
         argv += ["--add-dir", path]
     for path in args.read_dir:
@@ -1428,6 +1434,11 @@ class Worker:
         text = str(params.get("text") or "").strip()
         if not text:
             raise _Refusal(protocol.INVALID_PARAMS, "empty prompt")
+        if text.split()[0].lower() == "/sync":
+            from delfin.messenger.activation import configure
+            output = configure(self.emitter.session_id, text[5:].strip(), endpoint="")
+            self.emitter.emit("notice", text=output)
+            return {"accepted": True}
         how = str(params.get("how") or "queue")
         if how not in ("queue", "steer"):
             raise _Refusal(protocol.INVALID_PARAMS, "how must be queue or steer")
@@ -1551,7 +1562,8 @@ class Worker:
                 answers=list(params.get("answers") or []),
                 reason=str(params.get("reason") or ""),
                 persist=bool(params.get("persist", False)),
-                text=str(params.get("text") or ""))
+                text=str(params.get("text") or ""),
+                command=str(params.get("command") or ""))
         except UnknownRequest as exc:
             raise _Refusal(protocol.UNKNOWN_REQUEST, str(exc)) from None
         except InvalidAnswer as exc:
@@ -1804,6 +1816,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    choices=["", "plan", "default", "acceptEdits"])
     p.add_argument("--add-dir", action="append", default=[])
     p.add_argument("--read-dir", action="append", default=[])
+    # A run nobody watches (a user schedule): chat's own ceilings, so the
+    # session stops itself at its cost or time and says which.
+    p.add_argument("--unattended", action="store_true")
+    p.add_argument("--max-budget-usd", type=float, default=0.0)
+    p.add_argument("--max-run-seconds", type=float, default=0.0)
     p.add_argument("--isolate", action="store_true")
     p.add_argument("--no-isolate", action="store_true")
     p.add_argument("--fake", action="store_true",

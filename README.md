@@ -248,6 +248,7 @@ ctx = create_dashboard(backend="auto")   # SLURM when available, else local
 | **Job Status** | Queue monitoring (local/SLURM), resource usage, fairshare and limits, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc CENSO/ANMR` |
 | **Archive** | Archive browser with statistics |
+| **Review** | Rate structures by eye, frame by frame (pass or block, defect categories, the atoms of each defect); team review: [docs/REVIEW_TEAM_GUIDE.md](docs/REVIEW_TEAM_GUIDE.md) |
 | **Remote Archive** | Browse and transfer results on a remote machine over SSH |
 | **Office** | Documents and spreadsheets, with an agent that has no chemistry tools |
 | **Literature** | The indexed literature corpus |

@@ -229,3 +229,67 @@ once, then deploy as above; then, as `pi`,
 `sudo bash ~delfin/delfin/src/scripts/pi/pi_harden_host.sh` and
 `deploy_pi.sh --landlock pi@<host>`, and the checklist "After the first
 boot".
+
+## SimpleX messenger: forum and session chats
+
+Set up in one run on the Pi (or any Linux with systemd and glibc >= 2.34),
+after a deploy, as the admin user (`pi`; the agent user has no sudo):
+
+```bash
+sudo apt install qrencode          # optional: the pairing link as a QR code
+sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair --name=Pi
+```
+
+`--name=` labels the bot (`DELFIN-Pi`) and every chat, for a phone paired with
+several machines; the default is the host name. The bot keeps the name of its
+first start. `--lang=en` sends every phone text in English (default German).
+
+The script waits for the SimpleX daemon, then prints the QR code and, last,
+the link (on a phone's terminal: copy the link and paste it in SimpleX under
++ > paste link). Once the phone connects it prints the security code -- compare
+it on the phone under the contact > Verify security code -- the bot says
+hello in SimpleX and invites you to the forum for all agents. The script installs the pinned simplex-chat build (its daemon creates the bot
+profile), the gateway venv (hashed), the units including the agent service, and
+with `--whisper` local speech recognition (pinned faster-whisper-small, every
+file digest-checked, about 0.5 GB). After a DELFIN update run it again.
+
+Then, as `delfin`, in a project folder: `delfin-agent tui` and `/sync` in the
+session; within a few seconds the gateway creates the session's chat and
+invites you, nothing to type on the phone. The group is named after
+machine and session (an untitled session after its folder). A closed TUI
+leaves its session running: `delfin-agent tui --continue` in the same folder
+joins it again.
+
+On the phone, `neu NAME` (or `neu NAME: task`) starts a session in
+`~/DELFIN-Handy/NAME` and invites you to its chat; it asks before commands and
+edits. A session started at the computer joins with `/sync` there. Reply to a
+question/approval with SimpleX's Reply gesture and `ja/nein`, an offered option or
+a text answer -- spoken or typed; a spoken sentence frees nothing. A shell
+command can be changed before it runs: reply `ändern: NEW COMMAND` (typed only);
+your version runs once, exactly as typed. Late replies
+never approve the next action. `status`, `update`, `pending`, `stop`, `name NAME`,
+`dateien`, `datei NAME`, `forum on/off`, `meldungen kurz/fragen/aus`; files and
+images up to 8 MiB.
+
+See [setup, security boundaries and command reference](../../docs/design/messenger-simplex.md).
+
+## Schedules
+
+The agent service runs your schedules (a task at set times) as sessions:
+
+```bash
+delfin-agent schedule add täglich 07:30 --cwd ~/proj Fasse die Jobs zusammen
+delfin-agent schedule            # list, with the next run
+```
+
+In a session: `/schedule add mo-fr 18:00 <task>`. On the phone: `zeitpläne`
+opens the chat "<machine> · Zeitpläne"; there `neu alle 2h <task>` proposes one
+(in `~/DELFIN-Handy/zeitplaene`) and `ok N` starts it; in a session's chat
+`plan täglich 07:30 <task>` proposes one in that session's folder. Every run is
+reported there. Asked "every day at 7:30 ...", the agent proposes one; it runs
+only after your `ok`. Ceilings: $1 and 30 min a run, $2 a day per schedule.
+Watchers start a task on an event instead of a time: `neu wenn datei
+out.txt erscheint <task>`, `wenn job 123 fertig`, `wenn datei calc.log sich
+ändert`, `wenn ausgabe "squeue -u NAME" sich ändert`; without a task only a
+report.
+See [schedules](../../docs/design/schedules.md).

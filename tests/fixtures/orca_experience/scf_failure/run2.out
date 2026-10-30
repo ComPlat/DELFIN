@@ -1,0 +1,23 @@
+                        Program Version 6.1.1  -  RELEASE   -
+
+Number of atoms                         ....    3
+
+Total Charge           Charge          ....    0
+Multiplicity           Mult            ....    2
+
+               *           SCF CONVERGED AFTER   5 CYCLES          *
+               *        SCF NOT CONVERGED AFTER 124 CYCLES         *
+
+[file orca_leanscf/orca_leanscf.cpp, line 306, Process 0]: Error (ORCA_LEANSCF): unfortunately, the SCF has not converged. There may be a way out but we have to stop here
+
+ORCA finished by error termination in LEANSCF
+Calling Command: mpirun -np 20 orca_leanscf_mpi
+
+--------------------------
+TIMING statistics
+--------------------------
+
+Total Wall time : 456.78s
+
+[file orca_tools/qcmsg.cpp, line 394]:
+  .... aborting the run

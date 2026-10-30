@@ -72,7 +72,8 @@ REQUESTS: dict[str, dict[str, str]] = {
     # (A, k) need; without it they approve once.
     "permission.reply": {"requestId": "string", "choice": "string?",
                          "answers": "[string]?", "reason": "string?",
-                         "persist": "boolean?", "text": "string?"},
+                         "persist": "boolean?", "text": "string?",
+                         "command": "string?"},
     # What the window completes and picks from (choices.py): the session's
     # /commands, the paths under its workspace for an @fragment, and the
     # models, efforts or agent modes a picker offers (what: model | effort
@@ -201,7 +202,15 @@ EVENTS: dict[str, dict[str, str]] = {
                          "choices": "[string]?",
                          "choiceDetails": "[string]?",
                          "multiSelect": "boolean?",
-                         "suggestion": "string?", "readDir": "string?"},
+                         "suggestion": "string?", "readDir": "string?",
+                         # The tool call's own one-line description (the
+                         # bash tool requires one), masked; the model's
+                         # statement, not a check of the command.
+                         "purpose": "string?",
+                         # A shell request's command, for a window to put
+                         # in the prompt to change (key c); absent when it
+                         # holds a secret the preview masks.
+                         "command": "string?"},
     # by: client | outside | expired | abort
     "permission.resolved": {"requestId": "string", "decision": "string",
                             "by": "string"},
@@ -237,6 +246,7 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        # names the row.
                        "brief": "string?", "briefTitle": "string?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
+    "session.pending": {"sessionId": "string"},
     "session.detach": {"sessionId": "string"},
     # A message for a session elsewhere (dashboard, another terminal).
     "session.message": {"key": "string", "text": "string"},
@@ -272,6 +282,7 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "session.attach": {"session": "object", "state": "string",
                        "pending": "[object]", "events": "[object]",
                        "summary": "object"},
+    "session.pending": {"pending": "[object]"},
     "session.detach": {"detached": "boolean"},
     "session.message": {"sent": "boolean"},
     # sessionId, title, workspace, model, provider, updatedAt, running

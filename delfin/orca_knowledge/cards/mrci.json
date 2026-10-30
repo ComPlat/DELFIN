@@ -1,0 +1,1264 @@
+[
+ {
+  "id": "mrci.legacy-module",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "The orca_mrci module (uncontracted MR-CI/MR-PT) is considered legacy in ORCA 6.1. The manual notes that NEVPT2 is typically the method of choice as it is fast and easy to use; internally contracted alternatives (NEVPT2, NEVPT4(SD), FIC-MRCC, FIC-MRCI) are described elsewhere in the manual. Cost grows rapidly with the reference space and all integrals must be kept in memory to be efficient.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19 Multireference Configuration Interaction and Pertubation Theory (uncontracted)"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.allsingles-default",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "In the MRCI module the default mode requires all single excitations via AllSingles=true (the keyword table lists AllSingles false with the comment 'Default is now TRUE'). The matrix elements between a CASSCF reference and the singles vanish, so singles are never selected; they contribute from fourth order in perturbation theory on and matter for smooth potential energy surfaces and accurate molecular properties. This may lead to lengthy computations if the reference space becomes large.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.3.1 Single excitations"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.pes-keep-allsingles",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "Keep AllSingles true (the default) on potential energy surfaces and for spectroscopic constants: with AllSingles false the total energy converges erratically with Tsel (3.19.7.2), so selection noise appears along the surface; keep the default true.",
+  "orca": ">=6.0",
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.10 Energy Surfaces and Spectroscopic Constants"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "when": {
+   "job_type": "potential energy surface / spectroscopic constants",
+   "condition": "AllSingles false"
+  },
+  "verified_by": "expert-mrci",
+  "review_note": "Core claim supported by 3.19.10. 'Turning it off changes the physics of the surface' goes beyond the text. What the manual shows is erratic, non-converging Tsel behaviour (CO/SVP ACPF: 6.3 mEh error at Tsel=1e-6, not monotonic). The card has no 'when', so the warning fires on every job."
+ },
+ {
+  "id": "mrci.citype-place-first",
+  "topic": "mrci",
+  "kind": "incompatibility",
+  "statement": "In the %mrci block, place CIType at the very beginning: the CIType statement selects several default values for other variables. If CIType is placed after a value that it sets by default, that input is simply overwritten, silently changing the calculation. Overwrite program-selected defaults only later in the block.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "CIType is not the first statement of the %mrci block"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "The content is the 3.19.4 Note. Severity error is too strong: ORCA does not refuse, and the result changes only if a variable that CIType sets by default comes before CIType. The condition 'sets CIType and other %mrci variables' matches nearly every %mrci block, so it would fire everywhere."
+ },
+ {
+  "id": "mrci.tsel-units-default",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "Tsel is the selection threshold for inclusion of excited CSFs in the CI, given in Eh and referring to the second-order MR-MP2 energy contribution of a CSF (default Tsel 1e-6). 10^-6 Eh is a pretty good value; reliable transition energies start with approximately 10^-5 Eh, but the total energy converges slowly with Tsel -- a main drawback of individually selecting CI.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.tsel-tighten-for-transitions",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "For transition energies, tighten Tsel when it was loosened above 1e-5 Eh: the default is 1e-6. For potential energy surfaces and spectroscopic constants the manual's examples use Tsel around 1e-7 to 1e-8 (HF Morse fit, ozone, CH); study the Tsel dependence explicitly, since selection produces noise in the procedure.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "transition energies with Tsel > 1e-5; potential energy surfaces and spectroscopic constants"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "The default is already 1e-6, so 'use 1e-5 or tighter' only matters if the user loosened Tsel; the condition does not say that. Wrong cause: the total energy converges slowly with Tsel at every threshold, not only at loose ones. For PES and spectroscopic constants the manual's examples use 1e-8 (HF Morse fit, ozone, CH) and tell you to study the Tsel dependence."
+ },
+ {
+  "id": "mrci.tpre-dimensionless",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "Tpre is dimensionless and refers to the weight of an initial reference after diagonalization of the initial reference space; configurations with weight below Tpre are rejected from the reference space (default Tpre 1e-4). 1e-4 is a pretty good value and there is little need to go much lower; aggressive values such as 1e-2 only select the truly leading configurations for a target state and can save time, but intermediate values are not really recommended.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.intmode-size-limit",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "IntMode FullTrafo (the default) performs an exact four-index transformation and is possible for small cases with less than about 100-200 MOs; it speeds up the calculation considerably and is much better for small molecules or when high accuracy in total energies is required. Beyond roughly 200-300 MOs one runs out of disk space or main memory and must set IntMode RITrafo, which recomputes integrals on the fly via the RI approximation.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "IntMode FullTrafo is used or contemplated"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.ritrafo-needs-auxbasis",
+  "topic": "mrci",
+  "kind": "requirement",
+  "statement": "With IntMode RITrafo the integrals are recomputed on the fly using the RI approximation, so a meaningful auxiliary basis set must be provided -- the /C correlation-fitting basis matching the orbital basis (e.g. def2-SVP/C for def2-SVP, cc-pVTZ/C for cc-pVTZ) or AutoAux. These give accurate transition energies, but the error in total energies is higher, on the order of 1 mEh. Without an auxiliary basis the RITrafo calculation has no valid fitting basis to work from. The same requirement applies on the RI-<Method> simple-keyword route.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "%mrci IntMode RITrafo"
+  },
+  "recommend": {
+   "keywords": [
+    "AutoAux"
+   ]
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Requirement correct (3.19.2: 'a meaningful auxiliary basis set must be provided'), and error severity is defensible. Hard-coding def2-TZVP/C in recommend is wrong for non-def2 or non-TZ orbital bases. The manual recommends the MP2 (/C) fitting basis that matches the orbital basis; its own examples pair def2-SVP with def2-SVP/C and cc-pwCVTZ-DK with cc-pVTZ/C."
+ },
+ {
+  "id": "mrci.maxmemint-must-fit",
+  "topic": "mrci",
+  "kind": "error-pattern",
+  "statement": "MaxMemInt (default 256 MB) is the maximum core memory devoted to storage of integrals. If not all three-index integrals fit into main memory the program fails; increase MaxMemInt (the RI-MRMP2 stilbene example sets MaxMemInt 2000). MaxMemVec (default 16 MB) for trial and sigma vectors is not particularly critical.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "an orca_mrci run aborts on integral memory"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, integral storage"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.solver-ci-vs-acpf",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "For CI methods the Solver Diag (Davidson) is usually preferable; for methods with nonlinear terms such as ACPF, DIIS is imperative, and particularly recommended for calculations in direct2 mode. Manual ACPF examples omit Solver and run fine, so CIType chooses the solver default; the danger is setting Solver Diag explicitly on such a method. For perturbation theory DIIS is always used. Solver DIIS may converge better or faster since it only recomputes unconverged vectors, but occasionally converges poorly and states of the same symmetry can be problematic.",
+  "orca": ">=6.0",
+  "when": {
+   "method": "%mrci CIType in {MRACPF, MRACPF2, MRACPF2a, MRAQCC, MRCEPA_R, MRCEPA_0, SORCP} and Solver Diag set explicitly"
+  },
+  "recommend": {
+   "%block": [
+    "%mrci Solver DIIS"
+   ]
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, algorithm for the solver"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "The rule ('DIIS is imperative' for ACPF-type) is in 3.19.4. But several manual ACPF examples omit Solver (CO via '! MRACPF', N-atom MRACPF2a 2nd job) and do not fail. That suggests CIType chooses the solver default (consistent with the 'CIType selects several default values' note), so the danger is an explicit 'Solver Diag'. The method list also misses MRACPF2a's siblings MRCEPA_R, MRCEPA_0 and SORCP."
+ },
+ {
+  "id": "mrci.ci-not-size-consistent",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "CI-type methods are not size consistent: the energy of a supermolecule A-B of noninteracting fragments differs from the sum of the isolated energies. ACPF, AQCC and CEPA methods approximately account for this, but the effect remains in the energies, the more so the more electrons are included. Perturbation-theory-based methods (e.g. MRMP2) are size consistent as long as the reference wavefunction is.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.3.3 Size Consistency"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.cisdq-size-consistency-error",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "Quantitatively (two noninteracting HF molecules, section 3.19.12): CISD+Q has a size-consistency error of 0.00335 Eh, AQCC is only about a factor of 10 better (0.00032 Eh), while ACPF and ACPF2 are essentially size consistent (0.00000 Eh) and CEPA-0 is also size consistent.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.12 Size Consistency"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.cepa-open-shell-invalid",
+  "topic": "mrci",
+  "kind": "incompatibility",
+  "statement": "For open-shell systems the CEPA-type variants are treacherous: in the 3.19.8 N-atom example CEPA1 and CEPA3 give poor results while CEPA2 is acceptable. Note the CEPA1/2/3 variants are not documented CIType values in ORCA 6.1 (the CIType table lists only MRCEPA_R and MRCEPA_0); for open-shell CEPA variants use the MDCI module.",
+  "orca": ">=6.0",
+  "when": {
+   "method": "open-shell system with a CEPA-type method (documented CItypes: MRCEPA_R, MRCEPA_0)"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.8 Energy Differences - Bond Breaking"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Physics matches 3.19.8 (N atom, CEPA1/3 poor, CEPA2 OK). But 'when' names CIType MRCEPA1/MRCEPA3: the 6.1 CIType table lists only MRCEPA_R and MRCEPA_0, and no CEPA1/2/3 CIType value is documented. An agent following this card could write an undocumented CIType."
+ },
+ {
+  "id": "mrci.ddci2-underestimates-coupling",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "In magnetic-coupling (spin-flipping) applications compare against a full-valence reference: in the H-Ne-H/def2-SVP model (3.19.9, DoDDCIMP2 true) the full-valence MRACPF2a reference is 108 cm^-1; DDCI2 gives 85 (underestimates, characteristic of the method); DDCI3 gives 130 and SORCI 131 (both overestimate by about 20 percent and are mutually consistent, as SORCI is supposed to approximate IDDCI3); MRCI, ACPF and AQCC give 93-98 (slightly low). This is a single toy model-system observation, not a general benchmark.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "magnetic coupling / singlet-triplet gap"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.9 Energy Differences - Spin Flipping"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Leaves out the reference value. The full-valence MRACPF2a reference is 108 cm-1. DDCI2 (85) underestimates; DDCI3 (130) and SORCI (131) both overestimate by ~20%; the others (93-98) are slightly low. 'SORCI showed a somewhat larger error than the other MR methods' compares against the wrong baseline and hides that DDCI3 has the same error. This is also a toy H-Ne-H/def2-SVP model, not a general benchmark."
+ },
+ {
+  "id": "mrci.useivos-with-dft-orbitals",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "UseIVOs (improved virtual orbitals, an N-1 electron potential, less diffuse than HF virtuals) is fine with HF orbitals, but if DFT orbitals are fed into the MRCI module -- perfectly admissible and recommended in some cases, e.g. transition metal complexes -- set UseIVOs false, since DFT orbitals are already adequate in this respect.",
+  "orca": ">=6.0",
+  "when": {
+   "orbital_source": "DFT orbitals read into the MRCI module"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.ivo-restart-procedure",
+  "topic": "mrci",
+  "kind": "procedure",
+  "statement": "The MRCI module writes a .ivo file, a standard .gbw-type file whose orbitals can be visualized. This is important to identify the generated IVOs; if they are not the ones wanted, re-run the MR-CI with the IVOs as input via moread on the .ivo file, NoIter, and the IVO feature turned off in the new run.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.orbital-ordering-responsibility",
+  "topic": "mrci",
+  "kind": "check",
+  "statement": "The MRCI program uses the orbitals around the HOMO-LUMO gap as supplied by the user to build the reference space; it is the user's responsibility that the orbital ordering makes sense (the %mrci keyword comments state this explicitly: first nfrozen/2 orbitals frozen, next nint/2 doubly occupied internal, then nact active, remaining external). The frozen core follows %method FrozenCore / EWin. If the wanted active orbitals are not naturally in place, reorder them with moread, the rotate feature and NoIter, then run the CI in the second job.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "references defined in a %mrci NewBlock (CAS/RAS/explicit) on orbitals not from a CASSCF with the same active space"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.3.2 Reference Spaces; 3.19.15 Keywords, orbital selection"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "The content is right (3.19.3.2 and the table comment, including 'MRCI module respects %method FrozenCore'). Severity error plus a vague condition makes it fire on every %mrci job. ORCA does not refuse; it is a check the agent must do by inspecting orbitals. It applies when references are defined in a NewBlock on orbitals whose frontier ordering was not built for that space. It does not apply in the same way to the simple-keyword route, which uses the CASSCF active space."
+ },
+ {
+  "id": "mrci.usesym-recommended",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "Use UseSym: the MRCI program takes real advantage of symmetry-adapted orbitals -- the CI matrix is blocked by irreducible representations and diagonalized irrep by irrep, a big computational advantage that also makes converging on specific excited states much easier.",
+  "orca": ">=6.0",
+  "recommend": {
+   "keywords": [
+    "UseSym"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.3.5 Symmetry"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.newblock-irrep-star",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "NewBlock Multiplicity Irrep defines one CI block. Irrep '*' repeats the block in every irrep of the point group (e.g. newblock 1 * with NRoots 8 in C2v computes 8 singlet roots in each of the four irreps, 32 states total); a number restricts the block to that irrep (0=A1, 1=A2, 2=B1, 3=B2 in C2v). Block options belong inside %mrci, they are not simple-input keywords.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.3.5 Symmetry"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.symmetry-small-energy-effect",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "Results with and without symmetry differ slightly: without symmetry the reference space contains references of wrong symmetry carrying excited configurations of right symmetry, so more CSFs are selected and the energy is slightly lower. The manual calls this unavoidable; for well-designed reference spaces the effect should not be large since the extra CSFs do not belong to the first-order interacting space.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.3.5 Symmetry"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.davidsonopt-eunselopt-defaults",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "For CIType MRCI, MRDDCI and SORCI the final energy includes the Davidson correction DavidsonOpt Davidson1 by default (the O2 job with only 'citype mrci' is called 'the result of the MRCI+Q'; the MCD example turns it off with DavidsonOpt 0) -- report it as +Q. The EUnselOpt default is not stated in the 6.1 text (set it explicitly). EUnselOpt controls the treatment of unselected CSFs: 0 = no correction, 1 = estimate from overlap with the 0th order wavefunction (crude, footnote: perturbation energy added to the 'most similar root'), 2 = FullMP2, i.e. a full MR-MP2 of the missing contributions after the variational step using the relaxed reference wavefunction -- the most accurate and only slightly more expensive. The Davidson correction becomes unreliable as the reference space weight drops or the number of correlated electrons becomes large (watch RefWeight; 0.91/0.89 still OK in H2CO).",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, corrections to MR-CI energies"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Leaves out the consequence that matters. With %mrci CIType MRCI the Davidson1 correction is applied by default: the O2 job with only 'citype mrci' is called 'the result of the MRCI+Q', and the MCD example turns it off with 'davidsonopt 0'. So the reported energy is +Q (plus E(unsel)), not plain MRCI. The card gives no EUnselOpt default, and the 6.1 text does not document one. Also missing: 3.19.4 says the Davidson correction 'becomes unreliable as the reference space weight drops or the number of correlated electrons becomes large'."
+ },
+ {
+  "id": "mrci.eunselopt-fullmp2-preferred",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "Prefer EUnselOpt FullMP2 (value 2): the overlap-based estimate (EUnselOpt 1) is 'a rather crude approximation' (3.19.15 footnote 3), while FullMP2 recomputes the second-order energy of the unselected configurations rigorously and is only slightly more expensive.",
+  "orca": ">=6.0",
+  "when": {
+   "method": "%mrci CIType MRCI, MRDDCI or SORCI with EUnselOpt 1"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, footnote 3; 3.19.4 tutorial"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Recommendation correct, but the 'rather crude' quote is from footnote 3 of the keyword section, not 3.19.4. The condition 'EUnselOpt set' also fires when the user already chose FullMP2."
+ },
+ {
+  "id": "mrci.divergent-mrpt-selection-ignore",
+  "topic": "mrci",
+  "kind": "check",
+  "statement": "The MR-PT selection step before the variational CI can be divergent ('not that uncommon'): strange total energies printed with E2(sel)/E2(unsel) in the MR-PT SELECTION section can be ignored -- the following variational calculation is still OK. Do not abort a run on such numbers.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "any orca_mrci run"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.natorbiter-tnat-defaults",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "NatOrbIters (default 0) is the number of average natural orbital iterations. Tnat (default 1e-4) cuts natural orbitals: NOs with occupation below Tnat are not included in the next iteration and orbitals with occupation closer than Tnat to 2.0 are frozen. Tnat2 (default -1) is set equal to Tnat; if set above 0 it is the threshold for freezing almost doubly occupied orbitals. Tnat is additionally used by SORCI.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, natural orbital iterations"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.mrmp2-intruders-nevpt2",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "Uncontracted MR-MP2 (CIType MRMP2) is 'nowadays outdated': much more expensive than internally contracted NEVPT2 and prone to intruder states, a major obstacle for practical applications. Prefer NEVPT2 unless there is a specific reason. MRPT_b (default 0.0; e.g. 0.02) shifts individual intruders away; MRPT_shift (example value 0.3; default not stated) shifts the entire excited manifold, a correction is applied afterwards but results do depend on this arbitrary value to some extent. Note the MRMP2/RI-MRMP2 simple keyword is documented only by example (it is not in simple-keyword table 3.51).",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.13 Efficient MR-MP2 Calculations for Larger Molecules"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Content matches 3.19.13 and the MRPT table. 'MRPT_shift (0.3)' reads as a default, but the table gives 0.3 only as the listed value; no default is stated (unlike MRPT_b, 'default 0.0'). Also MRMP2 is not in simple-keyword Table 3.51; RI-MRMP2 appears only in the stilbene example via the RI-<Method> rule."
+ },
+ {
+  "id": "mrci.mrmp2-rijk-fitting",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "The manual's RI-MRMP2 example input is '! def2-TZVP def2/JK RIJCOSX RI-MRMP2' (stilbene), with the JK fitting basis chosen 'in order to fit the Coulomb and the dynamic correlation contributions both with sufficient accuracy' -- treat this as the example input, not a rule. Also give the matching /C correlation-fitting basis for the RI path, as 3.19.2 recommends (e.g. def2-TZVP/C with def2-TZVP). Which auxiliary slot orca_mrci's RI reads is not stated in the 6.1 text; verify with an ORCA run.",
+  "orca": ">=6.0",
+  "when": {
+   "method": "RI-MRMP2"
+  },
+  "recommend": {
+   "keywords": [
+    "def2/JK",
+    "def2-TZVP/C",
+    "RI-MRMP2"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.13 Efficient MR-MP2 Calculations for Larger Molecules"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Paraphrases the stilbene example ('! def2-TZVP def2/JK RIJCOSX RI-MRMP2'). The rationale dates from when ORCA had one auxiliary slot. ORCA 6 has separate AuxJ/AuxJK/AuxC slots, and the text does not say which slot orca_mrci's RI uses. 3.19.2 recommends the MP2 (/C) fitting bases for RI in this module. Turning a single example into 'rather than a Coulomb-fitting basis' could leave out the /C basis the RI-MRCI path needs."
+ },
+ {
+  "id": "mrci.ri-methods-slower",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "All orca_mrci methods can be used with RI integrals via the RI-<Method> simple-input keywords, but for the variational CI methods the calculations then become even more time consuming since integrals are made one by one on the fly; non-RI calculations are pretty much limited to about 200-300 orbitals included in the CI. Exception: for MRMP2 (UsePartialTrafo / RI-MRMP2) the RI route is the efficient one, avoiding the full transformation (stilbene example, >500 basis functions, <1 h/step). For the variational methods RI is the way to run larger cases, not a speed-up.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Faithful to the 3.19.15 preamble, but 'RI is ... not a speed-up' contradicts 3.19.13. There RI-MRMP2 avoids the full transformation and is described as efficient (stilbene, >500 basis functions, <1 h/step)."
+ },
+ {
+  "id": "mrci.simple-keywords-take-casscf",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "The simple-input MR keywords (e.g. MRCI+Q, MRACPF, SORCI, RI-MRMP2) take the active space, multiplicities and roots from the %casscf block, which must be present in the input: its active space and state structure define the MR-CI. %mrci thresholds (tsel, tpre) can still be set, as in the CO/HF/ozone examples. These calculations are of the individually selecting type and very time consuming.",
+  "orca": ">=6.0",
+  "when": {
+   "keywords": [
+    "MRCI+Q",
+    "MRACPF",
+    "SORCI",
+    "RI-MRMP2"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "'With them, reference spaces and roots cannot be defined in a %mrci NewBlock' is not in the manual. It says only that the information is taken from the CASSCF module. The card also leaves out the practical requirement: a %casscf block (nel, norb, mult, nroots) must be in the input, since its active space and state structure define the MR-CI."
+ },
+ {
+  "id": "mrci.rejectinvalidrefs-default",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "By default the MRCI program only considers reference configurations that already have the target spin and spatial symmetry ('Configurations with insufficient # of SOMOs WILL be rejected'); RejectInvalidRefs false lifts this restriction when it is undesired.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.1 Introductory Remarks; 3.19.15 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.sorci-two-step-definition",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "SORCI corresponds to CIType SORCP with the two-step settings: CIType_in MRCI, CIType_fi MRCI, Exc_in DDCI2, Exc_fi DDCI3, Tsel_in 1e-5, Tsel_fi 1e-5, Tpre_in 1e-2, Tpre_fi 1e-2. The SORCP variables (CIType_in, CIType_fi, Exc_in, Exc_fi, Tsel_in, Tsel_fi, Tpre_in, Tpre_fi) define first and second step independently.",
+  "orca": ">=6.0",
+  "when": {
+   "method": "%mrci CIType SORCI or SORCP"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, the SORCP model"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.doddcimp2-for-geometries",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "For DDCI-type calculations set DoDDCIMP2 true when comparing molecules at different geometries or computing potential energy surfaces: the program then computes an MP2-like correction for the effect of inactive double excitations not explicitly included in the CI. Without it, DDCI energy differences between geometries are unbalanced.",
+  "orca": ">=6.0",
+  "when": {
+   "method": "%mrci CIType MRDDCI1/2/3",
+   "job_type": "potential energy surface or geometry comparison"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, additional flags"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.zfs-rescale-to-local-s",
+  "topic": "mrci",
+  "kind": "check",
+  "statement": "For local ZFS of one site in a dimer the three second-order D-tensor components printed at the end (D^(SOC-(0)), D^(SOC-(-1)), D^(SOC-(+1))) are scaled with the S value of the whole complex. To obtain the local ZFS they must be rescaled with the local S: the prefactors differ per component -- D(SOC-0) is proportional to 1/S^2, D(SOC--1) to 1/(S(2S-1)), D(SOC-+1) to 1/((S+1)(2S+1)). Example: S=4.5 complex vs S=2 Mn(III) gives prefactor (4.5^2)/(2^2)=5.0625 for the SOC-(0) component. Then sum the three rescaled matrices, diagonalize, and derive D and E from the eigenvalues; orbitals must be SAHF, localized and block-canonicalized (orca_loc, orca_blockf).",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "SOC/ZFS calculation on a dimer or cluster with a local S different from the total S"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.2 Zero-Field Splitting from a Dimer"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Prefactors and the 5.0625 example match 3.19.14.2. The final step, needed for a correct result, is missing: sum the three rescaled matrices, diagonalize, take D and E from the eigenvalues. Prerequisites are missing too: SAHF orbitals, localization, orca_blockf recanonicalization."
+ },
+ {
+  "id": "mrci.dkh-picturechange-soc",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "The DKH correction to the SOC operator is a correction to the one-electron part of the SOMF operator; the DKH transformation is performed up to second order and the two-electron part is left untransformed. Control with %rel method DKH / picturechange 2 (0 = no picture change, 1 = first, 2 = second order). With picturechange 1 or 2 the DKH correction is also applied in first order to the Zeeman operator, with a visible effect on g-tensors for third-row and heavier atoms.",
+  "orca": ">=6.0",
+  "when": {
+   "method": "DKH relativistic treatment with SOC or g-tensors in orca_mrci"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.8 Relativistic Picture Change in Douglas-Kroll-Hess SOC and Zeeman Operators"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.xes-via-mrci-not-recommended",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "It is in general not recommended to compute RASCI XES spectra on the basis of the mrci module: K-alpha (2p->1s) and K-beta1,3 mainline (3p->1s) XES are extremely state demanding and require a large number of relativistic transition densities, stressing the mrci module. Use the CAS-CI/RAS-CI XES protocol via the %casscf module instead.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "XES/RIXS spectra"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.9 X-ray Spectroscopy"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Recommendation correct, but 'K-alpha mainline XES (Fe 2p to Fe 1s)' mixes up the lines. K-alpha is 2p->1s; mainline is K-beta1,3 (3p->1s), the line the mrci RASCI-XES protocol in the same section computes. The manual's note itself has a typo (K-alpha listed twice)."
+ },
+ {
+  "id": "mrci.xasmos-definition",
+  "topic": "mrci",
+  "kind": "procedure",
+  "statement": "XASMOs (a %mrci block option, e.g. XASMOs 42, 43, 44) has two effects: it reduces the generated CSFs to those exclusively containing contributions from the defined core orbitals, and in RIXS/XES the specified XASMOs define the intermediate or core-ionized states. The core orbitals are rotated into the active space beforehand (via the rotate feature in %scf).",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "XAS or RIXS with orca_mrci"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.9 X-ray Spectroscopy"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.spectroscopy-table-switches",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "The whole set of spectroscopy tables (dipole length, dipole velocity, decomposed oscillator strengths, full semiclassical transition moments) is requested in the %mrci block with DoDipoleLength true, DoDipoleVelocity true, DecomposeFosc true, DoFullSemiclassical true. These are %mrci block options, not simple-input keywords.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "absorption/CD spectra from orca_mrci"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.9 X-ray Spectroscopy"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.soc-magneticfield-defaults",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "In the soc subblock of %mrci, MagneticField defaults to false; B (magnetic field strength in Gauss) defaults to 4000; MagneticField_PrintLevel defaults to 0 (wavefunction printing per field disabled) with TPrint 1e-3 omitting small contributions. With MagneticField true the output contains splittings of the magnetic levels for B parallel to x, y and z (energies in cm^-1 with populations).",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "Zeeman splittings in the QDPT/SOC procedure"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.7 Addition of Magnetic Fields"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.mcd-temperature-b-pairs",
+  "topic": "mrci",
+  "kind": "procedure",
+  "statement": "In the soc subblock for MCD (Domcd true), B (field, Gauss) and Temperature (K) can be assigned in pairs (e.g. B = 1000, 2000, 3000 and Temperature = 4, 10, 300); the program computes MCD and absorption spectra for every pair and writes input.1.mcd, input.2.mcd, ... files. NInitStates sets the number of SOC and SSC states accounted for, starting from the lowest state.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "MCD spectra from orca_mrci"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.6 Magnetic Circular Dichroism"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.mcd-mapspc-line-params",
+  "topic": "mrci",
+  "kind": "procedure",
+  "statement": "orca_mapspc checks automatically for a line-shape parameter file (input.1.mcd.inp, rows: start and end energy of the interval in cm^-1 and the line-width parameter for that interval); it is not specified on the executing command line. Example: orca_mapspc input.1.mcd MCD -x020000 -x150000. The output .dat file contains seven columns: transition energies, MCD intensities C, absorption intensities D, C/D, and the stick spectra.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "processing orca_mrci MCD output with orca_mapspc"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.6 Magnetic Circular Dichroism"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Wrong meaning of the third value. The manual says the .inp file holds 'the energy intervals (in cm-1) and the line shape parameters for this energy interval', not 'number of points'. The example row '20000 35000 1000' is not in the 6.1 text (the code block is empty), so it is unsourced."
+ },
+ {
+  "id": "mrci.rel-same-keywords-casscf",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "The magnetization and susceptibility keywords work the same in the %casscf rel block instead of the soc subblock of MRCI; the values listed come from a commented example (MAGFieldStep 100.0 Gauss and nPointsFStep 5 are marked as defaults; MAGTemperatureMIN/MAX 4.0 K, MAGFieldMIN/MAX 0.0/70000.0 Gauss, MAGNPoints 15, SUSTempMIN/MAX 1.0/300.0 K, SUSNPoints 300, SUSStatFieldMIN/MAX 0.0/0.0 Gauss are example values, not stated defaults). Set dosoc true, and set domagnetization true / dosusceptibility true when wanted (both default false). Limit: susceptibility tensors at non-zero field work only in CASSCF, not MRCI. Magnetization and susceptibility are printed in .mag and .sus files and in the output.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.14.4 g-Tensor, magnetization and susceptibility"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "The listed values come from a commented example. Only MAGFieldStep (100 G) and nPointsFStep (5) are marked '(def: ...)'; the rest are not stated as defaults. Missing: DoMagnetization/DoSusceptibility (default false) and DoSOC must be true. Missing limit: non-zero-field susceptibility tensors work only in CASSCF, not MRCI."
+ },
+ {
+  "id": "mrci.keepfiles-mrciinp",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "KeepFiles false (default) in %mrci; when true, the integrals and the CI program input file (.mrciinp, a standard ASCII file) are kept so the MRCI program can be run directly after manual editing -- the only thing that cannot be changed is the orbital window.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, integral storage"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.fourindexints-limit",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "FourIndexInts (default false) stores ALL four-index integrals over MOs in main memory; this is only possible for relatively small systems, perhaps up to 150-200 MOs included in the CI.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, integral storage"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.excitations-vs-flags",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "Inside a NewBlock, Flags[_class_] turn excitation classes on or off individually (s = any SOMO, i/j = internal, a/b = external; singles classes ss, sa, is, ia; doubles classes ijss, ijsa, ijab, isss, issa, isab, ssss, sssa, ssab). Flags take priority over Excitations: Excitations (cis, cid, cisd, ddci1, ddci2, ddci3) does nothing but set Flags, providing initial values that subsequent Flags assignments can modify.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "setting Excitations or Flags inside a %mrci NewBlock"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, definitions of blocks of the CI matrix"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.ras-reference-syntax",
+  "topic": "mrci",
+  "kind": "procedure",
+  "statement": "RAS reference syntax in a refs sub-block: RAS(nel: m1 h/ m2 / m3 p) with nel electrons; m1 = number of orbitals in RAS-1, h = maximum number of holes in RAS-1; m2 = orbitals in RAS-2 (any number of electrons or holes); m3 = orbitals in RAS-3, p = maximum number of particles in RAS-3. CAS(nel,norb) and explicit configuration lists ({2 0 1 0}, all references must have the same electron count; the orbital count follows from the definition length) are the alternatives.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "defining a reference space other than CAS in a NewBlock"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, definitions of blocks of the CI matrix"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.solver-convergence-defaults",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "Solver convergence values listed in the 6.1 keyword table for %mrci: MaxIter 100, Etol 1e-6 Eh (energy), Rtol 1e-6 (residual); for Solver Diag additionally Otol 1e-16 (Schmidt orthogonality), NGuessMat 512 and NGuessMatRefCI 512 (guess matrix dimensions), MaxDim 3 (Davidson expansion space = MaxDim x NRoots); for Solver DIIS MaxDIIS 5 (old vectors) and LevelShift 0.4 (DIIS stabilization only; Davidson prints 0). RelaxRefs true (listed) relaxes the reference space coefficients in the CI rather than freezing them. These listed values are not reliable as defaults (AllSingles and MRPT_b show the table can disagree with the text): the H2CO tutorial's run prints MaxIter 35, Otol 1e-14 and expansion space MaxDim*NRoots+1 = 4 for 1 root. Read the actual values from the DAVIDSON/DIIS header of the run, or set them explicitly when they matter.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, algorithm for the solver"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "The values match the table, but the tutorial's printed Davidson settings disagree: MaxIter 35, Otol 1e-14, expansion space 4 for 1 root. The AllSingles and MRPT_b cases show the table's listed values are not reliable defaults, so the card should not state them as facts. LevelShift 0.4 applies to DIIS only (Davidson prints 0)."
+ },
+ {
+  "id": "mrci.mdci-module-for-single-reference",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "If the problem is effectively single-reference, use the MDCI module instead of orca_mrci: MDCI ACPF runs about 2x faster than selected MRCI ACPF (Tsel 1e-6, serine example: about 15 percent of possible double excitations selected, selection error about 3 mEh in the total energy) and an estimated 50x faster than unselected MRCI, without selection error. If you can use MDCI, do it. Some of the selection error can cancel in energy differences.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "single-reference problem, MRCI module considered"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.3.4 Performance"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Numbers correct (3.19.3.4). 'Only the unselected MRCI module is estimated 50 times slower' is garbled. The manual says MDCI is about 2x faster than the selected MRCI and an estimated 50x faster than the unselected MRCI."
+ },
+ {
+  "id": "mrci.refweight-and-natocc-check",
+  "topic": "mrci",
+  "kind": "check",
+  "statement": "After an MRCI run check the reference quality: watch RefWeight (the Davidson correction is reliable at a reference weight of about 0.9 in the H2CO example), configurations outside the reference with significant weight (the MRCI+Q run shows a 1 percent MO6,MO6 -> LUMO,LUMO double excitation), and natural orbital occupations far from 2/0 of orbitals outside the reference. Verify each state's identity from its configuration weights (e.g. [11] is the HOMO-to-LUMO single excitation) before using transition energies.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "any orca_mrci calculation of excited states"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.4 A Tutorial Type Example of a MR Calculation"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Misreads the manual's data. In the H2CO AANO table the 1.33 occupation is N[7] (B1), an active orbital inside the CAS(2,2) (active MOs 7-8); MO6 has 1.958. The CAS(4,3) SORCI energies (3.959/4.414 eV) are no closer to experiment (~3.50/4.00) than CAS(2,2) (3.934/4.386), so 'enlarging fixed it' is contradicted by the manual's own numbers. The general check stands: watch RefWeight, NO occupations of orbitals outside the reference, and large weights of out-of-reference configurations (the 1% MO6,MO6->LUMO,LUMO double in the MRCI+Q run)."
+ },
+ {
+  "id": "mrci.symmetry-breaking-in-linear-molecules",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "For linear molecules run in D2h (e.g. O2), the CASSCF procedure necessarily breaks the symmetry of degenerate Delta states: the degenerate 1-Delta state appears split by about 200 wavenumbers in the MRCI transition energies, due to symmetry breaking of the CAS and the individual selection. Using MP2 natural orbitals instead of CASSCF orbitals gave an almost indistinguishable result.",
+  "orca": ">=6.0",
+  "when": {
+   "system": "linear molecule with degenerate Pi/Delta states"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.5 Excitation Energies between Different Multiplicities"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.natorbs-good-substitute",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "MP2 natural orbitals are a good substitute for CASSCF orbitals as MRCI reference orbitals and often easier to obtain (O2 example: repeating the calculation with MP2 natural orbitals gave an almost indistinguishable result and an even lower ground-state energy). Use RI-MP2 with density relaxed natorbs true and moread the .mp2nat file in the second job.",
+  "orca": ">=6.0",
+  "recommend": {
+   "keywords": [
+    "RI-MP2",
+    "PModel",
+    "moread"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.5 Excitation Energies between Different Multiplicities"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.levelshift-large-for-convergence",
+  "topic": "mrci",
+  "kind": "recommendation",
+  "statement": "Large orbital/diis level shifts help convergence of the MR steps: the CASSCF preceding an MRACPF run used shiftup 2 / shiftdn 2 'in order to help convergence', and DIIS runs use LevelShift (default 0.4) for stabilization.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "convergence problems in CASSCF/MRCI"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.7 Thresholds; 3.19.15 Keywords"
+   }
+  ],
+  "status": "rejected",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Mixes two unrelated mechanisms under one claim: CASSCF orbital-rotation shifts (shiftup/shiftdn 2 for the CASSCF in the CO example) and the MRCI DIIS LevelShift (0.4, already in mrci.solver-convergence-defaults). The manual never says 'large level shifts help convergence of the MR steps'. The CASSCF part belongs to casscf cards."
+ },
+ {
+  "id": "mrci.tsel-convergence-data",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "Convergence of closed-shell ACPF with Tsel (CO at 1.128 A with the SVP basis, section 3.19.7.2): with AllSingles=true the energy at TSel=1e-6 is -112.943350 Eh vs the TSel=0 value -112.943387 Eh (3.7e-5 Eh error), while with AllSingles=false the same threshold errs by 6.3e-3 Eh. The convergence is not monotonic: at Tsel 1e-4 the energy even falls below the Tsel=0 value (-112.944039 vs -112.943387 Eh). The singles dominate the convergence behaviour; do not compare AllSingles=false energies at loose Tsel.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.7.2 Convergence of Single Reference Approaches with Respect to Tsel"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Wrong system. The 3.19.7.2 table is CO (1.128 A) with the SVP basis, not H2O/TZVPP; the energies (-112.94 Eh) are CO's. The numbers themselves (3.7e-5 vs 6.3e-3 Eh at Tsel 1e-6) are right."
+ },
+ {
+  "id": "mrci.mrpt-h0opt-partitioning",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "MR-PT settings in %mrci: H0Opt projected (off-diagonal definition of H0) vs Diagonal (much faster but maybe a little less reliable); Partitioning MP (Moeller-Plesset) vs EN (Epstein-Nesbet, not recommended) vs RE (Fink's partitioning); Fopt Standard (standard MR Fock operators) vs G3 (Anderson's g3 correction, also used in CASPT2); UsePartialTrafo true/false speeds up MRMP2.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, multireference perturbation theory"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.densities-keys",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "Densities i,j in %mrci; the listed value is 1,1 (ground-state density plus ground-to-excited transition densities, consistent with the H2CO tutorial printing only GS-origin transitions). First key = state densities (0 none; 1 ground state only, electron; 2 ground state, electron+spin; 3 lowest root per block, electron; 4 as 3 with spin; 5 all states, electron; 6 all states, electron+spin), second key = transition densities needed for all transition intensities, g-tensor etc. (0 none through 6 all state pairs, el / el+spin). For perturbation theory the density is an expectation value over the renormalized first (second) order wavefunction. Use a second key >=5 for all state pairs and an even key (e.g. 2,2 / 6,6) when spin densities, excited-to-excited transitions or SOC properties are needed.",
+  "orca": ">=6.0",
+  "when": {
+   "job_type": "transition intensities, g-tensor or population analysis from orca_mrci"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, density matrix generation flags"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "Key meanings correct, but the card (kind default) omits the listed value 'Densities 1,1': ground-state density plus ground-to-excited transition densities. That is consistent with the H2CO tutorial printing only GS-origin transitions. Excited-state properties, transitions between excited states and spin densities need higher keys."
+ },
+ {
+  "id": "mrci.printwf-options",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "PrintWF 1 (default) prints configuration (CFG)-based wavefunctions; det selects determinant-based printing. TPrintWF 3e-3 is the printing threshold for CFGs/determinants. For printing, weights are always summed over all linearly independent spin couplings of a spatial configuration, so the printed weight belongs to the configuration, not to each CSF.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, complete printing of the wavefunction"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.loc-option",
+  "topic": "mrci",
+  "kind": "default",
+  "statement": "Loc f1,f2,f3 in %mrci localizes orbitals in the internal (first flag), active (second flag) and external (third flag) space; listed value 0,0,0. The default of UseIVOs is not reliably stated (the keyword table lists UseIVOs false, but the same table's AllSingles and MRPT_b entries disagree with the text); set UseIVOs true/false explicitly (true for HF orbitals, false for DFT or pre-optimized orbitals).",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, orbital selection"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci",
+  "review_note": "'UseIVOs false is its default state' comes only from the keyword table listing. The same table lists AllSingles false although the default is TRUE, and lists MRPT_b 0.02 although the default is 0.0, so listed values are not reliable defaults. Every manual MRCI example sets UseIVOs explicitly (true for HF orbitals, false in the XES example). Mixing UseIVOs into a Loc card is also off-topic."
+ },
+ {
+  "id": "mrci.moranges-alternative",
+  "topic": "mrci",
+  "kind": "procedure",
+  "statement": "MORanges First_internal, Last_internal, First_active, Last_active, First_virtual, Last_virtual is an alternative MO definition in %mrci besides the orbital energy window EWIN (e.g. EWIN -40,1000) used with the %method frozencore fc_ewin option; EWin -3,1000 in %mrci selects the MOs within the given orbital energy range for the correlation treatment.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, orbital selection"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ },
+ {
+  "id": "mrci.linearresponse-not-recommended",
+  "topic": "mrci",
+  "kind": "limit",
+  "statement": "For MRACPF/MRACPF2/MRAQCC/SORCP, LinearResponse true uses the ground state correlation energy to compute the shift for higher roots; the manual marks it 'not recommended'. NelCorr (default 0) sets the electron count for the average coupled-pair correction: 0 = all CI electrons, -1 = all active-space electrons, -2 = active-space electrons if inactive doubles are excluded (as in MRDDCI), above 0 = user-defined value.",
+  "orca": ">=6.0",
+  "when": {
+   "method": "%mrci CIType MRACPF, MRACPF2, MRAQCC or SORCP"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mrci.html",
+    "section": "3.19.15 Keywords, corrections"
+   }
+  ],
+  "status": "verified",
+  "author": "w15",
+  "verified_by": "expert-mrci"
+ }
+]

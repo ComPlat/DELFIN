@@ -96,6 +96,9 @@ table inet filter {
         type filter hook output priority filter; policy accept;
     }
 }
+# The messenger's port rule (pi_messenger.sh), kept across this flush; a
+# glob that matches nothing is no error.
+include "/etc/delfin-messenger/*.nft"
 EOF
 nft -c -f "$rules"
 if [[ -n "${SSH_CONNECTION:-}" ]]; then
@@ -106,7 +109,7 @@ if [[ -n "${SSH_CONNECTION:-}" ]]; then
     systemctl stop "$ROLLBACK_UNIT.timer" 2>/dev/null || true
     systemd-run --unit "$ROLLBACK_UNIT" --on-active=120 /bin/sh -c \
         "journalctl -q --since @$armed -t sshd -t sshd-session --grep '^Accepted ' -n 1 | grep -q . \
-         || /usr/sbin/nft flush ruleset" >/dev/null
+         || { /usr/sbin/nft flush ruleset; for f in /etc/delfin-messenger/*.nft; do [ -f \"\$f\" ] && /usr/sbin/nft -f \"\$f\"; done; }" >/dev/null
     echo "    rollback armed: open a NEW SSH session within 120 s to keep the firewall;"
     echo "    without a successful new login it is removed again"
 fi

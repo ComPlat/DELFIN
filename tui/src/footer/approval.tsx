@@ -10,7 +10,9 @@
  *             this · R always read here · e stop asking about writes ·
  *             a abort · ? explain;   esc = n, as in the REPL;
  *             N = no, and say why: the reason is typed in the prompt, and
- *             enter refuses with it (the reason goes to the model)
+ *             enter refuses with it (the reason goes to the model);
+ *             c = change the command: it is put in the prompt, and enter
+ *             answers with the edited one, run once exactly as typed
  *   plan      d approve → default · e approve → acceptEdits · n reject
  *             (N: reject and say why)
  *   ask       1-9 pick · ↑ ↓ the highlight · enter takes it (several:
@@ -20,7 +22,7 @@
  *
  * A line typed in the prompt is never an approval: with a confirm or a
  * plan open, enter sends it as a message (app.tsx), except as the reason
- * of N.
+ * of N or the changed command of c.
  *
  * A and k save a rule that is global and permanent: a second step shows
  * the rule and its reach, and only y saves it (n or esc approve once).
@@ -73,7 +75,7 @@ export type Line = Span[]
 
 export interface ApprovalState {
   requestId: string
-  mode: "options" | "help" | "persist" | "reason"
+  mode: "options" | "help" | "persist" | "reason" | "change"
   choice: string           // the key the second step is for (A, k, n)
   picked: number[]         // a multi-select question's picks (1-based)
   /** The question's highlighted choice (0-based): enter takes it. */
@@ -235,6 +237,15 @@ function panelLines(asked: Asked, ui: ApprovalState | null, max: number, preview
     lines.push([{ text: fit("enter refuses with it · esc on an empty prompt: back", max), tone: "faint" }])
     return lines
   }
+  if (mode === "change") {
+    // The command is in the prompt below, to be edited there.
+    const head = "change "
+    lines.push([{ text: head, tone: "warn", bold: true },
+                { text: fit("edit the command in the prompt below", Math.max(1, max - width(head))), tone: "bright" }])
+    lines.push([{ text: fit("enter runs your version once, exactly as typed · esc on an empty prompt: back", max),
+                  tone: "faint" }])
+    return lines
+  }
   const keys: Span[] = asked.options.map((o) => ({ text: `[${o.key}] ${o.label}   `, tone: "key" as Tone, bold: true,
                                                    act: o.key }))
   if (offers(asked, "n")) keys.splice(keys.findIndex((k) => k.text.startsWith("[n]")) + 1, 0,
@@ -274,6 +285,8 @@ export interface ApprovalDeps {
   /** A held key that turned out to be the first letter of typing: into
    *  the prompt, where the cursor is. */
   release?(text: string): void
+  /** Key c: the command to change, into the (empty) prompt. */
+  prefill?(text: string): void
 }
 
 export interface ApprovalUi {
@@ -332,6 +345,10 @@ function panelKey(asked: Asked, mode: ApprovalState["mode"], char: string, name:
       // The reason is typed in the prompt; from an empty prompt enter
       // refuses without one, esc goes back to the options.
       return name === "escape" || name === "return"
+    case "change":
+      // The command is edited in the prompt; from an empty one esc goes
+      // back to the options (enter with nothing changes nothing).
+      return name === "escape"
     default:
       return name === "escape" || offers(asked, char) || (char === "N" && offers(asked, "n"))
   }
@@ -411,7 +428,7 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
     }
     const quiet = t - state.lastKeyAt
     setState({ lastKeyAt: t })
-    if (pause > 0 && state.mode !== "reason") {
+    if (pause > 0 && state.mode !== "reason" && state.mode !== "change") {
       // The typing that was going on goes on: not an answer, until quiet.
       const typeahead = state.burst ? quiet < QUIET_MS : t - state.openedAt < pause
       if (typeahead) {
@@ -448,7 +465,13 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       answer(asked, { text })
       return "sent"
     }
-    // An approval takes typed text only as the reason of N: a refusal.
+    // An approval takes typed text only as the reason of N (a refusal) or
+    // as the changed command of c (run once, exactly as typed).
+    if (state.mode === "change") {
+      if (!text.trim()) return "no"
+      answer(asked, { choice: "c", command: text })
+      return "sent"
+    }
     if (state.mode !== "reason") return "no"
     answer(asked, { choice: "n", reason: text.trim() })
     return "sent"
@@ -469,6 +492,9 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
         if (name === "escape") setState({ mode: "options" })
         else if (name === "return") answer(asked, { choice: "n", reason: "" })
         return true
+      case "change":
+        if (name === "escape") setState({ mode: "options" })
+        return true
     }
     if (name === "escape") {
       // Esc refuses, as in the REPL.
@@ -484,6 +510,12 @@ export function createApprovalUi(deps: ApprovalDeps): ApprovalUi {
       return true
     }
     if (!offers(asked, char)) return true         // a key the question did not offer means nothing
+    if (char === "c" && asked.kind === "confirm") {
+      // The command goes into the prompt, to be edited there.
+      setState({ mode: "change", choice: "c" })
+      deps.prefill?.(String(asked.command ?? ""))
+      return true
+    }
     if ((char === "A" || char === "k") && asked.kind === "confirm") {
       // Saving a rule takes a second step, for a click as for a key.
       setState({ mode: "persist", choice: char })
