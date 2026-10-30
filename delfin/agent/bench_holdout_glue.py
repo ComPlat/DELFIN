@@ -339,16 +339,18 @@ class GlueAccounting:
 def build_default_config(*, model: str, instances: int,
                          mode: str = "holdout",
                          holdout_seed_path: str = "",
-                         public_seed=7) -> dict:
+                         public_seed=7,
+                         provider: str = "") -> dict:
     """A ready ``bench_nightly.run`` config wired end to end with the
     glue: real CB0B sampler, real DELFIN grading and accounting, and
     the real ``run_task`` (injected by ``run()`` itself)."""
 
     def _glue_runner(task, *, model="", **kwargs):
-        return GlueRunner()(task, model=model)
+        return GlueRunner()(task, model=model, **kwargs)
 
     return {
         "model": model,
+        "provider": provider,
         "sampler": GlueSampler(),
         "grader": GlueGrader(),
         "accounting": GlueAccounting(),
