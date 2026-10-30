@@ -21736,7 +21736,10 @@ class _DocToolExecutor:
                         time.sleep(_CLASSIFIER_RETRY_DELAY_S)
                         continue
                     _reasons.append(type(box["exc"]).__name__)
-                    break  # this model failed; no verdict
+                    failed.extend(_reasons)
+                    # The model's own error, so the watcher's status names
+                    # the real cause (ConnectionError, not "no verdict").
+                    raise box["exc"]
                 return str(box.get("out") or "")
             failed.extend(_reasons)
             raise TimeoutError("no verdict")
