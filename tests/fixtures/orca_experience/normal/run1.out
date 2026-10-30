@@ -1,0 +1,26 @@
+                        Program Version 6.1.1  -  RELEASE   -
+
+Number of atoms                         ....    3
+
+Total Charge           Charge          ....    0
+Multiplicity           Mult            ....    1
+
+               *           SCF CONVERGED AFTER  12 CYCLES          *
+
+******************
+*                *
+*  THERMOCHEMISTRY AT 298.15K *
+*                *
+******************
+
+-----------------------
+ELECTRIC DIPOLE MULTIPOLE MOMENTS
+-----------------------
+
+zero-point vibrational energy
+
+There are 0 imaginary frequencies
+
+Total Wall time : 123.45s 6.0
+
+ORCA TERMINATED NORMALLY

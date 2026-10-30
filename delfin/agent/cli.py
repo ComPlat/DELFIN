@@ -376,6 +376,13 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
 
     chunks: list[str] = []
     tool_calls: list[dict] = []
+    # Set True once a tool_use event arrives; reset False on each text
+    # chunk. True at return means the turn's final text was followed by a
+    # tool call, i.e. the turn ended ON a tool round, not on the text.
+    # Carried on the ENGINE, not in the returned dict: the dict's keys are
+    # pinned to repl.TURN_KEYS by an existing test, so a private
+    # attribute is the contract-preserving channel for this internal flag.
+    _nonlocal: dict[str, bool] = {"tools_after_last_text": False}
     error = ""
 
     if emit is not None:
@@ -408,6 +415,11 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     def _on_token(text: str) -> None:
         if text:
             chunks.append(text)
+            # The turn's LAST text chunk is the final assistant message; a
+            # tool call arriving after it means that message was followed
+            # by a tool round, so it did not close the turn. Reset here,
+            # set in _on_tool_use, read by _continue_announced.
+            _nonlocal["tools_after_last_text"] = False
             if emit is not None:
                 emit({"type": "text", "text": text})
 
@@ -436,6 +448,7 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         except (json.JSONDecodeError, TypeError):
             inp = {"raw": str(input_json)}
         tool_calls.append({"name": name, "input": inp})
+        _nonlocal["tools_after_last_text"] = True
         observer.saw_tool_use(name)
         if emit is not None:
             emit({"type": "tool_use", "name": name, "input": inp})
@@ -515,6 +528,22 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
 
     in_after = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
+    # The internal "did a tool follow the last text" flag rides on the
+    # engine, not the returned dict (whose keys are pinned to TURN_KEYS).
+    try:
+        setattr(engine, "_tools_after_last_text",
+                bool(_nonlocal["tools_after_last_text"]))
+    except (AttributeError, TypeError):
+        pass
+
+    # The model switches this turn made live on the engine's client
+    # (api_client._turn_model_switches: {before, after, reason}). Read them
+    # defensively -- a stub engine without a client (the scheduler and
+    # benchmark test doubles) must keep working and report []. The read is
+    # of the client the engine owns, so `engine.client` is the only route.
+    _model_switches = getattr(
+        getattr(engine, "client", None), "_turn_model_switches", None)
+    model_switches = (list(_model_switches) if _model_switches else [])
 
     return {
         "text": (full_text or "".join(chunks)).strip(),
@@ -522,11 +551,135 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         "input_tokens": max(0, in_after - in_before),
         "output_tokens": max(0, out_after - out_before),
         "error": error,
+        "model_switches": model_switches,
         **observer.summary(
             error=error,
             engine_stop_reason=str(
                 getattr(engine, "last_turn_stop_reason", "") or "")),
     }
+
+
+#: Continuations for a headless run whose answer ends by announcing work
+#: it did not do. Env over ``agent.announce_continuations`` over this
+#: default; invalid keeps the default, 0 disables. Read per run, like the
+#: other run knobs, never written into anyone's settings file.
+_ANNOUNCE_CONTINUATIONS_DEFAULT = 5
+
+
+def _resolve_announce_continuations() -> int:
+    try:
+        env = str(os.environ.get("DELFIN_ANNOUNCE_CONTINUATIONS") or "").strip()
+        if env:
+            return max(0, int(env))
+    except (TypeError, ValueError):
+        pass
+    try:
+        from delfin.user_settings import load_settings
+        raw = (load_settings() or {}).get("agent", {}) or {}
+        val = int(raw.get("announce_continuations",
+                          _ANNOUNCE_CONTINUATIONS_DEFAULT))
+    except Exception:
+        val = _ANNOUNCE_CONTINUATIONS_DEFAULT
+    return val if val >= 0 else _ANNOUNCE_CONTINUATIONS_DEFAULT
+
+
+_ANNOUNCE_CONT_PROMPT = (
+    "You ended this run by announcing an action and did not take it. "
+    "Take it NOW with the tool call you described, and continue until "
+    "the run's task is done. If the action is risky or you are unsure "
+    "it is wanted, say clearly in your answer that it is not done "
+    "instead of announcing it.")
+
+
+def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
+                        max_tokens: int, emit: Any = None) -> dict[str, Any]:
+    """Keep a headless run going while its final reply announces undone
+    work.
+
+    Input: ``out`` -- the ``TURN_KEYS``-shaped dict ``_run_once`` returned
+    for the one-shot run's turn (``chat -p`` / ``run``), plus the internal
+    flag ``tools_after_last_text``; ``engine`` -- the run's engine, whose
+    ceilings ``run_limits.ceiling_reason`` reads; ``max_tokens`` -- the
+    per-turn token bound cmd_run was given; ``emit`` -- the JSON-line
+    renderer or None.
+
+    Output: the LAST turn's dict, same shape. Each continuation is a full
+    ``_run_once`` turn: its tokens are billed, its rounds draw the same
+    per-turn tool-round budget, and ``ceiling_reason`` counts it against
+    the run's ceilings -- the first reached ceiling ends the loop the way
+    it would end any further turn.
+
+    The turn's internal ``tools_after_last_text`` flag is read off the
+    ENGINE (set by ``_run_once``), not from ``out``: the returned dict's
+    keys are pinned to ``repl.TURN_KEYS`` and cannot carry it.
+
+    Semantics: the decision is about the turn's FINAL assistant message
+    only, not the turn as a whole -- a run that made many tool calls and
+    then closed on an announcement is exactly the failure this fixes, so
+    ``out["tool_calls"]`` must not veto. The turn continues when the
+    final text announces an action and that text was the turn's last
+    output (no tool call followed it); a turn that ended ON a tool round
+    is already mid-work and gets none. Bounded by
+    ``agent.announce_continuations`` (env ``DELFIN_ANNOUNCE_CONTINUATIONS``
+    over settings; default 5; 0 disables). Stops on: a real final answer,
+    a ceiling, a non-"done" stop reason, an error, or a no-tool
+    continuation that STILL announces -- a real-final no-tool continuation
+    is the task finishing, not a stall. Attended sessions never come
+    through here: the terminal and the dashboard drive ``repl.run_turn``,
+    not ``cmd_run``.
+
+    Rejected: keying the decision on ``out["tool_calls"]`` being empty --
+    that is the turn-wide count, and it would have left precisely the
+    measured failure (tools, then an announcing close) unfixed. Editing
+    api_client's in-turn ``_announced`` guard instead -- that path serves
+    attended sessions too, and the headless loop belongs to the CLI.
+    """
+    allowed = _resolve_announce_continuations()
+    try:
+        from .api_client import _announces_an_action
+    except Exception:
+        return out
+    if allowed <= 0 or not isinstance(out, dict) or out.get("error"):
+        return out
+    if str(out.get("stop_reason") or "done") != "done":
+        return out
+    if not _announces_an_action(str(out.get("text") or "")):
+        return out
+    # The announcement'd final message must carry NO following tool call.
+    # Read off the engine (set by _run_once): a turn that ended ON a tool
+    # round is already mid-work and gets no nudge.
+    if bool(getattr(engine, "_tools_after_last_text", False)):
+        return out
+    used = 0
+    while used < allowed:
+        try:
+            from .run_limits import ceiling_reason
+            if ceiling_reason(engine):
+                break
+        except Exception:
+            pass
+        used += 1
+        if emit is not None:
+            try:
+                emit({"type": "notice", "text":
+                      "\n↻ announced an action → continuing the run "
+                      f"({used}/{allowed})\n"})
+            except Exception:
+                pass
+        out = _run_once(engine, _ANNOUNCE_CONT_PROMPT,
+                        max_tokens=max_tokens, emit=emit)
+        tools_after = bool(getattr(engine, "_tools_after_last_text", False))
+        if out.get("error") or str(out.get("stop_reason") or "done") != "done":
+            break
+        if not _announces_an_action(str(out.get("text") or "")):
+            # A real answer -- with or without tool calls -- ends it.
+            break
+        if tools_after:
+            continue
+        # No tool call AND still announcing: nudging again would only
+        # repeat the same sentence.
+        break
+    return out
 
 
 def _display_messages(engine, limit: int = 200) -> list[dict[str, str]]:
@@ -835,6 +988,14 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     out = _run_once(engine, prompt_sent,
                     max_tokens=int(getattr(args, "max_tokens", 0) or 0),
                     **_emit)
+    # A one-shot run stops for good after this answer; one that ends by
+    # announcing work it did not do must keep going here, bounded (see
+    # _continue_announced). Attended sessions are unaffected: they never
+    # pass through cmd_run.
+    out = _continue_announced(engine, prompt_sent, out,
+                              max_tokens=int(getattr(args, "max_tokens", 0)
+                                             or 0),
+                              emit=_emit.get("emit"))
     sid = _save_session(engine, repo)
 
     _end_session(engine, sid, repo, task=prompt, failed=bool(out["error"]),

@@ -122,6 +122,21 @@ def test_a_keyword_inside_a_recommendation_or_the_text_is_checked_too():
                              " It damps the first iterations.")) == []
 
 
+def test_a_delfin_doc_is_a_source():
+    # DELFIN's own documentation may back a card about DELFIN itself: the
+    # path stays inside the repository, under docs/ or delfin/ (that it
+    # exists is test_every_delfin_doc_source_exists_in_the_repository).
+    src = {"type": "delfin-doc", "path": "docs/USER_MANUAL.md", "section": "OCCUPIER Settings"}
+    assert ok.validate(_card(sources=[src])) == []
+    assert ok.validate(_card(sources=[{"type": "delfin-doc", "path": "delfin/config.py"}])) == []
+    assert any("docs/ or delfin/" in p
+               for p in ok.validate(_card(sources=[{"type": "delfin-doc",
+                                                    "path": "etc/passwd.md"}])))
+    assert any(".." in p for p in ok.validate(_card(
+        sources=[{"type": "delfin-doc", "path": "../outside/secret.md"}])))
+    assert any("path" in p for p in ok.validate(_card(sources=[{"type": "delfin-doc"}])))
+
+
 def test_a_run_of_orca_is_a_source():
     card = _card(sources=[{"type": "orca-run", "version": "6.1.1",
                            "input": "! HF def2-SVP", "output": "INITIAL GUESS: MODEL POTENTIAL"}])
@@ -153,3 +168,12 @@ def test_a_real_marker_is_read_even_in_parentheses_or_a_list():
     card = _card(statement="Run the geometry as ! B3LYP def2-SVP (see manual) "
                            "and note !SlowConv helps; every name here is real.")
     assert ok.validate(card) == []
+
+
+def test_every_delfin_doc_source_exists_in_the_repository():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    missing = [(c["id"], s["path"]) for c in ok.cards(include_unverified=True)
+               for s in c.get("sources", []) if s.get("type") == "delfin-doc"
+               and not (root / s["path"]).exists()]
+    assert missing == []

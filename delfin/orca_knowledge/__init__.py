@@ -88,7 +88,7 @@ KINDS = frozenset({
     "requirement", "recommendation", "default", "incompatibility", "error-pattern",
     "keyword", "limit", "procedure", "check",
 })
-SOURCE_TYPES = frozenset({"manual", "paper", "orca-message", "orca-run", "archive"})
+SOURCE_TYPES = frozenset({"manual", "paper", "orca-message", "orca-run", "archive", "delfin-doc"})
 STATUSES = frozenset({"proposed", "verified", "rejected"})
 SEVERITIES = frozenset({"error", "warning", "info"})
 
@@ -109,7 +109,7 @@ def _catalog() -> dict:
 _CATALOG: dict | None = None
 
 
-def _keywords() -> tuple[set[str], set[str], set[str]]:
+def _keywords() -> tuple[set[str], set[str], set[str], dict[str, set[str]]]:
     global _CATALOG
     if _CATALOG is None:
         _CATALOG = _catalog()
@@ -118,7 +118,17 @@ def _keywords() -> tuple[set[str], set[str], set[str]]:
     kws = {k.lower() for k in [*_CATALOG.get("keywords", []), *_CATALOG.get("orca_parser", [])]}
     solvents = {s.lower().replace(" ", "") for s in _CATALOG.get("solvents", [])}
     aliases = {k.lower() for k in (_CATALOG.get("aliases") or {})}
-    return kws, solvents, aliases
+    # Block names -> option names. "blocks" is what OPI's typed models
+    # know; "blocks_orca_parser" are "block.option" pairs ORCA's own parser
+    # accepted (measured by probes, kept when the catalog is rewritten).
+    blocks: dict[str, set[str]] = {}
+    for block, options in (_CATALOG.get("blocks") or {}).items():
+        blocks[str(block).lower()] = {str(o).lower() for o in options or []}
+    for pair in _CATALOG.get("blocks_orca_parser") or []:
+        block, _, option = str(pair).partition(".")
+        if option:
+            blocks.setdefault(block.lower(), set()).add(option.lower())
+    return kws, solvents, aliases, blocks
 
 
 def known_keyword(word: str) -> bool:
@@ -126,13 +136,30 @@ def known_keyword(word: str) -> bool:
     w = str(word or "").strip().lower()
     if not w:
         return False
-    kws, solvents, aliases = _keywords()
+    kws, solvents, aliases, _blocks = _keywords()
     if w in kws or w in aliases:
         return True
     m = _PARAM.match(w)
     if m and m.group(1) in _SOLVATION_FORMS:
         return m.group(2).replace(" ", "") in solvents
     return False
+
+
+def known_block_option(block: str, option: str = "") -> bool:
+    """Whether ORCA knows ``option`` in ``block`` (case-blind).
+
+    From the ``blocks`` section of the catalog (OPI's typed block models,
+    written by ``refresh-keywords``) plus ``blocks_orca_parser``, the
+    options a probe measured ORCA's own parser accepting. With an empty
+    ``option`` it asks whether the ``block`` itself is known.
+    """
+    b, o = str(block or "").strip().lower(), str(option or "").strip().lower()
+    if not b:
+        return False
+    known = _keywords()[3]
+    if not o:
+        return b in known
+    return o in known.get(b, ())
 
 
 def validate(card: Any) -> list[str]:
@@ -157,6 +184,16 @@ def validate(card: Any) -> list[str]:
     for kw in _named_keywords(card):
         if not known_keyword(kw):
             out.append(f"keyword {kw!r} is not one ORCA knows (OPI catalog, ORCA's parser)")
+    rec = card.get("recommend")
+    if isinstance(rec, dict) and "blocks" in rec:
+        out += blocks_problems(rec["blocks"], "recommend.blocks")
+    avoid = card.get("avoid")
+    if isinstance(avoid, dict):
+        if "blocks" in avoid:
+            out += blocks_problems(avoid["blocks"], "avoid.blocks")
+        if set(avoid) - {"blocks"}:
+            out.append("avoid as an object carries only 'blocks' "
+                       "(advice text stays a list of strings)")
     sources = card.get("sources")
     if not isinstance(sources, list) or not sources:
         out.append("sources: at least one source")
@@ -182,9 +219,11 @@ def _v2_problems(card: dict) -> list[str]:
                          relations_problems)
     out: list[str] = []
     if "applies" in card:
-        out += condition_problems(card["applies"], known_keyword)
+        out += condition_problems(card["applies"], known_keyword,
+                                  known_block_option=known_block_option)
     if "check" in card:
-        out += check_problems(card["check"], known_keyword)
+        out += check_problems(card["check"], known_keyword,
+                              known_block_option=known_block_option)
     if "relations" in card:
         out += relations_problems(card["relations"])
     return out
@@ -198,6 +237,54 @@ def _v2_problems(card: dict) -> list[str]:
 # not "TightSCF)").
 _BANG = re.compile(r"(?:^|(?<=[\s(\"']))!\s*([A-Za-z0-9][A-Za-z0-9+\-*/(),_.']*)")
 _TRAILING = re.compile(r"[.,;:\"']+$")
+
+
+def blocks_problems(blocks: Any, field: str) -> list[str]:
+    """Every reason a structured ``blocks`` advice is not one ORCA reads:
+    block and option names must be known (catalog), the mapping must be
+    ``{block: {option: value}}``. Called for ``recommend.blocks`` and
+    ``avoid.blocks`` -- the audits found prose options and options put
+    into the wrong block; both are refused here, with the name.
+    """
+    if not isinstance(blocks, dict) or not blocks:
+        return [f"{field}: {blocks!r} is not {{block: {{option: value}}}}"]
+    out: list[str] = []
+    for block, options in blocks.items():
+        name = str(block or "").strip().lower()
+        if not name or not isinstance(options, dict) or not options:
+            out.append(f"{field}.{block!r}: {{option: value}} pairs")
+            continue
+        if not known_block_option(name, "") and name not in _keywords()[3]:
+            out.append(f"{field}: block {block!r} is not one ORCA knows "
+                       "(OPI catalog, ORCA's parser)")
+        for option, value in options.items():
+            if not str(option or "").strip():
+                out.append(f"{field}.{block!r}: an option name")
+            elif not known_block_option(name, str(option)):
+                out.append(f"{field}: option {option!r} is not one block {block!r} "
+                           "knows (OPI catalog, ORCA's parser)")
+            if not isinstance(value, (str, int, float, bool)) or isinstance(value, dict):
+                out.append(f"{field}.{block}.{option}: {value!r} is not an input value")
+    return out
+
+
+def to_input(blocks: dict) -> str:
+    """Render structured blocks as complete ORCA block input::
+
+    >>> to_input({"mdci": {"TCutPNO": "3.33e-7"}})
+    '%mdci\n  TCutPNO 3.33e-7\nend'
+
+    Multiple blocks in insertion order, two spaces before each option.
+    """
+    out: list[str] = []
+    for block, options in (blocks or {}).items():
+        if not str(block).strip():
+            continue
+        out.append(f"%{str(block).strip().lower()}")
+        for option, value in (options or {}).items():
+            out.append(f"  {str(option).strip()} {value}")
+        out.append("end")
+    return "\n".join(out)
 
 
 def _named_keywords(card: dict) -> list[str]:
@@ -252,8 +339,21 @@ def _source_problems(src: Any) -> list[str]:
         return out
     if kind == "orca-message":
         return [] if len(str(src.get("text") or "")) >= 8 else ["an ORCA message source quotes the message"]
-    count = src.get("count")
-    return [] if isinstance(count, int) and count > 0 else ["an archive source gives the count of runs"]
+    if kind == "archive":
+        count = src.get("count")
+        return [] if isinstance(count, int) and count > 0 else ["an archive source gives the count of runs"]
+    if kind == "delfin-doc":
+        path = str(src.get("path") or "")
+        if not path:
+            return ["a delfin-doc source names its path (docs/... or delfin/...)"]
+        if ".." in path or path.startswith("/"):
+            return ["a delfin-doc source path stays inside the repository (no '..', not absolute)"]
+        if not path.startswith(("docs/", "delfin/")):
+            return ["a delfin-doc source path is under docs/ or delfin/"]
+        # Existence is checked by a test in the repository, not here: an
+        # installed DELFIN has no docs/, and the working folder of a session
+        # is not the repository.
+        return []
 
 
 def _files() -> list[Path]:
@@ -329,6 +429,37 @@ def solvents_from_opi() -> list[str]:
     return sorted({str(getattr(Solvent, a)) for a in dir(Solvent) if a.isupper()})
 
 
-__all__ = ["validate", "cards", "check_store", "known_keyword", "keywords_from_opi",
-           "solvents_from_opi", "TOPICS", "KINDS", "CARDS_DIR", "KEYWORDS_FILE",
+def blocks_from_opi() -> dict[str, list[str]]:
+    """Every input block OPI's typed models know, with its option names.
+
+    Read from the pydantic fields of ``opi.input.blocks.Block*`` (the class
+    attribute ``_name`` is the block name); field aliases, where OPI sets
+    one, are included so a card may use either spelling.
+    """
+    import inspect
+    import opi.input.blocks as blocks_mod
+    from opi.input.blocks import Block
+    out: dict[str, set[str]] = {}
+    for name, obj in vars(blocks_mod).items():
+        if not inspect.isclass(obj) or not issubclass(obj, Block) or obj is Block:
+            continue
+        pa = obj.__private_attributes__.get("_name")
+        block = str(pa.default) if pa is not None else ""
+        if not block:
+            continue
+        options = out.setdefault(block.lower(), set())
+        for field in obj.model_fields.values():
+            options.add(str(field.alias or field.validation_alias or "").lower())
+        for field in obj.model_fields:
+            options.add(field.lower())
+    for options in out.values():
+        options.discard("")
+        options.discard("aftercoord")
+    return {b: sorted(o) for b, o in sorted(out.items()) if o}
+
+
+__all__ = ["validate", "cards", "check_store", "known_keyword", "known_block_option",
+           "keywords_from_opi", "solvents_from_opi", "blocks_from_opi",
+           "blocks_problems", "to_input",
+           "TOPICS", "KINDS", "CARDS_DIR", "KEYWORDS_FILE",
            "applies", "findings", "check_graph"]
