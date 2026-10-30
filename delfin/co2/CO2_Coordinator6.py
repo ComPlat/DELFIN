@@ -1909,6 +1909,25 @@ def main():
 
     # Orientation at fixed distance (defaults to 5.0 Å)
     orientation_distance = args.get("orientation_distance", 2.0)
+    # When the adduct chain is requested but the xTB preopt is off, the raw
+    # placement geometry IS the surface start (no xTB pulls CO2 to the metal).
+    # Placing at the scan orientation_distance (typically 4.0 Å) guarantees
+    # "no_coordination" — the user decision (2026-10-26) is to place near the
+    # binding distance instead so the raw geometry is chemically reasonable.
+    if (
+        _is_enabled(args.get("adduct_flow", False))
+        and not _is_enabled(args.get("run_xtb", False))
+        and _is_enabled(args.get("reduction_surface", False))
+    ):
+        _PLACE_DIST_WITHOUT_PREOPT = 2.1
+        try:
+            if float(args.get("orientation_distance", 4.0) or 4.0) > _PLACE_DIST_WITHOUT_PREOPT:
+                print(f"[INFO] adduct_flow=on with run_xtb=false: placement distance "
+                      f"{args.get('orientation_distance')} Å > {_PLACE_DIST_WITHOUT_PREOPT} Å "
+                      f"— placing at {_PLACE_DIST_WITHOUT_PREOPT} Å (binding distance) instead.")
+                orientation_distance = _PLACE_DIST_WITHOUT_PREOPT
+        except (ValueError, TypeError):
+            pass
     rot_step_deg = args.get("rot_step_deg", 10)     # 0,10,20,...,180
     rot_range_deg = args.get("rot_range_deg", 180)
 
@@ -2107,7 +2126,39 @@ def main():
     # -> OCCUPIER job preparation) replaces the orientation/distance scans.
     # The chain reads its own settings from the coordinator CONTROL.txt
     # (adduct_start_xyz defaults to the placement geometry written above).
+    # Generator adducts (adduct_source=manta/quick/architector/...): the
+    # structure already contains the coordinated substrate, so it replaces
+    # the placement geometry as the chain start (user decision 2026-10-26,
+    # option B) — no place_co2 distance question, the SMILES IS the binding
+    # situation.
     if _is_enabled(args.get("adduct_flow", False)):
+        _gen_source = _clean_str(args.get("adduct_source"))
+        _gen_smiles = _clean_str(args.get("manta_smiles"))
+        if _gen_source and _gen_source != "xyz" and _gen_smiles:
+            try:
+                _gen_atoms, _gen_xyz = _generated_adduct_geometry(
+                    _gen_source, _gen_smiles,
+                    out_path=os.path.join(
+                        os.path.dirname(os.path.abspath("CONTROL.txt")) or ".",
+                        "manta_adduct_start.xyz"),
+                )
+                _gen_path = os.path.relpath(_gen_xyz)
+                # Persist the generated structure as the chain start in the
+                # coordinator CONTROL.txt (set_control_value: the one place
+                # that rewrites a CONTROL line in text form).
+                from delfin.config import set_control_value
+                _ctrl_path = os.path.join(
+                    os.path.dirname(os.path.abspath("CONTROL.txt")) or ".", "CONTROL.txt")
+                with open(_ctrl_path, "r", encoding="utf-8") as _fh:
+                    _ctrl_text = _fh.read()
+                with open(_ctrl_path, "w", encoding="utf-8") as _fh:
+                    _fh.write(set_control_value(_ctrl_text, "adduct_start_xyz", _gen_path))
+                print(f"[INFO] adduct_source={_gen_source}: generated adduct structure "
+                      f"written to {_gen_path}; adduct_start_xyz updated — the chain "
+                      f"(flow + reduction surface) starts from the generated structure.")
+            except Exception as exc:
+                print(f"[WARN] adduct_source={_gen_source} adduct generation failed "
+                      f"({exc}) — falling back to the placement geometry.")
         from delfin.co2.adduct_flow import run_adduct_flow
         control_dir = os.path.dirname(os.path.abspath("CONTROL.txt")) or "."
         result = run_adduct_flow(control_dir, workdir=control_dir)

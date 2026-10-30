@@ -309,7 +309,31 @@ def _add_hydrogen(atoms: Atoms, anchor_idx: int, h_index: int) -> Atoms:
 
 
 def _substrate_oxygen_indices(atoms: Atoms, substrate_start: int) -> List[int]:
-    """Substrate O indices in the tail block (substrate_start..end)."""
+    """Substrate O indices: the oxygens BONDED to the substrate carbon.
+
+    The substrate carbon is the metal-bound C with two C-O bonds <= 1.6 A
+    (the same bonding criterion `_substrate_tail_start` uses to find the
+    CO2 group in generator adducts). Range alone is not enough: in a
+    generator adduct (manta) the tail range continues past the substrate
+    into ligand oxygens, whose bound H's then pollute the H2O split
+    ("positions has wrong length: 5 != 3" on the real manta geometry).
+    Falls back to the tail range when no bonded pair is found (the raw
+    placement geometry keeps its O,C,O tail block).
+    """
+    positions = atoms.positions
+    symbols = [a.symbol for a in atoms]
+    metal_idx = _coord.detect_metal_index(atoms)
+    if metal_idx is not None:
+        for c_idx in range(len(atoms)):
+            if symbols[c_idx] != "C":
+                continue
+            if float(np.linalg.norm(positions[c_idx] - positions[metal_idx])) > 2.6:
+                continue
+            bonded_o = [i for i in range(len(atoms))
+                        if symbols[i] == "O"
+                        and float(np.linalg.norm(positions[i] - positions[c_idx])) <= 1.6]
+            if len(bonded_o) == 2:
+                return sorted(bonded_o)
     return [i for i in range(substrate_start, len(atoms)) if atoms[i].symbol == "O"]
 
 
@@ -358,12 +382,30 @@ def _track_atom_index(anchor_idx: int, current_atoms: Atoms,
 
 
 def _substrate_h_indices(atoms: Atoms, substrate_start: int) -> List[int]:
-    """Indices of hydrogens appended into the substrate tail block.
+    """Indices of the hydrogens BOUND to substrate oxygens.
 
-    Previous stations re-bound ligand hydrogens INTO the tail: a bound
-    donor H sits at ~1 A from a substrate O, so anything H-like inside the
-    tail belongs to the substrate, not to a ligand.
+    Range alone is not enough: in a generator adduct (manta) the tail
+    range continues past the substrate into the ligands, so "every H in
+    the range" picks ligand donors too — measured on the real 81-105_87
+    manta geometry (2 real protons + 3 ligand H migrated to the anchor,
+    then the H2O split built a 5-atom "water" and raised
+    'positions has wrong length: 5 != 3'). A bound proton sits at
+    bonding distance (< 1.3 A) to a substrate O, the same criterion
+    _substrate_proton_indices applies; fall back to the tail range only
+    for the plain placement geometry (where the appended protons live).
     """
+    bound = []
+    o_all = _substrate_oxygen_indices(atoms, substrate_start)
+    if o_all:
+        for i, atom in enumerate(atoms):
+            if atom.symbol != "H":
+                continue
+            for o in o_all:
+                if float(np.linalg.norm(atom.position - atoms.positions[o])) < 1.3:
+                    bound.append(i)
+                    break
+        if bound:
+            return bound
     return [i for i in range(substrate_start, len(atoms)) if atoms[i].symbol == "H"]
 
 
@@ -1012,6 +1054,28 @@ def _substrate_tail_start(atoms: Atoms, control: Dict[str, Any],
     # that is NEAREST to the metal (the CO2 O binds the metal). The block
     # starts there.
     metal_idx = _coord.detect_metal_index(atoms)
+    # Generator adducts (manta/quick/architector/...) integrate the CO2
+    # INTO the ligand shell instead of appending it: the tail-match fails
+    # and the suffix fallback sees only ONE substrate O, so the second
+    # protonation raises "no second oxygen" (measured on the real
+    # 81-105_87 manta_adduct_start.xyz: C at M-C 1.95 A with both C-O
+    # <= 1.31 A, but the suffix fallback started at the anchor O itself).
+    # Locate the CO2 group by bonding instead: a C that is metal-bound
+    # AND has two O neighbours (<= 1.6 A) is the substrate carbon; the
+    # block starts at that carbon.
+    positions = atoms.positions
+    for c_idx in range(n):
+        if symbols[c_idx] != "C" or metal_idx is None:
+            continue
+        if float(np.linalg.norm(positions[c_idx] - positions[metal_idx])) > 2.6:
+            continue
+        o_nbrs = [i for i in range(n) if symbols[i] == "O"
+                  and float(np.linalg.norm(positions[i] - positions[c_idx])) <= 1.6]
+        if len(o_nbrs) == 2:
+            print(f"[reduction_surface] generator adduct: CO2 group found "
+                  f"by bonding (C{c_idx} metal-bound, O{o_nbrs[0]}/O{o_nbrs[1]}); "
+                  f"substrate block starts at {c_idx}.")
+            return c_idx
     start = n
     for i in range(n - 1, -1, -1):
         if symbols[i] == "H":
