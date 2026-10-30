@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import pytest
 
+# The main py3.11 CI jobs run ALL tests without OPI installed; skip there.
+# The OPI job (DELFIN_OPI_REQUIRED=1, tests/conftest.py) turns that skip
+# into a failure, so the OPI-required job still gates on these tests.
 pytest.importorskip("opi")
 
 from delfin.tools.adapters.orca_sp_opi import (  # noqa: E402
