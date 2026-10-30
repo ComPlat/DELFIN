@@ -537,6 +537,22 @@ class BenchmarkResult:
     success_ci_high: Optional[float] = None
     per_run_quality: list[int] = field(default_factory=list)
     per_run_success: list[bool] = field(default_factory=list)
+    #: Stricter, alongside readings of the SAME k repeats -- never a
+    #: replacement for ``success``. ``pass_at_k`` (pass@k) = at least one
+    #: of the k repeats passed (the optimistic "it can do it"); ``pass_pow_k``
+    #: (pass^k) = ALL k passed (the reliability a user actually gets).
+    #: For a single-repeat run (k == 1) both equal ``success``. Set by
+    #: ``score_outcome`` (single run) and ``aggregate_replicates`` (pooled;
+    #: all repeats unmeasured -> False, the only honest reading).
+    pass_at_k: bool = False
+    pass_pow_k: bool = False
+    #: Weighted rubric score (0-100) and its per-criterion components, when
+    #: the task declares a ``rubric``. Scored deterministically from the same
+    #: trajectory the signals/values/verify already read; reported beside
+    #: ``quality_0_100`` and beside ``success`` (a rubric never rewrites the
+    #: existing pass/quality criterion). Empty when the task has no rubric.
+    rubric_0_100: Optional[int] = None
+    rubric_components: dict[str, float] = field(default_factory=dict)
     # Per-replicate counted work, in replicate order. The scalar
     # tool_calls / input_tokens / output_tokens above are medians; a
     # learning verdict compares the two samples, not two medians.
@@ -2042,6 +2058,8 @@ def score_outcome(
         verify_output=str(traj.verify_output or "")[:2000],
         verify_quality=verify_quality,
         per_run_verify_quality=[verify_quality],
+        pass_at_k=success,
+        pass_pow_k=success,
         tool_names=tool_names,
         tool_subjects=[tool_subject(c) for c in traj.tool_calls
                        if isinstance(c, dict)][:60],
@@ -2419,6 +2437,8 @@ def aggregate_replicates(
         success_ci_high=wilson_interval(n_pass, n)[1],
         per_run_quality=list(qualities),
         per_run_success=list(success_flags),
+        pass_at_k=any(success_flags),
+        pass_pow_k=all(success_flags),
         per_run_tool_calls=list(tool_counts),
         per_run_tokens_total=[i + o for i, o in zip(in_toks, out_toks)],
         text_excerpt=excerpt,
@@ -2858,6 +2878,8 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
     if not rows:
         return {
             "n_tasks": 0, "n_pass": 0, "n_fail": 0, "pass_rate": 0.0,
+            "n_pass_at_k": 0, "pass_at_k_rate": 0.0,
+            "n_pass_pow_k": 0, "pass_pow_k_rate": 0.0,
             "n_unmeasured": 0, "unmeasured_tasks": [],
             "avg_quality": 0.0, "total_cost_usd": 0.0,
             "total_duration_s": 0.0, "total_tool_calls": 0,
@@ -2880,6 +2902,14 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
     n_unmeasured = len(rows) - len(scored)
     n = len(scored)
     n_pass = sum(1 for r in scored if r.get("success"))
+    # The two stricter, alongside readings over the SAME k repeats. A task
+    # whose request never reached the model is already out (``scored``),
+    # exactly as it is out of ``n_pass``. pass@k = >=1 of its repeats
+    # passed; pass^k = ALL of its repeats passed. Neither rewrites the
+    # existing pass criterion — they are reported next to it so a run's
+    # "best attempt" and its "every attempt" are both visible.
+    n_pass_at_k = sum(1 for r in scored if r.get("pass_at_k"))
+    n_pass_pow_k = sum(1 for r in scored if r.get("pass_pow_k"))
     # Token sums over scored tasks, and the per-call normalisation that
     # tells a real saving from "did less work" (see the per-call comment
     # below).  Exact values, no rounding: the caller renders them.
@@ -2896,6 +2926,10 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         "unmeasured_tasks": sorted(
             str(r.get("task_id") or "?") for r in rows if r.get("unmeasured")),
         "pass_rate": (n_pass / n) if n else 0.0,
+        "n_pass_at_k": n_pass_at_k,
+        "pass_at_k_rate": (n_pass_at_k / n) if n else 0.0,
+        "n_pass_pow_k": n_pass_pow_k,
+        "pass_pow_k_rate": (n_pass_pow_k / n) if n else 0.0,
         "avg_quality": (sum(int(r.get("quality_0_100") or 0)
                             for r in scored) / n) if n else 0.0,
         "total_cost_usd": sum(float(r.get("cost_usd") or 0) for r in rows),

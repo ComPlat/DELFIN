@@ -90,7 +90,7 @@ def test_summarise_run_reports_pass_at_k_and_pass_pow_k():
     """One model's run: counts and rates of tasks reaching each bar."""
     rows = [
         _aggregate([True, True, True]),    # @k and ^k   -- reliable
-        _aggregate([True, True, False]),   # @k only     -- flaky
+        _aggregate([True, False, False]),  # @k only     -- flaky minority
         _aggregate([False, False, False]), # neither
     ]
     s = bm.summarise_run(rows)
