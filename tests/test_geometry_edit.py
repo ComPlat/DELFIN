@@ -33,6 +33,8 @@ from delfin.tools.geometry_edit import (
     constraints_block,
     merge_fragments,
     align_rmsd,
+    measured_dihedral,
+    measured_angle,
 )
 
 rad = math.pi / 180.0
@@ -122,20 +124,13 @@ def test_set_angle_h2o():
     g, change = set_angle(g, 1, 0, 2, 110.0)
     assert abs(_measured_angle(g, 1, 0, 2) - 110.0) < 1e-6
     assert change["atoms_moved"]
-    # the O stays put (vertex), only H's move
-    assert change["atoms_moved"] == [1, 2] or set(change["atoms_moved"]) == {1, 2}
+    # the vertex O (atom 0) stays put; the moved side is the *smaller* fragment,
+    # i.e. exactly one H (both H sides are singletons)
+    assert set(change["atoms_moved"]) in ({1}, {2})
 
 
 def _measured_angle(g, i, j, k):
-    a = g.coords[i]
-    b = g.coords[j]
-    c = g.coords[k]
-    v1 = (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-    v2 = (c[0] - b[0], c[1] - b[1], c[2] - b[2])
-    n1 = math.sqrt(sum(x * x for x in v1))
-    n2 = math.sqrt(sum(x * x for x in v2))
-    cosv = (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (n1 * n2)
-    return math.degrees(math.acos(max(-1.0, min(1.0, cosv))))
+    return measured_angle(g, i, j, k)
 
 
 def test_set_dihedral_butane_to_60():
@@ -149,37 +144,7 @@ def test_set_dihedral_butane_to_60():
 
 
 def _measured_dihedral(g, i, j, k, l):
-    import math as _m
-    p0, p1, p2, p3 = (g.coords[x] for x in (i, j, k, l))
-
-    def _v(a, b):
-        return (b[0] - a[0], b[1] - a[1], b[2] - a[2])
-
-    def _dot(u, v):
-        return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
-
-    def _cross(u, v):
-        return (u[1] * v[2] - u[2] * v[1],
-                u[2] * v[0] - u[0] * v[2],
-                u[0] * v[1] - u[1] * v[0])
-
-    def _sub(u, v):
-        return (u[0] - v[0], u[1] - v[1], u[2] - v[2])
-
-    b0 = _sub(p0, p1)
-    b1 = _sub(p2, p1)
-    b2 = _sub(p3, p2)
-    b1n = _cross(b1, b0)  # plane 1 normal
-    b2n = _cross(b2, b1)  # plane 2 normal
-    n1 = math.sqrt(_dot(b1n, b1n))
-    n2 = math.sqrt(_dot(b2n, b2n))
-    if n1 == 0 or n2 == 0:
-        return 0.0
-    cosv = _dot(b1n, b2n) / (n1 * n2)
-    phi = _m.degrees(_m.acos(max(-1.0, min(1.0, cosv))))
-    if _dot(_cross(b1n, b2n), _sub(b1, _cross(b1n, b2n))) < 0:
-        phi = -phi
-    return (phi + 720.0) % 360.0
+    return measured_dihedral(g, i, j, k, l)
 
 
 # --------------------------------------------------------------------------
