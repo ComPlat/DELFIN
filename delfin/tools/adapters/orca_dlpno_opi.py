@@ -466,7 +466,13 @@ def read_dlpno_output(work_dir: Path, base_name: str) -> DlpnoResult:
     energies = out.get_energies() or {}
     for key, energy in energies.items():
         base_key = key.split("_")[0]
-        value = getattr(energy, "value", None)
+        # OPI 2.0.0's Energy model stores the number in ``totalenergy``
+        # (list[list[float]]); take the last entry ( opi/output/models/json/
+        # property/properties/energy.py, class Energy).
+        raw = getattr(energy, "totalenergy", None) or getattr(energy, "value", None)
+        if not raw:
+            continue
+        value = float(raw[-1][-1]) if isinstance(raw[0], (list, tuple)) else float(raw)
         if value is None:
             continue
         if base_key == "SCF":
@@ -496,10 +502,18 @@ def read_dlpno_output(work_dir: Path, base_name: str) -> DlpnoResult:
         result.energy_Eh = result.energy_Eh or result.ccsd_energy_Eh
     result.aux_basis_used = ""
     match = re.search(r"NewAuxJGTO\s+(\S+)", inp_text) or re.search(
-        r"([A-Za-z0-9-]+/C)\b", inp_text
+        r"([A-Za-z0-9-]+/[Cc])\b", inp_text
     )
     if match:
-        result.aux_basis_used = match.group(1).strip('"')
+        result.aux_basis_used = match.group(1).strip('"').replace("/c", "/C")
+        # normalize OPI's lowercase keyword output back to the canonical
+        # basis name (cc-pvtz/C -> cc-pVTZ/C); kept as a small map because
+        # ORCA itself is case-insensitive for basis names
+        canonical = {"cc-pvtz/c": "cc-pVTZ/C", "cc-pvqz/c": "cc-pVQZ/C",
+                     "def2-tzvpp/c": "def2-TZVPP/C", "def2-qzvpp/c": "def2-QZVPP/C"}
+        result.aux_basis_used = canonical.get(
+            result.aux_basis_used.lower(), result.aux_basis_used
+        )
     return result
 
 
