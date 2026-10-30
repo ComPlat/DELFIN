@@ -178,20 +178,28 @@ def test_another_process_cannot_see_the_same_scratch():
 
 
 @requires_a_working_sandbox
-def test_write_gate_admits_the_scratch_dir(tmp_path):
+def test_write_gate_does_not_treat_scratch_as_a_file_tool_root(tmp_path):
+    """The scratch dir is shell-state only: TMPDIR for caged commands. The
+    file tools keep using the workspace, so the scratch dir must NOT appear
+    among the writable or readable roots — not even unlocked, and a locked
+    scope must reach nothing but its workspace. A file written into the
+    scratch dir by a write tool is therefore refused: the cage (TMPDIR)
+    is the only route to it."""
     ws = tmp_path / "ws"
     ws.mkdir()
     scratch = A._session_scratch_dir()
-    # write_file returns the human-readable diff, not JSON. A path outside
-    # the workspace roots is refused before the write: admission means the
-    # write happened (the scratch dir is on all_workspace_roots).
+    perms = _perms(ws)
+    assert Path(scratch) not in perms.all_workspace_roots(), \
+        list(perms.all_workspace_roots())
+    assert Path(scratch) not in perms.all_readable_roots()
+    locked = KitToolPermissions(mode="default", workspace=str(ws),
+                                lock_workspace=True)
+    assert tuple(locked.all_workspace_roots()) == (Path(ws),)
     out = _doc_executor.execute(
         "write_file",
         {"path": os.path.join(scratch, "agent.txt"),
-         "content": "hello"}, _perms(ws))
-    assert "error" not in out, out
-    content = (Path(scratch) / "agent.txt").read_text()
-    assert content == "hello", content
+         "content": "hello"}, perms)
+    assert "error" in out, out
 
 
 @requires_a_working_sandbox
@@ -230,15 +238,15 @@ def test_two_kit_tool_permissions_in_one_process_share_the_scratch_dir(tmp_path)
     process -- the scheduler daemon's several runs and sub-agents on threads
     all live in one process -- therefore see the SAME scratch dir. This pins
     and documents that sharing rather than hiding it: the TMPDIR exported to
-    every cage and the file tools' writable roots both come from that one
-    global, so every instance admits and writes the same directory."""
-    one = _perms(Path(tmp_path) / "sa")
-    two = _perms(Path(tmp_path) / "sb")
+    every cage comes from that one global (the file tools do NOT expose it
+    as a root — it is shell-state; the workspace is their route)."""
+    _perms(Path(tmp_path) / "sa")
+    _perms(Path(tmp_path) / "sb")
     scratch = A._session_scratch_dir()
-    one_root = next(r for r in one.all_workspace_roots() if r == Path(scratch))
-    two_root = next(r for r in two.all_workspace_roots() if r == Path(scratch))
-    assert one_root == two_root == Path(scratch), (one_root, two_root, scratch)
-    # stable across calls too: the global is cached once made
+    # The TMPDIR every caged command gets comes from that one global.
+    env = A._scrubbed_bash_env()
+    assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == scratch
+    # stable across calls: the global is cached once made
     assert A._session_scratch_dir() == scratch
 
 
