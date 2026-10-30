@@ -536,12 +536,22 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     except (AttributeError, TypeError):
         pass
 
+    # The model switches this turn made live on the engine's client
+    # (api_client._turn_model_switches: {before, after, reason}). Read them
+    # defensively -- a stub engine without a client (the scheduler and
+    # benchmark test doubles) must keep working and report []. The read is
+    # of the client the engine owns, so `engine.client` is the only route.
+    _model_switches = getattr(
+        getattr(engine, "client", None), "_turn_model_switches", None)
+    model_switches = (list(_model_switches) if _model_switches else [])
+
     return {
         "text": (full_text or "".join(chunks)).strip(),
         "tool_calls": tool_calls,
         "input_tokens": max(0, in_after - in_before),
         "output_tokens": max(0, out_after - out_before),
         "error": error,
+        "model_switches": model_switches,
         **observer.summary(
             error=error,
             engine_stop_reason=str(
