@@ -234,3 +234,20 @@ def test_registering_descriptors_changes_no_classic_engine():
     for fn in ("run_classic_phase", "run_occuper_phase", "run_esd_phase"):
         assert hasattr(wf_pipeline, fn), \
             f"classic engine entry {fn} must remain present after registration"
+
+
+def test_manifest_lists_classic_and_pipeline_together():
+    """The machine-readable manifest lists the classic CONTROL workflows and
+    the pipeline applications together under one 'workflows' section."""
+    from delfin.tools.manifest import build_manifest
+
+    workflows = build_manifest()["workflows"]
+    kinds = {w["kind"] for w in workflows}
+    assert "classic-control" in kinds
+    assert "pipeline" in kinds
+    # The classic descriptors carry the descriptor fields, not just a name.
+    occ = next(w for w in workflows
+               if w["name"] == "OCCUPIER" and w["kind"] == "classic-control")
+    assert occ["entry"], "OCCUPIER entry missing in manifest"
+    assert occ["control_keys"], "OCCUPIER control keys missing in manifest"
+    assert occ["extension_points"], "OCCUPIER extension points missing in manifest"
