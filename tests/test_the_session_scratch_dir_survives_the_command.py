@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import requires_a_working_sandbox
+from conftest import child_env, requires_a_working_sandbox
 from delfin.agent import api_client as A
 from delfin.agent.api_client import KitToolPermissions, _doc_executor
 
@@ -156,18 +156,19 @@ def test_file_written_by_one_command_survives_to_the_next():
         assert "kept" in content
 
 
-def test_another_process_cannot_see_the_same_scratch():
+def test_another_process_cannot_see_the_same_scratch(tmp_path):
     """A fresh process (a different session) gets a different scratch tree."""
     mine = Path(A._session_scratch_dir()).resolve()
     # A child process of this one is a separate session process: its scratch
-    # is its own private temp dir, not this one. Run it with the SAME
-    # interpreter and PYTHONPATH so it imports this tree's delfin ('-I' would
-    # drop PYTHONPATH, so it is not used).
+    # is its own private temp dir, not this one. child_env keeps the child's
+    # own user state out of the real home (conftest; the suite's in-memory
+    # redirect stops at the process boundary), and PYTHONPATH is set so it
+    # imports this tree's delfin ('-I' would drop PYTHONPATH, so not used).
     code = (
         "from delfin.agent import api_client as A;"
         "print(A._session_scratch_dir())"
     )
-    env = dict(os.environ)
+    env = child_env(tmp_path)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     proc = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True,
