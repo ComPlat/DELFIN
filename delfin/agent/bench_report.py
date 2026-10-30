@@ -66,11 +66,21 @@ def _score(instances: list[InstanceRecord]) -> dict:
 
 
 def _stop_verdict(record: RunRecord, history: list[RunRecord]) -> dict:
-    """Two consecutive rounds without gain, or the budget exhausted."""
+    """Two consecutive rounds without gain, or the budget exhausted.
+
+    HB2: a history record that measured nothing (every started
+    instance unmeasured — e.g. the 31.10. engine-init baseline) is
+    INVALID as evidence and is skipped: its flat/failed outcome must
+    not push the stop verdict. The mark is computed, not stored, so
+    an old broken record is recognised without anyone editing it.
+    """
     gains = list(record.previous_rounds_gain)
     if history:
         last = history[-1]
-        gains = list(last.previous_rounds_gain) + gains
+        if _all_unmeasured(last):
+            gains = []  # the "last round" measured nothing; no gains to chain
+        else:
+            gains = list(last.previous_rounds_gain) + gains
     flat_tail = 0
     for gain in reversed(gains):
         if gain and gain > 0:
@@ -85,6 +95,22 @@ def _stop_verdict(record: RunRecord, history: list[RunRecord]) -> dict:
                           % (record.spent_core_hours,
                              record.daily_budget_core_hours)}
     return {"should_stop": False, "reason": ""}
+
+
+def _all_unmeasured(record: RunRecord) -> bool:
+    """True when the round started but every started instance is
+    unmeasured (HB2): the round measured nothing. Distinguishes an
+    old record written before the unmeasured flag existed (all
+    success=False with empty error) from a real failed round."""
+    started = record.started()
+    if not started:
+        return False
+    if all(getattr(i, "unmeasured", False) for i in started):
+        return True
+    # A pre-HB2 record carries no unmeasured flag: every started
+    # instance graded False with NO error text is the shape the
+    # 31.10. round left behind (dead runs, error: "").
+    return all(not i.success and not i.error for i in started)
 
 
 def write(record: RunRecord, history: list[RunRecord] | None = None) -> str:
@@ -132,4 +158,11 @@ def write(record: RunRecord, history: list[RunRecord] | None = None) -> str:
         "stop": _stop_verdict(record, history),
         "rounds_included": len(history) + 1,
     }
+    # HB2: an invalid history record (measured nothing) is marked,
+    # never deleted — a later reader sees why it was skipped.
+    if history and _all_unmeasured(history[-1]):
+        report["history_invalid"] = (
+            "the previous round measured nothing (every started "
+            "instance unmeasured or a pre-HB2 all-failed/empty-error "
+            "record); its gains are excluded from the stop verdict")
     return json.dumps(report, sort_keys=True)

@@ -172,6 +172,49 @@ def test_measured_round_still_exits_zero(tmp_path):
     assert rc == 0, f"healthy round exited {rc}"
 
 
+def test_invalid_history_record_is_marked_and_skipped(tmp_path):
+    """Task item 5: a record shaped like the 31.10. round (started
+    instances, all success=False, quality=0, error="") — as a PREVIOUS
+    round in history — is marked invalid and its flat outcome does not
+    push the stop verdict toward 'should_stop'."""
+    import json
+    from delfin.agent import bench_report
+    from delfin.agent.bench_nightly import RunRecord
+
+    broken = RunRecord(model="kit.glm-5.3-flash", mode="holdout",
+                       started_at=1.0, ended_at=5.0)
+    broken.instances.append(InstanceRecord(
+        task_id="t1", task_class="classic_opt_freq", ran=True,
+        success=False, quality=0))  # error stays "" — the 31.10. shape
+    record = RunRecord(model="kit.glm-5.3-flash", mode="holdout",
+                       started_at=10.0)
+    data = json.loads(bench_report.write(record, history=[broken]))
+    assert "history_invalid" in data, \
+        "the invalid previous round is not marked"
+    stop = data["stop"]
+    assert stop["should_stop"] is False, \
+        f"invalid history pushed the stop verdict: {stop!r}"
+
+
+def test_real_failed_history_still_counts(tmp_path):
+    """Counter-case: a history record of REAL failed runs (error text
+    present) is not marked invalid — the stop logic keeps working."""
+    import json
+    from delfin.agent import bench_report
+    from delfin.agent.bench_nightly import RunRecord
+
+    failed = RunRecord(model="kit.glm-5.3-flash", mode="holdout",
+                       started_at=1.0, ended_at=5.0)
+    failed.instances.append(InstanceRecord(
+        task_id="t1", task_class="classic_opt_freq", ran=True,
+        success=False, quality=0, error="scoring fell out of range"))
+    record = RunRecord(model="kit.glm-5.3-flash", mode="holdout",
+                       started_at=10.0)
+    data = json.loads(bench_report.write(record, history=[failed]))
+    assert "history_invalid" not in data, \
+        "a real failed round was marked invalid"
+
+
 def test_provider_reaches_run_task_for_kit_model(tmp_path):
     """D1: the provider derived for a kit.<model> reaches run_task —
     the engine must be built as kit, not as Anthropic."""
