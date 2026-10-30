@@ -90,6 +90,23 @@ def test_approved_patch_to_protected_file_lands(ws):
         assert "error" in out, out
 
 
+def test_approved_patch_with_a_prefix_on_plus_side_lands(ws):
+    """The incident form: a header written ``+++ a/<rel>`` (a/ on the plus
+    side) previously made the applier target a/<rel> and the protected file
+    never changed; it must now land on the protected relative path."""
+    root, tgt = ws
+    perms = _perms(root)
+    perms.confirm_callback = _approving_callback
+    out = _apply(perms, _patch("--- a/delfin/agent/api_client.py",
+                               "+++ a/delfin/agent/api_client.py"))
+    if out.get("status") == "ok":
+        assert "class Second" in tgt.read_text(), (
+            f"approved apply_patch (+++ a/<rel>) reported ok but protected "
+            f"file unchanged; full result: {out}")
+    else:
+        assert "error" in out, out
+
+
 def test_absolute_path_in_header_does_not_write_outside(ws, tmp_path):
     root, tgt = ws
     perms = _perms(root)
