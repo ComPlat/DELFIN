@@ -149,6 +149,7 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
     grader: Grader = config["grader"]
     accounting: Accounting = config["accounting"]
     model: str = config.get("model", "")
+    provider: str = config.get("provider", "")
     mode: str = config.get("mode", "holdout")
     n_instances = int(config.get("instances", 10))
     budget = float(config.get("daily_budget_core_hours",
@@ -257,7 +258,7 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
             inst.ran = True
         try:
             t0 = now()
-            result = runner(task, model=model)
+            result = runner(task, model=model, provider=provider)
             inst.duration_s = now() - t0
             inst.success, inst.quality = grader.grade(task, result)
         except Exception as exc:  # a failed run is recorded, not swallowed
@@ -301,6 +302,11 @@ def main(argv: Optional[list] = None) -> int:
                     "run through benchmark_runner.run_task, grade with "
                     "DELFIN's own grading, record the cost.")
     parser.add_argument("--model", default="")
+    parser.add_argument("--provider", default="",
+                        help="provider backend for the model (kit, "
+                             "anthropic, openai, ollama); default: "
+                             "derived from the model id like the bench "
+                             "CLI does")
     parser.add_argument("--instances", type=int, default=10)
     parser.add_argument("--seed-path", default="")
     parser.add_argument("--practice", action="store_true")
@@ -320,6 +326,7 @@ def main(argv: Optional[list] = None) -> int:
         instances=args.instances,
         mode="practice" if args.practice else "holdout",
         holdout_seed_path=args.seed_path,
+        provider=args.provider,
     )
     cfg["daily_budget_core_hours"] = args.budget
     record = run(cfg)

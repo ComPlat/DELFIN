@@ -146,7 +146,19 @@ class GlueRunner:
             from .benchmark_runner import run_task as run_task_fn
         else:
             run_task_fn = self._run_task_fn
-        result = run_task_fn(task, model=model)
+        # Provider resolution (HB2 D1): the CLI resolves the provider
+        # the same way (cli.py:_resolve_provider → pricing.infer_provider
+        # as the last step). Without it the engine is built as Anthropic
+        # and every kit.<model> run dies with "engine init failed: No
+        # Anthropic API key found" — observed in the 31.10. baseline.
+        # The pricing table is the one answerer; no second mapping here.
+        # An explicit provider kwarg (from --provider) wins.
+        if not kwargs.get("provider"):
+            from .pricing import infer_provider
+            inferred = infer_provider(model)
+            if inferred:
+                kwargs["provider"] = inferred
+        result = run_task_fn(task, model=model, **kwargs)
         answer, evidence = self._collect()
         return GlueRun(
             task_id=result.task_id, task_class=result.task_class,
