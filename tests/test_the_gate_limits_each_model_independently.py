@@ -23,6 +23,7 @@ without sleeping for the real quiet period.
 
 from __future__ import annotations
 
+from conftest import child_env  # noqa: E402
 import json
 import os
 import subprocess
@@ -195,7 +196,7 @@ def test_per_model_limits_still_share_the_endpoints_total_cap(runtime):
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     scratch = runtime.parent / "workers2"
     scratch.mkdir(exist_ok=True)
-    env = dict(os.environ)
+    env = child_env(runtime.parent)
     env["DELFIN_ENDPOINT_MAX_CONCURRENCY"] = str(cap)
     env["DELFIN_RUNTIME_DIR"] = str(runtime)
     env["PYTHONPATH"] = repo
