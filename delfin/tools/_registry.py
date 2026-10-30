@@ -77,7 +77,6 @@ def _reexec_module(mod_name: str, path) -> None:
     User adapters never enter sys.modules (spec_from_file_location),
     so only the builtin walk needs this.
     """
-    import importlib.util
     import sys
 
     try:
@@ -85,7 +84,9 @@ def _reexec_module(mod_name: str, path) -> None:
         if module is None:
             __import__(mod_name)
             return
-        importlib.util.module_from_spec(module.__spec__)
+        # The module must be in sys.modules while its body runs: @dataclass
+        # (and typing.get_type_hints) look the class's module up there.
+        sys.modules[mod_name] = module
         module.__spec__.loader.exec_module(module)
     except ImportError:
         logger.debug("Optional adapter module not available: %s", mod_name)
