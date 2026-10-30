@@ -131,7 +131,9 @@ def test_the_tab_shows_only_the_reviewers_share(team_dir):
     assert set(rv.load_review(s.review_path)["reviews"]) == set(a["shared"] + a["raters"]["Ann"])
 
 
-def test_a_new_name_draws_its_own_block_and_keeps_it(team_dir):
+def test_a_new_name_draws_its_own_block_and_keeps_it(team_dir, monkeypatch):
+    # No name and no GitHub account to take it from: the tab asks for one.
+    monkeypatch.setattr(rt, "_gh_login", lambda run: "")
     a, _ = rt.assign(team_dir, ["Ann"], overlap=2, block=3, seed=6, self_block=5,
                      redundancy=0)
     rt.write_assignment(team_dir / rt.ASSIGNMENT_NAME, a)
