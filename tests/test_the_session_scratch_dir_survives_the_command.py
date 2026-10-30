@@ -85,6 +85,13 @@ def _argv_binds_scratch(argv: list, scratch: str) -> bool:
     the last pair. Walk the argv instead and read the KEY and VALUE in step.
     """
     ks = list(argv)
+    # The Landlock wrapper (what a host without bwrap builds) carries the
+    # same property in its own form: exactly one --tmpdir, = scratch, and
+    # scratch among the --write roots. The CI runner builds that form.
+    if any(a == "landlock_exec" for a in ks):
+        tmpdirs = [ks[i + 1] for i, a in enumerate(ks) if a == "--tmpdir"]
+        writes = [ks[i + 1] for i, a in enumerate(ks) if a == "--write"]
+        return tmpdirs == [scratch] and scratch in writes
     writes = [ks[i + 1] for i, a in enumerate(ks) if a in ("--bind-try", "--bind")
               and i + 1 < len(ks)]
     if not any(w == scratch for w in writes):
