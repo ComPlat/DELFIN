@@ -1707,6 +1707,32 @@ _SYSTEM_INFO_FILES: frozenset[str] = frozenset({
 })
 
 
+#: Programs that hand the REST of their words to another program to run.
+#: The first non-option, non-`NAME=value` word is the REAL command word,
+#: and its path must not be scanned as a read -- executing a program is
+#: not reading it. Each value lists the option spellings that take a
+#: SEPARATE value (skipped together with that value while the wrapper's
+#: options are walked); a flag or a self-contained `-n5`/`--x=5` needs no
+#: entry. `timeout` is the one with two leading positionals (DURATION
+#: then COMMAND); every other wrapper's first bare word is its program.
+#:
+#: The wrappers' own operands that ARE files (``env -C /dir``) are not
+#: touched here: only the command-word index is skipped, so the wrapper's
+#: file-like operands and every following argument are still scanned.
+_COMMAND_WORD_WRAPPERS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "-P",
+                      "--default-signal", "--block-signal", "--list-signal"}),
+    "timeout": frozenset({"-k", "--kill-after", "-s", "--signal"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata",
+                         "-p", "--pid"}),
+    "taskset": frozenset({"-c", "--cpu-list"}),
+    "nohup": frozenset(),
+    "setsid": frozenset(),
+    "command": frozenset(),
+}
+
+
 def _home_expanded(word: str) -> str:
     home = str(Path.home())
     for spelling in ("${HOME}", "$HOME"):
@@ -1828,6 +1854,62 @@ def _script_argument_index(prog: str, args: list) -> Optional[int]:
     return None
 
 
+def _executed_command_index(prog: str, args: list) -> Optional[int]:
+    """Index in *args* of the program the wrapper `prog` delegates to.
+
+    A delegating wrapper (``env``, ``timeout``, ``nice``, …) hands the
+    rest of its words to another program to run. That inner program is
+    a simple command's command word: its PATH must not be scanned as a
+    read -- executing a program is not reading it (2026-10-29: a venv
+    interpreter run under ``env X=1`` was asked about as an
+    outside-workspace read). Returns the index of that word so the caller
+    can skip exactly it, leaving every sibling argument -- the wrapper's
+    own operands and the program's following arguments -- scanned as
+    before. ``--`` ends the wrapper's options. ``timeout`` has a leading
+    DURATION positional before its COMMAND, so its program is the second
+    bare word; every other wrapper's first bare word is the program.
+    Returns None when `prog` is not a delegation wrapper, or when no bare
+    word occupies the command-word slot (a wrapper with only options or
+    only a duration leaves nothing to skip).
+    """
+    value_opts = _COMMAND_WORD_WRAPPERS.get(prog)
+    if value_opts is None:
+        return None
+    # How many bare words precede the program: timeout's DURATION, and
+    # taskset's MASK unless -c/--cpu-list gave the CPU list as an option
+    # value. taskset -p works on an existing pid and runs no program.
+    leading = 1 if prog == "timeout" else 0
+    if prog == "taskset":
+        if any(a in ("-p", "--pid") or (a.startswith("-") and not a.startswith("--")
+                                        and "p" in a[1:]) for a in args):
+            return None
+        if not any(a in ("-c", "--cpu-list") or a.startswith("--cpu-list=")
+                   for a in args):
+            leading = 1
+    positional = 0
+    skip = False
+    options_done = False
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if not options_done and a == "--":
+            options_done = True     # every later word is positional
+            continue
+        if not options_done and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+            continue               # env's NAME=value, not the program
+        if options_done or not a.startswith("-"):
+            if positional == leading:
+                return i
+            positional += 1
+            continue               # the DURATION or MASK, not yet the program
+        opt = a.split("=", 1)[0]
+        if opt in value_opts and "=" not in a:
+            skip = True            # the option takes a separate value
+        # a value-less flag, or a self-contained -n5 / --x=5: nothing to skip
+    return None
+
+
 def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                         _depth: int = 0) -> list[str]:
     """Paths a shell command would read, for the outside-read gate.
@@ -1924,6 +2006,21 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 out.extend(_bash_outside_reads(
                     args[i + 1], here, _depth + 1))
             return
+        # `env -S "STRING"` (--split-string) splits STRING into a new command
+        # line, like `sh -c`: judge that line, with the words after it.
+        if prog == "env" and _depth < 3:
+            for i, a in enumerate(args):
+                split = None
+                if a in ("-S", "--split-string") and i + 1 < len(args):
+                    split, tail = args[i + 1], args[i + 2:]
+                elif a.startswith("--split-string="):
+                    split, tail = a.split("=", 1)[1], args[i + 1:]
+                elif a.startswith("-S") and len(a) > 2:
+                    split, tail = a[2:], args[i + 1:]
+                if split is not None:
+                    line = " ".join([split] + [shlex.quote(t) for t in tail])
+                    out.extend(_bash_outside_reads(line, here, _depth + 1))
+                    return
         # Input redirection reads, whatever the program.
         for i, a in enumerate(args):
             if a == "<" and i + 1 < len(args):
@@ -1933,13 +2030,17 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
         if prog in _BASH_NO_FILE_PROGRAMS:
             return
         script_at = _script_argument_index(prog, args)
+        # A delegating wrapper's program word (env X=1 prog, timeout 20
+        # prog, nice prog) is the command word of a simple command: its
+        # path is not a read, whatever position the shell resolved it to.
+        cmd_at = _executed_command_index(prog, args)
         skip_next = False
         for i, a in enumerate(args):
             if skip_next:
                 skip_next = False
                 continue
-            if i == script_at:
-                continue    # the program's script or pattern, not a file
+            if i == script_at or i == cmd_at:
+                continue    # the program's script/pattern or command word, not a file
             if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
                 skip_next = True    # the redirection's own target
                 continue
@@ -1966,7 +2067,7 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
 
     try:
         import shlex
-        for segment in _shell_segments(cmd):
+        for segment in _shell_segments(_strip_heredoc_bodies(cmd)):
             segment = segment.strip()
             if not segment:
                 continue
@@ -4589,12 +4690,33 @@ def _links_to_a_secret(perms: Any, rel: str, base: Any = None) -> bool:
         return False
 
 
+def _is_run_hidden(resolved: Path) -> bool:
+    """Whether ``resolved`` is, or lies beneath, a path the run hides from
+    its cage (``DELFIN_CAGE_HIDE``). Without the variable nothing is hidden
+    and nothing can fail; with it, an error counts as hidden (fails closed
+    only where hiding was asked for)."""
+    if not str(os.environ.get("DELFIN_CAGE_HIDE") or "").strip():
+        return False
+    try:
+        from delfin.agent.sandbox import run_hidden_paths
+        for h in run_hidden_paths():
+            hp = Path(h)
+            if resolved == hp or hp in resolved.parents:
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def _is_secret_path(perms: Any, path: Path) -> bool:
     """Whether ``path`` matches the secret deny list, tested the way
     ``_check_read_access`` tests it: relative to the readable root it lies
-    in, else absolute. Fails closed."""
+    in, else absolute -- or is hidden from the run (``DELFIN_CAGE_HIDE``).
+    Fails closed."""
     try:
         resolved = Path(path).expanduser().resolve()
+        if _is_run_hidden(resolved):
+            return True
         in_root = perms.find_readable_root_for(resolved)
         if in_root is not None:
             try:
@@ -8937,6 +9059,62 @@ def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
             end = line_start + len(line)
             return cmd[i:end], end
     return cmd[i:], len(cmd)
+
+
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """``cmd`` with every here-document body (and its ``<<tag`` token) gone.
+
+    A heredoc body is DATA -- the program the interpreter runs, or file
+    content delivered to cat/tee -- never a shell argument of the outer
+    command. When the read scan shlex-split it together with the command
+    line, a string in the body was asked about as an outside-workspace
+    read: ``python - <<'PY' … '/agent' … PY`` asked about the nonexistent
+    /agent, and a body carrying ``'/'`` asked about the filesystem root --
+    approving the second would have opened the whole filesystem for the
+    session (2026-10-29). Blanked so the read scan never sees it.
+
+    Only the body lines and the ``<<tag`` token are removed. The REST of
+    the redirect's own line is kept verbatim: ``cat <<EOF > /outside/x``
+    must still let the write gate see ``/outside/x``, and
+    ``python - <<'PY'; cat /outside/secret`` must still let the read scan
+    see ``/outside/secret``. Blanking the whole ``<<tag … tag`` span would
+    hide both -- a new hole. When there is no newline at all the body is
+    empty (``cat <<EOF > /outside/x`` in one line), so only the token is
+    removed and ``/outside/x`` stays. Position is preserved so upstream
+    offset-based annotations keep their meaning. Here-strings (``<<<``)
+    need no terminator and are left as they are.
+    """
+    out: list[str] = []
+    i, n = 0, len(cmd)
+    while i < n:
+        if cmd[i:i + 3] == "<<<":
+            # A here-STRING needs no terminator and is ordinary text here;
+            # stepping one or two of its three `<<` would let the rest be
+            # re-read as a heredoc named after the string's first word.
+            out.append(cmd[i:i + 3])
+            i += 3
+            continue
+        if cmd[i:i + 2] == "<<":
+            consumed = _consume_heredoc(cmd, i)
+            if consumed is None:
+                out.append(cmd[i])
+                i += 1
+                continue
+            _, end = consumed
+            m = _HEREDOC_START_RE.match(cmd, i)
+            token_end = m.end() if m is not None else i + 2
+            nl = cmd.find("\n", token_end, end)
+            out.append(" " * (token_end - i))      # the <<TAG token
+            if nl == -1:
+                out.append(cmd[token_end:end])     # one line, no body: keep it all
+            else:
+                out.append(cmd[token_end:nl + 1])  # the redirect line's own words
+                out.append(" " * (end - (nl + 1))) # blank the body lines
+            i = end
+            continue
+        out.append(cmd[i])
+        i += 1
+    return "".join(out)
 
 
 def _lines_from(text: str, start: int):
@@ -20813,6 +20991,13 @@ class _DocToolExecutor:
         except Exception:
             resolved = path
 
+        # A path the run hides from its cage (DELFIN_CAGE_HIDE) is refused
+        # like a secret: no root, grant or confirmation reaches it.
+        if _is_run_hidden(Path(resolved)):
+            _record_gate_refusal("run_hidden", "", str(label or resolved))
+            return (f"read denied: '{label or resolved}' is hidden from this "
+                    "run (DELFIN_CAGE_HIDE).")
+
         # Build the string we test against deny-globs: workspace-relative
         # when possible (so globs like ".env" match), else absolute. READS are
         # allowed in any REACHABLE root (writable + read-only archive/delfin +
@@ -21163,6 +21348,31 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+    @staticmethod
+    def _shell_write_command_line(name: str, args: dict,
+                                  rel_str: str) -> str:
+        """A bash write request seen whole: the command and the file.
+
+        A shell request targeting a protected/calc/store file reached an
+        approval whose body was only the guard's warning text -- the
+        command lived elsewhere on the record and `approvals show` did
+        not print it, so an approval one could not read was one one
+        could not give. This line names the command (credentials masked,
+        cut to 400 characters with a marker when cut) and the file it
+        would write, exactly as the outside-read preview of a shell read
+        does. Empty for any non-shell tool: a write tool shows its diff
+        instead.
+        """
+        if name != "bash":
+            return ""
+        _cmd = str(args.get("command") or "").strip()
+        _shown = _redact_tool_result(_cmd) if _cmd else ""
+        if len(_shown) > 400:
+            _shown = _shown[:400] + " …"
+        return (
+            f"It would be run as:\n  {_shown}\n\n"
+            f"It writes:\n  {rel_str}\n\n")
+
     def _gate_write_path(
         self, path_arg: str, perms: "KitToolPermissions",
         name: str, args: dict,
@@ -21358,12 +21568,16 @@ class _DocToolExecutor:
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
+            # A bash request names the command and the file it would
+            # write; a write tool shows its diff instead ("" for bash).
+            _shell_line = self._shell_write_command_line(name, args, rel_str)
             if _is_gitcfg:
                 preview = (
                     "[GIT CONFIGURATION FILE]\n"
                     "git reads this file as configuration: it can name a "
                     "filter, diff driver or hook program that the next "
                     "git status or git add runs.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif _is_store:
@@ -21372,6 +21586,7 @@ class _DocToolExecutor:
                     "Later sessions are shown this file: shared lessons or "
                     "stored memory. Approving lets the agent change what "
                     "they are told.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_protected:
@@ -21380,6 +21595,7 @@ class _DocToolExecutor:
                     "This file is part of the agent's own safety layer.\n"
                     "Approving this will let the agent rewrite the code that "
                     "controls its own permissions.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_calc:
@@ -21387,6 +21603,7 @@ class _DocToolExecutor:
                     "[CALC EDIT — STORED CALCULATION]\n"
                     "This file is under calc (an active/stored calculation). "
                     "Approving this lets the agent modify it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             else:
@@ -21394,6 +21611,7 @@ class _DocToolExecutor:
                     "[REFUSED EARLIER]\n"
                     "You refused a write to this file earlier in this "
                     "session. This is a different change to it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
@@ -28638,6 +28856,12 @@ def _home_secret_paths() -> list[str]:
         out += [d for d in runtime_masked_dirs() if d not in out]
     except Exception:
         pass
+    # The run's own hidden paths (DELFIN_CAGE_HIDE).
+    try:
+        from delfin.agent.sandbox import run_hidden_paths
+        out += [d for d in run_hidden_paths() if d not in out]
+    except Exception:
+        pass
     return out
 
 
@@ -30369,6 +30593,12 @@ def _bash_isolation_argv(
             args += ["--tmpfs", d]
     except Exception:
         pass
+    # The run's own hidden paths (DELFIN_CAGE_HIDE), after every bind.
+    try:
+        from delfin.agent.sandbox import _bwrap_hide_args, run_hidden_paths
+        args += _bwrap_hide_args(run_hidden_paths())
+    except Exception:
+        pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
@@ -30529,6 +30759,19 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
 _STREAM_RETRY_MAX = 3
 
+# How many times a single turn may switch to another model because KIT does
+# not serve the one it asked for (either "Model not found" or "…temporarily
+# unavailable"). A headless run is ONE long turn that can ask several models;
+# bounding the count keeps a roster where nothing answers from looping forever,
+# while still letting the run get past one or two down models.
+_MODEL_FALLBACK_MAX = 3
+
+# The short pause before resending a model that reported itself "temporarily
+# unavailable": one retry on the same model, then the switch. Long enough to
+# ride out a blip, short enough to not hold the turn for the real outage's
+# whole hour.
+_MODEL_UNAVAILABLE_RETRY_S = 1.5
+
 # A request that produced no byte for this long was not a hiccup: the KIT
 # gateway answers 504 at 600 s when the model has not started, and the
 # SDK's own read timeout is 600 s. Measured 2026-09-11 with a 12.6k-token
@@ -30641,8 +30884,53 @@ def _is_transient_api_error(exc: Exception) -> bool:
     # without ever retrying a genuine bad request.
     low = msg.lower()
     if any(marker in low for marker in _INFRA_EXHAUSTION_MARKERS):
+        # ...except a MODEL that is itself unavailable: that is a property
+        # of the model, fixed by switching to another family KIT serves,
+        # not of the gateway. "Model 'X' is temporarily unavailable" is
+        # NOT gateway exhaustion; "_is_model_unavailable_error" decides it
+        # and the switch path handles it. (The gateway-wide "service
+        # temporarily unavailable" has no model scope and stays here.)
+        if _is_model_unavailable_error(exc):
+            return False
         return True
     return False
+
+
+_MODEL_UNAVAILABLE_PHRASES = (
+    "is temporarily unavailable",
+    "is currently unavailable",
+    "is temporarily down",
+    "is not available",
+)
+
+
+def _is_model_unavailable_error(exc: Exception) -> bool:
+    """Whether a 400 says the MODEL (not the gateway) is unavailable.
+
+    Measured 2026-10-29 for about an hour: KIT answered every request to one
+    model with "Model 'glm-5.3-flash' is temporarily unavailable. Please try
+    again later." That is a property of the model, fixed by switching to the
+    next family KIT serves — NOT gateway exhaustion ("too many connections",
+    "service temporarily unavailable"), which switching would not fix. This
+    deliberately tells the two apart: a model-unavailability NAMES the model
+    (the word "model" near a down-phrase, or a quoted model id), a gateway
+    message does not.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int) and status != 400:
+        return False
+    low = str(exc).lower()
+    if not any(p in low for p in _MODEL_UNAVAILABLE_PHRASES):
+        return False
+    # The message must name a model to be a MODEL unavailability. The word
+    # "model" in a scope that picks one out ("Model 'X' is …", "the model X
+    # is …"), or a quoted id next to an availability word, both count. The
+    # gateway's own "service temporarily unavailable" names no model.
+    if "model'" in low or 'model"' in low or " the model " in low:
+        return True
+    if low.strip().startswith("model ") or " model " in low:
+        return True
+    return "'" in low and "available" in low
 
 
 _MODEL_NOT_FOUND_HINTS = (
@@ -30661,17 +30949,24 @@ def _is_model_not_found_error(exc: Exception) -> bool:
 
 
 def _kit_fallback_model(current: str, provider: str, base_url: str = "",
-                        api_key: str = "") -> str:
+                        api_key: str = "", already_left: set = ()) -> str:
     """The best KIT model to continue on when ``current`` is not served, or
     "" (not a KIT session). The ranked roster's first entry the endpoint
     lists; when the listing cannot be read, the first ranked entry that is
-    not ``current`` -- it was the ranking that named ``current`` too."""
+    neither ``current`` nor in ``already_left``. ``already_left`` collects
+    the models this turn has already left behind, so a turn that bounced
+    A->B after only A was excluded does not hand the rank slot back to A
+    (A->B->A until the switch budget ran out). Only ``kit.*`` models in
+    ``_KIT_PREFERENCE`` are ever returned -- never the paid ``azure.*``,
+    ``google.*``, ``alias.*`` or ``standard-*`` routes, and no embedding,
+    reranker, speech or image models."""
     if str(provider or "").lower() != "kit":
         return ""
     try:
         from . import model_capabilities as _mc
         served = _mc.kit_models_served(base_url, api_key, fetch=True)
-        ranked = [m for m in _mc._KIT_PREFERENCE if m != current]
+        skip = set(already_left or ()) | {current}
+        ranked = [m for m in _mc._KIT_PREFERENCE if m not in skip]
         if served:
             return next((m for m in ranked if m in served), "")
         return ranked[0] if ranked else ""
@@ -30859,6 +31154,27 @@ def _infer_provider_from_base_url(base_url: str) -> str:
     if "ki-toolbox" in u or "kit.edu" in u:
         return "kit"
     return "openai"
+
+
+class _GateRound:
+    """Mutable outcome holder for one gate-guarded request round.
+
+    The round body fills ``first_byte_s`` (seconds to first byte on success)
+    and ``exception`` (the transient error that triggered a congested retry);
+    the request-``finally`` in ``OpenAIClient.stream_message`` reports both to
+    the shared adaptive limit and releases the slot on every exit path.
+    ``gate`` is the live ``endpoint_gate.EndpointGate`` (None when disabled).
+    Kept a plain mutable class so the round body can set fields without a
+    reporting protocol.
+    """
+
+    __slots__ = ("gate", "first_byte_s", "exception", "wait_notice")
+
+    def __init__(self) -> None:
+        self.gate = None
+        self.first_byte_s = None
+        self.exception = None
+        self.wait_notice = ""
 
 
 class OpenAIClient(_BaseClient):
@@ -32096,7 +32412,17 @@ class OpenAIClient(_BaseClient):
             except Exception:
                 pass
         _stream_attempt = 0    # transient-API-error retries (reset per response)
-        _model_fallback_done = False   # once per turn: see _kit_fallback_model
+        # The model-switch budget for THIS turn (both "Model not found" and
+        # "…temporarily unavailable"). A headless run is one long turn, so
+        # "once per turn" meant a single flapping model stood the whole run
+        # still; bounded, not unlimited. Reset at each new turn, never mid-turn.
+        _model_fallback_count = 0
+        # The one switch-collection per turn, read by turn_metrics and by a
+        # headless `chat -p --output-format json` result (repl.TURN_KEYS).
+        self._turn_model_switches: list[dict] = []
+        # "At most one short retry" guard for a model that reports itself
+        # unavailable, reset at the start of each new round below.
+        _mod_unav_retried = False
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
@@ -32519,8 +32845,24 @@ class OpenAIClient(_BaseClient):
                 _cq.put(True)
 
             _ct = _threading_mod.Thread(target=_spawn_create, daemon=True)
-            _ct.start()
             try:
+                # Host-wide per-endpoint concurrency gate (endpoint_gate):
+                # acquire one slot for this round and release it in the single
+                # `finally` below, so no exit path -- success, retry `continue`,
+                # re-raise, a consumer closing the generator mid-round
+                # (GeneratorExit), KeyboardInterrupt -- leaves it held.
+                _gslot = _GateRound()
+                try:
+                    from .endpoint_gate import for_client as _gslot_for
+                    _gslot.gate = _gslot_for(self._base_url, self.model)
+                except Exception:
+                    _gslot.gate = None
+                if _gslot.gate is not None:
+                    _gslot.gate.acquire()
+                if _gslot.gate is not None and _gslot.gate.wait_notice:
+                    yield StreamEvent(type="notice", text=(
+                        f"⚠️ {_gslot.gate.wait_notice}\n"))
+                _ct.start()
                 # Watch the first byte instead of parking in it: emit a
                 # visible "waiting for the model … Ns" indicator while the
                 # endpoint has not answered, and abandon the round on the
@@ -32615,6 +32957,11 @@ class OpenAIClient(_BaseClient):
                             finish_reason = choice.finish_reason
                 finally:
                     stream.close()
+                # A response was streamed to the end: record its first-byte
+                # time on the holder so the `finally` below reports a quick
+                # success to the shared adaptive limit.
+                if _round_ttft is not None:
+                    _gslot.first_byte_s = _round_ttft - _round_t0
             except Exception as _stream_exc:
                 if self._stop_was_requested():
                     # The transport was cut on purpose (signal_stop): the
@@ -32654,40 +33001,101 @@ class OpenAIClient(_BaseClient):
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
                             _stream_attempt, _STREAM_RETRY_MAX, _delay))
+                        # A congestion signal triggered this retry: report it
+                        # and free the slot BEFORE the backoff, so another
+                        # session can use the endpoint while this round waits.
+                        # The gate is then cleared on the holder, so the
+                        # round's `finally` neither reports it a second time
+                        # nor releases again; the next round takes a new slot.
+                        if _gslot.gate is not None:
+                            try:
+                                from . import endpoint_gate as _endpoint_gate
+                                _endpoint_gate.report_result(
+                                    _gslot.gate, exception=_stream_exc,
+                                    first_byte_s=None)
+                            except Exception:
+                                pass
+                            _gslot.gate.release()
+                            _gslot.gate = None
                         time.sleep(_delay)
                         continue
-                    # The endpoint does not serve the model (a KIT roster
-                    # change): once per turn, the best KIT model it serves
-                    # takes over, said in the stream, and the round is sent
-                    # again. Measured 2026-10-19: kit.glm-5.3 answered
-                    # "400 - Model not found" with no explanation.
-                    if (_is_model_not_found_error(_stream_exc)
-                            and not _model_fallback_done):
-                        _model_fallback_done = True
+                    # The endpoint does not serve the model — either it is not
+                    # on the KIT roster AT ALL ("Model not found", measured
+                    # 2026-10-19: kit.glm-5.3 answered "400 - Model not found")
+                    # or it is TEMPORARILY unavailable ("Model 'X' is
+                    # temporarily unavailable", measured 2026-10-29 for about
+                    # an hour, ten agents stood still). Both are properties
+                    # of the MODEL, not of the gateway: the best KIT model it
+                    # serves takes over, said in the stream, and the round is
+                    # sent again. A headless run is one long turn, so the
+                    # switch is allowed up to _MODEL_FALLBACK_MAX times per
+                    # turn, never a loop. An unavailable model gets at most
+                    # ONE short retry on itself first (a blip); a "Model not
+                    # found" is definitive and switches at once.
+                    _is_unavail = _is_model_unavailable_error(_stream_exc)
+                    _is_missing = _is_model_not_found_error(_stream_exc)
+                    if (_is_unavail or _is_missing) \
+                            and _model_fallback_count < _MODEL_FALLBACK_MAX:
+                        if _is_unavail and not _mod_unav_retried:
+                            _mod_unav_retried = True
+                            yield StreamEvent(type="notice", text=(
+                                f"\n⏳ The endpoint says `{self.model}` is "
+                                "temporarily unavailable; trying it once more "
+                                "briefly before switching models.\n"))
+                            time.sleep(_MODEL_UNAVAILABLE_RETRY_S)
+                            continue
+                        _mod_unav_retried = False
+                        _model_fallback_count += 1
                         _old_model = self.model
                         _alt = _kit_fallback_model(
                             _old_model, getattr(self, "_provider", ""),
                             str(getattr(self, "_base_url", "") or ""),
-                            str(getattr(self, "_api_key", "") or ""))
+                            str(getattr(self, "_api_key", "") or ""),
+                            already_left={s.get("before", "") for s in
+                                          self._turn_model_switches})
                         if _alt:
                             self.model = _alt
                             kwargs["model"] = _alt
+                            self._turn_model_switches.append({
+                                "before": _old_model, "after": _alt,
+                                "reason": ("model unavailable" if _is_unavail
+                                           else "model not found")})
                             _text_chunks = []
                             _tool_calls = {}
                             _round_in = 0
                             finish_reason = None
-                            yield StreamEvent(type="notice", text=(
-                                f"\n⚠️ KIT does not serve `{_old_model}` right "
-                                "now (\"Model not found\"). This session "
-                                f"continues on `{_alt}`, the best KIT model it "
-                                "serves; /model or the dashboard's model menu "
-                                "picks another.\n"))
+                            if _is_unavail:
+                                yield StreamEvent(type="notice", text=(
+                                    f"\n⚠️ KIT is not serving `{_old_model}` "
+                                    "right now (\"temporarily unavailable\"). "
+                                    f"This session continues on `{_alt}`, the "
+                                    "best KIT model it serves; /model or the "
+                                    "dashboard's model menu picks another.\n"))
+                            else:
+                                yield StreamEvent(type="notice", text=(
+                                    f"\n⚠️ KIT does not serve `{_old_model}` "
+                                    "right now (\"Model not found\"). This "
+                                    f"session continues on `{_alt}`, the best "
+                                    "KIT model it serves; /model or the "
+                                    "dashboard's model menu picks another.\n"))
                             continue
+                        # No alternative model to continue on.
                         yield StreamEvent(type="notice", text=(
                             f"\n⚠️ The endpoint does not serve `{_old_model}` "
-                            "(\"Model not found\"). Pick a model it serves: "
-                            "/model lists them in the terminal, the model menu "
-                            "in the dashboard.\n"))
+                            f"(\"{'temporarily unavailable' if _is_unavail else 'Model not found'}\") "
+                            "and no other KIT model is ranked for it. Pick a "
+                            "model it serves: /model lists them in the "
+                            "terminal, the model menu in the dashboard.\n"))
+                    elif (_is_unavail or _is_missing) \
+                            and _model_fallback_count >= _MODEL_FALLBACK_MAX:
+                        # The model-switch budget for this turn is spent:
+                        # switching again cannot help (every ranked model is
+                        # gone or down). End like any unfixable model error
+                        # rather than loop.
+                        yield StreamEvent(type="notice", text=(
+                            f"\n⚠️ `{self.model}` is unavailable and the "
+                            "model-switch budget for this turn is used up. "
+                            "No KIT model answered; try again later.\n"))
                     # Context-window overflow is deterministic — retrying the
                     # same request just fails again. End the turn cleanly with a
                     # terminal stop instead of crashing the generator (which
@@ -32727,6 +33135,23 @@ class OpenAIClient(_BaseClient):
                 _tool_calls.update(_calls)
                 if _fin:
                     finish_reason = _fin
+
+            finally:
+                # Single release point for this round's slot, and one report
+                # to the shared adaptive limit. Runs on EVERY exit path of
+                # the request -- success, the retry/stop/fallback branches
+                # above, and an exception re-raise -- so a slot is never
+                # leaked for the rest of the turn. report_result swallows its
+                # own errors; release is idempotent when nothing was acquired.
+                if _gslot.gate is not None:
+                    try:
+                        from . import endpoint_gate as _endpoint_gate
+                        _endpoint_gate.report_result(
+                            _gslot.gate, exception=_gslot.exception,
+                            first_byte_s=_gslot.first_byte_s)
+                    except Exception:
+                        pass
+                    _gslot.gate.release()
 
             # A stream that ended having produced no ANSWER. Not an error
             # and not a refusal: finish_reason says stop, and no content
@@ -32815,6 +33240,8 @@ class OpenAIClient(_BaseClient):
                         input_tokens=_round_in, cached_tokens=_round_cached,
                         output_tokens=_round_out, tool_calls=len(_tool_calls),
                         finish_reason=str(finish_reason or ""),
+                        model_switches=list(getattr(
+                            self, "_turn_model_switches", []) or []),
                         **_prompt_fingerprints(
                             api_messages,
                             int(getattr(self, "_turn_rows_base", 0) or 0)))

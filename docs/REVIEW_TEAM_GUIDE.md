@@ -39,12 +39,16 @@ nobody has rated or reserved come first. About 15 % of every block are
 structures that one or two other reviewers also get, spread over the whole
 set, so that everybody's ratings can be compared with many others'. Only
 when every structure has been rated once do blocks consist of second
-ratings. Pick a name nobody else in the project uses, and keep it. Running
+ratings. Pick a name nobody else in the project uses, and keep it: best your
+GitHub name (left empty, the Review tab takes the account `gh` is logged in
+with). Running
 `unpack` again never touches your ratings or your block. (Without `--name`
 the block is drawn the first time you open the folder in the Review tab.)
 
 **Reserve your block** (recommended, takes a minute): until your ratings
-come back, nobody else knows which structures you have. So tell them:
+come back, nobody else knows which structures you have. So tell them: press
+**Reserve my block** in the Review tab (under the comment field), or in a
+terminal:
 
 ```bash
 delfin review claim ~/review_kalib_2026_10 --name <your name>
@@ -81,7 +85,9 @@ Turn and zoom the molecule in the viewer (mouse), then:
   not accept.
 
 For **Block**, first choose the categories (several are allowed, see the
-table below), and mark where each defect is:
+table below; each button shows a short name, the mouse pointer over it shows
+what it means, and **What the categories mean** under the buttons lists them
+all), and mark where each defect is:
 
 1. Press the key of a category (or click it). It is now *active* (dark
    frame).
@@ -120,38 +126,38 @@ a dot (open).
 
 Press **U** (it writes `unsicher` into the comment) and still decide **P** or
 **B** as well as you can. A free comment is always welcome, and for the
-category `SONST` (other) it is required: say what you saw, new categories
+category **Other (comment)** it is required: say what you saw, new categories
 come from those comments.
 
 ## 4. The 18 categories
 
-| Key | Code | Meaning |
-|---|---|---|
-| 1 | `H` | a hydrogen is missing, stretched, at a wrong angle, points into the metal or sits on the metal |
-| 2 | `LAENGE_ML` | a metal-ligand or metal-metal distance visibly too long or too short (the ligand is still bound) |
-| 3 | `DURCHDRINGUNG` | interpenetration: ligands or rings stuck through each other, a bond threaded through a ring |
-| 4 | `CLASH` | atoms too close without interpenetration (also H...H) |
-| 5 | `METALLKONTAKT` | a heavy atom that is not a donor sits at the metal (a hydrogen at the metal: `H`) |
-| 6 | `TOPO` | topology: a bond missing or one too many, a ligand clearly torn off, a wrong donor atom, a fragment or counter-ion floating away or stuck inside another |
-| 7 | `HYB` | hybridisation / angle: a wrong angle, sp3 flat, sp2 pyramidal, a linear group bent (also one angle at a donor) |
-| 8 | `PLANAR` | an aromatic ring or sp2 framework not flat, an amide, ester or conjugated bond twisted |
-| 9 | `POLYEDER` | the coordination geometry at the metal is implausible |
-| 0 | `SONST` | something else: **always write a comment** |
-| Shift+1 | `DONOR` | a whole donor turned away from the metal, its lone pair not pointing at the metal, the metal out of the donor plane |
-| Shift+2 | `LAENGE_KOV` | a covalent bond too long or too short |
-| Shift+3 | `KOLLAPS` | collapse: a ring or ligand balled up, the molecule too compact |
-| Shift+4 | `HAPTO` | a pi ligand slipped, wrong hapticity |
-| Shift+5 | `STEREO` | wrong configuration (R/S, E/Z, atropisomer) |
-| Shift+6 | `KONFORMER` | an unrealistic conformation (eclipsed, a ring bent, a boat without reason) |
-| Shift+7 | `FORMEL` | formula: atoms missing or too many, an H on the wrong atom (tautomer, protonation) |
-| Shift+8 | `SYMMETRIE` | chemically equal parts visibly built unequal (equal ligands at different distances, a Cp ring tilted) |
+| Key | Button | Code (stored) | Meaning |
+|---|---|---|---|
+| 1 | H atoms | `H` | a hydrogen is missing, stretched, at a wrong angle, points into the metal or sits on the metal |
+| 2 | M–L length | `LAENGE_ML` | a metal-ligand or metal-metal distance visibly too long or too short (the ligand is still bound) |
+| 3 | Interpenetration | `DURCHDRINGUNG` | interpenetration: ligands or rings stuck through each other, a bond threaded through a ring |
+| 4 | Clash | `CLASH` | atoms too close without interpenetration (also H...H) |
+| 5 | Metal contact | `METALLKONTAKT` | a heavy atom that is not a donor sits at the metal (a hydrogen at the metal: `H`) |
+| 6 | Topology | `TOPO` | topology: a bond missing or one too many, a ligand clearly torn off, a wrong donor atom, a fragment or counter-ion floating away or stuck inside another |
+| 7 | Angle / hybrid. | `HYB` | hybridisation / angle: a wrong angle, sp3 flat, sp2 pyramidal, a linear group bent (also one angle at a donor) |
+| 8 | Planarity | `PLANAR` | an aromatic ring or sp2 framework not flat, an amide, ester or conjugated bond twisted |
+| 9 | Polyhedron | `POLYEDER` | the coordination geometry at the metal is implausible |
+| 0 | Other (comment) | `SONST` | something else: **always write a comment** |
+| Shift+1 | Donor direction | `DONOR` | a whole donor turned away from the metal, its lone pair not pointing at the metal, the metal out of the donor plane |
+| Shift+2 | Bond length | `LAENGE_KOV` | a covalent bond too long or too short |
+| Shift+3 | Collapse | `KOLLAPS` | collapse: a ring or ligand balled up, the molecule too compact |
+| Shift+4 | Hapticity | `HAPTO` | a pi ligand slipped, wrong hapticity |
+| Shift+5 | Stereo | `STEREO` | wrong configuration (R/S, E/Z, atropisomer) |
+| Shift+6 | Conformer | `KONFORMER` | an unrealistic conformation (eclipsed, a ring bent, a boat without reason) |
+| Shift+7 | Formula | `FORMEL` | formula: atoms missing or too many, an H on the wrong atom (tautomer, protonation) |
+| Shift+8 | Symmetry | `SYMMETRIE` | chemically equal parts visibly built unequal (equal ligands at different distances, a Cp ring tilted) |
 
 Where two categories are close:
 
-* stuck through each other = `DURCHDRINGUNG`; only too close = `CLASH`;
-* one angle at a donor = `HYB`; the whole donor turned away = `DONOR`;
-* still bound but too long = `LAENGE_ML`; clearly gone = `TOPO`;
-* a hydrogen at the metal = `H`; a heavy atom at the metal = `METALLKONTAKT`.
+* stuck through each other = Interpenetration; only too close = Clash;
+* one angle at a donor = Angle / hybrid.; the whole donor turned away = Donor direction;
+* still bound but too long = M–L length; clearly gone = Topology;
+* a hydrogen at the metal = H atoms; a heavy atom at the metal = Metal contact.
 
 ## 5. Saving, stopping, continuing
 
@@ -163,7 +169,8 @@ share; every finished part is useful.
 
 ## 6. Send your ratings back
 
-From your clone, in a terminal:
+Press **Send my ratings** in the Review tab (under the comment field; it
+shows the link to your pull request), or from your clone, in a terminal:
 
 ```bash
 delfin review submit ~/review_kalib_2026_10 --name <your name>

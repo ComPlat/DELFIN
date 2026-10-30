@@ -66,6 +66,7 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 TURN_KEYS: frozenset[str] = frozenset({
     "text", "tool_calls", "input_tokens", "output_tokens", "error",
     "schema_version", "stop_reason", "denials", "files_changed",
+    "model_switches",
 })
 
 
@@ -413,6 +414,7 @@ class TurnResult:
     stop_reason: str = "done"
     denials: list[dict] = field(default_factory=list)
     files_changed: list[str] = field(default_factory=list)
+    model_switches: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -425,6 +427,7 @@ class TurnResult:
             "stop_reason": self.stop_reason,
             "denials": self.denials,
             "files_changed": self.files_changed,
+            "model_switches": self.model_switches,
         }
 
 
