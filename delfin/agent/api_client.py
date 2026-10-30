@@ -30902,7 +30902,9 @@ def _retry_notice(exc_name: str, elapsed_s: float, had_partial: bool,
         return (f"\n⏳ Transient API error ({exc_name}); retrying {tail}"
                 " — connection lost mid-answer, the reply restarts below…\n")
     if slot_wait:
-        where = f" on {base_url}" if base_url else ""
+        from .endpoint_gate import display_url
+        shown = display_url(base_url) if base_url else ""
+        where = f" on {shown}" if shown else ""
         return (f"\n⏳ Waited {elapsed_s:.0f} s for a local slot{where} "
                 f"({exc_name}): other sessions hold it, the endpoint never "
                 f"got this request. Retrying {tail} waits for a slot "

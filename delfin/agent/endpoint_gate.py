@@ -102,6 +102,19 @@ _STATE_LOCK_TIMEOUT_S = 5.0
 _SLOT_WAIT_TIMEOUT_S = 900.0
 
 
+
+def display_url(url: str) -> str:
+    """``url`` without userinfo (``user:secret@``), for messages a user reads."""
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        p = urlsplit(str(url or ""))
+        host = p.hostname or ""
+        if p.port:
+            host = f"{host}:{p.port}"
+        return urlunsplit((p.scheme, host, p.path, "", ""))
+    except Exception:
+        return ""
+
 class SlotWaitTimeout(RuntimeError):
     """No slot became free within :data:`_SLOT_WAIT_TIMEOUT_S`."""
 
@@ -509,7 +522,7 @@ class EndpointGate:
                     f" {in_use} in use")
             if time.monotonic() >= deadline:
                 raise SlotWaitTimeout(
-                    f"no slot on {self.base_url} within the "
+                    f"no slot on {display_url(self.base_url)} within the "
                     f"allotted time ({n_slots} slots, all in use)")
             time.sleep(0.05)
 

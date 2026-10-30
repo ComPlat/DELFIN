@@ -221,3 +221,9 @@ def test_per_model_limits_still_share_the_endpoints_total_cap(runtime):
         held = sum(1 for c, d in series if c <= a < d)
         overlap = max(overlap, held)
     assert overlap == cap, series                 # never above the endpoint cap
+
+
+def test_a_url_shown_to_the_user_carries_no_credentials():
+    from delfin.agent.endpoint_gate import display_url
+    assert display_url("https://u:secret@ex.org:8443/api/v1?k=1") == "https://ex.org:8443/api/v1"
+    assert "secret" not in display_url("https://u:secret@ex.org/v1")
