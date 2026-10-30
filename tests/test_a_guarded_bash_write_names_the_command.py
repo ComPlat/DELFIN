@@ -11,6 +11,9 @@ file -- and an approval one cannot read is one one cannot give.
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from pathlib import Path
 
 from delfin.agent import api_client as A
@@ -75,3 +78,39 @@ def test_a_long_guarded_command_is_cut(tmp_path):
         tmp_path, previews=previews)
     assert previews
     assert "x" * 401 not in previews[0]
+
+
+def test_approvals_show_of_a_guarded_bash_request_names_command_and_file(
+        tmp_path, monkeypatch, capsys):
+    """`delfin-agent approvals show <id>` prints the command and the file
+    for a guarded bash request, through the redirected approvals room."""
+    from delfin.agent import file_confirm as _fc
+    room = tmp_path / "approvals"
+    room.mkdir()
+    monkeypatch.setattr(_fc, "requests_dir", lambda: room)
+    record = {
+        "id": "g1", "session_id": "sess-x", "kind": "confirm",
+        "tool": "bash",
+        "command": "cp scratch/new_api_client.py delfin/agent/api_client.py",
+        "preview": ("[SELF-MODIFICATION GUARD]\n"
+                    "This file is part of the agent's own safety layer.\n\n"
+                    "It would be run as:\n"
+                    "  cp scratch/new_api_client.py delfin/agent/api_client.py"
+                    "\n\n"
+                    "It writes:\n  delfin/agent/api_client.py\n\n"),
+        "asked_at": time.time(), "pid": os.getpid(), "host": "here",
+    }
+    (room / "g1.request.json").write_text(
+        json.dumps(record), encoding="utf-8")
+    os.chmod(room / "g1.request.json", 0o600)
+
+    import argparse
+    from delfin.agent import cli
+    ns = argparse.Namespace(approvals_action="show", request_id="g1")
+    rc = cli.cmd_approvals(ns)
+    out = capsys.readouterr().out
+    assert rc == 0
+    # The command and the file it targets are both readable in `show`.
+    assert "cp scratch/new_api_client.py delfin/agent/api_client.py" in out
+    assert "delfin/agent/api_client.py" in out
+    assert "[SELF-MODIFICATION GUARD]" in out
