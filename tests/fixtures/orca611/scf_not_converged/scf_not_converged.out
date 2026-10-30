@@ -172,7 +172,7 @@ interface, adapt or use parts of their codes:
 
   ***********************************
   * Starting time: Thu Oct 29 19:32:30 2026
-  * Host name:     qmchemserver
+  * Host name:     fixture-host
   * Process ID:    1730734
   * Working dir.:  tests/fixtures/orca611/scf_not_converged
   ***********************************
@@ -602,39 +602,39 @@ Iteration    Energy (Eh)           Delta-E    RMSDP     MaxDP     DIISErr   Damp
 
 [file orca_leanscf/orca_leanscf.cpp, line 306, Process 0]: Error (ORCA_LEANSCF): unfortunately, the SCF has not converged. There may be a way out but we have to stop here 
 [file orca_leanscf/orca_leanscf.cpp, line 306, Process 1]: Error (ORCA_LEANSCF): unfortunately, the SCF has not converged. There may be a way out but we have to stop here 
-[qmchemserver:1736338] *** Process received signal ***
-[qmchemserver:1736338] Signal: Aborted (6)
-[qmchemserver:1736338] Signal code:  (-6)
+[fixture-host:1736338] *** Process received signal ***
+[fixture-host:1736338] Signal: Aborted (6)
+[fixture-host:1736338] Signal code:  (-6)
 [file orca_leanscf/orca_leanscf.cpp, line 306, Process 0]: Error (ORCA_LEANSCF): unfortunately, the SCF has not converged. There may be a way out but we have to stop here 
-[qmchemserver:1736326] *** Process received signal ***
-[qmchemserver:1736326] Signal: Aborted (6)
-[qmchemserver:1736326] Signal code:  (-6)
-[qmchemserver:1736326] [ 0] /lib/x86_64-linux-gnu/libc.so.6(+0x45330)[0x79bf34045330]
-[qmchemserver:1736326] [ 1] /lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x11c)[0x79bf3409ec0c]
-[qmchemserver:1736326] [ 2] /lib/x86_64-linux-gnu/libc.so.6(gsignal+0x1e)[0x79bf3404527e]
-[qmchemserver:1736326] [ 3] /lib/x86_64-linux-gnu/libc.so.6(abort+0xdf)[0x79bf340288ff]
-[qmchemserver:1736326] [ 4] /opt/orca_6_1_1/lib/liborca_tools_6_1_1_avx2_mpi.so.6(_Z9PAL_Aborti+0x20)[0x79bf39017570]
-[qmchemserver:1736326] [ 5] /opt/orca_6_1_1/orca_leanscf_mpi[0x426f9f]
-[qmchemserver:1736326] [ 6] /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca)[0x79bf3402a1ca]
-[qmchemserver:1736326] [ 7] /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x79bf3402a28b]
-[qmchemserver:1736326] [ 8] /opt/orca_6_1_1/orca_leanscf_mpi[0x426476]
-[qmchemserver:1736326] *** End of error message ***
-[qmchemserver:1736338] [ 0] /lib/x86_64-linux-gnu/libc.so.6(+0x45330)[0x739ec8045330]
-[qmchemserver:1736338] [ 1] /lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x11c)[0x739ec809ec0c]
-[qmchemserver:1736338] [ 2] /lib/x86_64-linux-gnu/libc.so.6(gsignal+0x1e)[0x739ec804527e]
-[qmchemserver:1736338] [ 3] /lib/x86_64-linux-gnu/libc.so.6(abort+0xdf)[0x739ec80288ff]
-[qmchemserver:1736338] [ 4] /opt/orca_6_1_1/lib/liborca_tools_6_1_1_avx2_mpi.so.6(_Z9PAL_Aborti+0x20)[0x739ecd017570]
-[qmchemserver:1736338] [ 5] /opt/orca_6_1_1/orca_leanscf_mpi[0x426f9f]
-[qmchemserver:1736338] [ 6] /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca)[0x739ec802a1ca]
-[qmchemserver:1736338] [ 7] /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x739ec802a28b]
-[qmchemserver:1736338] [ 8] /opt/orca_6_1_1/orca_leanscf_mpi[0x426476]
-[qmchemserver:1736338] *** End of error message ***
+[fixture-host:1736326] *** Process received signal ***
+[fixture-host:1736326] Signal: Aborted (6)
+[fixture-host:1736326] Signal code:  (-6)
+[fixture-host:1736326] [ 0] /lib/x86_64-linux-gnu/libc.so.6(+0x45330)[0x79bf34045330]
+[fixture-host:1736326] [ 1] /lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x11c)[0x79bf3409ec0c]
+[fixture-host:1736326] [ 2] /lib/x86_64-linux-gnu/libc.so.6(gsignal+0x1e)[0x79bf3404527e]
+[fixture-host:1736326] [ 3] /lib/x86_64-linux-gnu/libc.so.6(abort+0xdf)[0x79bf340288ff]
+[fixture-host:1736326] [ 4] /opt/orca_6_1_1/lib/liborca_tools_6_1_1_avx2_mpi.so.6(_Z9PAL_Aborti+0x20)[0x79bf39017570]
+[fixture-host:1736326] [ 5] /opt/orca_6_1_1/orca_leanscf_mpi[0x426f9f]
+[fixture-host:1736326] [ 6] /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca)[0x79bf3402a1ca]
+[fixture-host:1736326] [ 7] /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x79bf3402a28b]
+[fixture-host:1736326] [ 8] /opt/orca_6_1_1/orca_leanscf_mpi[0x426476]
+[fixture-host:1736326] *** End of error message ***
+[fixture-host:1736338] [ 0] /lib/x86_64-linux-gnu/libc.so.6(+0x45330)[0x739ec8045330]
+[fixture-host:1736338] [ 1] /lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x11c)[0x739ec809ec0c]
+[fixture-host:1736338] [ 2] /lib/x86_64-linux-gnu/libc.so.6(gsignal+0x1e)[0x739ec804527e]
+[fixture-host:1736338] [ 3] /lib/x86_64-linux-gnu/libc.so.6(abort+0xdf)[0x739ec80288ff]
+[fixture-host:1736338] [ 4] /opt/orca_6_1_1/lib/liborca_tools_6_1_1_avx2_mpi.so.6(_Z9PAL_Aborti+0x20)[0x739ecd017570]
+[fixture-host:1736338] [ 5] /opt/orca_6_1_1/orca_leanscf_mpi[0x426f9f]
+[fixture-host:1736338] [ 6] /lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca)[0x739ec802a1ca]
+[fixture-host:1736338] [ 7] /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x739ec802a28b]
+[fixture-host:1736338] [ 8] /opt/orca_6_1_1/orca_leanscf_mpi[0x426476]
+[fixture-host:1736338] *** End of error message ***
 --------------------------------------------------------------------------
 Primary job  terminated normally, but 1 process returned
 a non-zero exit code. Per user-direction, the job has been aborted.
 --------------------------------------------------------------------------
 --------------------------------------------------------------------------
-mpirun noticed that process rank 0 with PID 0 on node qmchemserver exited on signal 6 (Aborted).
+mpirun noticed that process rank 0 with PID 0 on node fixture-host exited on signal 6 (Aborted).
 --------------------------------------------------------------------------
 
 ORCA finished by error termination in LEANSCF
