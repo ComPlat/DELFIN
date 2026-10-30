@@ -182,7 +182,11 @@ def test_translate_fragment():
     g, change = translate(g, [1, 2], (1.0, 2.0, 3.0))
     assert change["atoms_moved"] == [1, 2]
     assert g.coords[1][0] == pytest.approx(1.0, abs=1e-9)
-    assert g.coords[1][1] == pytest.approx(0.96 * math.sin(104.5 * rad / 2) + 2.0, abs=1e-9)
+    # the fixture rounds H coordinates to 6 decimals, so the translated y has
+    # up to ~5e-7 of rounding on top of the exact 2.0 shift; compare at 1e-5
+    assert g.coords[1][1] == pytest.approx(
+        0.96 * math.sin(104.5 * rad / 2) + 2.0, abs=1e-5
+    )
     # O untouched
     assert g.coords[0] == (0.0, 0.0, 0.0)
 
