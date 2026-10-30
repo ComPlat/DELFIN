@@ -109,8 +109,8 @@ def test_unmeasured_result_is_not_graded(tmp_path):
 
 def test_unmeasured_not_counted_in_report_score(tmp_path):
     """A round whose single instance never ran has NO family score:
-    quality stays None and n stays 0 — a dead run must not drag the
-    mean down as a 0-quality failure."""
+    unmeasured instances are excluded from the family grouping (no
+    fabricated quality-0 mean) and are NAMED in the report instead."""
     from delfin.agent import bench_report
 
     runner = _DeadRunner()
@@ -118,11 +118,13 @@ def test_unmeasured_not_counted_in_report_score(tmp_path):
     report = bench_report.write(record)
     import json
     data = json.loads(report)
-    families = data["families"]
-    assert families, "family entries vanished entirely"
-    for fam, score in families.items():
+    for fam, score in data["families"].items():
         assert score["n"] == 0, f"{fam} scored unmeasured instances"
         assert score["quality"] is None, f"{fam} has a fabricated mean"
+    named = data["unmeasured"]
+    assert len(named) == 1, f"dead run not named: {named!r}"
+    assert named[0]["task_id"] == record.instances[0].task_id
+    assert "No Anthropic API key" in named[0]["error"]
 
 
 def test_all_unmeasured_round_names_them_and_exit_nonzero(tmp_path):

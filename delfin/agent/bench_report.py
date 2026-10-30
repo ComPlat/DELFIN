@@ -45,9 +45,15 @@ def _split_family_level(task_class: str) -> tuple[str, str]:
 
 
 def _score(instances: list[InstanceRecord]) -> dict:
-    """Mean quality / success over the instances that ran and graded."""
+    """Mean quality / success over the instances that ran and graded.
+
+    Unmeasured instances (the run never happened: engine-init failure,
+    HB2 D2) are excluded — a dead run is not a quality-0 failure of
+    the model, and scoring one fabricates a measurement.
+    """
     graded = [i for i in instances
-              if i.ran and i.success is not None and i.quality is not None]
+              if i.ran and not i.unmeasured
+              and i.success is not None and i.quality is not None]
     if not graded:
         return {"quality": None, "success": None, "n": 0,
                 "core_hours": 0.0}
@@ -85,10 +91,14 @@ def write(record: RunRecord, history: list[RunRecord] | None = None) -> str:
     """The round report as JSON text: a pure function of its arguments."""
     history = list(history or [])
     ran = [i for i in record.instances if i.ran]
+    # HB2 D2: unmeasured instances are named, never scored.
+    unmeasured = [i for i in ran if i.unmeasured]
 
     families: dict[str, dict] = {}
     levels: dict[str, dict] = {}
     for inst in ran:
+        if inst.unmeasured:
+            continue
         family, level = _split_family_level(inst.task_class)
         families.setdefault(family, []).append(inst)
         if level:
@@ -104,6 +114,10 @@ def write(record: RunRecord, history: list[RunRecord] | None = None) -> str:
         "holdout_ran": record.holdout_ran,
         "seed_log": record.seed_log,
         "refused_over_budget": record.refused_over_budget,
+        "unmeasured": [
+            {"task_id": i.task_id, "task_class": i.task_class,
+             "error": i.error}
+            for i in unmeasured],
         "families": {f: _score(insts) for f, insts in sorted(families.items())},
         "correctness_levels": {lv: _score(insts)
                                for lv, insts in sorted(levels.items())},
