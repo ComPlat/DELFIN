@@ -89,9 +89,9 @@ def test_redox_extraction(tmp_path):
     out = ro.extract(str(calc), ["redox_E_ox", "redox_E_red",
                                  "redox_E_red_2", "redox_E_ref",
                                  "redox_method"])
-    assert out["redox_E_ox"] == 2.7288
-    assert out["redox_E_red"] == -0.4315
-    assert out["redox_E_red_2"] == -0.9797
+    assert out["redox_E_ox"] == 2.73
+    assert out["redox_E_red"] == -0.43
+    assert out["redox_E_red_2"] == -0.98
     assert out["redox_E_ref"] == 4.795
     assert out["redox_method"] == "2"
 
@@ -106,31 +106,52 @@ def test_multiplicity_extraction(tmp_path):
     assert out["mult_reduced2"] == "0/1"
 
 
-def test_rss_global_minimum_vs_reference(tmp_path):
-    # Energies rise towards short distances (4.0 lowest in the fixture is
-    # index 0), so the lowest point below 4.0 A defines the minimum.
+def test_rss_bound_vs_ref_35(tmp_path):
+    # New specification: E(2.0 A) vs E(3.5 A). The sweep minimum may sit
+    # elsewhere; the reported delta is bound point minus reference point.
     rss = "\n".join(
         f"{d:.8f} {e:.8f}" for d, e in [
             (4.0, -100.0),
-            (3.1, -100.5),
-            (2.1, -100.2),
-            (2.0, -100.1),
-        ])
+            (3.5, -100.1),
+            (3.1, -100.5),   # sweep minimum, NOT the reported delta
+                (2.1, -100.2),
+                (2.0, -100.05),  # ABOVE the 3.5-A reference -> endergon
+            ])
     calc = make_calc(tmp_path, "403", data=sample_data(), rss=rss)
     out = ro.rss_metrics(str(calc))
+    assert out["rss_delta_kj"] == pytest.approx(
+        (-100.05 + 100.1) * ro.HARTREE_KJ_MOL, rel=1e-3)
+    assert out["rss_direction"] == "endergon"
+    # sweep minimum still reported for orientation
     assert out["rss_min_distance"] == 3.1
-    assert out["rss_direction"] == "exergon"
-    assert out["rss_delta_kj"] == pytest.approx(-0.5 * ro.HARTREE_KJ_MOL,
-                                                rel=1e-3)
-    # tight window (1.9-2.3 A) minimum is at 2.1 A
     assert out["rss_tight_min_distance"] == 2.1
 
 
-def test_rss_endergon_when_minimum_above_reference(tmp_path):
+def test_rss_shape_minimum_vs_saddle(tmp_path):
+    # True minimum: 2.0 A below both sides.
+    rss_min = "\n".join(
+        f"{d:.8f} {e:.8f}" for d, e in [
+            (3.5, -100.0), (2.3, -99.9), (2.2, -99.85), (2.1, -99.8),
+            (2.0, -100.1), (1.9, -99.7), (1.8, -99.6), (1.7, -99.5)])
+    calc = make_calc(tmp_path, "403", rss=rss_min)
+    out = ro.rss_metrics(str(calc))
+    assert "Minimum" in out["rss_shape"]
+    # Saddle/shoulder: energy falls monotonically towards 2.0 A from above
+    # while the short side keeps falling.
+    rss_sad = "\n".join(
+        f"{d:.8f} {e:.8f}" for d, e in [
+            (3.5, -100.0), (2.3, -99.9), (2.2, -99.95), (2.1, -100.0),
+            (2.0, -100.05), (1.9, -100.1), (1.8, -100.15), (1.7, -100.2)])
+    calc2 = make_calc(tmp_path, "404", rss=rss_sad)
+    out2 = ro.rss_metrics(str(calc2))
+    assert "Sattel" in out2["rss_shape"]
+
+
+def test_rss_endergon_when_bound_above_ref(tmp_path):
     rss = "\n".join(
         f"{d:.8f} {e:.8f}" for d, e in [
-            (4.0, -100.0),
-            (2.1, -99.9),
+            (3.5, -100.0),
+            (2.0, -99.9),
         ])
     calc = make_calc(tmp_path, "403", rss=rss)
     out = ro.rss_metrics(str(calc))
@@ -144,7 +165,7 @@ def test_rss_second_sweep_ignored(tmp_path):
     # (increasing distances) must not create duplicate/incorrect points.
     rss = "\n".join(
         f"{d:.8f} {e:.8f}" for d, e in [
-            (4.0, -100.0),
+            (3.5, -100.0),
             (3.0, -100.3),
             (2.0, -100.2),
             (2.1, -99.0),   # sweep turns around: increasing again

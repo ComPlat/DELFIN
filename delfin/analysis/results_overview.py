@@ -30,9 +30,17 @@ DELFIN_DATA_NAME = "DELFIN_Data.json"
 RSS_DIR = os.path.join("CO2_coordination", "relaxed_surface_scan")
 RSS_DAT = os.path.join(RSS_DIR, "scan.relaxscanact.dat")
 
-# The CO2-bound minimum lies around 2.0-2.1 A; the unbound reference is 4.0 A.
+# The CO2-bound minimum lies around 2.0-2.1 A; the unbound reference is
+# 3.5 A (4.0 A sits too close to the plain-minimum and mislabels endergonic
+# cases, per user guidance 2026-10-30).
+# Window around the CO2-bound minimum used for the legacy global-minimum
+# column and the shape (saddle vs minimum) judgement.
 RSS_MIN_WINDOW = (1.9, 2.3)
-RSS_REF_DISTANCE = 4.0
+# RSS energetics: reference point (CO2 unbound side) vs CO2-bound point.
+RSS_REF_DISTANCE = 3.5
+RSS_BOUND_DISTANCE = 2.0
+# Neighbourhood inspected to judge saddle vs true minimum around 2.0 A.
+RSS_SHAPE_DISTANCES = (1.7, 1.8, 1.9, 2.1, 2.2, 2.3)
 
 # Metric ids offered in the dashboard tab.  Values are extracted lazily.
 METRICS: List[Dict[str, str]] = [
@@ -45,9 +53,14 @@ METRICS: List[Dict[str, str]] = [
     {"id": "mult_oxidized", "label": "Multiplicitaet oxidiert (charge/mult)"},
     {"id": "mult_reduced", "label": "Multiplicitaet reduziert (charge/mult)"},
     {"id": "mult_reduced2", "label": "Multiplicitaet 2x reduziert (charge/mult)"},
-    {"id": "rss_min_distance", "label": "RSS: Abstand am Minimum (A)"},
-    {"id": "rss_delta_kj", "label": "RSS: E(min) - E(4 A) (kJ/mol)"},
-    {"id": "rss_direction", "label": "RSS: endergon/exergon gegenueber 4 A"},
+    {"id": "broken_sym", "label": "BrokenSym (Zustand: Werte)"},
+    {"id": "rss_delta_kj", "label": "RSS: E(2.0 A) - E(3.5 A) (kJ/mol)"},
+    {"id": "rss_direction", "label": "RSS: endergon/exergon (2.0 vs 3.5 A)"},
+    {"id": "rss_shape", "label": "RSS: Form um 2.0 A (Minimum/Sattel)"},
+    {"id": "rss_min_distance", "label": "RSS: Abstand am Sweep-Minimum (A)"},
+    {"id": "rss_min_delta_kj", "label": "RSS: E(min) - E(3.5 A) (kJ/mol)"},
+    {"id": "rss_tight_min_distance", "label": "RSS: Min im 1.9-2.3-A-Fenster (A)"},
+    {"id": "rss_tight_delta_kj", "label": "RSS: E(tight min) - E(3.5 A) (kJ/mol)"},
     {"id": "gibbs_ground", "label": "Gibbs-Energie Grundzustand (hartree)"},
     {"id": "gap_ground", "label": "HOMO-LUMO-Gap Grundzustand (eV)"},
     {"id": "converged_flags", "label": "Konvergenz aller Zustands-Optimierungen"},
@@ -145,10 +158,18 @@ def parse_rss_dat(calc_dir: str) -> List[tuple]:
 
 
 def rss_metrics(calc_dir: str) -> Dict[str, Any]:
-    """RSS comparison: lowest energy in the CO2-bound window vs 4 A.
+    """RSS energetics: E(2.0 A) vs E(3.5 A) plus shape around the bound point.
 
-    The scan sweeps down and may continue back up; only the first sweep is
-    used, which keeps a single monotonic distance ordering per point.
+    The unbound reference is 3.5 A, not 4.0 A: at 4.0 A the curve is already
+    near a plain minimum and the sign of the difference mislabels endergonic
+    coordination.  3.5 A is still on the descending branch, so
+    ``delta = E(2.0) - E(3.5)`` answers "does binding pay off" cleanly.
+
+    When the delta is endergonic the bound point can still be a true local
+    minimum or sit on a shoulder/saddle.  The shape is judged from the
+    neighbourhood (1.7 ... 2.3 A): if E rises on both sides of 2.0 A, it is
+    a minimum; if it falls monotonically towards 2.0 A from above while the
+    short side keeps falling, it reads as "no clear minimum (saddle/shoulder)".
     """
     points = parse_rss_dat(calc_dir)
     result: Dict[str, Any] = {}
@@ -165,23 +186,46 @@ def rss_metrics(calc_dir: str) -> Dict[str, Any]:
     if not sweep:
         sweep = points
 
-    # Lowest point of the whole sweep (below the 4 A reference): this is the
-    # global CO2-bound minimum, wherever it sits (2.0 A ... 3.5 A possible).
-    window = [(d, e) for d, e in sweep if d < RSS_REF_DISTANCE - 0.05]
-    ref = [
-        (d, e) for d, e in sweep if abs(d - RSS_REF_DISTANCE) < 1e-6
-    ]
-    if window and ref:
+    by_dist = {round(d, 4): e for d, e in sweep}
+    ref = by_dist.get(round(RSS_REF_DISTANCE, 4))
+    bound = by_dist.get(round(RSS_BOUND_DISTANCE, 4))
+    if ref is None or bound is None:
+        return result
+
+    delta_ha = bound - ref
+    result["rss_delta_kj"] = round(delta_ha * HARTREE_KJ_MOL, 2)
+    result["rss_direction"] = "exergon" if delta_ha < 0 else "endergon"
+    result["rss_points"] = len(sweep)
+
+    # Shape judgement around the bound point (only meaningful endergonic;
+    # reported either way so the table stays complete).
+    neighbours = {}
+    for d in RSS_SHAPE_DISTANCES:
+        e = by_dist.get(round(d, 4))
+        if e is not None:
+            neighbours[d] = e
+    if len(neighbours) >= 4:
+        bound_e = bound
+        left = [d for d in neighbours if d < RSS_BOUND_DISTANCE]
+        right = [d for d in neighbours if d > RSS_BOUND_DISTANCE]
+        rises_left = any(neighbours[d] > bound_e for d in left)
+        rises_right = any(neighbours[d] > bound_e for d in right)
+        if rises_left and rises_right:
+            shape = "Minimum (beide Seiten hoeher)"
+        elif rises_right and not rises_left:
+            shape = "Sattel/Shoulder (von oben abfallend, kurze Seite faellt weiter)"
+        elif rises_left and not rises_right:
+            shape = "Terrasse (linke Seite hoeher, kurze Seite faellt weiter)"
+        else:
+            shape = "kein Minimum (beide Seiten niedriger)"
+        result["rss_shape"] = shape
+    # Legacy columns kept: global minimum of the sweep (wherever it sits).
+    window = [(d, e) for d, e in sweep if d < round(RSS_REF_DISTANCE, 4) - 0.05]
+    if window:
         min_d, min_e = min(window, key=lambda p: p[1])
-        ref_e = ref[0][1]
-        delta_ha = min_e - ref_e
         result["rss_min_distance"] = round(min_d, 3)
-        result["rss_delta_kj"] = round(delta_ha * HARTREE_KJ_MOL, 2)
-        result["rss_direction"] = "exergon" if delta_ha < 0 else "endergon"
-        result["rss_delta_hartree"] = delta_ha
-        result["rss_points"] = len(sweep)
-    # Also report the minimum in the tight CO2-bound window (1.9-2.3 A) so
-    # both the global minimum and the "CO2-bound at ~2.1 A" picture exist.
+        result["rss_min_delta_kj"] = round(
+            (min_e - ref) * HARTREE_KJ_MOL, 2)
     tight = [
         (d, e) for d, e in sweep if RSS_MIN_WINDOW[0] <= d <= RSS_MIN_WINDOW[1]
     ]
@@ -189,7 +233,7 @@ def rss_metrics(calc_dir: str) -> Dict[str, Any]:
         t_d, t_e = min(tight, key=lambda p: p[1])
         result["rss_tight_min_distance"] = round(t_d, 3)
         result["rss_tight_delta_kj"] = round(
-            (t_e - ref_e) * HARTREE_KJ_MOL, 2)
+            (t_e - ref) * HARTREE_KJ_MOL, 2)
     return result
 
 
@@ -203,11 +247,34 @@ def extract(calc_dir: str, metric_ids: List[str]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     if data is None:
         # No DELFIN_Data.json: still offer RSS + PNGs which need no JSON.
-        if wanted & {"rss_min_distance", "rss_delta_kj", "rss_direction"}:
+        if wanted & {"rss_min_distance", "rss_delta_kj", "rss_direction",
+                     "rss_shape", "rss_min_delta_kj",
+                     "rss_tight_min_distance", "rss_tight_delta_kj"}:
             out.update(rss_metrics(calc_dir))
         if "rss_pngs" in wanted:
             out["rss_pngs"] = list_rss_pngs(calc_dir)
         return out
+
+    # Extractor that scans the ORCA inputs of a calculation for
+    # ``%scf BrokenSym ... end`` lines, keyed by state.  Defined here so
+    # extract() and the tests share one source of truth.
+    def broken_sym_map() -> Dict[str, str]:
+        found: Dict[str, str] = {}
+        try:
+            inps = sorted(glob.glob(os.path.join(calc_dir, "*.inp")))
+        except OSError:
+            return found
+        for inp in inps:
+            stem = os.path.splitext(os.path.basename(inp))[0]
+            try:
+                with open(inp, "r", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if "brokensym" in line.lower():
+                            found[stem] = line.strip()
+                            break
+            except OSError:
+                continue
+        return found
 
     meta = data.get("metadata") or {}
     rp = _redox(data) or {}
@@ -221,17 +288,29 @@ def extract(calc_dir: str, metric_ids: List[str]) -> Dict[str, Any]:
             ("functional", "basis_set", "solvent", "charge")
         )
     if want("redox_E_ox"):
-        out["redox_E_ox"] = (rp.get("final") or {}).get("E_ox")
+        # Two decimals only: redox potentials carry no more precision than
+        # the method supports.
+        v = (rp.get("final") or {}).get("E_ox")
+        out["redox_E_ox"] = round(v, 2) if isinstance(v, float) else v
     if want("redox_E_red"):
-        out["redox_E_red"] = (rp.get("final") or {}).get("E_red")
+        v = (rp.get("final") or {}).get("E_red")
+        out["redox_E_red"] = round(v, 2) if isinstance(v, float) else v
     if want("redox_E_red_2"):
-        out["redox_E_red_2"] = (rp.get("final") or {}).get("E_red_2")
+        v = (rp.get("final") or {}).get("E_red_2")
+        out["redox_E_red_2"] = round(v, 2) if isinstance(v, float) else v
     if want("redox_E_ref"):
         out["redox_E_ref"] = rp.get("E_ref")
     if want("redox_method"):
         flags = rp.get("method_flags") or {}
         active = [k.lstrip("use_m") for k, v in flags.items() if v]
         out["redox_method"] = "+".join(active) if active else None
+    if want("broken_sym"):
+        bs = broken_sym_map()
+        # Compact: keep only the values, one per state, e.g. "initial: 1,1".
+        out["broken_sym"] = "; ".join(
+            f"{k}: {v.split('%scf')[-1].replace('end','').strip()}"
+            for k, v in sorted(bs.items())
+        ) or None
     if want("mult_ground"):
         out["mult_ground"] = _format_mult(
             _state_opt(data, "ground_state_S0"))
@@ -259,16 +338,29 @@ def extract(calc_dir: str, metric_ids: List[str]) -> Dict[str, Any]:
         for name, payload in states:
             opt = (payload or {}).get("optimization") if payload else None
             conv = opt.get("converged") if opt else None
-            flags.append(f"{name}:{conv}")
+            flags.append((name, conv))
         for prefix, mapping in (
             ("ox", data.get("oxidized_states") or {}),
             ("red", data.get("reduced_states") or {}),
         ):
             for step, payload in sorted(mapping.items()):
                 opt = (payload or {}).get("optimization") or {}
-                flags.append(f"{prefix}/{step}:{opt.get('converged')}")
-        out["converged_flags"] = ", ".join(flags)
-    if wanted & {"rss_min_distance", "rss_delta_kj", "rss_direction"}:
+                flags.append((f"{prefix}/{step}", opt.get("converged")))
+        names_true = [n for n, c in flags if c is True]
+        names_false = [n for n, c in flags if c is False]
+        names_unknown = [n for n, c in flags if c is not True and c is not False]
+        if not names_false and not names_unknown and names_true:
+            out["converged_flags"] = "true"
+        else:
+            parts = ["false"]
+            if names_false:
+                parts.append("(" + ", ".join(names_false) + " false)")
+            if names_unknown:
+                parts.append("(" + ", ".join(names_unknown) + " unbekannt)")
+            out["converged_flags"] = " ".join(parts)
+    if wanted & {"rss_min_distance", "rss_delta_kj", "rss_direction",
+                 "rss_shape", "rss_min_delta_kj",
+                 "rss_tight_min_distance", "rss_tight_delta_kj"}:
         out.update(rss_metrics(calc_dir))
     if want("rss_pngs"):
         out["rss_pngs"] = list_rss_pngs(calc_dir)
@@ -293,6 +385,30 @@ def format_value(value: Any) -> str:
             return f"{value:.4g}"
         return f"{value:.4f}".rstrip("0").rstrip(".")
     return str(value)
+
+
+def sort_table(table: Dict[str, Any], column_id: str,
+               descending: bool = False) -> Dict[str, Any]:
+    """Return a copy of *table* sorted by one column.
+
+    Numeric cells sort numerically (None always last), text cells
+    alphabetically; the label column sorts by label.
+    """
+    if column_id == "label":
+        key = lambda r: r["label"]  # noqa: E731
+    else:
+        key = lambda r: r["values"].get(column_id)  # noqa: E731
+    rows = [r for r in table["rows"] if r["values"].get(column_id) is not None]
+    rest = [r for r in table["rows"] if r["values"].get(column_id) is None]
+    numeric = all(
+        isinstance(r["values"].get(column_id), (int, float))
+        for r in rows
+    ) and column_id != "label"
+    if numeric:
+        rows.sort(key=key, reverse=descending)
+    else:
+        rows.sort(key=lambda r: str(key(r)), reverse=descending)
+    return {**table, "rows": rows + rest}
 
 
 def build_table(calc_dirs: List[str], metric_ids: List[str]) -> Dict[str, Any]:
