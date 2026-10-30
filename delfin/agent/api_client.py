@@ -9535,6 +9535,18 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # The classifier's resolved model ids, set by the client's
+    # ``_attach_classifier_runner`` (model_capabilities): ``classifier_model``
+    # is the PRIMARY, asked first; ``classifier_confirm_models`` the ALLOW-
+    # confirmation chain of other families, in bench order (see the "allow
+    # needs two families" rule in _classifier_second_opinion). Empty tuple =
+    # the primary decides alone (no second family served, or an explicit
+    # configured model). Leaves both unset for callers that drive
+    # _classifier_second_opinion directly (tests), which then use a single
+    # cfg["model"] -- the old behaviour. Dataclass fields so a sub-agent's
+    # copy (dataclasses.replace) carries the same models.
+    classifier_model: Optional[str] = None
+    classifier_confirm_models: tuple = ()
     # Keys of actions the USER approved in a second-opinion dialog: not
     # asked again in this session (see _classifier_second_opinion).
     classifier_user_allowed: set = field(default_factory=set)
@@ -9981,6 +9993,9 @@ class KitToolPermissions:
         session has no business reading either, and "reachable" is what
         every read gate is built on.
         """
+        # The session scratch dir is NOT a file-tool root: it is private
+        # shell-state (TMPDIR for caged commands); the file tools use the
+        # workspace, so a locked scope reaches only the workspace.
         if self.scope_locked:
             return (self.workspace,)
         return (self.all_workspace_roots()
@@ -15358,8 +15373,13 @@ def _classifier_settings() -> Optional[dict]:
         return None
     from . import action_classifier as _ac
     rules = cfg.get("user_rules")
+    # ``explicit_model``: the user actually set agent.classifier.model. When
+    # false the model is the default and the classifier is moved onto a fast
+    # model from a family different from the session's (model_capabilities).
+    explicit_model = bool(str(cfg.get("model") or "").strip())
     return {
         "model": str(cfg.get("model") or "").strip() or _ac.DEFAULT_MODEL,
+        "explicit_model": explicit_model,
         "broad": broad,
         "rules": [str(r) for r in rules if str(r or "").strip()][:20]
         if isinstance(rules, (list, tuple)) else [],
@@ -21736,7 +21756,7 @@ class _DocToolExecutor:
         if state.get("turn") != turn:
             state.clear()
             state.update(turn=turn, allowed=set(), refused=set(),
-                         refusals=0, calls=[], stalled=False)
+                         refusals=0, calls=[], stalled_models=set())
         # The lockout holds at every point that reaches this method, in
         # every scope: after three refusals an auto-allowed command or an
         # auto-accepted edit waits for the user too. No model call.
@@ -21848,30 +21868,76 @@ class _DocToolExecutor:
         failed: list = []
         called: list = []
 
+        # The classifier's models. ``_primary`` decides first; its own
+        # refuse/ask stands at once, and an ALLOW is confirmed by a model of
+        # another family (``_confirm``, in bench order) -- "allow needs two
+        # families". cfg["model"] is the configured or default; perms carried
+        # the client's independence choice (model_capabilities). Tests and
+        # direct drivers leave perms unset and fall back to a single model
+        # (no confirmation) -- the old behaviour.
+        _primary = str(getattr(perms, "classifier_model", None)
+                       or cfg.get("model") or _ac.DEFAULT_MODEL)
+        _confirm = tuple(getattr(perms, "classifier_confirm_models", None)
+                         or ())
+        # A confirm slot identical to the primary is not a second opinion:
+        # it would only re-ask the same family. Drop it.
+        _confirm = tuple(c for c in _confirm if c != _primary)
+
+        # Effective decision chain: the primary, then the confirm families.
+        # A model stalled within the probe window is skipped, so one slow
+        # model does not latch every action of the turn -- the next usable
+        # model (the confirm family) takes over. All _CLASSIFIER_MODELS are
+        # different families, so a promoted confirm is still "another family"
+        # than the one that allowed.
+        _last_attempt = health.get("last_attempt_at")
+        _recent = (_last_attempt is not None and _classifier_clock()
+                   - _last_attempt < _CLASSIFIER_PROBE_INTERVAL_S)
+        _stalled = state.setdefault("stalled_models", set())
+        _chain = []
+        for _m in [_primary] + list(_confirm):
+            if _m in _chain or (_recent and _m in _stalled):
+                continue
+            _chain.append(_m)
+        # The first usable model is asked first; an ALLOW is confirmed by a
+        # latter one. Empty chain (everything latched) falls back to asking
+        # the primary, whose _bounded then raises -> on_error (ask/refuse).
+        _ask = _chain[0] if _chain else _primary
+        _confirms = _chain[1:] if _chain else ()
+
         def _bounded(prompt: str, model: str) -> str:
-            # The runner is the client's; the bound is the gate's, so a
-            # runner that hangs cannot hold an action for minutes. After
-            # one timeout in a turn, or while the watcher is down, the
-            # model is not waited for again until the probe interval has
-            # passed: the error behaviour applies at once (user rules and
-            # the claim guard still run, they need no model).
+            # Exactly ONE model per call (the primary, or one step of the
+            # confirmation chain, chosen by the caller). The runner is the
+            # client's; the bound is the gate's, so a runner that hangs cannot
+            # hold an action for minutes. A stall latches only THIS model
+            # (``state["stalled_models"]``), probed again after
+            # _CLASSIFIER_PROBE_INTERVAL_S, so one slow model does not block
+            # the others.
+            #
+            # ``_reasons`` is local: merged into the outer ``failed`` only
+            # when this single call gave no verdict, so a successful verdict
+            # never records a watcher failure.
+            _reasons: list = []
             last = health.get("last_attempt_at")
             recent = (last is not None and _classifier_clock() - last
                       < _CLASSIFIER_PROBE_INTERVAL_S)
-            if (health.get("down") or state.get("stalled")) and recent:
-                failed.append("down" if health.get("down") else "stalled")
-                raise TimeoutError(
-                    "no verdict: the watcher is down" if health.get("down")
-                    else "no verdict: the model timed out earlier in this "
-                    "turn")
+            if (health.get("down") or model in state.setdefault(
+                    "stalled_models", set())) and recent:
+                _reasons.append("down" if health.get("down") else "stalled")
+                failed.extend(_reasons)
+                raise TimeoutError("model latched this turn")
             for attempt in (1, 2):
                 health["last_attempt_at"] = _classifier_clock()
                 called.append(attempt)
                 box: dict = {}
 
-                def _work() -> None:
+                def _work(box=box, m=model) -> None:
+                    # Bind the worker'S OWN box and model: a timed-out thread
+                    # for an earlier model keeps running, and when it finishes
+                    # it must write its OWN box, not the current model's.
+                    # Late binding would let model A's late answer -- or A's
+                    # exception -- land in model B's result.
                     try:
-                        box["out"] = runner(prompt, model)
+                        box["out"] = runner(prompt, m)
                     except BaseException as exc:      # noqa: BLE001
                         box["exc"] = exc
 
@@ -21881,20 +21947,23 @@ class _DocToolExecutor:
                 wait_s = _classifier_timeout_s()
                 worker.join(wait_s)
                 if worker.is_alive():
-                    failed.append("timeout")
-                    state["stalled"] = True
-                    raise TimeoutError(
-                        f"no verdict within {wait_s:.0f} s")
+                    state.setdefault("stalled_models", set()).add(model)
+                    _reasons.append("timeout")
+                    break  # this model timed out; no verdict
                 if "exc" in box:
                     if attempt == 1:
                         # One short retry: a dropped connection or a 502
                         # from the proxy is usually gone a moment later.
                         time.sleep(_CLASSIFIER_RETRY_DELAY_S)
                         continue
-                    failed.append(type(box["exc"]).__name__)
+                    _reasons.append(type(box["exc"]).__name__)
+                    failed.extend(_reasons)
+                    # The model's own error, so the watcher's status names
+                    # the real cause (ConnectionError, not "no verdict").
                     raise box["exc"]
                 return str(box.get("out") or "")
-            raise TimeoutError("no verdict")      # pragma: no cover
+            failed.extend(_reasons)
+            raise TimeoutError("no verdict")
 
         # The watcher failing. An action that leaves the workspace asks,
         # or is refused when nobody can be asked: the second look was the
@@ -21917,11 +21986,46 @@ class _DocToolExecutor:
                 verdict = (_ac.screen(screened, context, cfg["rules"])
                            or _ac.Verdict(
                                "allow", "screened without the model."))
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # A screened verdict is not a model's opinion: it is a
+                # deterministic allow (or a user rule), so no second-family
+                # confirmation is owed for it.
             else:
                 verdict = _ac.judge(
-                    action, context, model=cfg["model"], runner=_bounded,
+                    action, context, model=_ask, runner=_bounded,
                     rules=cfg["rules"], default_on_error=on_error)
-            decision, reason = verdict.decision, str(verdict.reason or "")
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # "allow needs two families": the first model's own refuse/ask
+                # stands (decision is not "allow"), but an ALLOW is confirmed
+                # by a model of another family before it is granted. Gate the
+                # confirmation on the ORIGINAL _confirm (a second family is
+                # served at all) and iterate the usable _confirms. A confirm
+                # that gives no verdict (latched, timed out, failed) is
+                # skipped for the next; if NONE does, the allow is NOT granted
+                # -- it asks (or refuses when nobody can be asked). Never
+                # allowed on one vote when a second family was available; a
+                # lone allow stands only when _confirm was empty from the
+                # start (one family served, today's behaviour).
+                if decision == "allow" and _confirm:
+                    confirmed = False
+                    for cm in _confirms:
+                        vc = _ac.judge(
+                            action, context, model=cm, runner=_bounded,
+                            rules=cfg["rules"], default_on_error=on_error)
+                        if str(vc.reason or "").startswith(_ac.ERROR_PREFIX):
+                            continue  # this confirm gave no verdict; try next
+                        decision, reason = (vc.decision,
+                                            str(vc.reason or ""))
+                        confirmed = True
+                        break
+                    if not confirmed:
+                        # A second family was available but never gave a firm
+                        # verdict: not allowed on one vote.
+                        decision = "ask" if can_ask else "refuse"
+                        reason = ("the confirming model could not answer, so "
+                                  "the action needs two families to allow and "
+                                  "asks.")
+                        failed.append("no-confirmation")
         except Exception as exc:
             failed.append(type(exc).__name__)
             decision, reason = on_error, f"classifier error: {exc}"
@@ -28737,6 +28841,35 @@ def _private_tmp_dir() -> str:
     return _PRIVATE_TMP
 
 
+_SESSION_SCRATCH: Optional[str] = None
+
+
+def _session_scratch_dir() -> str:
+    """The session's persistent scratch directory, 0700, private to it.
+
+    /tmp inside a cage is fresh for every command, so a file one command
+    writes there is gone for the next, and the file tools cannot reach it
+    either. The scratch dir sits under this process's own private temp
+    directory (:func:`_private_tmp_dir`), so it inherits three properties
+    for free: 0700, never shared with another session (one process = one
+    session), and pruned when the session ends (the atexit rmtree of the
+    parent). It is exported as TMPDIR/TMP/TEMP in every cage layer and
+    bound read-write into each one, and it is on the file tools' writable
+    and readable root lists -- see KitToolPermissions.all_workspace_roots.
+    /tmp itself stays private and fresh; nothing else becomes writable.
+    """
+    global _SESSION_SCRATCH
+    if _SESSION_SCRATCH and Path(_SESSION_SCRATCH).is_dir():
+        return _SESSION_SCRATCH
+    # Created the way _private_tmp_dir is: tempfile.mkdtemp, mode 0700,
+    # inside this process's private tmp dir -- private per-process state,
+    # never a user path.
+    import tempfile
+    _SESSION_SCRATCH = tempfile.mkdtemp(prefix="scratch-",
+                                        dir=_private_tmp_dir())
+    return _SESSION_SCRATCH
+
+
 def _home_secret_paths() -> list[str]:
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -29101,7 +29234,17 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                  for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
-    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"] + [
+    # TMPDIR/TMP/TEMP point at the session scratch dir. The scratch dir is
+    # writable here because it lies under _private_tmp_dir(), which is in
+    # the profile's write roots (roots + [tmp] below); it is NOT one of
+    # all_workspace_roots. The private tmp dir is the fallback when the
+    # scratch dir could not be built. Package cache dirs stay under it.
+    try:
+        _scratch = _session_scratch_dir()
+    except Exception:
+        _scratch = ""
+    env_prefix = ["/usr/bin/env", f"TMPDIR={_scratch or tmp}",
+                  f"TMP={_scratch or tmp}", f"TEMP={_scratch or tmp}"] + [
         f"{k}={tmp}/{sub}" for k, sub in _package_cache_dirs()]
     port = 0
     if mode == "proxy":
@@ -29149,7 +29292,25 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
     # refuses the command; an unattended run proceeds on Landlock alone.
     net_args, _proxy_dir = _sandbox_network_args(perms)
     argv += net_args
-    argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
+    # The session scratch dir: writable, and TMPDIR points at it (the
+    # helper maps the in-cage path; it equals the host path here).
+    # landlock_exec.main keeps the LAST --tmpdir (tmpdir = value, which it
+    # also adds to the write roots), so there must be exactly ONE --tmpdir
+    # and it must be the scratch dir; the private tmp dir stays a write
+    # root of its own (--write) so its non-scratch uses still work, but is
+    # no longer the TMPDIR target.
+    try:
+        scratch = _session_scratch_dir()
+        argv += ["--write", scratch, "--tmpdir", scratch]
+    except Exception:
+        scratch = None
+        # Keep the TMPDIR invariant when the scratch dir cannot be made:
+        # exactly one --tmpdir, falling back to the private tmp dir (what
+        # this argv had before the scratch work), so landlock_exec still
+        # controls TMPDIR/TMP/TEMP for every program in the cage.
+        argv += ["--tmpdir", _private_tmp_dir()]
+    argv += ["--write", _private_tmp_dir(), "--strict",
+             "1" if strict else "0", "--"]
     return argv + plain
 
 
@@ -29212,6 +29373,16 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # The session scratch dir: where the commands of THIS session keep
+    # files they need across commands and the file tools must find. It
+    # replaces TMPDIR/TMP/TEMP so nothing points at the fresh per-cage
+    # /tmp; paths are absolute so a child that chdirs stays correct.
+    try:
+        _scratch = _session_scratch_dir()
+        for _t in ("TMPDIR", "TMP", "TEMP"):
+            env[_t] = _scratch
+    except Exception:
+        pass
     # Every process an agent session starts says so: `delfin-agent
     # approvals approve` and the answer functions refuse under it
     # (approval_guard), and a nested DELFIN ignores DELFIN_CLASSIFIER=off
@@ -30392,10 +30563,24 @@ def _bash_isolation_argv(
         # The host's TMPDIR (a cluster scratch path) is read-only under the
         # "/" bind; the cage's own /tmp is the writable one. Landlock and
         # Seatbelt set their private directory the same way.
+        # The session scratch dir is the exception: it is bound read-write
+        # and TMPDIR points AT it, so a file one command of this session
+        # writes there is visible to the next and to the file tools. The
+        # path inside the cage equals the host path because "/" is bound
+        # at itself; _bind-try keeps a cage from failing should the
+        # directory have been pruned between build and run.
         "--setenv", "TMPDIR", "/tmp",
         "--setenv", "TMP", "/tmp",
         "--setenv", "TEMP", "/tmp",
     ]
+    try:
+        _scratch = _session_scratch_dir()
+        args += ["--bind-try", _scratch, _scratch]
+        args += ["--setenv", "TMPDIR", _scratch,
+                 "--setenv", "TMP", _scratch,
+                 "--setenv", "TEMP", _scratch]
+    except Exception:
+        pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
     for rel in _HOME_SECRET_DIRS:
@@ -31639,6 +31824,42 @@ class OpenAIClient(_BaseClient):
         try:
             permissions.classifier_runner = self._classifier_complete
         except Exception:
+            return
+        # Resolve the classifier's models from the served roster once. The
+        # classifier must be independent of the session's model (a slow one
+        # with many agents latched every action to a human, 2026-10-29). The
+        # client is the only place with both the session model and the
+        # endpoint, so it stows the resolved ids here. Cached roster only
+        # (no fetch): re-attaching on every set_permissions must not spend a
+        # /v1/models round trip each time.
+        try:
+            from . import model_capabilities as _mc
+            from .action_classifier import DEFAULT_MODEL as _default_cls
+            cfg = _classifier_settings() or {}
+            base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
+            api_key = getattr(self, "_api_key", "") or ""
+            served = _mc.kit_models_served(base_url, api_key)
+            model = getattr(self, "model", "") or ""
+            cfg_model = str(cfg.get("model") or _default_cls)
+            explicit = bool(cfg.get("explicit_model"))
+            primary = _mc.classifier_choice(
+                served=served, session_model=model,
+                cfg_model=cfg_model, cfg_explicit=explicit)
+            permissions.classifier_model = primary
+            if explicit:
+                # An explicitly configured classifier model decides alone:
+                # the user chose it, and no roster pick second-guesses it.
+                permissions.classifier_confirm_models = ()
+            else:
+                # The ALLOW-confirmation chain: bench models of a family
+                # other than the primary's, so an allow needs two families.
+                permissions.classifier_confirm_models = (
+                    _mc.classifier_confirmation(
+                        served=served, primary=primary,
+                        cfg_model=cfg_model))
+        except Exception:
+            # A roster that could not be asked leaves the configured default:
+            # the old behaviour, never a missing classifier.
             pass
 
     def _attach_subagent_runner(
