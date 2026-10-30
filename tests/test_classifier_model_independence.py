@@ -264,8 +264,13 @@ def _bounded_gate(tmp_path, monkeypatch, runner, models, dialog, *,
             # confirmation-with-a-latched-confirm path is reached on the FIRST
             # action deterministically (otherwise the probe window notion of
             # "recent" would ignore the latch on a fresh action).
-            perms.classifier_state.setdefault("stalled_models", set()).update(
-                stalled_models)
+            # The gate starts a fresh per-turn state (latch cleared) when the
+            # turn key changes, so the seeded latch carries this turn's key.
+            users = A._classifier_user_texts(TASK)
+            perms.classifier_state.update(
+                turn=(len(users), users[-1][:200] if users else ""),
+                allowed=set(), refused=set(), refusals=0, calls=[],
+                stalled_models=set(stalled_models))
             perms.classifier_health["last_attempt_at"] = (
                 A._classifier_clock())
         perms.confirm_callback = dialog.ask
@@ -425,7 +430,8 @@ def test_attach_classifier_runner_stows_primary_and_confirm_from_the_roster(
               "kit.glm-5.3-flash", "azure.gpt-5", "kit.embed-v3"}
     monkeypatch.setattr(MC, "kit_models_served", lambda *a, **k: served)
     monkeypatch.setattr(A, "_classifier_settings",
-                        lambda: {"model": PRIMARY, "explicit_model": False})
+                        lambda: {"model": PRIMARY, "explicit_model": False,
+                                 "rules": [], "broad": False})
 
     class _Stub:
         _base_url = "kit://proxy"
