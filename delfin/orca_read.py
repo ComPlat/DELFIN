@@ -359,6 +359,10 @@ _ATOMIC_NUMBERS = {
 def _text_nelectrons(inp_path: Path, charge: Optional[int]) -> Optional[int]:
     """Total electrons = sum of atomic numbers in the input minus charge.
 
+    This is the physical electron count. With an ECP the electrons ORCA
+    treats explicitly are fewer (the core electrons are replaced), so this
+    value is not ORCA's "Number of Electrons" for such runs.
+
     Same derivation as OCCUPIER's ``calculate_total_electrons`` minus its
     CONTROL indirection: the run's own ``.inp`` carries the geometry.
     """
