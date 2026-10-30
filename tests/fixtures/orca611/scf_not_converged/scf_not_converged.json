@@ -515,7 +515,7 @@
         "NuclearCharge": 8.0
       }
     ],
-    "BaseName": "/home/qmchem_max/delfin-knowledge/orca_fixtures/611/scf_not_converged/scf_not_converged",
+    "BaseName": "./scf_not_converged/scf_not_converged",
     "MolecularOrbitals": {
       "EnergyUnit": "Eh",
       "MOs": [

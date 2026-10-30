@@ -473,7 +473,7 @@
         "NuclearCharge": 1.0
       }
     ],
-    "BaseName": "/home/qmchem_max/delfin-knowledge/orca_fixtures/611/h2o_optfreq/h2o_optfreq",
+    "BaseName": "./h2o_optfreq/h2o_optfreq",
     "MolecularOrbitals": {
       "EnergyUnit": "Eh",
       "MOs": [

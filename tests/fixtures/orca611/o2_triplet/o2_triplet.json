@@ -515,7 +515,7 @@
         "NuclearCharge": 8.0
       }
     ],
-    "BaseName": "/home/qmchem_max/delfin-knowledge/orca_fixtures/611/o2_triplet/o2_triplet",
+    "BaseName": "./o2_triplet/o2_triplet",
     "MolecularOrbitals": {
       "EnergyUnit": "Eh",
       "MOs": [

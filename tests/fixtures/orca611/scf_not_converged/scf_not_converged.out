@@ -174,7 +174,7 @@ interface, adapt or use parts of their codes:
   * Starting time: Thu Oct 29 19:32:30 2026
   * Host name:     qmchemserver
   * Process ID:    1730734
-  * Working dir.:  /home/qmchem_max/delfin-knowledge/orca_fixtures/611/scf_not_converged
+  * Working dir.:  ./scf_not_converged
   ***********************************
 
 NOTE: MaxCore=1000 MB was set to SCF,MP2,MDCI,CIPSI,MRCI,RASCI and CIS
