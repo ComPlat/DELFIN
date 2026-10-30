@@ -40,8 +40,6 @@ def rows_to_markdownish(columns: List[dict], rows: List[dict],
     """
     sort_col, sort_desc = sorted_by if sorted_by else (None, False)
     head = []
-    head.append("<th style='padding:4px 10px;text-align:left;border-bottom:"
-                "2px solid #ccc'>Rechnung</th>")
     for col in columns:
         arrow = ""
         if col["id"] == sort_col:
@@ -244,22 +242,64 @@ class ResultsOverviewPanel:
                     f" ({len(rels)})</summary><ul>{items}</ul></details>")
         self._pngs.value = "<h4>Relaxed-Surface-Scan PNGs</h4>" + "".join(
             png_html) if png_html else ""
-        # Click-to-sort wiring: one hidden button per sortable column.
-        # HTML links in an HTML widget cannot call Python, so the panel
-        # renders a button row under the table instead.
+        # Click-to-sort wiring: the column headers carry an onclick
+        # attribute that calls window.__roSort(idx); that function (sent
+        # once via ctx.add_init_js) clicks the matching hidden button.
+        # HTML widgets cannot call Python directly, so the buttons stay
+        # as the Python-side targets but are invisible (no extra row).
         sort_btns = [
-            widgets.Button(description=f"⇅ {c['label'][:28]}")
+            widgets.Button(description=f"⇅ {c['label'][:28]}", layout=widgets.Layout(
+                display="none"))
             for c in self._table["columns"]
         ]
         for btn, col in zip(sort_btns, self._table["columns"]):
             btn.ro_sort_col = col["id"]
+            # CSS class is the JS->Python bridge: the header link carries
+            # data-col=<id>, the matching hidden button this class.
+            btn.add_class(f"ro-sort-btn-{col['id']}")
             btn.on_click(self._on_sort)
         self._sortbar.children = tuple(sort_btns)
+        self._sortbar.add_class("ro-sortbar")
+
+    def init_js(self) -> str:
+        """Startup JS: header clicks click the matching hidden button.
+
+        A MutationObserver re-binds after every re-render of the HTML
+        widget (each render replaces the table DOM).
+        """
+        return """
+(function () {
+  if (window.__roSortBind) { return; }
+  window.__roSortBind = function (root) {
+    (root || document).querySelectorAll('a.ro-sort').forEach(function (a) {
+      if (a.__roBound) { return; }
+      a.__roBound = true;
+      a.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        var col = a.getAttribute('data-col');
+        var btn = document.querySelector('.ro-sortbar .ro-sort-btn-' + col);
+        if (btn) { btn.click(); }
+      });
+    });
+  };
+  new MutationObserver(function (muts) {
+    muts.forEach(function (m) {
+      m.addedNodes.forEach(function (n) {
+        if (n.nodeType === 1) { window.__roSortBind(n); }
+      });
+    });
+  }).observe(document.body, {childList: true, subtree: true});
+  window.__roSortBind();
+})();
+"""
 
 
 def create_tab(ctx: Any):
     """Create the Results Overview tab. Returns ``(widget, refs)``."""
     panel = ResultsOverviewPanel(ctx)
+    init = getattr(ctx, "add_init_js", None)
+    if callable(init):
+        init(panel.init_js())
     return panel.widget, {"results_overview": panel}
 
 

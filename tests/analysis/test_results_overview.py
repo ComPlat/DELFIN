@@ -12,12 +12,14 @@ import pytest
 from delfin.analysis import results_overview as ro
 
 
-def make_calc(tmp_path, name, data=None, rss=None, pngs=()):
+def make_calc(tmp_path, name, data=None, rss=None, pngs=(), inps=None):
     calc = tmp_path / name
     calc.mkdir()
     if data is not None:
         (calc / ro.DELFIN_DATA_NAME).write_text(
             json.dumps(data), encoding="utf-8")
+    for stem, text in (inps or {}).items():
+        (calc / f"{stem}.inp").write_text(text, encoding="utf-8")
     if rss is not None:
         rss_dir = calc / "CO2_coordination" / "relaxed_surface_scan"
         rss_dir.mkdir(parents=True)
@@ -104,6 +106,20 @@ def test_multiplicity_extraction(tmp_path):
     assert out["mult_oxidized"] == "3/2"
     assert out["mult_reduced"] == "1/2"
     assert out["mult_reduced2"] == "0/1"
+
+
+def test_multiplicity_with_broken_sym_suffix(tmp_path):
+    # BrokenSym appears as compact "bs x,y" suffix in the multiplicity
+    # cell, keyed by the ORCA input stem (initial/ox_step_1/...).
+    calc = make_calc(
+        tmp_path, "403", data=sample_data(),
+        inps={"initial": "%scf\n  BrokenSym 1,1\nend\n",
+              "red_step_2": "%scf\n  BrokenSym 3,1 MaxIter 300\nend\n"})
+    out = ro.extract(str(calc), ["mult_ground", "mult_reduced2"])
+    assert out["mult_ground"] == "2/1 bs 1,1"
+    assert out["mult_reduced2"] == "0/1 bs 3,1"
+    # No standalone broken_sym column any more.
+    assert ro.extract(str(calc), ["broken_sym"]) == {}
 
 
 def test_rss_bound_vs_ref_35(tmp_path):

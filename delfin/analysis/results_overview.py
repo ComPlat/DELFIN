@@ -21,6 +21,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 # hartree -> kJ/mol
@@ -49,11 +50,10 @@ METRICS: List[Dict[str, str]] = [
     {"id": "redox_E_red_2", "label": "Redoxpotential E_red2 (V vs E_ref)"},
     {"id": "redox_E_ref", "label": "Redox Referenz E_ref (V)"},
     {"id": "redox_method", "label": "Redox-Methode (m1/m2/m3-Flags)"},
-    {"id": "mult_ground", "label": "Multiplicitaet Grundzustand (charge/mult)"},
-    {"id": "mult_oxidized", "label": "Multiplicitaet oxidiert (charge/mult)"},
-    {"id": "mult_reduced", "label": "Multiplicitaet reduziert (charge/mult)"},
-    {"id": "mult_reduced2", "label": "Multiplicitaet 2x reduziert (charge/mult)"},
-    {"id": "broken_sym", "label": "BrokenSym (Zustand: Werte)"},
+    {"id": "mult_ground", "label": "Multiplicitaet Grundzustand (charge/mult bs)"},
+    {"id": "mult_oxidized", "label": "Multiplicitaet oxidiert (charge/mult bs)"},
+    {"id": "mult_reduced", "label": "Multiplicitaet reduziert (charge/mult bs)"},
+    {"id": "mult_reduced2", "label": "Multiplicitaet 2x reduziert (charge/mult bs)"},
     {"id": "rss_delta_kj", "label": "RSS: E(2.0 A) - E(3.5 A) (kJ/mol)"},
     {"id": "rss_direction", "label": "RSS: endergon/exergon (2.0 vs 3.5 A)"},
     {"id": "rss_shape", "label": "RSS: Form um 2.0 A (Minimum/Sattel)"},
@@ -117,14 +117,23 @@ def _state_opt(data: dict, *keys: str) -> Optional[dict]:
     return None
 
 
-def _format_mult(opt: Optional[dict]) -> Optional[str]:
+def _format_mult(opt: Optional[dict], broken_sym: Optional[str] = None
+                 ) -> Optional[str]:
     if not opt:
         return None
     charge = opt.get("charge")
     mult = opt.get("multiplicity")
     if charge is None or mult is None:
         return None
-    return f"{charge}/{mult}"
+    text = f"{charge}/{mult}"
+    if broken_sym:
+        # Compact suffix per user request: "2/3 bs 1,1" — only the values,
+        # no state prefix (the state is the column).
+        m = re.search(r"brokensym\s+(-?\d+(?:\s*,\s*-?\d+)*)",
+                      broken_sym, re.IGNORECASE)
+        if m and m.group(1).strip():
+            text += f" bs {m.group(1).strip()}"
+    return text
 
 
 def _redox(data: dict) -> Optional[dict]:
@@ -211,13 +220,13 @@ def rss_metrics(calc_dir: str) -> Dict[str, Any]:
         rises_left = any(neighbours[d] > bound_e for d in left)
         rises_right = any(neighbours[d] > bound_e for d in right)
         if rises_left and rises_right:
-            shape = "Minimum (beide Seiten hoeher)"
+            shape = "Minimum"
         elif rises_right and not rises_left:
-            shape = "Sattel/Shoulder (von oben abfallend, kurze Seite faellt weiter)"
+            shape = "Sattel"
         elif rises_left and not rises_right:
-            shape = "Terrasse (linke Seite hoeher, kurze Seite faellt weiter)"
+            shape = "Terrasse"
         else:
-            shape = "kein Minimum (beide Seiten niedriger)"
+            shape = "kein Minimum"
         result["rss_shape"] = shape
     # Legacy columns kept: global minimum of the sweep (wherever it sits).
     window = [(d, e) for d, e in sweep if d < round(RSS_REF_DISTANCE, 4) - 0.05]
@@ -304,26 +313,23 @@ def extract(calc_dir: str, metric_ids: List[str]) -> Dict[str, Any]:
         flags = rp.get("method_flags") or {}
         active = [k.lstrip("use_m") for k, v in flags.items() if v]
         out["redox_method"] = "+".join(active) if active else None
-    if want("broken_sym"):
-        bs = broken_sym_map()
-        # Compact: keep only the values, one per state, e.g. "initial: 1,1".
-        out["broken_sym"] = "; ".join(
-            f"{k}: {v.split('%scf')[-1].replace('end','').strip()}"
-            for k, v in sorted(bs.items())
-        ) or None
     if want("mult_ground"):
         out["mult_ground"] = _format_mult(
-            _state_opt(data, "ground_state_S0"))
+            _state_opt(data, "ground_state_S0"),
+            broken_sym_map().get("initial"))
     if want("mult_oxidized"):
         out["mult_oxidized"] = _format_mult(
-            _state_opt(data, "oxidized_state"))
+            _state_opt(data, "oxidized_state"),
+            broken_sym_map().get("ox_step_1"))
     if want("mult_reduced"):
         out["mult_reduced"] = _format_mult(
-            _state_opt(data, "reduced_state"))
+            _state_opt(data, "reduced_state"),
+            broken_sym_map().get("red_step_1"))
     if want("mult_reduced2"):
         red2 = (data.get("reduced_states") or {}).get("red_step_2")
         out["mult_reduced2"] = _format_mult(
-            red2.get("optimization") if isinstance(red2, dict) else None)
+            red2.get("optimization") if isinstance(red2, dict) else None,
+            broken_sym_map().get("red_step_2"))
     if want("gibbs_ground"):
         thermo = (data.get("ground_state_S0") or {}).get("thermochemistry") or {}
         out["gibbs_ground"] = thermo.get("total_gibbs_free_energy_hartree")
