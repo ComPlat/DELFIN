@@ -1923,6 +1923,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
         # primary frame is then byte-identical to the flag-off build BY CONSTRUCTION, not by a
         # check that has to be trusted.
         built = _build_config_never_worse(d, config, ligands, geom_key)
+        if built is None and _bv_geom_on():
+            built = _historic_bv_config(d, config, ligands, geom_key, _ex, _gb)
         if built is None:
             _iso_trace("BUILD_NONE", k, geom_tag)
             continue
@@ -1984,6 +1986,11 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                         lambda: _build_config_never_worse(d, config, ligands, geom_key),
                         cn=d.get("cn"), geom=d.get("geometry"),
                         exempt_pairs=_ex, graph_bonds=_gb)
+                if reseated is None and _bv_geom_on():
+                    _hb = _historic_bv_config(d, config, ligands, geom_key, _ex, _gb)
+                    if _hb is not None:
+                        reseated = (_hb[0], _hb[1])
+                        donors = _hb[2]
                 if reseated is None:
                     _iso_trace("SELFGATE", k, geom_tag)
                     continue                          # skip this config
@@ -2713,6 +2720,27 @@ def _coord_filter(results):
         return kept or [results[0]]                         # never empty -> keep base
     except Exception:
         return results
+
+
+def _historic_bv_config(d, config, ligands, geom_key, exempt, graph_bonds):
+    """The configuration built with the plain bond-valence embed (DELFIN_FFFREE_BV_EMBED_GEOM suspended), if it
+    passes the same self-gate -- the never-worse floor of BV_EMBED_GEOM.  A rigid, chemically right ligand can
+    clash in a strained configuration that the distorted one squeezed into (KEXHOL OC-6-chelate-8, whose
+    pucker frames were clean in lc18); that configuration then keeps its historic frame instead of being lost.
+    The realism ranking places such a frame by its score.  None when the historic build fails as well."""
+    from delfin.manta import bv_embed_geom as _bvg
+    try:
+        hb = _bvg.without_geom(lambda: _build_config_never_worse(d, config, ligands, geom_key))
+        if hb is None:
+            return None
+        hs, hP, hd = hb
+        hs, hP = _maybe_relax(hs, hP)
+        if not _build_is_clean(hs, hP, cn=d.get("cn"), geom=d.get("geometry"), donors=hd,
+                               exempt_pairs=exempt, graph_bonds=graph_bonds):
+            return None
+        return hs, hP, hd
+    except Exception:
+        return None
 
 
 def _bv_geom_on() -> bool:

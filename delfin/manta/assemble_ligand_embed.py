@@ -293,6 +293,7 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         from delfin.manta import _ml_targets_bv as _bvt
         _bv_embed = _bvt.embed_at_targets() and _have_targets
         _bite_free = _bite_free or _bv_embed
+        _geom_state = {"used": False, "bad": [], "failed": False}
         _use_bm = (_have_targets and (_chel_bite or harden or force_bite or _bite_free)) \
             or _oc6_vertex or _ring_b
         if not _use_bm and os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
@@ -436,6 +437,19 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                                 _cf = mh.GetConformer(_cid)
                                 for _ai in range(mh.GetNumAtoms()):
                                     _cf.SetAtomPosition(_ai, _Q[_ai].tolist())
+                    if _bm_geom:
+                        # a conformer the constrained ring cannot close (fused strained chelates: the
+                        # windows and the ring closure contradict, KEXHOL) misses its radii or squeezes
+                        # a bond -> it is replaced by the historic conformer of the same index below
+                        _radii_q = [float(np.linalg.norm(p)) for p in _tp_use]
+                        _geom_state["bad"] = [
+                            _i for _i, _cid in enumerate(cids)
+                            if not _bvg.conformer_ok(
+                                mh, mi, np.array(mh.GetConformer(_cid).GetPositions(), float),
+                                [int(d) for d in donor_idxs], _radii_q, _bm_keep)]
+                        _geom_state["used"] = bool(cids)
+                if _bm_geom and not cids:
+                    _geom_state["failed"] = True
                 if os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0") not in ("", "0"):
                     from delfin.manta.converter_backend import _ff_trace_write as _tw
                     _tw("[EMBED_BM] metal=%s donors=%s r=%s bite_free=%s smooth=%s confs=%d"
@@ -520,6 +534,18 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         for cid in cids:
             P = np.array(mh.GetConformer(cid).GetPositions(), float)
             coords.append(P[keep] - P[mi])                          # metal -> origin
+        if _geom_state["failed"] or (_geom_state["used"] and _geom_state["bad"]):
+            # DELFIN_FFFREE_BV_EMBED_GEOM never builds less than the plain BV embed: where the chemically
+            # constrained ring cannot be closed, that ligand keeps the historic conformer
+            _hist = _bvg.without_geom(lambda: _embed_metallacycle(
+                lmol, donor_idxs, metal_sym, k=k, donor_target_pos=donor_target_pos,
+                harden=harden, force_bite=force_bite))
+            if _hist is not None and list(_hist[0]) == list(lsyms):
+                if _geom_state["failed"]:
+                    return _hist
+                for _i in _geom_state["bad"]:
+                    if _i < len(coords) and _i < len(_hist[1]):
+                        coords[_i] = _hist[1][_i]
         return lsyms, coords
     except Exception:
         return None

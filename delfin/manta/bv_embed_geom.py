@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -47,8 +48,45 @@ from rdkit.Chem import AllChem
 ENV = "DELFIN_FFFREE_BV_EMBED_GEOM"
 
 
+_SUSPEND = threading.local()
+
+
 def geom_enabled() -> bool:
+    if getattr(_SUSPEND, "on", False):
+        return False
     return os.environ.get(ENV, "0") == "1"
+
+
+def without_geom(fn):
+    """fn() with this switch suspended (the historic BV embed, for the fallback of a ring that cannot close)."""
+    prev = getattr(_SUSPEND, "on", False)
+    _SUSPEND.on = True
+    try:
+        return fn()
+    finally:
+        _SUSPEND.on = prev
+
+
+def conformer_ok(mh, mi: int, P: np.ndarray, donor_idxs: Sequence[int], radii: Sequence[float], bm) -> bool:
+    """The embedded ring closed as asked: every M-D within 0.06 A of its target and every ligand bond within
+    0.88-1.12 of its bounds-matrix length (KEXHOL: radii 0.19 A off, C-N at 0.86)."""
+    try:
+        for d, r in zip(donor_idxs, radii):
+            if abs(float(np.linalg.norm(P[int(d)] - P[mi])) - float(r)) > 0.06:
+                return False
+        for b in mh.GetBonds():
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if mi in (i, j):
+                continue
+            d0 = _bm_mid(bm, i, j)
+            if d0 <= 0:
+                continue
+            q = float(np.linalg.norm(P[i] - P[j])) / d0
+            if q < 0.88 or q > 1.12:
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def _geom_parts() -> set:
