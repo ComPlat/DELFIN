@@ -251,3 +251,36 @@ def test_manifest_lists_classic_and_pipeline_together():
     assert occ["entry"], "OCCUPIER entry missing in manifest"
     assert occ["control_keys"], "OCCUPIER control keys missing in manifest"
     assert occ["extension_points"], "OCCUPIER extension points missing in manifest"
+
+
+def test_new_workflow_cli_scaffolds_a_valid_workflow(tmp_path):
+    """The `new-workflow` CLI command writes a module and acceptance test whose
+    spec passes the existing checks — a scaffold cannot emit a workflow that
+    would not run."""
+    import argparse
+    from delfin.agent import cli_new_workflow
+
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers()
+    cli_new_workflow.build_parser(sub)
+    args = parser.parse_args(
+        ["new-workflow", "my_flow", "--dir", str(tmp_path)])
+    rc = cli_new_workflow.handler(args)
+    assert rc == 0, f"new-workflow returned {rc}"
+    assert (tmp_path / "my_flow.py").exists()
+    assert (tmp_path / "test_workflow_my_flow.py").exists()
+
+    from delfin.tools import user_workflows as uw
+    spec = (tmp_path / "my_flow.py").read_text(encoding="utf-8")
+    assert "WorkflowDescriptor" in spec, "scaffold module must register a descriptor"
+    # The default skeleton spec validates under the existing checks.
+    report = uw.check_spec({
+        "name": "my_flow", "kind": "pipeline", "defaults": {},
+        "steps": [
+            {"step": "smiles_to_xyz", "label": "structure",
+             "kwargs": {"smiles": "CCO"}},
+            {"step": "orca_sp", "label": "sp",
+             "kwargs": {"charge": 0, "mult": 1}},
+        ],
+    })
+    assert report["ok"], f"scaffold default spec fails: {report['errors']}"
