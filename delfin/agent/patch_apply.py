@@ -141,9 +141,9 @@ def _apply_python(
         if Path(rel).is_absolute():
             return {
                 "status": "check_failed",
-                "error": (f"diff target {rel} is an absolute path; apply_patch "
-                          "refuses it. Rewrite the diff header to name the file "
-                          "relative to the workspace (+++ b/<rel>)."),
+                "error": (f"diff target {rel} is an absolute path and escapes workspace; "
+                          "apply_patch refuses it. Rewrite the diff header to name "
+                          "the file relative to the workspace (+++ b/<rel>)."),
                 "backend": "py",
             }
         target = (workspace / rel).resolve()
