@@ -487,7 +487,11 @@ class OrcaSpOpiAdapter(StepAdapter):
                 "failure_lines": list(res.failure_lines),
             },
             error=res.error,
-            error_kind=ErrorKind.CONVERGENCE if not res.meaningful and res.scf_converged is not None else ErrorKind.TOOL_FAILED,
+            # No kind on success; an unconverged SCF is a convergence failure,
+            # anything else (abort, missing output) a tool failure.
+            error_kind=(ErrorKind.NONE if res.ok
+                        else ErrorKind.CONVERGENCE if res.scf_converged is False
+                        else ErrorKind.TOOL_FAILED),
         )
 
 
