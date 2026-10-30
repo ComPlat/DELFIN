@@ -159,7 +159,7 @@ class TestBuildDlpnoInput:
         text = inp.read_text()
         assert "dlpno-ccsd(t)" in text.lower()
         assert "tightpno" in text.lower()
-        assert "cc-pVTZ/C" in text
+        assert "cc-pvtz/c" in text.lower()
 
     def test_cbs_keyword_written(self, tmp_path):
         inp = build_dlpno_input(
