@@ -88,7 +88,8 @@ def _argv_binds_scratch(argv: list, scratch: str) -> bool:
     # The Landlock wrapper (what a host without bwrap builds) carries the
     # same property in its own form: exactly one --tmpdir, = scratch, and
     # scratch among the --write roots. The CI runner builds that form.
-    if any(Path(str(a)).name == "landlock_exec.py" for a in ks):
+    if (not ks or ks[0] != "bwrap") and any(
+            Path(str(a)).name == "landlock_exec.py" for a in ks):
         tmpdirs = [ks[i + 1] for i, a in enumerate(ks) if a == "--tmpdir"]
         writes = [ks[i + 1] for i, a in enumerate(ks) if a == "--write"]
         return tmpdirs == [scratch] and scratch in writes
