@@ -101,6 +101,18 @@ class ResultsOverviewPanel:
             description="PNGs inline anzeigen",
             indent=False,
         )
+        # Gallery controls: relative scan only, size in percent of the
+        # 640px default, images per row before wrapping.
+        self._png_size = widgets.IntSlider(
+            value=70, min=20, max=150, step=10,
+            description="Bildgroesse %", continuous_update=False,
+            layout=widgets.Layout(width="260px"))
+        self._png_cols = widgets.IntSlider(
+            value=2, min=1, max=4, step=1,
+            description="Bilder/Zeile", continuous_update=False,
+            layout=widgets.Layout(width="260px"))
+        self._png_opts = widgets.HBox([
+            self._png_size, self._png_cols])
         self._status = widgets.HTML()
         self._pngs = widgets.HTML()
         self._sortbar = widgets.HBox()
@@ -112,6 +124,8 @@ class ResultsOverviewPanel:
         self._refresh_btn.on_click(self._on_build)
         self._rescan_btn.on_click(self._on_rescan)
         self._show_pngs.observe(self._on_png_toggle, names="value")
+        self._png_size.observe(self._on_png_opts_change, names="value")
+        self._png_cols.observe(self._on_png_opts_change, names="value")
 
         left = widgets.VBox([
             widgets.HTML("<b>Rechnungen</b> (Mehrfachauswahl)"),
@@ -126,6 +140,7 @@ class ResultsOverviewPanel:
         self.widget = widgets.VBox([
             widgets.HBox([left, right]),
             self._show_pngs,
+            self._png_opts,
             self._status,
             self._sortbar,
             self._pngs,
@@ -193,6 +208,10 @@ class ResultsOverviewPanel:
         if self._table is not None:
             self._render()
 
+    def _on_png_opts_change(self, _change) -> None:
+        if self._table is not None and self._png_mode == "inline":
+            self._render()
+
     def _render(self) -> None:
         """Re-render table + PNG section from current state."""
         if self._table is None:
@@ -205,15 +224,20 @@ class ResultsOverviewPanel:
             if not rels:
                 continue
             if self._png_mode == "inline":
-                # Only show the two standard scans inline, and only the
-                # file that exists: large galleries make the tab unusable.
-                # file:// <img> URLs are blocked by the Jupyter browser
-                # security model - embed as base64 data URIs instead.
-                preferred = [
-                    "CO2_coordination/relaxed_surface_scan/scan_relative.png",
-                    "CO2_coordination/relaxed_surface_scan/scan_absolute.png",
+                # Only the RELATIVE scan inline (user request: never the
+                # absolute one); file:// URLs are blocked by the Jupyter
+                # browser, so embed as base64 data URIs instead.
+                rel_only = [
+                    p for p in rels
+                    if p["rel"].endswith("scan_relative.png")
                 ]
-                shown = [p for p in rels if p["rel"] in preferred] or rels[:1]
+                shown = rel_only or rels[:1]
+                width = int(640 * self._png_size.value / 100)
+                cols = self._png_cols.value
+                # Wrap after `cols` images: the container is exactly
+                # cols image widths + margins wide, so inline-block
+                # images overflow to the next row.
+                wrap_width = cols * (width + 8)
                 imgs = ""
                 for p in shown:
                     try:
@@ -222,15 +246,18 @@ class ResultsOverviewPanel:
                         b64 = _base64.b64encode(data).decode("ascii")
                         imgs += (
                             f"<img src='data:image/png;base64,{b64}'"
-                            f" alt='' style='max-width:640px;display:block;"
-                            f"margin:4px 0'>")
+                            f" alt='' style='width:{width}px;height:auto;"
+                            f"display:inline-block;vertical-align:top;"
+                            f"margin:4px'>")
                     except OSError:
                         imgs += (f"<p style='color:#dc3545'>PNG nicht lesbar: "
                                  f"{_html.escape(p['rel'])}</p>")
                 png_html.append(
                     f"<details open><summary>RSS-PNGs: "
                     f"{_html.escape(row['label'])}"
-                    f" ({len(rels)})</summary>{imgs}</details>")
+                    f" ({len(rels)})</summary>"
+                    f"<div style='max-width:{wrap_width}px'>"
+                    f"{imgs}</div></details>")
             else:
                 items = "".join(
                     f"<li><code>{_html.escape(p['rel'])}</code></li>"
