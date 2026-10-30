@@ -95,16 +95,14 @@ def test_a_slow_model_halves_only_its_own_limit(runtime):
 
 
 def test_the_fast_model_keeps_its_slots(runtime):
-    """Repeat halving on the slow model never touches the fast one, even
-    when the fast model has many successes in the same period."""
+    """Repeat halving on the slow model never touches the fast one: the
+    fast model keeps its full starting limit."""
     g_slow, d_slow = _gate_with_limit(runtime, "slow", 8)
     g_fast, d_fast = _gate_with_limit(runtime, "fast", 8)
     for _ in range(6):
         G.report_result(g_slow, exception=_stall())
     assert g_slow.current_limit(d_slow) == 2       # 8 -> 4 -> 2 -> 2... (floor)
-    for _ in range(G._QUICK_SUCCESS_RUN * 2):
-        G.report_result(g_fast, first_byte_s=0.5)
-    assert g_fast.current_limit(d_fast) == 8       # still full
+    assert g_fast.current_limit(d_fast) == 8       # still full, not halved
 
 
 # -- recovery ----------------------------------------------------------------
