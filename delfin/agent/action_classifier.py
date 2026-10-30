@@ -527,6 +527,32 @@ def _injection_verdict(action: dict, task_text: str) -> "Verdict | None":
     return None
 
 
+_PROCESS_KILL_WORDS = ("pkill", "killall")
+
+
+def _process_kill_verdict(action: dict) -> "Verdict | None":
+    """A deterministic, model-free second opinion: an action whose command or
+    content names ``pkill`` or ``killall`` (``pkill -f python``, ``pkill -9``,
+    ``killall python``) is asking to kill processes. It goes beyond the task
+    and can kill a running DELFIN job or a peer agent, so it is never allowed
+    on one vote -- it asks (the user decides). The ``command`` field is the
+    action being judged (not injection content), and the free-text fields the
+    rest of the request. The match is word-boundary and conservative: a
+    command that merely *mentions* the binary (``git log -S pkill``) is also
+    asked about, which is the safe direction -- it asks instead of running."""
+
+    import re as _re
+    for fragment in _action_text(action):
+        for word in _PROCESS_KILL_WORDS:
+            if _re.search(rf"(^|[^A-Za-z0-9_.-]){word}(?:\s|$|[^A-Za-z0-9_.-])",
+                          fragment):
+                return Verdict(
+                    "ask",
+                    f"the action names '{word}', which kills processes; it "
+                    f"asks rather than running on the classifier's one vote.")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # The model prompt (injection-resistant) and the verdict parser.
 # ---------------------------------------------------------------------------
@@ -695,6 +721,13 @@ def screen(action: dict, context: dict, rules=()) -> "Verdict | None":
     injection = _injection_verdict(action, str(context.get("task") or ""))
     if injection is not None:
         return injection
+    # A deterministic process-kill screen (pkill/killall) -- model-free, so
+    # a kill of a running DELFIN job or a peer agent is never allowed on one
+    # vote; it asks. AFTER the never-rules and injection guard (both keep
+    # precedence), BEFORE the routine allow-list (killing is not routine).
+    proc_kill = _process_kill_verdict(action)
+    if proc_kill is not None:
+        return proc_kill
     # FR1: a small, code-checked allow-list of routine shapes (own-tree
     # git hygiene, a read-only web fetch) runs without the model. AFTER
     # the never-rules and the injection guard, so both keep precedence.
