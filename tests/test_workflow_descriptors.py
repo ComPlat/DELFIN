@@ -156,7 +156,7 @@ def test_catalog_lists_all_three_kinds_together(tmp_path):
              "kwargs": {"charge": 0, "mult": 1}},
         ],
     }
-    uw.save("user_demo", spec, root=tmp_path)
+    uw.save(spec, name="user_demo", root=tmp_path)
     user_kinds = {wf.kind for wf in list_workflows(root=tmp_path)}
     assert "user" in user_kinds, f"user workflows missing: {user_kinds}"
 
@@ -230,9 +230,7 @@ def test_scaffold_writes_workflow_that_passes_acceptance(tmp_path):
 def test_registering_descriptors_changes_no_classic_engine():
     """The classic engines keep their entry points after registration — the
     descriptor only describes, it does not reimplement."""
-    import importlib
-    import delfin.cli as cli
+    import delfin.workflows.pipeline as wf_pipeline
     for fn in ("run_classic_phase", "run_occuper_phase", "run_esd_phase"):
-        assert hasattr(cli, fn) or hasattr(
-            importlib.import_module("delfin.utils"), fn
-        ), f"classic engine entry {fn} must remain present"
+        assert hasattr(wf_pipeline, fn), \
+            f"classic engine entry {fn} must remain present after registration"
