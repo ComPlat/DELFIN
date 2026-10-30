@@ -150,14 +150,12 @@ def test_ir_readers_give_the_same_values_from_the_same_lines():
         assert abs(m.intensity_km_mol - intens) < INTENSITY_TOL
 
 
-def test_not_converged_run_reports_no_ir_to_either_reader():
+def test_not_converged_run_reports_no_ir_to_either_reader(tmp_path):
     """A run whose SCF did not converge has no IR block: DELFIN says [] and
     OPI says None, and OPI's convergence flag says the run is bad -- so no
     reader can hand back a bogus mode list."""
-    out = _scf_not_converged_out()
-    assert parse_ir_spectrum(out) == [], (
-        "DELFIN must not invent IR modes for an unconverged run"
-    )
+    out = parse_ir_spectrum(_scf_not_converged_out())
+    assert out == [], "DELFIN must not invent IR modes for an unconverged run"
 
     try:
         from opi.output.core import Output
@@ -166,6 +164,9 @@ def test_not_converged_run_reports_no_ir_to_either_reader():
         # assertion above still holds.
         return
 
-    OPI = Output(basename=out.stem, working_dir=out.parent)
-    assert OPI.scf_converged() is False
-    assert OPI.get_ir() is None
+    src = _scf_not_converged_out()
+    (tmp_path / src.name).write_bytes(src.read_bytes())
+    run_out = tmp_path / src.name
+    opi = Output(basename=run_out.stem, working_dir=tmp_path)
+    assert opi.scf_converged() is False
+    assert opi.get_ir() is None
