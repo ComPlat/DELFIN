@@ -28531,9 +28531,12 @@ def _session_scratch_dir() -> str:
     global _SESSION_SCRATCH
     if _SESSION_SCRATCH and Path(_SESSION_SCRATCH).is_dir():
         return _SESSION_SCRATCH
-    d = Path(_private_tmp_dir()) / "scratch"
-    d.mkdir(mode=0o700, exist_ok=True)
-    _SESSION_SCRATCH = str(d)
+    # Created the way _private_tmp_dir is: tempfile.mkdtemp, mode 0700,
+    # inside this process's private tmp dir -- private per-process state,
+    # never a user path.
+    import tempfile
+    _SESSION_SCRATCH = tempfile.mkdtemp(prefix="scratch-",
+                                        dir=_private_tmp_dir())
     return _SESSION_SCRATCH
 
 
