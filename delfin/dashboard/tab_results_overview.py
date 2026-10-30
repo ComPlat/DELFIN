@@ -9,6 +9,7 @@ additively with :func:`delfin.dashboard.tab_registry.register_tab`, so
 
 from __future__ import annotations
 
+import base64 as _base64
 import html as _html
 import os
 from typing import Any, List
@@ -208,17 +209,26 @@ class ResultsOverviewPanel:
             if self._png_mode == "inline":
                 # Only show the two standard scans inline, and only the
                 # file that exists: large galleries make the tab unusable.
+                # file:// <img> URLs are blocked by the Jupyter browser
+                # security model - embed as base64 data URIs instead.
                 preferred = [
                     "CO2_coordination/relaxed_surface_scan/scan_relative.png",
                     "CO2_coordination/relaxed_surface_scan/scan_absolute.png",
                 ]
                 shown = [p for p in rels if p["rel"] in preferred] or rels[:1]
-                imgs = "".join(
-                    f"<img src='file://{_html.escape(p['abs'], safe='')}'"
-                    f" alt='' style='max-width:640px;display:block;"
-                    f"margin:4px 0'>"
-                    for p in shown
-                )
+                imgs = ""
+                for p in shown:
+                    try:
+                        with open(p["abs"], "rb") as fh:
+                            data = fh.read(8 * 1024 * 1024)
+                        b64 = _base64.b64encode(data).decode("ascii")
+                        imgs += (
+                            f"<img src='data:image/png;base64,{b64}'"
+                            f" alt='' style='max-width:640px;display:block;"
+                            f"margin:4px 0'>")
+                    except OSError:
+                        imgs += (f"<p style='color:#dc3545'>PNG nicht lesbar: "
+                                 f"{_html.escape(p['rel'])}</p>")
                 png_html.append(
                     f"<details open><summary>RSS-PNGs: "
                     f"{_html.escape(row['label'])}"
