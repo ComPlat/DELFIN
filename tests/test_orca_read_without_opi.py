@@ -16,7 +16,7 @@ TOL = 1e-6
 
 def fixture_copy(name: str, tmp_path: Path) -> Path:
     dst = tmp_path / name
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.mkdir(parents=True, exist_ok=True)
     for src in (FIXTURES / name).iterdir():
         (dst / src.name).write_bytes(src.read_bytes())
     return dst
@@ -135,6 +135,12 @@ def test_unconverged_run_never_raises(tmp_path):
             assert r.value is False
         elif q is Quantity.FAILURE_REASON:
             assert r.value
+        elif q in (Quantity.MULTIPLICITY, Quantity.CHARGE,
+                   Quantity.NUMBER_OF_ELECTRONS):
+            # read from the .inp: the run's *intended* charge/multiplicity
+            # stays reportable even when the run failed (phase-1 q04).
+            assert r.source == "text"
+            assert r.value is not None
         else:
             assert r.value is None, q
 

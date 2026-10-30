@@ -21,7 +21,7 @@ TOL = 1e-6
 
 def fixture_copy(name: str, tmp_path: Path) -> Path:
     dst = tmp_path / name
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.mkdir(parents=True, exist_ok=True)
     for src in (FIXTURES / name).iterdir():
         (dst / src.name).write_bytes(src.read_bytes())
     return dst
@@ -107,6 +107,10 @@ def test_unconverged_run_gives_none(tmp_path):
             assert r.value is False
         elif q is Quantity.FAILURE_REASON:
             assert r.source == "text" and r.value
+        elif q in (Quantity.MULTIPLICITY, Quantity.CHARGE,
+                   Quantity.NUMBER_OF_ELECTRONS):
+            # input-side reads survive a failed run (intended values)
+            assert r.source == "text" and r.value is not None
         else:
             assert r.value is None, q
             assert r.source in ("opi", "none"), q
@@ -161,10 +165,8 @@ def test_forced_mismatch_returns_text_value_and_warns(tmp_path, monkeypatch, cap
     import logging
 
     d = fixture_copy("o2_triplet", tmp_path)
-    monkeypatch.setattr(
-        "delfin.orca_read._opi_final_single_point_energy",
-        lambda *a, **k: -123.0,
-    )
+    monkeypatch.setattr("delfin.orca_read._opi_values",
+                        lambda *a, **k: {"final_energy": -123.0})
     with caplog.at_level(logging.WARNING, logger="delfin.orca_read"):
         r = read(d, "o2_triplet", Quantity.FINAL_SINGLE_POINT_ENERGY)
     assert r.value == pytest.approx(-150.05182051484584, abs=TOL)
