@@ -56,7 +56,7 @@ METRICS: List[Dict[str, str]] = [
     {"id": "mult_reduced2", "label": "Multiplicitaet 2x reduziert (charge/mult bs)"},
     {"id": "rss_delta_kj", "label": "RSS: E(2.0 A) - E(3.5 A) (kJ/mol)"},
     {"id": "rss_direction", "label": "RSS: endergon/exergon (2.0 vs 3.5 A)"},
-    {"id": "rss_shape", "label": "RSS: Form um 2.0 A (Minimum/Sattel)"},
+    {"id": "rss_shape", "label": "RSS: Minimum-Typ (global/lokal/keines)"},
     {"id": "rss_min_distance", "label": "RSS: Abstand am Sweep-Minimum (A)"},
     {"id": "rss_min_delta_kj", "label": "RSS: E(min) - E(3.5 A) (kJ/mol)"},
     {"id": "rss_tight_min_distance", "label": "RSS: Min im 1.9-2.3-A-Fenster (A)"},
@@ -213,20 +213,19 @@ def rss_metrics(calc_dir: str) -> Dict[str, Any]:
         e = by_dist.get(round(d, 4))
         if e is not None:
             neighbours[d] = e
-    if len(neighbours) >= 4:
-        bound_e = bound
-        left = [d for d in neighbours if d < RSS_BOUND_DISTANCE]
-        right = [d for d in neighbours if d > RSS_BOUND_DISTANCE]
-        rises_left = any(neighbours[d] > bound_e for d in left)
-        rises_right = any(neighbours[d] > bound_e for d in right)
-        if rises_left and rises_right:
-            shape = "Minimum"
-        elif rises_right and not rises_left:
-            shape = "Sattel"
-        elif rises_left and not rises_right:
-            shape = "Terrasse"
-        else:
-            shape = "kein Minimum"
+    # Shape judgement per user specification (2026-10-30):
+    # exergonic -> "globales Minimum"; endergonic -> look at E(2.1 A):
+    # higher than E(2.0 A) -> "lokales Minimum", else no minimum.
+    # The old left/right neighbourhood criteria are retired.
+    shape = None
+    if result.get("rss_direction") == "exergon":
+        shape = "globales Minimum"
+    elif result.get("rss_direction") == "endergon":
+        e_20 = by_dist.get(round(RSS_BOUND_DISTANCE, 4))
+        e_21 = by_dist.get(round(RSS_BOUND_DISTANCE + 0.1, 4))
+        if e_20 is not None and e_21 is not None:
+            shape = "lokales Minimum" if e_21 > e_20 else "kein Minimum"
+    if shape:
         result["rss_shape"] = shape
     # Legacy columns kept: global minimum of the sweep (wherever it sits).
     window = [(d, e) for d, e in sweep if d < round(RSS_REF_DISTANCE, 4) - 0.05]

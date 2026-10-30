@@ -143,24 +143,37 @@ def test_rss_bound_vs_ref_35(tmp_path):
     assert out["rss_tight_min_distance"] == 2.1
 
 
-def test_rss_shape_minimum_vs_saddle(tmp_path):
-    # True minimum: 2.0 A below both sides.
-    rss_min = "\n".join(
+def test_rss_shape_exergon_global_endergon_local_vs_none(tmp_path):
+    # Exergonic (E(2.0) below E(3.5)) -> "globales Minimum" directly.
+    rss_ex = "\n".join(
         f"{d:.8f} {e:.8f}" for d, e in [
-            (3.5, -100.0), (2.3, -99.9), (2.2, -99.85), (2.1, -99.8),
-            (2.0, -100.1), (1.9, -99.7), (1.8, -99.6), (1.7, -99.5)])
-    calc = make_calc(tmp_path, "403", rss=rss_min)
+            (3.5, -100.0), (2.1, -100.5), (2.0, -100.2)])
+    calc = make_calc(tmp_path, "403", rss=rss_ex)
     out = ro.rss_metrics(str(calc))
-    assert "Minimum" in out["rss_shape"]
-    # Saddle/shoulder: energy falls monotonically towards 2.0 A from above
-    # while the short side keeps falling.
-    rss_sad = "\n".join(
+    assert out["rss_direction"] == "exergon"
+    assert out["rss_shape"] == "globales Minimum"
+    # Endergonic with E(2.1) ABOVE E(2.0) -> "lokales Minimum".
+    rss_local = "\n".join(
         f"{d:.8f} {e:.8f}" for d, e in [
-            (3.5, -100.0), (2.3, -99.9), (2.2, -99.95), (2.1, -100.0),
-            (2.0, -100.05), (1.9, -100.1), (1.8, -100.15), (1.7, -100.2)])
-    calc2 = make_calc(tmp_path, "404", rss=rss_sad)
+            (3.5, -100.0), (2.1, -99.8), (2.0, -99.9)])
+    calc2 = make_calc(tmp_path, "404", rss=rss_local)
     out2 = ro.rss_metrics(str(calc2))
-    assert "Sattel" in out2["rss_shape"]
+    assert out2["rss_direction"] == "endergon"
+    assert out2["rss_shape"] == "lokales Minimum"
+    # Endergonic with E(2.1) BELOW E(2.0) -> no minimum.
+    rss_none = "\n".join(
+        f"{d:.8f} {e:.8f}" for d, e in [
+            (3.5, -100.0), (2.1, -100.1), (2.0, -99.9)])
+    calc3 = make_calc(tmp_path, "405", rss=rss_none)
+    out3 = ro.rss_metrics(str(calc3))
+    assert out3["rss_direction"] == "endergon"
+    assert out3["rss_shape"] == "kein Minimum"
+    # Missing 2.1 A point -> no shape claim at all.
+    rss_gap = "\n".join(
+        f"{d:.8f} {e:.8f}" for d, e in [(3.5, -100.0), (2.0, -99.9)])
+    calc4 = make_calc(tmp_path, "406", rss=rss_gap)
+    out4 = ro.rss_metrics(str(calc4))
+    assert "rss_shape" not in out4
 
 
 def test_rss_endergon_when_bound_above_ref(tmp_path):
