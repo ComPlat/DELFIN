@@ -21275,6 +21275,31 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+    @staticmethod
+    def _shell_write_command_line(name: str, args: dict,
+                                  rel_str: str) -> str:
+        """A bash write request seen whole: the command and the file.
+
+        A shell request targeting a protected/calc/store file reached an
+        approval whose body was only the guard's warning text -- the
+        command lived elsewhere on the record and `approvals show` did
+        not print it, so an approval one could not read was one one
+        could not give. This line names the command (credentials masked,
+        cut to 400 characters with a marker when cut) and the file it
+        would write, exactly as the outside-read preview of a shell read
+        does. Empty for any non-shell tool: a write tool shows its diff
+        instead.
+        """
+        if name != "bash":
+            return ""
+        _cmd = str(args.get("command") or "").strip()
+        _shown = _redact_tool_result(_cmd) if _cmd else ""
+        if len(_shown) > 400:
+            _shown = _shown[:400] + " …"
+        return (
+            f"It would be run as:\n  {_shown}\n\n"
+            f"It writes:\n  {rel_str}\n\n")
+
     def _gate_write_path(
         self, path_arg: str, perms: "KitToolPermissions",
         name: str, args: dict,
@@ -21470,12 +21495,16 @@ class _DocToolExecutor:
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
+            # A bash request names the command and the file it would
+            # write; a write tool shows its diff instead ("" for bash).
+            _shell_line = self._shell_write_command_line(name, args, rel_str)
             if _is_gitcfg:
                 preview = (
                     "[GIT CONFIGURATION FILE]\n"
                     "git reads this file as configuration: it can name a "
                     "filter, diff driver or hook program that the next "
                     "git status or git add runs.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif _is_store:
@@ -21484,6 +21513,7 @@ class _DocToolExecutor:
                     "Later sessions are shown this file: shared lessons or "
                     "stored memory. Approving lets the agent change what "
                     "they are told.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_protected:
@@ -21492,6 +21522,7 @@ class _DocToolExecutor:
                     "This file is part of the agent's own safety layer.\n"
                     "Approving this will let the agent rewrite the code that "
                     "controls its own permissions.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_calc:
@@ -21499,6 +21530,7 @@ class _DocToolExecutor:
                     "[CALC EDIT — STORED CALCULATION]\n"
                     "This file is under calc (an active/stored calculation). "
                     "Approving this lets the agent modify it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             else:
@@ -21506,6 +21538,7 @@ class _DocToolExecutor:
                     "[REFUSED EARLIER]\n"
                     "You refused a write to this file earlier in this "
                     "session. This is a different change to it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
