@@ -99,18 +99,19 @@ def _stop_verdict(record: RunRecord, history: list[RunRecord]) -> dict:
 
 def _all_unmeasured(record: RunRecord) -> bool:
     """True when the round started but every started instance is
-    unmeasured (HB2): the round measured nothing. Distinguishes an
-    old record written before the unmeasured flag existed (all
-    success=False with empty error) from a real failed round."""
+    marked unmeasured (HB2): the round measured nothing.
+
+    Deliberately ONLY the explicit flag: a pre-HB2 record (all
+    success=False, empty error) is indistinguishable from a real
+    failed round that measured quality 0 — the flag did not exist
+    then, and guessing marked real failed rounds invalid and broke
+    the flat-round stop verdict (caught by test_pl4_report). The
+    31.10. round is identified by the person, not by a heuristic.
+    """
     started = record.started()
     if not started:
         return False
-    if all(getattr(i, "unmeasured", False) for i in started):
-        return True
-    # A pre-HB2 record carries no unmeasured flag: every started
-    # instance graded False with NO error text is the shape the
-    # 31.10. round left behind (dead runs, error: "").
-    return all(not i.success and not i.error for i in started)
+    return all(getattr(i, "unmeasured", False) for i in started)
 
 
 def write(record: RunRecord, history: list[RunRecord] | None = None) -> str:

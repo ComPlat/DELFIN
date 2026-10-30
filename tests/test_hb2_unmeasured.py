@@ -173,10 +173,11 @@ def test_measured_round_still_exits_zero(tmp_path):
 
 
 def test_invalid_history_record_is_marked_and_skipped(tmp_path):
-    """Task item 5: a record shaped like the 31.10. round (started
-    instances, all success=False, quality=0, error="") — as a PREVIOUS
-    round in history — is marked invalid and its flat outcome does not
-    push the stop verdict toward 'should_stop'."""
+    """A history record that measured nothing — every started instance
+    marked unmeasured=True, the post-fix shape of a dead round — is
+    marked invalid and its flat outcome does not push the stop verdict
+    toward 'should_stop'. A PRE-fix record (no flag) is deliberately
+    NOT marked: see test_pre_hb2_all_failed_record_is_not_marked_invalid."""
     import json
     from delfin.agent import bench_report
     from delfin.agent.bench_nightly import RunRecord
@@ -185,7 +186,8 @@ def test_invalid_history_record_is_marked_and_skipped(tmp_path):
                        started_at=1.0, ended_at=5.0)
     broken.instances.append(InstanceRecord(
         task_id="t1", task_class="classic_opt_freq", ran=True,
-        success=False, quality=0))  # error stays "" — the 31.10. shape
+        unmeasured=True,
+        error="engine init failed: No Anthropic API key found."))
     record = RunRecord(model="kit.glm-5.3-flash", mode="holdout",
                        started_at=10.0)
     data = json.loads(bench_report.write(record, history=[broken]))
@@ -213,6 +215,29 @@ def test_real_failed_history_still_counts(tmp_path):
     data = json.loads(bench_report.write(record, history=[failed]))
     assert "history_invalid" not in data, \
         "a real failed round was marked invalid"
+
+
+def test_pre_hb2_all_failed_record_is_not_marked_invalid(tmp_path):
+    """Regression control (caught by test_pl4_report): a PRE-HB2
+    record (all success=False, empty error, no unmeasured flag) is
+    indistinguishable from a real failed round that measured quality
+    0 — it must NOT be marked invalid, or real flat-round stop logic
+    breaks."""
+    import json
+    from delfin.agent import bench_report
+    from delfin.agent.bench_nightly import RunRecord
+
+    pre_hb2 = RunRecord(model="kit.glm-5.3-flash", mode="holdout",
+                        started_at=1.0, ended_at=5.0)
+    pre_hb2.instances.append(InstanceRecord(
+        task_id="t1", task_class="classic_opt_freq", ran=True,
+        success=False, quality=0))  # no unmeasured flag, no error
+    record = RunRecord(model="kit.glm-5.3-flash", mode="holdout",
+                       started_at=10.0)
+    data = json.loads(bench_report.write(record, history=[pre_hb2]))
+    assert "history_invalid" not in data, \
+        "a pre-HB2 record was guessed invalid; real failed rounds " \
+        "share exactly this shape"
 
 
 def test_provider_reaches_run_task_for_kit_model(tmp_path):
