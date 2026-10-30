@@ -172,7 +172,7 @@ interface, adapt or use parts of their codes:
 
   ***********************************
   * Starting time: Thu Oct 29 19:31:14 2026
-  * Host name:     qmchemserver
+  * Host name:     fixture-host
   * Process ID:    1622785
   * Working dir.:  tests/fixtures/orca611/h2o_optfreq
   ***********************************
