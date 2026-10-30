@@ -71,7 +71,7 @@ class TestParse:
         assert [i.text.split()[0] for i in items] == ["Match", "The", "The"]
         assert set(items[0].scope) == {"orca-cards", "dispersion"}
         assert items[0].source == "orca-cards.md"
-        assert items[0].line == 5
+        assert items[0].line == 4
 
     def test_section_heading_scopes_bullets_under_it(self, tmp_path: Path):
         path = _write(tmp_path, "tools.md",
@@ -92,10 +92,11 @@ class TestSelect:
         assert len(got["lessons"]) == 1
         assert "dispersion" in got["lessons"][0].text
 
-    def test_file_name_participates_in_matching(self, tmp_path: Path):
+    def test_a_tag_fragment_matches_a_task_keyword(self, tmp_path: Path):
         items = lessons.parse_lessons_file(_catalog(tmp_path))
-        # The task names no tag literally, but the catalog is about orca.
-        got = lessons.select_lessons("the orca cards were wrong", items)
+        # The task never says the tag "orca-cards" verbatim, only "orca" —
+        # a fragment of it. Both orca-cards lessons should surface.
+        got = lessons.select_lessons("the orca run used the wrong cards", items)
         assert len(got["lessons"]) >= 2
 
     def test_more_matched_tags_rank_first(self, tmp_path: Path):
