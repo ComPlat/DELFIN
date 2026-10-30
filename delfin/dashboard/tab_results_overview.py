@@ -108,7 +108,7 @@ class ResultsOverviewPanel:
             description="Bildgroesse %", continuous_update=False,
             layout=widgets.Layout(width="260px"))
         self._png_cols = widgets.IntSlider(
-            value=2, min=1, max=4, step=1,
+            value=2, min=1, max=10, step=1,
             description="Bilder/Zeile", continuous_update=False,
             layout=widgets.Layout(width="260px"))
         self._png_opts = widgets.HBox([
@@ -234,24 +234,29 @@ class ResultsOverviewPanel:
                 shown = rel_only or rels[:1]
                 width = int(640 * self._png_size.value / 100)
                 cols = self._png_cols.value
-                # Wrap after `cols` images: the container is exactly
-                # cols image widths + margins wide, so inline-block
-                # images overflow to the next row.
                 wrap_width = cols * (width + 8)
-                imgs = ""
-                for p in shown:
-                    try:
-                        with open(p["abs"], "rb") as fh:
-                            data = fh.read(8 * 1024 * 1024)
-                        b64 = _base64.b64encode(data).decode("ascii")
-                        imgs += (
-                            f"<img src='data:image/png;base64,{b64}'"
-                            f" alt='' style='width:{width}px;height:auto;"
-                            f"display:inline-block;vertical-align:top;"
-                            f"margin:4px'>")
-                    except OSError:
-                        imgs += (f"<p style='color:#dc3545'>PNG nicht lesbar: "
-                                 f"{_html.escape(p['rel'])}</p>")
+                rows_png = []
+                # Explicit rows: the dashboard panel can be narrower
+                # than cols*width, so a max-width container would be
+                # clamped and show fewer images per row than asked.
+                for i in range(0, len(shown), cols):
+                    chunk = shown[i:i + cols]
+                    cells = ""
+                    for p in chunk:
+                        try:
+                            with open(p["abs"], "rb") as fh:
+                                data = fh.read(8 * 1024 * 1024)
+                            b64 = _base64.b64encode(data).decode("ascii")
+                            cells += (
+                                f"<img src='data:image/png;base64,{b64}'"
+                                f" alt='' style='width:{width}px;height:auto;"
+                                f"vertical-align:top;margin:4px'>")
+                        except OSError:
+                            cells += (
+                                f"<p style='color:#dc3545'>PNG nicht lesbar: "
+                                f"{_html.escape(p['rel'])}</p>")
+                    rows_png.append(f"<div>{cells}</div>")
+                imgs = "".join(rows_png)
                 png_html.append(
                     f"<details open><summary>RSS-PNGs: "
                     f"{_html.escape(row['label'])}"
