@@ -409,12 +409,21 @@ def build_basis_blocks(
         return SimpleKeyword(str(name))
 
     block_kwargs: dict[str, Any] = {}
-    if per_element:
-        for el, b in per_element.items():
-            block_kwargs["newgto"] = NewBasis(element=Element(el), basis=_kw(b))
-    if per_element_ecp:
-        for el, e in per_element_ecp.items():
-            block_kwargs["newecp"] = NewBasis(element=Element(el), basis=_kw(e))
+    # Each element's NewGTO/NewECP override becomes its OWN BlockBasis: OPI's
+    # BlockBasis holds a single NewBasis per field, so putting several elements
+    # in one block would silently overwrite all but the last (a real bug seen
+    # with {Sm: SARC2-..., H: ZORA-def2-...} where Sm's NewGTO vanished).
+    element_blocks: list[Any] = []
+    for el in dict.fromkeys((*per_element, *per_element_ecp)):
+        eb: dict[str, Any] = {}
+        if el in per_element:
+            eb["newgto"] = NewBasis(element=Element(el), basis=_kw(per_element[el]))
+        if el in per_element_ecp:
+            eb["newecp"] = NewBasis(
+                element=Element(el), basis=_kw(per_element_ecp[el])
+            )
+        element_blocks.append(BlockBasis(**eb))
+    # Shared (non-per-element) keywords go in one block of their own.
     if ecp:
         block_kwargs["ecp"] = _kw(ecp)
     if aux_j:
@@ -429,7 +438,12 @@ def build_basis_blocks(
     # (rule 6).  If a caller truly needs it, they set it on the block
     # themselves and own the consequence.  A ghost-only input still emits the
     # (ECP-free) block so the caller has one object to attach.
-    blocks = [BlockBasis(**block_kwargs)] if (block_kwargs or ghosts) else []
+    blocks = element_blocks
+    if block_kwargs:
+        blocks.append(BlockBasis(**block_kwargs))
+    elif ghosts and not per_element and not per_element_ecp and not blocks:
+        # ghost-only input: one (ECP-free) block to attach.
+        blocks.append(BlockBasis())
 
     # -- suggestions (defaults are suggestions, the caller decides) ----------
     if suggestions:

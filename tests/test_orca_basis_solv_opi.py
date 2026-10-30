@@ -49,6 +49,25 @@ class TestBasisRules:
         assert str(block.newgto.element) == "Fe"
         assert "def2-TZVP".upper() in str(block.newgto.basis).upper()
 
+    def test_multiple_per_element_gto_get_their_own_block(self):
+        """OPI's BlockBasis holds a single NewBasis per field, so two per-
+        element NewGTOs must come back as TWO BlockBasis, not one (a single
+        block would silently keep only the last element)."""
+        blocks, errors, _, _ = build_basis_blocks(
+            elements=["Sm", "H"],
+            coordinates=[(0, 0, 0), (0, 0, 1.9)],
+            basis="ZORA-def2-TZVP",
+            rel_hamiltonian="ZORA",
+            per_element={"Sm": "SARC2-ZORA-QZVP", "H": "ZORA-def2-TZVP"},
+        )
+        assert errors == []
+        basis_blocks = [b for b in blocks if isinstance(b, BlockBasis)]
+        elements = {str(b.newgto.element) for b in basis_blocks if b.newgto}
+        assert elements == {"Sm", "H"}, (
+            "every per-element NewGTO must come back as its own BlockBasis; "
+            f"got {sorted(elements)}"
+        )
+
     def test_newgto_for_heavy_element_without_ecp_is_an_error(self):
         """MISTAKES.md: NewGTO never loads an ECP — under an all-electron
         global basis, NewGTO Pd "def2-TZVP" runs WITHOUT a core potential.
