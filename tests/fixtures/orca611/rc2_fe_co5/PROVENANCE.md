@@ -3,7 +3,9 @@
 - System: Fe(CO)5, iron pentacarbonyl. Target state: singlet (S=0),
   trigonal-bipyramidal D3h. 18-electron Fe(0) d8 low-spin closed shell.
 - Method: r2SCAN-3c (r2SCAN meta-GGA + D4 + gCP, def2-mTZVPP basis),
-  TightOpt + NumFreq. ORCA 6.1.1. Input keywords: `! r2SCAN-3c TightOpt
+  TightOpt + NumFreq. ORCA 6.1.0 (the .out banner prints "Program
+  Version 6.1.0  -  RELEASE   -" at :54; the orca611 fixture directory
+  name refers to the fixture suite, not this run's build). Input keywords: `! r2SCAN-3c TightOpt
   NumFreq` with `%output jsonpropfile True end`, `%pal nprocs 2 end`,
   `%maxcore 1000`; charge/multiplicity `* xyz 0 1`.
 - Job id: 8172015 (submitted by the operator through DELFIN's own
