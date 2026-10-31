@@ -52,11 +52,10 @@ def check(workspace: Path) -> tuple[bool, str, int]:
     if (repo / ".git" / "MERGE_HEAD").is_file():
         return False, "the merge is still in progress", 0
     status = _git(repo, "status", "--porcelain")
-    if "U" in status[:20] and status:
-        # any unmerged path left
-        if any(line.startswith("UU") or line.startswith("AA")
-               for line in status.splitlines()):
-            return False, "unmerged paths remain", 0
+    unmerged = [line for line in status.splitlines()
+                if line[:2] in ("UU", "AA", "DD", "AU", "UA", "DU", "UD")]
+    if unmerged:
+        return False, f"unmerged paths remain: {unmerged}", 0
 
     # 3. both features present
     if not (repo / "src/widgetkit/rename.py").is_file():
