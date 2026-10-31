@@ -23,6 +23,12 @@ from tests.conftest import lc1_fixture_dir
 
 FIXTURES = lc1_fixture_dir("tests/fixtures/orca611")
 
+
+def _fixture_dir(name: str):
+    """The specific orca611 subfolder: legacy path while its files are
+    committed, else the private store (skip without the env var)."""
+    return lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
+
 #: Same budget the recovery analyser's tail scan is held to.
 PEAK_BUDGET = 8 * 1024 * 1024
 
@@ -35,8 +41,8 @@ def _generated_multimb_out(tmp_path: Path, source_name: str) -> Path:
     """A ~12 MB ``.out``: the fixture's own text with irrelevant dense padding
     inserted mid-file, keeping the head and the true tail (with the markers
     each quantity needs) intact."""
-    src = FIXTURES / source_name / f"{source_name}.out"
-    src_inp = FIXTURES / source_name / f"{source_name}.inp"
+    src = _fixture_dir(source_name) / f"{source_name}.out"
+    src_inp = _fixture_dir(source_name) / f"{source_name}.inp"
     out = tmp_path / f"{source_name}.out"
     inp = tmp_path / f"{source_name}.inp"
     text = src.read_text(encoding="utf-8", errors="replace")
