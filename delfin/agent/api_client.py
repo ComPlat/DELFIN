@@ -30883,18 +30883,32 @@ _WAIT_TICK_MAX_S = 10.0
 
 
 def _retry_notice(exc_name: str, elapsed_s: float, had_partial: bool,
-                  attempt: int, max_attempts: int, delay_s: float) -> str:
+                  attempt: int, max_attempts: int, delay_s: float, *,
+                  slot_wait: bool = False, base_url: str = "") -> str:
     """What the user reads when a round is retried.
 
     The one line used to be "Transient API error; retrying", whether the
     connection dropped mid-answer or the endpoint never started. The
     second case is the ten-minute wait, and it is named as such: the
     retry does not shorten it, it queues again.
+
+    ``slot_wait`` is the case where the round never reached the endpoint
+    at all: it spent ``elapsed_s`` waiting for a LOCAL slot in the
+    host-wide gate, held by other sessions. That is not the endpoint's
+    fault, so it is never reported as "No byte from the endpoint".
     """
     tail = f"{attempt}/{max_attempts} in {delay_s:.0f}s"
     if had_partial:
         return (f"\n⏳ Transient API error ({exc_name}); retrying {tail}"
                 " — connection lost mid-answer, the reply restarts below…\n")
+    if slot_wait:
+        from .endpoint_gate import display_url
+        shown = display_url(base_url) if base_url else ""
+        where = f" on {shown}" if shown else ""
+        return (f"\n⏳ Waited {elapsed_s:.0f} s for a local slot{where} "
+                f"({exc_name}): other sessions hold it, the endpoint never "
+                f"got this request. Retrying {tail} waits for a slot "
+                "again…\n")
     if elapsed_s >= _ZERO_BYTE_CUT_S:
         return (f"\n⏳ No byte from the endpoint in {elapsed_s:.0f} s "
                 f"({exc_name}): it cut the request before the model started. "
@@ -31075,6 +31089,74 @@ def _is_context_length_error(exc: Exception) -> bool:
         return True
     name = type(exc).__name__.lower()
     return "contextwindow" in name or "contextlength" in name
+
+
+def _augment_api_error(exc: Exception, request_kwargs=None) -> Exception:
+    """Attach the server's own error body to a 4xx/5xx API exception.
+
+    Input: a litellm-style exception with an integer ``status_code`` (or
+    ``status``) and the server's body in ``response.text`` / ``message``;
+    optionally ``request_kwargs`` with the request's ``messages``.
+    Output/semantics: rewrites ``exc.args`` IN PLACE -- same class, same
+    ``status_code`` -- to carry the server message/body cut to 1000
+    characters and scrubbed of credentials via :func:`_redact_tool_result`;
+    for a context-length 400 (:func:`_is_context_length_error`) adds a
+    plain-words explanation plus the measured prompt size from
+    ``estimate_schema_tokens`` over ``request_kwargs["messages"]``.
+    The final text is always the scrubbed one, so a credential inside the
+    raw ``str(exc)`` never reaches the log. Non-4xx/5xx exceptions and
+    unreadable bodies pass through unchanged. Rejected alternatives: a new
+    exception type (every classifier reads ``str(exc)`` / status), and a
+    dedupe rule that appends the body only when ``str(exc)`` does not
+    already embed it (provider-specific formatting must not decide the log
+    format). Best-effort and idempotent (guarded by
+    ``exc._delfin_augmented``).
+    """
+    if getattr(exc, "_delfin_augmented", False):
+        return exc
+    try:
+        status = getattr(exc, "status_code", None)
+        if not isinstance(status, int):
+            status = getattr(exc, "status", None)
+        if not isinstance(status, int) or not (400 <= status <= 599):
+            return exc
+        body = (getattr(getattr(exc, "response", None), "text", "") or ""
+                or getattr(exc, "message", "") or "")
+        body = str(body) if body else ""
+        # str(exc) already embeds the raw body ("Error code: 400 - {...}"),
+        # so masking must cover the whole final text, not just the body. The
+        # base is bounded too: a huge embedded body (providers repeat the
+        # full request) must not flood the log even though str(exc) carries it.
+        base = _redact_tool_result(str(exc))[:2000]
+        body_masked = _redact_tool_result(body)[:1000] if body else ""
+        extra = ""
+        # Always append the server's body: str(exc) formatting differs per
+        # provider, so whether it already embeds the body is not something
+        # the log format should depend on. Bounded at 1000 chars.
+        if body_masked:
+            extra = f" [HTTP {status} from the model endpoint: {body_masked}]"
+        if status == 400 and _is_context_length_error(exc):
+            prompt_tokens = 0
+            try:
+                msgs = (request_kwargs or {}).get("messages") or []
+                prompt_tokens = sum(estimate_schema_tokens(m) for m in msgs)
+            except Exception:
+                prompt_tokens = 0
+            extra += (
+                " The server rejected the request because the conversation"
+                " context is too long for this model; the prompt sent"
+                f" measured about {prompt_tokens} tokens (house estimate)."
+                " Compact the conversation or shorten the request.")
+        if extra or base != str(exc):
+            # Rewrite args whenever the text differs from the original: even
+            # when extra is empty (body already embedded in str(exc)) the
+            # base is the scrubbed text, so a credential inside the raw
+            # str(exc) would otherwise reach the log unmasked.
+            exc.args = (base + extra,)
+            exc._delfin_augmented = True
+    except Exception:
+        return exc
+    return exc
 
 
 def _max_subagent_depth() -> int:
@@ -32937,15 +33019,26 @@ class OpenAIClient(_BaseClient):
                 # (GeneratorExit), KeyboardInterrupt -- leaves it held.
                 _gslot = _GateRound()
                 try:
-                    from .endpoint_gate import for_client as _gslot_for
+                    from .endpoint_gate import (for_client as _gslot_for,
+                                                SlotWaitTimeout
+                                                as _SlotWaitTimeout)
                     _gslot.gate = _gslot_for(self._base_url, self.model)
                 except Exception:
                     _gslot.gate = None
+                    _SlotWaitTimeout = None
                 if _gslot.gate is not None:
                     _gslot.gate.acquire()
                 if _gslot.gate is not None and _gslot.gate.wait_notice:
                     yield StreamEvent(type="notice", text=(
                         f"⚠️ {_gslot.gate.wait_notice}\n"))
+                # The slot is held: the clock for THIS round's endpoint
+                # timing starts now, AFTER the (possibly long) local wait for
+                # a slot. Otherwise a session that queued 900 s for a slot in
+                # the gate would make every downstream number look like an
+                # endpoint stall -- first-byte latency, the retry deadline,
+                # the "no byte from the endpoint" notice -- when the endpoint
+                # had not even been contacted yet.
+                _round_t0 = time.monotonic()
                 _ct.start()
                 # Watch the first byte instead of parking in it: emit a
                 # visible "waiting for the model … Ns" indicator while the
@@ -33084,7 +33177,11 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
-                            _stream_attempt, _STREAM_RETRY_MAX, _delay))
+                            _stream_attempt, _STREAM_RETRY_MAX, _delay,
+                            slot_wait=isinstance(
+                                _stream_exc, _SlotWaitTimeout)
+                            if _SlotWaitTimeout is not None else False,
+                            base_url=self._base_url))
                         # A congestion signal triggered this retry: report it
                         # and free the slot BEFORE the backoff, so another
                         # session can use the endpoint while this round waits.
@@ -33194,6 +33291,10 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="message_delta", stop_reason="max_context")
                         return
+                    # The server's own error body belongs in whatever error
+                    # text reaches the user/log/JSON — not just "Error code:
+                    # 400". Augment IN PLACE before the bare raise.
+                    _stream_exc = _augment_api_error(_stream_exc, kwargs)
                     raise
                 # The proxy cannot stream this request (litellm 400:
                 # "'async for' requires ... got ModelResponse"). Retry ONCE
@@ -33203,7 +33304,16 @@ class OpenAIClient(_BaseClient):
                 nk = dict(kwargs)
                 nk["stream"] = False
                 nk.pop("stream_options", None)
-                resp = self.client.chat.completions.create(**nk)
+                try:
+                    resp = self.client.chat.completions.create(**nk)
+                except Exception as _exc:
+                    # The non-streaming retry is itself subject to the model
+                    # endpoint's 4xx/5xx: a retry that still fails on a
+                    # status-coded error must carry the server body too, or
+                    # a KIT 400 here would reach the log as a bare "Error
+                    # code: 400". Augment in place, then re-raise.
+                    _augment_api_error(_exc, kwargs)
+                    raise
                 _round_served = _served_model_of(resp) or _round_served
                 _c, _calls, _fin, (_ti, _to, _tc_cached) = \
                     _absorb_non_streaming(resp)
