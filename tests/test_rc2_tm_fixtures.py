@@ -19,7 +19,11 @@ import pytest
 from delfin.imag import collect_imaginary_modes
 from delfin.orca_read import Quantity, read
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from tests.test_lc1_fixtures_helper import lc1_fixture_dir
+
+FIXTURES = lc1_fixture_dir("tests/fixtures/orca611")
 
 # name -> (charge, multiplicity)
 SYSTEMS = {

@@ -10,15 +10,20 @@ import pytest
 
 from delfin.orca_read import Quantity, read
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+# The real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); every test here SKIPS without it.
+from tests.test_lc1_fixtures_helper import private_fixtures_or_skip  # noqa: E402
+
 TOL = 1e-6
 
 
 def fixture_copy(name: str, tmp_path: Path) -> Path:
+    """Copy the fixture run's files from the private store into tmp."""
+    src = private_fixtures_or_skip(f"tests/fixtures/orca611/{name}")
     dst = tmp_path / name
     dst.mkdir(parents=True, exist_ok=True)
-    for src in (FIXTURES / name).iterdir():
-        (dst / src.name).write_bytes(src.read_bytes())
+    for f in src.iterdir():
+        (dst / f.name).write_bytes(f.read_bytes())
     return dst
 
 

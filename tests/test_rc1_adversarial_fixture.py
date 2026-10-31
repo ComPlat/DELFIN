@@ -19,8 +19,11 @@ import pytest
 from delfin.api import parse_orca_output
 from delfin.tools.orca_out_index import orca_out_index, orca_out_section
 
-FIXTURE_DIR = (Path(__file__).resolve().parent
-               / "fixtures" / "orca611" / "rc1_butane_scan_r2scan3c")
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from tests.test_lc1_fixtures_helper import lc1_fixture_dir
+
+FIXTURE_DIR = lc1_fixture_dir("tests/fixtures/orca611/rc1_butane_scan_r2scan3c")
 OUT_FILE = FIXTURE_DIR / "rc1_butane_scan_r2scan3c.out"
 INP_FILE = FIXTURE_DIR / "rc1_butane_scan_r2scan3c.inp"
 PROVENANCE = FIXTURE_DIR / "PROVENANCE.md"

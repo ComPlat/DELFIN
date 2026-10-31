@@ -13,7 +13,13 @@ when tests/fixtures/orca611/rc2_*/ carry files that satisfy the contract.
 import re
 from pathlib import Path
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+import pytest
+
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from tests.test_lc1_fixtures_helper import lc1_fixture_dir
+
+FIXTURES = lc1_fixture_dir("tests/fixtures/orca611")
 
 #: name -> (charge, multiplicity, n_atoms, element counts that decide the
 #: electron count) -- the physics contract of the package task.
