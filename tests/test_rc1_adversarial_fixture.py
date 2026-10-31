@@ -37,12 +37,16 @@ needs_fixture = pytest.mark.skipif(
 
 
 def _inp_scan_block() -> str:
-    """The '%geom ... Scan ...' line of the committed .inp, normalized."""
+    """The 'D a b c d = start, stop, nsteps' line of the committed .inp.
+
+    ORCA's Scan block spans two lines: 'Scan' opens it and the dihedral
+    definition sits on its own line, so the two are matched separately
+    (the .inp of the v5 fixture, lines 7-8)."""
     text = INP_FILE.read_text()
-    for line in text.splitlines():
-        low = line.strip().lower()
-        if "scan" in low and "d " in low:
-            return line.strip()
+    lines = [l.strip() for l in text.splitlines()]
+    for i, low in enumerate(l.lower() for l in lines):
+        if low == "scan" and i + 1 < len(lines):
+            return lines[i + 1]
     return ""
 
 
@@ -99,9 +103,11 @@ def test_scan_output_has_25_energy_points_and_terminated_normally():
                 if s.title.upper() == "FINAL SINGLE POINT ENERGY"]
     assert len(sections) == n_expected, (
         f"expected {n_expected} scan points, got {len(sections)}")
-    # The scan summary table ORCA writes at the end must have survived any
-    # trim (the brief: keep the scan summary table).
-    assert "THE RELAXED SURFACE SCAN" in text.upper() or "Scan summary" in text
+    # The scan summary ORCA writes at the end must have survived any
+    # trim (the brief: keep the scan summary table). Real ORCA wording:
+    # "RELAXED SURFACE SCAN DONE" and "RELAXED SURFACE SCAN RESULTS".
+    assert ("RELAXED SURFACE SCAN DONE" in text.upper()
+            or "RELAXED SURFACE SCAN RESULTS" in text.upper())
 
 
 def _read_all_scan_energies() -> list:
@@ -139,8 +145,11 @@ def test_anti_is_minimum_gauche_next_syn_is_highest():
     angles = [start + i * step for i in range(len(energies))]
 
     def fam(lo, hi):
+        """Min over absolute dihedral angles (mod 360) in the window
+        [lo, hi); a window crossing 0 (lo > hi) matches both sides."""
         vals = [e for a, e in zip(angles, energies)
-                if lo <= ((a - start) % 360) < hi]
+                if lo <= (a % 360) < hi
+                or (lo > hi and ((a % 360) >= lo or (a % 360) < hi))]
         assert vals, f"no scan point in {lo}..{hi} deg"
         return min(vals)
 
@@ -175,8 +184,13 @@ def test_provenance_records_job_identity_and_no_home_paths():
     """PROVENANCE.md carries job id, ORCA version, node type, core-hours;
     no home paths or host names anywhere in the fixture."""
     prov = PROVENANCE.read_text()
-    for field in ("job id", "ORCA version", "node", "core-hours"):
-        assert field.lower() in prov.lower(), f"provenance field {field!r} missing"
+    prov_low = prov.lower()
+    # Field facts, not literal phrases: the job identity ("job 8173642"),
+    # the ORCA version, the node type, and the core-hours.
+    assert "job 8173642" in prov_low, "fixture job id missing"
+    assert "orca" in prov_low and "6.1." in prov_low, "ORCA version missing"
+    assert "core-h" in prov_low or "core-hours" in prov_low, \
+        "core-hours missing"
     for path in (INP_FILE, OUT_FILE, PROVENANCE):
         blob = path.read_text()
         for marker in ("/home/", "/pfs/data6", "ka_ew7404"):
@@ -199,5 +213,6 @@ def test_orca_json_property_json_exist_as_orca_wrote_them():
 def test_parse_orca_output_reader_still_works_on_the_fixture():
     """DELFIN's primary reader must parse the fixture without error."""
     parsed = parse_orca_output(str(OUT_FILE))
-    assert parsed.single_point is not None
+    assert parsed.final_single_point is not None
     assert parsed.scf_converged is True
+    assert parsed.opt_converged is True
