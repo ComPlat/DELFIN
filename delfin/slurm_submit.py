@@ -171,11 +171,15 @@ def sbatch_command(sbatch: str, submit_script, job_dir=None) -> list:
             chosen = choose_partitions(path, Path(job_dir) if job_dir else path.parent, sbatch=sbatch)
             if chosen:
                 cmd.append(f'--partition={chosen}')
-    except OSError as problem:
+    except (OSError, ValueError, RuntimeError) as problem:
         # A read or probe failure must not break the submit (the command
         # below is what these callers ran before), but it is no longer
         # swallowed silently: the user sees why the partition choice is
-        # missing.
+        # missing. All three real callers (cli_step.py:223,
+        # cli_pipeline.py:292, agent/slurm_tests.py:282) call this
+        # without a try around it, so the catch covers the failure
+        # classes the probe path can raise; anything else is a bug and
+        # stays visible.
         get_logger(__name__).warning(
             'sbatch_command: partition choice skipped (%s); submitting '
             'without a --partition override', problem)

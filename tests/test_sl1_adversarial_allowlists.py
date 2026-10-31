@@ -40,20 +40,20 @@ def test_partition_rejects_whitespace_and_hash():
     assert _rejects(_SAFE_PARTITION, "cpu#short")
 
 
-def test_partition_leading_trailing_comma_accepted_CURRENT_GAP():
-    """FINDING F2 (unchanged code): _SAFE_PARTITION accepts ',cpu' / 'cpu,'
-    (slurm_tests.py:56) -- rendered as '--partition=,cpu', an empty
-    name SLURM rejects late. Builder: require a name before/after each
-    comma."""
-    assert _SAFE_PARTITION.fullmatch(",cpu")
-    assert _SAFE_PARTITION.fullmatch("cpu,")
+def test_partition_leading_trailing_comma_rejected():
+    """FIXED F2 (SL1 phase 2). The old version pinned the gap: ',cpu' /
+    'cpu,' rendered as '--partition=,cpu', an empty name SLURM rejects
+    late. The regex now requires a name on both sides of each comma."""
+    assert _SAFE_PARTITION.fullmatch(",cpu") is None
+    assert _SAFE_PARTITION.fullmatch("cpu,") is None
+    assert _SAFE_PARTITION.fullmatch("cpu,,cpu_il") is None
 
 
-def test_partition_dash_start_accepted_CURRENT_GAP():
-    """FINDING F3: '-cpu' passes _SAFE_PARTITION -- '--partition=-cpu'
-    can be re-read by sbatch as a new option. Builder: forbid a
-    leading '-' (and empty segments)."""
-    assert _SAFE_PARTITION.fullmatch("-cpu")
+def test_partition_dash_start_rejected():
+    """FIXED F3 (SL1 phase 2). The old version pinned the gap: '-cpu'
+    passes as '--partition=-cpu', re-readable by sbatch as an option.
+    A leading '-' is now forbidden."""
+    assert _SAFE_PARTITION.fullmatch("-cpu") is None
     assert _SAFE_PARTITION.fullmatch("--output=/etc/passwd") is None  # '=' excluded already
 
 
@@ -62,12 +62,12 @@ def test_partition_dash_start_accepted_CURRENT_GAP():
 # with '-' would be re-parsed by git (used as `git checkout <ref>` --
 # ref='-h' prints git's help on the compute node).
 # ------------------------------------------------------------------ #
-def test_ref_dash_start_accepted_CURRENT_GAP():
-    """FINDING F4: _SAFE_REF accepts '-h' / '--help' (slurm_tests.py:54);
-    a git consumer would re-parse it as an option. Builder: forbid a
-    leading '-' on refs."""
-    assert _SAFE_REF.fullmatch("-h")
-    assert _SAFE_REF.fullmatch("--help")
+def test_ref_dash_start_rejected():
+    """FIXED F4 (SL1 phase 2). The old version pinned the gap: _SAFE_REF
+    accepted '-h' / '--help', which a git consumer would re-parse as an
+    option. A leading '-' on a ref is now forbidden."""
+    assert _SAFE_REF.fullmatch("-h") is None
+    assert _SAFE_REF.fullmatch("--help") is None
 
 
 def test_ref_rejects_newline_and_space():
@@ -123,12 +123,12 @@ def test_safe_mem_rejects_injection():
 # is binary already. The real gap: '1.5GB' -> int() truncation and
 # unit 'B' (bytes) treated as MB: '512B' -> 512 "MB" = 64x overcount.
 # ------------------------------------------------------------------ #
-def test_parse_memory_bytes_unit_currently_means_megabytes_CURRENT_GAP():
-    """FINDING F6 (unchanged code): _parse_memory_string('512B') == 512
-    -- bytes read as MB, a 512x overcount (cluster_utils.py:169, 'B'
-    sits in the MB set). Builder: drop 'B' from the MB set (bytes have
-    no business in a --mem value) or divide by 1024*1024."""
-    assert _parse_memory_string("512B") == 512  # pins the defect
+def test_parse_memory_bytes_unit_rejected():
+    """FIXED F6 (SL1 phase 2). The old version pinned the defect:
+    _parse_memory_string('512B') == 512 -- bytes read as MB, a 512x
+    overcount (cluster_utils.py:169, 'B' sat in the MB set). Bytes are
+    now their own unit."""
+    assert _parse_memory_string("512B") == 0
 
 
 def test_parse_memory_decimal_gib_prefix():
