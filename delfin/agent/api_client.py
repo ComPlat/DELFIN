@@ -14994,6 +14994,13 @@ _HEAVY_COMPUTE_RE = re.compile(r"""(?x)
 """)
 
 
+# Commands that start another program: skipped to reach the program judged.
+_HEAVY_PREFIXES = frozenset({
+    "env", "nice", "ionice", "nohup", "time", "timeout", "exec", "command",
+    "stdbuf", "taskset", "xargs",
+})
+
+
 def _xtb_exceeds_thread_limit(cmd: str, limit: int = 2) -> bool:
     """True when ``cmd`` runs xtb with a parallel count above *limit*.
 
@@ -15032,9 +15039,50 @@ def _is_heavy_compute_command(cmd: str) -> bool:
     does not bound the shared-server load they place.
     """
     text = str(cmd or "")
-    if _HEAVY_COMPUTE_RE.search(text):
-        return True
-    return _xtb_exceeds_thread_limit(text)
+    try:
+        segs = _split_shell_segments(text)
+    except Exception:
+        return bool(_HEAVY_COMPUTE_RE.search(text))
+    for seg in segs or [text]:
+        try:
+            words = shlex.split(seg, posix=True)
+        except ValueError:
+            if _HEAVY_COMPUTE_RE.search(seg):
+                return True
+            continue
+        # Only the program a segment starts is judged, so a read that
+        # names an ORCA file (``cat orca.out``) stays workspace work.
+        # Launcher prefixes and VAR=value assignments are skipped; a
+        # ``sh -c`` / ``bash -c`` string is judged as its own command.
+        i = 0
+        while i < len(words):
+            w = words[i]
+            if "=" in w and not w.startswith("-") and \
+                    w.split("=", 1)[0].isidentifier():
+                i += 1
+            elif w in _HEAVY_PREFIXES:
+                i += 1
+                # its options and their numeric values (nice -n 10,
+                # timeout 60s, taskset -c 0-3)
+                while i < len(words) and (words[i].startswith("-")
+                                          or words[i][:1].isdigit()):
+                    i += 1
+            else:
+                break
+        if i >= len(words):
+            continue
+        prog = words[i].rsplit("/", 1)[-1]
+        if prog in ("sh", "bash", "zsh") and "-c" in words[i + 1:]:
+            j = words.index("-c", i + 1)
+            if j + 1 < len(words) and _is_heavy_compute_command(words[j + 1]):
+                return True
+            continue
+        m = _HEAVY_COMPUTE_RE.match(prog)
+        if m and m.end() == len(prog):
+            return True
+        if _xtb_exceeds_thread_limit(" ".join(shlex.quote(x) for x in words[i:])):
+            return True
+    return False
 
 
 def _bash_runs_caged(perms) -> bool:

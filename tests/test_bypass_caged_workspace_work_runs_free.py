@@ -185,3 +185,18 @@ def test_no_cage_asks_as_before(cmd, tmp_path, monkeypatch):
         return
     out = _gate(perms, "bash", {"command": cmd})
     assert out is not None or len(dialog.shown) == 1, cmd
+
+
+@pytest.mark.parametrize("cmd,heavy", [
+    ("cat orca.out", False),
+    ("grep E job/orca.log", False),
+    ("sed -i s/orca/x/ f", False),
+    ("orca_2mkl x -basis", False),
+    ("nice -n 10 orca x.inp", True),
+    ("timeout 60 orca x.inp", True),
+    ("cd d && orca x.inp > x.out", True),
+    ("bash -c 'orca x.inp'", True),
+    ("env OMP_NUM_THREADS=2 crest m.xyz", True),
+])
+def test_only_the_program_a_segment_starts_is_judged_heavy(cmd, heavy):
+    assert A._is_heavy_compute_command(cmd) is heavy
