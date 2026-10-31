@@ -62,8 +62,9 @@ paths, never by rewriting the ORCA input by hand:
   imaginary mode is IMAG's case, not a repair job.  Route it through
   IMAG (`delfin --imag` for the pipeline, or the `imag` workflow with
   the calculation's .inp/.out).  IMAG's default noise floor is
-  `allow_imaginary_freq` = -50 cm-1 (a measured value — see
-  `control_validator.py`); a shallower mode than the floor is skipped
+  `allow_imaginary_freq` = -50 cm-1 (the shipped default — imag.py
+  NOISE_FLOOR, mirrored in control_validator.py; a measured value
+  recorded in its comment).  A mode shallower than the floor is skipped
   BY DESIGN and silently.  If the user asks to heal a named mode (e.g.
   -21.86 cm-1), propose an explicit `allow_imaginary_freq` SHALLOWER
   than the measured mode (20 for -21.86, because the filter is
