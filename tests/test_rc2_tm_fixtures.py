@@ -109,4 +109,4 @@ def test_no_host_identity_in_rc2_fixtures():
             assert "/home/" not in text, f.name
             for line in text.splitlines():
                 if "Host name:" in line:
-                    assert line.split("Host name:", 1)[1].strip() == "<redacted>", f.name
+                    assert line.split("Host name:", 1)[1].strip() == "fixture-host", f.name
