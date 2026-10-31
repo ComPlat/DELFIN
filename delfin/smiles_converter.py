@@ -4744,6 +4744,9 @@ def check_converted_complex(smiles: str, xyz_text: str) -> List[Dict[str, object
         return findings
     mol = None
     try:
+        # pinned is safe here: the pin changes H counts only (it rewrites
+        # unbracketed metal-neighbour tokens to bracket atoms), so the
+        # heavy-atom and charge readings below are unaffected by it.
         mol = Chem.MolFromSmiles(_pin_metal_neighbour_hydrogens(smiles))
         if mol is None:
             mol = Chem.MolFromSmiles(smiles)
@@ -4788,32 +4791,103 @@ def check_converted_complex(smiles: str, xyz_text: str) -> List[Dict[str, object
         })
 
     # --- 2. hydrogen count vs SMILES ----------------------------------------
-    # Reading rule: compare against the USER's SMILES (unpinned), never the
-    # pinned one -- the pin rewrites unbracketed donors to bracket atoms and
-    # would silently lower the expectation, hiding the very defect this check
-    # exists to catch.  For the expectation, mirror the pin's own guard
-    # (delfin/manta/single_structure.py:161): the default-valence dative-donor
-    # reading fires ONLY for an unbracketed metal neighbour that carries
-    # implicit H (n_h > 0); anything else -- a bracket atom, which states its
-    # H count itself, or an atom the pin leaves alone because n_h <= 0, e.g.
-    # a halide -- is read by its own H count, so a halide gains no phantom H
-    # (dv - (deg - n_metal) = 1 - 0 = 1 would be wrong for [Pt](Cl)...).
+    # Reading rule (person's convention decision, 2026-10-31, superseding the
+    # phase-2a dative reading): the USER's SMILES reads as WRITTEN under the
+    # standard OpenSMILES rules (#36) -- an unbracketed N/O on a metal is
+    # AMIDO/HYDROXO (the M-L bond counts against the donor's valence), and an
+    # ammine/aqua is written [NH3]/[OH2].  Never normalize silently.
+    #   delfin/manta/single_structure.py:161 -- the pin mirrors this rule.
+    #   Dative exception: an arrow that ORIGINATES at the donor ("N->[Pt]",
+    # i.e. the donor is the begin atom) shifts the H to the donor reading
+    # (NH3); RDKit itself applies this (probed 09:44, probe retired to
+    # .gate/).  An arrow drawn FROM the metal ("[Pt]->N") makes RDKit read the
+    # donor as acceptor -- one H too few and likely a typo, so that case is
+    # flagged (dative_direction) instead of being silently re-read.
+    #   An unbracketed N/O/P/S on a metal is additionally reported as
+    # h_ambiguity INFO (amido NH2 vs ammine NH3) so the caller can show the
+    # user both readings before any calculation.  Findings only, always.
     mol_user = None
     try:
         mol_user = Chem.MolFromSmiles(smiles)
     except Exception:
         mol_user = None
     if mol_user is None:
-        mol_user = mol  # pinned fallback; the guard below still applies
+        mol_user = mol  # pinned fallback; reading rules below still apply
     try:
+        _DONOR_EL = ("N", "O", "P", "S", "Se")
+        _ambig = []  # (element, implicit H) per unbracketed donor on a metal
+        for a in mol_user.GetAtoms():
+            for b in a.GetBonds():
+                if str(b.GetBondType()) != "DATIVE":
+                    continue
+                other = b.GetOtherAtom(a)
+                # Arrow drawn FROM the metal onto a lone-pair donor: RDKit
+                # reads the donor as acceptor (implicit H reduced by one,
+                # probe 09:44: [Pt](Cl)(Cl)->N gives 2 H).  Likely mistyped
+                # direction; the donor-first spelling is named.  Compare by
+                # index, not identity: RDKit Atom proxies are fresh objects
+                # per call, so `is` is unreliable.
+                if (
+                    b.GetBeginAtomIdx() == a.GetIdx()
+                    and a.GetSymbol() in _METAL_SET_SX1
+                    and other.GetSymbol() in _DONOR_EL
+                ):
+                    findings.append({
+                        "kind": "dative_direction",
+                        "detail": (
+                            f"dative arrow drawn from the metal to lone-pair "
+                            f"donor {other.GetSymbol()} (index "
+                            f"{other.GetIdx()}): RDKit then reads it as an "
+                            f"acceptor and drops one H; if the donor is meant "
+                            f"to donate, write it donor-first, e.g. "
+                            f"'{other.GetSymbol()}->[Pt]'.  Reading the SMILES "
+                            f"as written either way -- nothing is normalized."
+                        ),
+                    })
+            # Non-blocking INFO: unbracketed lone-pair donor on a metal has
+            # two chemically different readings (amido NH2 vs ammine NH3).
+            # Collected and reported once per molecule, naming every such
+            # atom, instead of one finding per atom.
+            if (
+                a.GetSymbol() in _DONOR_EL
+                and any(n.GetSymbol() in _METAL_SET_SX1 for n in a.GetNeighbors())
+                and int(a.GetNumImplicitHs()) > 0
+                and not _atom_token_is_bracketed(smiles, a.GetIdx())
+            ):
+                _ambig.append((a.GetSymbol(), int(a.GetNumImplicitHs())))
+        if _ambig:
+            parts = [
+                f"{el}H{h} (standard, amido/hydroxo) vs [{el}H{h + 1}] "
+                f"(ammine/aqua-type donor)" for el, h in _ambig
+            ]
+            findings.append({
+                "kind": "h_ambiguity",
+                "detail": (
+                    f"unbracketed lone-pair donor(s) on a metal: " + "; ".join(parts)
+                    + f".  The two readings give different formulas and "
+                    f"charges; an ammine/aqua donor is written bracketed "
+                    f"([NH3]) or with the arrow from the donor (N->[M]).  "
+                    f"DELFIN reads the SMILES as written (standard SMILES, "
+                    f"#36) and changes nothing."
+                ),
+                "severity": "info",
+            })
         pt = Chem.GetPeriodicTable()
         smi_h = 0
         for a in mol_user.GetAtoms():
-            metal_n = [n for n in a.GetNeighbors() if n.GetSymbol() in _METAL_SET_SX1]
-            if metal_n and int(a.GetNumImplicitHs()) > 0:
-                # unbracketed metal neighbour carrying implicit H: count H
-                # as a dative donor at default valence minus non-metal bonds.
-                n_metal = len(metal_n)
+            dative_from_donor = any(
+                str(b.GetBondType()) == "DATIVE"
+                and b.GetBeginAtomIdx() == a.GetIdx()
+                for b in a.GetBonds()
+            )
+            if dative_from_donor and int(a.GetNumImplicitHs()) > 0:
+                # Arrow originates at the donor: donor reading at default
+                # valence minus non-metal bonds (RDKit already shifts the
+                # implicit H this way; the explicit branch keeps the rule
+                # visible and holds when RDKit's valence model changes).
+                n_metal = sum(
+                    1 for n in a.GetNeighbors() if n.GetSymbol() in _METAL_SET_SX1
+                )
                 deg = a.GetDegree()
                 dv = pt.GetDefaultValence(a.GetAtomicNum())
                 if dv > 0 and deg - n_metal <= dv:
@@ -5016,6 +5090,66 @@ def _hapto_planarity_findings(mol, atoms, hs):
 # Metals for the SX1 check, from delfin/manta/ml_tables._METALS (the table the
 # M-L distance check reads its values from).
 _METAL_SET_SX1 = set(_METALS)
+
+
+def _atom_token_is_bracketed(smiles: str, atom_idx: int) -> bool:
+    """Is this atom's token in ``smiles`` written in brackets (``[NH3]``)?
+
+    A bracket atom states its H count itself, so the h_ambiguity INFO is not
+    needed (and would be wrong: ``[NH3]`` is unambiguous).  Derived from the
+    SMILES string, not the RDKit mol, because ``MolFromSmiles`` does not keep
+    the token spelling.  Bracket tokens on non-tetrahedral stereocentres
+    (``[C@H]``) carry H and would be treated as explicit too -- correct for
+    this purpose, since a bracket token is always an explicit statement.
+    """
+    depth = 0
+    idx = -1
+    in_bracket = False
+    prev_digit_or_pct = False
+    i = 0
+    while i < len(smiles):
+        c = smiles[i]
+        if c == "[":
+            depth += 1
+            in_bracket = True
+            idx += 1
+            i += 1
+            continue
+        if c == "]":
+            depth -= 1
+            in_bracket = False
+            prev_digit_or_pct = False
+            i += 1
+            continue
+        if depth == 0:
+            if c == "%":
+                # ring closure number written as two digits: consumes the
+                # next char, is not an atom
+                i += 2
+                prev_digit_or_pct = True
+                continue
+            if c.isdigit() and prev_digit_or_pct:
+                prev_digit_or_pct = False
+                i += 1
+                continue
+            if c.isalpha() and not prev_digit_or_pct:
+                idx += 1
+                prev_digit_or_pct = c.isupper() and i + 1 < len(smiles) and smiles[i + 1].islower()
+                if prev_digit_or_pct:
+                    i += 1  # two-letter element symbol is one atom
+                i += 1
+                continue
+            prev_digit_or_pct = False
+            i += 1
+            continue
+        # inside brackets: every atom token is one atom
+        if c.isalpha():
+            idx += 1
+            prev_digit_or_pct = False
+        else:
+            prev_digit_or_pct = False
+        i += 1
+    return in_bracket and idx == atom_idx
 
 
 

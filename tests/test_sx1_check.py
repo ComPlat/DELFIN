@@ -34,12 +34,36 @@ def test_check_function_exists_and_reports_findings_list():
 
 
 def test_check_flags_missing_hydrogens_vs_smiles():
-    """[Cu(NH3)4]2+ as [Cu](N)(N)(N)(N): converter emits 8 H, SMILES says 12."""
+    """A frame that really lost H vs the SMILES AS WRITTEN is flagged.
+
+    Old decision (superseded by the person's convention, 2026-10-31): the
+    unbracketed ``[Cu](N)(N)(N)(N)`` case was read dative (12 H) so its 8-H
+    frame flagged.  Under standard SMILES (#36) that SMILES reads 4 amido N
+    (8 H) and the 8-H frame matches -- the reading choice is surfaced as the
+    h_ambiguity INFO instead.  A REAL h_count defect is a frame with fewer H
+    than the written H counts: a bracketed ammine that lost hydrogens.
+    """
     from delfin import smiles_converter as sc
     xyz = _convert("[Cu](N)(N)(N)(N)")
     findings = sc.check_converted_complex("[Cu](N)(N)(N)(N)", xyz)
     kinds = {f["kind"] for f in findings}
-    assert "h_count" in kinds, f"expected h_count finding, got {findings}"
+    assert "h_ambiguity" in kinds, f"expected h_ambiguity INFO, got {findings}"
+    # and the genuine-defect direction still fires: drop 2 H from a real
+    # conversion of an explicitly bracketed ammine complex
+    xyz12 = _convert("[Cu]([NH3])([NH3])([NH3])([NH3])")
+    lines = xyz12.strip().splitlines()
+    kept = [str(len(lines) - 3), "H-dropped probe"]
+    dropped = 0
+    for ln in lines[1:]:
+        p = ln.split()
+        if len(p) >= 4 and p[0] == "H" and dropped < 2:
+            dropped += 1
+            continue
+        kept.append(ln)
+    findings2 = sc.check_converted_complex(
+        "[Cu]([NH3])([NH3])([NH3])([NH3])", "\n".join(kept) + "\n"
+    )
+    assert "h_count" in {f["kind"] for f in findings2}, findings2
 
 
 def test_check_flags_unphysical_h_bond_length():
