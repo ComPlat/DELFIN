@@ -201,15 +201,23 @@ def test_a_daemon_or_a_terminal_agent_is_found_by_its_command_line(stop_file, mo
 def test_a_process_that_ends_on_its_own_is_not_signalled(stop_file, monkeypatch):
     mark = f"delfin-test-daemon-{uuid.uuid4().hex}"
     monkeypatch.setattr(S, "_COMMAND_MARKERS", (mark,))
-    # Long enough to be found: the stop writes its record and disables the
-    # schedules before it looks for processes, which took over 0.5 s on a
-    # loaded CI runner (the process was gone, found_here == []). Short
-    # enough to end on its own well inside settle_s.
+    # It has to be found before it ends, and end on its own inside settle_s.
+    # A fixed lifetime from its start cannot promise the first: the stop
+    # writes its record and disables the schedules before it looks for
+    # processes, which took over 0.5 s and then over 3 s on a loaded CI
+    # runner (the process was gone, found_here == []). So its clock starts
+    # at the stop's record: it waits for the file, then lives 4 s more.
     quick = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(3)", mark],
+        [sys.executable, "-c",
+         "import os, sys, time\n"
+         "end = time.time() + 60\n"
+         "while not os.path.exists(sys.argv[1]) and time.time() < end:\n"
+         "    time.sleep(0.05)\n"
+         "time.sleep(4)\n",
+         str(S._PATH), mark],
         env=_child_env())
     try:
-        summary = S.request("test", settle_s=10, grace_s=5)
+        summary = S.request("test", settle_s=20, grace_s=5)
         assert summary["found_here"] == [quick.pid]
         assert summary["ended_here"] == []
     finally:

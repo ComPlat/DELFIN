@@ -4032,7 +4032,7 @@ _CALC_OPTIONS_BY_TYPE: dict[str, list[str]] = {
     "control_txt":      ["Recalc", "Smart Recalc"],
     "occupier_txt":     ["Override"],
     "inp":              ["Recalc"],
-    "out":              ["Print Mode", "MO Plot", "Print NMR", "RMSD"],
+    "out":              ["Print Mode", "MO Plot", "Print NMR", "Spin Density", "RMSD"],
     "xyz":              [
         "Build Batch from XYZ", "Calc NMR", "Calc CENSO/ANMR",
         "hyperpol_xtb", "tadf_xtb", "RMSD",
@@ -4138,7 +4138,7 @@ def run_calc_option(
         }
 
     ui_only = {
-        "Visualize", "MO Plot", "Print Mode", "Print NMR",
+        "Visualize", "MO Plot", "Print Mode", "Print NMR", "Spin Density",
         "Plot Trajectory", "Preselection", "RMSD",
         "Build Batch from XYZ", "Calc NMR", "Calc CENSO/ANMR",
         "hyperpol_xtb", "tadf_xtb",

@@ -60,7 +60,7 @@ class StreamEvent:
     __slots__ = ("type", "text", "input_tokens", "output_tokens", "stop_reason",
                  "cost_usd", "tool_name", "tool_input", "tool_output",
                  "cached_tokens", "output_truncated", "output_chars",
-                 "output_notes")
+                 "output_notes", "seen_text")
 
     def __init__(
         self,
@@ -77,6 +77,7 @@ class StreamEvent:
         output_truncated: bool = False,
         output_chars: int = 0,
         output_notes: str = "",
+        seen_text: str = "",
     ):
         self.type = type
         self.text = text
@@ -110,6 +111,13 @@ class StreamEvent:
         self.output_truncated = output_truncated
         self.output_chars = output_chars
         self.output_notes = output_notes
+        # * ``seen_text`` — the result as the model was given it (after the
+        #   context cut, before the data fence). The evidence pool is filled
+        #   from it: filled from the preview, a figure past character 2000
+        #   of a result the model saw whole was flagged as unsupported.
+        #   Empty where a backend passes the result through whole, and
+        #   never written to a trace.
+        self.seen_text = seen_text
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +137,17 @@ class _BaseClient:
     #: was asked for: ``create_client`` returns an OpenAIClient for
     #: provider kit/ollama/openai whatever ``backend`` says.
     supplies_session_id: bool = False
+
+    def preset_session_id(self, session_id: str) -> bool:
+        """Take ``session_id`` as the id of the conversation not begun yet.
+
+        For a backend that announces its id: one that can be told the id
+        up front answers True, and the session has its id before the
+        first turn -- the service's log and presence are keyed by it from
+        the start. False (the default): the id stays "" until the stream
+        announces it.
+        """
+        return False
 
     def stream_message(
         self,
@@ -259,6 +278,9 @@ class CLIClient(_BaseClient):
             )
         self._proc: subprocess.Popen | None = None
         self._session_id: str = ""
+        #: The id a new conversation is started under (``--session-id``)
+        #: until the CLI has announced it; from then on it is resumed.
+        self._new_session_id: str = ""
         # DELFIN's file gate in front of the CLI's own tools (cli_gate):
         # the same read/write boundary, and the same dialog, as every
         # other backend. One token per client; the relay carries the
@@ -357,7 +379,10 @@ class CLIClient(_BaseClient):
         if self.effort in ("low", "medium", "high", "xhigh", "max"):
             cmd.extend(["--effort", self.effort])
 
-        if session_id:
+        if session_id and session_id == self._new_session_id:
+            # Nothing to resume yet: the conversation begins under this id.
+            cmd.extend(["--session-id", session_id])
+        elif session_id:
             cmd.extend(["--resume", session_id])
 
         self._proc = subprocess.Popen(
@@ -465,6 +490,7 @@ class CLIClient(_BaseClient):
                 sid = data.get("session_id", "")
                 if sid:
                     self._session_id = sid
+                    self._new_session_id = ""
                     yield StreamEvent(type="session_init", text=sid)
 
             elif dtype == "stream_event":
@@ -734,6 +760,15 @@ class CLIClient(_BaseClient):
             except Exception:
                 pass
             self._proc = None
+
+    def preset_session_id(self, session_id: str) -> bool:
+        """A new conversation is started with ``--session-id``. Not while
+        one is live (a running process, an announced id): that one goes on
+        under the id it has."""
+        if self._session_id or (self._proc is not None and self._proc.poll() is None):
+            return False
+        self._new_session_id = session_id
+        return True
 
     @property
     def session_id(self) -> str:
@@ -1672,6 +1707,32 @@ _SYSTEM_INFO_FILES: frozenset[str] = frozenset({
 })
 
 
+#: Programs that hand the REST of their words to another program to run.
+#: The first non-option, non-`NAME=value` word is the REAL command word,
+#: and its path must not be scanned as a read -- executing a program is
+#: not reading it. Each value lists the option spellings that take a
+#: SEPARATE value (skipped together with that value while the wrapper's
+#: options are walked); a flag or a self-contained `-n5`/`--x=5` needs no
+#: entry. `timeout` is the one with two leading positionals (DURATION
+#: then COMMAND); every other wrapper's first bare word is its program.
+#:
+#: The wrappers' own operands that ARE files (``env -C /dir``) are not
+#: touched here: only the command-word index is skipped, so the wrapper's
+#: file-like operands and every following argument are still scanned.
+_COMMAND_WORD_WRAPPERS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "-P",
+                      "--default-signal", "--block-signal", "--list-signal"}),
+    "timeout": frozenset({"-k", "--kill-after", "-s", "--signal"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata",
+                         "-p", "--pid"}),
+    "taskset": frozenset({"-c", "--cpu-list"}),
+    "nohup": frozenset(),
+    "setsid": frozenset(),
+    "command": frozenset(),
+}
+
+
 def _home_expanded(word: str) -> str:
     home = str(Path.home())
     for spelling in ("${HOME}", "$HOME"):
@@ -1793,6 +1854,62 @@ def _script_argument_index(prog: str, args: list) -> Optional[int]:
     return None
 
 
+def _executed_command_index(prog: str, args: list) -> Optional[int]:
+    """Index in *args* of the program the wrapper `prog` delegates to.
+
+    A delegating wrapper (``env``, ``timeout``, ``nice``, …) hands the
+    rest of its words to another program to run. That inner program is
+    a simple command's command word: its PATH must not be scanned as a
+    read -- executing a program is not reading it (2026-10-29: a venv
+    interpreter run under ``env X=1`` was asked about as an
+    outside-workspace read). Returns the index of that word so the caller
+    can skip exactly it, leaving every sibling argument -- the wrapper's
+    own operands and the program's following arguments -- scanned as
+    before. ``--`` ends the wrapper's options. ``timeout`` has a leading
+    DURATION positional before its COMMAND, so its program is the second
+    bare word; every other wrapper's first bare word is the program.
+    Returns None when `prog` is not a delegation wrapper, or when no bare
+    word occupies the command-word slot (a wrapper with only options or
+    only a duration leaves nothing to skip).
+    """
+    value_opts = _COMMAND_WORD_WRAPPERS.get(prog)
+    if value_opts is None:
+        return None
+    # How many bare words precede the program: timeout's DURATION, and
+    # taskset's MASK unless -c/--cpu-list gave the CPU list as an option
+    # value. taskset -p works on an existing pid and runs no program.
+    leading = 1 if prog == "timeout" else 0
+    if prog == "taskset":
+        if any(a in ("-p", "--pid") or (a.startswith("-") and not a.startswith("--")
+                                        and "p" in a[1:]) for a in args):
+            return None
+        if not any(a in ("-c", "--cpu-list") or a.startswith("--cpu-list=")
+                   for a in args):
+            leading = 1
+    positional = 0
+    skip = False
+    options_done = False
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if not options_done and a == "--":
+            options_done = True     # every later word is positional
+            continue
+        if not options_done and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+            continue               # env's NAME=value, not the program
+        if options_done or not a.startswith("-"):
+            if positional == leading:
+                return i
+            positional += 1
+            continue               # the DURATION or MASK, not yet the program
+        opt = a.split("=", 1)[0]
+        if opt in value_opts and "=" not in a:
+            skip = True            # the option takes a separate value
+        # a value-less flag, or a self-contained -n5 / --x=5: nothing to skip
+    return None
+
+
 def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                         _depth: int = 0) -> list[str]:
     """Paths a shell command would read, for the outside-read gate.
@@ -1889,6 +2006,21 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
                 out.extend(_bash_outside_reads(
                     args[i + 1], here, _depth + 1))
             return
+        # `env -S "STRING"` (--split-string) splits STRING into a new command
+        # line, like `sh -c`: judge that line, with the words after it.
+        if prog == "env" and _depth < 3:
+            for i, a in enumerate(args):
+                split = None
+                if a in ("-S", "--split-string") and i + 1 < len(args):
+                    split, tail = args[i + 1], args[i + 2:]
+                elif a.startswith("--split-string="):
+                    split, tail = a.split("=", 1)[1], args[i + 1:]
+                elif a.startswith("-S") and len(a) > 2:
+                    split, tail = a[2:], args[i + 1:]
+                if split is not None:
+                    line = " ".join([split] + [shlex.quote(t) for t in tail])
+                    out.extend(_bash_outside_reads(line, here, _depth + 1))
+                    return
         # Input redirection reads, whatever the program.
         for i, a in enumerate(args):
             if a == "<" and i + 1 < len(args):
@@ -1898,13 +2030,17 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
         if prog in _BASH_NO_FILE_PROGRAMS:
             return
         script_at = _script_argument_index(prog, args)
+        # A delegating wrapper's program word (env X=1 prog, timeout 20
+        # prog, nice prog) is the command word of a simple command: its
+        # path is not a read, whatever position the shell resolved it to.
+        cmd_at = _executed_command_index(prog, args)
         skip_next = False
         for i, a in enumerate(args):
             if skip_next:
                 skip_next = False
                 continue
-            if i == script_at:
-                continue    # the program's script or pattern, not a file
+            if i == script_at or i == cmd_at:
+                continue    # the program's script/pattern or command word, not a file
             if a in ("<", ">", ">>", "2>", "2>>", "&>", "&>>", ">|"):
                 skip_next = True    # the redirection's own target
                 continue
@@ -1931,7 +2067,7 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
 
     try:
         import shlex
-        for segment in _shell_segments(cmd):
+        for segment in _shell_segments(_strip_heredoc_bodies(cmd)):
             segment = segment.strip()
             if not segment:
                 continue
@@ -3796,7 +3932,9 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
 # Keeping them out by default avoids surprising "agent runs xtb on user
 # files" behaviour for non-DELFIN projects.
 _DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
-    r"^\s*xtb\s+\S+\.xyz\b",          # read-only xtb invocation
+    # An xtb run is a calculation: calc_policy decides it by its setup and
+    # its cores, not by its spelling (an `xtb <file>.xyz` pattern here let
+    # `-P 64` and an odd electron count run unasked).
     # The read-only subcommands of delfin-agent and delfin, by name; every
     # acting one is asked (classification above _DEFAULT_BASH_AUTO_ALLOW).
     *_delfin_cli_read_only_patterns(r"delfin-agent", r"delfin"),
@@ -4552,12 +4690,33 @@ def _links_to_a_secret(perms: Any, rel: str, base: Any = None) -> bool:
         return False
 
 
+def _is_run_hidden(resolved: Path) -> bool:
+    """Whether ``resolved`` is, or lies beneath, a path the run hides from
+    its cage (``DELFIN_CAGE_HIDE``). Without the variable nothing is hidden
+    and nothing can fail; with it, an error counts as hidden (fails closed
+    only where hiding was asked for)."""
+    if not str(os.environ.get("DELFIN_CAGE_HIDE") or "").strip():
+        return False
+    try:
+        from delfin.agent.sandbox import run_hidden_paths
+        for h in run_hidden_paths():
+            hp = Path(h)
+            if resolved == hp or hp in resolved.parents:
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def _is_secret_path(perms: Any, path: Path) -> bool:
     """Whether ``path`` matches the secret deny list, tested the way
     ``_check_read_access`` tests it: relative to the readable root it lies
-    in, else absolute. Fails closed."""
+    in, else absolute -- or is hidden from the run (``DELFIN_CAGE_HIDE``).
+    Fails closed."""
     try:
         resolved = Path(path).expanduser().resolve()
+        if _is_run_hidden(resolved):
+            return True
         in_root = perms.find_readable_root_for(resolved)
         if in_root is not None:
             try:
@@ -6197,6 +6356,110 @@ def _run_github_push(plan: dict, run_cwd, env: dict,
     return subprocess.CompletedProcess(plan["argv"], code, out, err)
 
 
+def _github_pr_plan(cmd: str, run_cwd) -> Optional[dict]:
+    """A noninteractive PR create, with no shell or checkout code near gh's login.
+
+    Deliberately accepts only inline text and the current branch. In particular,
+    no editor, browser, template/body file, API command or implicit push runs
+    with credentials. All permission gates must have run before execution.
+    """
+    if any(c in cmd for c in ("`", "$", "\n", "\r")):
+        return None
+    push = None
+    if cmd.lstrip().startswith("git push "):
+        first, sep, cmd = cmd.partition("&&")
+        if not sep:
+            return None
+        push = _github_push_plan(first.strip(), run_cwd)
+        if push is None or push["filter"] or push["merge_stderr"]:
+            return None
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return None
+    if tokens[:3] != ["gh", "pr", "create"]:
+        return None
+    options = {}
+    flags = set()
+    i = 3
+    while i < len(tokens):
+        key = tokens[i]
+        if key in ("--fill", "--draft") and key not in flags:
+            flags.add(key)
+            i += 1
+        elif key in ("--base", "--head", "--title", "--body", "--repo"):
+            if key in options or i + 1 >= len(tokens):
+                return None
+            options[key] = tokens[i + 1]
+            i += 2
+        else:
+            return None
+    gh = shutil.which("gh")
+    if not gh or _checkout_configures_transport(run_cwd):
+        return None
+    url = (push["url"] if push else
+           _git_out(run_cwd, "remote", "get-url", "--push", "origin")) or ""
+    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:)"
+                         r"([A-Za-z0-9._-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?", url)
+    if not match:
+        return None
+    repo = match.group(1)
+    if options.get("--repo", repo) != repo:
+        return None
+    head = _git_out(run_cwd, "symbolic-ref", "--short", "HEAD") or ""
+    base = options.get("--base", "")
+    # An explicit head prevents gh from pushing or forking interactively.
+    if (not head or options.get("--head", head) != head or not base
+            or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./-]*", base)
+            or ".." in base or head.startswith("-")):
+        return None
+    title, body = options.get("--title"), options.get("--body")
+    if "--fill" in flags and (title is None or body is None):
+        base_ref = "refs/remotes/origin/" + base
+        if not _git_out(run_cwd, "rev-parse", "--verify", base_ref):
+            base_ref = "refs/heads/" + base
+        commits = _git_out(run_cwd, "log", "--reverse", "--format=%s%n%n%b",
+                           base_ref + "..HEAD", "--")
+        if not commits:
+            return None
+        title = title if title is not None else commits.splitlines()[0]
+        body = body if body is not None else commits
+    if not title or body is None:
+        return None
+    argv = [gh, "pr", "create", "--repo", repo, "--head", head,
+            "--base", base, "--title", title, "--body", body]
+    if "--draft" in flags:
+        argv.append("--draft")
+    return {"push": push, "argv": argv, "repo": repo}
+
+
+def _run_github_pr(plan: dict, run_cwd, env: dict, timeout: int):
+    """Execute only vetted argv, preserving && failure and the shared deadline."""
+    import tempfile
+    start = time.monotonic()
+    out, err = "", ""
+    if plan["push"] is not None:
+        proc = _run_github_push(plan["push"], run_cwd, env, timeout)
+        if proc.returncode:
+            return proc
+        out, err = proc.stdout or "", proc.stderr or ""
+    remaining = timeout - (time.monotonic() - start)
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired(plan["argv"], timeout)
+    gh_env = {k: v for k, v in env.items() if not k.startswith("GIT_")}
+    gh_env.update(GH_HOST="github.com", GH_PROMPT_DISABLED="1",
+                  GH_PAGER="cat", GH_BROWSER="false", GH_EDITOR="false")
+    # gh must never discover the agent-writable checkout's config or hooks.
+    with tempfile.TemporaryDirectory(prefix="delfin-pr-") as empty:
+        proc = subprocess.run(plan["argv"], cwd=empty, env=gh_env,
+                              capture_output=True, text=True, timeout=remaining,
+                              stdin=subprocess.DEVNULL, start_new_session=True,
+                              check=False)
+    return subprocess.CompletedProcess(plan["argv"], proc.returncode,
+                                       out + (proc.stdout or ""),
+                                       err + (proc.stderr or ""))
+
+
 def _message_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -7622,6 +7885,124 @@ def _artifact_path_inside(base: str, perms) -> str:
         return ""
 
 
+def _calculation_verdict(perms, cmd: str, args: dict,
+                         wall_limit_s: Optional[float]):
+    """calc_policy's verdict for a bash command, or None on any failure.
+
+    The command's other segments must pass the gate's own auto-allow test,
+    so a calculation cannot carry an unrelated command past the dialog.
+    A failure of the check itself admits nothing: None falls through to
+    the gate's ordinary path.
+    """
+    try:
+        from . import calc_policy
+        cwd_arg = str((args or {}).get("cwd") or "").strip()
+        ws = Path(str(getattr(perms, "workspace", ".") or "."))
+        cwd = Path(cwd_arg) if cwd_arg else ws
+        if not cwd.is_absolute():
+            cwd = ws / cwd
+        return calc_policy.judge_command(
+            _split_shell_segments(cmd), cwd, perms._segment_auto_allowed,
+            tool_wall_s=wall_limit_s)
+    except Exception:
+        return None
+
+
+def _unasked_cpu_set() -> Optional[list]:
+    """The CPUs a command nobody approved is bound to, or None."""
+    try:
+        from . import calc_policy
+        return calc_policy.unasked_cpu_set()
+    except Exception:
+        return None
+
+
+def _unasked_share(argv: list) -> list:
+    """``argv`` bound to the CPUs a command nobody approved may use.
+
+    On a login node, LOGIN_LOCAL_CORES CPUs (calc_policy.unasked_cpu_set):
+    the gate reads a command's text, and `python3 run.py` that starts a
+    16-core ORCA reads as `python3`. The binding holds for whatever the
+    command starts. Elsewhere, and on any failure, ``argv`` unchanged.
+    """
+    try:
+        from . import calc_policy
+        return calc_policy.bound_argv(argv, _unasked_cpu_set())
+    except Exception:
+        return list(argv)
+
+
+def _with_calculation_note(result: str, notes: list) -> str:
+    """The run's JSON result, naming the calculation the gate let start.
+
+    The model reads it and can tell the user what runs where; the same
+    line is in the security-event panel. A result that is not a JSON
+    object is returned unchanged.
+    """
+    if not notes:
+        return result
+    try:
+        data = json.loads(result)
+    except (TypeError, ValueError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    data["calculation_check"] = ("started without a dialog, setup and "
+                                 "resources checked: " + "; ".join(notes))
+    return json.dumps(data)
+
+
+def _mcp_calculation_verdict(base: str, args: dict):
+    """calc_policy's verdict for an ops tool that starts a calculation.
+
+    ``submit_calculation`` (ORCA and DELFIN mode), ``run_orca_input`` and a
+    plain ``pipeline_run`` on a CONTROL.txt are checked; every other tool
+    (a recalc, --define, extra arguments, the other workflow runners) is
+    not, and returns None: the dialog stays. So does
+    delfin-tools ``run_application``/``submit_application``: an
+    application's ``inputs`` are its own schema, which carries no charge,
+    spin or geometry this check could read.
+    """
+    try:
+        from . import calc_policy
+        a = args or {}
+        if base == "submit_calculation" and str(a.get("mode") or "delfin") \
+                == "orca":
+            return calc_policy.judge_orca_submission(
+                Path(str(a.get("folder") or "")), int(a.get("pal") or 12),
+                int(a.get("maxcore") or 6000),
+                str(a.get("time_limit") or "12:00:00"))
+        if base == "run_orca_input" and a.get("input_file"):
+            return calc_policy.judge_orca_run(Path(str(a["input_file"])))
+        if base == "submit_calculation" and str(a.get("mode") or "delfin") \
+                == "delfin":
+            return calc_policy.judge_delfin_submission(
+                Path(str(a.get("folder") or "")), int(a.get("pal") or 12),
+                int(a.get("maxcore") or 6000),
+                str(a.get("time_limit") or "12:00:00"))
+        if base == "pipeline_run":
+            control = Path(str(a.get("control_file") or "CONTROL.txt"))
+            if (a.get("define") or a.get("extra_args") or a.get("overwrite")
+                    or control.name != "CONTROL.txt"):
+                return None
+            return calc_policy.judge_delfin_run(control.parent if str(
+                control.parent) not in ("", ".") else Path.cwd())
+    except Exception:
+        return None
+    return None
+
+
+def _is_honoured_dry_run(name: str, arguments) -> bool:
+    """True when ``check_only`` on this call is a dry run its executor runs.
+
+    Only the native ``apply_patch`` has one (``git apply --check``). On any
+    other tool, and on every MCP tool, the flag is an argument the executor
+    may ignore -- an MCP server drops a key its schema does not name and
+    performs the call -- so it decides nothing.
+    """
+    return name == "apply_patch" and bool((arguments or {}).get("check_only"))
+
+
 def _bare_tool_name(name: str) -> str:
     """A namespaced ``mcp__server__tool`` reduced to its tool name.
 
@@ -8171,6 +8552,11 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # The account key and the pins beside it (trust_store): DELFIN's own
     # processes outside agent sessions read them, no agent route does.
     "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
+    "messenger_sessions", "messenger_sessions/**",
+    "**/messenger_sessions", "**/messenger_sessions/**",
+    # The user's schedules: written and confirmed by the user only.
+    "user_schedules", "user_schedules/**",
+    "**/user_schedules", "**/user_schedules/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -8675,6 +9061,62 @@ def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
     return cmd[i:], len(cmd)
 
 
+def _strip_heredoc_bodies(cmd: str) -> str:
+    """``cmd`` with every here-document body (and its ``<<tag`` token) gone.
+
+    A heredoc body is DATA -- the program the interpreter runs, or file
+    content delivered to cat/tee -- never a shell argument of the outer
+    command. When the read scan shlex-split it together with the command
+    line, a string in the body was asked about as an outside-workspace
+    read: ``python - <<'PY' … '/agent' … PY`` asked about the nonexistent
+    /agent, and a body carrying ``'/'`` asked about the filesystem root --
+    approving the second would have opened the whole filesystem for the
+    session (2026-10-29). Blanked so the read scan never sees it.
+
+    Only the body lines and the ``<<tag`` token are removed. The REST of
+    the redirect's own line is kept verbatim: ``cat <<EOF > /outside/x``
+    must still let the write gate see ``/outside/x``, and
+    ``python - <<'PY'; cat /outside/secret`` must still let the read scan
+    see ``/outside/secret``. Blanking the whole ``<<tag … tag`` span would
+    hide both -- a new hole. When there is no newline at all the body is
+    empty (``cat <<EOF > /outside/x`` in one line), so only the token is
+    removed and ``/outside/x`` stays. Position is preserved so upstream
+    offset-based annotations keep their meaning. Here-strings (``<<<``)
+    need no terminator and are left as they are.
+    """
+    out: list[str] = []
+    i, n = 0, len(cmd)
+    while i < n:
+        if cmd[i:i + 3] == "<<<":
+            # A here-STRING needs no terminator and is ordinary text here;
+            # stepping one or two of its three `<<` would let the rest be
+            # re-read as a heredoc named after the string's first word.
+            out.append(cmd[i:i + 3])
+            i += 3
+            continue
+        if cmd[i:i + 2] == "<<":
+            consumed = _consume_heredoc(cmd, i)
+            if consumed is None:
+                out.append(cmd[i])
+                i += 1
+                continue
+            _, end = consumed
+            m = _HEREDOC_START_RE.match(cmd, i)
+            token_end = m.end() if m is not None else i + 2
+            nl = cmd.find("\n", token_end, end)
+            out.append(" " * (token_end - i))      # the <<TAG token
+            if nl == -1:
+                out.append(cmd[token_end:end])     # one line, no body: keep it all
+            else:
+                out.append(cmd[token_end:nl + 1])  # the redirect line's own words
+                out.append(" " * (end - (nl + 1))) # blank the body lines
+            i = end
+            continue
+        out.append(cmd[i])
+        i += 1
+    return "".join(out)
+
+
 def _lines_from(text: str, start: int):
     """(offset, line) for each line of *text* from *start*, no newlines."""
     pos = start
@@ -8930,7 +9372,19 @@ def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
     if (not ok and isinstance(away, dict) and token
             and _DocToolExecutor._confirm_timed_out(perms)):
         away[kind] = token
+    elif not ok and token:
+        _note_refusal_in_turn(perms)
     return ok
+
+
+def _note_refusal_in_turn(perms) -> None:
+    """The user said no in this turn (_confirm_widening reads it)."""
+    try:
+        token = getattr(perms, "turn_token", 0)
+        if token:
+            perms.approval_refused_turn = token
+    except Exception:
+        pass
 
 
 def _not_asked_again_note() -> str:
@@ -9002,6 +9456,12 @@ class KitToolPermissions:
     # sub-agent receives through dataclasses.replace stays its own.
     # remember() stores it as the note's ``read_before``.
     turn_untrusted_sources: tuple[str, ...] = ()
+    # The engine turn the tool calls belong to, as an opaque key the
+    # engine renews at every turn start (AgentEngine.stream_response).
+    # The step journal (step_journal.auto_start) opens its next turn
+    # number when the key changes; empty means "continue the current
+    # one", the behaviour of a caller that has no turns.
+    step_turn_key: str = ""
     # The swarm run this agent belongs to (swarm_memory): set by the
     # orchestrator through DELFIN_SWARM_RUN, or at the first delegation
     # (subagents._derive_perms), and copied to every child by the
@@ -9075,6 +9535,18 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # The classifier's resolved model ids, set by the client's
+    # ``_attach_classifier_runner`` (model_capabilities): ``classifier_model``
+    # is the PRIMARY, asked first; ``classifier_confirm_models`` the ALLOW-
+    # confirmation chain of other families, in bench order (see the "allow
+    # needs two families" rule in _classifier_second_opinion). Empty tuple =
+    # the primary decides alone (no second family served, or an explicit
+    # configured model). Leaves both unset for callers that drive
+    # _classifier_second_opinion directly (tests), which then use a single
+    # cfg["model"] -- the old behaviour. Dataclass fields so a sub-agent's
+    # copy (dataclasses.replace) carries the same models.
+    classifier_model: Optional[str] = None
+    classifier_confirm_models: tuple = ()
     # Keys of actions the USER approved in a second-opinion dialog: not
     # asked again in this session (see _classifier_second_opinion).
     classifier_user_allowed: set = field(default_factory=set)
@@ -9197,6 +9669,10 @@ class KitToolPermissions:
     #: mapped to the turn_token it expired in (_ask_confirm). Shared by
     #: reference with sub-agents (dataclasses.replace) like denied_actions.
     approval_away: dict = field(default_factory=dict)
+    #: The turn_token of the turn in which the user last refused a dialog
+    #: (_ask_confirm, the widening dialogs): a request to widen the agent's
+    #: own permissions right after a refusal is not asked (_confirm_widening).
+    approval_refused_turn: int = 0
     # Directories a single approved outside-workspace READ opened for the
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
@@ -9517,6 +9993,9 @@ class KitToolPermissions:
         session has no business reading either, and "reachable" is what
         every read gate is built on.
         """
+        # The session scratch dir is NOT a file-tool root: it is private
+        # shell-state (TMPDIR for caged commands); the file tools use the
+        # workspace, so a locked scope reaches only the workspace.
         if self.scope_locked:
             return (self.workspace,)
         return (self.all_workspace_roots()
@@ -10685,9 +11164,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "show_molecule",
             "description": (
-                "Show an .xyz (multi-frame too) or .cube file as a rotatable "
-                "3D viewer in the chat; isovalue is the cube's isosurface "
-                "(default 0.02)."
+                "Show .xyz (multi-frame too) or .cube in 3D, .smi/.mol/.sdf "
+                "as a structural formula, in the chat; isovalue: cube "
+                "isosurface (default 0.02)."
             ),
             "parameters": {
                 "type": "object",
@@ -12113,8 +12592,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "cron_create",
             "description": (
-                "Create a recurring invocation on a fixed ``every_seconds`` "
-                "interval (no cron expressions). Survives restarts."
+                "Recurring run every every_seconds; or ``at`` "
+                "('daily 07:30', cron): proposed to the user."
             ),
             "parameters": {
                 "type": "object",
@@ -12122,6 +12601,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "every_seconds": {
                         "type": "integer",
                         "minimum": 60,
+                    },
+                    "at": {
+                        "type": "string",
                     },
                     "prompt": {
                         "type": "string",
@@ -12133,7 +12615,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "boolean",
                     },
                 },
-                "required": ["every_seconds", "prompt"],
+                "required": ["prompt"],
             },
         },
     },
@@ -14891,8 +15373,13 @@ def _classifier_settings() -> Optional[dict]:
         return None
     from . import action_classifier as _ac
     rules = cfg.get("user_rules")
+    # ``explicit_model``: the user actually set agent.classifier.model. When
+    # false the model is the default and the classifier is moved onto a fast
+    # model from a family different from the session's (model_capabilities).
+    explicit_model = bool(str(cfg.get("model") or "").strip())
     return {
         "model": str(cfg.get("model") or "").strip() or _ac.DEFAULT_MODEL,
+        "explicit_model": explicit_model,
         "broad": broad,
         "rules": [str(r) for r in rules if str(r or "").strip()][:20]
         if isinstance(rules, (list, tuple)) else [],
@@ -16446,6 +16933,49 @@ def _syntax_regression_note(path: Path, before: str, after: str) -> str:
             "it parsed before this edit.")
 
 
+def _diagnostics_note(path: Path, workspace, old_text: "Optional[str]") -> str:
+    """LSP1: language diagnostics for the file AS IT NOW STANDS, minus
+    the findings its PRE-EDIT text already had. Appended to a successful
+    edit/write result the way _syntax_regression_note is — reported,
+    never refused. Computed from ``old_text`` already in hand at the
+    call site (the write path journals it right after via
+    _capture_change); the undo journal is NOT read back.
+
+    No try/except here on purpose: check_detailed is contractually
+    never-raises, and a broad catch would only hide a wiring bug
+    (wave-17 lesson 5). A missing tool surfaces as the one-line
+    "diagnostics unavailable" note ONCE per session (the flag lives in
+    diagnostics.py), then the block stays silent."""
+    result = _diag_check_detailed(path, workspace, old_text)
+    lines = []
+    for d in result.diagnostics:
+        sev = d.severity
+        if d.line > 0:
+            loc = f"{d.line}:{d.column}" if d.column else str(d.line)
+        else:
+            # A tool without location info (degenerate shapes, s15 note):
+            # no invented "0:" prefix.
+            loc = "-"
+        lines.append(f"  {loc} {d.code} [{sev}] {d.message}")
+    if not lines:
+        if result.note:
+            # The once-per-session "diagnostics unavailable: <why>" line:
+            # without this the first edit would consume the note and
+            # nobody would ever see it (operator ruling v2, 2026-10-18).
+            return f"\n\nDiagnostics after this edit: {result.note}"
+        return ""
+    body = "\n".join(lines)
+    return f"\n\nDiagnostics after this edit:\n{body}"
+
+
+def _diag_check_detailed(path: Path, workspace, old_text: "Optional[str]"):
+    """Import + call check_detailed once, so the wiring has exactly one
+    place that names diagnostics.py. ImportError here is a wiring bug a
+    test must see, not something to swallow."""
+    from . import diagnostics as _diag
+    return _diag.check_detailed(path, workspace, old_text=old_text)
+
+
 def _language_hint_for_write(path: Path, text: str,
                              inserted: Optional[list] = None) -> str:
     """Advisory note for a successful write/edit whose new code carries
@@ -17116,7 +17646,7 @@ class _DocToolExecutor:
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not _plan_mode_admits_for_delegate(name, permissions)
-                and not bool((arguments or {}).get("check_only"))):
+                and not _is_honoured_dry_run(name, arguments)):
             # Plan mode, deny-by-default. One gate covering everything the
             # per-family refusals had not been remembered into -- future
             # agent turns, worktrees that widen the live permissions,
@@ -17126,7 +17656,8 @@ class _DocToolExecutor:
             # It sits AFTER the role check on purpose: a role that can
             # NEVER use a tool should be told that, not told it is merely
             # the wrong mode. The more permanent reason is more useful.
-            # A check_only call is a dry run and stays allowed.
+            # A check_only call stays allowed where the executor performs
+            # the dry run (_is_honoured_dry_run).
             _record_gate_refusal("plan_mode", name, "")
             result = json.dumps({"error": _plan_mode_refusal(
                 _bare_tool_name(name))})
@@ -17158,8 +17689,37 @@ class _DocToolExecutor:
             # call the schema cannot accept is answered with its shape.
             result = json.dumps({"error": _malformed})
         else:
-            result = self._dispatch_under_rules(
-                name, arguments, permissions, rule_hit)
+            # DR1 step journal: the call is about to RUN for real (past
+            # every refusal). One bracket, start before / finish after,
+            # per the package ruling. auto_start/auto_finish promise
+            # never to raise (step_journal.py:233), so this hook has no
+            # broad except-wrap: a wiring bug (ImportError, renamed
+            # function) fails a test instead of silently turning the
+            # journal off (wave-17 lesson 5). The only guarded path is
+            # the dispatch itself: a raising dispatch closes the bracket
+            # as failed so the step cannot read as open forever, and the
+            # exception is re-raised unchanged.
+            from . import step_journal as _step_journal
+            _sid = str(getattr(permissions, "task_session_id", "") or "")
+            _dr1_step = None
+            if _sid:
+                _dr1_step = _step_journal.auto_start(
+                    _sid, tool=name, arguments=arguments,
+                    turn_key=str(getattr(permissions, "step_turn_key", "")
+                                 or "") or None)
+            try:
+                result = self._dispatch_under_rules(
+                    name, arguments, permissions, rule_hit)
+            except Exception:
+                if _dr1_step is not None:
+                    _step_journal.auto_finish(
+                        _sid, _dr1_step, ok=False, result="raised")
+                raise
+            if _dr1_step is not None:
+                _step_journal.auto_finish(
+                    _sid, _dr1_step,
+                    ok=not str(result).startswith('{"error"'),
+                    result=result)
 
         # Track mtime after a successful read so the write tools can verify
         # the file hasn't changed since the agent last read it. read_document
@@ -17598,12 +18158,16 @@ class _DocToolExecutor:
             # command, cwd, deny-list, secret scanner, and auto-allow
             # check are identical; only the execution model differs.
             _caged: list = []
+            _calc_notes: list = []
+            _approved: list = []     # filled by the gate on a human yes
             if permissions is not None:
-                gate_name = "bash" if name == "bash_background" else name
-                gate_err = self._run_permission_gate(
-                    gate_name, arguments, permissions,
-                    **({"caged_admission": _caged} if gate_name == "bash"
-                       else {}))
+                if name in ("bash", "bash_background"):
+                    gate_err = self._gate_bash_call(name, arguments,
+                                                    permissions, _caged,
+                                                    _calc_notes, _approved)
+                else:
+                    gate_err = self._run_permission_gate(
+                        name, arguments, permissions)
                 if gate_err is not None:
                     return json.dumps({"error": gate_err})
             # The network tools and run_tests only needed the gate; their
@@ -17619,12 +18183,20 @@ class _DocToolExecutor:
                 if _caged:
                     return self._execute_bash(arguments, permissions,
                                               caged_unasked=True)
-                return self._execute_bash(arguments, permissions)
+                return _with_calculation_note(
+                    self._execute_bash(arguments, permissions,
+                                       **({"approved": True} if _approved
+                                          else {})),
+                    _calc_notes)
             if name == "bash_background":
                 if _caged:
                     return self._execute_bash_background(
                         arguments, permissions, caged_unasked=True)
-                return self._execute_bash_background(arguments, permissions)
+                return _with_calculation_note(
+                    self._execute_bash_background(
+                        arguments, permissions,
+                        **({"approved": True} if _approved else {})),
+                    _calc_notes)
 
         # Document writes. The per-path write gate runs inside the
         # executors: edit_sheet gates the file it edits, fill_pdf_form
@@ -20404,7 +20976,8 @@ class _DocToolExecutor:
         return None
 
     def _check_read_access(
-        self, perms: "KitToolPermissions", path: Path, label: str = ""
+        self, perms: "KitToolPermissions", path: Path, label: str = "",
+        command: str = "",
     ) -> Optional[str]:
         """Gate read-style tools (read_file, grep_file).
 
@@ -20420,6 +20993,13 @@ class _DocToolExecutor:
             resolved = path.expanduser().resolve()
         except Exception:
             resolved = path
+
+        # A path the run hides from its cage (DELFIN_CAGE_HIDE) is refused
+        # like a secret: no root, grant or confirmation reaches it.
+        if _is_run_hidden(Path(resolved)):
+            _record_gate_refusal("run_hidden", "", str(label or resolved))
+            return (f"read denied: '{label or resolved}' is hidden from this "
+                    "run (DELFIN_CAGE_HIDE).")
 
         # Build the string we test against deny-globs: workspace-relative
         # when possible (so globs like ".env" match), else absolute. READS are
@@ -20544,10 +21124,20 @@ class _DocToolExecutor:
         _grant_dir = resolved if _is_dir else resolved.parent
         _grantable = _is_grantable_read_dir(_grant_dir)
         _what = "directory" if _is_dir else "file"
+        # A shell command's read names the command too: the path alone does
+        # not say what the yes lets run. Masked like a tool result, cut to
+        # 400 characters.
+        _cmd_line = ""
+        if command:
+            _shown = _redact_tool_result(str(command))
+            if len(_shown) > 400:
+                _shown = _shown[:400] + " …"
+            _cmd_line = f"It is read by this shell command:\n  {_shown}\n\n"
         preview = (
             "[OUTSIDE-WORKSPACE READ]\n"
             f"The agent wants to read a {_what} outside the allowed roots:\n"
             f"  {resolved}\n\n"
+            + _cmd_line
             + (("Approving allows READING this file and other files in\n"
                 if not _is_dir else
                 "Approving allows READING the files in\n")
@@ -20632,8 +21222,25 @@ class _DocToolExecutor:
         nothing more, and the reason arrived -- if at all -- as a message
         after the turn that needed it.
         """
+        changed = cls._changed_to(perms)
+        if changed:
+            return (" The user did not drop the task: they changed the command. "
+                    "Run the changed command below next, exactly as written and "
+                    "with the same tool; it is approved once as written, and any "
+                    "other change is asked again.\nChanged command:\n" + changed)
         why = cls._refusal_reason(perms)
         return f" The user said why: {why}" if why else ""
+
+    @staticmethod
+    def _changed_to(perms: "KitToolPermissions") -> str:
+        """The command the user changed THIS refusal's dialog to, or ""
+        (``TerminalConfirmBroker.last_changed_to``; read like the reason)."""
+        try:
+            return str(getattr(
+                getattr(perms.confirm_callback, "__self__", None),
+                "last_changed_to", "") or "")
+        except Exception:
+            return ""
 
     @staticmethod
     def _refuse_write(perms: "KitToolPermissions", path: str, name: str,
@@ -20739,8 +21346,35 @@ class _DocToolExecutor:
             _self = getattr(perms.confirm_callback, "__self__", None)
             if _self is not None:
                 _self.last_refusal_reason = ""
+                if hasattr(_self, "last_changed_to"):
+                    _self.last_changed_to = ""
         except Exception:
             pass
+
+    @staticmethod
+    def _shell_write_command_line(name: str, args: dict,
+                                  rel_str: str) -> str:
+        """A bash write request seen whole: the command and the file.
+
+        A shell request targeting a protected/calc/store file reached an
+        approval whose body was only the guard's warning text -- the
+        command lived elsewhere on the record and `approvals show` did
+        not print it, so an approval one could not read was one one
+        could not give. This line names the command (credentials masked,
+        cut to 400 characters with a marker when cut) and the file it
+        would write, exactly as the outside-read preview of a shell read
+        does. Empty for any non-shell tool: a write tool shows its diff
+        instead.
+        """
+        if name != "bash":
+            return ""
+        _cmd = str(args.get("command") or "").strip()
+        _shown = _redact_tool_result(_cmd) if _cmd else ""
+        if len(_shown) > 400:
+            _shown = _shown[:400] + " …"
+        return (
+            f"It would be run as:\n  {_shown}\n\n"
+            f"It writes:\n  {rel_str}\n\n")
 
     def _gate_write_path(
         self, path_arg: str, perms: "KitToolPermissions",
@@ -20937,12 +21571,16 @@ class _DocToolExecutor:
             _cannot = self._edit_cannot_apply(name, args, resolved, perms)
             if _cannot:
                 return _cannot
+            # A bash request names the command and the file it would
+            # write; a write tool shows its diff instead ("" for bash).
+            _shell_line = self._shell_write_command_line(name, args, rel_str)
             if _is_gitcfg:
                 preview = (
                     "[GIT CONFIGURATION FILE]\n"
                     "git reads this file as configuration: it can name a "
                     "filter, diff driver or hook program that the next "
                     "git status or git add runs.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif _is_store:
@@ -20951,6 +21589,7 @@ class _DocToolExecutor:
                     "Later sessions are shown this file: shared lessons or "
                     "stored memory. Approving lets the agent change what "
                     "they are told.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_protected:
@@ -20959,6 +21598,7 @@ class _DocToolExecutor:
                     "This file is part of the agent's own safety layer.\n"
                     "Approving this will let the agent rewrite the code that "
                     "controls its own permissions.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             elif is_calc:
@@ -20966,6 +21606,7 @@ class _DocToolExecutor:
                     "[CALC EDIT — STORED CALCULATION]\n"
                     "This file is under calc (an active/stored calculation). "
                     "Approving this lets the agent modify it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             else:
@@ -20973,6 +21614,7 @@ class _DocToolExecutor:
                     "[REFUSED EARLIER]\n"
                     "You refused a write to this file earlier in this "
                     "session. This is a different change to it.\n\n"
+                    + _shell_line
                     + self._build_change_preview(name, args, resolved)
                 )
             try:
@@ -21114,12 +21756,26 @@ class _DocToolExecutor:
         if state.get("turn") != turn:
             state.clear()
             state.update(turn=turn, allowed=set(), refused=set(),
-                         refusals=0, calls=[], stalled=False)
+                         refusals=0, calls=[], stalled_models=set())
         # The lockout holds at every point that reaches this method, in
         # every scope: after three refusals an auto-allowed command or an
         # auto-accepted edit waits for the user too. No model call.
         if int(state.get("refusals") or 0) >= _CLASSIFIER_REFUSALS_PER_TURN:
             _record_security_event("classifier_refuse", base, shown)
+            if perms.confirm_callback is None:
+                # AM1 unattended mode: nobody can be asked, so the lock
+                # does not wait for a person who is not there. The policy
+                # (unattended_policy.decide) says pause: one fire-and-
+                # forget operator message, then stop the turn cleanly.
+                _record_security_event(
+                    "unattended_pause", base, shown)
+                return (
+                    f"'{base}' ({shown}) was not run: three actions were "
+                    "refused in this turn. Unattended mode: the session "
+                    "is PAUSED — queue ONE session_message to 'operator' "
+                    "with the three refusals and their reasons, then end "
+                    "your turn. Do not wait for an answer; do not retry "
+                    "any refused action in another spelling.")
             return (
                 f"'{base}' ({shown}) was not run: three actions were "
                 "refused in this turn, so nothing but reading runs until "
@@ -21204,35 +21860,84 @@ class _DocToolExecutor:
             "task": task,
             "recent_user": earlier,
             "recent_calls": list(state["calls"][-6:]),
+            # Where the command runs: the routine shapes that look at the
+            # tree (an existing branch, GT1) look there, not in the cwd.
+            "workspace": str(getattr(perms, "workspace", "") or ""),
         }
         state["calls"].append({"tool": base, "args": shown})
         failed: list = []
         called: list = []
 
+        # The classifier's models. ``_primary`` decides first; its own
+        # refuse/ask stands at once, and an ALLOW is confirmed by a model of
+        # another family (``_confirm``, in bench order) -- "allow needs two
+        # families". cfg["model"] is the configured or default; perms carried
+        # the client's independence choice (model_capabilities). Tests and
+        # direct drivers leave perms unset and fall back to a single model
+        # (no confirmation) -- the old behaviour.
+        _primary = str(getattr(perms, "classifier_model", None)
+                       or cfg.get("model") or _ac.DEFAULT_MODEL)
+        _confirm = tuple(getattr(perms, "classifier_confirm_models", None)
+                         or ())
+        # A confirm slot identical to the primary is not a second opinion:
+        # it would only re-ask the same family. Drop it.
+        _confirm = tuple(c for c in _confirm if c != _primary)
+
+        # Effective decision chain: the primary, then the confirm families.
+        # A model stalled within the probe window is skipped, so one slow
+        # model does not latch every action of the turn -- the next usable
+        # model (the confirm family) takes over. All _CLASSIFIER_MODELS are
+        # different families, so a promoted confirm is still "another family"
+        # than the one that allowed.
+        _last_attempt = health.get("last_attempt_at")
+        _recent = (_last_attempt is not None and _classifier_clock()
+                   - _last_attempt < _CLASSIFIER_PROBE_INTERVAL_S)
+        _stalled = state.setdefault("stalled_models", set())
+        _chain = []
+        for _m in [_primary] + list(_confirm):
+            if _m in _chain or (_recent and _m in _stalled):
+                continue
+            _chain.append(_m)
+        # The first usable model is asked first; an ALLOW is confirmed by a
+        # latter one. Empty chain (everything latched) falls back to asking
+        # the primary, whose _bounded then raises -> on_error (ask/refuse).
+        _ask = _chain[0] if _chain else _primary
+        _confirms = _chain[1:] if _chain else ()
+
         def _bounded(prompt: str, model: str) -> str:
-            # The runner is the client's; the bound is the gate's, so a
-            # runner that hangs cannot hold an action for minutes. After
-            # one timeout in a turn, or while the watcher is down, the
-            # model is not waited for again until the probe interval has
-            # passed: the error behaviour applies at once (user rules and
-            # the claim guard still run, they need no model).
+            # Exactly ONE model per call (the primary, or one step of the
+            # confirmation chain, chosen by the caller). The runner is the
+            # client's; the bound is the gate's, so a runner that hangs cannot
+            # hold an action for minutes. A stall latches only THIS model
+            # (``state["stalled_models"]``), probed again after
+            # _CLASSIFIER_PROBE_INTERVAL_S, so one slow model does not block
+            # the others.
+            #
+            # ``_reasons`` is local: merged into the outer ``failed`` only
+            # when this single call gave no verdict, so a successful verdict
+            # never records a watcher failure.
+            _reasons: list = []
             last = health.get("last_attempt_at")
             recent = (last is not None and _classifier_clock() - last
                       < _CLASSIFIER_PROBE_INTERVAL_S)
-            if (health.get("down") or state.get("stalled")) and recent:
-                failed.append("down" if health.get("down") else "stalled")
-                raise TimeoutError(
-                    "no verdict: the watcher is down" if health.get("down")
-                    else "no verdict: the model timed out earlier in this "
-                    "turn")
+            if (health.get("down") or model in state.setdefault(
+                    "stalled_models", set())) and recent:
+                _reasons.append("down" if health.get("down") else "stalled")
+                failed.extend(_reasons)
+                raise TimeoutError("model latched this turn")
             for attempt in (1, 2):
                 health["last_attempt_at"] = _classifier_clock()
                 called.append(attempt)
                 box: dict = {}
 
-                def _work() -> None:
+                def _work(box=box, m=model) -> None:
+                    # Bind the worker'S OWN box and model: a timed-out thread
+                    # for an earlier model keeps running, and when it finishes
+                    # it must write its OWN box, not the current model's.
+                    # Late binding would let model A's late answer -- or A's
+                    # exception -- land in model B's result.
                     try:
-                        box["out"] = runner(prompt, model)
+                        box["out"] = runner(prompt, m)
                     except BaseException as exc:      # noqa: BLE001
                         box["exc"] = exc
 
@@ -21242,20 +21947,23 @@ class _DocToolExecutor:
                 wait_s = _classifier_timeout_s()
                 worker.join(wait_s)
                 if worker.is_alive():
-                    failed.append("timeout")
-                    state["stalled"] = True
-                    raise TimeoutError(
-                        f"no verdict within {wait_s:.0f} s")
+                    state.setdefault("stalled_models", set()).add(model)
+                    _reasons.append("timeout")
+                    break  # this model timed out; no verdict
                 if "exc" in box:
                     if attempt == 1:
                         # One short retry: a dropped connection or a 502
                         # from the proxy is usually gone a moment later.
                         time.sleep(_CLASSIFIER_RETRY_DELAY_S)
                         continue
-                    failed.append(type(box["exc"]).__name__)
+                    _reasons.append(type(box["exc"]).__name__)
+                    failed.extend(_reasons)
+                    # The model's own error, so the watcher's status names
+                    # the real cause (ConnectionError, not "no verdict").
                     raise box["exc"]
                 return str(box.get("out") or "")
-            raise TimeoutError("no verdict")      # pragma: no cover
+            failed.extend(_reasons)
+            raise TimeoutError("no verdict")
 
         # The watcher failing. An action that leaves the workspace asks,
         # or is refused when nobody can be asked: the second look was the
@@ -21278,11 +21986,46 @@ class _DocToolExecutor:
                 verdict = (_ac.screen(screened, context, cfg["rules"])
                            or _ac.Verdict(
                                "allow", "screened without the model."))
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # A screened verdict is not a model's opinion: it is a
+                # deterministic allow (or a user rule), so no second-family
+                # confirmation is owed for it.
             else:
                 verdict = _ac.judge(
-                    action, context, model=cfg["model"], runner=_bounded,
+                    action, context, model=_ask, runner=_bounded,
                     rules=cfg["rules"], default_on_error=on_error)
-            decision, reason = verdict.decision, str(verdict.reason or "")
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # "allow needs two families": the first model's own refuse/ask
+                # stands (decision is not "allow"), but an ALLOW is confirmed
+                # by a model of another family before it is granted. Gate the
+                # confirmation on the ORIGINAL _confirm (a second family is
+                # served at all) and iterate the usable _confirms. A confirm
+                # that gives no verdict (latched, timed out, failed) is
+                # skipped for the next; if NONE does, the allow is NOT granted
+                # -- it asks (or refuses when nobody can be asked). Never
+                # allowed on one vote when a second family was available; a
+                # lone allow stands only when _confirm was empty from the
+                # start (one family served, today's behaviour).
+                if decision == "allow" and _confirm:
+                    confirmed = False
+                    for cm in _confirms:
+                        vc = _ac.judge(
+                            action, context, model=cm, runner=_bounded,
+                            rules=cfg["rules"], default_on_error=on_error)
+                        if str(vc.reason or "").startswith(_ac.ERROR_PREFIX):
+                            continue  # this confirm gave no verdict; try next
+                        decision, reason = (vc.decision,
+                                            str(vc.reason or ""))
+                        confirmed = True
+                        break
+                    if not confirmed:
+                        # A second family was available but never gave a firm
+                        # verdict: not allowed on one vote.
+                        decision = "ask" if can_ask else "refuse"
+                        reason = ("the confirming model could not answer, so "
+                                  "the action needs two families to allow and "
+                                  "asks.")
+                        failed.append("no-confirmation")
         except Exception as exc:
             failed.append(type(exc).__name__)
             decision, reason = on_error, f"classifier error: {exc}"
@@ -21446,9 +22189,43 @@ class _DocToolExecutor:
         except Exception:
             return None
 
+    def _gate_bash_call(self, name: str, args: dict,
+                        perms: "KitToolPermissions",
+                        caged_admission: Optional[list] = None,
+                        calc_notes: Optional[list] = None,
+                        approval_seen: Optional[list] = None,
+                        ) -> Optional[str]:
+        """The bash gate for ``bash`` and ``bash_background``.
+
+        The two share the gate; they differ in the wall-time limit the run
+        will have, which calc_policy needs for a local calculation on a
+        login node: the foreground tool's timeout (capped at
+        ``bash_max_timeout_s``) or the background job's ``timeout_s``
+        (capped at bash_jobs' 24 h).
+        """
+        try:
+            if name == "bash_background":
+                from .bash_jobs import _DEFAULT_BG_TIMEOUT_S as _bg_cap
+                wall = min(float(args.get("timeout_s") or _bg_cap),
+                           float(_bg_cap))
+            else:
+                wall = float(max(1, min(
+                    int(args.get("timeout_s", perms.bash_timeout_s)
+                        or perms.bash_timeout_s),
+                    perms.bash_max_timeout_s)))
+        except (TypeError, ValueError):
+            wall = None
+        return self._run_permission_gate(
+            "bash", args, perms, caged_admission=caged_admission,
+            wall_limit_s=wall, calc_notes=calc_notes,
+            approval_seen=approval_seen)
+
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions",
         *, caged_admission: Optional[list] = None,
+        wall_limit_s: Optional[float] = None,
+        calc_notes: Optional[list] = None,
+        approval_seen: Optional[list] = None,
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None.
 
@@ -22214,6 +22991,32 @@ class _DocToolExecutor:
                     "read_only_shape", "bash",
                     f"{_ros_shape}: {cmd[:80]}", blocked=False)
                 return self._classifier_second_opinion(perms, name, args, mode)
+            # A calculation (xtb, crest, orca, sbatch): calc_policy checks
+            # its setup and its resources on this host. Passed, it starts
+            # without a dialog and is named in the security-event panel;
+            # failed, it stays off the caged admission and the dialog (or
+            # the refusal when nobody can be asked) states the reason. An
+            # ask or deny rule of the user's keeps it in the dialog, and an
+            # upload the egress scan flagged is never admitted here.
+            _calc = _calculation_verdict(perms, cmd, args, wall_limit_s)
+            _calc_reason = ""
+            if _calc is not None and _calc.calculation:
+                _calc_rule = _permission_rule_hit(perms, "bash",
+                                                  {"command": cmd})
+                if _calc_rule is not None and _calc_rule[0] == "deny":
+                    return _refuse_by_rule("bash", _calc_rule[1])
+                if (_calc.admit and _calc_rule is None and egress is None
+                        and not _approved_here):
+                    _record_security_event(
+                        "calculation_admitted", "bash",
+                        _calc.summary[:200], blocked=False)
+                    verdict = self._classifier_second_opinion(
+                        perms, name, args, mode)
+                    if verdict is None and calc_notes is not None:
+                        calc_notes.append(_calc.summary)
+                    return verdict
+                if not _calc.admit:
+                    _calc_reason = _calc.reason
             # Off the list, but held by the cage: writes confined to the
             # session's roots with the protected files read-only, no process
             # outside visible, network through the egress policy. Every tier
@@ -22230,6 +23033,7 @@ class _DocToolExecutor:
                 return _refuse_by_rule("bash", _caged_rule[1])
             _cage_cwd = str(args.get("cwd") or "").strip()
             if (caged_admission is not None and not _approved_here
+                    and not _calc_reason
                     and not _allow_rule_names_bash(perms, name, args)
                     and _caged_command_may_run_unasked(cmd, perms, mode,
                                                        cwd=_cage_cwd)):
@@ -22270,6 +23074,8 @@ class _DocToolExecutor:
             if _approved_here:
                 # Asked above, with the whole command shown, after every
                 # hard tier and the publish readiness check.
+                if approval_seen is not None:
+                    approval_seen.append(True)
                 return None
             # An allow rule of the user's (permission_rules) answers the
             # dialog below -- and the head-less refusal after it, which is
@@ -22295,11 +23101,15 @@ class _DocToolExecutor:
                 # there, never asked as a read.
                 _cwd = str(args.get("cwd") or "").strip()
                 preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
+                if _calc_reason:
+                    preview += f"\nNot started unasked: {_calc_reason}"
                 try:
                     ok = bool(_ask_confirm(perms, "bash", {"command": cmd}, preview))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if ok:
+                    if approval_seen is not None:
+                        approval_seen.append(True)
                     return None
                 # Timeout is ABSENCE, not refusal — the two need different
                 # guidance (a "user denied, never retry" after every
@@ -22332,6 +23142,14 @@ class _DocToolExecutor:
             # refusal is recorded where an unattended run's owner looks.
             if getattr(perms, "unisolated_fallback", False):
                 return self._unisolated_fallback_verdict(perms, name, args)
+            if _calc_reason:
+                _record_gate_refusal("calculation_not_checked", "bash",
+                                     _calc_reason[:300])
+                return (
+                    f"bash: the calculation '{cmd[:120]}' was not started: "
+                    f"{_calc_reason}. Fix the setup or the resources and run "
+                    "it again, or tell the user what you want to run and "
+                    "why and let them approve it.")
             # default / acceptEdits without a UI callback (head-less / CLI):
             # the command must match an auto-allow regex; otherwise tell the
             # user the exact command and let them add an allow_pattern or switch
@@ -22612,8 +23430,7 @@ class _DocToolExecutor:
         # parse_orca_output, which is the investigation plan mode is for.
         if perms is not None and getattr(perms, "mode", "") == "plan":
             if (_bare_tool_name(name) not in _PLAN_READONLY_MCP_TOOLS
-                    and not _plan_mode_admits_for_delegate(name, perms)
-                    and not bool((args or {}).get("check_only"))):
+                    and not _plan_mode_admits_for_delegate(name, perms)):
                 _record_security_event("plan_mode_mcp", name, "", blocked=True)
                 # Same wording as the native gate, for the same reason:
                 # the check is a name against a list and the message may
@@ -22757,11 +23574,6 @@ class _DocToolExecutor:
         bypassPermissions through because that profile's promise is that it
         asks nothing.
         """
-        # A dry run changes nothing, so there is nothing to decide — the
-        # same exemption the plan-mode and native checks make.
-        if bool((args or {}).get("check_only")):
-            return None
-
         executes_code = base in _MCP_CODE_EXEC_TOOL_BASES
 
         # Arguments a code-writing tool cannot be allowed to carry, checked
@@ -22794,11 +23606,32 @@ class _DocToolExecutor:
             # Nobody is asked here; the second opinion is the one look.
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
+        # A calculation the ops server starts: the same check as the bash
+        # gate's (calc_policy). Passed, it runs without a dialog; failed,
+        # the dialog or the refusal below states the reason. A deny or ask
+        # rule naming the tool keeps it in the dialog.
+        calc_reason = ""
+        calc = _mcp_calculation_verdict(base, args or {})
+        if calc is not None and calc.calculation:
+            rule = _permission_rule_hit(perms, name, args or {})
+            if calc.admit and rule is None:
+                _record_security_event("calculation_admitted", name,
+                                       calc.summary[:200], blocked=False)
+                return self._classifier_second_opinion(
+                    perms, name, args or {}, mode)
+            if not calc.admit:
+                calc_reason = calc.reason
         # An allow rule of the user's naming this tool answers the question
         # below (and its head-less refusal); the second opinion still looks.
         if _rule_answers(perms, "tool", name):
             return self._classifier_second_opinion(
                 perms, name, args or {}, mode)
+        if perms.confirm_callback is None and calc_reason:
+            _record_security_event("mcp_side_effect", name, base, blocked=True)
+            return (f"'{name}' {what} and was not started unasked: "
+                    f"{calc_reason}. Fix the setup or the resources and call "
+                    "it again, or tell the user what you want to run and why "
+                    "and let them approve it.")
         if perms.confirm_callback is None:
             _record_security_event("mcp_side_effect", name, base, blocked=True)
             return (
@@ -22809,6 +23642,8 @@ class _DocToolExecutor:
                 "the Perms mode chip."
             )
         preview = f"{name}\n" + _preview_args(args)
+        if calc_reason:
+            preview += f"\nNot started unasked: {calc_reason}"
         try:
             ok = bool(_ask_confirm(perms, name, args or {}, preview))
         except Exception as exc:
@@ -23061,7 +23896,8 @@ class _DocToolExecutor:
         lang_hint = _language_hint_for_write(resolved, content)
         shape_note = ("\n\nNOTE: " + " ".join(write_notes)) if write_notes else ""
         return (f"File {action}: {disp}\n\n{diff}"
-                f"{test_hint}{lang_hint}{shape_note}")
+                f"{test_hint}{lang_hint}{shape_note}"
+                f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text if existed else None)}")
 
     def _execute_edit_file(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -23144,6 +23980,7 @@ class _DocToolExecutor:
                         f"{fm.strategy}{indent_note} — old_string did not "
                         f"match exactly; whitespace-tolerant fallback found "
                         f"a unique match):\n\n{diff}{lang_hint}"
+                        f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
                         f"{_syntax_regression_note(resolved, old_text, new_text)}"
                     )
         if count == 0 or (count > 1 and not replace_all):
@@ -23188,6 +24025,7 @@ class _DocToolExecutor:
         return (
             f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n"
             f"{diff}{test_hint}{lang_hint}"
+            f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
             f"{_syntax_regression_note(resolved, old_text, new_text)}"
         )
 
@@ -23302,6 +24140,7 @@ class _DocToolExecutor:
             f"Multi-edited {disp} "
             f"({len(edits)} edit(s), {total} replacement(s) total"
             f"{fuzzy_note}):\n\n{diff}{test_hint}{lang_hint}"
+            f"{_diagnostics_note(resolved, getattr(perms, 'workspace', None), old_text)}"
             f"{_syntax_regression_note(resolved, old_text, text)}"
         )
 
@@ -23482,17 +24321,36 @@ class _DocToolExecutor:
                 "remember_permission needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
-        try:
-            ok = bool(perms.confirm_callback(
-                "remember_permission",
-                {"kind": kind, "value": value, "scope": scope,
-                 "rationale": rationale},
-                preview,
-            ))
-        except Exception as exc:
-            return json.dumps({"error": f"confirm_callback raised: {exc}"})
-        if not ok:
-            return json.dumps({"status": "denied", "kind": kind, "value": value})
+        call_args = {"kind": kind, "value": value, "scope": scope,
+                     "rationale": rationale}
+        if kind == "deny_pattern":
+            # Narrows what the agent may do: one ordinary question.
+            try:
+                ok = bool(perms.confirm_callback(
+                    "remember_permission", call_args, preview))
+            except Exception as exc:
+                return json.dumps({"error": f"confirm_callback raised: {exc}"})
+            if not ok:
+                return json.dumps({"status": "denied", "kind": kind, "value": value})
+        else:
+            where = ("in every project" if scope == "user"
+                     else f"in {perms.workspace}")
+            plain = {
+                "allow_pattern": (
+                    f"Shell commands matching {value} will run WITHOUT asking "
+                    f"you, {where}, in this and every later session."),
+                "extra_dir": (
+                    f"The agent may WRITE in {value} and everything below it, "
+                    f"{where}, in this and every later session."),
+                "default_mode": (
+                    f"Every later session starts in mode '{value}'"
+                    + (", in which the agent acts WITHOUT asking you."
+                       if value in ("bypassPermissions", "all_free") else ".")),
+            }[kind]
+            refused = self._confirm_widening(
+                perms, "remember_permission", call_args, preview, plain)
+            if refused is not None:
+                return refused
 
         # Apply the change to disk and to the live permissions.
         try:
@@ -23536,6 +24394,51 @@ class _DocToolExecutor:
             "scope": scope,
             "path": scope_path,
         })
+
+    def _confirm_widening(self, perms: "KitToolPermissions", tool: str,
+                          args: dict, preview: str, plain: str) -> Optional[str]:
+        """Ask twice, plainly, before the agent's own permissions widen.
+
+        Input: the call (an allow pattern, a workspace root, a starting
+        mode, a bundle of them) and ``plain``, what a yes means in words a
+        person who does not read regexes understands. Output: None when the
+        user said yes twice, else the tool's answer (refused or denied).
+
+        The model writes both the rule and the rationale the user reads,
+        and one y made it permanent for every later session. Measured
+        2026-10-23: refused a write, a model answered with
+        remember_permission_bundle -- a workspace root under /tmp and ten
+        auto-allow patterns into the user's settings. So: the question says
+        in its first line that the agent asks for more rights, permanently;
+        a second question asks again; and right after the user refused
+        something in this turn it is not asked at all.
+        """
+        token = getattr(perms, "turn_token", 0)
+        if token and getattr(perms, "approval_refused_turn", 0) == token:
+            _record_security_event("widening_after_refusal", tool,
+                                   plain[:120], blocked=True)
+            return json.dumps({"error": (
+                f"{tool} is refused: the user said no to something in this "
+                "turn, and a request for more permissions right after a no "
+                "is not put to them. Do not try another route to the same "
+                "permission. Tell the user what you need and why; they can "
+                "grant it themselves.")})
+        first = (f"{_WIDENING_BANNER}\n{plain}\n"
+                 "The agent wrote the reason below itself. If you are not "
+                 f"sure, answer no.\n\n{preview}")
+        second = (f"{_WIDENING_AGAIN}\n{plain}\n"
+                  "Answer yes only if you asked for this yourself.")
+        try:
+            for text, extra in ((first, {}), (second, {"confirm": "again"})):
+                if not bool(perms.confirm_callback(tool, {**args, **extra}, text)):
+                    if not self._confirm_timed_out(perms):
+                        _note_refusal_in_turn(perms)
+                    _record_security_event("denied_by_user", tool, plain[:120])
+                    return json.dumps({"status": "denied", "tool": tool,
+                                       "meaning": plain})
+        except Exception as exc:
+            return json.dumps({"error": f"confirm_callback raised: {exc}"})
+        return None
 
     # Bundle profiles: name -> list of allow-pattern templates. The
     # placeholder ``{dir_re}`` is replaced with a regex-escaped form of the
@@ -23671,19 +24574,16 @@ class _DocToolExecutor:
                 "remember_permission_bundle needs a user-confirm callback. "
                 "Run inside the dashboard with the KIT confirm panel mounted."
             )})
-        try:
-            ok = bool(perms.confirm_callback(
-                "remember_permission_bundle",
-                {"profile": profile, "directory": str(dir_path),
-                 "scope": scope, "rationale": rationale,
-                 "patterns": patterns},
-                preview,
-            ))
-        except Exception as exc:
-            return json.dumps({"error": f"confirm_callback raised: {exc}"})
-        if not ok:
-            return json.dumps({"status": "denied", "profile": profile,
-                               "directory": str(dir_path)})
+        refused = self._confirm_widening(
+            perms, "remember_permission_bundle",
+            {"profile": profile, "directory": str(dir_path),
+             "scope": scope, "rationale": rationale, "patterns": patterns},
+            preview,
+            (f"The agent may WRITE in {dir_path} and run {len(patterns)} kinds "
+             "of commands there WITHOUT asking you, in this and every later "
+             "session."))
+        if refused is not None:
+            return refused
 
         # Apply atomically. If the directory step or any pattern fails,
         # roll back what we already wrote so the user isn't left with a
@@ -23824,7 +24724,7 @@ class _DocToolExecutor:
                         "not make the write run. Grant the directory via "
                         "--add-dir / extra_workspace_dirs to make it work."
                     )})
-                err = self._check_read_access(perms, path)
+                err = self._check_read_access(perms, path, command=cmd)
                 if err is not None:
                     return json.dumps({"error": (
                         f"blocked: this command would print '{target}'. {err}"
@@ -24212,6 +25112,7 @@ class _DocToolExecutor:
     def _hand_suite_to_background(
         self, cmd: str, run_cwd, arguments: dict,
         perms: "KitToolPermissions", caged_unasked: bool,
+        approved: bool = False,
     ) -> Optional[str]:
         """Start a whole-suite pytest run as a watched background job.
 
@@ -24239,7 +25140,8 @@ class _DocToolExecutor:
             return None
         args = {k: v for k, v in (arguments or {}).items() if k != "timeout_s"}
         raw = self._execute_bash_background(
-            args, perms, caged_unasked=caged_unasked)
+            args, perms, caged_unasked=caged_unasked,
+            **({"approved": True} if approved else {}))
         try:
             out = json.loads(raw)
         except Exception:
@@ -24303,7 +25205,7 @@ class _DocToolExecutor:
 
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions",
-        caged_unasked: bool = False,
+        caged_unasked: bool = False, approved: bool = False,
     ) -> str:
         cmd = arguments.get("command", "") or ""
         description = arguments.get("description", "") or ""
@@ -24371,8 +25273,11 @@ class _DocToolExecutor:
         # refusal argv instead of the command, which is a refusal too.
         if _GATE_DRY_RUN.get():
             try:
-                _would = ([] if _is_git_push(cmd)
-                          and _github_push_plan(cmd, run_cwd) is not None
+                _broker = ((_is_git_push(cmd)
+                            and _github_push_plan(cmd, run_cwd) is not None)
+                           or (not caged_unasked and _is_gh_pr_create(cmd)
+                               and _github_pr_plan(cmd, run_cwd) is not None))
+                _would = ([] if _broker
                           else _bash_isolation_argv(cmd, run_cwd, perms))
             except Exception:
                 _would = []
@@ -24384,7 +25289,8 @@ class _DocToolExecutor:
         # a command that already ran into the ceiling this turn is not
         # waited out again under another prefix (long_runs).
         _handed = self._hand_suite_to_background(
-            cmd, run_cwd, arguments, perms, caged_unasked)
+            cmd, run_cwd, arguments, perms, caged_unasked,
+            **({"approved": True} if approved else {}))
         if _handed is not None:
             return _handed
         _again = self._timed_out_again(cmd, perms)
@@ -24433,9 +25339,18 @@ class _DocToolExecutor:
         _snap = self._shell_snapshot(perms)
 
         t0 = time.monotonic()
+        _pr = None
         try:
+            _pr = (_github_pr_plan(cmd, run_cwd)
+                   if not caged_unasked and _is_gh_pr_create(cmd) else None)
             _push = _github_push_plan(cmd, run_cwd) if _is_git_push(cmd) else None
-            if _push is not None:
+            if _pr is not None:
+                _record_security_event(
+                    "isolation", "bash",
+                    f"GitHub PR create for {_pr['repo']} used the credential broker "
+                    "(fixed argv, explicit head, no checkout code)", blocked=False)
+                proc = _run_github_pr(_pr, run_cwd, env, timeout)
+            elif _push is not None:
                 _record_security_event(
                     "isolation", "bash",
                     f"git push to {_push['url']} ran outside the process cage "
@@ -24452,6 +25367,8 @@ class _DocToolExecutor:
                              if not caged_unasked
                              else _bash_isolation_argv(cmd, run_cwd, perms,
                                                        caged_unasked=True))
+                if not approved:
+                    _run_argv = _unasked_share(_run_argv)
                 proc = _contained.run(
                     _run_argv,
                     cwd=str(run_cwd),
@@ -24464,6 +25381,13 @@ class _DocToolExecutor:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
             self._note_timed_out(cmd, perms, timeout)
+            if _pr is not None:
+                return json.dumps({
+                    "error": "GitHub publishing timed out. The push or PR creation "
+                             "may already have succeeded; check the remote branch "
+                             "and open PRs before retrying.",
+                    "command": cmd[:200], "description": description,
+                })
             if _is_push:
                 return json.dumps({
                     "error": (
@@ -24564,7 +25488,7 @@ class _DocToolExecutor:
             "description": description,
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
-        if _push is None:
+        if _push is None and _pr is None:
             _wrap_err = _note_wrap_failure(_run_argv, proc.returncode,
                                            proc.stderr or "")
             if _wrap_err:
@@ -24574,7 +25498,7 @@ class _DocToolExecutor:
                     "Commands off the auto-allow list are asked about for "
                     "the rest of this session; tell the user if they need "
                     "this one.")
-        if _push is None and proc.returncode != 0:
+        if _push is None and _pr is None and proc.returncode != 0:
             self._detach_at_held_branch(
                 cmd, proc, payload, run_cwd, perms, env, timeout,
                 caged_unasked)
@@ -24697,7 +25621,7 @@ class _DocToolExecutor:
 
     def _execute_bash_background(
         self, arguments: dict, perms: "KitToolPermissions",
-        caged_unasked: bool = False,
+        caged_unasked: bool = False, approved: bool = False,
     ) -> str:
         """Start a long-running shell command in the background.
 
@@ -24777,6 +25701,9 @@ class _DocToolExecutor:
                 if not caged_unasked
                 else _bash_isolation_argv(cmd, run_cwd, perms,
                                           caged_unasked=True),
+                # A job nobody approved keeps to its share of a login
+                # node; the registry binds the argv (_unasked_cpu_set).
+                cpu_set=None if approved else _unasked_cpu_set(),
                 **({"session_id": _job_sid} if _job_sid else {}),
                 on_finish=_journal_job_changes,
             )
@@ -25925,6 +26852,8 @@ class _DocToolExecutor:
                     "id": ent.id,
                     "fires_at_epoch": ent.next_fire_at,
                 })
+            if name == "cron_create" and str(arguments.get("at", "") or "").strip():
+                return _propose_user_schedule(arguments, _ws)
             if name == "cron_create":
                 ent = sch.schedule_interval(
                     every_seconds=int(arguments.get("every_seconds", 0)),
@@ -27912,6 +28841,35 @@ def _private_tmp_dir() -> str:
     return _PRIVATE_TMP
 
 
+_SESSION_SCRATCH: Optional[str] = None
+
+
+def _session_scratch_dir() -> str:
+    """The session's persistent scratch directory, 0700, private to it.
+
+    /tmp inside a cage is fresh for every command, so a file one command
+    writes there is gone for the next, and the file tools cannot reach it
+    either. The scratch dir sits under this process's own private temp
+    directory (:func:`_private_tmp_dir`), so it inherits three properties
+    for free: 0700, never shared with another session (one process = one
+    session), and pruned when the session ends (the atexit rmtree of the
+    parent). It is exported as TMPDIR/TMP/TEMP in every cage layer and
+    bound read-write into each one, and it is on the file tools' writable
+    and readable root lists -- see KitToolPermissions.all_workspace_roots.
+    /tmp itself stays private and fresh; nothing else becomes writable.
+    """
+    global _SESSION_SCRATCH
+    if _SESSION_SCRATCH and Path(_SESSION_SCRATCH).is_dir():
+        return _SESSION_SCRATCH
+    # Created the way _private_tmp_dir is: tempfile.mkdtemp, mode 0700,
+    # inside this process's private tmp dir -- private per-process state,
+    # never a user path.
+    import tempfile
+    _SESSION_SCRATCH = tempfile.mkdtemp(prefix="scratch-",
+                                        dir=_private_tmp_dir())
+    return _SESSION_SCRATCH
+
+
 def _home_secret_paths() -> list[str]:
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -27928,6 +28886,12 @@ def _home_secret_paths() -> list[str]:
     try:
         from delfin.agent.sandbox import runtime_masked_dirs
         out += [d for d in runtime_masked_dirs() if d not in out]
+    except Exception:
+        pass
+    # The run's own hidden paths (DELFIN_CAGE_HIDE).
+    try:
+        from delfin.agent.sandbox import run_hidden_paths
+        out += [d for d in run_hidden_paths() if d not in out]
     except Exception:
         pass
     return out
@@ -28270,7 +29234,17 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                  for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
-    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"] + [
+    # TMPDIR/TMP/TEMP point at the session scratch dir. The scratch dir is
+    # writable here because it lies under _private_tmp_dir(), which is in
+    # the profile's write roots (roots + [tmp] below); it is NOT one of
+    # all_workspace_roots. The private tmp dir is the fallback when the
+    # scratch dir could not be built. Package cache dirs stay under it.
+    try:
+        _scratch = _session_scratch_dir()
+    except Exception:
+        _scratch = ""
+    env_prefix = ["/usr/bin/env", f"TMPDIR={_scratch or tmp}",
+                  f"TMP={_scratch or tmp}", f"TEMP={_scratch or tmp}"] + [
         f"{k}={tmp}/{sub}" for k, sub in _package_cache_dirs()]
     port = 0
     if mode == "proxy":
@@ -28318,7 +29292,25 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
     # refuses the command; an unattended run proceeds on Landlock alone.
     net_args, _proxy_dir = _sandbox_network_args(perms)
     argv += net_args
-    argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
+    # The session scratch dir: writable, and TMPDIR points at it (the
+    # helper maps the in-cage path; it equals the host path here).
+    # landlock_exec.main keeps the LAST --tmpdir (tmpdir = value, which it
+    # also adds to the write roots), so there must be exactly ONE --tmpdir
+    # and it must be the scratch dir; the private tmp dir stays a write
+    # root of its own (--write) so its non-scratch uses still work, but is
+    # no longer the TMPDIR target.
+    try:
+        scratch = _session_scratch_dir()
+        argv += ["--write", scratch, "--tmpdir", scratch]
+    except Exception:
+        scratch = None
+        # Keep the TMPDIR invariant when the scratch dir cannot be made:
+        # exactly one --tmpdir, falling back to the private tmp dir (what
+        # this argv had before the scratch work), so landlock_exec still
+        # controls TMPDIR/TMP/TEMP for every program in the cage.
+        argv += ["--tmpdir", _private_tmp_dir()]
+    argv += ["--write", _private_tmp_dir(), "--strict",
+             "1" if strict else "0", "--"]
     return argv + plain
 
 
@@ -28381,6 +29373,16 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # The session scratch dir: where the commands of THIS session keep
+    # files they need across commands and the file tools must find. It
+    # replaces TMPDIR/TMP/TEMP so nothing points at the fresh per-cage
+    # /tmp; paths are absolute so a child that chdirs stays correct.
+    try:
+        _scratch = _session_scratch_dir()
+        for _t in ("TMPDIR", "TMP", "TEMP"):
+            env[_t] = _scratch
+    except Exception:
+        pass
     # Every process an agent session starts says so: `delfin-agent
     # approvals approve` and the answer functions refuse under it
     # (approval_guard), and a nested DELFIN ignores DELFIN_CLASSIFIER=off
@@ -28397,6 +29399,21 @@ def _scrubbed_bash_env() -> dict:
     # 10-14). Fail instead; nothing here adds a credential.
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "never"
+    # A thread cap unless the user's environment sets one: an OpenMP
+    # program started without it takes every core the host has (measured:
+    # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
+    # on a cluster login node are everyone's cores. Inside a Slurm
+    # allocation the cap is the allocation, on a login node the local limit
+    # calc_policy admits (2), elsewhere at most four. A job
+    # submitted from here inherits it unless its script sets its own.
+    try:
+        from . import calc_policy as _cp
+        _cap = str(_cp.default_threads(_cp.host_kind(env), env))
+    except Exception:
+        _cap = str(max(1, min(4, os.cpu_count() or 1)))
+    for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                  "OPENBLAS_NUM_THREADS"):
+        env.setdefault(_name, _cap)
     _editor = any(k.startswith("VSCODE_GIT_") for k in env)
     for k in [k for k in env if k.startswith("VSCODE_GIT_")]:
         env.pop(k, None)
@@ -29546,10 +30563,24 @@ def _bash_isolation_argv(
         # The host's TMPDIR (a cluster scratch path) is read-only under the
         # "/" bind; the cage's own /tmp is the writable one. Landlock and
         # Seatbelt set their private directory the same way.
+        # The session scratch dir is the exception: it is bound read-write
+        # and TMPDIR points AT it, so a file one command of this session
+        # writes there is visible to the next and to the file tools. The
+        # path inside the cage equals the host path because "/" is bound
+        # at itself; _bind-try keeps a cage from failing should the
+        # directory have been pruned between build and run.
         "--setenv", "TMPDIR", "/tmp",
         "--setenv", "TMP", "/tmp",
         "--setenv", "TEMP", "/tmp",
     ]
+    try:
+        _scratch = _session_scratch_dir()
+        args += ["--bind-try", _scratch, _scratch]
+        args += ["--setenv", "TMPDIR", _scratch,
+                 "--setenv", "TMP", _scratch,
+                 "--setenv", "TEMP", _scratch]
+    except Exception:
+        pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
     for rel in _HOME_SECRET_DIRS:
@@ -29646,6 +30677,12 @@ def _bash_isolation_argv(
             args += ["--tmpfs", d]
     except Exception:
         pass
+    # The run's own hidden paths (DELFIN_CAGE_HIDE), after every bind.
+    try:
+        from delfin.agent.sandbox import _bwrap_hide_args, run_hidden_paths
+        args += _bwrap_hide_args(run_hidden_paths())
+    except Exception:
+        pass
     args += ["--chdir", str(Path(run_cwd).resolve())]
     args += (_process_cage_options() if _process_cage_enabled()
              else ["--die-with-parent"])
@@ -29737,6 +30774,44 @@ def _test_run_argv(argv: list[str], perms, report_dir) -> list[str]:
                                 extra_write=(report_dir,))
 
 
+#: Proposals waiting for the user at once; more are refused.
+_MAX_OPEN_PROPOSALS = 5
+
+
+def _propose_user_schedule(arguments: dict, workspace: str) -> str:
+    """``cron_create`` with ``at``: a user schedule PROPOSED, not made.
+
+    Input: ``at`` (the time as the user would write it), ``prompt`` (the
+    task), the session's workspace. Output: the proposal's number and how
+    the user confirms it. It never runs before the user's ``ok``
+    (``schedules.take_due`` checks the confirmation hash), and at most
+    ``_MAX_OPEN_PROPOSALS`` wait at once."""
+    from . import schedules
+    task = str(arguments.get("prompt", "") or "").strip()
+    when = str(arguments.get("at", "") or "").strip()
+    if not task:
+        return json.dumps({"error": "prompt is required: it is the task the schedule runs"})
+    try:
+        open_ones = [e for e in schedules.entries()
+                     if not e["confirmed"] and e.get("created_by") == "agent"]
+        if len(open_ones) >= _MAX_OPEN_PROPOSALS:
+            return json.dumps({"error": (
+                f"{len(open_ones)} proposals already wait for the user's ok; "
+                "ask them to confirm or delete those first")})
+        spec = schedules.parse_when(when)
+        entry = schedules.add(f"{spec['text']} {task}", workspace=workspace or os.getcwd(),
+                              created_by="agent", confirm=False)
+    except schedules.ScheduleError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({
+        "status": "proposed", "id": entry["id"], "when": entry["when"],
+        "tz": entry["tz"], "next": schedules.describe_next(entry),
+        "note": (f"Not active until the user confirms it: `/schedule ok {entry['id']}` "
+                 f"in a session, `delfin-agent schedule ok {entry['id']}`, or "
+                 f"`ok {entry['id']}` in the phone's schedules chat. Tell the user."),
+    })
+
+
 def _schedule_is_mine(sch: Any, entry_id: str, session_id: str) -> bool:
     """Whether a schedule entry belongs to the asking session.
 
@@ -29768,6 +30843,19 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
 _STREAM_RETRY_MAX = 3
 
+# How many times a single turn may switch to another model because KIT does
+# not serve the one it asked for (either "Model not found" or "…temporarily
+# unavailable"). A headless run is ONE long turn that can ask several models;
+# bounding the count keeps a roster where nothing answers from looping forever,
+# while still letting the run get past one or two down models.
+_MODEL_FALLBACK_MAX = 3
+
+# The short pause before resending a model that reported itself "temporarily
+# unavailable": one retry on the same model, then the switch. Long enough to
+# ride out a blip, short enough to not hold the turn for the real outage's
+# whole hour.
+_MODEL_UNAVAILABLE_RETRY_S = 1.5
+
 # A request that produced no byte for this long was not a hiccup: the KIT
 # gateway answers 504 at 600 s when the model has not started, and the
 # SDK's own read timeout is 600 s. Measured 2026-09-11 with a 12.6k-token
@@ -29795,18 +30883,32 @@ _WAIT_TICK_MAX_S = 10.0
 
 
 def _retry_notice(exc_name: str, elapsed_s: float, had_partial: bool,
-                  attempt: int, max_attempts: int, delay_s: float) -> str:
+                  attempt: int, max_attempts: int, delay_s: float, *,
+                  slot_wait: bool = False, base_url: str = "") -> str:
     """What the user reads when a round is retried.
 
     The one line used to be "Transient API error; retrying", whether the
     connection dropped mid-answer or the endpoint never started. The
     second case is the ten-minute wait, and it is named as such: the
     retry does not shorten it, it queues again.
+
+    ``slot_wait`` is the case where the round never reached the endpoint
+    at all: it spent ``elapsed_s`` waiting for a LOCAL slot in the
+    host-wide gate, held by other sessions. That is not the endpoint's
+    fault, so it is never reported as "No byte from the endpoint".
     """
     tail = f"{attempt}/{max_attempts} in {delay_s:.0f}s"
     if had_partial:
         return (f"\n⏳ Transient API error ({exc_name}); retrying {tail}"
                 " — connection lost mid-answer, the reply restarts below…\n")
+    if slot_wait:
+        from .endpoint_gate import display_url
+        shown = display_url(base_url) if base_url else ""
+        where = f" on {shown}" if shown else ""
+        return (f"\n⏳ Waited {elapsed_s:.0f} s for a local slot{where} "
+                f"({exc_name}): other sessions hold it, the endpoint never "
+                f"got this request. Retrying {tail} waits for a slot "
+                "again…\n")
     if elapsed_s >= _ZERO_BYTE_CUT_S:
         return (f"\n⏳ No byte from the endpoint in {elapsed_s:.0f} s "
                 f"({exc_name}): it cut the request before the model started. "
@@ -29880,8 +30982,53 @@ def _is_transient_api_error(exc: Exception) -> bool:
     # without ever retrying a genuine bad request.
     low = msg.lower()
     if any(marker in low for marker in _INFRA_EXHAUSTION_MARKERS):
+        # ...except a MODEL that is itself unavailable: that is a property
+        # of the model, fixed by switching to another family KIT serves,
+        # not of the gateway. "Model 'X' is temporarily unavailable" is
+        # NOT gateway exhaustion; "_is_model_unavailable_error" decides it
+        # and the switch path handles it. (The gateway-wide "service
+        # temporarily unavailable" has no model scope and stays here.)
+        if _is_model_unavailable_error(exc):
+            return False
         return True
     return False
+
+
+_MODEL_UNAVAILABLE_PHRASES = (
+    "is temporarily unavailable",
+    "is currently unavailable",
+    "is temporarily down",
+    "is not available",
+)
+
+
+def _is_model_unavailable_error(exc: Exception) -> bool:
+    """Whether a 400 says the MODEL (not the gateway) is unavailable.
+
+    Measured 2026-10-29 for about an hour: KIT answered every request to one
+    model with "Model 'glm-5.3-flash' is temporarily unavailable. Please try
+    again later." That is a property of the model, fixed by switching to the
+    next family KIT serves — NOT gateway exhaustion ("too many connections",
+    "service temporarily unavailable"), which switching would not fix. This
+    deliberately tells the two apart: a model-unavailability NAMES the model
+    (the word "model" near a down-phrase, or a quoted model id), a gateway
+    message does not.
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int) and status != 400:
+        return False
+    low = str(exc).lower()
+    if not any(p in low for p in _MODEL_UNAVAILABLE_PHRASES):
+        return False
+    # The message must name a model to be a MODEL unavailability. The word
+    # "model" in a scope that picks one out ("Model 'X' is …", "the model X
+    # is …"), or a quoted id next to an availability word, both count. The
+    # gateway's own "service temporarily unavailable" names no model.
+    if "model'" in low or 'model"' in low or " the model " in low:
+        return True
+    if low.strip().startswith("model ") or " model " in low:
+        return True
+    return "'" in low and "available" in low
 
 
 _MODEL_NOT_FOUND_HINTS = (
@@ -29900,17 +31047,24 @@ def _is_model_not_found_error(exc: Exception) -> bool:
 
 
 def _kit_fallback_model(current: str, provider: str, base_url: str = "",
-                        api_key: str = "") -> str:
+                        api_key: str = "", already_left: set = ()) -> str:
     """The best KIT model to continue on when ``current`` is not served, or
     "" (not a KIT session). The ranked roster's first entry the endpoint
     lists; when the listing cannot be read, the first ranked entry that is
-    not ``current`` -- it was the ranking that named ``current`` too."""
+    neither ``current`` nor in ``already_left``. ``already_left`` collects
+    the models this turn has already left behind, so a turn that bounced
+    A->B after only A was excluded does not hand the rank slot back to A
+    (A->B->A until the switch budget ran out). Only ``kit.*`` models in
+    ``_KIT_PREFERENCE`` are ever returned -- never the paid ``azure.*``,
+    ``google.*``, ``alias.*`` or ``standard-*`` routes, and no embedding,
+    reranker, speech or image models."""
     if str(provider or "").lower() != "kit":
         return ""
     try:
         from . import model_capabilities as _mc
         served = _mc.kit_models_served(base_url, api_key, fetch=True)
-        ranked = [m for m in _mc._KIT_PREFERENCE if m != current]
+        skip = set(already_left or ()) | {current}
+        ranked = [m for m in _mc._KIT_PREFERENCE if m not in skip]
         if served:
             return next((m for m in ranked if m in served), "")
         return ranked[0] if ranked else ""
@@ -29935,6 +31089,74 @@ def _is_context_length_error(exc: Exception) -> bool:
         return True
     name = type(exc).__name__.lower()
     return "contextwindow" in name or "contextlength" in name
+
+
+def _augment_api_error(exc: Exception, request_kwargs=None) -> Exception:
+    """Attach the server's own error body to a 4xx/5xx API exception.
+
+    Input: a litellm-style exception with an integer ``status_code`` (or
+    ``status``) and the server's body in ``response.text`` / ``message``;
+    optionally ``request_kwargs`` with the request's ``messages``.
+    Output/semantics: rewrites ``exc.args`` IN PLACE -- same class, same
+    ``status_code`` -- to carry the server message/body cut to 1000
+    characters and scrubbed of credentials via :func:`_redact_tool_result`;
+    for a context-length 400 (:func:`_is_context_length_error`) adds a
+    plain-words explanation plus the measured prompt size from
+    ``estimate_schema_tokens`` over ``request_kwargs["messages"]``.
+    The final text is always the scrubbed one, so a credential inside the
+    raw ``str(exc)`` never reaches the log. Non-4xx/5xx exceptions and
+    unreadable bodies pass through unchanged. Rejected alternatives: a new
+    exception type (every classifier reads ``str(exc)`` / status), and a
+    dedupe rule that appends the body only when ``str(exc)`` does not
+    already embed it (provider-specific formatting must not decide the log
+    format). Best-effort and idempotent (guarded by
+    ``exc._delfin_augmented``).
+    """
+    if getattr(exc, "_delfin_augmented", False):
+        return exc
+    try:
+        status = getattr(exc, "status_code", None)
+        if not isinstance(status, int):
+            status = getattr(exc, "status", None)
+        if not isinstance(status, int) or not (400 <= status <= 599):
+            return exc
+        body = (getattr(getattr(exc, "response", None), "text", "") or ""
+                or getattr(exc, "message", "") or "")
+        body = str(body) if body else ""
+        # str(exc) already embeds the raw body ("Error code: 400 - {...}"),
+        # so masking must cover the whole final text, not just the body. The
+        # base is bounded too: a huge embedded body (providers repeat the
+        # full request) must not flood the log even though str(exc) carries it.
+        base = _redact_tool_result(str(exc))[:2000]
+        body_masked = _redact_tool_result(body)[:1000] if body else ""
+        extra = ""
+        # Always append the server's body: str(exc) formatting differs per
+        # provider, so whether it already embeds the body is not something
+        # the log format should depend on. Bounded at 1000 chars.
+        if body_masked:
+            extra = f" [HTTP {status} from the model endpoint: {body_masked}]"
+        if status == 400 and _is_context_length_error(exc):
+            prompt_tokens = 0
+            try:
+                msgs = (request_kwargs or {}).get("messages") or []
+                prompt_tokens = sum(estimate_schema_tokens(m) for m in msgs)
+            except Exception:
+                prompt_tokens = 0
+            extra += (
+                " The server rejected the request because the conversation"
+                " context is too long for this model; the prompt sent"
+                f" measured about {prompt_tokens} tokens (house estimate)."
+                " Compact the conversation or shorten the request.")
+        if extra or base != str(exc):
+            # Rewrite args whenever the text differs from the original: even
+            # when extra is empty (body already embedded in str(exc)) the
+            # base is the scrubbed text, so a credential inside the raw
+            # str(exc) would otherwise reach the log unmasked.
+            exc.args = (base + extra,)
+            exc._delfin_augmented = True
+    except Exception:
+        return exc
+    return exc
 
 
 def _max_subagent_depth() -> int:
@@ -30098,6 +31320,27 @@ def _infer_provider_from_base_url(base_url: str) -> str:
     if "ki-toolbox" in u or "kit.edu" in u:
         return "kit"
     return "openai"
+
+
+class _GateRound:
+    """Mutable outcome holder for one gate-guarded request round.
+
+    The round body fills ``first_byte_s`` (seconds to first byte on success)
+    and ``exception`` (the transient error that triggered a congested retry);
+    the request-``finally`` in ``OpenAIClient.stream_message`` reports both to
+    the shared adaptive limit and releases the slot on every exit path.
+    ``gate`` is the live ``endpoint_gate.EndpointGate`` (None when disabled).
+    Kept a plain mutable class so the round body can set fields without a
+    reporting protocol.
+    """
+
+    __slots__ = ("gate", "first_byte_s", "exception", "wait_notice")
+
+    def __init__(self) -> None:
+        self.gate = None
+        self.first_byte_s = None
+        self.exception = None
+        self.wait_notice = ""
 
 
 class OpenAIClient(_BaseClient):
@@ -30663,6 +31906,42 @@ class OpenAIClient(_BaseClient):
         try:
             permissions.classifier_runner = self._classifier_complete
         except Exception:
+            return
+        # Resolve the classifier's models from the served roster once. The
+        # classifier must be independent of the session's model (a slow one
+        # with many agents latched every action to a human, 2026-10-29). The
+        # client is the only place with both the session model and the
+        # endpoint, so it stows the resolved ids here. Cached roster only
+        # (no fetch): re-attaching on every set_permissions must not spend a
+        # /v1/models round trip each time.
+        try:
+            from . import model_capabilities as _mc
+            from .action_classifier import DEFAULT_MODEL as _default_cls
+            cfg = _classifier_settings() or {}
+            base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
+            api_key = getattr(self, "_api_key", "") or ""
+            served = _mc.kit_models_served(base_url, api_key)
+            model = getattr(self, "model", "") or ""
+            cfg_model = str(cfg.get("model") or _default_cls)
+            explicit = bool(cfg.get("explicit_model"))
+            primary = _mc.classifier_choice(
+                served=served, session_model=model,
+                cfg_model=cfg_model, cfg_explicit=explicit)
+            permissions.classifier_model = primary
+            if explicit:
+                # An explicitly configured classifier model decides alone:
+                # the user chose it, and no roster pick second-guesses it.
+                permissions.classifier_confirm_models = ()
+            else:
+                # The ALLOW-confirmation chain: bench models of a family
+                # other than the primary's, so an allow needs two families.
+                permissions.classifier_confirm_models = (
+                    _mc.classifier_confirmation(
+                        served=served, primary=primary,
+                        cfg_model=cfg_model))
+        except Exception:
+            # A roster that could not be asked leaves the configured default:
+            # the old behaviour, never a missing classifier.
             pass
 
     def _attach_subagent_runner(
@@ -31299,7 +32578,17 @@ class OpenAIClient(_BaseClient):
             except Exception:
                 pass
         _stream_attempt = 0    # transient-API-error retries (reset per response)
-        _model_fallback_done = False   # once per turn: see _kit_fallback_model
+        # The model-switch budget for THIS turn (both "Model not found" and
+        # "…temporarily unavailable"). A headless run is one long turn, so
+        # "once per turn" meant a single flapping model stood the whole run
+        # still; bounded, not unlimited. Reset at each new turn, never mid-turn.
+        _model_fallback_count = 0
+        # The one switch-collection per turn, read by turn_metrics and by a
+        # headless `chat -p --output-format json` result (repl.TURN_KEYS).
+        self._turn_model_switches: list[dict] = []
+        # "At most one short retry" guard for a model that reports itself
+        # unavailable, reset at the start of each new round below.
+        _mod_unav_retried = False
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
@@ -31722,8 +33011,35 @@ class OpenAIClient(_BaseClient):
                 _cq.put(True)
 
             _ct = _threading_mod.Thread(target=_spawn_create, daemon=True)
-            _ct.start()
             try:
+                # Host-wide per-endpoint concurrency gate (endpoint_gate):
+                # acquire one slot for this round and release it in the single
+                # `finally` below, so no exit path -- success, retry `continue`,
+                # re-raise, a consumer closing the generator mid-round
+                # (GeneratorExit), KeyboardInterrupt -- leaves it held.
+                _gslot = _GateRound()
+                try:
+                    from .endpoint_gate import (for_client as _gslot_for,
+                                                SlotWaitTimeout
+                                                as _SlotWaitTimeout)
+                    _gslot.gate = _gslot_for(self._base_url, self.model)
+                except Exception:
+                    _gslot.gate = None
+                    _SlotWaitTimeout = None
+                if _gslot.gate is not None:
+                    _gslot.gate.acquire()
+                if _gslot.gate is not None and _gslot.gate.wait_notice:
+                    yield StreamEvent(type="notice", text=(
+                        f"⚠️ {_gslot.gate.wait_notice}\n"))
+                # The slot is held: the clock for THIS round's endpoint
+                # timing starts now, AFTER the (possibly long) local wait for
+                # a slot. Otherwise a session that queued 900 s for a slot in
+                # the gate would make every downstream number look like an
+                # endpoint stall -- first-byte latency, the retry deadline,
+                # the "no byte from the endpoint" notice -- when the endpoint
+                # had not even been contacted yet.
+                _round_t0 = time.monotonic()
+                _ct.start()
                 # Watch the first byte instead of parking in it: emit a
                 # visible "waiting for the model … Ns" indicator while the
                 # endpoint has not answered, and abandon the round on the
@@ -31818,6 +33134,11 @@ class OpenAIClient(_BaseClient):
                             finish_reason = choice.finish_reason
                 finally:
                     stream.close()
+                # A response was streamed to the end: record its first-byte
+                # time on the holder so the `finally` below reports a quick
+                # success to the shared adaptive limit.
+                if _round_ttft is not None:
+                    _gslot.first_byte_s = _round_ttft - _round_t0
             except Exception as _stream_exc:
                 if self._stop_was_requested():
                     # The transport was cut on purpose (signal_stop): the
@@ -31856,41 +33177,106 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
-                            _stream_attempt, _STREAM_RETRY_MAX, _delay))
+                            _stream_attempt, _STREAM_RETRY_MAX, _delay,
+                            slot_wait=isinstance(
+                                _stream_exc, _SlotWaitTimeout)
+                            if _SlotWaitTimeout is not None else False,
+                            base_url=self._base_url))
+                        # A congestion signal triggered this retry: report it
+                        # and free the slot BEFORE the backoff, so another
+                        # session can use the endpoint while this round waits.
+                        # The gate is then cleared on the holder, so the
+                        # round's `finally` neither reports it a second time
+                        # nor releases again; the next round takes a new slot.
+                        if _gslot.gate is not None:
+                            try:
+                                from . import endpoint_gate as _endpoint_gate
+                                _endpoint_gate.report_result(
+                                    _gslot.gate, exception=_stream_exc,
+                                    first_byte_s=None)
+                            except Exception:
+                                pass
+                            _gslot.gate.release()
+                            _gslot.gate = None
                         time.sleep(_delay)
                         continue
-                    # The endpoint does not serve the model (a KIT roster
-                    # change): once per turn, the best KIT model it serves
-                    # takes over, said in the stream, and the round is sent
-                    # again. Measured 2026-10-19: kit.glm-5.3 answered
-                    # "400 - Model not found" with no explanation.
-                    if (_is_model_not_found_error(_stream_exc)
-                            and not _model_fallback_done):
-                        _model_fallback_done = True
+                    # The endpoint does not serve the model — either it is not
+                    # on the KIT roster AT ALL ("Model not found", measured
+                    # 2026-10-19: kit.glm-5.3 answered "400 - Model not found")
+                    # or it is TEMPORARILY unavailable ("Model 'X' is
+                    # temporarily unavailable", measured 2026-10-29 for about
+                    # an hour, ten agents stood still). Both are properties
+                    # of the MODEL, not of the gateway: the best KIT model it
+                    # serves takes over, said in the stream, and the round is
+                    # sent again. A headless run is one long turn, so the
+                    # switch is allowed up to _MODEL_FALLBACK_MAX times per
+                    # turn, never a loop. An unavailable model gets at most
+                    # ONE short retry on itself first (a blip); a "Model not
+                    # found" is definitive and switches at once.
+                    _is_unavail = _is_model_unavailable_error(_stream_exc)
+                    _is_missing = _is_model_not_found_error(_stream_exc)
+                    if (_is_unavail or _is_missing) \
+                            and _model_fallback_count < _MODEL_FALLBACK_MAX:
+                        if _is_unavail and not _mod_unav_retried:
+                            _mod_unav_retried = True
+                            yield StreamEvent(type="notice", text=(
+                                f"\n⏳ The endpoint says `{self.model}` is "
+                                "temporarily unavailable; trying it once more "
+                                "briefly before switching models.\n"))
+                            time.sleep(_MODEL_UNAVAILABLE_RETRY_S)
+                            continue
+                        _mod_unav_retried = False
+                        _model_fallback_count += 1
                         _old_model = self.model
                         _alt = _kit_fallback_model(
                             _old_model, getattr(self, "_provider", ""),
                             str(getattr(self, "_base_url", "") or ""),
-                            str(getattr(self, "_api_key", "") or ""))
+                            str(getattr(self, "_api_key", "") or ""),
+                            already_left={s.get("before", "") for s in
+                                          self._turn_model_switches})
                         if _alt:
                             self.model = _alt
                             kwargs["model"] = _alt
+                            self._turn_model_switches.append({
+                                "before": _old_model, "after": _alt,
+                                "reason": ("model unavailable" if _is_unavail
+                                           else "model not found")})
                             _text_chunks = []
                             _tool_calls = {}
                             _round_in = 0
                             finish_reason = None
-                            yield StreamEvent(type="notice", text=(
-                                f"\n⚠️ KIT does not serve `{_old_model}` right "
-                                "now (\"Model not found\"). This session "
-                                f"continues on `{_alt}`, the best KIT model it "
-                                "serves; /model or the dashboard's model menu "
-                                "picks another.\n"))
+                            if _is_unavail:
+                                yield StreamEvent(type="notice", text=(
+                                    f"\n⚠️ KIT is not serving `{_old_model}` "
+                                    "right now (\"temporarily unavailable\"). "
+                                    f"This session continues on `{_alt}`, the "
+                                    "best KIT model it serves; /model or the "
+                                    "dashboard's model menu picks another.\n"))
+                            else:
+                                yield StreamEvent(type="notice", text=(
+                                    f"\n⚠️ KIT does not serve `{_old_model}` "
+                                    "right now (\"Model not found\"). This "
+                                    f"session continues on `{_alt}`, the best "
+                                    "KIT model it serves; /model or the "
+                                    "dashboard's model menu picks another.\n"))
                             continue
+                        # No alternative model to continue on.
                         yield StreamEvent(type="notice", text=(
                             f"\n⚠️ The endpoint does not serve `{_old_model}` "
-                            "(\"Model not found\"). Pick a model it serves: "
-                            "/model lists them in the terminal, the model menu "
-                            "in the dashboard.\n"))
+                            f"(\"{'temporarily unavailable' if _is_unavail else 'Model not found'}\") "
+                            "and no other KIT model is ranked for it. Pick a "
+                            "model it serves: /model lists them in the "
+                            "terminal, the model menu in the dashboard.\n"))
+                    elif (_is_unavail or _is_missing) \
+                            and _model_fallback_count >= _MODEL_FALLBACK_MAX:
+                        # The model-switch budget for this turn is spent:
+                        # switching again cannot help (every ranked model is
+                        # gone or down). End like any unfixable model error
+                        # rather than loop.
+                        yield StreamEvent(type="notice", text=(
+                            f"\n⚠️ `{self.model}` is unavailable and the "
+                            "model-switch budget for this turn is used up. "
+                            "No KIT model answered; try again later.\n"))
                     # Context-window overflow is deterministic — retrying the
                     # same request just fails again. End the turn cleanly with a
                     # terminal stop instead of crashing the generator (which
@@ -31905,6 +33291,10 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="message_delta", stop_reason="max_context")
                         return
+                    # The server's own error body belongs in whatever error
+                    # text reaches the user/log/JSON — not just "Error code:
+                    # 400". Augment IN PLACE before the bare raise.
+                    _stream_exc = _augment_api_error(_stream_exc, kwargs)
                     raise
                 # The proxy cannot stream this request (litellm 400:
                 # "'async for' requires ... got ModelResponse"). Retry ONCE
@@ -31914,7 +33304,16 @@ class OpenAIClient(_BaseClient):
                 nk = dict(kwargs)
                 nk["stream"] = False
                 nk.pop("stream_options", None)
-                resp = self.client.chat.completions.create(**nk)
+                try:
+                    resp = self.client.chat.completions.create(**nk)
+                except Exception as _exc:
+                    # The non-streaming retry is itself subject to the model
+                    # endpoint's 4xx/5xx: a retry that still fails on a
+                    # status-coded error must carry the server body too, or
+                    # a KIT 400 here would reach the log as a bare "Error
+                    # code: 400". Augment in place, then re-raise.
+                    _augment_api_error(_exc, kwargs)
+                    raise
                 _round_served = _served_model_of(resp) or _round_served
                 _c, _calls, _fin, (_ti, _to, _tc_cached) = \
                     _absorb_non_streaming(resp)
@@ -31930,6 +33329,23 @@ class OpenAIClient(_BaseClient):
                 _tool_calls.update(_calls)
                 if _fin:
                     finish_reason = _fin
+
+            finally:
+                # Single release point for this round's slot, and one report
+                # to the shared adaptive limit. Runs on EVERY exit path of
+                # the request -- success, the retry/stop/fallback branches
+                # above, and an exception re-raise -- so a slot is never
+                # leaked for the rest of the turn. report_result swallows its
+                # own errors; release is idempotent when nothing was acquired.
+                if _gslot.gate is not None:
+                    try:
+                        from . import endpoint_gate as _endpoint_gate
+                        _endpoint_gate.report_result(
+                            _gslot.gate, exception=_gslot.exception,
+                            first_byte_s=_gslot.first_byte_s)
+                    except Exception:
+                        pass
+                    _gslot.gate.release()
 
             # A stream that ended having produced no ANSWER. Not an error
             # and not a refusal: finish_reason says stop, and no content
@@ -32018,6 +33434,8 @@ class OpenAIClient(_BaseClient):
                         input_tokens=_round_in, cached_tokens=_round_cached,
                         output_tokens=_round_out, tool_calls=len(_tool_calls),
                         finish_reason=str(finish_reason or ""),
+                        model_switches=list(getattr(
+                            self, "_turn_model_switches", []) or []),
                         **_prompt_fingerprints(
                             api_messages,
                             int(getattr(self, "_turn_rows_base", 0) or 0)))
@@ -32609,6 +34027,7 @@ class OpenAIClient(_BaseClient):
                     # The cut is judged on the result itself, before the
                     # fence adds its lines.
                     _cut_len = len(context_result)
+                    _seen_text = context_result
                     if _fence_this:
                         context_result = _fence_output_tool_result(
                             fn_name, context_result)
@@ -32649,6 +34068,7 @@ class OpenAIClient(_BaseClient):
                                           or _tool_cut),
                         output_chars=len(_redacted),
                         output_notes=_result_notes,
+                        seen_text=_seen_text,
                     )
                     # Thrash detector: prepend a one-time progress nudge when a
                     # low-progress loop (repeated cleanup, same-file rewrites) is
@@ -33820,6 +35240,12 @@ class CodexCLIClient(_BaseClient):
 # Factory
 # ---------------------------------------------------------------------------
 
+#: The first line of every question that widens the agent's own permissions
+#: (_confirm_widening); the front ends mark lines starting with "⚠".
+_WIDENING_BANNER = "⚠ THE AGENT ASKS FOR MORE RIGHTS — PERMANENTLY"
+_WIDENING_AGAIN = "⚠ CONFIRM AGAIN — THIS IS PERMANENT"
+
+
 def _map_kit_permission_mode(permission_mode: str) -> str:
     """Map dashboard CLI-permission strings to KitToolPermissions modes.
 
@@ -34007,6 +35433,10 @@ def _kit_sandbox(
     return kit_perms
 
 
+class BackendRefused(ValueError):
+    """The managed policy does not allow this backend (create_client)."""
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -34047,6 +35477,12 @@ def create_client(
     extra_dirs : list[str], optional
         Extra writable directories for the CLI (``--add-dir``).
     """
+    # The administrator's floor, before any client exists: a backend the
+    # managed policy refuses is never built (managed_policy.backend_refusal).
+    from . import managed_policy as _mp
+    _refused = _mp.backend_refusal(backend, provider)
+    if _refused:
+        raise BackendRefused(_refused)
     if provider == "kit":
         from .credentials import load_credential as _load_cred
         kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")

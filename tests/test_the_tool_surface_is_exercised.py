@@ -343,9 +343,41 @@ def test_search_results_arrive_marked_untrusted(box, perms):
     assert "UNTRUSTED" in raw
 
 
+def test_a_fetched_page_arrives_as_text_inside_the_fence(box, perms,
+                                                         monkeypatch):
+    """The fence and the HTML-to-text step, on every machine.
+
+    The transport is replaced by a canned page, so the check does not
+    depend on a network or on a third party's server being up; the live
+    test below covers the transport where it is reachable.
+    """
+    from delfin.agent import web_tools
+    page = (b"<html><head><title>T</title><script>var x=1;</script></head>"
+            b"<body><h1>Example Domain</h1><p>For use in examples.</p>"
+            b"</body></html>")
+    monkeypatch.setattr(web_tools, "_fetch_bytes",
+                        lambda url, timeout_s, *a, **k:
+                        (page, "text/html; charset=utf-8"))
+    out, raw = call("web_fetch", {"url": "https://example.com",
+                                  "timeout_s": 15}, perms)
+    assert "Example Domain" in out.get("text", ""), raw
+    assert "var x" not in out.get("text", "")
+    assert raw.lstrip().startswith("[UNTRUSTED"), raw[:120]
+
+
 @needs_net
 def test_web_fetch_retrieves_and_fences_a_page(box, perms):
-    _, raw = call("web_fetch", {"url": "https://example.com", "timeout_s": 15},
-                  perms)
+    """The real transport, where the page is reachable.
+
+    example.com is a third party's server: it answered HTTP 503 during a
+    CI run and turned a green suite red. An error object is web_fetch
+    reporting that server's state correctly and is not fenced by design
+    (``_wrap_untrusted``), so it is a run with nothing to check here; the
+    fence itself is pinned offline above.
+    """
+    out, raw = call("web_fetch", {"url": "https://example.com",
+                                  "timeout_s": 15}, perms)
+    if out.get("error"):
+        pytest.skip(f"example.com is not serving: {out['error'][:120]}")
     assert "Example Domain" in raw
     assert "UNTRUSTED" in raw

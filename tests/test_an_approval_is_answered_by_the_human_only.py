@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +41,8 @@ from conftest import child_env
 
 
 MARKER = "DELFIN_AGENT_SESSION"
+#: The checkout under test (the one this test file imported delfin from).
+REPO = Path(A.__file__).resolve().parents[2]
 
 
 class Yes:
@@ -334,7 +337,17 @@ def test_a_spelling_the_gate_cannot_read_meets_the_second_layer(
         home, ws, monkeypatch, mode, attended):
     """Isolation off, the subcommand assembled at run time: the gate's
     text reading sees no answer command, and the CLI the shell starts
-    refuses because it carries the marker."""
+    refuses because it carries the marker.
+
+    The shell starts ``python -m delfin.agent.cli`` in the workspace, so
+    the child imports whichever delfin the interpreter finds there, not
+    necessarily the one under test. Measured: the delfin-ci interpreter
+    on a development host resolved an older editable install, whose CLI
+    had no second layer, and printed another program's login prompt. The
+    checkout under test goes first on the child's PYTHONPATH, which is
+    what CI has implicitly by installing that same checkout."""
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
+        p for p in (str(REPO), os.environ.get("PYTHONPATH", "")) if p))
     monkeypatch.setattr(A, "_BASH_ISOLATION_OVERRIDE", "off")
     rid, req = _pending(home)
     perms, _ = _perms(ws, mode, attended)

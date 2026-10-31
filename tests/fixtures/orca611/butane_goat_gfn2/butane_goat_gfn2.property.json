@@ -1,0 +1,17 @@
+{
+    "Calculation_Info": {
+        "Charge": 0,
+        "Mult": 1,
+        "NumOfAtoms": 14,
+        "NumOfElectrons": 28,
+        "NumOfBasisFuncts": 0
+    },
+    "Calculation_Status": {
+        "Status": "NORMAL TERMINATION",
+        "progName": "ProgGOAT",
+        "version": "6.1.1"
+    },
+    "Calculation_Timings": {
+        "CONSTRUCTED": 0.0
+    }
+}

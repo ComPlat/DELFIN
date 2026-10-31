@@ -447,7 +447,8 @@ def _refuse_hartree_as_given(parsed, spec: dict) -> None:
             f"are kcal/mol, set units: \"kcal/mol\"")
 
 
-def _read_output(path, root: Path, reader=None) -> tuple[str, Path]:
+def _read_output(path, root: Path, reader=None,
+                 texts: dict | None = None) -> tuple[str, Path]:
     """``(text, resolved path)`` of an output for ``energy_profile``.
 
     Unlike a data file it may lie outside the workspace -- outputs live in
@@ -456,13 +457,19 @@ def _read_output(path, root: Path, reader=None) -> tuple[str, Path]:
     for ``read_file``. The gate runs first: ``reader(path, max_bytes)``
     looks at the file (:func:`read_text`) only once it admitted the path,
     so a refusal is the same whether the path exists or not. Bounded by
-    ``MAX_OUTPUT_BYTES``.
+    ``MAX_OUTPUT_BYTES``. ``texts`` keeps what one call already read, so
+    each output passes the gate once.
     """
     if not isinstance(path, str) or not path.strip():
         raise SpecError("each files entry must be a path string or null")
     p = Path(path).expanduser()
     p = (p if p.is_absolute() else root / p).resolve()
-    return (reader or read_text)(p, MAX_OUTPUT_BYTES), p
+    if texts is not None and p in texts:
+        return texts[p], p
+    text = (reader or read_text)(p, MAX_OUTPUT_BYTES)
+    if texts is not None:
+        texts[p] = text
+    return text, p
 
 
 def _resolve_pathways(spec: dict, root: Path, reader=None):
@@ -514,9 +521,17 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         raise SpecError(f"{len(raw)} pathways; at most {MAX_SERIES}")
     raw = _as_columns(raw)
 
-    energy = _require_str(spec, "energy", "gibbs").strip().lower()
-    if energy not in ("gibbs", "electronic"):
-        raise SpecError(f"energy must be gibbs or electronic, got {energy!r}")
+    energy = _require_str(spec, "energy", "auto").strip().lower()
+    if energy not in ("gibbs", "electronic", "auto"):
+        raise SpecError(f"energy must be gibbs, electronic or auto, "
+                        f"got {energy!r}")
+    energy_note = ""
+    # Each output once through the read gate: deciding which energy the
+    # outputs carry reads them before they are drawn.
+    texts: dict = {}
+    if energy == "auto":
+        energy, energy_note = _energy_the_outputs_carry(raw, spec, root,
+                                                        reader, texts)
 
     # First pass: values as given, or Hartree read from the outputs.
     parsed, outputs, n = [], {}, 0
@@ -542,7 +557,8 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
                     continue
                 key = _state_key(f, idx)
                 if key not in outputs:
-                    outputs[key] = _state_record(key, root, reader, energy)
+                    outputs[key] = _state_record(key, root, reader,
+                                                 energy, texts)
                 ys.append(outputs[key]["eh"])
         else:
             ys = [None if v is None else _number(v, f"series[{idx}].y")
@@ -595,7 +611,8 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         else:
             ref_file = _state_key(ref_file, "reference")
         if ref_file not in outputs:
-            outputs[ref_file] = _state_record(ref_file, root, reader, energy)
+            outputs[ref_file] = _state_record(ref_file, root, reader, energy,
+                                            texts)
         ref = outputs[ref_file]
         ref_eh = ref["eh"]
         programs = sorted({part for rec in outputs.values()
@@ -609,6 +626,8 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
                 f"surface -- every state must be computed the same way")
         notes.append(f"{energy} energies relative to {' + '.join(ref_file)} "
                      f"({ref_eh:.6f} Eh), x {factor:g} {units}/Eh")
+        if energy_note:
+            notes.append(energy_note)
         _check_balance(parsed, outputs, ref_file, notes)
         if energy == "gibbs":
             _standard_state_note(parsed, notes)
@@ -703,8 +722,51 @@ def _state_key(entry, where) -> tuple[str, ...]:
                     f"paths (fragments of one state) or null, got {entry!r}")
 
 
+def _energy_the_outputs_carry(raw, spec, root: Path, reader,
+                              texts: dict) -> tuple[str, str]:
+    """``(energy, note)`` for a profile drawn without an ``energy`` key.
+
+    Every output of the call counts -- all pathways, every fragment of a
+    state, and ``reference``: ``gibbs`` when each carries a free energy,
+    ``electronic`` with a note saying so when none does. A mix is refused
+    naming both groups: ΔG and ΔE are not one surface, and the gap between
+    them would read as a reaction step. Without outputs (typed values) the
+    choice is moot and ``gibbs`` is returned.
+    """
+    from delfin.agent import energy_profile as ep
+
+    keys = []
+    for idx, s in enumerate(raw):
+        if isinstance(s, dict) and isinstance(s.get("files"), list):
+            keys += [_state_key(f, idx) for f in s["files"] if f is not None]
+    if keys and spec.get("reference") is not None:
+        keys.append(_state_key(spec["reference"], "reference"))
+    with_g: list[str] = []
+    without: list[str] = []
+    for path in dict.fromkeys(p for key in keys for p in key):
+        text, resolved = _read_output(path, root, reader, texts)
+        (with_g if ep.has_free_energy(text, str(resolved))
+         else without).append(path)
+    if not without:
+        return "gibbs", ""
+    if not with_g:
+        return "electronic", (
+            "no output carries a free energy (no frequency calculation): "
+            "ΔE from electronic energies; frequencies on every state give ΔG")
+
+    def _names(paths: list[str]) -> str:
+        shown = ", ".join(paths[:6])
+        return shown + (f" and {len(paths) - 6} more" if len(paths) > 6
+                        else "")
+
+    raise SpecError(
+        f"free energies in {_names(with_g)}, none in {_names(without)}: "
+        f"ΔG and ΔE are not one surface. Run frequencies on the second "
+        f"group, or pass energy: \"electronic\" to draw ΔE for every state")
+
+
 def _state_record(key: tuple[str, ...], root: Path, reader,
-                  energy: str) -> dict:
+                  energy: str, texts: dict | None = None) -> dict:
     """``{"eh", "imag", "atoms", "charge"}`` of one state, its fragments
     summed; a refusal naming the output that lacks its energy."""
     from collections import Counter
@@ -713,7 +775,7 @@ def _state_record(key: tuple[str, ...], root: Path, reader,
     eh, imag, atoms, charge, programs = 0.0, 0, Counter(), 0, []
     witnessed = []
     for path in key:
-        text, resolved = _read_output(path, root, reader)
+        text, resolved = _read_output(path, root, reader, texts)
         try:
             rec = ep.read_output(text, str(resolved), energy)
         except ValueError as exc:
@@ -852,6 +914,22 @@ def _caption(title: str, units: str, kind: str, n_points: int) -> str:
 # rendering
 
 
+#: Lines with at most this many points get a marker on each one.
+_MARKERS_UP_TO = 80
+
+
+def _house_style(ax) -> None:
+    """The look every line/scatter/bar/histogram/box plot shares: no
+    top/right frame, a faint grid under the data, readable tick labels.
+    Set on the axes, not through rcParams, so the caller's process keeps
+    its own matplotlib defaults (see the module docstring)."""
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.grid(True, axis="y", alpha=0.3, linewidth=0.6)
+    ax.set_axisbelow(True)
+    ax.tick_params(labelsize=10)
+
+
 def resolve_out_path(spec: dict, out_dir: Path) -> Path:
     """The file :func:`plot` writes for ``spec`` under ``out_dir``.
 
@@ -862,11 +940,17 @@ def resolve_out_path(spec: dict, out_dir: Path) -> Path:
     # An energy profile goes on a slide or into a paper draft: PNG at
     # 300 dpi as the group's scripts wrote it. Two live runs asked for a PNG
     # without saying format and then converted the SVG by hand.
-    fmt = _require_str(spec, "format",
-                       "png" if kind == "energy_profile" else "svg").lower()
+    filename = _require_str(spec, "filename", "").strip()
+    # A filename that ends in a format IS the format when none is given:
+    # "butane_pes.svg" with the energy profile's PNG default was written as
+    # "butane_pes.svg.png".
+    named = Path(filename).suffix[1:].lower() if filename else ""
+    default_fmt = (named if named in _FORMATS
+                   else "png" if kind == "energy_profile" else "svg")
+    fmt = _require_str(spec, "format", default_fmt).lower()
     if fmt not in _FORMATS:
         raise SpecError(f"format must be png or svg, got {fmt!r}")
-    filename = _require_str(spec, "filename", "").strip() or f"plot_{kind}.{fmt}"
+    filename = filename or f"plot_{kind}.{fmt}"
     if not filename.lower().endswith(f".{fmt}"):
         filename = f"{filename}.{fmt}"
     out_path = (out_dir / filename).resolve()
@@ -907,27 +991,37 @@ def plot(spec: dict, *, out_dir: str = "", reader=None) -> PlotResult:
                                     title=title, xlabel=xlabel)
     series, n_points = _resolve_series(spec, kind, out_dir_path, reader)
 
-    fig = Figure(figsize=(6, 4))
+    fig = Figure(figsize=(7.5, 4.2), layout="constrained")
     ax = fig.subplots()
+    _house_style(ax)
     if kind in ("line", "scatter", "bar"):
         draw = {"line": ax.plot, "scatter": ax.scatter, "bar": ax.bar}[kind]
         for label, xs, ys in series:
             pos, ticks = _positions(xs) if xs else (list(range(len(ys))), None)
-            draw(pos, ys, label=label or None)
+            extra = {}
+            if kind == "line":
+                # Each computed point visible while there are few enough to
+                # read: a smooth line over 25 calculations hides that they
+                # are 25.
+                extra = {"linewidth": 1.8}
+                if len(ys) <= _MARKERS_UP_TO:
+                    extra.update(marker="o", markersize=4)
+            draw(pos, ys, label=label or None, **extra)
             if ticks is not None:
                 ax.set_xticks(pos, ticks)
         if any(lbl for lbl, _, _ in series):
-            ax.legend()
+            ax.legend(frameon=False)
     elif kind == "histogram":
         ax.hist(series[0][2], bins=bins if bins is not None else "auto")
     else:  # box
         ax.boxplot([series[0][2]], tick_labels=[xlabel])
     if xlabel:
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(xlabel, fontsize=11.5)
     if ylabel:
-        ax.set_ylabel(f"{ylabel} ({units})" if units else ylabel)
+        ax.set_ylabel(f"{ylabel} ({units})" if units else ylabel,
+                      fontsize=11.5)
     if title:
-        ax.set_title(title)
+        ax.set_title(title, fontsize=13, fontweight="semibold", loc="left")
 
     _write(fig, out_path, fmt)
     return PlotResult(

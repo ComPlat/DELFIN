@@ -326,3 +326,16 @@ describe("notes of the window's own", () => {
     expect(w.t.externalOutput.takeText()).toContain("theme must be")
   })
 })
+
+// A local transport switch must not become the answer to an open model question.
+test("/sync remains a session command while a question waits", async () => {
+  const w = await mount({ answerPauseMs: 0 })
+  w.store.push(multi("q-sync", 100, "Which solvent?", ["Water", "DMF"]) as never)
+  await w.settle()
+  await w.t.mockInput.typeText("/sync off")
+  w.t.mockInput.pressEnter()
+  await w.settle()
+  expect(w.replies()).toEqual([])
+  expect(w.calls.some((call) => call.method === "session.prompt" && call.params.text === "/sync off")).toBe(true)
+  expect(w.store.state.sessions.s1!.pending.some((request) => request.requestId === "q-sync")).toBe(true)
+})

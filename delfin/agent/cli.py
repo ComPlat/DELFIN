@@ -376,6 +376,13 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
 
     chunks: list[str] = []
     tool_calls: list[dict] = []
+    # Set True once a tool_use event arrives; reset False on each text
+    # chunk. True at return means the turn's final text was followed by a
+    # tool call, i.e. the turn ended ON a tool round, not on the text.
+    # Carried on the ENGINE, not in the returned dict: the dict's keys are
+    # pinned to repl.TURN_KEYS by an existing test, so a private
+    # attribute is the contract-preserving channel for this internal flag.
+    _nonlocal: dict[str, bool] = {"tools_after_last_text": False}
     error = ""
 
     if emit is not None:
@@ -408,6 +415,11 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     def _on_token(text: str) -> None:
         if text:
             chunks.append(text)
+            # The turn's LAST text chunk is the final assistant message; a
+            # tool call arriving after it means that message was followed
+            # by a tool round, so it did not close the turn. Reset here,
+            # set in _on_tool_use, read by _continue_announced.
+            _nonlocal["tools_after_last_text"] = False
             if emit is not None:
                 emit({"type": "text", "text": text})
 
@@ -436,6 +448,7 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         except (json.JSONDecodeError, TypeError):
             inp = {"raw": str(input_json)}
         tool_calls.append({"name": name, "input": inp})
+        _nonlocal["tools_after_last_text"] = True
         observer.saw_tool_use(name)
         if emit is not None:
             emit({"type": "tool_use", "name": name, "input": inp})
@@ -515,6 +528,22 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
 
     in_after = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
+    # The internal "did a tool follow the last text" flag rides on the
+    # engine, not the returned dict (whose keys are pinned to TURN_KEYS).
+    try:
+        setattr(engine, "_tools_after_last_text",
+                bool(_nonlocal["tools_after_last_text"]))
+    except (AttributeError, TypeError):
+        pass
+
+    # The model switches this turn made live on the engine's client
+    # (api_client._turn_model_switches: {before, after, reason}). Read them
+    # defensively -- a stub engine without a client (the scheduler and
+    # benchmark test doubles) must keep working and report []. The read is
+    # of the client the engine owns, so `engine.client` is the only route.
+    _model_switches = getattr(
+        getattr(engine, "client", None), "_turn_model_switches", None)
+    model_switches = (list(_model_switches) if _model_switches else [])
 
     return {
         "text": (full_text or "".join(chunks)).strip(),
@@ -522,11 +551,135 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         "input_tokens": max(0, in_after - in_before),
         "output_tokens": max(0, out_after - out_before),
         "error": error,
+        "model_switches": model_switches,
         **observer.summary(
             error=error,
             engine_stop_reason=str(
                 getattr(engine, "last_turn_stop_reason", "") or "")),
     }
+
+
+#: Continuations for a headless run whose answer ends by announcing work
+#: it did not do. Env over ``agent.announce_continuations`` over this
+#: default; invalid keeps the default, 0 disables. Read per run, like the
+#: other run knobs, never written into anyone's settings file.
+_ANNOUNCE_CONTINUATIONS_DEFAULT = 5
+
+
+def _resolve_announce_continuations() -> int:
+    try:
+        env = str(os.environ.get("DELFIN_ANNOUNCE_CONTINUATIONS") or "").strip()
+        if env:
+            return max(0, int(env))
+    except (TypeError, ValueError):
+        pass
+    try:
+        from delfin.user_settings import load_settings
+        raw = (load_settings() or {}).get("agent", {}) or {}
+        val = int(raw.get("announce_continuations",
+                          _ANNOUNCE_CONTINUATIONS_DEFAULT))
+    except Exception:
+        val = _ANNOUNCE_CONTINUATIONS_DEFAULT
+    return val if val >= 0 else _ANNOUNCE_CONTINUATIONS_DEFAULT
+
+
+_ANNOUNCE_CONT_PROMPT = (
+    "You ended this run by announcing an action and did not take it. "
+    "Take it NOW with the tool call you described, and continue until "
+    "the run's task is done. If the action is risky or you are unsure "
+    "it is wanted, say clearly in your answer that it is not done "
+    "instead of announcing it.")
+
+
+def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
+                        max_tokens: int, emit: Any = None) -> dict[str, Any]:
+    """Keep a headless run going while its final reply announces undone
+    work.
+
+    Input: ``out`` -- the ``TURN_KEYS``-shaped dict ``_run_once`` returned
+    for the one-shot run's turn (``chat -p`` / ``run``), plus the internal
+    flag ``tools_after_last_text``; ``engine`` -- the run's engine, whose
+    ceilings ``run_limits.ceiling_reason`` reads; ``max_tokens`` -- the
+    per-turn token bound cmd_run was given; ``emit`` -- the JSON-line
+    renderer or None.
+
+    Output: the LAST turn's dict, same shape. Each continuation is a full
+    ``_run_once`` turn: its tokens are billed, its rounds draw the same
+    per-turn tool-round budget, and ``ceiling_reason`` counts it against
+    the run's ceilings -- the first reached ceiling ends the loop the way
+    it would end any further turn.
+
+    The turn's internal ``tools_after_last_text`` flag is read off the
+    ENGINE (set by ``_run_once``), not from ``out``: the returned dict's
+    keys are pinned to ``repl.TURN_KEYS`` and cannot carry it.
+
+    Semantics: the decision is about the turn's FINAL assistant message
+    only, not the turn as a whole -- a run that made many tool calls and
+    then closed on an announcement is exactly the failure this fixes, so
+    ``out["tool_calls"]`` must not veto. The turn continues when the
+    final text announces an action and that text was the turn's last
+    output (no tool call followed it); a turn that ended ON a tool round
+    is already mid-work and gets none. Bounded by
+    ``agent.announce_continuations`` (env ``DELFIN_ANNOUNCE_CONTINUATIONS``
+    over settings; default 5; 0 disables). Stops on: a real final answer,
+    a ceiling, a non-"done" stop reason, an error, or a no-tool
+    continuation that STILL announces -- a real-final no-tool continuation
+    is the task finishing, not a stall. Attended sessions never come
+    through here: the terminal and the dashboard drive ``repl.run_turn``,
+    not ``cmd_run``.
+
+    Rejected: keying the decision on ``out["tool_calls"]`` being empty --
+    that is the turn-wide count, and it would have left precisely the
+    measured failure (tools, then an announcing close) unfixed. Editing
+    api_client's in-turn ``_announced`` guard instead -- that path serves
+    attended sessions too, and the headless loop belongs to the CLI.
+    """
+    allowed = _resolve_announce_continuations()
+    try:
+        from .api_client import _announces_an_action
+    except Exception:
+        return out
+    if allowed <= 0 or not isinstance(out, dict) or out.get("error"):
+        return out
+    if str(out.get("stop_reason") or "done") != "done":
+        return out
+    if not _announces_an_action(str(out.get("text") or "")):
+        return out
+    # The announcement'd final message must carry NO following tool call.
+    # Read off the engine (set by _run_once): a turn that ended ON a tool
+    # round is already mid-work and gets no nudge.
+    if bool(getattr(engine, "_tools_after_last_text", False)):
+        return out
+    used = 0
+    while used < allowed:
+        try:
+            from .run_limits import ceiling_reason
+            if ceiling_reason(engine):
+                break
+        except Exception:
+            pass
+        used += 1
+        if emit is not None:
+            try:
+                emit({"type": "notice", "text":
+                      "\n↻ announced an action → continuing the run "
+                      f"({used}/{allowed})\n"})
+            except Exception:
+                pass
+        out = _run_once(engine, _ANNOUNCE_CONT_PROMPT,
+                        max_tokens=max_tokens, emit=emit)
+        tools_after = bool(getattr(engine, "_tools_after_last_text", False))
+        if out.get("error") or str(out.get("stop_reason") or "done") != "done":
+            break
+        if not _announces_an_action(str(out.get("text") or "")):
+            # A real answer -- with or without tool calls -- ends it.
+            break
+        if tools_after:
+            continue
+        # No tool call AND still announcing: nudging again would only
+        # repeat the same sentence.
+        break
+    return out
 
 
 def _display_messages(engine, limit: int = 200) -> list[dict[str, str]]:
@@ -835,6 +988,14 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     out = _run_once(engine, prompt_sent,
                     max_tokens=int(getattr(args, "max_tokens", 0) or 0),
                     **_emit)
+    # A one-shot run stops for good after this answer; one that ends by
+    # announcing work it did not do must keep going here, bounded (see
+    # _continue_announced). Attended sessions are unaffected: they never
+    # pass through cmd_run.
+    out = _continue_announced(engine, prompt_sent, out,
+                              max_tokens=int(getattr(args, "max_tokens", 0)
+                                             or 0),
+                              emit=_emit.get("emit"))
     sid = _save_session(engine, repo)
 
     _end_session(engine, sid, repo, task=prompt, failed=bool(out["error"]),
@@ -2188,6 +2349,18 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 os.chdir(_cwd_before)
             except Exception:
                 pass
+
+
+def _run_prcheck_subcommand(args: argparse.Namespace) -> int:
+    """The `prcheck` subcommand body (package PC1): delegate to the
+    owned module so the check itself is tested outside cli.py."""
+    from .cli_prcheck import main as prcheck_main
+    argv = []
+    if getattr(args, "base", "origin/main") != "origin/main":
+        argv += ["--base", args.base]
+    for partner in getattr(args, "partner", []):
+        argv += ["--partner", partner]
+    return prcheck_main(argv)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -4163,6 +4336,30 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace(args: argparse.Namespace) -> int:
+    """One run read as a trace: turns, model calls, tool calls (OT1).
+
+    Text timeline from the existing stores only (tool_trace, turn_metrics,
+    session_store) — no new store, nothing sent anywhere.
+    """
+    from .otel_export import spans, timeline, write_otlp_json
+
+    session_id = args.session_id
+    if args.otlp:
+        path = write_otlp_json(session_id, args.otlp)
+        if path is None:
+            print(f"(could not write {args.otlp})")
+            return 1
+        print(f"OTLP/JSON written: {path}")
+    print(timeline(session_id))
+    # A trace with no recorded tool calls and no turns is likely a wrong
+    # session id; the note says so instead of leaving a blank screen.
+    if not spans(session_id):
+        print(f"(no spans for session {session_id!r} — check the id with "
+              "'delfin-agent sessions')")
+    return 0
+
+
 def cmd_where(args: argparse.Namespace) -> int:
     """Say where the dashboard is and how to walk back into it."""
     from . import where as _where
@@ -4771,6 +4968,29 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Overwrite existing files")
     init.set_defaults(func=cmd_init)
 
+    # new-adapter (WB3): the hook is exactly these two lines; everything
+    # else lives in delfin/agent/cli_new_adapter.py.
+    from delfin.agent import cli_new_adapter
+    _na = cli_new_adapter.build_parser(sub)
+    _na.set_defaults(func=cli_new_adapter.handler)
+
+    # new-workflow: the hook is exactly these two lines; everything else
+    # lives in delfin/agent/cli_new_workflow.py.
+    from delfin.agent import cli_new_workflow
+    _nw = cli_new_workflow.build_parser(sub)
+    _nw.set_defaults(func=cli_new_workflow.handler)
+
+    # prcheck (package PC1)
+    prcheck = sub.add_parser(
+        "prcheck", help="The pre-PR self-check: run, verify, then hand over")
+    prcheck.add_argument(
+        "--base", default="origin/main",
+        help="Branch to diff against (default: origin/main)")
+    prcheck.add_argument(
+        "--partner", action="append", default=[],
+        help="Reviewer branch that must be merged in; repeatable")
+    prcheck.set_defaults(func=_run_prcheck_subcommand)
+
     # bench — canned-task benchmark suite
     bench = sub.add_parser(
         "bench",
@@ -5212,6 +5432,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     bug.set_defaults(func=cmd_bug, bug_action="ls")
 
+    # schedule -- the user's own schedules, run by the agent service
+    user_sched = sub.add_parser(
+        "schedule",
+        help="Your schedules (run by the agent service): list | add <when> <task> | "
+             "show | ok | pause | resume | delete | run | log | autostart")
+    user_sched.add_argument("words", nargs=argparse.REMAINDER,
+                            help="e.g. add täglich 07:30 --cwd ~/proj Fasse die Jobs zusammen")
+
+    def _cmd_user_schedule(args):
+        from .schedule_commands import cli_main
+        return cli_main(list(args.words or []))
+    user_sched.set_defaults(func=_cmd_user_schedule)
+
     # scheduler — headless executor for schedule_wakeup / cron entries
     sched = sub.add_parser(
         "scheduler",
@@ -5505,6 +5738,22 @@ def build_parser() -> argparse.ArgumentParser:
                             help="With --load: repeat every SECONDS "
                                  "(Ctrl-C to stop)")
     sessions_p.set_defaults(func=cmd_sessions)
+
+    # trace — one run read as a trace (OT1): text timeline from the
+    # existing tool_trace / turn_metrics / session_store records, plus
+    # an OTLP/JSON file with --otlp. Read-only; nothing is sent anywhere.
+    trace_p = sub.add_parser(
+        "trace",
+        help="One run as a trace: turns, model calls, tool calls "
+             "(text timeline; --otlp writes an OTLP/JSON file)",
+    )
+    trace_p.add_argument("session_id",
+                         help="Session id to render (see 'delfin-agent "
+                              "sessions')")
+    trace_p.add_argument("--otlp", default="", metavar="PATH",
+                         help="Also write the span tree as an OTLP/JSON "
+                              "file a collector can import (no network)")
+    trace_p.set_defaults(func=cmd_trace)
 
     # jobs — the cluster's jobs, read-only, without starting a session.
     # Same query and watch files the monitor daemon uses (cli_jobs is

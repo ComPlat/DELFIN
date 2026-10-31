@@ -99,6 +99,17 @@ class FileConfirmBroker:
         self.require_code = bool(require_code)
         self._timed_out = threading.local()
         self._refusal_reason = threading.local()
+        self._changed_to = threading.local()
+
+    @property
+    def last_changed_to(self) -> str:
+        """The command THIS thread's last dialog was changed to, or ""
+        (the answer's ``changed_to``); read by the gate like the reason."""
+        return str(getattr(self._changed_to, "value", "") or "")
+
+    @last_changed_to.setter
+    def last_changed_to(self, value: str) -> None:
+        self._changed_to.value = str(value or "")
 
     # -- the contract the gate reads -------------------------------------
     @property
@@ -117,6 +128,7 @@ class FileConfirmBroker:
         """Bound on purpose: the gate reads last_timed_out off __self__."""
         self.last_timed_out = False
         self.last_refusal_reason = ""
+        self.last_changed_to = ""
         try:
             request_id, path = self._write_request(tool_name, args, preview)
         except OSError:
@@ -162,6 +174,9 @@ class FileConfirmBroker:
             "session_id": self.session_id,
             "tool": str(tool_name or ""),
             "path": str((args or {}).get("path") or ""),
+            # A shell request's command, so the dialog can offer to change
+            # it (terminal_confirm.checked_change caps a change at 4000).
+            "command": str((args or {}).get("command") or "")[:20000],
             "preview": str(preview or "")[:20000],
             "pid": os.getpid(),
             "host": _hostname(),
@@ -203,6 +218,11 @@ class FileConfirmBroker:
         while True:
             answer = _read_answer(answer_path, request_id, asked_at)
             if answer is not None:
+                # Read before the answer is retired, under the same checks;
+                # on the asking thread, so per thread like the reason.
+                self.last_changed_to = (
+                    _read_changed(answer_path, request_id, asked_at)
+                    if answer[0] is False else "")
                 _retire(request_path, answer_path, answer[0])
                 return answer
             if _code.spent(request_id) or time.monotonic() >= deadline:
@@ -282,7 +302,8 @@ def needs_code(request_path: Path) -> bool:
 
 def _write_answer(request_id: str, decision: bool, *,
                   room: Optional[Path] = None, by: str = "",
-                  reason: str = "", code: str = "") -> bool:
+                  reason: str = "", code: str = "",
+                  changed_to: str = "") -> bool:
     """``answer`` without the agent-session check, for the CLI backend's
     Relay: it writes what the person clicked in this process's own dialog,
     and a DELFIN started from an agent's shell must still be able to.
@@ -298,6 +319,9 @@ def _write_answer(request_id: str, decision: bool, *,
         reason = _sanitize_reason(reason)
         if reason:
             record["reason"] = reason
+        changed = _sanitize_command(changed_to)
+        if changed:
+            record["changed_to"] = changed
     if _code.normalize(code):
         _code.sign(record, code)
     path = room / f"{request_id}.answer.json"
@@ -439,6 +463,31 @@ def _read_answer(path: Path, request_id: str,
         reason = _sanitize_reason(record.get("reason"))
         return (False, reason)
     return None                          # unrecognised is not an answer
+
+
+#: The longest changed command an answer carries (checked_change's cap).
+CHANGED_MAX = 4000
+
+
+def _sanitize_command(text) -> str:
+    """A changed command as an answer carries it: newline and tab kept,
+    every other control character refusing the whole command (it was
+    checked before it was written; this is the reader's own check)."""
+    value = str(text or "").strip()
+    if not value or len(value) > CHANGED_MAX:
+        return ""
+    if any((ord(ch) < 32 and ch not in "\n\t") or ord(ch) == 127 for ch in value):
+        return ""
+    return value
+
+
+def _read_changed(path: Path, request_id: str, asked_at: float) -> str:
+    """The changed command a refusal in *path* carries, or "". Under the
+    same checks as the decision: the model is told to run it."""
+    record = _checked_record(path, request_id, asked_at)
+    if record is None or record.get("decision") != DENY:
+        return ""
+    return _sanitize_command(record.get("changed_to"))
 
 
 def _read_choice(path: Path, request_id: str, asked_at: float,

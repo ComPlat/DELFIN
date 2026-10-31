@@ -15,7 +15,9 @@ the memories it saves compound across sessions). Manual trigger via
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
+import datetime as dt
 
 
 _DISTILL_SYSTEM = (
@@ -361,3 +363,181 @@ def distill_and_save(
         return save_facts(parse_facts(raw, cfg["max_facts"]), repo_root=repo_root)
     except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Shipping a lesson into the pack knowledge (MM1)
+# ---------------------------------------------------------------------------
+
+def _split_labels(text: str) -> tuple[str, str, str]:
+    """(situation, lesson, why) from the lesson text. Missing labels fall
+    back to the plain-text split of ``knowledge_private._split``: the
+    shipped entry uses the same shape as a private lesson."""
+    from .knowledge_private import _split
+    return _split(text)
+
+
+def distill_for_shipping(
+    text: str,
+    evidence,
+    *,
+    author: str = "delfin-agent",
+    topic: str = "delfin-development",
+    title: str = "",
+    review_by: str = "",
+    folder=None,
+    today=None,
+) -> "Path":
+    """Ship a session lesson as a knowledge entry — only through the four
+    gates, raising ValueError otherwise.
+
+    Gates (all existing DELFIN checks, no new ones):
+    1. Evidence: every pointer must be a ``kind:ref`` AND one of
+       ``knowledge.PUBLIC_EVIDENCE_KINDS`` — a job/session/calc/swarm id
+       names one machine and no reader elsewhere can follow it.
+    2. Privacy: ``knowledge_check.check(public=True)`` on the whole entry
+       text — secrets (DELFIN's own redaction), emails, home paths,
+       account/host names, user-specific text, machine references.
+    3. Instruction: ``knowledge_check.instruction_findings`` — a lesson
+       that tells the reader to change a protected file or skip a check
+       is not shipped.
+    4. Dedupe: ``knowledge.near_duplicate`` against every entry already
+       in the target folder. A duplicate MERGES (provenance added, one
+       file); a contradiction raises instead of silently overwriting an
+       existing lesson.
+
+    ``review_by`` defaults to one year out so shipped lessons get the
+    same periodic re-review as the rest of the pack.
+
+    Returns the written entry path. The duplicate-merge path returns the
+    existing entry's path.
+    """
+    from . import knowledge as kn
+    from . import knowledge_check as kc
+
+    text = str(text or "").strip()
+    if not text:
+        raise ValueError("an empty lesson is not shippable")
+
+    # Gate 1 — evidence: present, well-formed, and followable anywhere.
+    pointers = [str(e).strip() for e in (evidence or []) if str(e).strip()]
+    if not pointers:
+        raise ValueError("a shipped lesson needs evidence: a pointer such "
+                         "as test:<node> or commit:<sha>")
+    bad = [p for p in pointers if not kn.valid_evidence(p)]
+    if bad:
+        raise ValueError(f"evidence must be kind:ref pointers: {bad!r}")
+    machine_local = [p for p in pointers
+                     if p.split(":", 1)[0] not in kn.PUBLIC_EVIDENCE_KINDS]
+    if machine_local:
+        raise ValueError(
+            "evidence must be followable by any reader; these names one "
+            "machine only: " + ", ".join(machine_local))
+
+    # Shape the entry.
+    situation, lesson, why = _split_labels(text)
+    if not lesson:
+        raise ValueError("the lesson text carries no Lesson label")
+    slug = kn.slugify(title or lesson)
+    if not title:
+        title = (lesson.split(". ")[0] or lesson)[:kn.MAX_TITLE].rstrip(".")
+    if not review_by:
+        year = (dt.date.today() if today is None else today).year
+        review_by = f"{year + 1}-12-31"
+
+    e = kn.Entry(
+        slug=slug, title=title, topic=topic, scope="delfin-development",
+        provenance=[kn.Provenance(author=author, date=(
+            dt.date.today() if today is None else today).isoformat(),
+            evidence=p) for p in pointers],
+        review_by=review_by,
+        situation=situation, lesson=lesson, why=why, layer=kn.GLOBAL)
+
+    # Gates 2+3 — privacy, instructions and the entry template, the same
+    # checks CI lint runs on every shipped entry (knowledge_curation.
+    # _recheck, knowledge_curation.py:324-332). Without the template here
+    # a bad topic, date, length or author handle would ship and only fail
+    # in CI.
+    findings = [f.line() for f in kc.check(e.text, public=True,
+                                           identity={},
+                                           unpublished_terms=())]
+    findings += [f.line() for f in kc.instruction_findings(e.text)]
+    topics = kn.read_topics(kn.global_dir())
+    findings += kn.template_findings(e, topics=topics, layer=kn.GLOBAL)
+    if findings:
+        raise ValueError("the lesson is not shippable (private or "
+                         "instructional content): " + "; ".join(findings))
+
+    # Gate 4 — dedupe against the shipped folder. A contradiction is
+    # checked on EVERY entry first (near_duplicate returns False for
+    # polarity-inverted pairs by design, knowledge.py:437 — that is the
+    # pair contradicts() exists for); only then the duplicate merge.
+    target = kn.Path(folder) if folder is not None else kn.global_dir()
+    existing = kn.read_entries(target, layer=kn.GLOBAL)
+    for other in existing:
+        if kn.contradicts(e, other):
+            raise ValueError(
+                f"the lesson contradicts the shipped entry {other.slug!r}"
+                " — merge it by hand, do not ship")
+    for other in existing:
+        if kn.near_duplicate(e, other):
+            return kn.write_entry(target, kn.merge_entries(other, e))
+    return kn.write_entry(target, e)
+
+
+# ---------------------------------------------------------------------------
+# Recall order: the four memory levels, narrowest first (MM1 P2)
+# ---------------------------------------------------------------------------
+
+RECALL_LEVELS = ("session", "project", "knowledge", "user")
+
+
+def recall_levels(task_text: str, *, session_text: str = "",
+                  project_text: str = "", knowledge_text: str = "",
+                  user_text: str = "") -> list[tuple[str, str]]:
+    """The four memory levels in recall order, narrowest first.
+
+    Takes the ALREADY-FETCHED text of each level (the fetching lives in
+    prompt_loader — session history, project store, shipped pack
+    knowledge, user store) and returns ``[(level, text), ...]`` with:
+
+    * the fixed narrowest-first order session -> project -> knowledge ->
+      user (a session fact is more specific than the project's, the
+      project's than what every DELFIN user ships, the shipped pack than
+      the user's personal store);
+    * a ``source`` label on every level, so recalled text always says
+      where it came from;
+    * empty levels dropped — no level with no text is recalled;
+    * a wider level that merely repeats a narrower one dropped
+      (near-duplicate of the narrower text — the shipped copy of a
+      lesson the session already carries adds nothing and would be
+      recalled twice);
+    * no recall at all without a task (the same rule
+      knowledge.load_block applies, knowledge.py:548).
+
+    Returns ``[(level, text), ...]``; callers render each level as
+    ``--- <Level> ---`` blocks, the same shape prompt_loader already
+    uses for the separate blocks.
+    """
+    if not (task_text or "").strip():
+        return []
+    level_texts = [("session", session_text), ("project", project_text),
+                   ("knowledge", knowledge_text), ("user", user_text)]
+    out: list[tuple[str, str]] = []
+    kept_texts: list[str] = []
+    for level, text in level_texts:
+        text = str(text or "").strip()
+        if not text:
+            continue
+        from .memory_store import _inverts_polarity, _normalise_text
+        # A wider level repeating a narrower one is dropped: near-
+        # duplicate of the narrower text, or verbatim inside it.
+        duplicate_of_narrower = any(
+            text in kept or (_normalise_text(text) == _normalise_text(kept))
+            for kept in kept_texts)
+        if duplicate_of_narrower and not _inverts_polarity(text, " ".join(
+                kept_texts) or text):
+            continue
+        out.append((level, f"[source: {level}] {text}"))
+        kept_texts.append(text)
+    return out

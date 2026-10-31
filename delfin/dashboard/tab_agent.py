@@ -8,6 +8,7 @@ import re
 import shutil
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple, Sequence
 
@@ -21,6 +22,7 @@ from delfin.agent import pricing as _pricing
 from delfin.agent import turn_context
 from delfin.agent.harness_rows import HarnessText
 from delfin.dashboard.chat_markdown import render as _render_markdown
+from delfin.messenger.dashboard import gate as _messenger_gate, serialized_gate as _serialized_gate
 
 
 _PLAN_HINT_VERBS = re.compile(
@@ -78,6 +80,14 @@ _PLACEHOLDER_WIDTH = 96
 _PROMPT_MARKER = re.compile(r"^[ \t>*_-]*PROMPT:[ \t]*(\S.*?)[ \t]*$", re.M)
 
 
+def _unquote_shell_offer(text: str) -> str:
+    """Accept a copied inline-code shell escape, without interpreting prose."""
+    if (text.startswith("`!") and text.endswith("`")
+            and text.count("`") == 2 and "\n" not in text):
+        return text[1:-1].strip()
+    return text
+
+
 def proposed_prompt(text: str):
     """The message the agent marked as an offer, or None.
 
@@ -93,7 +103,8 @@ def proposed_prompt(text: str):
     except Exception:
         return None
     for line in reversed(found):
-        cleaned = " ".join(str(line).split())
+        candidate = _unquote_shell_offer(str(line).strip())
+        cleaned = candidate if candidate.startswith("!") else " ".join(candidate.split())
         if cleaned:
             return cleaned
     return None
@@ -975,6 +986,98 @@ def _provider_key(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The chat transcript on the page
+# ---------------------------------------------------------------------------
+
+# Python renders the whole transcript as one string, and ipywidgets puts
+# every assignment of an HTML widget's value in with innerHTML. Assigned
+# directly, that destroyed and rebuilt every message, card and plot about
+# four times a second while the agent streamed: measured in the real page,
+# the 3D canvases a reader had scrolled up to went 3 -> 0 -> 1 -> 2 -> 3 on
+# each update, and a selection or a drag in progress was lost with the node
+# under it.
+#
+# So the value carries the transcript inside an inert <template> (nothing
+# in it is rendered, loaded or run) and, after it, an image whose error
+# handler applies it. The shown messages live in a container of their own,
+# appended to the widget's host beside .widget-html-content -- ipywidgets
+# replaces only the content element, so the container and every node in it
+# survive an update. The handler keeps the longest run of leading messages
+# whose source HTML is unchanged (each shown node carries the source it was
+# made from, so a card's own later DOM changes do not count as a change) and
+# replaces the rest. Within a growing assistant message its finished leading
+# paragraphs also keep their nodes, selection and interactive controls.
+# A new message is appended; everything above stays. Any error falls back to
+# the old whole replacement inside the container.
+#
+# Rejected: one ipywidget per message. Same effect, but it changes the DOM
+# every rule and script of the chat is written against.
+_CHAT_MORPH_JS = (
+    "(function(img){var W=window;"
+    "if(!W.__delfinChatMorph){W.__delfinChatMorph=function(img){"
+    "var host=img.closest?img.closest('.delfin-agent-chat-host'):null;"
+    "var src=img.previousElementSibling;"
+    "if(!host||!src||src.tagName!=='TEMPLATE')return;"
+    "var fresh=src.content.firstElementChild;if(!fresh)return;"
+    "var shown=host.__delfinShown;"
+    "if(!shown||shown.parentNode!==host||shown.tagName!==fresh.tagName){"
+    "if(shown&&shown.parentNode===host)host.removeChild(shown);"
+    "shown=document.createElement(fresh.tagName);host.appendChild(shown);"
+    "host.__delfinShown=shown;}"
+    "try{"
+    "Array.from(shown.attributes).forEach(function(a){"
+    "if(!fresh.hasAttribute(a.name))shown.removeAttribute(a.name);});"
+    "Array.from(fresh.attributes).forEach(function(a){"
+    "if(shown.getAttribute(a.name)!==a.value)shown.setAttribute(a.name,a.value);});"
+    "var want=Array.from(fresh.childNodes).filter(function(n){"
+    "return n.nodeType===1||(n.nodeType===3&&n.data.trim());});"
+    "var keys=want.map(function(n){"
+    "return n.nodeType===1?n.outerHTML:'#'+n.data;});"
+    "var have=Array.from(shown.childNodes);var p=0;"
+    "function key(n){return n.nodeType===1?n.outerHTML:'#'+n.data;}"
+    "function stamp(n){n.__delfinKey=key(n);"
+    "Array.from(n.childNodes).forEach(function(c){c.__delfinKey=key(c);});return n;}"
+    "while(p<want.length&&p<have.length){"
+    "if(have[p].__delfinKey===keys[p]){p++;continue;}"
+    "var old=have[p],next=want[p];"
+    "if(old.nodeType!==1||next.nodeType!==1||old.tagName!==next.tagName||"
+    "!old.classList.contains('delfin-chat-agent')||old.className!==next.className)break;"
+    "var oc=Array.from(old.childNodes),nc=Array.from(next.childNodes),k=0;"
+    "while(k<oc.length&&k<nc.length&&oc[k].__delfinKey===key(nc[k]))k++;"
+    "for(var x=oc.length-1;x>=k;x--)old.removeChild(oc[x]);"
+    "var part=document.createDocumentFragment();"
+    "for(var x=k;x<nc.length;x++)part.appendChild(stamp(document.importNode(nc[x],true)));"
+    "old.appendChild(part);old.__delfinKey=keys[p];p++;}"
+    "for(var j=have.length-1;j>=p;j--)shown.removeChild(have[j]);"
+    "var frag=document.createDocumentFragment();"
+    "for(var i=p;i<want.length;i++){var n=document.importNode(want[i],true);"
+    "stamp(n);frag.appendChild(n);}"
+    "shown.appendChild(frag);"
+    "}catch(e){shown.innerHTML=fresh.innerHTML;}"
+    "if(W.__delfinWatchChat)W.__delfinWatchChat(host);};}"
+    "W.__delfinChatMorph(img);img.remove();})(this)"
+)
+_CHAT_MORPH_TAG = ('<img src="" alt="" style="display:none" onerror="'
+                   + _html.escape(_CHAT_MORPH_JS, quote=True) + '">')
+
+
+def _chat_value(transcript_html: str) -> str:
+    """The value of the chat widget for ``transcript_html``.
+
+    Input: the transcript element (``<div class="delfin-agent-chat" ...>``
+    with one child per message). Output: that element inside an inert
+    ``<template>``, followed by the tag that applies it to the shown
+    messages (see ``_CHAT_MORPH_JS``). A ``</template`` in the transcript --
+    a message quoting the tag -- is written as ``&lt;/template``, which
+    reads the same in text and in an attribute and cannot end the wrapper.
+    """
+    body = re.sub(r"</(template)", r"&lt;/\1", str(transcript_html or ""),
+                  flags=re.I)
+    return ('<template class="delfin-chat-src">' + body + "</template>"
+            + _CHAT_MORPH_TAG)
+
+
+# ---------------------------------------------------------------------------
 # CSS for the chat interface
 # ---------------------------------------------------------------------------
 
@@ -1029,8 +1132,8 @@ _AGENT_CSS = """\
    approvals, questions -- sits INSIDE the box the reader is looking at,
    and the transcript above it is the part that scrolls. The panels under
    the input fold away (an accordion, closed by default). */
-/* With --claude-terminal the frame shares a row with the Claude Code
-   panel; the row then takes the frame's place in the tab. */
+/* With --agent-terminal the frame shares a row with the terminal panel;
+   the row then takes the frame's place in the tab. */
 .delfin-agent-root > .delfin-agent-chat-row {
     flex: 1 1 0 !important;
     min-height: 45vh;
@@ -1038,23 +1141,23 @@ _AGENT_CSS = """\
     align-items: stretch;
 }
 .delfin-agent-chat-row > .delfin-agent-chat-frame { min-width: 0; }
-.delfin-claude-term-panel {
+.delfin-agent-term-panel {
     flex: 1 1 0 !important; min-width: 0;
     display: flex; flex-direction: column;
     border: 1px solid #333; border-radius: 6px; overflow: hidden;
     background: #1e1e1e;
 }
-.delfin-claude-term-panel > .delfin-claude-term-head {
+.delfin-agent-term-panel > .delfin-agent-term-head {
     flex: 0 0 auto; color: #cbd5e1; background: #111827;
     font-size: 12px; padding: 3px 10px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.delfin-claude-term-panel > .delfin-claude-term-host {
+.delfin-agent-term-panel > .delfin-agent-term-host {
     flex: 1 1 0 !important; min-height: 0;
 }
-.delfin-claude-term-host .widget-html-content,
-.delfin-claude-term-host .delfin-claude-term { height: 100%; width: 100%; }
-.delfin-claude-term { padding: 4px; box-sizing: border-box; }
+.delfin-agent-term-host .widget-html-content,
+.delfin-agent-term-host .delfin-agent-term { height: 100%; width: 100%; }
+.delfin-agent-term { padding: 4px; box-sizing: border-box; }
 .delfin-agent-root > .delfin-agent-chat-frame,
 .delfin-agent-chat-row > .delfin-agent-chat-frame {
     flex: 1 1 0 !important;
@@ -1242,8 +1345,13 @@ _AGENT_CSS = """\
     display: flex;
     flex-direction: column;
 }
-.delfin-agent-chat-host > .widget-html-content { display: flex;
-    flex-direction: column; min-height: 100%; }
+/* The widget's own content holds only the inert source and the tag that
+   applies it (_chat_value); the shown messages are the container beside it,
+   which an update does not replace. */
+.delfin-agent-chat-host > .widget-html-content { display: none; }
+.delfin-agent-chat-host > .delfin-agent-chat { display: flex;
+    flex-direction: column; min-height: 100%; box-sizing: border-box;
+    width: 100%; flex-shrink: 0; }
 /* Return to the newest output. Sticky rather than absolute: the chat is its
    own scrollport, so an absolutely placed control would ride away with the
    content instead of staying within reach. Hidden while the reader is
@@ -1253,8 +1361,10 @@ _AGENT_CSS = """\
     bottom: 6px;
     z-index: 5;
     flex: 0 0 auto;
-    align-self: flex-end;
-    margin: -4px 2px 0 0;
+    /* Centred: at the right edge it lay over a card's own controls (the
+       3D viewer's Fullscreen button) whenever the reader scrolled up. */
+    align-self: center;
+    margin: -4px auto 0 auto;
     padding: 3px 10px;
     border: 1px solid #475569;
     border-radius: 999px;
@@ -1314,6 +1424,9 @@ _AGENT_CSS = """\
     color: #1976d2 !important;
     opacity: 1;
 }
+/* Empty (marked from Python when a send clears it): the resting height,
+   over whatever the grow script last wrote inline. */
+.delfin-agent-input-empty textarea { height: 80px !important; }
 .delfin-agent-input textarea {
     min-height: 80px;
     max-height: 280px;
@@ -1325,9 +1438,9 @@ _AGENT_CSS = """\
 }
 .delfin-chat-msg {
     overflow-anchor: none;
-    margin-bottom: 8px;
-    padding: 8px 12px;
-    border-radius: 8px;
+    margin-bottom: 10px;
+    padding: 10px 14px;
+    border-radius: 12px;
     max-width: 85%;
     word-wrap: break-word;
     /* The widget label around the chat sets 28px, which put a blank
@@ -1340,19 +1453,21 @@ _AGENT_CSS = """\
     margin-top: 4px;
 }
 .delfin-chat-user {
-    background: #dbeafe;
+    background: #e8f0fe;
     /* The background is fixed, so the text colour is too: inherited, it
        is the dark theme's white on a light bubble. */
-    color: #1f2937;
+    color: #0f172a;
     margin-left: auto;
     text-align: left;
     border-bottom-right-radius: 2px;
 }
 .delfin-chat-agent {
-    background: #f3f4f6;
-    color: #1f2937;
+    background: #ffffff;
+    color: #111827;
     margin-right: auto;
     border-bottom-left-radius: 2px;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 .delfin-chat-system {
     background: #f3f4f6;
@@ -1431,6 +1546,21 @@ _AGENT_CSS = """\
     word-wrap: break-word;
     color: inherit;
     background: transparent;
+}
+/* The part of a reply still arriving reads as the reply's own text, not
+   as a code block: the generic ".delfin-chat-agent pre" rule below is more
+   specific than ".delfin-streaming-pre" and drew it as a dark box. */
+.delfin-chat-agent pre.delfin-streaming-pre {
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    font-family: inherit;
+    font-size: inherit;
+    white-space: pre-wrap;
 }
 .delfin-chat-approval {
     background: #fef3c7;
@@ -2180,6 +2310,203 @@ _AGENT_CSS = """\
     margin: 0 0 3px 0 !important;
     font-size: 16px;
 }
+/* THE PRESENTATION LAYER (2026-10-22). One type face and one card language
+   for the agent tab, on top of the rules above:
+   - a single sans-serif stack for the chat and the input (Inter where
+     installed, else the platform's UI face) at 14 px, where the chat
+     mixed the Jupyter UI font, 13 px and monospace placeholders;
+   - answers as white cards with a hairline and a soft shadow on a light
+     slate canvas, the user's turn in a light blue -- fixed colours, so a
+     dark Jupyter theme does not reach into them;
+   - every card in the transcript (files, plots, molecules, formulas) with
+     the same 12 px corner and shadow -- !important because their own
+     HTML carries inline borders;
+   - system lines in the UI face rather than monospace.
+   Colours and sizes only: nothing here moves an element or changes what is
+   shown. */
+.delfin-agent-root {
+    --delfin-ui-font: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont,
+        Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+/* The chat and the input only. The controls keep the Jupyter UI face:
+   their labels and dropdowns are sized to it, and the wider Inter/Segoe
+   metrics cut "Provider:" to "Provid..." (measured 2026-10-22). */
+.delfin-agent-root .delfin-agent-chat-host,
+.delfin-agent-root .delfin-agent-input textarea {
+    font-family: var(--delfin-ui-font);
+}
+.delfin-agent-root .delfin-agent-chat-host { font-size: 14px; line-height: 1.55; }
+.delfin-agent-root > .delfin-agent-chat-frame,
+.delfin-agent-chat-row > .delfin-agent-chat-frame {
+    background: #f8fafc;
+    border-color: #e2e8f0;
+    border-radius: 12px;
+}
+.delfin-agent-chat-host .delfin-artifact {
+    border-color: #e5e7eb !important;
+    border-radius: 12px !important;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+    background: #ffffff;
+}
+.delfin-chat-system {
+    font-family: var(--delfin-ui-font);
+    font-size: 12px;
+    background: #f1f5f9;
+    border-left-color: #cbd5e1;
+    border-radius: 0 8px 8px 0;
+    word-break: normal;
+    overflow-wrap: anywhere;
+}
+.delfin-chat-role { color: #64748b; letter-spacing: 0.6px; }
+.delfin-chat-tool .tool-name { color: #475569; }
+.delfin-md-table { font-size: 13px; border-radius: 8px; overflow: hidden; }
+.delfin-md-table th, .delfin-md-table td { border-color: #e2e8f0; padding: 5px 10px; }
+.delfin-md-table th { background: #f1f5f9; color: #0f172a; }
+.delfin-agent-root .delfin-agent-input textarea {
+    font-size: 14px;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    background: #ffffff;
+    color: #0f172a;
+    transition: border-color .12s ease, box-shadow .12s ease;
+}
+.delfin-agent-root .delfin-agent-input textarea:focus {
+    outline: none;
+    border-color: #93c5fd;
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12),
+                0 2px 8px rgba(15, 23, 42, 0.06);
+}
+/* Past the 280 px cap the box scrolls: a thin rounded bar without arrow
+   buttons, in the box's own colours (Chromium and Safari); Firefox takes
+   the standard thin bar. */
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar {
+    width: 8px;
+}
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar-track {
+    background: transparent;
+}
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar-thumb {
+    background: #cbd5e1; border-radius: 8px; border: 2px solid #ffffff;
+}
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+.delfin-agent-root .delfin-agent-input textarea::-webkit-scrollbar-button {
+    display: none;
+}
+@supports not selector(::-webkit-scrollbar) {
+    .delfin-agent-root .delfin-agent-input textarea {
+        scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent;
+    }
+}
+/* The shell, Files and Send buttons are as tall as the box beside them:
+   the rows stretch their items, and the buttons' 80 px from their widget
+   layout becomes the least height. */
+.delfin-agent-root .delfin-agent-input-area > .widget-hbox {
+    align-items: stretch !important;
+}
+.delfin-agent-root .delfin-agent-send-row {
+    align-items: stretch !important;
+}
+/* The box and Send carry the widgets' 2 px vertical margin; the shell and
+   Files buttons beside them did not, and stood 4 px taller. */
+.delfin-agent-root .delfin-agent-input-area > .widget-hbox > .jupyter-button {
+    margin-top: 2px !important; margin-bottom: 2px !important;
+}
+.delfin-agent-root .delfin-agent-input-area .jupyter-button {
+    height: auto !important; min-height: 80px;
+}
+.delfin-agent-root .delfin-agent-input textarea::placeholder { color: #94a3b8; }
+.delfin-agent-send-row .jupyter-button.mod-primary {
+    border-radius: 12px;
+    font-weight: 600;
+}
+/* The rest of the composer and the bars around the chat take the same
+   corner: the shell and Files buttons (in the input area's row, not in
+   the Send row) keep their light grey; the Details bar is a 12 px bar;
+   the working line, task line and Background box are strips inset 8 px
+   into the rounded chat frame, so they sit inside its corners instead of
+   running under them. */
+.delfin-agent-root .delfin-agent-input-area .jupyter-button {
+    border-radius: 12px;
+}
+.delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary) {
+    background: #eeeeee; border: none; color: #334155;
+    /* The 40 px shell button holds an icon and "/": with the default
+       padding and a border its label was cut to ">_ ..." (measured). */
+    padding: 0 4px;
+}
+.delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary):hover {
+    background: #e2e5e9;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-header {
+    border-radius: 12px; border: 1px solid #e2e8f0; background: #f8fafc;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse.jupyter-widget-Collapse-open > .jupyter-widget-Collapse-header {
+    border-radius: 12px 12px 0 0;
+}
+.delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-contents {
+    border-radius: 0 0 12px 12px; border-color: #e2e8f0;
+}
+.delfin-agent-chat-frame .delfin-agent-working,
+.delfin-agent-chat-frame > .delfin-agent-task-strip,
+.delfin-agent-chat-frame > .delfin-agent-background {
+    margin: 0 8px 6px; border-radius: 8px; border: 1px solid #e2e8f0;
+}
+/* The transcript keeps its height while the agent works. The working line
+   (one widget, with the slow-phase hint under it) lies over the
+   transcript's lower edge in the same grid cell instead of taking its
+   height: in a flex column the transcript went 737 -> 691 -> 657 -> 691
+   -> 737 px through one turn at 1920x1080 (measured), and a reader at the
+   end saw all of it move each time. The transcript keeps that much room
+   below its last message for good, so at the end nothing lies under the
+   line. The task line, the Background box and the docks follow in rows
+   below, as before. */
+.delfin-agent-root .delfin-agent-chat-frame {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    grid-auto-rows: auto;
+}
+.delfin-agent-chat-frame > .delfin-agent-chat-host { grid-area: 1 / 1; }
+.delfin-agent-chat-frame > .delfin-agent-working-slot {
+    grid-area: 1 / 1; align-self: end; z-index: 3;
+    /* Off the transcript's scrollbar (10 px, below) with 8 px to spare:
+       across the full cell the line lay on it (field report 2026-10-22). */
+    margin-right: 18px;
+}
+/* The transcript's scrollbar: a thin rounded bar like the input's, of a
+   known width, so the working line laid over the transcript can keep off
+   it. Chromium and Safari; Firefox takes its thin bar. */
+.delfin-agent-chat-host::-webkit-scrollbar { width: 10px; }
+.delfin-agent-chat-host::-webkit-scrollbar-track { background: transparent; }
+.delfin-agent-chat-host::-webkit-scrollbar-thumb {
+    background: #cbd5e1; border-radius: 8px; border: 2px solid #f8fafc;
+}
+.delfin-agent-chat-host::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+.delfin-agent-chat-host::-webkit-scrollbar-button { display: none; }
+@supports not selector(::-webkit-scrollbar) {
+    .delfin-agent-chat-host { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+}
+.delfin-agent-chat-host .delfin-agent-chat { padding-bottom: 84px; }
+/* The slow-phase hint under the working line: the same inset strip. */
+.delfin-agent-chat-frame .delfin-activity-hint {
+    margin: 0 8px 6px; border-radius: 8px; border: 1px solid #fde68a;
+}
+.delfin-agent-chat-frame:has(> .delfin-agent-working-slot .delfin-agent-working) .delfin-chat-jump {
+    bottom: 84px;
+}
+/* On a short/narrow window the wrapped toolbar needs the room that the
+   desktop transcript floor reserved. Keep the composer on screen. */
+@media (max-height: 700px), (max-width: 1000px) {
+    .delfin-agent-root > .delfin-agent-chat-frame,
+    .delfin-agent-chat-row > .delfin-agent-chat-frame,
+    .delfin-agent-root > .delfin-agent-chat-row { min-height: 60px !important; }
+    .delfin-agent-root .delfin-agent-chat-frame > .delfin-agent-chat-host {
+        min-height: 60px !important;
+    }
+}
 </style>
 """
 
@@ -2376,7 +2703,7 @@ def resolve_office_workspace(configured) -> Path | None:
 # a directory "always", approve every staged diff, schedule autonomous
 # loops, delete memories or write a user-wide memory.
 _USER_ONLY_SLASH_COMMANDS = frozenset({
-    "/perms", "/perm-cycle",
+    "/sync", "/perms", "/perm-cycle",
     "/grant", "/hooks", "/mcp", "/approve", "/reject",
     "/loop", "/auto", "/forget", "/profile", "/session", "/init",
     "/undo", "/undo-file", "/git",
@@ -2430,7 +2757,7 @@ def _awaiting_user_answer(state: dict) -> bool:
 # dispatcher. Kept at module scope so a test can drive the same routing
 # decision the send path makes.
 _BUILTIN_SLASH_PREFIXES = frozenset({
-    "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
+    "/sync", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
     "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
     "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
     "/memories", "/memorize", "/tidy", "/remember", "/forget", "/plans", "/plan", "/hooks",
@@ -2700,6 +3027,53 @@ def _code_block_html(lang: str, code: str, idx: int = 0) -> str:
     )
 
 
+@lru_cache(maxsize=8)
+def _streaming_markdown_head(text: str) -> str:
+    """Reuse completed paragraphs while tokens extend the unfinished tail."""
+    return _md_to_html(text)
+
+
+def _streaming_html(text: str) -> str:
+    """A reply that is still arriving, as chat HTML.
+
+    The paragraphs that are finished -- everything up to the last blank
+    line, and never inside an open code fence -- go through
+    :func:`_md_to_html`, so bold text, lists and tables appear as they
+    will stay. The paragraph still being written is escaped plain text in
+    the reply's own font. Before, the whole reply was raw markdown until
+    the turn ended, then flipped to the formatted version. Finished text
+    must never switch back to raw markdown at a length threshold: that
+    reflows the whole answer under the reader.
+    """
+    # Same trim as the markdown path: the first tokens often arrive behind
+    # a newline, and that gap would sit under the label for the whole reply.
+    text = text.strip(chr(13) + chr(10))
+
+    def _plain(part: str) -> str:
+        return (f'<pre class="delfin-streaming-pre">{_html.escape(part)}'
+                f'</pre>') if part.strip() else ""
+
+    cut = text.rfind("\n\n")
+    if cut < 0:
+        return _plain(text)
+    head, tail = text[:cut], text[cut:]
+    if head.count("```") % 2:
+        # The last fence in the finished part is still open: the code
+        # block belongs to the growing part until its closing fence.
+        fence = head.rfind("```")
+        head, tail = text[:fence], text[fence:]
+    else:
+        # A table arrives row by row with no blank line until it ends:
+        # its finished rows (header and separator included) are drawn,
+        # only the row still being written stays text.
+        lines = tail.strip("\n").split("\n")
+        if (len(lines) >= 3 and lines[0].lstrip().startswith("|")
+                and lines[1].lstrip().startswith("|")):
+            done = tail.rfind("\n")
+            head, tail = text[:cut] + tail[:done], tail[done:]
+    return (_streaming_markdown_head(head) if head.strip() else "") + _plain(tail.strip("\n"))
+
+
 def _md_to_html(text: str) -> str:
     """A chat message's markdown as HTML (see ``chat_markdown``).
 
@@ -2726,6 +3100,7 @@ def _md_to_html(text: str) -> str:
 # - has_args: True means the command takes arguments — palette adds a trailing
 #   space so the user starts typing immediately
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
+    ("Session", "/sync", "SimpleX für diese Sitzung on|off|status", True),
     # Session
     ("Session", "/help", "Show this help", False),
     ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),
@@ -2946,6 +3321,20 @@ window.__delfinQ = window.__delfinQ || function(sel) {
         if (all[i].offsetParent !== null) return all[i];
     }
     return all.length ? all[0] : null;
+};
+// Both agent key listeners use this guard, regardless of registration order.
+// The header owns Ctrl+K; a hidden chat must never submit slash commands.
+window.__delfinAgentOwnsKey = function(e) {
+    if (e.defaultPrevented) return false;
+    var chat = window.__delfinQ('.delfin-agent-chat-host');
+    if (!chat || chat.offsetParent === null) return false;
+    if (document.querySelector('.delfin-branch-btn') &&
+            (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') return false;
+    var panels = document.querySelectorAll('.delfin-branch-pop, .delfin-confirm');
+    for (var i = 0; i < panels.length; i++) {
+        if (panels[i].offsetParent !== null) return false;
+    }
+    return true;
 };
 """
 
@@ -3467,9 +3856,78 @@ def _format_action_stop_note(
 _TIER3_EXACT = {
     "/submit", "/orca submit", "/recalc auto",
     "/cancel all", "/cancel running", "/cancel pending",
+    # Resubmits the failed job with the fix's CONTROL change and time.
+    "/fix apply",
 }
 _TIER3_PREFIX = ("/recalc ", "/cancel ")
 _TIER3_SAFE_PREFIX = ("/recalc check",)  # these stay tier 0 (read-only)
+
+
+def _orca_builder_verdict(refs):
+    """calc_policy's verdict for the ORCA Builder's current input, or None.
+
+    Reads what the builder's submit button sends: the input preview, PAL,
+    MaxCore and the Slurm time. None when the builder or its preview is
+    not there, which keeps the dialog.
+    """
+    try:
+        text = str(refs["orca_preview"].value or "")
+    except Exception:
+        return None
+    if not text.strip():
+        return None
+    try:
+        from pathlib import Path as _P
+        from delfin.agent import calc_policy as _cp
+
+        def _v(key, default):
+            w = refs.get(key)
+            return getattr(w, "value", default) if w is not None else default
+        return _cp.judge_orca_job(
+            text, int(_v("orca_pal", 1) or 1), int(_v("orca_maxcore", 1000)
+                                                    or 1000),
+            str(_v("orca_slurm_time", "") or ""), base_dir=_P.cwd(),
+            name="the ORCA Builder input")
+    except Exception:
+        return None
+
+
+def _submit_tab_verdict(refs):
+    """calc_policy's verdict for the Submit tab's single job, or None.
+
+    Reads what `/submit` sends: the CONTROL text, the coordinates or
+    SMILES, and the time. A batch (several entries submitted at once) is
+    not judged here and keeps the dialog; so does a tab without its
+    widgets.
+    """
+    try:
+        control = str(refs["control_widget"].value or "")
+        coords = str(refs["coords_widget"].value or "")
+    except Exception:
+        return None
+    batch = refs.get("smiles_batch_widget")
+    if batch is not None and str(getattr(batch, "value", "") or "").strip():
+        return None
+    if not control.strip() or not coords.strip():
+        return None
+    try:
+        from pathlib import Path as _P
+        from delfin.agent import calc_policy as _cp
+        from delfin.dashboard.helpers import resolve_time_limit
+        from delfin.dashboard.input_processing import parse_resource_settings
+        time_limit = resolve_time_limit(refs["job_type_widget"],
+                                        refs["custom_time_widget"],
+                                        "48:00:00")
+        # The job's request, read as the tab's submit reads it (48 cores
+        # and 4500 MB where the CONTROL states none).
+        pal, maxcore = parse_resource_settings(control)
+        return _cp.judge_delfin_job(
+            control, int(pal or 48), int(maxcore or 4500),
+            str(time_limit or ""), base_dir=_P.cwd(),
+            name="the Submit tab's job", geometry_text=coords,
+            pal_is_the_request=True)
+    except Exception:
+        return None
 
 
 def _command_tier(cmd: str) -> int:
@@ -3843,7 +4301,8 @@ def _mol3d_card_html(path, name_html: str,
     element may never become visible, and a card that then shows an
     empty grey box says less than "24 atoms, C12H10O2" did before.
     """
-    from delfin.dashboard.molecule_viewer import get_viewer_profile
+    from delfin.dashboard.molecule_viewer import (get_viewer_profile,
+                                                  molecule_view_style_js)
 
     try:
         if not get_viewer_profile().get("enabled", True):
@@ -3860,11 +4319,62 @@ def _mol3d_card_html(path, name_html: str,
     label = _html.escape(payload["label"])
     kind = ("trajectory" if payload["frames"] > 1
             else "orbital" if payload["fmt"] == "cube" else "structure")
+    # A trajectory card gets a control bar so it can be stepped through by
+    # button instead of only auto-animated: play/pause, one frame back, the
+    # frame counter, one forward, back to the first frame, and a fullscreen
+    # view (the Calculations tab already shows a structure full-size; make
+    # the chat card feel as capable). The stage fills the viewport rather
+    # than a fixed 260px box so a close inspection is actually possible;
+    # `min(68vh, 1000px)` keeps it large without swallowing the chat.
+    is_traj = payload["frames"] > 1
+    # The style the user set in the dashboard's viewer settings: the same
+    # value the Calculations tab draws with, so a molecule looks identical
+    # in the chat card and in the fullscreen lightbox.
+    style_js = molecule_view_style_js(get_viewer_profile()["style"])
+    # A nav bar under every card: the Fullscreen button (right-aligned) lets
+    # any structure/trajectory/orbital fill the viewport, and a trajectory
+    # (frames > 1) additionally gets the play / step / reset controls. The
+    # frame buttons are only emitted for trajectories; the JS already
+    # guards on their absence, so a single structure keeps the card minimal.
+    nav = ('<div class="delfin-mol3d-nav" '
+           'style="display:flex;align-items:center;gap:6px;padding:6px 0 0 0;">')
+    if is_traj:
+        nav += (
+            '<button type="button" class="delfin-mol3d-play" '
+            'data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;padding:3px 10px;cursor:pointer;">'
+            '&#9654;</button>'
+            '<button type="button" class="delfin-mol3d-prev" '
+            'data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;padding:3px 8px;cursor:pointer;">'
+            '&#9664;</button>'
+            '<span class="delfin-mol3d-frame" data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;color:#1f2937;font-family:monospace;'
+            'min-width:64px;text-align:center;">1 / ' + str(payload["frames"])
+            + '</span>'
+            '<button type="button" class="delfin-mol3d-next" '
+            'data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;padding:3px 8px;cursor:pointer;">'
+            '&#9654;</button>'
+            '<button type="button" class="delfin-mol3d-reset" '
+            'data-mol3d-id="' + view_id + '" '
+            'style="font-size:12px;padding:3px 8px;cursor:pointer;">'
+            '&#8617; Reset</button>'
+        )
+    nav += (
+        '<button type="button" class="delfin-mol3d-fullscreen" '
+        'data-mol3d-id="' + view_id + '" '
+        'style="font-size:12px;padding:3px 8px;cursor:pointer;'
+        'margin-left:auto;">&#9732; Fullscreen</button>'
+        '</div>'
+    )
     return (
         f'<div class="delfin-artifact delfin-chat-mol3d" '
         f'data-mol3d-fmt="{payload["fmt"]}" '
         f'data-mol3d-frames="{payload["frames"]}" '
         f'data-mol3d-iso="{payload["iso"]:g}" '
+        f'data-mol3d-style="{_html.escape(style_js, quote=True)}" '
+        f'data-mol3d-title="{_html.escape(name_html, quote=True)}" '
         f'data-mol3d="{_html.escape(payload["text"], quote=True)}" '
         f'style="margin:6px 0;padding:6px;border:1px solid #e5e7eb;'
         f'border-radius:6px;background:#fff;">'
@@ -3872,8 +4382,12 @@ def _mol3d_card_html(path, name_html: str,
         f'\u269b\ufe0f <code>{name_html}</code> '
         f'<span style="color:#9ca3af;">({kind})</span></div>'
         f'<div id="{view_id}" class="delfin-mol3d-stage" '
-        f'style="width:100%;height:260px;position:relative;'
-        f'border-radius:4px;overflow:hidden;"></div>'
+        f'style="width:100%;height:var(--delfin-mol3d-h, 380px);'
+        f'min-height:280px;'
+        f'position:relative;border-radius:4px;overflow:hidden;">'
+        f'<div class="delfin-mol3d-scope" style="width:100%;height:100%;'
+        f'position:relative;"></div></div>'
+        f'{nav}'
         f'<div style="font-size:12px;color:#1f2937;font-family:monospace;'
         f'padding:4px 0 0 0;">{label}</div>'
         f'<img src="" onerror="'
@@ -3938,6 +4452,30 @@ def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
             "iso": iso}
 
 
+def _tool_param_html(parsed: dict, tool_input: str) -> str:
+    """The short description beside a tool's name in the chat.
+
+    The first meaningful argument (a path, a pattern, a query, ...); for a
+    plot spec, its file, kind and title. Without that rule, make_plot
+    showed its raw JSON -- a hundred characters of numbers. Falls back to
+    the start of the raw input, escaped.
+    """
+    spec = parsed.get("spec") if isinstance(parsed, dict) else None
+    if isinstance(spec, dict):
+        kind = str(spec.get("kind") or "plot")
+        name = str(spec.get("filename") or f"plot_{kind}")
+        title = str(spec.get("title") or "")
+        text = f"{name} ({kind})" + (f" \u2014 {title}" if title else "")
+        return f'<span class="tool-param">{_html.escape(text[:120])}</span>'
+    if isinstance(parsed, dict):
+        for key in ("file_path", "path", "pattern",
+                    "prompt", "description", "query", "command"):
+            if key in parsed:
+                val = str(parsed[key])[:80]
+                return f'<span class="tool-param">{_html.escape(val)}</span>'
+    return _html.escape(str(tool_input or "")[:100])
+
+
 def _show_molecule_card_html(tool_output) -> str | None:
     """The chat card for a ``show_molecule`` result, or None.
 
@@ -3957,6 +4495,10 @@ def _show_molecule_card_html(tool_output) -> str | None:
     if payload is None:
         return None
     name_html = _html.escape(payload["title"])
+    if payload.get("view") == "2d":
+        card = _formula_card_html(Path(payload["path"]), name_html)
+        if card is not None:
+            return card
     card = _mol3d_card_html(Path(payload["path"]), name_html,
                             isovalue=payload.get("isovalue"))
     if card is not None:
@@ -3971,6 +4513,63 @@ def _show_molecule_card_html(tool_output) -> str | None:
         '<div style="font-size:12px;color:#1f2937;font-family:monospace;'
         f'white-space:pre-wrap;overflow-wrap:anywhere;">'
         f'{_html.escape(payload["text"])}</div></div>'
+    )
+
+
+def _sum_formula_html(formula: str) -> str:
+    """``C4H10`` as ``C<sub>4</sub>H<sub>10</sub>``; charges stay as written."""
+    import re as _re_f
+    return _re_f.sub(r"(?<=[A-Za-z)])(\d+)", r"<sub>\1</sub>",
+                     _html.escape(formula))
+
+
+def _formula_card_html(path: Path, name_html: str) -> str | None:
+    """A structural formula card for a .smi/.mol/.sdf file, or None.
+
+    Input: a path the executor admitted (show_molecule). Output: the
+    formula drawn by RDKit as an SVG, embedded as an image -- a data URI
+    in an ``<img>``, so nothing in it runs as page markup -- with the sum
+    formula and the canonical SMILES under it. Terminal methyl groups are
+    written out (CH3) so a short chain still reads as a formula. None
+    when the file cannot be parsed; the caller then shows the text card.
+    """
+    from delfin.dashboard import chat_viewer
+    try:
+        mol, smiles, formula = chat_viewer.read_formula(str(path))
+        from rdkit.Chem import AllChem
+        from rdkit.Chem.Draw import rdMolDraw2D
+        mol = AllChem.Mol(mol)
+        AllChem.Compute2DCoords(mol)
+        drawer = rdMolDraw2D.MolDraw2DSVG(560, 300)
+        opts = drawer.drawOptions()
+        opts.explicitMethyl = True
+        opts.bondLineWidth = 3
+        opts.minFontSize = 22
+        opts.padding = 0.12
+        opts.clearBackground = True
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        svg = drawer.GetDrawingText()
+    except Exception:
+        return None
+    import base64 as _b64
+    data = _b64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (
+        '<div class="delfin-artifact delfin-formula-card" style="margin:6px 0;'
+        'padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;'
+        'background:#fff;">'
+        '<div style="font-size:11px;color:#6b7280;margin-bottom:6px;">'
+        f'\U0001F9EA <code>{name_html}</code> '
+        '<span style="color:#9ca3af;">(structural formula)</span></div>'
+        f'<img src="data:image/svg+xml;base64,{data}" alt="{name_html}"'
+        f'{_img_box(svg.encode("utf-8"))} '
+        'style="display:block;margin:0 auto;width:min(560px,100%);'
+        'height:auto;"/>'
+        '<div style="text-align:center;margin-top:6px;font-size:15px;'
+        f'color:#111827;">{_sum_formula_html(formula)}'
+        '<span style="margin-left:12px;font-size:12px;color:#6b7280;'
+        f'font-family:monospace;">{_html.escape(smiles)}</span></div>'
+        '</div>'
     )
 
 
@@ -4299,9 +4898,9 @@ def _render_pdf_preview(p) -> str | None:
     import base64
     b64 = base64.b64encode(png).decode("ascii")
     return (
-        f'<img src="data:image/png;base64,{b64}" '
-        f'style="max-width:100%;border:1px solid #f3f4f6;border-radius:4px;'
-        f'display:block;" alt="page 1 of {pages}"/>'
+        f'<img src="data:image/png;base64,{b64}"{_img_box(png)} '
+        f'style="max-width:100%;height:auto;border:1px solid #f3f4f6;'
+        f'border-radius:4px;display:block;" alt="page 1 of {pages}"/>'
         f'<div style="font-size:11px;color:#9ca3af;margin-top:3px;">'
         f'page 1 of {pages}</div>'
     )
@@ -4385,6 +4984,70 @@ def _render_artifact_inline(path) -> str | None:
     return body + link
 
 
+def _img_box(data: bytes) -> str:
+    """`` width="W" height="H"`` read from an image's header, or "".
+
+    Input: the image's bytes (PNG, GIF, JPEG or SVG text). Output: the two
+    attributes for its ``<img>``. With them the browser reserves the box
+    before the data URI is decoded; without them an image is 0 px tall
+    until then, and Python replaces the whole transcript on every update,
+    so every update collapsed the images above the end for a moment. The
+    CSS keeps scaling them (max-width, height: auto); only the aspect ratio
+    is taken from these numbers.
+    """
+    import struct
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+            w, h = struct.unpack(">II", data[16:24])
+        elif data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+            w, h = struct.unpack("<HH", data[6:10])
+        elif data[:2] == b"\xff\xd8":
+            i, w, h = 2, 0, 0
+            while i + 9 < len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker in (0xC0, 0xC1, 0xC2, 0xC3):
+                    h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                    break
+                i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+        else:
+            head = data[:4096].decode("utf-8", "ignore")
+            tag = re.search(r"<svg\b[^>]*>", head)
+            if not tag:
+                return ""
+            tag = tag.group(0)
+
+            def _len(name):
+                m = re.search(name + r'\s*=\s*["\']\s*([\d.]+)\s*(px|pt)?\s*["\']',
+                              tag)
+                return float(m.group(1)) if m else None
+
+            w, h = _len("width"), _len("height")
+            if not (w and h):
+                vb = re.search(r'viewBox\s*=\s*["\']\s*[-\d.]+[\s,]+[-\d.]+'
+                               r'[\s,]+([\d.]+)[\s,]+([\d.]+)\s*["\']', tag)
+                if not vb:
+                    return ""
+                w, h = float(vb.group(1)), float(vb.group(2))
+        w, h = int(round(w)), int(round(h))
+    except Exception:
+        return ""
+    if w <= 0 or h <= 0:
+        return ""
+    return f' width="{w}" height="{h}"'
+
+
+def _img_box_b64(b64: str) -> str:
+    """``_img_box`` of a base64-encoded PNG, read from its first 24 bytes."""
+    import base64
+    try:
+        return _img_box(base64.b64decode(b64[:32]))
+    except Exception:
+        return ""
+
+
 def _render_artifact_body(path) -> str | None:
     """Render a workspace artifact as inline HTML for the chat.
 
@@ -4437,8 +5100,11 @@ def _render_artifact_body(path) -> str | None:
             f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'📷 <code>{name_html}</code></div>'
-            f'<img src="data:{mime};base64,{b64}" '
-            f'style="max-width:100%;border-radius:4px;display:block;" '
+            f'<img src="data:{mime};base64,{b64}"{_img_box(data)} '
+            # Never wider than reading size: a 300 dpi figure is 3000 px
+            # and filled the whole chat; a small image is not enlarged.
+            f'style="max-width:min(900px,100%);height:auto;border-radius:4px;'
+            f'display:block;margin:0 auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -4466,8 +5132,13 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🎨 <code>{name_html}</code></div>'
             f'<div style="max-width:100%;overflow:auto;">'
-            f'<img src="data:image/svg+xml;base64,{b64}" '
-            f'style="max-width:100%;display:block;" alt="{name_html}"/>'
+            # A vector drawing is shown at reading size, centred: at its
+            # own 576 px a plot sat small in the corner of a 1500 px chat.
+            # It scales without blur; 900 px keeps a wide chat calm.
+            f'<img src="data:image/svg+xml;base64,{b64}"'
+            f'{_img_box(text.encode("utf-8"))} '
+            f'style="width:min(900px,100%);height:auto;display:block;'
+            f'margin:0 auto;" alt="{name_html}"/>'
             f'</div></div>'
         )
 
@@ -4542,8 +5213,10 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🧪 <code>{name_html}</code> '
             f'<code style="color:#374151;">{_html.escape(first[:120])}</code></div>'
-            f'<img src="data:image/png;base64,{b64}" '
-            f'style="display:block;border-radius:4px;" '
+            f'<img src="data:image/png;base64,{b64}"'
+            f'{_img_box_b64(b64)} '
+            f'style="display:block;border-radius:4px;max-width:100%;'
+            f'height:auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -4572,8 +5245,10 @@ def _render_artifact_body(path) -> str | None:
             f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
             f'🧪 <code>{name_html}</code> '
             f'({mol.GetNumAtoms()} atoms, {mol.GetNumBonds()} bonds)</div>'
-            f'<img src="data:image/png;base64,{b64}" '
-            f'style="display:block;border-radius:4px;" '
+            f'<img src="data:image/png;base64,{b64}"'
+            f'{_img_box_b64(b64)} '
+            f'style="display:block;border-radius:4px;max-width:100%;'
+            f'height:auto;" '
             f'alt="{name_html}"/></div>'
         )
 
@@ -5865,7 +6540,9 @@ def create_tab(ctx):
         # a third thing again. One word for three concepts, and the one it
         # was taken from is the one the user reads next to it.
         description="Mode:",
-        layout=widgets.Layout(width="200px"),
+        # 160: the longest option ("Dashboard") fits; at 200 the control
+        # row wrapped on a 1366 px screen.
+        layout=widgets.Layout(width="160px"),
         style={"description_width": "45px"},
     )
     mode_desc_html = widgets.HTML(
@@ -6170,8 +6847,9 @@ def create_tab(ctx):
         options=_perm_options_for_mode(mode_dropdown.value),
         value="ask_all",
         description="Perms:",
-        layout=widgets.Layout(width="195px"),
-        style={"description_width": "42px"},
+        layout=widgets.Layout(width="190px"),
+        # 48, not 42: at 42 px the label was cut to "Per...".
+        style={"description_width": "48px"},
         tooltip=("Plan = read only · Ask All = asks before every file change "
                  "and every shell command · Accept Edits = file changes go "
                  "through, shell still asks · Bypass = asks nothing inside "
@@ -6251,7 +6929,7 @@ def create_tab(ctx):
     )
     stop_btn = widgets.Button(
         description="Stop",
-        button_style="danger",
+        button_style="",
         layout=widgets.Layout(width="80px"),
     )
     stop_btn.disabled = True
@@ -6415,6 +7093,23 @@ def create_tab(ctx):
             btn = git_buttons[cmd]
             btn.disabled = bool(reasons[cmd])
             btn.tooltip = reasons[cmd] or tip
+        # Outside a git checkout the four buttons and the base field can
+        # do nothing at all; shown greyed out, they took a third of the
+        # control row and pushed the rest onto a second line. They come
+        # back the moment the session's folder is a repository.
+        in_repo = not all(r.startswith("Not a git repository")
+                          for r in reasons.values())
+        shown = "" if in_repo else "none"
+        for w in (git_base, *git_buttons.values()):
+            if w.layout.display != shown:
+                w.layout.display = shown
+
+    # The first look, before any status refresh: a session that opens in
+    # a folder without git starts without the git controls.
+    try:
+        _refresh_git_buttons()
+    except Exception:
+        pass
 
     def _on_git_button(cmd: str) -> None:
         reason = _git_button_state().get(cmd, "")
@@ -7180,7 +7875,7 @@ def create_tab(ctx):
 
     # Chat display
     chat_html = widgets.HTML(
-        value=_CHAT_OPEN + '<i>Start a conversation...</i></div>',
+        value=_chat_value(_CHAT_OPEN + '<i>Start a conversation...</i></div>'),
         layout=widgets.Layout(min_height="200px"),
     )
     chat_html.add_class("delfin-agent-chat-host")
@@ -7401,11 +8096,10 @@ def create_tab(ctx):
     # so the row looks like one coherent strip.
     # Kept by name: when nothing is open the grey line goes back to this,
     # because an empty placeholder would read as "nothing to propose".
-    _INPUT_HINT = (
-        "Message the agent... (Enter = send, Shift+Enter = newline)\n"
-        "KIT tip: say 'also work in /path' to grant write access \u2014 "
-        "the agent persists it after one confirm click."
-    )
+    # One calm line. The KIT write-access tip it used to carry stays in the
+    # write-access line of the Details fold (kit_dirs_status), where it is
+    # read when wanted rather than on every empty input.
+    _INPUT_HINT = "Message DELFIN\u2026  (Enter to send, Shift+Enter for a new line)"
     input_textarea = widgets.Textarea(
         placeholder=_INPUT_HINT,
         layout=widgets.Layout(
@@ -7413,6 +8107,21 @@ def create_tab(ctx):
         ),
     )
     input_textarea.add_class("delfin-agent-input")
+
+    # An empty box is marked from here, in the same message that empties
+    # it: every send clears the value from Python after a kernel round
+    # trip and without an 'input' event, and the browser's grow script,
+    # re-measuring 60 ms after a click, kept a grown box at its height
+    # until the next keystroke (measured: 138 px at 2 s with 300 ms of
+    # latency). The stylesheet holds a marked box at its resting 80 px.
+    def _mark_empty(_change=None):
+        if input_textarea.value:
+            input_textarea.remove_class("delfin-agent-input-empty")
+        else:
+            input_textarea.add_class("delfin-agent-input-empty")
+
+    input_textarea.observe(_mark_empty, names="value")
+    _mark_empty()
     send_btn = widgets.Button(
         description="Send",
         button_style="primary",
@@ -7522,6 +8231,9 @@ def create_tab(ctx):
 
     # Working indicator (animated spinner)
     working_html = widgets.HTML(value="")
+    # Placed over the transcript's lower edge by the stylesheet, so its
+    # coming and going does not resize the transcript.
+    working_html.add_class("delfin-agent-working-slot")
 
     # Queue indicator (shown when messages are queued during streaming)
     queue_html = widgets.HTML(value="")
@@ -7567,6 +8279,7 @@ def create_tab(ctx):
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
     document.addEventListener('keydown', function(e) {
+        if (!window.__delfinAgentOwnsKey(e)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             if (e.target && e.target.tagName === 'TEXTAREA') {
                 var container = e.target.closest
@@ -7660,13 +8373,69 @@ def create_tab(ctx):
         if (window.__delfinMol3DInstalled) return;
         window.__delfinMol3DInstalled = true;
 
+        // The wheel over a molecule in the chat scrolls the chat. 3Dmol
+        // takes every wheel event over its canvas for zoom and cancels it,
+        // so a card as tall as the chat stopped the reader dead: measured
+        // once the chat stopped rebuilding its cards, forty wheel steps
+        // down from inside a trajectory card left the reader ~1000 px short
+        // of the end. (While every update rebuilt the cards, the canvas
+        // under the pointer was missing part of the time and wheel steps
+        // fell through to the chat at random.) Stopped here, in the
+        // capture phase at the document,
+        // the event never reaches 3Dmol and nothing cancels it, so the
+        // browser scrolls. It zooms with Ctrl (a trackpad pinch arrives as
+        // a wheel with ctrlKey) or once the molecule has been clicked,
+        // until the pointer leaves it. The fullscreen view is not inside
+        // the chat and keeps its plain wheel zoom.
+        var zoomStage = null;
+        function chatStage(t) {
+            var s = t && t.closest ? t.closest('.delfin-mol3d-stage') : null;
+            return s && s.closest('.delfin-agent-chat-host') ? s : null;
+        }
+        document.addEventListener('pointerdown', function(e) {
+            zoomStage = chatStage(e.target);
+        }, {capture: true, passive: true});
+        document.addEventListener('pointerover', function(e) {
+            if (zoomStage && chatStage(e.target) !== zoomStage) zoomStage = null;
+        }, {capture: true, passive: true});
+        document.addEventListener('wheel', function(e) {
+            var stage = chatStage(e.target);
+            if (!stage || e.ctrlKey || stage === zoomStage) return;
+            e.stopPropagation();
+        }, {capture: true, passive: true});
+
         function build(card, stage) {
             var data = card.getAttribute('data-mol3d') || '';
             var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
+            var label = card.getAttribute('data-mol3d-title') || '';
             var frames = parseInt(card.getAttribute('data-mol3d-frames') || '1', 10);
             var iso = parseFloat(card.getAttribute('data-mol3d-iso') || '0.02');
             if (!(iso > 0)) iso = 0.02;
             if (!data) return true;
+            // The chat scrolls inside its own frame (.delfin-agent-chat-frame);
+            // the browser viewport says nothing about how much room that
+            // frame actually has. Measure the frame and size the stage to
+            // fit inside it -- the card must never overflow the chat window
+            // it lives in.
+            var host = card.closest('.delfin-agent-chat-frame')
+                      || card.parentElement;
+            if (host) {
+                var frameH = host.clientHeight;
+                if (frameH > 0) {
+                    var stageH =
+                        Math.max(280, Math.min(Math.round(frameH * 0.8), 700)) + 'px';
+                    stage.style.height = stageH;
+                    // Kept on the frame, which survives the transcript:
+                    // Python replaces the whole transcript on every
+                    // streaming update, and a card rebuilt at 380 px and
+                    // sized here only after 3Dmol had built it moved the
+                    // end of the chat by its difference on every update
+                    // (717 px for three cards at 1920x1080). The card's
+                    // stage reads this property, so it is rebuilt at its
+                    // height.
+                    host.style.setProperty('--delfin-mol3d-h', stageH);
+                }
+            }
             var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});
             if (fmt === 'cube') {
                 viewer.addModel(data, 'cube');
@@ -7680,21 +8449,239 @@ def create_tab(ctx):
             } else if (frames > 1) {
                 viewer.addModelsAsFrames(data, fmt);
                 viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
-                // Looped, because a trajectory that plays once and stops
-                // on the last frame reads as a still picture to anybody
-                // who looked away while it ran.
-                viewer.animate({loop: 'forward', reps: 0, interval: 120});
+                // Stepped by hand instead of auto-animated: the card's
+                // control bar (play, one back, one forward, reset) drives
+                // setFrame so the trajectory can be inspected frame by
+                // frame. Play advances once per ~10 fps and stops at the
+                // last frame; the bar shows the current one.
+                viewer.setFrame(0);
+                wireTrajectory(card, stage, viewer, frames);
             } else {
                 viewer.addModel(data, fmt);
                 viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
             }
             viewer.zoomTo();
+            // zoomTo fits the bounding sphere, which leaves a chain small in
+            // a wide stage; a quarter closer still keeps it inside. Not for
+            // an orbital: its lobes reach past the atoms.
+            if (fmt !== 'cube') viewer.zoom(1.25);
             viewer.render();
-            // The data is on screen now; drop the copy in the attribute so
-            // a long transcript does not hold every trajectory twice.
+            // Keep one in-memory copy of the source text for the fullscreen
+            // lightbox (wireFullscreen rebuilds from it), then drop the copy
+            // in the attribute so a long transcript does not hold every
+            // molecule twice.
+            card.__delfinMol3DData = data;
+            card.__delfinMol3DTitle = label;
+            var st = card.getAttribute('data-mol3d-style');
+            if (st) { try { card.__delfinMol3DStyle = JSON.parse(st); } catch (e) {} }
             card.removeAttribute('data-mol3d');
             card.__delfinViewer = viewer;
+            wireFullscreen(card, viewer, frames, iso);
             return true;
+        }
+
+        function wireTrajectory(card, stage, viewer, nFrames) {
+            var btnPlay = card.querySelector('.delfin-mol3d-play');
+            var btnPrev = card.querySelector('.delfin-mol3d-prev');
+            var btnNext = card.querySelector('.delfin-mol3d-next');
+            var btnReset = card.querySelector('.delfin-mol3d-reset');
+            var btnFs = card.querySelector('.delfin-mol3d-fullscreen');
+            var counter = card.querySelector('.delfin-mol3d-frame');
+            var playing = false, timer = null;
+            function setCounter() {
+                if (counter) counter.textContent =
+                    (viewer.getFrame() + 1) + ' / ' + nFrames;
+            }
+            function stop() {
+                playing = false;
+                if (timer) { clearInterval(timer); timer = null; }
+                if (btnPlay) btnPlay.textContent = '\u25b6';
+            }
+            function step(delta) {
+                var f = viewer.getFrame() + delta;
+                if (f < 0) f = 0;
+                if (f >= nFrames) f = nFrames - 1;
+                viewer.setFrame(f);
+                viewer.render();
+                setCounter();
+                return f;
+            }
+            function play() {
+                if (playing) { stop(); return; }
+                playing = true;
+                if (btnPlay) btnPlay.textContent = '\u23f8';
+                timer = setInterval(function() {
+                    var last = step(1);
+                    if (last === nFrames - 1) stop();
+                }, 100);
+            }
+            if (btnPlay) btnPlay.onclick = play;
+            if (btnPrev) btnPrev.onclick = function() { stop(); step(-1); };
+            if (btnNext) btnNext.onclick = function() { stop(); step(1); };
+            if (btnReset) btnReset.onclick = function() {
+                stop(); viewer.setFrame(0);
+                viewer.zoomTo(); viewer.zoom(1.25); viewer.render(); setCounter();
+            };
+        }
+
+        function wireFullscreen(card, viewer, nFrames, iso) {
+            var btnFs = card.querySelector('.delfin-mol3d-fullscreen');
+            if (!btnFs) return;
+            var fs = null;
+            btnFs.onclick = function() {
+                if (fs) { closeFs(); return; }
+                var txt = card.__delfinMol3DData;
+                if (!txt) return;
+                // Same layout language as the Calculations-tab fullscreen:
+                // white viewer surface, a dark toolbar bar with the file
+                // name on the left and Close on the right, the viewer
+                // filling everything below it, ESC closes.
+                fs = document.createElement('div');
+                fs.className = 'delfin-mol3d-fs';
+                fs.style.cssText = 'position:fixed;inset:0;z-index:20000;'
+                    + 'display:flex;flex-direction:column;background:#fff;';
+                var bar = document.createElement('div');
+                bar.style.cssText = 'flex:0 0 auto;display:flex;'
+                    + 'align-items:center;gap:10px;padding:8px 14px;'
+                    + 'background:#111827;color:#fff;font:13px sans-serif;';
+                var title = document.createElement('div');
+                title.style.cssText = 'flex:1 1 auto;overflow:hidden;'
+                    + 'text-overflow:ellipsis;white-space:nowrap;';
+                title.textContent = (card.__delfinMol3DTitle || '');
+                var close = document.createElement('button');
+                close.type = 'button';
+                close.style.cssText = 'flex:0 0 auto;cursor:pointer;'
+                    + 'background:#374151;color:#fff;border:0;'
+                    + 'border-radius:4px;padding:4px 12px;font:13px sans-serif;';
+                close.textContent = 'Close \u2715 (Esc)';
+                close.onclick = closeFs;
+                bar.appendChild(title);
+                bar.appendChild(close);
+                var big = document.createElement('div');
+                big.style.cssText = 'flex:1 1 auto;min-height:0;'
+                    + 'position:relative;';
+                // A lightbox fullscreen re-creates the viewer rather than
+                // moving the DOM node: 3Dmol renders into the stage's box
+                // it was created with, and moving the node leaves a blank
+                // canvas. Rebuilding from the saved text is cheap and the
+                // trajectory frame index is copied back.
+                var f = viewer.getFrame();
+                var v2 = $3Dmol.createViewer(big,
+                    {backgroundColor: 'white'});
+                v2.setStyle({}, card.__delfinMol3DStyle ||
+                    {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                fs.appendChild(bar);
+                fs.appendChild(big);
+                document.body.appendChild(fs);
+                var f2 = card.getAttribute('data-mol3d-fmt');
+                if (f2 === 'cube') {
+                    v2.addModel(txt, 'cube');
+                    v2.addVolumetricData(txt, 'cube',
+                        {isoval: iso, color: '#0026ff', opacity: 0.85});
+                    v2.addVolumetricData(txt, 'cube',
+                        {isoval: -iso, color: '#b00010', opacity: 0.85});
+                } else if (nFrames > 1) {
+                    v2.addModelsAsFrames(txt, 'xyz');
+                    v2.setFrame(f);
+                } else {
+                    v2.addModel(txt, f2 || 'xyz');
+                }
+                v2.zoomTo();
+                v2.render();
+            };
+            function closeFs() {
+                if (!fs) return;
+                var p = document.body;
+                try { p.removeChild(fs); } catch (e) {}
+                fs = null;
+            }
+            document.addEventListener('keydown', function(ev) {
+                if (ev.key === 'Escape') closeFs();
+            });
+        }
+
+
+        // Viewers already built, kept across transcript rebuilds. Python
+        // replaces the whole transcript on every update, and each card used
+        // to build its viewer again with a new WebGL context: three cards
+        // made 15 canvases in 40 s (measured), Chrome keeps about 16
+        // contexts, and a long session with many cards froze the page. A
+        // rebuilt card that shows the same molecule (same stage id, same
+        // coordinates) gets the kept stage moved into it -- canvas, context
+        // and current frame included; a changed molecule is built anew.
+        //
+        // Chrome drops the oldest context past about 16, so a kept stage that
+        // no rebuilt card claimed within KEEP_IDLE_MS (its card left the
+        // transcript) gives its context back, and at most KEEP_MAX are kept.
+        var KEEP_MAX = 12, KEEP_IDLE_MS = 10000;
+        var kept3d = window.__delfinMol3DKept || (window.__delfinMol3DKept = []);
+        // FNV-1a over the whole text: two conformers may share their length
+        // and their first lines, never their full coordinates.
+        function hashOf(text) {
+            var h = 0x811c9dc5;
+            for (var i = 0; i < text.length; i++) {
+                h ^= text.charCodeAt(i);
+                h = Math.imul(h, 0x01000193) >>> 0;
+            }
+            return h.toString(16);
+        }
+        function keyOf(stage, card) {
+            var d = card.getAttribute('data-mol3d') || '';
+            return (stage.id || '') + '|' + d.length + '|' + hashOf(d);
+        }
+        function release(kept) {
+            var cv = kept.stage.querySelector('canvas');
+            if (!cv) return;
+            try {
+                var gl = cv.getContext('webgl2') || cv.getContext('webgl');
+                var ext = gl && gl.getExtension('WEBGL_lose_context');
+                if (ext) ext.loseContext();
+            } catch (e) {}
+        }
+        // An entry's clock starts when a sweep first finds it detached, so a
+        // rebuild after a long quiet spell still finds every viewer it had.
+        var sweep = null;
+        function prune() {
+            var now = Date.now(), waiting = false;
+            for (var i = kept3d.length - 1; i >= 0; i--) {
+                var k = kept3d[i];
+                if (k.stage.isConnected) { k.gone = 0; continue; }
+                if (!k.gone) k.gone = now;
+                if (now - k.gone >= KEEP_IDLE_MS || kept3d.length > KEEP_MAX) {
+                    kept3d.splice(i, 1);
+                    release(k);
+                } else {
+                    waiting = true;
+                }
+            }
+            if (waiting && !sweep) {
+                sweep = setTimeout(function() { sweep = null; prune(); },
+                                   KEEP_IDLE_MS + 100);
+            }
+        }
+        function reuse(card, stage, key) {
+            prune();
+            for (var i = kept3d.length - 1; i >= 0; i--) {
+                var kept = kept3d[i];
+                if (kept.key !== key || kept.stage.isConnected) continue;
+                stage.parentNode.replaceChild(kept.stage, stage);
+                card.__delfinMol3DDone = true;
+                card.__delfinViewer = kept.viewer;
+                card.__delfinMol3DData = kept.data;
+                card.__delfinMol3DTitle = kept.title;
+                card.__delfinMol3DStyle = kept.style;
+                card.__delfinViewerData = kept.data;
+                if (kept.frames > 1) {
+                    wireTrajectory(card, kept.stage, kept.viewer, kept.frames);
+                }
+                wireFullscreen(card, kept.viewer, kept.frames, kept.iso);
+                try { kept.viewer.resize(); kept.viewer.render(); } catch (e) {}
+                kept.gone = 0;
+                kept3d.splice(i, 1);
+                kept3d.push(kept);
+                return true;
+            }
+            return false;
         }
 
         window.__delfinMol3D = function(el) {
@@ -7702,6 +8689,8 @@ def create_tab(ctx):
             if (!card || card.__delfinMol3DDone) return;
             var stage = card.querySelector('.delfin-mol3d-stage');
             if (!stage) return;
+            var key = keyOf(stage, card);
+            if (reuse(card, stage, key)) return;
             var tries = 0;
             function attempt() {
                 // Gone: the chat was rebuilt under us and this card no
@@ -7723,7 +8712,30 @@ def create_tab(ctx):
                 }
                 card.__delfinMol3DDone = true;
                 try {
+                    // Keep a copy of the coordinates for the fullscreen
+                    // lightbox, which rebuilds the viewer at screen size.
+                    card.__delfinViewerData =
+                        card.getAttribute('data-mol3d') || '';
                     build(card, stage);
+                    if (card.__delfinViewer) {
+                        kept3d.push({
+                            key: key, stage: stage, viewer: card.__delfinViewer,
+                            data: card.__delfinMol3DData || card.__delfinViewerData,
+                            title: card.__delfinMol3DTitle,
+                            style: card.__delfinMol3DStyle,
+                            frames: parseInt(card.getAttribute('data-mol3d-frames') || '1', 10),
+                            iso: parseFloat(card.getAttribute('data-mol3d-iso') || '0.02'),
+                            gone: 0
+                        });
+                        prune();
+                    }
+                    // The small build removes the attribute; fullscreen
+                    // needs the text again -- restore it from the copy.
+                    if (card.querySelector('.delfin-mol3d-fullscreen')
+                            && card.__delfinViewerData) {
+                        card.setAttribute('data-mol3d',
+                            card.__delfinViewerData);
+                    }
                 } catch (e) {
                     // A malformed cube or a truncated frame must not take
                     // the chat with it. The text line stays.
@@ -7812,7 +8824,9 @@ def create_tab(ctx):
             // Compare the achievable offset. scrollHeight itself is always
             // beyond the end, so comparing it directly writes on every poll.
             top = Math.max(0, Math.min(top, c.scrollHeight - c.clientHeight));
-            if (c.scrollTop === top) return;
+            // Browser zoom can leave a fractional scroll offset at the end.
+            // Do not keep writing the same rounded position on every poll.
+            if (Math.abs(c.scrollTop - top) < 1) return;
             st.auto = true;
             c.scrollTop = top;
             if (st.timer) clearTimeout(st.timer);
@@ -7841,14 +8855,8 @@ def create_tab(ctx):
             // own record while it waits to be looked at.
             if (!c.clientHeight) return;
             var st = stateFor(c);
-            var max = c.scrollHeight - c.clientHeight;
-            // An offset past the end belongs to a longer transcript than the
-            // one now shown -- the conversation was swapped, so start at the
-            // end rather than somewhere arbitrary in the middle of it.
-            if (!st.follow && st.top > max) {
-                st.follow = true;
-                st.unseen = false;
-            }
+            // A reflow or a temporarily shorter streaming message is not
+            // permission to resume following. Session changes/reset own that.
             if (st.follow) {
                 // At the end: come along with the agent. This is the half
                 // that is wanted and is unchanged.
@@ -7869,6 +8877,57 @@ def create_tab(ctx):
             }
             paint(c, st);
         };
+        // ipywidgets replaces the HTML before the trailing image's onerror
+        // task runs. Waiting for that task (or the 150 ms poll) lets a frame
+        // paint at the old/clamped offset, then jump to the new end. Mutation
+        // observers run before paint: follow in the same rendering cycle.
+        // ResizeObserver covers images loading later and viewport resizing.
+        // Both use the same per-session decision, including hidden sessions
+        // and readers who have deliberately scrolled away.
+        var watchedChatSizes = new WeakSet();
+        // The shown messages are the container _chat_value's tag keeps
+        // beside the widget's content; the content itself is empty now.
+        var chatSizes = typeof ResizeObserver === 'undefined' ? null
+            : new ResizeObserver(function(entries) {
+                var hosts = new Set();
+                entries.forEach(function(entry) {
+                    var c = entry.target.closest('.delfin-agent-chat-host');
+                    if (c) hosts.add(c);
+                });
+                hosts.forEach(function(c) { window.__delfinChatSync(c); });
+            });
+        function watchChatSize(c) {
+            if (!chatSizes || !c) return;
+            [c, c.querySelector(':scope > .delfin-agent-chat')].forEach(
+                function(el) {
+                    if (!el || watchedChatSizes.has(el)) return;
+                    watchedChatSizes.add(el);
+                    chatSizes.observe(el);
+                });
+        }
+        window.__delfinWatchChat = watchChatSize;
+        if (typeof MutationObserver !== 'undefined' && document.body) {
+            new MutationObserver(function(records) {
+                var hosts = new Set();
+                records.forEach(function(record) {
+                    var target = record.target;
+                    if (target.nodeType !== 1) target = target.parentElement;
+                    var c = target && target.closest
+                        ? target.closest('.delfin-agent-chat-host') : null;
+                    if (c) hosts.add(c);
+                });
+                hosts.forEach(function(c) {
+                    watchChatSize(c);
+                    window.__delfinChatSync(c);
+                });
+            }).observe(document.body, {
+                childList: true, characterData: true, subtree: true
+            });
+        }
+        if (chatSizes && document.querySelectorAll) {
+            document.querySelectorAll('.delfin-agent-chat-host')
+                .forEach(watchChatSize);
+        }
         // A cleared or brand-new conversation carries no offset worth keeping.
         window.__delfinChatReset = function(el) {
             var c = (el && el.closest)
@@ -7879,6 +8938,61 @@ def create_tab(ctx):
             st.top = 0;
             st.mark = 0;
         };
+        // The reader's own input: a scroll with none of it just before is
+        // not the reader's. Measured 2026-10-22: while the agent waited, the
+        // browser moved a following reader 12 px up every ~1.5 s with no
+        // script writing scrollTop, and the 150 ms poll put it back 60-85 ms
+        // later -- a visible jitter at the end of the chat. A wheel, a touch,
+        // a navigation key, or a pointer held on the chat (the scrollbar) is
+        // the reader; 300 ms after it covers inertia and key repeat.
+        var inputUntil = 0, pressed = false;
+        function readerInput() {
+            inputUntil = Date.now() + 300;
+        }
+        function pauseForReader(e) {
+            var c = e.target && e.target.closest
+                ? e.target.closest('.delfin-agent-chat-host') : null;
+            if (!c) return;
+            var st = stateFor(c);
+            st.auto = false;
+            if (st.timer) clearTimeout(st.timer);
+            st.follow = false;
+            st.top = c.scrollTop;
+            st.mark = c.scrollHeight;
+            paint(c, st);
+        }
+        function onChat(e) {
+            return !!(e.target && e.target.closest
+                      && e.target.closest('.delfin-agent-chat-host'));
+        }
+        document.addEventListener('wheel', function(e) {
+            if (onChat(e)) {
+                readerInput();
+                // Stop before the browser scroll event: a streaming update
+                // can otherwise reach the end first and swallow that event.
+                if (e.deltaY < 0) pauseForReader(e);
+                else stateFor(e.target.closest('.delfin-agent-chat-host')).auto = false;
+            }
+        }, {capture: true, passive: true});
+        document.addEventListener('touchmove', function(e) {
+            if (onChat(e)) { readerInput(); pauseForReader(e); }
+        }, {capture: true, passive: true});
+        document.addEventListener('keydown', function(e) {
+            if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key))
+                readerInput();
+            if (/^(PageUp|ArrowUp|Home)$/.test(e.key)) pauseForReader(e);
+        }, true);
+        document.addEventListener('pointerdown', function(e) {
+            if (onChat(e)) { pressed = true; readerInput(); pauseForReader(e); }
+        }, true);
+        function released() {
+            if (pressed) { pressed = false; readerInput(); }
+        }
+        document.addEventListener('pointerup', released, true);
+        document.addEventListener('pointercancel', released, true);
+        function byReader() {
+            return pressed || Date.now() < inputUntil;
+        }
         // Scroll events do not bubble, so capture them at the document. That
         // also survives the chat element being replaced on every refresh.
         document.addEventListener('scroll', function(e) {
@@ -7886,9 +9000,23 @@ def create_tab(ctx):
             if (!c || !c.classList ||
                 !c.classList.contains('delfin-agent-chat-host')) return;
             var st = stateFor(c);
+            var previousTop = st.top;
             st.top = c.scrollTop;
             if (st.auto) { st.auto = false; return; }
-            var end = atEnd(c);
+            // Following, moved, and not by the reader: back to the end in
+            // this event, which runs before the next paint, so the move is
+            // never seen.
+            if (st.follow && !byReader()
+                    && c.scrollTop < c.scrollHeight - c.clientHeight - 1) {
+                setTop(c, c.scrollHeight, st);
+                st.top = c.scrollTop;
+                return;
+            }
+            // Once deliberately paused, even a small upward wheel gesture
+            // must stick. The generous tolerance only applies while following.
+            var end = atEnd(c) && (st.follow ||
+                (!pressed && c.scrollTop > previousTop &&
+                 c.scrollHeight - c.scrollTop - c.clientHeight <= 1));
             if (end === st.follow) return;
             st.follow = end;
             if (end) { st.unseen = false; } else { st.mark = c.scrollHeight; }
@@ -7932,7 +9060,17 @@ def create_tab(ctx):
         function grow(ta) {
             if (!ta) return;
             ta.style.height = 'auto';
-            ta.style.height = Math.min(ta.scrollHeight, MAXH) + 'px';
+            // The height includes the borders (box-sizing: border-box),
+            // scrollHeight does not: set to scrollHeight alone, a box
+            // whose content fitted overflowed by its two 1 px borders
+            // and drew a scrollbar (measured: 98 px box, 96 px inside).
+            var edge = ta.offsetHeight - ta.clientHeight;
+            ta.style.height = Math.min(ta.scrollHeight + edge, MAXH) + 'px';
+            // Writing at the end of a box past its cap: keep the line being
+            // written inside the frame with its padding, not on the edge.
+            if (ta.selectionStart === ta.value.length) {
+                ta.scrollTop = ta.scrollHeight;
+            }
         }
         function inputTA() {
             var sel = '.delfin-agent-input textarea';
@@ -8142,19 +9280,18 @@ def create_tab(ctx):
         # the session compacts, and it costs six characters.
         ctx_pct = state.get("_fold_ctx")
         if ctx_pct is not None:
-            parts.append(f"ctx {ctx_pct:.0f}%")
+            parts.append(f"Context {ctx_pct:.0f}%")
         n_tools = int(state.get("_fold_tools", 0) or 0)
         if n_tools:
-            last = str(state.get("_fold_last_tool", "") or "")
-            parts.append(f"Tool calls {n_tools}" + (f" (last: {last})" if last else ""))
-        sec_total, sec_blocked = state.get("_fold_security", (0, 0))
-        if sec_total:
-            parts.append(f"⚠ Containment {sec_blocked} blocked / "
-                         f"{sec_total - sec_blocked} flagged")
-        t_in, t_out, t_cost = state.get("_fold_tokens", (0, 0, 0.0))
-        if t_in or t_out:
-            parts.append(f"{t_in:,} in / {t_out:,} out"
-                         + (f" · {_fmt_cost(t_cost)}" if t_cost > 0 else ""))
+            parts.append(f"{n_tools} tool call{'s' if n_tools != 1 else ''}")
+        # A warning sign only for what was refused. Flagged-but-allowed
+        # events and the last tool's internal name were in this line on
+        # every busy session and read as an alarm that was not one; they
+        # are in the sub-folds below (Containment, Tool calls) and the
+        # token counts in the status row, one click away.
+        _sec_total, sec_blocked = state.get("_fold_security", (0, 0))
+        if sec_blocked:
+            parts.append(f"⚠ {sec_blocked} blocked")
         return " · ".join(parts) if parts else "Details"
 
     def _refresh_subfolds():
@@ -8821,9 +9958,11 @@ def create_tab(ctx):
         multi = bool(args.get("multiSelect", False))
         ev = _th.Event()
         result = {"answers": []}
-        state["_ask_user_event"] = ev
-        state["_ask_user_result"] = result
-        state["_ask_user_args"] = dict(args or {})
+        with _messenger_gate(state):
+            state["_ask_user_event"] = ev
+            state["_ask_user_result"] = result
+            state["_ask_user_args"] = dict(args or {})
+            state["_ask_user_deadline"] = time.monotonic() + 300
         from html import escape as _esc
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
@@ -8967,6 +10106,7 @@ def create_tab(ctx):
             return {"answers": [], "timed_out": True}
         return result
 
+    @_serialized_gate(state)
     def _close_ask_user_modal(ev) -> None:
         """Take the question widget off screen and forget the question.
 
@@ -8983,6 +10123,7 @@ def create_tab(ctx):
         state["_ask_user_result"] = None
         state["_ask_user_args"] = None
 
+    @_serialized_gate(state)
     def _answer_ask_from_chat(text: str) -> bool:
         """A chat line sent while ask_user_question waits is its answer.
 
@@ -9020,10 +10161,11 @@ def create_tab(ctx):
         import threading as _th
         ev = _th.Event()
         result: dict = {"approved": False, "new_mode": "default"}
-        state["_plan_approval_event"] = ev
-        state["_plan_approval_result"] = result
-        # Stash the plan body so the accept-handler can persist it.
-        state["_pending_plan_body"] = plan
+        with _messenger_gate(state):
+            state["_plan_approval_event"] = ev
+            state["_plan_approval_result"] = result
+            state["_plan_approval_deadline"] = time.monotonic() + 180
+            state["_pending_plan_body"] = plan
         # Surface the plan so the user sees what they're approving.
         # Name the controls as they are actually labelled: this told the
         # user to click "Plan akzeptieren" and to switch the "Mode-Chip",
@@ -9052,14 +10194,16 @@ def create_tab(ctx):
         with awaiting_person(lambda: state.get("engine"), APPROVAL):
             _paint_activity()
             got = ev.wait(timeout=180)   # 3 min
-        if not got:
-            result["timed_out"] = True
+        with _messenger_gate(state):
+            if not got and not ev.is_set():
+                result["timed_out"] = True
         return result
 
     # Hook into the existing _on_plan_accept: register a second on_click
     # handler that signals any pending exit_plan_mode tool call. The
     # original handler (registered earlier) still does its UI/mode work
     # — both fire on click.
+    @_serialized_gate(state)
     def _on_plan_accept_phase5(_btn):
         ev = state.get("_plan_approval_event")
         result = state.get("_plan_approval_result")
@@ -9501,41 +10645,45 @@ def create_tab(ctx):
              ),
          )])
     _input_area.add_class("delfin-agent-input-area")
-    # The Claude Code panel beside the chat (delfin-voila --claude-terminal
-    # only). The page script attaches it to the server's restricted
-    # terminal the first time it is shown; hiding it keeps the session.
+    # The terminal panel beside the chat (delfin-voila --agent-terminal
+    # only): the one program the launcher was given. The page script
+    # attaches it to the server's restricted terminal the first time it is
+    # shown; hiding it keeps the session.
     _chat_area = chat_frame
-    from delfin.dashboard import claude_terminal as _claude_term
-    if _claude_term.enabled():
-        _term_cwd = os.environ.get(_claude_term.CWD_ENV, "") or "~"
+    from delfin.dashboard import agent_terminal as _agent_term
+    if _agent_term.enabled():
+        _term_cwd = os.environ.get(_agent_term.CWD_ENV, "") or "~"
+        _term_argv = _agent_term.configured_argv()
+        _term_name = os.path.basename(_term_argv[0]) if _term_argv else "terminal"
         _home = str(Path.home())
         if _term_cwd == _home or _term_cwd.startswith(_home + os.sep):
             _term_cwd = "~" + _term_cwd[len(_home):]
         _term_head = widgets.HTML(
-            value=(f'<span title="{_html.escape(_term_cwd)}">Claude Code '
+            value=(f'<span title="{_html.escape(_term_cwd)}">'
+                   f'{_html.escape(_term_name)} '
                    f'&middot; {_html.escape(_term_cwd)}</span>'))
-        _term_head.add_class("delfin-claude-term-head")
-        _term_host = widgets.HTML(value='<div class="delfin-claude-term"></div>')
-        _term_host.add_class("delfin-claude-term-host")
-        claude_term_panel = widgets.VBox(
+        _term_head.add_class("delfin-agent-term-head")
+        _term_host = widgets.HTML(value='<div class="delfin-agent-term"></div>')
+        _term_host.add_class("delfin-agent-term-host")
+        agent_term_panel = widgets.VBox(
             [_term_head, _term_host], layout=widgets.Layout(display="none"))
-        claude_term_panel.add_class("delfin-claude-term-panel")
-        claude_term_btn = widgets.Button(
-            description="Claude Code", icon="terminal",
-            tooltip=("Show the Claude Code CLI beside the chat. It keeps "
-                     "running while hidden; a reload reattaches to it."),
+        agent_term_panel.add_class("delfin-agent-term-panel")
+        agent_term_btn = widgets.Button(
+            description="Terminal", icon="terminal",
+            tooltip=(f"Show {_term_name} beside the chat. It keeps running "
+                     "while hidden; a reload reattaches to it."),
             layout=widgets.Layout(width="auto", flex="0 0 auto"))
 
-        def _toggle_claude_term(_b):
-            opening = claude_term_panel.layout.display == "none"
-            claude_term_panel.layout.display = "" if opening else "none"
-            claude_term_btn.button_style = "info" if opening else ""
+        def _toggle_agent_term(_b):
+            opening = agent_term_panel.layout.display == "none"
+            agent_term_panel.layout.display = "" if opening else "none"
+            agent_term_btn.button_style = "info" if opening else ""
 
-        claude_term_btn.on_click(_toggle_claude_term)
-        git_group.children = tuple(git_group.children) + (claude_term_btn,)
-        _chat_area = widgets.HBox([chat_frame, claude_term_panel])
+        agent_term_btn.on_click(_toggle_agent_term)
+        git_group.children = tuple(git_group.children) + (agent_term_btn,)
+        _chat_area = widgets.HBox([chat_frame, agent_term_panel])
         _chat_area.add_class("delfin-agent-chat-row")
-        ctx.add_init_js(_claude_term.init_js())
+        ctx.add_init_js(_agent_term.init_js())
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
@@ -9723,6 +10871,8 @@ def create_tab(ctx):
             # of them raises rather than quietly winning.
             estate = dict(engine.export_state())
             estate["session_id"] = engine.session_id
+            if engine.session_id in state.get("_messenger_titles", {}):
+                estate["title"] = state["_messenger_titles"][engine.session_id]
             save_session(
                 chat_messages=state["chat_messages"],
                 cycle_history=state.get("_cycle_history", []),
@@ -9784,6 +10934,7 @@ def create_tab(ctx):
         except Exception:
             pass  # non-critical — don't break the chat
 
+    @_serialized_gate(state)
     def _load_saved_session(session_id):
         """Load a saved session and restore engine + UI state."""
         # One conversation, one view: two sessions holding the same one would
@@ -10081,6 +11232,7 @@ def create_tab(ctx):
         _update_status()
         _update_button_states()
 
+        state.setdefault("_messenger_titles", {})[session_id] = data.get("title", "")
         title = data.get("title", "")[:50] or session_id[:12]
         _record_cycle_event("session", "Session restored", title)
         _append_system_message(f"Session restored: {title}")
@@ -10203,6 +11355,7 @@ def create_tab(ctx):
             return "api"
         return "cli"  # will error at runtime
 
+    @_serialized_gate(state)
     def _hand_state_to(engine, data: dict, *, mode: str, session_id: str) -> None:
         """The one place a saved or carried state reaches an engine.
 
@@ -11502,14 +12655,7 @@ def create_tab(ctx):
             # During streaming: plain <pre> — no expensive markdown parsing.
             # On finalize: full _md_to_html with code blocks, formatting etc.
             if msg.get("_streaming"):
-                # Same trim as the markdown path: the first tokens often
-                # arrive behind a newline, and during streaming that gap
-                # sits under the label for the whole reply.
-                content = (
-                    f'<pre class="delfin-streaming-pre">'
-                    f'{_html.escape(str(msg["content"] or "").strip(chr(13) + chr(10)))}'
-                    f'</pre>'
-                )
+                content = _streaming_html(str(msg["content"] or ""))
             else:
                 content = _md_to_html(msg["content"])
             _ts = str(msg.get("turn_summary") or "")
@@ -11686,12 +12832,12 @@ def create_tab(ctx):
                 body = _render_agent_transcript(_va)
             except Exception as _exc:
                 body = "<i>subagent view unavailable: " + str(_exc)[:120] + "</i>"
-            chat_html.value = (_CHAT_OPEN + body
-                               + "\n" + _SCROLL_TAG + "</div>")
+            chat_html.value = _chat_value(_CHAT_OPEN + body
+                                          + "\n" + _SCROLL_TAG + "</div>")
             return
         msgs = state["chat_messages"]
         if not msgs:
-            chat_html.value = (
+            chat_html.value = _chat_value(
                 _CHAT_OPEN
                 + "<i>Start a conversation...</i>"
                 + _SCROLL_RESET_TAG + "</div>"
@@ -11706,7 +12852,7 @@ def create_tab(ctx):
         # The prefix (all messages before the last) is cached.
         if streaming and n > 1 and _html_cache["prefix_count"] == n - 1:
             last_html = _render_single_msg(msgs[-1])
-            chat_html.value = (
+            chat_html.value = _chat_value(
                 _CHAT_OPEN
                 + _html_cache["prefix"]
                 + "\n" + last_html
@@ -11728,7 +12874,7 @@ def create_tab(ctx):
             _html_cache["prefix"] = ""
             _html_cache["prefix_count"] = 0
 
-        chat_html.value = (
+        chat_html.value = _chat_value(
             _CHAT_OPEN
             + "\n".join(parts)
             + "\n" + _SCROLL_TAG
@@ -12427,6 +13573,11 @@ def create_tab(ctx):
         # pressing it again is the one thing left to do when the first
         # stop did not take.
         stop_btn.disabled = not (is_streaming or _turn_thread_alive())
+        # Red only while there is something to stop: a pale red button
+        # on an idle tab drew the eye to a control that could do nothing.
+        _stop_style = "" if stop_btn.disabled else "danger"
+        if stop_btn.button_style != _stop_style:
+            stop_btn.button_style = _stop_style
         mode_dropdown.disabled = is_streaming
         model_dropdown.disabled = is_streaming
         effort_dropdown.disabled = is_streaming
@@ -12443,11 +13594,50 @@ def create_tab(ctx):
 
     # -- event handlers ----------------------------------------------------
 
+    def _messenger_command(args):
+        from delfin.messenger import activation
+        from delfin.messenger.dashboard import DashboardSession
+        engine = _ensure_engine()
+        sid = str(getattr(engine, "session_id", "") or state.get("active_session_id") or "")
+        if not sid:
+            return "Zuerst eine Sitzung starten, dann /sync eingeben."
+        adapters = state.setdefault("_messenger_adapters", {})
+        if args.strip().lower() in {"off", "status"}:
+            return activation.configure(sid, args)
+        if args.strip().lower() not in {"", "on"}:
+            return activation.configure(sid, args)
+        if sid not in adapters:
+            def answer_detected_question(text):
+                if input_textarea.value.strip() or not state.get("_pending_question"):
+                    return False
+                input_textarea.value = "Antwort auf deine Rückfrage: " + text
+                _on_send(None)
+                return not state.get("_pending_question")
+            def send(text):
+                if input_textarea.value.strip() or _awaiting_user_answer(state):
+                    return False
+                input_textarea.value = text
+                _on_send(None)
+                return True
+            adapter = DashboardSession(sid, state, send=send,
+                stop=lambda: _on_stop(None), answer=_answer_ask_from_chat,
+                plan=lambda yes: _handle_slash_command("/plan approve" if yes else "/plan reject"),
+                approval=lambda yes: _on_approve(None) if yes else _on_deny(None),
+                question=answer_detected_question)
+            adapters[sid] = activation.LocalSession(sid, adapter)
+        return activation.configure(sid, args, endpoint=str(adapters[sid].path))
+
     def _handle_slash_command(text: str) -> bool:
         """Handle slash commands. Returns True if handled."""
         import subprocess as _sp
 
         cmd = text.lower().strip()
+        if cmd == "/sync" or cmd.startswith("/sync "):
+            if state.get("_on_its_own"):
+                _append_system_message("SimpleX kann nur von dir in dieser Sitzung aktiviert werden.")
+            else:
+                _append_system_message(_messenger_command(text[5:].strip()))
+            return True
 
         # -- Global safety: zone-based permission check (all modes) ----------
         tier = _command_tier(cmd)
@@ -13719,34 +14909,38 @@ def create_tab(ctx):
         # tool call. The user can read the plan in chat and unblock the
         # session without restarting.
         if cmd in ("/plan approve", "/plan reject"):
-            ev = state.get("_plan_approval_event")
-            result = state.get("_plan_approval_result")
-            if ev is None or result is None:
-                _append_system_message(
-                    "No plan is currently awaiting approval. "
-                    "Switch to /mode plan and ask the agent to draft a plan."
-                )
+            with _messenger_gate(state):
+                ev = state.get("_plan_approval_event")
+                result = state.get("_plan_approval_result")
+                if ev is None or result is None:
+                    _append_system_message(
+                        "No plan is currently awaiting approval. "
+                        "Switch to /mode plan and ask the agent to draft a plan."
+                    )
+                    return True
+                # Same shared logic as the 'Plan akzeptieren' button so the
+                # two paths are functionally identical (persist + perm flip).
+                for _m in _finalize_plan_decision(
+                    state,
+                    approved=(cmd == "/plan approve"),
+                    repo_root=ctx.repo_dir or ".",
+                ):
+                    _append_system_message(_m)
+                if cmd == "/plan approve":
+                    _append_system_message(
+                        "✅ Plan approved via /plan approve fallback. "
+                        "Mode flipped to acceptEdits — the agent can now "
+                        "execute the plan."
+                    )
+                else:
+                    _append_system_message(
+                        "🚫 Plan rejected via /plan reject fallback."
+                    )
+                state["_kit_plan_has_response"] = False
+                _refresh_plan_accept_btn()
+                _set_wait_chip("")
+                ev.set()
                 return True
-            # Same shared logic as the 'Plan akzeptieren' button so the
-            # two paths are functionally identical (persist + perm flip).
-            for _m in _finalize_plan_decision(
-                state,
-                approved=(cmd == "/plan approve"),
-                repo_root=ctx.repo_dir or ".",
-            ):
-                _append_system_message(_m)
-            if cmd == "/plan approve":
-                _append_system_message(
-                    "✅ Plan approved via /plan approve fallback. "
-                    "Mode flipped to acceptEdits — the agent can now "
-                    "execute the plan."
-                )
-            else:
-                _append_system_message(
-                    "🚫 Plan rejected via /plan reject fallback."
-                )
-            ev.set()
-            return True
 
         # /bugs — browse the bug-report archive and close the optimisation
         # loop by scaffolding a regression benchmark task from a report.
@@ -16157,7 +17351,25 @@ def create_tab(ctx):
                         ctx.select_tab("Job Status")
                     except Exception as exc:
                         _append_system_message(f"Submit error: {exc}")
-                _confirm_or_exec("submit_job", f"Submit job '{job_name}' from Submit tab?", _do_submit, cmd_for_zone="/submit")
+                # The same check as the agent's other routes (calc_policy,
+                # reading the CONTROL with DELFIN's own functions).
+                _verdict = _submit_tab_verdict(ctx.submit_refs)
+                if _verdict is not None and _verdict.admit:
+                    try:
+                        from delfin.agent import security_events as _se
+                        _se.record("calculation_admitted", "/submit",
+                                   _verdict.summary[:200], blocked=False)
+                    except Exception:
+                        pass
+                    _append_system_message(
+                        f"🧪 Started without asking (setup and resources "
+                        f"checked): {_verdict.summary}")
+                    _do_submit()
+                    return True
+                _ask = f"Submit job '{job_name}' from Submit tab?"
+                if _verdict is not None and _verdict.reason:
+                    _ask += f" Not started unasked: {_verdict.reason}"
+                _confirm_or_exec("submit_job", _ask, _do_submit, cmd_for_zone="/submit")
             else:
                 _append_system_message("Submit tab not available.")
             return True
@@ -16303,8 +17515,27 @@ def create_tab(ctx):
                 def _do_orca_submit():
                     btn.click()
                     _append_system_message("ORCA job submitted. Check Job Status tab.")
+                # The same check as the agent's other routes (calc_policy):
+                # a checked input within the host's or partition's limits
+                # goes without the dialog; otherwise the dialog says why.
+                _verdict = _orca_builder_verdict(ctx.orca_builder_refs)
+                if _verdict is not None and _verdict.admit:
+                    try:
+                        from delfin.agent import security_events as _se
+                        _se.record("calculation_admitted", "/orca submit",
+                                   _verdict.summary[:200], blocked=False)
+                    except Exception:
+                        pass
+                    _append_system_message(
+                        f"🧪 Started without asking (setup and resources "
+                        f"checked): {_verdict.summary}")
+                    _do_orca_submit()
+                    return True
+                _ask = "Submit ORCA job?"
+                if _verdict is not None and _verdict.reason:
+                    _ask += f" Not started unasked: {_verdict.reason}"
                 _confirm_or_exec(
-                    "orca_submit", "Submit ORCA job?", _do_orca_submit,
+                    "orca_submit", _ask, _do_orca_submit,
                     cmd_for_zone="/orca submit",
                 )
             else:
@@ -18127,7 +19358,7 @@ def create_tab(ctx):
                 parts.append(f'<div class="{css_class}">{content}</div>')
         parts.append(_SCROLL_TAG)
         parts.append("</div>")
-        chat_html.value = "\n".join(parts)
+        chat_html.value = _chat_value("\n".join(parts))
 
     def _retry_last():
         """Remove the last assistant response and re-send the last user message."""
@@ -18171,6 +19402,7 @@ def create_tab(ctx):
         else:
             _append_system_message("Could not find a user message to retry.")
 
+    @_serialized_gate(state)
     def _request_confirmation(action_id, description, callback):
         """Show confirmation prompt for destructive dashboard operations.
 
@@ -18206,6 +19438,7 @@ def create_tab(ctx):
         # Needs confirmation
         _request_confirmation(action_id, description, callback)
 
+    @_serialized_gate(state)
     def _show_approval_prompt(tool_name, detail):
         """Show approval request inline in chat + approval buttons."""
         state["_pending_approval"] = {"tool": tool_name, "detail": detail}
@@ -18233,6 +19466,7 @@ def create_tab(ctx):
         deny_btn.layout.display = "inline-flex"
         approval_row.layout.display = "flex"
 
+    @_serialized_gate(state)
     def _hide_approval():
         """Hide approval UI."""
         approve_btn.layout.display = "none"
@@ -18244,6 +19478,7 @@ def create_tab(ctx):
             _set_active_gate()
             _update_status()
 
+    @_serialized_gate(state)
     def _on_approve(button):
         """User approves a blocked operation.
 
@@ -18371,6 +19606,7 @@ def create_tab(ctx):
         input_textarea.value = f"Yes, proceed with: {readable}"
         _on_send(None)
 
+    @_serialized_gate(state)
     def _on_deny(button):
         """User denies a blocked operation."""
         # Dashboard action denial
@@ -18391,6 +19627,7 @@ def create_tab(ctx):
     # -- Interactive question detection & UI ------------------------------------
 
 
+    @_serialized_gate(state)
     def _show_question_ui(question_info: dict):
         """Show interactive widgets based on detected question type.
 
@@ -18497,6 +19734,7 @@ def create_tab(ctx):
         input_textarea.value = answer
         _on_send(None)
 
+    @_serialized_gate(state)
     def _hide_question_ui():
         """Hide question UI and reset state."""
         question_row.layout.display = "none"
@@ -18795,8 +20033,9 @@ def create_tab(ctx):
         # not a message to the model. Off the UI thread, because the gate
         # may ask the user and the command may take a while.
         from delfin.agent.repl_commands import SHELL_PREFIX as _SHELL_PREFIX
-        if user_text.startswith(_SHELL_PREFIX) and len(user_text) > 1:
-            _cmd = user_text[len(_SHELL_PREFIX):].strip()
+        _shell_text = _unquote_shell_offer(user_text)
+        if _shell_text.startswith(_SHELL_PREFIX) and len(_shell_text) > 1:
+            _cmd = _shell_text[len(_SHELL_PREFIX):].strip()
             input_textarea.value = ""
             _eng = state.get("engine")
 
@@ -19760,18 +20999,9 @@ def create_tab(ctx):
                             _append_tool_message("\n".join(lines))
 
                     else:
-                        # Generic: show first meaningful param
-                        param = ""
-                        for key in ("file_path", "path", "pattern",
-                                    "prompt", "description", "query", "command"):
-                            if key in parsed:
-                                val = str(parsed[key])[:80]
-                                param = f'<span class="tool-param">{_e(val)}</span>'
-                                break
-                        if not param:
-                            param = _e(tool_input[:100])
                         _append_tool_message(
-                            f'<span class="tool-name">{_e(tool_name)}</span>  {param}'
+                            f'<span class="tool-name">{_e(tool_name)}</span>  '
+                            + _tool_param_html(parsed, tool_input)
                         )
 
                 def _emit_new_workspace_artifacts() -> None:
@@ -22743,6 +23973,7 @@ def create_tab(ctx):
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
     document.addEventListener('keydown', function(e) {
+        if (!window.__delfinAgentOwnsKey(e)) return;
         /* Enter = Approve (if approval pending) or Send */
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             /* Check if approval buttons are visible */
@@ -23057,6 +24288,8 @@ def create_tab(ctx):
         if state.get("_closed"):
             return
         state["_closed"] = True
+        for adapter in state.pop("_messenger_adapters", {}).values():
+            adapter.close()
         # Auto mode ends with its session, with its report.
         _auto_end = state.get("_auto")
         if _auto_end is not None and getattr(_auto_end, "enabled", False):
@@ -23153,6 +24386,8 @@ def create_tab(ctx):
         "refresh_loop": _refresh_loop_panel,
         "auto_tick": _auto_tick,
         "auto_after_turn": _auto_after_turn,
+        "fold_title": _fold_title,
+        "refresh_chat": _refresh_chat_html,
     }
 
 

@@ -27,6 +27,29 @@ from typing import Optional
 from . import multiwfn_available
 
 
+def _resolve_method_key(method, method_map) -> str:
+    """Map an analysis method name to its Multiwfn menu key, strictly.
+
+    An unknown method (including None or a non-string) raises ValueError
+    instead of silently falling back to the first menu entry (the
+    pre-fix behaviour at the two call sites below): a typo like "mayer"
+    vs "mulliken" must not swap which analysis runs while the result
+    dict still reports the requested method name.
+    """
+    if not isinstance(method, str):
+        raise ValueError(
+            f"method must be a string, got {type(method).__name__}: "
+            f"{method!r}"
+        )
+    key = method_map.get(method.lower())
+    if key is None:
+        raise ValueError(
+            f"method '{method}' is not one of {sorted(method_map)}; "
+            "Multiwfn's menu for this analysis has no such entry"
+        )
+    return key
+
+
 def _run_multiwfn(
     input_file: str | Path,
     commands: str,
@@ -113,7 +136,7 @@ def bond_order_analysis(
     dict with key "output" (raw text) and "bond_orders" (list of dicts)
     """
     method_map = {"mayer": "1", "wiberg": "2", "fuzzy": "3"}
-    method_key = method_map.get(method.lower(), "1")
+    method_key = _resolve_method_key(method, method_map)
 
     # Menu: 9 (Bond order analysis) -> method -> q
     commands = f"9\n{method_key}\nq\n"
@@ -157,7 +180,7 @@ def population_analysis(
         "lowdin": "6",
         "becke": "10",
     }
-    method_key = method_map.get(method.lower(), "1")
+    method_key = _resolve_method_key(method, method_map)
 
     # Menu: 7 (Population analysis) -> method -> q
     commands = f"7\n{method_key}\nq\n"

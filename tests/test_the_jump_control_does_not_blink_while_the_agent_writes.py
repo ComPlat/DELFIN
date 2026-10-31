@@ -149,6 +149,9 @@ function flush() {
     for (const fn of (docListeners.scroll || [])) fn({target: t});
 }
 function userScroll(top) {
+  // The reader's input comes first (a wheel), then the scroll: the
+  // script undoes a scroll with no input before it.
+  for (const fn of (docListeners.wheel || [])) fn({target: chat});
   const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
   chat._top = Math.max(0, Math.min(max, top));
   for (const fn of (docListeners.scroll || [])) fn({target: chat});

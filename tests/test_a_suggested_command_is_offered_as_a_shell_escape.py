@@ -342,3 +342,17 @@ def test_the_code_role_is_told_the_user_runs_a_shown_command_with_the_bang(
         session_key="bang-offer-1")
     assert "runs it with `! <command>`" in built
     assert "same gate as yours" in built
+
+
+def test_copied_backtick_shell_escape_uses_gate_not_model(tmp_path):
+    tab, refs = _tab(tmp_path)
+    try:
+        eng = _Engine()
+        refs["state"]["engine"] = eng
+        _input(tab).value = "`! git push origin topic`"
+        _send(tab).click()
+        _wait_escape()
+        assert eng.calls == ["git push origin topic"]
+        assert eng.typed == []
+    finally:
+        refs["shutdown"]()

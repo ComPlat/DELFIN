@@ -194,6 +194,10 @@ global.document = {
 global.setInterval = (fn) => { intervalFn = fn; return 1; };
 global.setTimeout = () => 1;
 global.clearTimeout = () => {};
+// The script tells the reader's scrolls from the browser's by the input
+// just before them; the clock is the driver's.
+let NOW = 1000000;
+Date.now = () => NOW;
 
 __SCRIPT__
 
@@ -203,6 +207,19 @@ function flush() {
     for (const fn of (docListeners.scroll || [])) fn({target: t});
 }
 function userScroll(top) {
+  // A person scrolls with a wheel, a touch, a key or the scrollbar: the
+  // input event comes first, then the scroll.
+  NOW += 1000;
+  for (const fn of (docListeners.wheel || [])) fn({target: chat});
+  const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
+  chat._top = Math.max(0, Math.min(max, top));
+  for (const fn of (docListeners.scroll || [])) fn({target: chat});
+}
+// A scroll nobody asked for: the browser moved the offset (measured
+// 2026-10-22: 12 px up every 1.5 s while the agent waited, with no
+// script writing scrollTop), and the script put it back 60-85 ms later.
+function browserScroll(top) {
+  NOW += 1000;
   const max = Math.max(0, chat.scrollHeight - chat.clientHeight);
   chat._top = Math.max(0, Math.min(max, top));
   for (const fn of (docListeners.scroll || [])) fn({target: chat});
@@ -223,6 +240,13 @@ seen.followed_to_the_end = chat.scrollTop === end();
 const shown = () => chat.attrs['data-delfin-follow'] === '0';
 const unseen = () => chat.attrs['data-delfin-unseen'] === '1';
 seen.control_hidden_at_the_end = !shown();
+
+// The browser moves a following reader 12 px up: put back in the same
+// scroll event, before the next paint, and still following.
+browserScroll(end() - 12);
+seen.a_scroll_nobody_made_is_undone_at_once =
+  chat.scrollTop === end() && S().follow === true;
+flush();
 
 // The reader scrolls up to re-read something.
 working = {working: true};
@@ -288,12 +312,12 @@ const writesAtEnd = scrollWrites;
 tick();
 seen.idle_poll_does_not_write_scroll_again = scrollWrites === writesAtEnd;
 
-// An offset past the end of what is now shown belongs to another
-// conversation, so the reader is put at the end rather than mid-history.
+// A transient shrink/reflow is not a session switch and must not revoke
+// the reader's decision to pause. Each session has its own follow record.
 userScroll(400);
 chat.scrollHeight = 500;
 sync();
-seen.swapped_conversation_starts_at_the_end = S().follow === true;
+seen.shrinking_content_does_not_resume_following = S().follow === false;
 
 // A cleared conversation drops the carried offset.
 window.__delfinChatReset();
@@ -306,6 +330,37 @@ userScroll(200);
 clickSend();
 seen.sending_returns_to_the_end =
   S().follow === true && chat.scrollTop === end();
+
+// Input arrives while an automatic scroll event is still queued. A new
+// token/poll before the reader's scroll event must not steal the viewport.
+chat.scrollHeight += 200;
+window.__delfinChatSync(chat); // deliberately do NOT flush its scroll event
+for (const fn of docListeners.wheel) fn({target: chat, deltaY: -12});
+const beforeGesture = chat.scrollTop;
+chat.scrollHeight += 100;
+tick();
+seen.input_pauses_before_scroll_event = !S().follow && chat.scrollTop === beforeGesture;
+chat._top -= 12;
+for (const fn of docListeners.scroll) fn({target: chat});
+sync();
+seen.pending_auto_event_does_not_swallow_reader = !S().follow && chat.scrollTop === beforeGesture - 12;
+
+// A tiny upward gesture inside the old 60px tolerance also stays paused.
+window.__delfinChatToBottom(jump); flush();
+for (const fn of docListeners.wheel) fn({target: chat, deltaY: -12});
+chat._top -= 12;
+for (const fn of docListeners.scroll) fn({target: chat});
+sync();
+seen.small_upward_gesture_stays_paused = !S().follow && chat.scrollTop === end() - 12;
+
+// Manipulating a viewer must pause follow even before any scrolling occurs.
+window.__delfinChatToBottom(jump); flush();
+for (const fn of docListeners.pointerdown) fn({target: chat});
+const viewerTop = chat.scrollTop;
+chat.scrollHeight += 300;
+tick(); sync();
+for (const fn of docListeners.pointerup) fn({target: chat});
+seen.viewer_interaction_keeps_position = !S().follow && chat.scrollTop === viewerTop;
 
 console.log(JSON.stringify(seen));
 """
@@ -324,6 +379,76 @@ def test_the_script_follows_only_from_the_end():
     wrong = sorted(name for name, ok in seen.items() if not ok)
     assert not wrong, f"the chat scroll misbehaved: {', '.join(wrong)}"
     assert len(seen) >= 22, f"the driver checked only {len(seen)} things"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_refresh_and_late_resize_follow_before_the_next_paint(tmp_path):
+    """Drive the gap between HTML replacement and the delayed onerror/poll.
+
+    A browser delivers mutation/resize observers before painting. Neither
+    the trailing image's onerror nor the polling timer has fired here.
+    """
+    observers = r"""
+let mutationCallback, resizeCallback;
+document.body = {};
+chat.nodeType = 1;
+global.MutationObserver = class {
+  constructor(callback) { mutationCallback = callback; }
+  observe() {}
+};
+global.ResizeObserver = class {
+  constructor(callback) { resizeCallback = callback; }
+  observe() {}
+};
+"""
+    checks = r"""
+const assert = require('node:assert/strict');
+window.__delfinChatToBottom(jump); flush();
+// Replacing the transcript may clamp the old offset before new content
+// is laid out. Repair it before paint, without a timer or image event.
+for (let i = 0; i < 12; i++) {
+  chat._top = 0;
+  chat.scrollHeight += 120;
+  if (mutationCallback) mutationCallback([{target: chat}]);
+  assert.equal(chat.scrollTop, end(), 'replacement painted off the end');
+  flush();
+}
+chat.scrollHeight += 300;
+resizeCallback([{target: chat}]);
+assert.equal(chat.scrollTop, end(), 'late content resize lost the end');
+flush();
+chat.clientHeight -= 40;
+resizeCallback([{target: chat}]);
+assert.equal(chat.scrollTop, end(), 'viewport resize lost the end');
+flush();
+// A fractional browser offset must not cause endless corrective writes.
+chat._top = end() - 0.25;
+const fractionalWrites = scrollWrites;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+tick();
+assert.equal(scrollWrites, fractionalWrites, 'fractional end was rewritten');
+// Neither observer may move someone reading further up the transcript.
+userScroll(100);
+const awayWrites = scrollWrites;
+chat.scrollHeight += 200;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+assert.equal(scrollWrites, awayWrites, 'observer moved a reader');
+assert.equal(chat.scrollTop, 100);
+// Background sessions have no viewport and must not be scrolled either.
+chat.clientHeight = 0;
+const hiddenWrites = scrollWrites;
+mutationCallback([{target: chat}]);
+resizeCallback([{target: chat}]);
+assert.equal(scrollWrites, hiddenWrites, 'hidden session was scrolled');
+"""
+    script = _DRIVER.replace("__SCRIPT__", observers + _chat_scroll_js()) + checks
+    path = tmp_path / "chat_before_paint.js"
+    path.write_text(script, encoding="utf-8")
+    done = subprocess.run([_NODE, str(path)], capture_output=True, text=True,
+                          timeout=30)
+    assert done.returncode == 0, done.stderr[-3000:]
 
 
 def test_the_chat_script_is_not_inside_the_keyboard_guard():
