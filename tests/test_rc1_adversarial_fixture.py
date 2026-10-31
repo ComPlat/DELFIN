@@ -11,6 +11,7 @@ Red on main 8b5753686 by design: the fixture does not exist yet; the
 builder's commits must turn these green.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -35,64 +36,108 @@ needs_fixture = pytest.mark.skipif(
 )
 
 
+def _inp_scan_block() -> str:
+    """The '%geom ... Scan ...' line of the committed .inp, normalized."""
+    text = INP_FILE.read_text()
+    for line in text.splitlines():
+        low = line.strip().lower()
+        if "scan" in low and "d " in low:
+            return line.strip()
+    return ""
+
+
+def _scan_point_count() -> int:
+    """Number of scan points the .inp requests (derived, not hard-coded).
+
+    ORCA's Scan D = start, stop, Nsteps requests Nsteps points in total
+    (end point equals start for a full dihedral circle, so v5's
+    180,525,24 is 24 distinct angles closing on the start)."""
+    m = re.search(r"=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)", _inp_scan_block())
+    assert m, "no parsable Scan D = start,stop,nsteps in .inp"
+    return int(m.group(3))
+
+
 @needs_fixture
 def test_scan_inp_requests_the_full_dihedral_range():
-    """The .inp scans D 0 1 2 3 = 0,360,25 at r2SCAN-3c, neutral singlet."""
+    """The .inp scans the central dihedral at r2SCAN-3c, neutral singlet,
+    over a full circle (start and stop differ by 360 deg)."""
     text = INP_FILE.read_text()
     assert "r2SCAN-3c" in text, "method keyword missing"
     assert "* xyz 0 1" in text, "charge 0 / multiplicity 1 missing"
     # ORCA %geom scan block: relaxed scan over the central C-C-C-C dihedral.
     assert "Scan" in text and "D 0 1 2 3" in text
-    assert "0, 360, 25" in text.replace("0,360,25", "0, 360, 25")
+    m = re.search(r"=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)", _inp_scan_block())
+    assert m, "no parsable Scan D = start,stop,nsteps in .inp"
+    start, stop, _ = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    assert abs((stop - start) - 360) <= 1e-9 * abs(stop - start) or \
+        stop - start == 360, \
+        f"scan range {start}..{stop} is not a full dihedral circle"
 
 
 @needs_fixture
 def test_scan_output_has_25_energy_points_and_terminated_normally():
-    """25 scan points = 25 FINAL SINGLE POINT ENERGY sections; clean end."""
+    """One FINAL SINGLE POINT ENERGY section per requested scan point;
+    clean end; the scan summary table survived any trim."""
     text = OUT_FILE.read_text()
     assert "ORCA TERMINATED NORMALLY" in text
-    # The per-point reader is DELFIN's own index: each scan point opens its
-    # own FINAL SINGLE POINT ENERGY section.
+    n_expected = _scan_point_count()
     sections = [s for s in orca_out_index(OUT_FILE)
                 if s.title.upper() == "FINAL SINGLE POINT ENERGY"]
-    assert len(sections) == 25, f"expected 25 scan points, got {len(sections)}"
+    assert len(sections) == n_expected, (
+        f"expected {n_expected} scan points, got {len(sections)}")
     # The scan summary table ORCA writes at the end must have survived any
     # trim (the brief: keep the scan summary table).
     assert "THE RELAXED SURFACE SCAN" in text.upper() or "Scan summary" in text
 
 
-@needs_fixture
-def test_every_scan_point_energy_is_finite_and_read_via_orca_out_section():
-    """Each of the 25 energies reads through orca_out_section, finite."""
+def _read_all_scan_energies() -> list:
+    """All scan-point energies via orca_out_section, in scan order."""
     energies = []
-    for n in range(1, 26):
+    for n in range(1, _scan_point_count() + 1):
         lines = orca_out_section(OUT_FILE, "FINAL SINGLE POINT ENERGY", n=n)
         value_line = next(l for l in lines
                           if l.strip().upper().startswith(
                               "FINAL SINGLE POINT ENERGY"))
         energies.append(float(value_line.split()[-1]))
-    assert len(energies) == 25
+    return energies
+
+
+@needs_fixture
+def test_every_scan_point_energy_is_finite_and_read_via_orca_out_section():
+    """Each scan-point energy reads through orca_out_section, finite."""
+    energies = _read_all_scan_energies()
+    assert len(energies) == _scan_point_count()
     assert all(e == e and abs(e) < 1e3 for e in energies), "non-finite energy"
 
 
 @needs_fixture
 def test_anti_is_minimum_gauche_next_syn_is_highest():
-    """Physics ordering: anti (180 deg) lowest; syn (0 deg) highest;
-    gauche around 60-70 deg a local minimum between them."""
-    energies = []
-    for n in range(1, 26):
-        lines = orca_out_section(OUT_FILE, "FINAL SINGLE POINT ENERGY", n=n)
-        value_line = next(l for l in lines
-                          if l.strip().upper().startswith(
-                              "FINAL SINGLE POINT ENERGY"))
-        energies.append(float(value_line.split()[-1]))
-    anti = energies[12]  # point 13 = 180 deg
-    syn = energies[0]    # point 1 = 0 deg
-    assert syn > anti, "syn (0 deg) must be the highest point"
-    # Gauche minimum: lowest energy among points 3-8 (30..120 deg).
-    gauche = min(energies[2:8])
-    assert anti < syn
-    # Gauche-anti difference of order 0.6-0.9 kcal/mol at r2SCAN-3c.
+    """Physics ordering, independent of the scan's start angle and step
+    count: syn = highest of the 0/360-family points, anti = lowest of the
+    180/540-family points, gauche a local minimum around 300/420 (plus 60
+    on the 0-family side). Gap = min(gauche) - min(anti-family)."""
+    block = _inp_scan_block()
+    m = re.search(r"=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)", block)
+    assert m, "no parsable Scan D in .inp"
+    start = int(m.group(1))
+    energies = _read_all_scan_energies()
+    step = 360.0 / len(energies)
+    angles = [start + i * step for i in range(len(energies))]
+
+    def fam(lo, hi):
+        vals = [e for a, e in zip(angles, energies)
+                if lo <= ((a - start) % 360) < hi]
+        assert vals, f"no scan point in {lo}..{hi} deg"
+        return min(vals)
+
+    # syn family (0/360), anti family (180/540), and the gauche minima
+    # near 60/300/420 (operator: gauche ~300 and ~420 on the 180-based
+    # v5 grid; 60 is its mirror on a 0-based grid).
+    syn = fam(330, 30)
+    anti = fam(150, 210)
+    gauche_candidates = [fam(30, 90), fam(270, 330)]
+    gauche = min(g for g in gauche_candidates if g is not None)
+    assert syn > anti, "syn (0/360 family) must be the highest point"
     gap_kcal = (gauche - anti) * 627.509474
     assert 0.3 < gap_kcal < 1.5, (
         f"gauche-anti gap {gap_kcal:.3f} kcal/mol outside plausible band")
@@ -100,12 +145,14 @@ def test_anti_is_minimum_gauche_next_syn_is_highest():
 
 @needs_fixture
 def test_every_scan_point_optimization_converged():
-    """Each scan step is a constrained optimisation: 25 converged geoms."""
+    """Each scan step is a constrained optimisation: >= n_points converged
+    geometry blocks, none reported as not converged."""
     text = OUT_FILE.read_text()
     n_done = text.count("THE OPTIMIZATION HAS CONVERGED")
     n_done += text.count("OPTIMIZATION RUN DONE")
-    assert n_done >= 25, (
-        f"only {n_done} converged optimization blocks for 25 scan points")
+    assert n_done >= _scan_point_count(), (
+        f"only {n_done} converged optimization blocks for "
+        f"{_scan_point_count()} scan points")
     assert "OPTIMIZATION DID NOT CONVERGE" not in text
 
 
