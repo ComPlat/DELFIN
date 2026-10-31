@@ -33,6 +33,7 @@ Safety invariants (package HX1 brief):
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -64,6 +65,19 @@ def pick_weakest_family(
     """
     if not scores:
         raise ValueError("no family scores given")
+    # Reviewer F4: a NaN/None score is UNMEASURED data, not a family
+    # "at the ceiling" — refusing beats silently skipping (the skip
+    # manufactured a false LookupError claim about the data) and beats
+    # a TypeError from the comparison.
+    for fid, score in scores.items():
+        try:
+            bad = score is None or not math.isfinite(float(score))
+        except (TypeError, ValueError):
+            bad = True
+        if bad:
+            raise ValueError(
+                "family %r has a non-numeric score %r; refusing to pick "
+                "a target from unmeasured data" % (fid, score))
     headroom = [(score, fid) for fid, score in scores.items()
                 if score < ceiling]
     if not headroom:
@@ -84,9 +98,20 @@ def pick_weakest_family(
 #: is refused: the paper's edits are harness TEXT, not code (§2.2.1).
 ALLOWED_SUFFIXES = (".md", ".txt", ".rst")
 
-#: Protected paths are refused unconditionally: the safety frame and
-#: the chemistry core are read-only for the loop, and the knowledge
-#: tree is memory-poisoning surface that only the user approves.
+#: The enumerated ALLOWED ROOTS (reviewer F1/F2, round 1: the deny-list
+#: of suffix+markers let traversal and unrelated .md files through; an
+#: allow-list is the fix, not a longer deny-list).  A candidate target
+#: must be repo-relative, contain no "..", and live under one of these
+#: guidance directories.
+ALLOWED_ROOTS = (
+    "delfin/agent/pack/skills/",
+    "delfin/tools/guidance/",
+)
+
+#: Protected markers stay as a second, independent check on top of the
+#: allow-list (defence in depth; the roots above are already outside
+#: every protected tree, but a future root edit must not silently
+#: widen into one).
 PROTECTED_MARKERS = (
     "sandbox", "permission", "approval", "api_client", "engine.py",
     "benchmark_runner", "knowledge", "skill_safety", "skill_share",
@@ -120,7 +145,11 @@ def validate_candidate(candidate: Candidate) -> None:
 
     Refusals (all :class:`HarnessCandidateError`):
     * target not a guidance text file (code, data, notebooks);
-    * target under a protected path or the pack/knowledge tree;
+    * target not repo-relative, containing "..", absolute, or outside
+      the enumerated allowed guidance roots (allow-list — reviewer F1/F2);
+    * target under a protected path (independent second check);
+    * a no-op diff: empty or unchanged new_text (F3 — a zero-diff probe
+      burns budget for a guaranteed no-contrast);
     * no observation (the report must cite one for every decision);
     * kind not in ("invariant", "domain").
     """
@@ -129,6 +158,16 @@ def validate_candidate(candidate: Candidate) -> None:
         raise HarnessCandidateError(
             "candidate target %r is not a guidance text file "
             "(allowed suffixes: %s)" % (candidate.target, ALLOWED_SUFFIXES))
+    if candidate.target.startswith("/") or ".." in candidate.target.split("/"):
+        raise HarnessCandidateError(
+            "candidate target %r must be a repo-relative path without "
+            "traversal" % candidate.target)
+    if not any(candidate.target.startswith(root)
+               for root in ALLOWED_ROOTS):
+        raise HarnessCandidateError(
+            "candidate target %r is outside the allowed guidance roots "
+            "%s; the loop edits only enumerated guidance files"
+            % (candidate.target, ALLOWED_ROOTS))
     lowered = candidate.target.lower()
     for marker in PROTECTED_MARKERS:
         if marker in lowered:
@@ -136,6 +175,14 @@ def validate_candidate(candidate: Candidate) -> None:
                 "candidate target %r hits the protected marker %r; "
                 "the safety frame is not editable by the loop"
                 % (candidate.target, marker))
+    if not (candidate.new_text or "").strip():
+        raise HarnessCandidateError(
+            "candidate new_text is empty; a diff that changes nothing is "
+            "not an edit")
+    if candidate.new_text == candidate.old_text:
+        raise HarnessCandidateError(
+            "candidate is a no-op (old_text == new_text); probing a "
+            "zero-diff burns budget for a guaranteed no-contrast")
     if not (candidate.observation_task_id or "").strip():
         raise HarnessCandidateError(
             "candidate has no observation task id; every edit must cite "
@@ -188,6 +235,15 @@ def contrast_supported(
             "reference and probe must be paired per task "
             "(got %d tasks, %d reference, %d probe values)"
             % (len(task_ids), len(reference), len(probe)))
+    # Reviewer F5: a non-finite sample is an UNMEASURED value — letting
+    # it through would manufacture a clean-looking "no contrast" from
+    # nothing.  Refuse loudly.
+    for where, values in (("reference", reference), ("probe", probe)):
+        for value in values:
+            if not math.isfinite(float(value)):
+                raise ValueError(
+                    "non-finite %s quality %r; refusing to build a "
+                    "contrast from unmeasured data" % (where, value))
     per_task = [(tid, ref, pr, pr - ref)
                 for tid, ref, pr in zip(task_ids, reference, probe)]
     mean_gain = sum(gain for *_, gain in per_task) / len(per_task)
@@ -262,6 +318,13 @@ def run_round(config: RoundConfig, *, dry_run: bool) -> dict:
             "round estimated at %.2f USD exceeds the stated budget of "
             "%.2f USD; refusing to start" % (config.estimated_cost_usd,
                                              config.budget_usd))
+    # Reviewer F6: a round with no candidates is not a measured round —
+    # an empty report would present noise_band=None as if something was
+    # probed.  Refuse instead.
+    if not config.candidate_edits:
+        raise ValueError(
+            "no candidate edits given; a round without candidates is "
+            "not a measured round (report would carry noise_band=None)")
     composed = []
     no_contrast = []
     lessons = []
