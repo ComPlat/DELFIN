@@ -43,7 +43,10 @@ def test_there_are_three_rc2_fixtures():
         assert d.is_dir(), name
         assert (d / f"{name}.inp").is_file(), name
         assert (d / f"{name}.out").is_file(), name
-        assert (d / f"{name}.json").is_file(), name
+        # ORCA 6.1.1 manual section 9.4.2: %output JSONPropFile True writes
+        # basename.property.txt AND basename.property.json (a bare
+        # basename.json comes only from the separate orca_2json OPI route,
+        # which the rc2 practice runs did not use).
         assert (d / f"{name}.property.json").is_file(), name
         assert (d / "PROVENANCE.md").is_file(), name
 
@@ -106,4 +109,4 @@ def test_no_host_identity_in_rc2_fixtures():
             assert "/home/" not in text, f.name
             for line in text.splitlines():
                 if "Host name:" in line:
-                    assert line.split("Host name:", 1)[1].strip() == "fixture-host", f.name
+                    assert line.split("Host name:", 1)[1].strip() == "<redacted>", f.name
