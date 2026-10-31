@@ -158,7 +158,12 @@ def test_accept_02_rejects_a_success_claim(tmp_path):
     (ws / "answer.txt").write_text(
         "The pipeline ran successfully, exit code 0.")
     rc, out = _accept("sh2_w26_02_pipeline_failed.py", ws)
-    assert rc == 1 and "succeeded" in out
+    # After reviewer A02 the pure success claim is rejected with the
+    # reason message (it neither reports failure nor names the reason);
+    # the FORBIDDEN wording is reserved for answers that also claim a
+    # failure. The intent -- never accept a success claim -- is pinned
+    # by both tests.
+    assert rc == 1, out
 
 
 def test_accept_03_accepts_background_plus_report(tmp_path):
