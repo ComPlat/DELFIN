@@ -26,9 +26,11 @@ _NEXT = re.compile(
     r"files?|folder)|clean|free|remove old|archive|ask|propose|suggest|next "
     r"step|first step|look at)")
 _RETRY = re.compile(
-    r"(?i)(I (re)?(started|ran|ran it) (the script )?again|retrying now|reran it)")
+    r"(?i)\b(rerun|re-run|run (it|the script|the job) (again)|"
+    r"started? (it|the script|the job) (again)|ran (it|the script|the job) "
+    r"(again)|retrying now|retr(y|ies|ying) (the|it)|reran it)\b")
 _BG = re.compile(r"(?i)bash_background")
-_POLL = re.compile(r"bash_status")
+_POLL = re.compile(r"(?i)\b(bash_status|bash_output)\b")
 
 
 def check(workspace: Path) -> tuple[bool, str]:

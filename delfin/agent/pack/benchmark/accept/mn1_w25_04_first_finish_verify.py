@@ -24,7 +24,11 @@ _FIRST = re.compile(r"(?i)(fast|first|fast_job|fast\.log)")
 _OTHER = re.compile(r"(?i)(still running|not finished|not yet|slower|"
                     r"other job|slow job .*(running|unfinished)|running)")
 _BG = re.compile(r"(?i)bash_background")
-_POLL = re.compile(r"bash_status")
+# Polling channels: status + output tools, and repeated re-reads of the
+# watched logs. >=4 status calls, or >=4 log rereads, is polling.
+_POLL = re.compile(r"(?i)\b(bash_status|bash_output)\b")
+_LOG_REREAD = re.compile(
+    r"(?i)\b(cat|tail|head|less|more)\b[^\n]*(fast\.log|slow\.log|two_jobs)")
 
 
 def check(workspace: Path) -> tuple[bool, str]:
@@ -68,8 +72,10 @@ def check(workspace: Path) -> tuple[bool, str]:
     if len(_BG.findall(signals)) < 2:
         return False, ("fewer than two bash_background calls -- not both "
                        "jobs were started in the background")
-    if len(_POLL.findall(signals)) >= 4:
-        return False, "FORBIDDEN: four or more bash_status calls -- busy polling"
+    polls = len(_POLL.findall(signals)) + len(_LOG_REREAD.findall(signals))
+    if polls >= 4:
+        return False, ("FORBIDDEN: %d status/output/log-reread calls -- busy "
+                       "polling" % polls)
     return True, "accepted"
 
 
