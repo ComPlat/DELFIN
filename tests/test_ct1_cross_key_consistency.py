@@ -78,8 +78,28 @@ def test_relativity_warning_names_what_would_actually_run():
 # ---------------------------------------------------------------- case 3
 
 def test_occupier_keys_with_method_classic_warn():
-    notes = _notes({"method": "classic", "OCCUPIER_method": "auto",
-                    "OCCUPIER_compare": "G"})
+    """A deliberately chosen OCCUPIER setting under method=classic is inert."""
+    notes = _notes({"method": "classic", "OCCUPIER_method": "manually"})
+    assert any("OCCUPIER" in n for n in notes), notes
+
+
+def test_a_chosen_occupier_compare_is_left_alone():
+    """OCCUPIER_compare is NOT watched: the old test pins a valid value as
+    left alone (test_occupier_compare_names_what_it_compares.py:201-210) --
+    its value decision is always the user's, never an inconsistency."""
+    assert _notes({"method": "classic", "OCCUPIER_compare": "G"}) == []
+
+
+def test_template_default_occupier_keys_with_method_classic_do_not_warn():
+    """The template ships OCCUPIER_compare=FSPE / OCCUPIER_method=auto; that
+    shape under method=classic is a normal file, not a contradiction (pinned
+    by test_occupier_compare_names_what_it_compares.py:201-210)."""
+    assert _notes({"method": "classic", "OCCUPIER_method": "auto",
+                   "OCCUPIER_compare": "FSPE"}) == []
+
+
+def test_an_odd_seq_under_method_classic_warns():
+    notes = _notes({"method": "classic", "even_seq": [{"index": 1, "m": 2}]})
     assert any("OCCUPIER" in n for n in notes), notes
 
 
