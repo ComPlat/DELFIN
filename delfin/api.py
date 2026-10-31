@@ -3150,7 +3150,7 @@ def validate_orca_input(inp_text: str) -> list[ValidationIssue]:
 
     # --- Structural checks -----------------------------------------------
     from delfin.common.orca_input_checks import check_all
-    for _issue in check_all(inp_text):
+    for _issue in check_all(inp_text, use_probe=True):
         issues.append(ValidationIssue(
             severity=_issue.severity, code=_issue.code,
             message=_issue.message, suggestion=_issue.suggestion,
