@@ -74,8 +74,9 @@ workflow `tadf_xtb` comes before any TD-DFT chain:
 - **What it may claim**: rank/order only — S1 vs T1 order, sign and
   rough size of Delta E_ST, which candidate emitter is worth a
   production run. sTDA-xTB / sTD-DFT-xTB are screening methods
-  (Grimme, J. Chem. Phys. 138 (2013) 244104, DOI 10.1063/1.4809578;
-  typical errors a few tenths of an eV), NOT production methods.
+  (Grimme & Bannwarth, J. Chem. Phys. 145, 054103 (2016),
+  DOI 10.1063/1.4959605; typical errors a few tenths of an eV), NOT
+  production methods.
 - **What must be confirmed at a higher level**: absolute excitation
   energies, emission wavelengths (lambda_PL), and any rate derived
   from them — TD-DFT with a validated functional, or STEOM-CCSD /

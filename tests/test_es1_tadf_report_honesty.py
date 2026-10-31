@@ -1,8 +1,8 @@
 """The TADF-xTB report says what an xTB screening may claim.
 
 sTDA-xTB / sTD-DFT-xTB excitation energies and Delta E_ST values are
-screening estimates.  Grimme's sTDA-xTB paper (Grimme et al., J. Chem.
-Phys. 138 (2013) 244104, DOI 10.1063/1.4809578 — accuracy typically
+screening estimates.  Grimme & Bannwarth's sTDA-xTB paper (J. Chem.
+Phys. 145, 054103 (2016), DOI 10.1063/1.4959605 — accuracy typically
 ~0.5 eV for excitation energies; XTB-based screening, not a
 production method) and the sTD-DFT-xTB extension target ranking, not
 reference-grade numbers.  A referee accepts a TADF screening when the

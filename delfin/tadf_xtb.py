@@ -884,8 +884,8 @@ def _load_entries(
 def screening_note() -> str:
     """What an xTB screening may claim, and what confirms it.
 
-    sTDA-xTB (Grimme, J. Chem. Phys. 138 (2013) 244104, DOI
-    10.1063/1.4809578) and sTD-DFT-xTB are screening methods: typical
+    sTDA-xTB (Grimme & Bannwarth, J. Chem. Phys. 145, 054103 (2016),
+    DOI 10.1063/1.4959605) and sTD-DFT-xTB are screening methods: typical
     errors are a few tenths of an eV in excitation energies, so only the
     ranking (state order, sign and rough size of Delta E_ST) is a claim;
     absolute energies, emission wavelengths and any rate derived from
@@ -894,7 +894,7 @@ def screening_note() -> str:
     before they are quoted as results.
     """
     return (
-        "Screening estimate (sTDA-xTB / sTD-DFT-xTB, DOI 10.1063/1.4809578): "
+        "Screening estimate (sTDA-xTB / sTD-DFT-xTB, DOI 10.1063/1.4959605): "
         "rank/order only (S1 vs T1 order, sign of Delta E_ST); confirm at "
         "TD-DFT or STEOM-CCSD/SCS-double-hybrid level before quoting "
         "absolute energies, emission wavelengths or rates."

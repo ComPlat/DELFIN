@@ -77,3 +77,37 @@ def test_missing_required_setting_still_refused():
         wf.run(config=config, entry=_ENTRY, workdir=Path("wd"))
     assert "excited_method" in str(excinfo.value)
     assert "energy_window" in str(excinfo.value)
+
+
+def test_template_prefixed_keys_reach_the_workflow():
+    """The shipped template names these keys (delfin/define.py:269-275).
+
+    tadf_xTB_run_t1_opt=yes and tadf_xTB_bfw=no are what a user's
+    CONTROL.txt carries; before the fix cfg("run_t1_opt")/cfg("use_bfw")
+    never found them and the hard-coded defaults silently won.
+    """
+    config = {
+        "charge": 0,
+        "xTB_method": "XTB2",
+        "tadf_xTB_excited_method": "stda",
+        "tadf_xTB_energy_window": 10.0,
+        "tadf_xTB_run_t1_opt": "yes",
+        "tadf_xTB_bfw": "yes",
+        "tadf_xTB_preopt": "goat",
+        "PAL": 2,
+        "maxcore": 1000,
+    }
+    params = _run(config)
+    assert params["run_t1_opt"] is True
+    assert params["use_bfw"] is True
+    assert params["use_goat"] is True
+    assert params["use_crest"] is False
+    assert params["optimize_s0"] is False
+
+
+def test_unprefixed_aliases_still_work_for_template_keys():
+    params = _run(
+        {**_schema_named_config(), "run_t1_opt": True, "use_bfw": True}
+    )
+    assert params["run_t1_opt"] is True
+    assert params["use_bfw"] is True

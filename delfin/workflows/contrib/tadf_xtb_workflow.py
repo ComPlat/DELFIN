@@ -22,15 +22,24 @@ _REQUIRED_KEYS: tuple[str, ...] = (
 )
 
 # CONTROL.txt keys that map onto run_single_tadf_xtb parameters, with the
-# defaults ORCA's own tools use when CONTROL does not name them.
+# defaults the shipped CONTROL template carries when CONTROL does not
+# name them (delfin/define.py:269-275: tadf_xTB_preopt=none means
+# optimize_s0 False; tadf_xTB_run_t1_opt=yes is the template's default
+# and is looked up by its own name below, not hard-coded).
 _CONFIG_DEFAULTS: dict[str, Any] = {
-    "optimize_s0": True,
+    "optimize_s0": False,
     "use_bfw": False,
     "use_crest": False,
     "use_goat": False,
-    "run_t1_opt": False,
     "t1_multiplicity": 3,
 }
+
+
+def _yes_no(value: Any) -> bool:
+    """CONTROL yes/no strings and real booleans, both accepted."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("yes", "true", "1", "on")
 
 
 class TadfXtbWorkflow:
@@ -77,6 +86,31 @@ class TadfXtbWorkflow:
         )
         params["cores"] = kwargs.get("cores", cfg("PAL"))
         params["maxcore"] = kwargs.get("maxcore", cfg("maxcore"))
+        # Template-prefixed keys (delfin/define.py:273/:275) win over the
+        # hard-coded defaults; an explicit kwarg wins over both.  The
+        # preopt mode decides the geometry-preparation switches exactly
+        # as the pipeline does (pipeline.py:1021/:1035-1037): crest ->
+        # use_crest, goat -> use_goat, xtb -> optimize_s0, none -> none.
+        preopt = kwargs.get("preopt", cfg("tadf_xTB_preopt") or cfg("preopt"))
+        preopt = str(preopt).strip().lower() if preopt is not None else "none"
+        params["run_t1_opt"] = _yes_no(
+            kwargs.get(
+                "run_t1_opt",
+                cfg("tadf_xTB_run_t1_opt") or cfg("run_t1_opt") or False,
+            )
+        )
+        params["use_bfw"] = _yes_no(
+            kwargs.get("use_bfw", cfg("tadf_xTB_bfw") or cfg("use_bfw") or False)
+        )
+        params["use_crest"] = _yes_no(
+            kwargs.get("use_crest", preopt == "crest" or params["use_crest"])
+        )
+        params["use_goat"] = _yes_no(
+            kwargs.get("use_goat", preopt == "goat" or params["use_goat"])
+        )
+        params["optimize_s0"] = _yes_no(
+            kwargs.get("optimize_s0", preopt == "xtb" or params["optimize_s0"])
+        )
 
         # Entry / workdir are not CONTROL settings; they come from the caller.
         params["entry"] = kwargs.get("entry")
