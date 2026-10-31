@@ -73,12 +73,21 @@ def test_the_two_sanctioned_tools_ask_first():
                    "_execute_remember_permission_bundle"):
         i = src.find(f"def {anchor}")
         assert i > 0, anchor
-        body = src[i:i + 6000]
+        body = src[i:src.find("\n    def ", i + 10)]
         add = body.find("add_extra_dir(")
-        confirm = body.find("confirm_callback(")
+        # A widening asks through _confirm_widening (flagged, twice).
+        confirm = body.find("_confirm_widening(")
         assert confirm > 0, f"{anchor} does not ask"
         assert add < 0 or confirm < add, (
             f"{anchor} widens the sandbox before asking")
+
+
+def test_the_widening_question_asks_the_user():
+    src = (_ROOT / "delfin" / "agent" / "api_client.py").read_text(
+        encoding="utf-8")
+    i = src.find("def _confirm_widening(")
+    assert i > 0
+    assert "confirm_callback(" in src[i:i + 4000]
 
 
 def test_a_headless_session_cannot_be_talked_into_a_grant():

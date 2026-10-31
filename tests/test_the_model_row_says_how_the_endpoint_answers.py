@@ -115,3 +115,42 @@ def test_a_probe_cut_by_a_stop_posts_nothing():
     j = text.index("def _probe_endpoint_in_background(")
     body = text[j:j + 3500]
     assert 'getattr(getattr(engine, "client", None), "client", None) is not sdk' in body
+
+
+# --- a probe that failed says why, not "queueing" for every reason ---------
+#
+# Field report 2026-10-22 (KIT cluster): the KIT key had expired, every
+# request came back 401, and the dashboard said "no answer to a one-word
+# probe after 0 s (AuthenticationError). The endpoint is queueing." A
+# refused key is not a queue: the user has to sign in again, and waiting
+# never helps.
+
+import pytest as _pytest  # noqa: E402
+
+from delfin.agent import endpoint_probe as _EP  # noqa: E402
+
+
+@_pytest.mark.parametrize("error", ["AuthenticationError",
+                                    "PermissionDeniedError"])
+def test_a_refused_key_says_sign_in_again_not_queueing(error):
+    line = _EP.describe(_EP.ProbeResult("kit.deepseek-v4-flash", 0.1, False,
+                                        error))
+    assert "queueing" not in line
+    assert "key" in line and "sign in" in line
+
+
+def test_an_unreachable_endpoint_says_so():
+    line = _EP.describe(_EP.ProbeResult("m", 3.0, False,
+                                        "APIConnectionError"))
+    assert "queueing" not in line and "could not be reached" in line
+
+
+def test_an_unknown_model_says_so():
+    line = _EP.describe(_EP.ProbeResult("m", 0.2, False, "NotFoundError"))
+    assert "queueing" not in line and "does not serve" in line
+
+
+def test_a_timeout_still_reads_as_a_queue():
+    line = _EP.describe(_EP.ProbeResult("m", 60.0, False,
+                                        "APITimeoutError"))
+    assert "queueing" in line

@@ -3234,10 +3234,26 @@ class AgentEngine:
             # returned THIS turn. Kept apart from the ledger above because
             # the evidence has a different shape -- an ORCA output is text
             # a tool returned, not a result dict it filled in.
+            # The unit is the REQUEST, not the engine turn: a turn the
+            # harness starts (job or scheduled wake-up, auto mode, mail)
+            # continues the request the person last sent, and the final
+            # table it writes quotes what that request's earlier turns
+            # returned -- a literature value searched before the jobs were
+            # submitted. Such a turn gets the request's evidence back; the
+            # next message a person sends starts a fresh pool.
             try:
                 from . import verify_guard as _vg_numbers
-                _vg_numbers.reset_observed_numbers()
-                _vg_numbers.reset_keyed_values()
+                # Only inside the conversation that produced it: after
+                # reset_cycle cleared the history there is no request left
+                # to continue.
+                _carried = getattr(self, "_request_evidence", None)
+                if (isinstance(user_message, HarnessText) and _carried
+                        and self.messages):
+                    _vg_numbers.restore_evidence(_carried)
+                else:
+                    self._request_evidence = None
+                    _vg_numbers.reset_observed_numbers()
+                    _vg_numbers.reset_keyed_values()
             except Exception:
                 pass
 
@@ -3337,6 +3353,18 @@ class AgentEngine:
             self._stop_requested = False
             self._stop_owner_turn = None
         _turn_id = self._turn_id
+        # The step journal numbers its steps per turn, and the executor
+        # sees only the permissions object, so the turn travels on it. A
+        # fresh random key rather than _turn_serial: the serial restarts
+        # at 1 in every process, and a resumed session's first turn would
+        # read as the turn the crashed process was in.
+        try:
+            _kp = self.kit_permissions
+            if _kp is not None:
+                import uuid as _uuid
+                _kp.step_turn_key = _uuid.uuid4().hex
+        except Exception:
+            pass
 
         # This turn's delegated spend starts at zero, and every delegated
         # run from here is routed through a counter that knows which turn
@@ -3854,8 +3882,10 @@ class AgentEngine:
                     # rather than against the fact that something ran.
                     try:
                         from . import verify_guard as _vg_numbers
+                        # What the model was given, not the UI preview.
+                        _seen = str(getattr(event, "seen_text", "") or _out)
                         _vg_numbers.record_tool_numbers(
-                            _out,
+                            _seen,
                             truncated=bool(
                                 getattr(event, "output_truncated", False)))
                         # The same numbers, keyed by record and field, so
@@ -3870,7 +3900,10 @@ class AgentEngine:
                             if _pn == event.tool_name:
                                 _src = str(_pi)
                                 break
-                        _vg_numbers.record_keyed_values(_out, source=_src)
+                        _vg_numbers.record_keyed_values(_seen, source=_src)
+                        # Kept on the engine for the harness turns that
+                        # continue this request (see the turn start).
+                        self._request_evidence = _vg_numbers.evidence_state()
                     except Exception:
                         pass
                     # And whether the model saw the whole result. A count
@@ -4651,34 +4684,40 @@ class AgentEngine:
         return full_response + _guard_note
 
     def _note_session_language(self, user_message: str) -> None:
-        """Fix the session's language from the FIRST message that says one.
+        """Set the answer language from the user's latest message that says one.
 
-        The rule the user asked for, in their words: the language you start
-        writing in is the one the session runs in. It is stronger than
-        "the language of the latest message" for the case that actually
-        hurt — a long unattended run where the answer arrives minutes
-        later — because it can be STATED UP FRONT rather than checked
-        afterwards.
+        Input: one turn's message. A message the user typed that
+        ``detect_language`` can place (three function words of one
+        language, twice the other's; three words at least) sets the
+        language -- the first such message and every later one. A message
+        it cannot place ("ok", "hi", "ja mach das") keeps the current one,
+        and so does a turn the system starts (HarnessText: a finished job,
+        a wake-up, a message from another session), so a long unattended
+        run does not drift.
 
-        Set once. A later message in another language does not move it;
-        that is the point of a session language, and it is what stops an
-        English run drifting German halfway through.
+        Decided by the user on 2026-10-22, replacing "the first message
+        sets it for good": in a field session the first long message was
+        an English task, the user then asked "was kannst du?" in German,
+        and the model, told English by the pin and asked in German, wrote
+        both. A change of language changes the system prompt once, and
+        that turn's prompt is not served from the cache.
         """
-        if getattr(self, "_session_language", ""):
-            return
+        try:
+            from .harness_rows import HarnessText as _HT
+            if isinstance(user_message, _HT):
+                return                  # the system talking, not the user
+        except Exception:
+            pass
         text = str(user_message or "")
-        if text.lstrip().startswith(("[Verify]", "[Message from the session")):
+        if text.lstrip().startswith(("[Verify]", "[Message from the session",
+                                     "[watch", "[auto")):
             return                      # the harness talking, always English
         try:
             from . import verify_guard as _vg
-            # A lower floor than the answer-judging default: see
-            # detect_language. The question here is which language the
-            # user opened in, and the hit-count and margin rules already
-            # refuse a fragment.
-            # Five words: "kannst du die tabelle prüfen?" is five, and the
-            # three-hit, two-to-one rule below is what keeps a fragment
-            # from pinning anything.
-            found = _vg.detect_language(text, min_words=5)
+            # Three words: "was kannst du?" and "what can you do?" are
+            # placed; "ok danke" and "ja mach das" are not, and the
+            # three-hit, two-to-one rule keeps a fragment from moving it.
+            found = _vg.detect_language(text, min_words=3)
         except Exception:
             found = ""
         if found:
@@ -4707,13 +4746,14 @@ class AgentEngine:
         if not name:
             return ""
         return (
-            f"SESSION LANGUAGE: {name}. Every answer in this session is "
-            f"written in {name} — the first message set it, and a later "
-            f"message in another language does not change it. It outranks "
-            f"a remembered language preference and any rule about the "
-            f"latest message. This covers what you SAY. What goes into "
-            f"code is English either way: comments, docstrings, "
-            f"identifiers, log and error strings."
+            f"SESSION LANGUAGE: {name}. Answer in {name} — the language "
+            f"of the user's latest message that says one; a turn the "
+            f"system starts (a finished job, a wake-up) keeps it. One "
+            f"answer is in one language: never the same text twice in two "
+            f"languages. It outranks a remembered language preference. "
+            f"This covers what you SAY. What goes into code is English "
+            f"either way: comments, docstrings, identifiers, log and error "
+            f"strings."
         )
 
     def _nudge_language_if_wrong(self, chunks) -> None:
@@ -7548,9 +7588,19 @@ class AgentEngine:
         # silent — an empty id is not an error, it is the unscoped bucket.
         # Anything that does not declare the capability exactly gets an id,
         # which is the safe direction.
-        if getattr(self.client, "supplies_session_id", False) is True:
-            return ""
         import uuid as _u
+        if getattr(self.client, "supplies_session_id", False) is True:
+            # One that can be told the id of a conversation not begun yet
+            # (the Claude CLI: --session-id) gets it now: a service session
+            # needs its id before the first turn, it keys the event log.
+            # It must be a UUID in its canonical form there.
+            sid = str(_u.uuid4())
+            try:
+                if self.client.preset_session_id(sid) is True:
+                    return sid
+            except Exception:
+                pass
+            return ""
         return _u.uuid4().hex
 
     def _sync_task_session(self) -> None:
@@ -8767,6 +8817,12 @@ class AgentEngine:
         # as a lesson from the user's past. Found in the user's real
         # history on 2026-09-11.
         if str(user_task or "").lstrip().startswith("[Verify]"):
+            return {}
+        # A turn the provider refused before any work (an expired key, no
+        # connection, an unknown model) says nothing about the task; see
+        # outcome_tracker.NOT_A_TASK_ERRORS.
+        from delfin.agent.outcome_tracker import is_task_outcome
+        if not is_task_outcome(error_type):
             return {}
         duration = 0.0
         if start_time:

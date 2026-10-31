@@ -300,6 +300,12 @@ def test_a_session_nobody_kept_ends_and_stays_ended(server):
             assert pid, f"no process found for kernel {kid}"
             # Nothing to arm: the server counts this window itself.
             page.wait_for_timeout(2_000)
+            # Left the way a person leaves: the page unloads and says so
+            # (window_close's pagehide beacon). browser.close() alone skips
+            # the unload, and the server rightly reads that as a dropped
+            # connection, which is given far longer (DROPPED_SECONDS).
+            page.goto("about:blank", wait_until="domcontentloaded")
+            time.sleep(3)
         finally:
             browser.close()
 
@@ -351,15 +357,19 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             assert goodbye_status in (200, 204), f"the goodbye was not accepted: HTTP {goodbye_status}"
             page.goto("about:blank", wait_until="domcontentloaded")
             time.sleep(3)
+            # What the browser keeps when its window closes: the login
+            # cookie. The return address carries no token (45b0f0f4); the
+            # browser that opened the dashboard is the one that comes back.
+            signed_in = page.context.storage_state()
         finally:
             browser.close()
 
         assert "Kept as" in note, f"the dot does not say it is kept: {note!r}"
         assert resume.startswith("http"), f"the dot links nowhere: {resume!r}"
 
-        # The return address is behind the same token as the dashboard:
-        # without it nobody gets in, with it only the person who started
-        # the server. A name alone opens nothing.
+        # The return address is behind the same login as the dashboard:
+        # without the browser's login cookie (or the token) nobody gets
+        # in. A name alone opens nothing.
         import re as _re
         naked = _re.sub(r"([?&])token=[^&]*&?", r"\1", resume).rstrip("?&")
         assert "token=" not in naked
@@ -398,7 +408,7 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
         # And the address comes back INTO that kernel: no new one appears.
         listed_before_resume = {k["id"] for k in _kernels(root)}
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        page = browser.new_context(storage_state=signed_in).new_page()
         errors: list = []
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}")

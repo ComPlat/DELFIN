@@ -569,3 +569,60 @@ def test_the_reference_really_differs_on_the_stdin_form():
     cmd = "python3 - <<'EOF'\nprint(1)\nEOF"
     assert not _was_an_interpreter_invocation(cmd)
     assert A._is_interpreter_invocation(cmd)
+
+
+# ---------------------------------------------------------------------------
+# A heredoc body is never scanned as shell arguments of its command
+# ---------------------------------------------------------------------------
+#
+# _bash_outside_reads treats every word of a segment as a potential read.
+# When the heredoc body was shlex-split with the command line, a string
+# in the program was asked about as an outside-workspace read: a body
+# carrying `'/agent'` produced a read of the nonexistent /agent, and one
+# carrying `'/'` produced a read of the filesystem root -- approving the
+# second would have opened the whole filesystem for the session. The body
+# is DATA (program text or file content), never the outer command's
+# arguments, so nothing inside it may be scanned. The real arguments the
+# interpreter is told on its own command line are still reads.
+
+def test_a_body_string_is_not_a_read_of_the_outer_command():
+    cmd = "cd /tmp && python - <<'PY'\nimport os\nx = '/agent'\nprint(os.getcwd())\nPY"
+    reads = A._bash_outside_reads(cmd)
+    assert "/agent" not in reads, reads
+
+
+def test_a_body_slash_is_not_the_filesystem_root():
+    cmd = "python - <<'PY'\nimport os\nroot = '/'\nPY"
+    reads = A._bash_outside_reads(cmd)
+    assert "/" not in reads, reads
+
+
+def test_a_computation_no_longer_asks_about_a_body_fragment(ws):
+    """The real report: `python - <<'PY' … /agent … PY` asked for an
+    outside read of the nonexistent /agent. That is DATA in the program,
+    not a file the outer command reads, so it must not be asked about."""
+    cmd = "python3 - <<'PY'\nimport os\nx = '/agent'\nprint(os.getcwd())\nPY"
+    out = _run(ws, cmd, grant=True)
+    assert "error" not in out, out
+
+
+def test_a_real_legit_cd_target_is_still_read(ws):
+    """The `cd /tmp` part is the command's own business, not the body."""
+    cmd = "cd /xorg/agent && python - <<'PY'\nimport os\nprint(os.getcwd())\nPY"
+    assert A._bash_outside_reads(cmd) == ["/xorg/agent"]
+
+
+@pytest.mark.parametrize("cmd,path", [
+    ("python /outside/script.py", "/outside/script.py"),
+    ("cat /outside/x", "/outside/x"),
+    ("bash -c 'cat /outside/x'", "/outside/x"),
+])
+def test_a_real_argument_off_the_command_line_is_still_a_read(cmd, path):
+    assert path in A._bash_outside_reads(cmd), cmd
+
+
+def test_a_heredoc_between_other_segments_keeps_the_rest_scanned():
+    cmd = ("python - <<'PY'\nimport os\nPY\n"
+           "cat /outside/after.py")
+    reads = A._bash_outside_reads(cmd)
+    assert "/outside/after.py" in reads, reads

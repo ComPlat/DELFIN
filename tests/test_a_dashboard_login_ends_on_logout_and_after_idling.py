@@ -198,8 +198,21 @@ def _set_cookies(headers) -> dict:
     return jar
 
 
+def _runtime_of(base: Path) -> Path:
+    """The server's XDG runtime directory: short and private, so the
+    launcher keeps its kernels and login store in it instead of falling
+    back to the user's own /tmp/delfin-k-<uid> (a pytest path is too
+    long for a Unix socket). The same for every start of one server, as
+    a restart must find the logins it kept."""
+    import hashlib
+    import tempfile
+    tag = hashlib.sha256(str(base).encode()).hexdigest()[:10]
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    return Path(root) / f"dl-{tag}"
+
+
 def _start(base: Path, port: int):
-    runtime = base / "runtime"
+    runtime = _runtime_of(base)
     root = base / "root"
     for directory in (runtime, root):
         directory.mkdir(exist_ok=True)
@@ -262,6 +275,8 @@ def server(tmp_path_factory):
         yield state
     finally:
         _stop(state["proc"])
+        import shutil
+        shutil.rmtree(_runtime_of(base), ignore_errors=True)
 
 
 def _login(port) -> str:
@@ -336,7 +351,8 @@ def test_a_restart_keeps_a_login_and_keeps_a_logout(server):
 def test_the_session_store_on_the_host_is_owner_only(server):
     _login(server["port"])
     # jupyter-server's runtime directory, below the child's HOME.
-    stores = list(server["base"].rglob(login_session.STORE_PREFIX + "*"))
+    stores = [p for d in (server["base"], _runtime_of(server["base"]))
+              for p in d.rglob(login_session.STORE_PREFIX + "*")]
     assert stores, sorted(str(p) for p in server["base"].rglob("*runtime*"))
     for path in stores:
         assert stat.S_IMODE(path.stat().st_mode) == 0o600, path

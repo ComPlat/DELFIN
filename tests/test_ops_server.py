@@ -2352,6 +2352,7 @@ def test_tool_list_calc_options_out_set():
     assert data["file_type"] == "out"
     assert "MO Plot" in data["options"]
     assert "Print NMR" in data["options"]
+    assert "Spin Density" in data["options"]
 
 
 def test_tool_list_calc_options_occupier():

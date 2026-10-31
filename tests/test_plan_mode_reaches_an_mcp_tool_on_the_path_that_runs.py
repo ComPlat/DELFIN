@@ -55,12 +55,13 @@ def test_investigating_through_a_server_still_works(tmp_path, tool):
     assert _doc_executor._gate_mcp_tool(tool, {}, perms) is None, tool
 
 
-def test_a_dry_run_is_still_a_dry_run(tmp_path):
-    """The same exemption the native check makes: check_only changes
-    nothing, so plan mode has no reason to refuse it."""
+def test_a_dry_run_flag_does_not_open_plan_mode(tmp_path):
+    """check_only is a dry run only where the executor performs one (the
+    native apply_patch); an MCP server may drop the key and run the call."""
     perms = KitToolPermissions(workspace=tmp_path, mode="plan")
     assert _doc_executor._gate_mcp_tool(
-        "mcp__github__create_pull_request", {"check_only": True}, perms) is None
+        "mcp__github__create_pull_request", {"check_only": True},
+        perms) is not None
 
 
 @pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions"])

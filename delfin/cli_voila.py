@@ -13,11 +13,14 @@ import importlib.util
 import importlib.resources
 import ipaddress
 import os
+import re
 import socket
 import shutil
+import stat
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -557,15 +560,116 @@ def _kernel_transport_args() -> list:
     except Exception:
         limit = 0
     limit = limit or (103 if sys.platform == "darwin" else 107)
-    longest = len(os.fsencode(runtime)) + len("/kernel-") + 36 + len("-ipc-") + 5
-    if longest > limit:
+
+    def fits(path: str) -> bool:
+        longest = (len(os.fsencode(path)) + len("/kernel-") + 36
+                   + len("-ipc-") + 5)
+        return longest <= limit
+
+    if fits(runtime) and _is_private_dir(runtime):
+        return ["--KernelManager.transport=ipc"]
+    moved = _private_runtime_dir(fits)
+    if moved is None:
         print(f"Note: kernels talk over loopback TCP, which other users of "
-              f"this machine can reach: the socket path under {runtime} "
-              f"would be {longest} bytes, more than the {limit} a Unix "
-              "socket allows. Set JUPYTER_RUNTIME_DIR to a short private "
-              "directory (mode 0700) to keep them private.", file=sys.stderr)
+              f"this machine can reach: {runtime} is too long for a Unix "
+              "socket or readable by others, and neither $XDG_RUNTIME_DIR "
+              "nor /tmp gave a private directory. Set JUPYTER_RUNTIME_DIR "
+              "to a short private directory (mode 0700) to keep them "
+              "private.", file=sys.stderr)
         return []
+    # Read by the server, which is started with this process's
+    # environment (main() copies it into the server's env).
+    os.environ["JUPYTER_RUNTIME_DIR"] = moved
+    print(f"Kernels use private sockets under {moved} (the default "
+          f"runtime directory is too long for a socket or not private).",
+          file=sys.stderr)
     return ["--KernelManager.transport=ipc"]
+
+
+def _is_private_dir(path: str) -> bool:
+    """A directory, not a symlink, owned by this user, no group or other
+    permissions: where connection files (the kernels' keys) and sockets
+    may live."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
+            and not st.st_mode & 0o077)
+
+
+#: Where the fixed and the one-off runtime directories are made: short on
+#: every Unix, unlike $TMPDIR on macOS (/var/folders/...).
+#: ``DELFIN_PRIVATE_TMP`` replaces it (the test suite points it at a
+#: directory of its own, so no test server writes the user's real
+#: /tmp/delfin-k-<uid>); the same checks apply to it.
+_TMP_ROOT = "/tmp"
+PRIVATE_TMP_ENV = "DELFIN_PRIVATE_TMP"
+
+
+def _private_runtime_dir(fits) -> str | None:
+    """A short private directory for the kernels' connection files and
+    sockets, or None.
+
+    In order:
+    - ``$XDG_RUNTIME_DIR/delfin-jupyter`` when ``$XDG_RUNTIME_DIR`` is this
+      user's private directory (on Linux a tmpfs per login, mode 0700);
+    - ``/tmp/delfin-k-<uid>``, made 0700 by this user. It is the same
+      directory on every start, which the login store in it needs: a
+      restart keeps the logins (a fresh directory per start ended them);
+    - a new directory from ``mkdtemp`` under /tmp, made 0700 with a name
+      nobody can take first, removed when this process exits; only when
+      the fixed name exists and is not this user's private directory.
+    Every candidate is checked after it exists: a symlink, another owner
+    or open permissions is refused, not repaired.
+
+    The rules are the established ones for a per-user socket directory:
+    the XDG Base Directory Specification's runtime directory (owned by the
+    user, mode 0700), and in a shared /tmp the pattern tmux and ssh-agent
+    use (a fixed per-user name, accepted only when it is the user's own
+    0700 directory and not a symlink; CWE-377/CWE-379). /tmp itself must
+    carry the sticky bit or belong to the user: without it, any user
+    could rename or replace a directory in it, so neither the fixed name
+    nor a mkdtemp directory is used there.
+    """
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg and _is_private_dir(xdg):
+        candidate = os.path.join(xdg, "delfin-jupyter")
+        try:
+            os.mkdir(candidate, 0o700)
+        except FileExistsError:
+            pass
+        except OSError:
+            candidate = ""
+        if candidate and _is_private_dir(candidate) and fits(candidate):
+            return candidate
+    root = os.environ.get(PRIVATE_TMP_ENV, "").strip() or _TMP_ROOT
+    base = root if os.path.isdir(root) else tempfile.gettempdir()
+    try:
+        bst = os.lstat(base)
+    except OSError:
+        return None
+    if not (stat.S_ISDIR(bst.st_mode)
+            and (bst.st_mode & stat.S_ISVTX or bst.st_uid == os.getuid())):
+        return None
+    fixed = os.path.join(base, f"delfin-k-{os.getuid()}")
+    try:
+        os.mkdir(fixed, 0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        fixed = ""
+    if fixed and _is_private_dir(fixed) and fits(fixed):
+        return fixed
+    try:
+        made = tempfile.mkdtemp(prefix="delfin-k-", dir=base)
+    except OSError:
+        return None
+    if not (_is_private_dir(made) and fits(made)):
+        shutil.rmtree(made, ignore_errors=True)
+        return None
+    atexit.register(shutil.rmtree, made, True)
+    return made
 
 
 def _file_allowlist() -> str:
@@ -708,6 +812,17 @@ _BENIGN_STDERR_SUBSTRINGS = (
 )
 
 
+#: A server warning with no text: jupyter_server logs ``str(e)`` of the
+#: ``WebSocketClosedError`` raised for each kernel message that reaches a
+#: browser connection which has closed, and that exception has no text.
+_EMPTY_WARNING_RE = re.compile(rb"^(\[W [^\]]*\])\s*$")
+
+_CLOSED_CONNECTION_NOTE = (
+    b" kernel output reached a browser connection that had closed (page "
+    b"reloaded, tab closed or connection lost); repeats directly after "
+    b"it are not shown\n")
+
+
 def _forward_filtered_stderr(stream) -> None:
     """Forward the child's stderr to ours, dropping only benign noise lines.
 
@@ -716,11 +831,23 @@ def _forward_filtered_stderr(stream) -> None:
     hidden (fail-loud preserved). A ``warnings.warn`` header is printed with an
     indented source snippet on the next line; that snippet is dropped too when
     its header was dropped.
+
+    A run of warnings without text (``_EMPTY_WARNING_RE``) is printed once,
+    with what it means, instead of one empty header per kernel message.
     """
     drop_indented_continuation = False
+    in_empty_run = False
     out = getattr(sys.stderr, "buffer", None)
     try:
         for raw in iter(stream.readline, b""):
+            empty = _EMPTY_WARNING_RE.match(raw)
+            if empty:
+                if in_empty_run:
+                    continue
+                in_empty_run = True
+                raw = empty.group(1) + _CLOSED_CONNECTION_NOTE
+            else:
+                in_empty_run = False
             text = raw.decode("utf-8", "replace")
             if drop_indented_continuation and text[:1].isspace():
                 drop_indented_continuation = False
@@ -799,12 +926,14 @@ def main(argv=None):
         help="Fail if the requested port is occupied instead of choosing another (SSH launchers).",
     )
     parser.add_argument(
-        "--claude-terminal",
-        action="store_true",
+        "--agent-terminal",
+        metavar="COMMAND",
+        default="",
         help=(
-            "Offer the Claude Code CLI in a terminal panel of the Agent tab. "
-            "Loopback only; the terminal runs the claude command and nothing "
-            "else."
+            "Offer COMMAND (a coding-agent CLI, by name on PATH or as a "
+            "path) in a terminal panel of the Agent tab. Loopback only; the "
+            "terminal runs that program and nothing else, and never a shell "
+            "or an interpreter."
         ),
     )
     parser.add_argument(
@@ -971,25 +1100,31 @@ def main(argv=None):
         )
         sys.exit(2)
 
-    # -- Claude terminal (opt-in) ---------------------------------------------
+    # -- Agent terminal (opt-in) ----------------------------------------------
     # A terminal is a process under the user's account, outside the agent's
     # sandbox. Only on a loopback bind -- never with --allow-remote-bind --
-    # and only when the CLI exists: no command, no terminal, never a shell.
-    _claude_argv: list[str] = []
-    if args.claude_terminal:
+    # only when the program exists, and never a shell or an interpreter
+    # (agent_terminal.refusal): no command, no terminal.
+    _term_argv: list[str] = []
+    if args.agent_terminal:
+        from delfin.dashboard import agent_terminal as _at
         if not _is_loopback_bind(args.ip):
-            print("Error: --claude-terminal is only offered on a loopback "
+            print("Error: --agent-terminal is only offered on a loopback "
                   f"bind, not on {args.ip}.", file=sys.stderr)
             sys.exit(2)
-        _claude = shutil.which("claude") or next(
-            (str(p) for p in (Path.home() / ".local/bin/claude",
-                              Path.home() / ".claude/local/claude")
-             if p.is_file() and os.access(p, os.X_OK)), "")
-        if not _claude:
-            print("Error: --claude-terminal needs the claude command on PATH "
-                  "(or in ~/.local/bin).", file=sys.stderr)
+        _wanted = os.path.expanduser(args.agent_terminal)
+        _found = (_wanted if os.path.isfile(_wanted)
+                  and os.access(_wanted, os.X_OK) else shutil.which(_wanted))
+        if not _found:
+            print(f"Error: --agent-terminal: {args.agent_terminal!r} is not "
+                  "an executable on PATH or a path to one.", file=sys.stderr)
             sys.exit(2)
-        _claude_argv = [os.path.abspath(_claude)]
+        _found = os.path.realpath(os.path.abspath(_found))
+        _why = _at.refusal(_found) or _at.refusal(args.agent_terminal)
+        if _why:
+            print(f"Error: --agent-terminal: {_why}.", file=sys.stderr)
+            sys.exit(2)
+        _term_argv = [_found]
 
     # -- Token-based authentication ----------------------------------------
     # Auto-generate a token by default. On shared multi-user hosts (HPC login
@@ -1106,17 +1241,17 @@ def main(argv=None):
     _extensions = (
         "{'voila': True, 'jupyterlab': False, 'notebook': False, "
         "'jupyter_lsp': False, 'jupyter_server_terminals': "
-        + ("True" if _claude_argv else "False") + ", "
+        + ("True" if _term_argv else "False") + ", "
         "'delfin.dashboard.server_guard': True}"
     )
-    if _claude_argv:
+    if _term_argv:
         import json as _json
-        from delfin.dashboard import claude_terminal as _ct
-        env[_ct.ARGV_ENV] = _json.dumps(_claude_argv)
+        from delfin.dashboard import agent_terminal as _ct
+        env[_ct.ARGV_ENV] = _json.dumps(_term_argv)
         env[_ct.CWD_ENV] = os.environ.get("DELFIN_LAUNCH_CWD") or os.getcwd()
         env[_ct.ENABLED_ENV] = "1"
     else:
-        env.pop("DELFIN_CLAUDE_TERMINAL", None)
+        env.pop("DELFIN_AGENT_TERMINAL", None)
     import json
 
     from delfin.dashboard.web_security import NO_TYPESETTING_ROUTE
@@ -1179,13 +1314,14 @@ def main(argv=None):
         "--VoilaConfiguration.file_allowlist=" + _file_allowlist(),
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
-        # Shrink the RCE surface: no server terminals, unless the Claude
+        # Shrink the RCE surface: no server terminals, unless the agent
         # terminal was asked for -- and then only through the manager that
-        # runs the claude command and nothing else (claude_terminal.py).
+        # runs the one configured program and nothing else
+        # (agent_terminal.py).
         *(["--ServerApp.terminals_enabled=True",
             "--TerminalsExtensionApp.terminal_manager_class="
-            "delfin.dashboard.claude_terminal.ClaudeOnlyTerminalManager"]
-          if _claude_argv else ["--ServerApp.terminals_enabled=False"]),
+            "delfin.dashboard.agent_terminal.OneCommandTerminalManager"]
+          if _term_argv else ["--ServerApp.terminals_enabled=False"]),
         # Ctrl+C stops immediately instead of prompting "Shut down (y/[n])?".
         "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",
@@ -1374,6 +1510,11 @@ def main(argv=None):
     # daemons watch it, and what runs detached is on its ledger.
     from delfin.agent import lifeline as _lifeline
     env.update(_lifeline.claim_root())
+    # The private runtime directory _kernel_transport_args chose, when the
+    # default one was too long for a socket or not private: env was copied
+    # from os.environ before the choice was made.
+    if os.environ.get("JUPYTER_RUNTIME_DIR"):
+        env["JUPYTER_RUNTIME_DIR"] = os.environ["JUPYTER_RUNTIME_DIR"]
     proc = subprocess.Popen(
         cmd, env=env, stderr=subprocess.PIPE,
         preexec_fn=_lifeline.parent_death_signal if os.name == "posix" else None,

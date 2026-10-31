@@ -60,7 +60,10 @@ class MorfeusConeAngleAdapter(_MorfeusBase):
     description = "Cone angle via morfeus-ml"
     params = (ParamSpec("metal_index", "int", required=True,
                         description="0-based index of the metal centre"),)
-    data_keys = (DataKeySpec("cone_angle", "float", "deg", "Tolman cone angle"),)
+    data_keys = (DataKeySpec("cone_angle", "float", "deg",
+                             "Exact ligand cone angle (0-360 deg, "
+                             "Bilbrey/Allen 2013; can exceed 180 deg for "
+                             "ligands wrapping past a hemisphere)"),)
 
     def execute(self, work_dir: Path, *, geometry: Optional[Path] = None, cores: int = 1, **kwargs: Any) -> StepResult:
         start = time.monotonic()

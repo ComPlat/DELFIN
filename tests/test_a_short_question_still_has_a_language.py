@@ -34,7 +34,10 @@ def test_the_answer_judge_keeps_its_own_higher_floor():
     assert vg.detect_language("kannst du die tabelle prüfen?") == ""
 
 
-def test_the_session_pin_reads_five_words(tmp_path):
+def test_the_session_pin_reads_three_words(tmp_path):
+    # Five until 2026-10-22; three since the language follows the user's
+    # latest message, so "was kannst du?" is placed (see
+    # tests/test_the_session_language_follows_the_user.py).
     import inspect
     src = inspect.getsource(AgentEngine._note_session_language)
-    assert "min_words=5" in src and "min_words=8" not in src
+    assert "min_words=3" in src and "min_words=5" not in src

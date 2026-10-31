@@ -32,6 +32,7 @@ from pathlib import Path
 __all__ = [
     "CheckResult",
     "check_orca",
+    "check_opi",
     "check_xtb",
     "check_openmpi",
     "check_scratch_dir",
@@ -152,6 +153,29 @@ def check_orca() -> CheckResult:
         "install ORCA or add its bin directory to PATH "
         "(e.g. module load chem/orca), or set ORCA_BINARY",
     )
+
+
+#: The OPI version every DELFIN installation carries (the ``orca`` extra
+#: pins the same; tests/test_opi_is_the_same_everywhere.py).
+OPI_VERSION = "2.0.0"
+
+
+def check_opi() -> CheckResult:
+    """ORCA's Python interface, in the one version DELFIN pins.
+
+    Not installed is "missing" (DELFIN still reads ORCA's text output);
+    another version is "broken": it may build an input or read an output
+    differently from every other host."""
+    from importlib import metadata
+    hint = f'pip install "delfin-complat[orca]"  (orca-pi=={OPI_VERSION})'
+    try:
+        found = metadata.version("orca-pi")
+    except metadata.PackageNotFoundError:
+        return CheckResult("opi", MISSING, "OPI (orca-pi) is not installed", hint)
+    if found != OPI_VERSION:
+        return CheckResult("opi", BROKEN,
+                           f"OPI {found} is installed; DELFIN uses {OPI_VERSION}", hint)
+    return CheckResult("opi", OK, f"OPI {found}")
 
 
 def check_xtb() -> CheckResult:
@@ -398,6 +422,7 @@ def run_all(scratch_dir: str | os.PathLike | None = None) -> list[CheckResult]:
     """
     checks = [
         check_orca,
+        check_opi,
         check_xtb,
         check_openmpi,
         lambda: check_scratch_dir(scratch_dir),

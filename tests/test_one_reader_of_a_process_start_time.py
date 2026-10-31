@@ -119,3 +119,25 @@ def test_a_command_name_with_a_space_does_not_shift_the_field(tmp_path):
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+def test_an_exited_child_is_dead_before_its_parent_reaps_it():
+    """A zombie still has a PID/start time, but cannot serve a preview port."""
+    import sys
+    if not pathlib.Path('/proc/self/stat').exists():
+        pytest.skip('Linux process state required')
+    proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(.1)'])
+    try:
+        fingerprint = proc_identity.process_start(proc.pid)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            stat = pathlib.Path(f'/proc/{proc.pid}/stat').read_text()
+            if stat[stat.rindex(')') + 1:].split()[0] == 'Z':
+                break
+            time.sleep(.01)
+        else:
+            pytest.fail('child never exited')
+        # Do not call poll/wait before the assertion: that hides the bug.
+        assert proc_identity.alive(proc.pid, fingerprint) is False
+    finally:
+        proc.wait(timeout=5)
