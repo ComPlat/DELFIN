@@ -1,8 +1,10 @@
-"""Round-2 adversarial probes against the builder's FIX commit 5bc150e45.
+"""Round-2 adversarial battery against the builder's FIX commit 5bc150e45.
 
-The first battery found the holes; this one attacks the fix's own
-surface: the broadened _POLL/_RETRY/_PROBE regexes and the clean
-non-dict refusal. Green here means the fix holds; red is a new finding.
+The first battery (test_mn1_adversarial_review.py) found the holes;
+this one attacks the fix's own surface: the broadened _POLL/_RETRY/
+_PROBE regexes and the clean non-dict refusal. Green here means the
+fix holds; red is a new finding. (Was committed as test_zz_* by
+mistake; re-homed under its proper name, same 4 cases.)
 """
 from __future__ import annotations
 
