@@ -19,7 +19,15 @@ import pytest
 from delfin.imag import collect_imaginary_modes
 from delfin.orca_read import Quantity, read
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from test_lc1_fixtures_helper import lc1_fixture_dir
+
+
+def _fixtures(name: str):
+    """The specific orca611 subfolder: legacy path while its files are
+    committed, else the private store (skip without the env var)."""
+    return lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
 
 # name -> (charge, multiplicity)
 SYSTEMS = {
@@ -32,14 +40,14 @@ SYSTEMS = {
 def fixture_copy(name: str, tmp_path: Path) -> Path:
     dst = tmp_path / name
     dst.mkdir(parents=True, exist_ok=True)
-    for src in (FIXTURES / name).iterdir():
+    for src in _fixtures(name).iterdir():
         (dst / src.name).write_bytes(src.read_bytes())
     return dst
 
 
 def test_there_are_three_rc2_fixtures():
     for name in SYSTEMS:
-        d = FIXTURES / name
+        d = _fixtures(name)
         assert d.is_dir(), name
         assert (d / f"{name}.inp").is_file(), name
         assert (d / f"{name}.out").is_file(), name
@@ -102,7 +110,7 @@ def test_final_energy_present(name, tmp_path):
 
 def test_no_host_identity_in_rc2_fixtures():
     for name in SYSTEMS:
-        for f in sorted((FIXTURES / name).rglob("*")):
+        for f in sorted(_fixtures(name).rglob("*")):
             if not f.is_file() or f.suffix == ".gbw":
                 continue
             text = f.read_text(errors="replace")
