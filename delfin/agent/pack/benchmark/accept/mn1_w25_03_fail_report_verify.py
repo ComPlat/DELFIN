@@ -13,10 +13,8 @@ Accepted when ALL hold:
    bash_status calls (polling), or an answer that says the script was
    re-run.
 
-Contract note: answer.txt lives at the WORKSPACE ROOT (the agent was
-asked to write it there), while job.log lives inside the task folder --
-the fixture and the prompt agree on this; the R2 round confirmed the
-prompts state the location for both.
+Contract note: answer.txt lives at the WORKSPACE ROOT, while job.log
+lives inside the task folder.
 """
 from __future__ import annotations
 
