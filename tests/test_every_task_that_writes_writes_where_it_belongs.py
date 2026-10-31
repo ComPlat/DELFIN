@@ -374,8 +374,13 @@ def test_the_counts_still_match_what_was_measured():
     # on proposal.json, accept/cas1_verify.py) and one trap task (invented
     # Nactel/Nactorb keywords + a 24-orbital space that must be refused naming
     # RAS/ICE/DMRG). Offline, no setup script, no calculation.
+    #
+    # science 44 -> 48 on 2026-10-31 (SL1, wave 25, agent/s13-sl1b): the four
+    # tasks_w25_sl1.yaml SLURM-operation tasks (resources + partitions, a
+    # pending job's reason, a failed job classified and sent to DELFIN's
+    # recalc path, efficiency from sacct); recorded scheduler text, no load.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 44, "chemistry": 29, "generalist": 22,
+                      "science": 48, "chemistry": 29, "generalist": 22,
                       "other": 77}, counts
 
 
