@@ -4788,20 +4788,31 @@ def check_converted_complex(smiles: str, xyz_text: str) -> List[Dict[str, object
         })
 
     # --- 2. hydrogen count vs SMILES ----------------------------------------
-    # Reading rule: an UNBRACKETED atom bonded to a metal is a dative donor --
-    # the pipeline converts M-L bonds to dative (metal_smiles._convert_metal_bonds_to_dative),
-    # and a dative donor keeps its default neutral valence minus the non-metal
-    # bonds it carries (NH3 for N, H2O for O).  Bracket atoms state their H
-    # count themselves; every other atom is read the way RDKit reads it.
+    # Reading rule: compare against the USER's SMILES (unpinned), never the
+    # pinned one -- the pin rewrites unbracketed donors to bracket atoms and
+    # would silently lower the expectation, hiding the very defect this check
+    # exists to catch.  For the expectation, mirror the pin's own guard
+    # (delfin/manta/single_structure.py:161): the default-valence dative-donor
+    # reading fires ONLY for an unbracketed metal neighbour that carries
+    # implicit H (n_h > 0); anything else -- a bracket atom, which states its
+    # H count itself, or an atom the pin leaves alone because n_h <= 0, e.g.
+    # a halide -- is read by its own H count, so a halide gains no phantom H
+    # (dv - (deg - n_metal) = 1 - 0 = 1 would be wrong for [Pt](Cl)...).
+    mol_user = None
+    try:
+        mol_user = Chem.MolFromSmiles(smiles)
+    except Exception:
+        mol_user = None
+    if mol_user is None:
+        mol_user = mol  # pinned fallback; the guard below still applies
     try:
         pt = Chem.GetPeriodicTable()
         smi_h = 0
-        for a in mol.GetAtoms():
-            tok_bracketed = False  # unknown per-atom here; bracket info is
-            # already in GetTotalNumHs for bracket atoms, so only override the
-            # unbracketed metal-neighbour case:
+        for a in mol_user.GetAtoms():
             metal_n = [n for n in a.GetNeighbors() if n.GetSymbol() in _METAL_SET_SX1]
-            if metal_n:
+            if metal_n and int(a.GetNumImplicitHs()) > 0:
+                # unbracketed metal neighbour carrying implicit H: count H
+                # as a dative donor at default valence minus non-metal bonds.
                 n_metal = len(metal_n)
                 deg = a.GetDegree()
                 dv = pt.GetDefaultValence(a.GetAtomicNum())
@@ -4810,7 +4821,7 @@ def check_converted_complex(smiles: str, xyz_text: str) -> List[Dict[str, object
                     continue
             smi_h += a.GetTotalNumHs()
     except Exception:
-        smi_h = sum(a.GetTotalNumHs() for a in mol.GetAtoms())
+        smi_h = sum(a.GetTotalNumHs() for a in mol_user.GetAtoms())
     xyz_h = sum(1 for a in atoms if a[0] == "H")
     if smi_h != xyz_h:
         findings.append({
