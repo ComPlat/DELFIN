@@ -73,11 +73,13 @@ class TadfXtbWorkflow:
         if "workdir" in kwargs:
             params["workdir"] = kwargs["workdir"]
 
-        # A call that passes any argument explicitly is fully specified by
-        # its caller (the CLI path does exactly that) — it runs as given.  A
-        # config-only call missing a required setting is a misconfiguration
-        # and is refused with a message naming the setting, never TypeError.
-        explicit = bool(kwargs)
+        # Plumbing kwargs (entry, workdir, …) do not prove the physics
+        # settings are given: only an explicit kwarg that overrides one of
+        # the required keys counts.  A call whose required settings are all
+        # explicitly passed (the CLI path) runs as given; a call relying on
+        # config with a setting missing is a misconfiguration and is refused
+        # with a message naming the setting, never TypeError downstream.
+        explicit = [key for key in _REQUIRED_KEYS if key in kwargs]
         missing = [key for key in _REQUIRED_KEYS if params.get(key) is None]
         if missing and not explicit:
             raise ValueError(

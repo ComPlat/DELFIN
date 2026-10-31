@@ -29,6 +29,25 @@ import pytest
 # TadfXtbWorkflow.run: config values become defaults, explicit kwargs win
 # ---------------------------------------------------------------------------
 
+def test_tadf_workflow_run_plumbing_kwargs_do_not_skip_the_check(monkeypatch):
+    """A registry-style call with plumbing kwargs (entry, workdir) but a
+    config that lacks a required setting must raise — plumbing kwargs are
+    not proof the physics settings were given (reviewer finding F1)."""
+    from delfin.workflows.contrib.tadf_xtb_workflow import TadfXtbWorkflow
+
+    captured = {}
+    monkeypatch.setattr(
+        "delfin.tadf_xtb.run_single_tadf_xtb",
+        lambda **k: captured.update(k) or "x",
+    )
+
+    wf = TadfXtbWorkflow()
+    with pytest.raises(ValueError) as excinfo:
+        wf.run(config={"xtb_method": "XTB2"}, entry=object(), workdir="d")
+    assert "charge" in str(excinfo.value)
+    assert captured == {}  # run_single_tadf_xtb never called
+
+
 def _config() -> dict:
     """A parsed CONTROL.txt the way read_control_file produces one."""
     return {
