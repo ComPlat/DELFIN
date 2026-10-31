@@ -120,12 +120,16 @@ def test_rc2_provenance_documents_the_run():
         if not p.is_file():
             raise AssertionError(f"fixture not yet committed: {p}")
         text = p.read_text(encoding="utf-8", errors="replace")
+        # Field casing varies between the files ("Core-hours:"/"CPU
+        # Efficiency" vs "core-hours"/"CPU efficiency"); the substance is
+        # the presence of both numbers, so the check is case-insensitive.
         # Each PROVENANCE documents ITS OWN run id (the Cu chain documents
         # v1/v2/v3, Fe/Ru their single job): pin the system's own id.
         own_job = {"rc2_fe_co5": "8172015", "rc2_cu_nh3_4": "8173353",
                    "rc2_ru_o4": "8172021"}[name]
-        for field in (own_job, "core-hours", "CPU efficiency"):
-            assert field in text, (name, field)
+        lower = text.lower()
+        for field in (own_job, "core-hours", "cpu efficiency"):
+            assert field in lower, (name, field)
         # The version is pinned as "ORCA 6.1.1" in the method line (the
         # substance); a separate labelled "ORCA version:" field is not
         # required -- the label wording varied across the three files.
