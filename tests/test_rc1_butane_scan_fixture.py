@@ -145,11 +145,18 @@ def test_parse_orca_output_reports_the_run(out_path):
 
 
 def test_property_json_committed():
-    for name in ("rc1_butane_scan_r2scan3c.json",
-                 "rc1_butane_scan_r2scan3c.property.json"):
-        p = FIXTURE / name
-        if not p.is_file():
-            pytest.skip(f"{name} not committed yet")
-        import json
-        data = json.loads(p.read_text())
-        assert data, f"{name} is empty"
+    """The QS F2 ruling (nacht-s5): .property.json alone satisfies the
+    fixture contract. The v5 .inp requested %output jsonpropfile True
+    only -- no bare jsonfile -- so ORCA 6.1.0 wrote exactly this one
+    file; the bare .json pin was rewritten along the ruling (the old
+    skip-if-absent form hid a file the run correctly never wrote)."""
+    p = FIXTURE / "rc1_butane_scan_r2scan3c.property.json"
+    if not p.is_file():
+        pytest.skip("property.json not committed yet")
+    import json
+    data = json.loads(p.read_text())
+    assert data, "property.json is empty"
+    # The bare .json was never requested and must stay absent: its
+    # presence would mean the .inp asked for output modes the
+    # PROVENANCE says it did not.
+    assert not (FIXTURE / "rc1_butane_scan_r2scan3c.json").is_file()

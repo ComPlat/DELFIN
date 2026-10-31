@@ -69,7 +69,9 @@ converged.
   trim markers "[[trimmed: ...]]" mark the cuts; the full .out lives in the
   practice folder .gate/practice/rc1_butane_scan_r2scan3c_v5/, not committed).
 - rc1_butane_scan_r2scan3c_v5.property.json - ORCA property output, unmodified.
-  Note on JSON completeness (QS ruling 2026-11-04, option (a)): the .inp
+  Note on JSON completeness (QS ruling 2026-11-04, nacht-s5: "option (b)"
+  in QS's own labelling — property.json alone satisfies the contract, no
+  re-run): the .inp
   requested `%output jsonpropfile True end` ONLY — no bare `jsonfile` — so
   ORCA 6.1.0 (banner version in the .out) wrote exactly this property.json
   and no bare .json. The fixture is complete for every file the tests read;
