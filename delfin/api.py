@@ -3149,6 +3149,15 @@ def validate_orca_input(inp_text: str) -> list[ValidationIssue]:
     text_low = text.lower()
 
     # --- Structural checks -----------------------------------------------
+    from delfin.common.orca_input_checks import check_all
+    # Static checks only: the ORCA-parser probe (use_probe=True) is opt-in,
+    # because it starts a real ORCA process (up to 60 s) on whatever host
+    # calls this -- login node or dashboard (QS ruling, wave 25 OV1).
+    for _issue in check_all(inp_text):
+        issues.append(ValidationIssue(
+            severity=_issue.severity, code=_issue.code,
+            message=_issue.message, suggestion=_issue.suggestion,
+        ))
     m_keyword = _re.search(r"^\s*!\s*(.+)$", text, _re.MULTILINE)
     if not m_keyword:
         issues.append(ValidationIssue(
