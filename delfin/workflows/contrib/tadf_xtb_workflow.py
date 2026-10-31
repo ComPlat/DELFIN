@@ -86,11 +86,13 @@ class TadfXtbWorkflow:
         )
         params["cores"] = kwargs.get("cores", cfg("PAL"))
         params["maxcore"] = kwargs.get("maxcore", cfg("maxcore"))
-        # Template-prefixed keys (delfin/define.py:273/:275) win over the
+        # Template-prefixed keys (delfin/define.py:271-275) win over the
         # hard-coded defaults; an explicit kwarg wins over both.  The
-        # preopt mode decides the geometry-preparation switches exactly
-        # as the pipeline does (pipeline.py:1021/:1035-1037): crest ->
-        # use_crest, goat -> use_goat, xtb -> optimize_s0, none -> none.
+        # preopt vocabulary (none|xtb|crest|goat) is the validator's own
+        # (_as_preopt_mode, control_validator.py:1055-1063); the mapping
+        # of a mode to the geometry-preparation switches is defined here:
+        # crest -> use_crest, goat -> use_goat, xtb -> optimize_s0,
+        # none -> none of them.
         preopt = kwargs.get("preopt", cfg("tadf_xTB_preopt") or cfg("preopt"))
         preopt = str(preopt).strip().lower() if preopt is not None else "none"
         params["run_t1_opt"] = _yes_no(
