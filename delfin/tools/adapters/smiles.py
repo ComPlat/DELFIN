@@ -28,6 +28,12 @@ class SmilesToXyzAdapter(StepAdapter):
     data_keys = (
         DataKeySpec("smiles", "str", "", "Echo of the input SMILES"),
         DataKeySpec("n_atoms", "int", "", "Number of atoms in the generated structure"),
+        DataKeySpec(
+            "findings", "list", "",
+            "Post-conversion checker findings (dicts with kind/detail/severity); "
+            "empty list when the geometry is clean.  On failure carries the "
+            "conversion_failed finding.",
+        ),
     )
     requires_python = ("rdkit",)
 
