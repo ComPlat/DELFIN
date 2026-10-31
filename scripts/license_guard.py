@@ -141,12 +141,16 @@ def scan_path_text(relpath: str, text: str) -> list[tuple[int, str]]:
     Returns [(lineno, message)]. Binary bytes are skipped silently (no
     printable signature can be relied on there — the path rule covers
     the known binary artifacts, .gbw/.hess/.engrad).
+
+    Exception: a file whose FIRST line carries QM_SYNTHETIC_MARKER
+    declares itself a hand-written synthetic fixture and is exempt as a
+    whole (such a fixture legitimately contains ORCA-format lines).
     """
     findings: list[tuple[int, str]] = []
     lines = text.splitlines()
+    if lines and lines[0].strip() == QM_SYNTHETIC_MARKER:
+        return findings
     for i, ln in enumerate(lines, 1):
-        if QM_SYNTHETIC_MARKER in ln:
-            continue
         hit = QM_OUTPUT_RE.search(ln)
         if hit:
             findings.append((i, f"looks like licensed QM program output ('{hit.group(0)}')"))
