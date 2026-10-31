@@ -50,6 +50,6 @@ def lc1_fixture_dir(rel: str) -> Path:
     """Directory of a real-ORCA fixture: the committed legacy path while it
     still exists, else the private store (SKIP without the env var)."""
     legacy = Path(rel)
-    if legacy.is_dir():
+    if legacy.is_dir() and any(legacy.iterdir()):
         return legacy
     return private_fixtures_or_skip(rel)
