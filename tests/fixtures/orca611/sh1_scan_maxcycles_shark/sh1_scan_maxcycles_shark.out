@@ -1,0 +1,1050 @@
+
+                                 *****************
+                                 * O   R   C   A *
+                                 *****************
+
+                                            #,                                       
+                                            ###                                      
+                                            ####                                     
+                                            #####                                    
+                                            ######                                   
+                                           ########,                                 
+                                     ,,################,,,,,                         
+                               ,,#################################,,                 
+                          ,,##########################################,,             
+                       ,#########################################, ''#####,          
+                    ,#############################################,,   '####,        
+                  ,##################################################,,,,####,       
+                ,###########''''           ''''###############################       
+              ,#####''   ,,,,##########,,,,          '''####'''          '####       
+            ,##' ,,,,###########################,,,                        '##       
+           ' ,,###''''                  '''############,,,                           
+         ,,##''                                '''############,,,,        ,,,,,,###''
+      ,#''                                            '''#######################'''  
+     '                                                          ''''####''''         
+             ,#######,   #######,   ,#######,      ##                                
+            ,#'     '#,  ##    ##  ,#'     '#,    #''#        ,####,    ,#,          
+            ##       ##  ##   ,#'  ##            #'  '#       #'       ,# #          
+            ##       ##  #######   ##           ,######,      #####,      #          
+            '#,     ,#'  ##    ##  '#,     ,#' ,#      #,     #,   #      #          
+             '#######'   ##     ##  '#######'  #'      '#     '####' #    #          
+
+
+
+                #########################################################
+                #                        -***-                          #
+                #          Department of theory and spectroscopy        #
+                #                                                       #
+                #                      Frank Neese                      #
+                #                                                       #
+                #     Directorship, Architecture, Infrastructure        #
+                #                    SHARK, DRIVERS                     #
+                #        Core code/Algorithms in most modules           #
+                #                                                       #
+                #        Max Planck Institute fuer Kohlenforschung      #
+                #                Kaiser Wilhelm Platz 1                 #
+                #                 D-45470 Muelheim/Ruhr                 #
+                #                      Germany                          #
+                #                                                       #
+                #                  All rights reserved                  #
+                #                        -***-                          #
+                #########################################################
+
+
+                         Program Version 6.1.0  -  RELEASE   -
+                                (GIT: $679e74b$)
+                          ($2025-06-10 18:02:51 +0200$)
+
+
+ With contributions from (in alphabetic order):
+[Max-Planck-Institut fuer Kohlenforschung]                               
+  Daniel Aravena         : Magnetic Suceptibility                        
+  Michael Atanasov       : Ab Initio Ligand Field Theory (pilot matlab implementation)
+  Alexander A. Auer      : GIAO ZORA, VPT2 properties, NMR spectrum      
+  Ute Becker             : All parallelization in ORCA, NUMFREQ, NUMCALC 
+  Giovanni Bistoni       : ED, misc. LED, open-shell LED, HFLD           
+  Dmytro Bykov           : pre 5.0 version of the SCF Hessian            
+  Marcos Casanova-Páez   : Triplet and SCS-CIS(D). UHF-(DLPNO)-IP/EA/STEOM-CCSD. UHF-CVS-IP/STEOM-CCSD   
+  Vijay G. Chilkuri      : MRCI spin determinant printing, contributions to CSF-ICE 
+  Pauline Colinet        : FMM embedding                                 
+  Dipayan Datta          : RHF DLPNO-CCSD density                        
+  Achintya Kumar Dutta   : EOM-CC, STEOM-CC                              
+  Nicolas Foglia         : Exact transition moments, OPA infrastructure, MCD improvements    
+  Dmitry Ganyushin       : Spin-Orbit,Spin-Spin,Magnetic field MRCI      
+  Miquel Garcia-Rates    : C-PCM and meta-GGA Hessian, CCSD/C-PCM, Gaussian charge scheme 
+  Tiago L. C. Gouveia    : GS-ROHF, GS-ROCIS                             
+  Yang Guo               : DLPNO-NEVPT2, F12-NEVPT2, CIM, IAO-localization        
+  Andreas Hansen         : Spin unrestricted coupled pair/coupled cluster methods 
+  Ingolf Harden          : AUTO-CI MPn and infrastructure                
+  Benjamin Helmich-Paris : MC-RPA, TRAH-(SCF,CASSCF), AVAS, COSX integrals, SCF dyn. polar., MC-PDFT, srDFT 
+  Lee Huntington         : MR-EOM, pCC                                   
+  Robert Izsak           : Overlap fitted RIJCOSX, COSX-SCS-MP3, EOM     
+  Riya Kayal             : Wick's Theorem for AUTO-CI, AUTO-CI UHF-CCSDT 
+  Emily Kempfer          : AUTO-CI RHF CISDT and CCSDT, approximate NEVPT4
+  Christian Kollmar      : KDIIS, OOCD, Brueckner-CCSD(T), CCSD density, CASPT2, CASPT2-K, improved NEVPT2 
+  Axel Koslowski         : Symmetry handling                             
+  Simone Kossmann        : meta-GGA functionals, TD-DFT gradient, OOMP2, (MP2 Hessian; deprecated post 5.0) 
+  Lucas Lang             : DCDCAS, Hyperfine gauge corrections, ICE-SOC+SSC
+  Marvin Lechner         : AUTO-CI (C++ implementation), FIC-MRCC        
+  Spencer Leger          : CASSCF response                               
+  Dagmar Lenk            : GEPOL surface, SMD, ORCA-2-JSON               
+  Dimitrios Liakos       : Extrapolation schemes; Compound Job, Property file
+  Dimitrios Manganas     : Further ROCIS development; embedding schemes. LFT, Crystal Embedding 
+  Dimitrios Pantazis     : SARC Basis sets                               
+  Anastasios Papadopoulos: AUTO-CI, single reference methods and gradients 
+  Taras Petrenko         : pre 6.0 DFT Hessian and TD-DFT gradient,  ECA, NRVS 
+  Petra Pikulova         : Analytic Raman intensities                    
+  Peter Pinski           : DLPNO-MP2, DLPNO-MP2 Gradient                 
+  Shashank Vittal Rao    : ES-AILFT, MagRelax                            
+  Christoph Reimann      : Effective Core Potentials                     
+  Marius Retegan         : Local ZFS, SOC                                
+  Christoph Riplinger    : Optimizer, TS searches, QM/MM, DLPNO-CCSD(T), (RO)-DLPNO pert. Triples 
+  Michael Roemelt        : Original ROCIS implementation, recursive CI coupling coefficients
+  Masaaki Saitow         : Open-shell DLPNO-CCSD energy and density      
+  Barbara Sandhoefer     : DKH picture change effects                    
+  Yorick L. A. Schmerwitz: GMF and freeze-and-release deltaSCF, NEB S-IDPP initial path                    
+  Kantharuban Sivalingam : CASSCF convergence/infrastructure, NEVPT2, NEVPT3, NEVPT4(SD), FIC-MRCI and CEPA variants
+  Bernardo de Souza      : ESD, SOC TD-DFT                               
+  Georgi L. Stoychev     : AutoAux, RI-MP2 NMR, DLPNO-MP2 response, X2C  
+  Van Anh Tran           : RI-MP2 g-tensors                              
+  Willem Van den Heuvel  : Paramagnetic NMR                              
+  Zikuan Wang            : NOTCH, Electric field optimization            
+  Frank Wennmohs         : Technical directorship and infrastructure     
+  Hang Xu                : AUTO-CI-Response properties                   
+                                                                         
+[FACCTs GmbH]                                                            
+  Markus Bursch, Nicolas Foglia, Miquel Garcia-Rates, Ingolf Harden, Hagen Neugebauer, Anastasios Papadopoulos, 
+  Christoph Riplinger, Bernardo de Souza, Georgi L. Stoychev                                                    
+                                                                 
+  APM, various basis sets, CI-OPT, improved COSX, DLPNO-Multilevel,           
+  DOCKER, DRACO, updates on ESD, Fragmentator, GOAT, IRC, LR-CPCM, L-BFGS, MBIS, meta-GGA TD-DFT gradient, ML-optimized integration grids, 
+  MM, NACMEs, nearIR, NEB, NEB-TS, NL-DFT gradient (VV10), 2- and 3-layer-ONIOM, interface openCOSMO-RS, QMMM,   
+  Crystal-QMMM, RESP, rigid body optimization, SF, symmetry and pop. for TD-DFT, various functionals, SOLVATOR                                   
+                                                                         
+[Other institutions]                                                     
+  V. Asgeirsson          : NEB                                           
+  Christoph Bannwarth    : sTDA-DFT, sTD-DFT, PBEh-3c, B97-3c, D3        
+  Giovanni Bistoni       : ETS/NOCV, ADLD/ADEX, COVALED                  
+  Martin Brehm           : Molecular dynamics                            
+  Ronald Cardenas        : ETS/NOCV                                      
+  Martina Colucci        : COVALED                                       
+  Sebastian Ehlert       : rSCAN, r2SCAN, r2SCAN-3c, D4, dhf basis sets  
+  Marvin Friede          : D4 for Fr, Ra, Ac-Lr                          
+  Lars Goerigk           : TD-DFT with DH, B97 family of functionals     
+  Stefan Grimme          : VdW corrections, initial TS optimization, DFT functionals, gCP, sTDA/sTD-DF 
+  Waldemar Hujo          : DFT-NL                                        
+  H. Jonsson             : NEB                                           
+  Holger Kruse           : gCP                                           
+  Marcel Mueller         : wB97X-3c, vDZP basis set                      
+  Hagen Neugebauer       : wr2SCAN, Native XTB                           
+  Gianluca Regni         : ADLD/ADEX                                     
+  Tobias Risthaus        : pre 6.0 range-separated hybrid DFT and stability analysis
+  Lukas Wittmann         : regularized MP2, r2SCAN double-hybrids, wr2SCAN        
+                                                                         
+We gratefully acknowledge several colleagues who have allowed us to      
+interface, adapt or use parts of their codes:                            
+  Ed Valeev, F. Pavosevic, A. Kumar             : LibInt (2-el integral package), F12 methods 
+  Garnet Chan, S. Sharma, J. Yang, R. Olivares  : DMRG                   
+  Ulf Ekstrom                                   : XCFun DFT Library      
+  Mihaly Kallay                                 : mrcc  (arbitrary order and MRCC methods)
+  Frank Weinhold                                : gennbo (NPA and NBO analysis)           
+  Simon Mueller                                 : openCOSMO-RS                            
+  Christopher J. Cramer and Donald G. Truhlar   : smd solvation model                     
+  S Lehtola, MJT Oliveira, MAL Marques          : LibXC Library                           
+  Liviu Ungur et al                             : ANISO software                          
+
+
+ Your calculation uses the libint2 library for the computation of 2-el integrals
+ For citations please refer to: http://libint.valeyev.net
+
+ Your ORCA version has been built with support for libXC version: 7.0.0
+ For citations please refer to: https://libxc.gitlab.io
+
+ This ORCA versions uses:
+   CBLAS   interface :  Fast vector & matrix operations
+   LAPACKE interface :  Fast linear algebra routines
+   SCALAPACK package :  Parallel linear algebra routines
+   Shared memory     :  Shared parallel matrices
+   BLAS/LAPACK       :  OpenBLAS 0.3.29  USE64BITINT DYNAMIC_ARCH NO_AFFINITY Cooperlake SINGLE_THREADED
+        Core in use  :  Cooperlake
+   Copyright (c) 2011-2014, The OpenBLAS Project
+
+
+  ***********************************
+  * Starting time: Sat Oct 31 03:00:50 2026
+  * Host name:     fixture-host.localdomain
+  * Process ID:    4011717
+  * Working dir.:  /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run
+  ***********************************
+
+NOTE: MaxCore=2000 MB was set to SCF,MP2,MDCI,CIPSI,MRCI,RASCI and CIS
+      => If you want to overwrite this, your respective input block should be placed after the MaxCore statement
+Your calculation utilizes the geometrical counterpoise correction gCP
+Please cite in your paper:
+H.Kruse, S. Grimme J.Chem.Phys., 136, (2012), 154101 
+   
+
+Your calculation utilizes the atom-pairwise dispersion correction
+based on EEQ partial charges (D4)
+
+
+================================================================================
+
+----- Orbital basis set information -----
+Your calculation utilizes the basis: def2-mTZVPP
+   Stefan Grimme, Andreas Hansen, Sebastian Ehlert, and Jan-Michael Mewes 
+   J. Chem. Phys. 154, 064103 (2021). DOI: 10.1063/5.0040021
+
+----- AuxJ basis set information -----
+Your calculation utilizes the basis: def2-mTZVPP/J
+   Stefan Grimme, Andreas Hansen, Sebastian Ehlert, and Jan-Michael Mewes 
+   J. Chem. Phys. 154, 000000 (2021). DOI: 10.1063/5.0040021
+
+================================================================================
+                                        WARNINGS
+                       Please study these warnings very carefully!
+================================================================================
+
+
+
+WARNING: SCAN, rSCAN, or r2SCAN functional requested.
+  ===> : libXC variant has now been activated.
+
+
+
+WARNING: Geometry Optimization
+  ===> : Switching off AutoStart
+         For restart on a previous wavefunction, please use MOREAD
+
+================================================================================
+                                       INPUT FILE
+================================================================================
+NAME = /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4.inp
+|  1> ! r2SCAN-3c TightOpt TightSCF
+|  2> %pal nprocs 2 end
+|  3> %maxcore 2000
+|  4> %output jsonpropfile True end
+|  5> %geom
+|  6>   Scan
+|  7>     D 0 1 2 3 = 180, 540, 25
+|  8>   end
+|  9> end
+| 10> 
+| 11> * xyz 0 1
+| 12> C    -1.93194639429840031575    0.17633945427055919275    0.24955207624222505713
+| 13> C    -0.56663921096375413633   -0.50003851741646587747    0.25697874330211406546
+| 14> C     0.56664691281308809945    0.50005980777701608542    0.04119203932439310240
+| 15> C     1.93193711721469152387   -0.17635679198371967402    0.04842903045906585269
+| 16> H    -1.99257986434706446666    0.92187123633858658600    1.03968904993296251682
+| 17> H    -2.10614922057210041118    0.67353603188847788186   -0.70242291902843012608
+| 18> H    -2.72303954622107236005   -0.55364412525826012246    0.40518296907155676445
+| 19> H    -0.41926205653013914887   -1.00960630103362558607    1.21215737207458840174
+| 20> H    -0.53245635543466030004   -1.25722029234033438883   -0.52994752679807233253
+| 21> H     0.41918872961282849232    1.00970485949922306190   -0.91393196343447313801
+| 22> H     0.53255222392682655119    1.25715882795110278636    0.82819920307723693398
+| 23> H     1.99278571371094370690   -0.92125808876967096861   -0.74228154151466463340
+| 24> H     2.72308269278559667015    0.55374383423420914241   -0.10639826025389080566
+| 25> H     2.10587925830314803832   -0.67428993515715551776    1.00006785842644374540
+| 26> *
+| 27> 
+| 28>                          ****END OF INPUT****
+================================================================================
+
+                       ******************************
+                       *    Relaxed Surface Scan    *
+                       ******************************
+
+        Dihedral (  3,   2,   1,   0):   range= 180.00000000 .. 540.00000000  steps =   25
+
+There is 1 parameter to be scanned.
+There will be   25 constrained geometry optimizations.
+
+
+         *************************************************************
+         *               RELAXED SURFACE SCAN STEP   1               *
+         *                                                           *
+         *   Dihedral (  3,   2,   1,   0)  : 180.00000000           *
+         *************************************************************
+
+Geometry optimization settings:
+Update method            Update   .... BFGS
+Choice of coordinates    CoordSys .... (2022) Redundant Internals
+Initial Hessian          InHess   .... Almloef's Model
+Max. no of cycles        MaxIter  .... 50
+
+Convergence Tolerances:
+Energy Change            TolE     ....  1.0000e-06 Eh
+Max. Gradient            TolMAXG  ....  1.0000e-04 Eh/bohr
+RMS Gradient             TolRMSG  ....  3.0000e-05 Eh/bohr
+Max. Displacement        TolMAXD  ....  1.0000e-03 bohr
+RMS Displacement         TolRMSD  ....  6.0000e-04 bohr
+Strict Convergence                .... False
+
+------------------------------------------------------------------------------
+                        ORCA OPTIMIZATION COORDINATE SETUP
+------------------------------------------------------------------------------
+
+The optimization will be done in redundant internal coordinates (2022)
+Making redundant internal coordinates   ...  (2022 redundants) done
+Evaluating the initial hessian          ...  (Almloef) done
+Evaluating the coordinates              ...  done
+Calculating the B-matrix                .... done
+Calculating the G-matrix                .... done
+The number of degrees of freedom        ....   55
+Storing new coordinates                 .... done
+
+    -----------------------------------------------------------------
+                    Redundant Internal Coordinates
+
+
+    -----------------------------------------------------------------
+         Definition                    Initial Value    Approx d2E/dq
+    -----------------------------------------------------------------
+      1. B(C   1,C   0)                  1.5237         0.382347   
+      2. B(C   2,C   1)                  1.5268         0.378001   
+      3. B(C   3,C   2)                  1.5237         0.382346   
+      4. B(H   4,C   0)                  1.0880         0.362715   
+      5. B(H   5,C   0)                  1.0880         0.362717   
+      6. B(H   6,C   0)                  1.0876         0.363257   
+      7. B(H   7,C   1)                  1.0926         0.356694   
+      8. B(H   8,C   1)                  1.0926         0.356694   
+      9. B(H   9,C   2)                  1.0926         0.356695   
+     10. B(H  10,C   2)                  1.0926         0.356697   
+     11. B(H  11,C   3)                  1.0880         0.362719   
+     12. B(H  12,C   3)                  1.0876         0.363255   
+     13. B(H  13,C   3)                  1.0880         0.362715   
+     14. A(C   1,C   0,H   6)          110.6781         0.326026   
+     15. A(C   1,C   0,H   4)          110.5221         0.325946   
+     16. A(H   5,C   0,H   6)          108.3879         0.291570   
+     17. A(H   4,C   0,H   6)          108.3878         0.291570   
+     18. A(C   1,C   0,H   5)          110.5231         0.325946   
+     19. A(H   4,C   0,H   5)          108.2615         0.291502   
+     20. A(H   7,C   1,H   8)          107.5905         0.289973   
+     21. A(C   0,C   1,H   7)          109.3964         0.325050   
+     22. A(C   0,C   1,C   2)          111.9413         0.365533   
+     23. A(C   2,C   1,H   7)          109.2043         0.324440   
+     24. A(C   0,C   1,H   8)          109.4028         0.325050   
+     25. A(C   2,C   1,H   8)          109.2050         0.324440   
+     26. A(H   9,C   2,H  10)          107.5916         0.289974   
+     27. A(C   1,C   2,H   9)          109.2027         0.324440   
+     28. A(C   3,C   2,H   9)          109.4028         0.325050   
+     29. A(C   1,C   2,C   3)          111.9410         0.365533   
+     30. A(C   1,C   2,H  10)          109.2032         0.324440   
+     31. A(C   3,C   2,H  10)          109.3991         0.325050   
+     32. A(C   2,C   3,H  11)          110.5236         0.325946   
+     33. A(C   2,C   3,H  12)          110.6776         0.326026   
+     34. A(H  11,C   3,H  12)          108.3878         0.291570   
+     35. A(C   2,C   3,H  13)          110.5222         0.325946   
+     36. A(H  11,C   3,H  13)          108.2628         0.291502   
+     37. A(H  12,C   3,H  13)          108.3866         0.291570   
+     38. D(C   2,C   1,C   0,H   5)     59.9406         0.011644   
+     39. D(H   7,C   1,C   0,H   5)   -178.8751         0.011644   
+     40. D(H   7,C   1,C   0,H   4)     61.2975         0.011644   
+     41. D(H   7,C   1,C   0,H   6)    -58.7884         0.011644   
+     42. D(C   2,C   1,C   0,H   4)    -59.8869         0.011644   
+     43. D(C   2,C   1,C   0,H   6)   -179.9728         0.011644   
+     44. D(C   3,C   2,C   1,C   0)   -180.0000         0.011394 C 
+     45. D(C   3,C   2,C   1,H   7)     58.7047         0.011394   
+     46. D(C   3,C   2,C   1,H   8)    -58.6961         0.011394   
+     47. D(H   9,C   2,C   1,C   0)    -58.6979         0.011394   
+     48. D(H   9,C   2,C   1,H   7)   -179.9932         0.011394   
+     49. D(H   9,C   2,C   1,H   8)     62.6060         0.011394   
+     50. D(H  11,C   3,C   2,C   1)     59.9339         0.011644   
+     51. D(H  11,C   3,C   2,H   9)    -61.2527         0.011644   
+     52. D(H  11,C   3,C   2,H  10)   -178.8814         0.011644   
+     53. D(H  12,C   3,C   2,C   1)   -179.9796         0.011644   
+     54. D(H  12,C   3,C   2,H   9)     58.8338         0.011644   
+     55. D(H  12,C   3,C   2,H  10)    -58.7949         0.011644   
+    -----------------------------------------------------------------
+
+Number of atoms                         .... 14
+Number of degrees of freedom            .... 55
+
+
+         *************************************************************
+         *                GEOMETRY OPTIMIZATION CYCLE   1            *
+         *************************************************************
+---------------------------------
+CARTESIAN COORDINATES (ANGSTROEM)
+---------------------------------
+  C     -1.931945    0.176346    0.249584
+  C     -0.566644   -0.500045    0.256911
+  C      0.566650    0.500046    0.041131
+  C      1.931948   -0.176353    0.048459
+  H     -1.992530    0.921846    1.039755
+  H     -2.106193    0.673584   -0.702361
+  H     -2.723037   -0.553637    0.405227
+  H     -0.419277   -1.009618    1.212089
+  H     -0.532475   -1.257239   -0.530004
+  H      0.419193    1.009688   -0.913995
+  H      0.532521    1.257161    0.828122
+  H      1.992848   -0.921277   -0.742226
+  H      2.723093    0.553753   -0.106349
+  H      2.105847   -0.674256    1.000122
+
+----------------------------
+CARTESIAN COORDINATES (A.U.)
+----------------------------
+  NO LB      ZA    FRAG     MASS         X           Y           Z
+   0 C     6.0000    0    12.011   -3.650847    0.333246    0.471646
+   1 C     6.0000    0    12.011   -1.070801   -0.944948    0.485492
+   2 C     6.0000    0    12.011    1.070813    0.944950    0.077726
+   3 C     6.0000    0    12.011    3.650853   -0.333259    0.091574
+   4 H     1.0000    0     1.008   -3.765336    1.742036    1.964853
+   5 H     1.0000    0     1.008   -3.980128    1.272888   -1.327270
+   6 H     1.0000    0     1.008   -5.145794   -1.046221    0.765768
+   7 H     1.0000    0     1.008   -0.792319   -1.907901    2.290516
+   8 H     1.0000    0     1.008   -1.006232   -2.375837   -1.001563
+   9 H     1.0000    0     1.008    0.792160    1.908034   -1.727199
+  10 H     1.0000    0     1.008    1.006319    2.375689    1.564923
+  11 H     1.0000    0     1.008    3.765937   -1.740961   -1.402604
+  12 H     1.0000    0     1.008    5.145899    1.046442   -0.200970
+  13 H     1.0000    0     1.008    3.979475   -1.274159    1.889956
+
+--------------------------------
+INTERNAL COORDINATES (ANGSTROEM)
+--------------------------------
+ C      0   0   0     0.000000000000     0.00000000     0.00000000
+ C      1   0   0     1.523681732132     0.00000000     0.00000000
+ C      2   1   0     1.526793371748   111.94081984     0.00000000
+ C      3   2   1     1.523682753301   111.94035446   180.00786127
+ H      1   2   3     1.088030556996   110.52208134   300.11209450
+ H      1   2   3     1.088029160040   110.52309352    59.93956815
+ H      1   2   3     1.087623729147   110.67814728   180.02623716
+ H      2   1   3     1.092586639408   109.40009602   121.18634692
+ H      2   1   3     1.092586684187   109.40000860   238.81386112
+ H      3   2   1     1.092585857122   109.20313067   301.30636168
+ H      3   2   1     1.092584847944   109.20397953    58.70875213
+ H      4   3   2     1.088027436364   110.52363145    59.93289225
+ H      4   3   2     1.087625733467   110.67757950   180.01939846
+ H      4   3   2     1.088030212086   110.52215659   300.10348698
+
+---------------------------
+INTERNAL COORDINATES (A.U.)
+---------------------------
+ C      0   0   0     0.000000000000     0.00000000     0.00000000
+ C      1   0   0     2.879341188988     0.00000000     0.00000000
+ C      2   1   0     2.885221335690   111.94081984     0.00000000
+ C      3   2   1     2.879343118718   111.94035446   180.00786127
+ H      1   2   3     2.056079778060   110.52208134   300.11209450
+ H      1   2   3     2.056077138196   110.52309352    59.93956815
+ H      1   2   3     2.055310984842   110.67814728   180.02623716
+ H      2   1   3     2.064689526063   109.40009602   121.18634692
+ H      2   1   3     2.064689610683   109.40000860   238.81386112
+ H      3   2   1     2.064688047757   109.20313067   301.30636168
+ H      3   2   1     2.064686140686   109.20397953    58.70875213
+ H      4   3   2     2.056073880920   110.52363145    59.93289225
+ H      4   3   2     2.055314772457   110.67757950   180.01939846
+ H      4   3   2     2.056079126275   110.52215659   300.10348698
+
+---------------------
+BASIS SET INFORMATION
+---------------------
+There are 2 groups of distinct atoms
+
+ Group   1 Type C   : 11s6p1d contracted to 5s3p1d pattern {62111/411/1}
+ Group   2 Type H   : 4s1p contracted to 2s1p pattern {31/1}
+
+Atom   0C    basis set group =>   1
+Atom   1C    basis set group =>   1
+Atom   2C    basis set group =>   1
+Atom   3C    basis set group =>   1
+Atom   4H    basis set group =>   2
+Atom   5H    basis set group =>   2
+Atom   6H    basis set group =>   2
+Atom   7H    basis set group =>   2
+Atom   8H    basis set group =>   2
+Atom   9H    basis set group =>   2
+Atom  10H    basis set group =>   2
+Atom  11H    basis set group =>   2
+Atom  12H    basis set group =>   2
+Atom  13H    basis set group =>   2
+---------------------------------
+AUXILIARY/J BASIS SET INFORMATION
+---------------------------------
+There are 2 groups of distinct atoms
+
+ Group   1 Type C   : 8s3p3d contracted to 6s3p3d pattern {311111/111/111}
+ Group   2 Type H   : 5s2p1d contracted to 3s1p1d pattern {311/2/1}
+
+Atom   0C    basis set group =>   1
+Atom   1C    basis set group =>   1
+Atom   2C    basis set group =>   1
+Atom   3C    basis set group =>   1
+Atom   4H    basis set group =>   2
+Atom   5H    basis set group =>   2
+Atom   6H    basis set group =>   2
+Atom   7H    basis set group =>   2
+Atom   8H    basis set group =>   2
+Atom   9H    basis set group =>   2
+Atom  10H    basis set group =>   2
+Atom  11H    basis set group =>   2
+Atom  12H    basis set group =>   2
+Atom  13H    basis set group =>   2
+
+
+           ************************************************************
+           *        Program running with 2 parallel MPI-processes     *
+           *              working on a common directory               *
+           ************************************************************
+------------------------------------------------------------------------------
+                             ORCA STARTUP CALCULATIONS
+                           -- RI-GTO INTEGRALS CHOSEN --
+------------------------------------------------------------------------------
+------------------------------------------------------------------------------
+                   ___                                                        
+                  /   \      - P O W E R E D   B Y -                         
+                 /     \                                                     
+                 |  |  |   _    _      __       _____    __    __             
+                 |  |  |  | |  | |    /  \     |  _  \  |  |  /  |          
+                  \  \/   | |  | |   /    \    | | | |  |  | /  /          
+                 / \  \   | |__| |  /  /\  \   | |_| |  |  |/  /          
+                |  |  |   |  __  | /  /__\  \  |    /   |      \           
+                |  |  |   | |  | | |   __   |  |    \   |  |\   \          
+                \     /   | |  | | |  |  |  |  | |\  \  |  | \   \       
+                 \___/    |_|  |_| |__|  |__|  |_| \__\ |__|  \__/        
+                                                                              
+                      - O R C A' S   B I G   F R I E N D -                    
+                                      &                                       
+                       - I N T E G R A L  F E E D E R -                       
+                                                                              
+ v1 FN, 2020, v2 2021, v3 2022-2024                                           
+------------------------------------------------------------------------------
+
+
+----------------------
+SHARK INTEGRAL PACKAGE
+----------------------
+
+Number of atoms                             ...     14
+Number of basis functions                   ...    126
+Number of shells                            ...     66
+Maximum angular momentum                    ...      2
+Integral batch strategy                     ... SHARK/LIBINT Hybrid
+RI-J (if used) integral strategy            ... SPLIT-RIJ (Revised 2003 algorithm where possible)
+Printlevel                                  ...      1
+Contraction scheme used                     ... SEGMENTED contraction
+Prescreening option                         ... SCHWARTZ
+   Thresh                                   ... 2.500e-11
+   Tcut                                     ... 2.500e-12
+   Tpresel                                  ... 2.500e-12 
+Coulomb Range Separation                    ... NOT USED
+Exchange Range Separation                   ... NOT USED
+Multipole approximations                    ... NOT USED
+Finite Nucleus Model                        ... NOT USED
+CABS basis                                  ... NOT available
+Auxiliary Coulomb fitting basis             ... AVAILABLE
+   # of basis functions in Aux-J            ...    230
+   # of shells in Aux-J                     ...     98
+   Maximum angular momentum in Aux-J        ...      2
+Auxiliary J/K fitting basis                 ... NOT available
+Auxiliary Correlation fitting basis         ... NOT available
+Auxiliary 'external' fitting basis          ... NOT available
+
+Checking pre-screening integrals            ... done (  0.0 sec) Dimension = 66
+   => SHARK Basis and OBASIS are compatible. Storing Pre-screening
+Shell pair information
+Shell pair cut-off parameter TPreSel        ...   2.5e-12
+Total number of shell pairs                 ...      2211
+Shell pairs after pre-screening             ...      2122
+Total number of primitive shell pairs       ...      7621
+Primitive shell pairs kept                  ...      5740
+          la=0 lb=0:    784 shell pairs
+          la=1 lb=0:    844 shell pairs
+          la=1 lb=1:    242 shell pairs
+          la=2 lb=0:    156 shell pairs
+          la=2 lb=1:     86 shell pairs
+          la=2 lb=2:     10 shell pairs
+
+Checking whether 4 symmetric matrices of dimension 126 fit in memory
+:Max Core in MB      =   2000.00
+ MB in use           =      4.01
+ MB left             =   1995.99
+ MB needed           =      0.24
+ Data fit in memory  = YES
+Calculating RI/J V-Matrix + Cholesky decomp.... done (  0.0 sec)
+Calculating Nuclear repulsion               ... done (  0.0 sec) ENN=    131.251190795441 Eh
+
+Diagonalization of the overlap matrix:
+Smallest eigenvalue                        ... 3.063e-04
+Time for diagonalization                   ...    0.003 sec
+Threshold for overlap eigenvalues          ... 1.000e-07
+Number of eigenvalues below threshold      ... 0
+Time for construction of square roots      ...    0.000 sec
+Total time needed                          ...    0.005 sec
+
+-------------------
+DFT GRID GENERATION
+-------------------
+
+General Integration Accuracy     IntAcc      ... 4.388
+Radial Grid Type                 RadialGrid  ... OptM3 with GC (2021)
+Angular Grid (max. ang.)         AngularGrid ... 4 (Lebedev-302)
+Angular grid pruning method      GridPruning ... 4 (adaptive)
+Weight generation scheme         WeightScheme... mBecke (2022)
+Basis function cutoff            BFCut       ... 1.0000e-11
+Integration weight cutoff        WCut        ... 1.0000e-14
+Partially contracted basis set               ... off
+Rotationally invariant grid construction     ... off
+Angular grids for H and He will be reduced by one unit
+
+Total number of grid points                  ...    56356
+Total number of batches                      ...      886
+Average number of points per batch           ...       63
+Average number of grid points per atom       ...     4025
+Grids setup in   0.3 sec
+Initializing property integral containers    ... done (  0.0 sec)
+
+SHARK setup successfully completed in   0.4 seconds
+
+Maximum memory used throughout the entire STARTUP-calculation: 17.1 MB
+
+
+           ************************************************************
+           *        Program running with 2 parallel MPI-processes     *
+           *              working on a common directory               *
+           ************************************************************
+-------------------------------------------------------------------------------
+                                 ORCA GUESS
+                   Start orbitals & Density for SCF / CASSCF
+-------------------------------------------------------------------------------
+
+------------
+SCF SETTINGS
+------------
+Hamiltonian:
+ Density Functional     Method          .... DFT(GTOs)
+  Functional kind                       .... Exchange
+  Functional name                       .... Re-regularized SCAN exchange by Furness et al
+  Functional family                     .... MGGA
+  Functional refs                              
+    [ 0] J. W. Furness, A. D. Kaplan, J. Ning, J. P. Perdew, and J. Sun.,  J. Phys. Chem. Lett. 11, 8208-8215 (2020), doi: 10.1021/acs.jpclett.0c02405
+    [ 1] J. W. Furness, A. D. Kaplan, J. Ning, J. P. Perdew, and J. Sun.,  J. Phys. Chem. Lett. 11, 9248-9248 (2020), doi: 10.1021/acs.jpclett.0c03077
+  Functional external parameters        .... 6
+    Parameter  0 _c1        =  6.670000e-01 : c1 parameter        
+    Parameter  1 _c2        =  8.000000e-01 : c2 parameter        
+    Parameter  2 _d         =  1.240000e+00 : d parameter         
+    Parameter  3 _k1        =  6.500000e-02 : k1 parameter        
+    Parameter  4 _eta       =  1.000000e-03 : eta parameter       
+    Parameter  5 _dp2       =  3.610000e-01 : dp2 parameter       
+  Functional kind                       .... Correlation
+  Functional name                       .... Re-regularized SCAN correlation by Furness et al
+  Functional family                     .... MGGA
+  Functional refs                              
+    [ 0] J. W. Furness, A. D. Kaplan, J. Ning, J. P. Perdew, and J. Sun.,  J. Phys. Chem. Lett. 11, 8208-8215 (2020), doi: 10.1021/acs.jpclett.0c02405
+    [ 1] J. W. Furness, A. D. Kaplan, J. Ning, J. P. Perdew, and J. Sun.,  J. Phys. Chem. Lett. 11, 9248-9248 (2020), doi: 10.1021/acs.jpclett.0c03077
+  Functional external parameters        .... 1
+    Parameter  0 _eta       =  1.000000e-03 : Regularization parameter
+ Gradients option       PostSCFGGA      .... off
+ RI-approximation to the Coulomb term is turned on
+   Number of AuxJ basis functions       .... 230
+
+
+General Settings:
+ Integral files         IntName         .... /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4
+ Hartree-Fock type      HFTyp           .... RHF
+ Total Charge           Charge          ....    0
+ Multiplicity           Mult            ....    1
+ Number of Electrons    NEL             ....   34
+ Basis Dimension        Dim             ....  126
+ Nuclear Repulsion      ENuc            ....    131.2511907954 Eh
+
+Convergence Acceleration:
+ AO-DIIS                CNVDIIS         .... on
+   Start iteration      DIISMaxIt       ....    12
+   Startup error        DIISStart       ....  0.200000
+   # of expansion vecs  DIISMaxEq       ....     5
+   Bias factor          DIISBfac        ....   1.050
+   Max. coefficient     DIISMaxC        ....  10.000
+ MO-DIIS                CNVKDIIS        .... off
+ Trust-Rad. Augm. Hess. CNVTRAH         .... auto
+   Auto Start mean grad. ratio tolernc. ....  1.125000
+   Auto Start start iteration           ....    50
+   Auto Start num. interpolation iter.  ....    10
+   Max. Number of Micro iterations      ....    24
+   Max. Number of Macro iterations      .... Maxiter - #DIIS iter
+   Number of Davidson start vectors     ....     2
+   Converg. threshold    (grad. norm)   ....   1.000e-05
+   Grad. Scal. Fac. for Micro threshold ....   0.100
+   Minimum threshold for Micro iter.    ....   1.000e-02
+   NR start threshold (gradient norm)   ....   1.000e-04
+   Initial trust radius                 ....   0.400
+   Minimum AH scaling param. (alpha)    ....   1.000
+   Maximum AH scaling param. (alpha)    .... 1000.000
+   Quad. conv. algorithm                .... NR
+   White noise on init. David. guess    .... on
+   Maximum white noise                  ....   0.010
+   Pseudo random numbers                .... off
+   Inactive MOs                         .... canonical
+   Orbital update algorithm             .... Taylor
+   Preconditioner                       .... Diag
+   Full preconditioner red. dimension   ....   250
+   COSX micro iterations for RIJONX calc.... off
+ SOSCF                 CNVSOSCF           .... on
+   Start iteration     SOSCFMaxIt         ....   150
+   Startup grad/error  SOSCFStart         ....  0.003300
+   Hessian update      SOSCFHessUp        .... L-BFGS
+   Autom. constraints  SOSCFAutoConstrain .... off
+ Level Shifting         CNVShift        .... on
+   Level shift para.    LevelShift      ....    0.2500
+   Turn off err/grad.   ShiftErr        ....    0.0010
+ Zerner damping         CNVZerner       .... off
+ Static damping         CNVDamp         .... on
+   Fraction old density DampFac         ....    0.7000
+   Max. Damping (<1)    DampMax         ....    0.9800
+   Min. Damping (>=0)   DampMin         ....    0.0000
+   Turn off err/grad.   DampErr         ....    0.1000
+
+SCF Procedure:
+ Maximum # iterations   MaxIter         ....   125
+ SCF integral mode      SCFMode         .... Direct
+
+-------
+TIMINGS
+-------
+
+Total SCF gradient time     ....        1.070 sec
+
+Densities                   ....       0.000 sec  (  0.0%)
+One electron gradient       ....       0.042 sec  (  3.9%)
+RI-J Coulomb gradient       ....       0.170 sec  ( 15.9%)
+XC gradient                 ....       0.807 sec  ( 75.4%)
+
+Maximum memory used throughout the entire SCFGRAD-calculation: 26.3 MB
+------------------------------------------------------------------------------
+                         ORCA GEOMETRY RELAXATION STEP
+------------------------------------------------------------------------------
+
+Reading the OPT-File                    .... done
+Getting information on internals        .... done
+Copying old internal coords+grads       .... done
+Making the new internal coordinates     .... (2022 redundants) done
+Validating the new internal coordinates .... (2022 redundants) done
+Calculating the B-matrix                .... done
+Calculating the G,G- and P matrices     .... done
+Transforming gradient to internals      .... done
+Projecting the internal gradient        .... done
+Number of atoms                         ....  14
+Number of internal coordinates          ....  55
+Current Energy                          ....  -157.262826483 Eh
+Current gradient norm                   ....     0.357997543 Eh/bohr
+Maximum allowed component of the step   ....  0.300
+Current trust radius                    ....  0.150
+Updating the Hessian (BFGS)             .... done
+Forming the augmented Hessian           .... done
+Diagonalizing the augmented Hessian     .... done
+Last element of RFO vector              ....  0.818176194
+Lowest eigenvalues of augmented Hessian:
+ -0.274751126  0.002061847  0.011549871  0.011706731  0.018882739
+Length of the computed step             ....  0.702742981
+Warning: the length of the step is outside the trust region - taking restricted step instead
+The input lambda is                     ....    -0.000505
+   iter:   5  x=   -0.008356  g=21353.399892 f(x)=    72.078347
+   iter:  10  x=   -0.168898  g=   25.893118 f(x)=     1.963999
+   iter:  15  x=   -1.795340  g=    0.064618 f(x)=     0.033932
+   iter:  20  x=   -2.369693  g=    0.014249 f(x)=     0.000000
+The output lambda is                    ....    -2.369693 (21 iterations)
+The final length of the internal step   ....  0.150000000
+Converting the step to Cartesian space:
+ Initial RMS(Int)=    0.0202259959
+Transforming coordinates:
+ Iter   0:  RMS(Cart)=    0.0834988804 RMS(Int)=    0.0194986636
+ Iter   5:  RMS(Cart)=    0.0000000242 RMS(Int)=    0.0000000138
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0890355862 RMS(Int)=    5.1632174190
+ Iter   5:  RMS(Cart)=    0.0890355862 RMS(Int)=    4.5191081019
+ Iter  10:  RMS(Cart)=    0.0890355862 RMS(Int)=    3.8629379726
+ Iter  15:  RMS(Cart)=    0.0890355862 RMS(Int)=    3.3611671494
+ Iter  20:  RMS(Cart)=    0.0890355862 RMS(Int)=    3.0413910977
+ Iter  25:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.8439224563
+ Iter  30:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.7205216241
+ Iter  35:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.6432082681
+ Iter  40:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.5959336554
+ Iter  45:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.5690153629
+ Iter  50:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.5562795439
+ Iter  55:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.5535996848
+ Iter  60:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.5581137804
+ Iter  65:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.5677807499
+ Iter  70:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.5811149954
+ Iter  75:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.5970195085
+ Iter  80:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.6146763120
+ Iter  85:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.6334718625
+ Iter  90:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.6529447037
+ Iter  95:  RMS(Cart)=    0.0890355862 RMS(Int)=    2.6727478265
+ RMS(Cart) too big - taking linear step, building new B-matrix and trying again
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0879033127 RMS(Int)=    5.0476480823
+ Iter   5:  RMS(Cart)=    0.0879033127 RMS(Int)=    4.3944880100
+ Iter  10:  RMS(Cart)=    0.0879033127 RMS(Int)=    3.6961312247
+ Iter  15:  RMS(Cart)=    0.0879033127 RMS(Int)=    3.1670929848
+ Iter  20:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.8450600543
+ Iter  25:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.6547740867
+ Iter  30:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.5409096519
+ Iter  35:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4733915379
+ Iter  40:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4355758874
+ Iter  45:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4176117197
+ Iter  50:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4132862356
+ Iter  55:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4184778956
+ Iter  60:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4303466041
+ Iter  65:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4468803702
+ Iter  70:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4666256067
+ Iter  75:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.4885179963
+ Iter  80:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.5117716148
+ Iter  85:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.5358035413
+ Iter  90:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.5601810635
+ Iter  95:  RMS(Cart)=    0.0879033127 RMS(Int)=    2.5845838242
+ RMS(Cart) too big - taking linear step, building new B-matrix and trying again
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0866927375 RMS(Int)=    4.9320559199
+ Iter   5:  RMS(Cart)=    0.0866927375 RMS(Int)=    4.2359795469
+ Iter  10:  RMS(Cart)=    0.0866927375 RMS(Int)=    3.4317074164
+ Iter  15:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.8672163971
+ Iter  20:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.5611450510
+ Iter  25:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.3943373702
+ Iter  30:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.3018451078
+ Iter  35:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.2527700368
+ Iter  40:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.2309534082
+ Iter  45:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.2270534866
+ Iter  50:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.2352373796
+ Iter  55:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.2516562792
+ Iter  60:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.2736704926
+ Iter  65:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.2994209248
+ Iter  70:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.3275749425
+ Iter  75:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.3571667963
+ Iter  80:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.3874927157
+ Iter  85:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.4180393874
+ Iter  90:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.4484337837
+ Iter  95:  RMS(Cart)=    0.0866927375 RMS(Int)=    2.4784071731
+ RMS(Cart) too big - taking linear step, building new B-matrix and trying again
+Decreasing the constraint accuracy, check your results carefully!
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0856168200 RMS(Int)=    4.8162623688
+ Iter   5:  RMS(Cart)=    0.0856168200 RMS(Int)=    4.0524638029
+ Iter  10:  RMS(Cart)=    0.0856168200 RMS(Int)=    3.0949232859
+ Iter  15:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.5246071211
+ Iter  20:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.2557056047
+ Iter  25:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.1195844429
+ Iter  30:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.0500456623
+ Iter  35:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.0187702041
+ Iter  40:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.0113808075
+ Iter  45:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.0196030271
+ Iter  50:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.0382558309
+ Iter  55:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.0639073106
+ Iter  60:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.0941969831
+ Iter  65:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.1274602730
+ Iter  70:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.1625044828
+ Iter  75:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.1984671856
+ Iter  80:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.2347225718
+ Iter  85:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.2708172810
+ Iter  90:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.3064252025
+ Iter  95:  RMS(Cart)=    0.0856168200 RMS(Int)=    2.3413149411
+ RMS(Cart) too big - taking linear step, building new B-matrix and trying again
+Decreasing the constraint accuracy, check your results carefully!
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0846793701 RMS(Int)=    4.7000822051
+ Iter   5:  RMS(Cart)=    0.0846793701 RMS(Int)=    3.8228188122
+ Iter  10:  RMS(Cart)=    0.0846793701 RMS(Int)=    2.6750686640
+ Iter  15:  RMS(Cart)=    0.0846793701 RMS(Int)=    2.1617237307
+ Iter  20:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.9451647829
+ Iter  25:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.8401240066
+ Iter  30:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.7903350853
+ Iter  35:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.7726839495
+ Iter  40:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.7753419174
+ Iter  45:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.7913911208
+ Iter  50:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.8164362896
+ Iter  55:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.8475312867
+ Iter  60:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.8826295323
+ Iter  65:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.9202746891
+ Iter  70:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.9594138306
+ Iter  75:  RMS(Cart)=    0.0846793701 RMS(Int)=    1.9992783256
+ Iter  80:  RMS(Cart)=    0.0846793701 RMS(Int)=    2.0393046180
+ Iter  85:  RMS(Cart)=    0.0846793701 RMS(Int)=    2.0790797360
+ Iter  90:  RMS(Cart)=    0.0846793701 RMS(Int)=    2.1183027798
+ Iter  95:  RMS(Cart)=    0.0846793701 RMS(Int)=    2.1567570951
+ RMS(Cart) too big - taking linear step, building new B-matrix and trying again
+Decreasing the constraint accuracy, check your results carefully!
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0838470826 RMS(Int)=    4.5833026903
+ Iter   5:  RMS(Cart)=    0.0838470826 RMS(Int)=    3.4982951349
+ Iter  10:  RMS(Cart)=    0.0838470826 RMS(Int)=    2.2107587563
+ Iter  15:  RMS(Cart)=    0.0838470826 RMS(Int)=    1.8118689286
+ Iter  20:  RMS(Cart)=    0.0838470826 RMS(Int)=    1.6460888502
+ Iter  25:  RMS(Cart)=    0.0838470826 RMS(Int)=    1.5650110333
+ RMS(Int) increases - keeping linear update
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0830264344 RMS(Int)=    4.4656186577
+ Iter   5:  RMS(Cart)=    0.0830264344 RMS(Int)=    2.9746313347
+ Iter  10:  RMS(Cart)=    0.0830264344 RMS(Int)=    1.7829457519
+ Iter  15:  RMS(Cart)=    0.0830264344 RMS(Int)=    1.4985507858
+ RMS(Int) increases - keeping linear update
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0820366763 RMS(Int)=    4.3464710429
+ Iter   5:  RMS(Cart)=    0.0820366763 RMS(Int)=    2.2212731738
+ Iter  10:  RMS(Cart)=    0.0820366763 RMS(Int)=    1.4350907179
+ RMS(Int) increases - keeping linear update
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0805935496 RMS(Int)=    4.2246483938
+ Iter   5:  RMS(Cart)=    0.0805935496 RMS(Int)=    1.5895628194
+ Iter  10:  RMS(Cart)=    0.0805935496 RMS(Int)=    7.4417835167
+ RMS(Int) increases - keeping linear update
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0783064951 RMS(Int)=    4.0971636951
+ Iter   5:  RMS(Cart)=    0.0783064951 RMS(Int)=    1.1982766861
+ RMS(Int) increases - keeping linear update
+Imposing constraints:
+ Iter   0:  RMS(Cart)=    0.0746375008 RMS(Int)=    3.9549339418
+ Iter   5:  RMS(Cart)=    0.0746375008 RMS(Int)=    7.2137141445
+ RMS(Int) increases - keeping linear update
+
+          !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+          !                      CONSTRAINTS COULD NOT BE IMPOSED                      !
+          !          CHECK THE OPTIMIZED GEOMETRY FOR PRESERVING THE CONSTRAINTS       !
+          !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+done
+Storing new coordinates                 .... done
+The predicted energy change is          ....    -0.066943993
+Previously predicted energy change      ....    -0.093072900
+Actually observed energy change         ....    -0.038036848
+Ratio of predicted to observed change   ....     0.408678012
+New trust radius                        ....     0.100000000
+
+                                .--------------------.
+          ----------------------|Geometry convergence|-------------------------
+          Item                value                   Tolerance       Converged
+          ---------------------------------------------------------------------
+          Energy change      -0.0380368479            0.0000010000      NO
+          RMS gradient        0.0837237023            0.0000300000      NO
+          MAX gradient        0.2976537768            0.0001000000      NO
+          RMS step            0.0202259959            0.0006000000      NO
+          MAX step            0.0659084335            0.0010000000      NO
+          -------------------------------------------------------------------------
+          ........................................................
+          Max(Bonds)      0.0141      Max(Angles)    2.46
+          Max(Dihed)        3.78      Max(Improp)    0.00
+          ---------------------------------------------------------------------
+
+The optimization has not yet converged - more geometry cycles are needed
+
+
+    ---------------------------------------------------------------------------
+                         Redundant Internal Coordinates
+                            (Angstroem and degrees)
+
+        Definition                    Value    dE/dq     Step     New-Value
+    ----------------------------------------------------------------------------
+     1. B(C   1,C   0)                3.6147 -0.009134  0.0036    3.6183   
+     2. B(C   2,C   1)                2.7616 -0.064688  0.0070    2.7687   
+     3. B(C   3,C   2)                3.3761  0.074351 -0.0119    3.3642   
+     4. B(H   4,C   0)                3.1043  0.012758 -0.0014    3.1029   
+     5. B(H   5,C   0)                3.2340  0.003626  0.0001    3.2341   
+     6. B(H   6,C   0)                2.3957  0.041015 -0.0068    2.3889   
+     7. B(H   7,C   1)                2.2798 -0.031309  0.0051    2.2849   
+     8. B(H   8,C   1)                1.3307  0.074274 -0.0121    1.3186   
+     9. B(H   9,C   2)                1.7810  0.086250 -0.0141    1.7669   
+    10. B(H  10,C   2)                3.1021 -0.021473  0.0010    3.1031   
+    11. B(H  11,C   3)                3.0827  0.004822 -0.0006    3.0821   
+    12. B(H  12,C   3)                1.4834  0.082322 -0.0131    1.4703   
+    13. B(H  13,C   3)                3.1578  0.079302 -0.0115    3.1463   
+    14. A(C   1,C   0,H   6)           72.23 -0.019856   -0.16     72.07   
+    15. A(C   1,C   0,H   4)          101.77  0.297654   -2.35     99.42   
+    16. A(H   5,C   0,H   6)           99.52 -0.026473    0.29     99.81   
+    17. A(H   4,C   0,H   6)          153.74 -0.024851   -0.43    153.30   
+    18. A(C   1,C   0,H   5)          147.44 -0.086539    1.21    148.65   
+    19. A(H   4,C   0,H   5)           98.26 -0.153708    2.00    100.27   
+    20. A(H   7,C   1,H   8)          140.23  0.026234   -0.60    139.62   
+    21. A(C   0,C   1,H   7)          156.36 -0.036606    0.97    157.33   
+    22. A(C   0,C   1,C   2)           15.68 -0.051914   -0.54     15.14   
+    23. A(C   2,C   1,H   7)          165.70 -0.072913    1.25    166.95   
+    24. A(C   0,C   1,H   8)           29.15  0.042292    1.01     30.16   
+    25. A(C   2,C   1,H   8)           41.72 -0.025448    0.21     41.93   
+    26. A(H   9,C   2,H  10)           76.02 -0.107695    1.45     77.46   
+    27. A(C   1,C   2,H   9)          101.58  0.016984   -0.77    100.81   
+    28. A(C   3,C   2,H   9)           94.26  0.008294    0.26     94.52   
+    29. A(C   1,C   2,C   3)           24.02  0.026021    0.02     24.04   
+    30. A(C   1,C   2,H  10)          102.55 -0.201290    1.13    103.68   
+    31. A(C   3,C   2,H  10)          123.35 -0.204888    1.15    124.50   
+    32. A(C   2,C   3,H  11)          125.63  0.045591   -0.91    124.73   
+    33. A(C   2,C   3,H  12)           61.42  0.006912   -0.23     61.19   
+    34. A(H  11,C   3,H  12)          111.61  0.016637   -0.09    111.52   
+    35. A(C   2,C   3,H  13)          115.35 -0.188053    2.46    117.81   
+    36. A(H  11,C   3,H  13)          102.47  0.071835   -1.60    100.87   
+    37. A(H  12,C   3,H  13)          138.65  0.005248   -0.47    138.18   
+    38. D(C   2,C   1,C   0,H   5)     41.48 -0.035658    0.82     42.30   
+    39. D(H   7,C   1,C   0,H   5)   -101.94  0.086923   -1.71   -103.65   
+    40. D(H   7,C   1,C   0,H   4)    131.25 -0.057186    1.24    132.50   
+    41. D(H   7,C   1,C   0,H   6)    -22.27  0.055287   -1.56    -23.83   
+    42. D(C   2,C   1,C   0,H   4)    -85.33 -0.179767    3.78    -81.55   
+    43. D(C   2,C   1,C   0,H   6)    121.14 -0.067294    0.98    122.12   
+    44. D(C   3,C   2,C   1,C   0)   -123.58  0.164415    0.72   -122.85 C 
+    45. D(C   3,C   2,C   1,H   7)    -48.20  0.021483    0.00    -48.20   
+    46. D(C   3,C   2,C   1,H   8)   -154.22  0.007983   -0.16   -154.37   
+    47. D(H   9,C   2,C   1,C   0)    162.31  0.161301    0.19    162.51   
+    48. D(H   9,C   2,C   1,H   7)   -122.31  0.018369   -0.90   -123.21   
+    49. D(H   9,C   2,C   1,H   8)    131.67  0.004869   -1.05    130.62   
+    50. D(H  11,C   3,C   2,C   1)    141.31 -0.048849    1.65    142.96   
+    51. D(H  11,C   3,C   2,H   9)   -109.56 -0.043148    0.24   -109.33   
+    52. D(H  11,C   3,C   2,H  10)    174.39  0.062859   -0.95    173.44   
+    53. D(H  12,C   3,C   2,C   1)   -121.47 -0.043383    1.21   -120.26   
+    54. D(H  12,C   3,C   2,H   9)    -12.35 -0.037681   -0.20    -12.55   
+    55. D(H  12,C   3,C   2,H  10)    -88.39  0.068326   -1.39    -89.79   
+    ----------------------------------------------------------------------------
+
+Geometry step timings:
+Preparation and reading OPT file:      0.000 s ( 0.441 %)
+Internal coordinates            :      0.000 s ( 0.599 %)
+B/P matrices and projection     :      0.000 s ( 8.322 %)
+Hessian update/contruction      :      0.000 s ( 4.813 %)
+Making the step                 :      0.000 s ( 8.286 %)
+Converting the step to Cartesian:      0.004 s (69.059 %)
+Storing new data                :      0.000 s ( 0.617 %)
+Checking convergence            :      0.000 s ( 0.917 %)
+Final printing                  :      0.000 s ( 6.946 %)
+Total time                      :      0.006 s
+
+Time for energy+gradient        :     10.513 s
+Time for complete geometry iter :     11.058 s
+
+
+
+
+    ----------------------------------------------------------------------------
+                                  WARNING !!!
+       The optimization did not converge but reached the maximum number of
+       optimization cycles.
+       Please check your results very carefully.
+    ----------------------------------------------------------------------------
+
+
+
+Storing optimized geometry in /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4.025.xyz ... failed!
+Storing optimized geometry and energy in /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4.xyzall ... failed!
+Storing actual gbw-file in /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4.025.gbw ... failed!
+
+
+           ************************************************************
+           *        Program running with 2 parallel MPI-processes     *
+           *              working on a common directory               *
+           ************************************************************
+ERROR (SHARK): Failed to read input file (/scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4.SHARKINP.tmp)
+ERROR (SHARK): Failed to read input file (/scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4.SHARKINP.tmp)
+--------------------------------------------------------------------------
+Primary job  terminated normally, but 1 process returned
+a non-zero exit code. Per user-direction, the job has been aborted.
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+mpirun detected that one or more processes exited with non-zero status, thus causing
+the job to be terminated. The first process to do so was:
+
+  Process name: [[40877,1],0]
+  Exit code:    1
+--------------------------------------------------------------------------
+
+ORCA finished by error termination in PROPERTIES
+Calling Command: mpirun -np 2  /scratch/slurm_tmpdir/job_8172492/orca_8172492/orca_prop_mpi /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4.propinp.tmp /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4 1 /scratch/slurm_tmpdir/job_8172492/delfin_8172492/run/rc1_butane_scan_r2scan3c_v4 
+[file orca_tools/qcmsg.cpp, line 394]: 
+  .... aborting the run
+
+[file orca_tools/qcmsg.cpp, line 394]: 
+  .... aborting the run
+
