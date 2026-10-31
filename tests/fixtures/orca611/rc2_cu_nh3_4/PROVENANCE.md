@@ -5,7 +5,9 @@
 - System: [Cu(NH3)4]2+, tetraamminecopper(II). Target state: doublet
   (S=1/2), square planar, Cu(II) d9. CPCM(water).
 - Method: r2SCAN-3c (UKS, multiplicity 2) + CPCM(water), TightOpt +
-  NumFreq, MaxIter 200.
+  NumFreq, MaxIter 200, ORCA 6.1.0 (the .out banner prints "Program
+  Version 6.1.0  -  RELEASE   -" at :54; the orca611 fixture directory
+  name refers to the fixture suite, not this run's build).
 - Input keywords: `! r2SCAN-3c CPCM(water) TightOpt NumFreq` with
   `%output jsonpropfile True end`, `%pal nprocs 2 end`, `%maxcore 1000`,
   `%geom MaxIter 200 end`.

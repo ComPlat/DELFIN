@@ -2,7 +2,10 @@
 
 - System: RuO4, ruthenium tetroxide. Target state: singlet (S=0),
   tetrahedral Td, Ru(VIII) d0.
-- Method: r2SCAN-3c (RKS), TightOpt + NumFreq, ORCA 6.1.1.
+- Method: r2SCAN-3c (RKS), TightOpt + NumFreq, ORCA 6.1.0 (the .out
+  banner prints "Program Version 6.1.0  -  RELEASE   -" at :54; the
+  orca611 fixture directory name refers to the fixture suite, not this
+  run's build).
   Input keywords: `! r2SCAN-3c TightOpt NumFreq` with
   `%output jsonpropfile True end`, `%pal nprocs 2 end`,
   `%maxcore 1000`; charge/multiplicity `* xyz 0 1`.
