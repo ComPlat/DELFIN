@@ -281,7 +281,42 @@
       "valid_values": "positive float, Hartree",
       "default": "1e-5",
       "read_by": "delfin/common/control_validator.py:2219-2220 (_as_imag_sp_energy_window, old-value mapping at :1279); delfin/imag.py:476.",
-      "best_practice": "Leave the default; it is a noise floor on single-point differences. SH1 trace."
+        "best_practice": "Leave the default; it is a noise floor on single-point differences. SH1 trace."
+    },
+    "tadf_xTB": {
+      "meaning": "Whether the xTB-based TADF screening phase runs inside the classic pipeline (a screening step, not production excitation physics).",
+      "valid_values": "yes | no (_as_yes_no)",
+      "default": "no",
+      "read_by": "delfin/workflows/pipeline.py:1010 (gate), :1013 (import); FieldSpec delfin/common/control_validator.py:2268.",
+      "best_practice": "Screening level only (sTDA-xTB / sTD-DFT-xTB; Grimme, J. Chem. Phys. 138, 244104 (2013), DOI 10.1063/1.4809578): emitter RANKING, S1-vs-T1 order and the sign/rough size of Delta E_ST. Absolute excitation energies, emission wavelengths and rates need TD-DFT or STEOM-DLPNO-CCSD / SCS double-hybrid confirmation before a number is quoted."
+    },
+    "tadf_xTB_excited_method": {
+      "meaning": "Which xTB excited-state engine computes the singlet/triplet screening spectra.",
+      "valid_values": "stda | std2 (_as_response_engine)",
+      "default": "stda",
+      "read_by": "delfin/workflows/pipeline.py:1022 (default stda); FieldSpec :2271; delfin/workflows/contrib/tadf_xtb_workflow.py:64-70 (schema name preferred, aliases kept, missing required settings refused naming them).",
+      "best_practice": "stda for the fast screen; std2 when the screening itself decides which candidate goes to production (better excited-state energetics). Still screening level -- never quote its wavelengths as production values."
+    },
+    "tadf_xTB_energy_window": {
+      "meaning": "Energy window (eV) for the screening excited-state calculation.",
+      "valid_values": "non-negative number, eV (_as_non_negative_float)",
+      "default": 10.0,
+      "read_by": "delfin/workflows/pipeline.py:1024 (default 10.0); FieldSpec :2273; tadf_xtb_workflow.py:67-73.",
+      "best_practice": "The default 10 eV covers typical emitter windows. Raise it only when a low-lying state outside the window must appear (e.g. to confirm the Delta E_ST sign across a wide family) -- the reason goes in the same sentence as the changed value, through /control with user confirmation."
+    },
+    "tadf_xTB_run_t1_opt": {
+      "meaning": "Whether the T1 geometry is optimised so the adiabatic (relaxed) Delta E_ST is produced alongside the vertical one.",
+      "valid_values": "yes | no (_as_yes_no)",
+      "default": "yes",
+      "read_by": "delfin/workflows/pipeline.py:1025 (default yes); FieldSpec :2274.",
+      "best_practice": "Keep yes for emitter decisions: the adiabatic gap is the number a TADF referee asks for -- report BOTH the vertical and the relaxed gap. Turning it off is a cost decision that must be stated."
+    },
+    "tadf_xTB_preopt": {
+      "meaning": "How the S0 geometry is prepared before the screening: none (no optimisation), xtb (xTB optimisation), crest (CREST conformer search), goat (GOAT with xTB).",
+      "valid_values": "none | xtb | crest | goat (_as_preopt_mode)",
+      "default": "none",
+      "read_by": "delfin/workflows/pipeline.py:1021, mapped to use_crest/use_goat/optimize_s0 at :1035-1037; FieldSpec :2270; dashboard env DELFIN_TADF_XTB_PREOPT (delfin/dashboard/local_runner.py:692).",
+      "best_practice": "Rigid chromophores: xtb is enough. Flexible emitters with conformer heterogeneity need crest or goat -- a wrong conformer can flip the S1/T1 order and with it the emitter decision."
     }
   }
 }
