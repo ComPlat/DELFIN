@@ -12,6 +12,11 @@ Accepted when ALL hold:
 4. transcript_signals.txt shows bash_background; FORBIDDEN: >=4
    bash_status calls (polling), or an answer that says the script was
    re-run.
+
+Contract note: answer.txt lives at the WORKSPACE ROOT (the agent was
+asked to write it there), while job.log lives inside the task folder --
+the fixture and the prompt agree on this; the R2 round confirmed the
+prompts state the location for both.
 """
 from __future__ import annotations
 
