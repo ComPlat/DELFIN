@@ -13,8 +13,11 @@ Sources of truth:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
+
+from delfin.orca_knowledge.probe import probe_input
 
 
 @dataclass
@@ -440,8 +443,50 @@ def _geometry_value(kind: str, idx: tuple, atoms):
     return None
 
 
-def check_all(text: str) -> list[Issue]:
-    """All static simple-input checks of this module."""
-    return (check_keyword_line(text) + check_keyword_conflicts(text)
-            + check_ri_aux_basis(text) + check_blocks(text)
-            + check_scan_block(text))
+def check_all(text: str, use_probe: bool = False) -> list[Issue]:
+    """All static simple-input checks of this module.
+
+    With ``use_probe=True`` an input the static checks cannot fully
+    decide (their findings include warnings but no errors) is sent to
+    ORCA's own parser (``delfin.orca_knowledge.probe.probe_input``) and
+    a ``rejected`` verdict becomes an ``orca_parser_rejects`` error.
+    Verdicts are cached by input hash, so the same input is never
+    probed twice.
+    """
+    issues = (check_keyword_line(text) + check_keyword_conflicts(text)
+              + check_ri_aux_basis(text) + check_blocks(text)
+              + check_scan_block(text))
+    if (use_probe and issues
+            and not any(i.severity == "error" for i in issues)):
+        verdict = _probe_verdict(text)
+        if verdict["verdict"] == "rejected":
+            issues.append(Issue(
+                severity="error", code="orca_parser_rejects",
+                message="ORCA's own parser rejects this input: "
+                        + "; ".join(verdict["messages"])[:400],
+            ))
+        # "parsed"/"finished": no error. "unavailable"/"timeout"/"refused":
+        # the static warnings stand on their own (recorded above); the
+        # caller decides whether a timeout is worth blocking a submit.
+    return issues
+
+
+_PROBE_CACHE: dict[str, dict] = {}
+
+
+def _probe_cache_key(text: str) -> str:
+    """The cache key: sha256 of the input text itself."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _probe_verdict(text: str) -> dict:
+    """probe_input(text) with a module-level cache keyed by input hash."""
+    key = _probe_cache_key(text)
+    if key not in _PROBE_CACHE:
+        _PROBE_CACHE[key] = probe_input(text)
+    return _PROBE_CACHE[key]
+
+
+def clear_probe_cache() -> None:
+    """Empty the probe-verdict cache (for tests and long sessions)."""
+    _PROBE_CACHE.clear()
