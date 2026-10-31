@@ -156,6 +156,18 @@ def test_property_json_committed():
     import json
     data = json.loads(p.read_text())
     assert data, "property.json is empty"
+    # Real ORCA property output, not a stub: ORCA's property JSON carries
+    # the run's metadata (Calculation_Info / NAtoms / Calculation_Status).
+    assert (
+        "Calculation_Info" in data
+        or "NAtoms" in data
+        or "Calculation_Status" in data
+    ), "property.json does not look like real ORCA property output"
+    # The .inp must request jsonpropfile True -- that is why this file
+    # exists and why no bare .json does (QS F2 ruling, 2026-11-04).
+    inp = (FIXTURE / "rc1_butane_scan_r2scan3c.inp").read_text()
+    assert "jsonpropfile True" in inp
+    assert "jsonfile True" not in inp
     # The bare .json was never requested and must stay absent: its
     # presence would mean the .inp asked for output modes the
     # PROVENANCE says it did not.
