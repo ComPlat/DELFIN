@@ -288,6 +288,8 @@ HEADER_CSS = """
   display: flex; flex-direction: column; overflow: hidden;
 }
 .delfin-hdr .delfin-pop-head { gap: 6px; align-items: center; flex-wrap: wrap; }
+.delfin-hdr .delfin-branch-pop > :not(.delfin-branch-rows) { flex: 0 0 auto; }
+.delfin-hdr .delfin-branch-rows > * { flex-shrink: 0; }
 .delfin-hdr .delfin-branch-search { flex: 1 1 200px; min-width: 160px; width: auto; margin: 0; }
 .delfin-hdr .widget-text input, .delfin-hdr .widget-text input[type="text"] {
   height: var(--dh-h); border-radius: var(--dh-r); border: 1px solid var(--dh-border);
@@ -430,6 +432,7 @@ def keys_js() -> str:
     })();
   }
   document.addEventListener('keydown', function(ev) {
+    if (ev.defaultPrevented) return;
     var t = ev.target, tag = (t && t.tagName || '').toUpperCase();
     var typing = tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable);
     // Esc presses the Cancel of an open confirmation first; no key
@@ -438,11 +441,14 @@ def keys_js() -> str:
       var c = Array.prototype.find.call(
         document.querySelectorAll('.delfin-confirm .delfin-confirm-cancel'),
         function(b) { return b.offsetParent !== null; });
-      if (c) { ev.preventDefault(); c.click(); return; }
+      if (c) { ev.preventDefault(); ev.stopImmediatePropagation(); c.click(); return; }
     }
-    if (ev.key === 'Escape' && open()) { ev.preventDefault(); toggle(); return; }
-    if ((ev.key === 'k' && (ev.ctrlKey || ev.metaKey)) || (ev.key === '/' && !typing)) {
+    if (ev.key === 'Escape' && open()) {
+      ev.preventDefault(); ev.stopImmediatePropagation(); toggle(); return;
+    }
+    if ((ev.key.toLowerCase() === 'k' && (ev.ctrlKey || ev.metaKey)) || (ev.key === '/' && !typing)) {
       ev.preventDefault();
+      ev.stopImmediatePropagation();
       if (!open()) toggle();
       focusSearch();
     }

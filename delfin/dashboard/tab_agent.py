@@ -8,6 +8,7 @@ import re
 import shutil
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple, Sequence
 
@@ -1004,8 +1005,9 @@ def _provider_key(name: str) -> str:
 # survive an update. The handler keeps the longest run of leading messages
 # whose source HTML is unchanged (each shown node carries the source it was
 # made from, so a card's own later DOM changes do not count as a change) and
-# replaces the rest: a streaming answer replaces itself, a new message is
-# appended, everything above stays the same nodes. Any error falls back to
+# replaces the rest. Within a growing assistant message its finished leading
+# paragraphs also keep their nodes, selection and interactive controls.
+# A new message is appended; everything above stays. Any error falls back to
 # the old whole replacement inside the container.
 #
 # Rejected: one ipywidget per message. Same effect, but it changes the DOM
@@ -1032,11 +1034,24 @@ _CHAT_MORPH_JS = (
     "var keys=want.map(function(n){"
     "return n.nodeType===1?n.outerHTML:'#'+n.data;});"
     "var have=Array.from(shown.childNodes);var p=0;"
-    "while(p<want.length&&p<have.length&&have[p].__delfinKey===keys[p])p++;"
+    "function key(n){return n.nodeType===1?n.outerHTML:'#'+n.data;}"
+    "function stamp(n){n.__delfinKey=key(n);"
+    "Array.from(n.childNodes).forEach(function(c){c.__delfinKey=key(c);});return n;}"
+    "while(p<want.length&&p<have.length){"
+    "if(have[p].__delfinKey===keys[p]){p++;continue;}"
+    "var old=have[p],next=want[p];"
+    "if(old.nodeType!==1||next.nodeType!==1||old.tagName!==next.tagName||"
+    "!old.classList.contains('delfin-chat-agent')||old.className!==next.className)break;"
+    "var oc=Array.from(old.childNodes),nc=Array.from(next.childNodes),k=0;"
+    "while(k<oc.length&&k<nc.length&&oc[k].__delfinKey===key(nc[k]))k++;"
+    "for(var x=oc.length-1;x>=k;x--)old.removeChild(oc[x]);"
+    "var part=document.createDocumentFragment();"
+    "for(var x=k;x<nc.length;x++)part.appendChild(stamp(document.importNode(nc[x],true)));"
+    "old.appendChild(part);old.__delfinKey=keys[p];p++;}"
     "for(var j=have.length-1;j>=p;j--)shown.removeChild(have[j]);"
     "var frag=document.createDocumentFragment();"
     "for(var i=p;i<want.length;i++){var n=document.importNode(want[i],true);"
-    "n.__delfinKey=keys[i];frag.appendChild(n);}"
+    "stamp(n);frag.appendChild(n);}"
     "shown.appendChild(frag);"
     "}catch(e){shown.innerHTML=fresh.innerHTML;}"
     "if(W.__delfinWatchChat)W.__delfinWatchChat(host);};}"
@@ -1335,7 +1350,8 @@ _AGENT_CSS = """\
    which an update does not replace. */
 .delfin-agent-chat-host > .widget-html-content { display: none; }
 .delfin-agent-chat-host > .delfin-agent-chat { display: flex;
-    flex-direction: column; min-height: 100%; }
+    flex-direction: column; min-height: 100%; box-sizing: border-box;
+    width: 100%; flex-shrink: 0; }
 /* Return to the newest output. Sticky rather than absolute: the chat is its
    own scrollport, so an absolutely placed control would ride away with the
    content instead of staying within reach. Hidden while the reader is
@@ -2481,6 +2497,16 @@ _AGENT_CSS = """\
 .delfin-agent-chat-frame:has(> .delfin-agent-working-slot .delfin-agent-working) .delfin-chat-jump {
     bottom: 84px;
 }
+/* On a short/narrow window the wrapped toolbar needs the room that the
+   desktop transcript floor reserved. Keep the composer on screen. */
+@media (max-height: 700px), (max-width: 1000px) {
+    .delfin-agent-root > .delfin-agent-chat-frame,
+    .delfin-agent-chat-row > .delfin-agent-chat-frame,
+    .delfin-agent-root > .delfin-agent-chat-row { min-height: 60px !important; }
+    .delfin-agent-root .delfin-agent-chat-frame > .delfin-agent-chat-host {
+        min-height: 60px !important;
+    }
+}
 </style>
 """
 
@@ -3001,10 +3027,10 @@ def _code_block_html(lang: str, code: str, idx: int = 0) -> str:
     )
 
 
-#: Above this many characters a streaming reply is shown as plain text:
-#: markdown costs ~0.5 ms per KB here (measured 2026-10-22), and a reply
-#: this long is rendered once more when it ends anyway.
-_STREAM_MARKDOWN_MAX = 20_000
+@lru_cache(maxsize=8)
+def _streaming_markdown_head(text: str) -> str:
+    """Reuse completed paragraphs while tokens extend the unfinished tail."""
+    return _md_to_html(text)
 
 
 def _streaming_html(text: str) -> str:
@@ -3015,8 +3041,9 @@ def _streaming_html(text: str) -> str:
     :func:`_md_to_html`, so bold text, lists and tables appear as they
     will stay. The paragraph still being written is escaped plain text in
     the reply's own font. Before, the whole reply was raw markdown until
-    the turn ended, then flipped to the formatted version. Over
-    ``_STREAM_MARKDOWN_MAX`` characters the whole reply is plain text.
+    the turn ended, then flipped to the formatted version. Finished text
+    must never switch back to raw markdown at a length threshold: that
+    reflows the whole answer under the reader.
     """
     # Same trim as the markdown path: the first tokens often arrive behind
     # a newline, and that gap would sit under the label for the whole reply.
@@ -3026,8 +3053,6 @@ def _streaming_html(text: str) -> str:
         return (f'<pre class="delfin-streaming-pre">{_html.escape(part)}'
                 f'</pre>') if part.strip() else ""
 
-    if len(text) > _STREAM_MARKDOWN_MAX:
-        return _plain(text)
     cut = text.rfind("\n\n")
     if cut < 0:
         return _plain(text)
@@ -3046,7 +3071,7 @@ def _streaming_html(text: str) -> str:
                 and lines[1].lstrip().startswith("|")):
             done = tail.rfind("\n")
             head, tail = text[:cut] + tail[:done], tail[done:]
-    return (_md_to_html(head) if head.strip() else "") + _plain(tail.strip("\n"))
+    return (_streaming_markdown_head(head) if head.strip() else "") + _plain(tail.strip("\n"))
 
 
 def _md_to_html(text: str) -> str:
@@ -3296,6 +3321,20 @@ window.__delfinQ = window.__delfinQ || function(sel) {
         if (all[i].offsetParent !== null) return all[i];
     }
     return all.length ? all[0] : null;
+};
+// Both agent key listeners use this guard, regardless of registration order.
+// The header owns Ctrl+K; a hidden chat must never submit slash commands.
+window.__delfinAgentOwnsKey = function(e) {
+    if (e.defaultPrevented) return false;
+    var chat = window.__delfinQ('.delfin-agent-chat-host');
+    if (!chat || chat.offsetParent === null) return false;
+    if (document.querySelector('.delfin-branch-btn') &&
+            (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') return false;
+    var panels = document.querySelectorAll('.delfin-branch-pop, .delfin-confirm');
+    for (var i = 0; i < panels.length; i++) {
+        if (panels[i].offsetParent !== null) return false;
+    }
+    return true;
 };
 """
 
@@ -8240,6 +8279,7 @@ def create_tab(ctx):
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
     document.addEventListener('keydown', function(e) {
+        if (!window.__delfinAgentOwnsKey(e)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             if (e.target && e.target.tagName === 'TEXTAREA') {
                 var container = e.target.closest
@@ -8815,14 +8855,8 @@ def create_tab(ctx):
             // own record while it waits to be looked at.
             if (!c.clientHeight) return;
             var st = stateFor(c);
-            var max = c.scrollHeight - c.clientHeight;
-            // An offset past the end belongs to a longer transcript than the
-            // one now shown -- the conversation was swapped, so start at the
-            // end rather than somewhere arbitrary in the middle of it.
-            if (!st.follow && st.top > max) {
-                st.follow = true;
-                st.unseen = false;
-            }
+            // A reflow or a temporarily shorter streaming message is not
+            // permission to resume following. Session changes/reset own that.
             if (st.follow) {
                 // At the end: come along with the agent. This is the half
                 // that is wanted and is unchanged.
@@ -8915,22 +8949,41 @@ def create_tab(ctx):
         function readerInput() {
             inputUntil = Date.now() + 300;
         }
+        function pauseForReader(e) {
+            var c = e.target && e.target.closest
+                ? e.target.closest('.delfin-agent-chat-host') : null;
+            if (!c) return;
+            var st = stateFor(c);
+            st.auto = false;
+            if (st.timer) clearTimeout(st.timer);
+            st.follow = false;
+            st.top = c.scrollTop;
+            st.mark = c.scrollHeight;
+            paint(c, st);
+        }
         function onChat(e) {
             return !!(e.target && e.target.closest
                       && e.target.closest('.delfin-agent-chat-host'));
         }
         document.addEventListener('wheel', function(e) {
-            if (onChat(e)) readerInput();
+            if (onChat(e)) {
+                readerInput();
+                // Stop before the browser scroll event: a streaming update
+                // can otherwise reach the end first and swallow that event.
+                if (e.deltaY < 0) pauseForReader(e);
+                else stateFor(e.target.closest('.delfin-agent-chat-host')).auto = false;
+            }
         }, {capture: true, passive: true});
         document.addEventListener('touchmove', function(e) {
-            if (onChat(e)) readerInput();
+            if (onChat(e)) { readerInput(); pauseForReader(e); }
         }, {capture: true, passive: true});
         document.addEventListener('keydown', function(e) {
             if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key))
                 readerInput();
+            if (/^(PageUp|ArrowUp|Home)$/.test(e.key)) pauseForReader(e);
         }, true);
         document.addEventListener('pointerdown', function(e) {
-            if (onChat(e)) { pressed = true; readerInput(); }
+            if (onChat(e)) { pressed = true; readerInput(); pauseForReader(e); }
         }, true);
         function released() {
             if (pressed) { pressed = false; readerInput(); }
@@ -8947,6 +9000,7 @@ def create_tab(ctx):
             if (!c || !c.classList ||
                 !c.classList.contains('delfin-agent-chat-host')) return;
             var st = stateFor(c);
+            var previousTop = st.top;
             st.top = c.scrollTop;
             if (st.auto) { st.auto = false; return; }
             // Following, moved, and not by the reader: back to the end in
@@ -8958,7 +9012,11 @@ def create_tab(ctx):
                 st.top = c.scrollTop;
                 return;
             }
-            var end = atEnd(c);
+            // Once deliberately paused, even a small upward wheel gesture
+            // must stick. The generous tolerance only applies while following.
+            var end = atEnd(c) && (st.follow ||
+                (!pressed && c.scrollTop > previousTop &&
+                 c.scrollHeight - c.scrollTop - c.clientHeight <= 1));
             if (end === st.follow) return;
             st.follow = end;
             if (end) { st.unseen = false; } else { st.mark = c.scrollHeight; }
@@ -23915,6 +23973,7 @@ def create_tab(ctx):
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
     document.addEventListener('keydown', function(e) {
+        if (!window.__delfinAgentOwnsKey(e)) return;
         /* Enter = Approve (if approval pending) or Send */
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
             /* Check if approval buttons are visible */
