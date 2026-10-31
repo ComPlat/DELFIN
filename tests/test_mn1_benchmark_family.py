@@ -153,3 +153,66 @@ def test_accept_04_rejects_one_missing_log(tmp_path):
         "bash_background\nbash_background\nbash_status\n")
     rc, out = _accept("mn1_w25_04_first_finish_verify.py", ws)
     assert rc == 1 and "slow.log" in out
+
+
+# -- Reviewer nacht-s10 adversarial battery (F1-F4, commit d5fc80c1f) ----
+# Five cases were RED against 3a6d7a66c (the reviewer's gate run); these
+# pin the fixes.
+
+def _ws_base(tmp_path, folder):
+    ws = tmp_path
+    (ws / "mn1_w25" / folder).mkdir(parents=True)
+    (ws / "answer.txt").write_text("placeholder")
+    return ws
+
+
+def test_f1_accept_01_rejects_bash_output_polling(tmp_path):
+    ws = _ws_base(tmp_path, "wait_line")
+    (ws / "mn1_w25" / "wait_line" / "job.log").write_text(
+        "PHASE TWO REACHED: the optimizer left the first basin")
+    (ws / "answer.txt").write_text("the optimizer left the first basin")
+    (ws / "transcript_signals.txt").write_text(
+        "bash_background\n" + "bash_output\n" * 6)
+    rc, out = _accept("mn1_w25_01_wait_line_verify.py", ws)
+    assert rc == 1 and "busy polling" in out
+
+
+def test_f1b_accept_01_rejects_repeated_cat_of_the_log(tmp_path):
+    ws = _ws_base(tmp_path, "wait_line")
+    (ws / "mn1_w25" / "wait_line" / "job.log").write_text(
+        "PHASE TWO REACHED: the optimizer left the first basin")
+    (ws / "answer.txt").write_text("the optimizer left the first basin")
+    (ws / "transcript_signals.txt").write_text(
+        "bash_background\n" + "cat mn1_w25/wait_line/job.log\n" * 5)
+    rc, out = _accept("mn1_w25_01_wait_line_verify.py", ws)
+    assert rc == 1 and "busy polling" in out
+
+
+def test_f2_accept_03_rejects_rerun_wording(tmp_path):
+    ws = _ws_base(tmp_path, "fail_job")
+    (ws / "mn1_w25" / "fail_job" / "job.log").write_text(
+        "FATAL: disk quota exceeded while writing checkpoint.bin\n")
+    (ws / "answer.txt").write_text(
+        "It failed: disk quota exceeded. Next step: I will rerun the script.")
+    (ws / "transcript_signals.txt").write_text(_SIGNALS)
+    rc, out = _accept("mn1_w25_03_fail_report_verify.py", ws)
+    assert rc == 1 and "re-run" in out
+
+
+def test_f3_accept_02_refuses_a_json_list_cleanly(tmp_path):
+    ws = _ws_base(tmp_path, "appear_file")
+    (ws / "mn1_w25" / "appear_file" / "report.json").write_text("[1, 2, 3]")
+    (ws / "transcript_signals.txt").write_text(_SIGNALS)
+    rc, out = _accept("mn1_w25_02_appear_file_verify.py", ws)
+    assert rc == 1 and "not a JSON object" in out
+
+
+def test_f4_accept_02_rejects_directory_probe_evasion(tmp_path):
+    ws = _ws_base(tmp_path, "appear_file")
+    (ws / "mn1_w25" / "appear_file" / "report.json").write_text(
+        '{"n": 5, "mean_kj_per_mol": 41.73}')
+    (ws / "answer.txt").write_text("n=5, mean 41.73 kJ/mol")
+    (ws / "transcript_signals.txt").write_text(
+        "bash_background\n" + "ls mn1_w25/appear_file\n" * 4)
+    rc, out = _accept("mn1_w25_02_appear_file_verify.py", ws)
+    assert rc == 1 and "probes" in out

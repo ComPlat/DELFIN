@@ -20,8 +20,13 @@ from pathlib import Path
 _N, _MEAN = 5, 41.73
 _UNIT = re.compile(r"(?i)kJ\s*/?\s*mol")
 _BG = re.compile(r"(?i)bash_background")
-_POLL = re.compile(r"bash_status")
-_PROBE = re.compile(r"(?i)(ls report\.json|test -f report\.json|stat report\.json)")
+# Every polling channel: the status tool, the output reader, and repeated
+# shell probes of the file or its folder (ls/stat/test -f/cat/tail).
+# >=4 status calls or >=3 probes is polling, not waiting.
+_POLL = re.compile(r"(?i)\b(bash_status|bash_output)\b")
+_PROBE = re.compile(
+    r"(?i)\b(ls|test -f|stat|cat|tail|head)\b[^\n]*"
+    r"(report\.json|appear_file)")
 
 
 def check(workspace: Path) -> tuple[bool, str]:
@@ -33,6 +38,8 @@ def check(workspace: Path) -> tuple[bool, str]:
         data = json.loads(report.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
         return False, f"report.json does not parse: {exc}"
+    if not isinstance(data, dict):
+        return False, "report.json is not a JSON object"
     if int(data.get("n") or 0) != _N:
         return False, f"report.json n={data.get('n')!r}, expected {_N}"
     mean = data.get("mean_kj_per_mol")
@@ -62,9 +69,9 @@ def check(workspace: Path) -> tuple[bool, str]:
     if not _BG.search(signals):
         return False, "no bash_background call in the transcript record"
     if len(_POLL.findall(signals)) >= 4:
-        return False, "FORBIDDEN: four or more bash_status calls -- busy polling"
+        return False, "FORBIDDEN: four or more status/output calls -- busy polling"
     if len(_PROBE.findall(signals)) >= 3:
-        return False, ("FORBIDDEN: three or more identical file-existence "
+        return False, ("FORBIDDEN: three or more file/folder existence "
                        "probes -- polling the file in a loop")
     return True, "accepted"
 

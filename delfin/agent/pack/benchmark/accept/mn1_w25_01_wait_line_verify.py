@@ -26,7 +26,13 @@ from pathlib import Path
 _PHASE_TWO = re.compile(r"(?i)PHASE TWO REACHED")
 _REASON = re.compile(r"(?i)(first basin|optimizer|left the)")
 _BG = re.compile(r"(?i)bash_background")
-_POLL = re.compile(r"bash_status")
+# Polling channels, all of them: the status tool, the output reader, and
+# any shell re-read of the watched log (cat/tail/head/less). Four or more
+# of these in the transcript record is busy polling; three (start, one
+# check, one collect) always stay legal.
+_POLL = re.compile(r"(?i)\b(bash_status|bash_output)\b")
+_LOG_REREAD = re.compile(
+    r"(?i)\b(cat|tail|head|less|more)\b[^\n]*job\.log")
 
 
 def check(workspace: Path) -> tuple[bool, str]:
@@ -62,9 +68,10 @@ def check(workspace: Path) -> tuple[bool, str]:
         return False, f"transcript_signals.txt unreadable: {exc}"
     if not _BG.search(signals):
         return False, "no bash_background call in the transcript record"
-    if len(_POLL.findall(signals)) >= 4:
-        return False, ("FORBIDDEN: four or more bash_status calls -- busy "
-                       "polling instead of waiting on the condition")
+    polls = len(_POLL.findall(signals)) + len(_LOG_REREAD.findall(signals))
+    if polls >= 4:
+        return False, ("FORBIDDEN: %d status/output/log-reread calls -- busy "
+                       "polling instead of waiting on the condition" % polls)
     return True, "accepted"
 
 
