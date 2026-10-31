@@ -377,6 +377,27 @@ def _first_coordination_sphere_indices(atoms, metal_indices, scale, radii_map):
     return first
 
 
+_COMPOSITE_3C_KEYWORDS = {
+    # ORCA 6.1.1 manual, section 3.6.7, Table 3.32: the simple-input
+    # keywords of the 3c composite methods. Each keyword IS the method
+    # (own basis, own dispersion correction, gCP); nothing may be
+    # appended or overridden (section 3.6). Kept as an explicit list,
+    # not a '-3c' suffix rule, so a future non-composite name that
+    # merely ends in '-3c' is not misrouted.
+    "hf-3c",
+    "b97-3c",
+    "r2scan-3c",
+    "pbeh-3c",
+    "b3lyp-3c",
+    "wb97x-3c",
+}
+
+
+def _is_composite_3c(functional: str) -> bool:
+    """True when the functional is one of ORCA's 3c composite methods."""
+    return str(functional).strip().lower() in _COMPOSITE_3C_KEYWORDS
+
+
 def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multiplicity,
                                   solvent, found_metals, metal_basisset, main_basisset,
                                   config, broken_sym, work_dir=None):
@@ -472,7 +493,7 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     # composite's basis; ZORA has no relativistic counterpart inside the
     # composite. Emit the composite keyword + the generic runners only.
     functional_str = str(config['functional'])
-    if functional_str.lower().endswith("-3c"):
+    if _is_composite_3c(functional_str):
         composite_tokens = [functional_str]
         if qmmm_range:
             composite_tokens.insert(0, str(config.get('qmmm_option', 'QM/XTB')).strip())
@@ -533,7 +554,7 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     # 3c composite: its own basis covers all elements it supports
     # (r2SCAN-3c: up to Lr, Z=103 -- ORCA 6.1.1 manual section 3.6.3),
     # so no per-atom NewGTO override.
-    if functional_str.lower().endswith("-3c"):
+    if _is_composite_3c(functional_str):
         metal_basis = None
     metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
     metal_indices = [i for i, a in enumerate(atoms) if a['elem'].capitalize() in metal_syms]
@@ -987,7 +1008,7 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         # composite's tailored basis with the CONTROL's generic one. Emit the
         # composite keyword alone and drop the composite-incompatible tokens.
         functional_str = str(config['functional'])
-        if functional_str.lower().endswith("-3c"):
+        if _is_composite_3c(functional_str):
             composite_tokens = [functional_str]
             if qmmm_range:
                 composite_tokens.insert(0, str(config.get('qmmm_option', 'QM/XTB')).strip())
@@ -1054,7 +1075,7 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         # section 3.6.3). A per-atom NewGTO override would replace the
         # composite's basis on the metal (and possibly its first sphere),
         # so it is suppressed when the functional is a composite.
-        if functional_str.lower().endswith("-3c"):
+        if _is_composite_3c(functional_str):
             metal_basis = None
         metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
         metal_indices = [i for i, a in enumerate(atoms) if a['elem'].capitalize() in metal_syms]
