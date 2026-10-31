@@ -40,6 +40,8 @@ __all__ = [
     "pick_weakest_family", "DEFAULT_CEILING",
     "Candidate", "HarnessCandidateError", "validate_candidate",
     "ALLOWED_SUFFIXES", "PROTECTED_MARKERS",
+    "contrast_supported",
+    "RoundConfig", "RoundReport", "run_round",
 ]
 
 #: Classic workflow families scored 91-95 in the 31.10. E2 baseline
@@ -196,4 +198,133 @@ def contrast_supported(
         "band": band,
         "mean_gain": mean_gain,
         "per_task": per_task,
+    }
+
+
+# ---------------------------------------------------------------------------
+# The improvement round (brief items 5 and 6)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RoundConfig:
+    """One improvement round's inputs.
+
+    In dry-run mode the paired quality samples come from RECORDED
+    transcripts (fixtures); no runner is imported and no model is
+    called.  In real mode the caller has already run the reference and
+    probe rounds through bench_nightly's path and hands the paired
+    qualities in — this module measures and composes, it never drives
+    the model stack itself (one module, one responsibility; the driver
+    is the operator's nightly orchestration).
+    """
+
+    family_id: str
+    candidate_edits: dict  # candidate id -> Candidate
+    paired_tasks: list  # task ids in matched order
+    reference: list  # recorded reference qualities
+    probe_quality: dict  # candidate id -> recorded probe qualities
+    spread: float = 0.0
+    estimated_cost_usd: float = 0.0
+    budget_usd: float = float("inf")
+
+
+class RoundReport:
+    """Namespace for the round's outcome record and its budget error.
+
+    The report is a plain, JSON-serialisable dict (the caller writes
+    it wherever the review flow reads it); nothing here opens a file,
+    touches a model, or applies a change.
+    """
+
+    class BudgetRefused(Exception):
+        """The round's estimated cost exceeds the stated budget."""
+
+
+def run_round(config: RoundConfig, *, dry_run: bool) -> dict:
+    """Run one Propose-Probe-Compose round and return the report.
+
+    Every candidate is probed against the SAME paired task ids and the
+    SAME reference qualities (matched conditions, arXiv:2610.14224
+    §2.2.1).  Only candidates whose contrast is supported are composed;
+    a "no contrast" is recorded as a valid, named outcome — never
+    hidden, never counted as a gain.  Each composed candidate becomes
+    one KN1-style lesson record (fields shaped like
+    :class:`delfin.agent.knowledge.Entry`: situation / lesson / why /
+    provenance with an evidence pointer, kinds per knowledge.py:96).
+
+    The report is a PROPOSAL.  This function applies nothing: adoption
+    is a PR the person merges, gated at adoption time on the family
+    rising and no other family falling (holdout check, outside this
+    module).
+    """
+    if config.estimated_cost_usd > config.budget_usd:
+        raise RoundReport.BudgetRefused(
+            "round estimated at %.2f USD exceeds the stated budget of "
+            "%.2f USD; refusing to start" % (config.estimated_cost_usd,
+                                             config.budget_usd))
+    composed = []
+    no_contrast = []
+    lessons = []
+    band = None
+    for cid, candidate in config.candidate_edits.items():
+        validate_candidate(candidate)
+        if cid not in config.probe_quality:
+            raise KeyError(
+                "no probe qualities recorded for candidate %r; the probe "
+                "must run before composition" % cid)
+        verdict = contrast_supported(
+            config.paired_tasks, config.reference,
+            list(config.probe_quality[cid]), spread=config.spread)
+        band = verdict["band"]
+        decision = {
+            "id": cid,
+            "kind": candidate.kind,
+            "target": candidate.target,
+            "observation_task_id": candidate.observation_task_id,
+            "observation": candidate.observation,
+            "mean_gain": verdict["mean_gain"],
+            "band": verdict["band"],
+            "supported": verdict["supported"],
+        }
+        if verdict["supported"]:
+            composed.append(decision)
+            lessons.append(_lesson_for(candidate, cid, verdict))
+        else:
+            no_contrast.append(decision)
+    return {
+        "mode": "dry-run" if dry_run else "real",
+        "family_id": config.family_id,
+        "noise_band": band,
+        "spread": config.spread,
+        "composed": composed,
+        "no_contrast": no_contrast,
+        "lessons": lessons,
+        "adoption": "PR for the person to review; nothing is applied "
+                    "automatically",
+    }
+
+
+def _lesson_for(candidate: Candidate, cid: str, verdict: dict) -> dict:
+    """KN1-style lesson record for one composed candidate."""
+    return {
+        "topic": "harness-improvement",
+        "situation": (
+            "Workflow family tasks like %s: %s"
+            % (candidate.observation_task_id, candidate.observation)),
+        "lesson": (
+            "Apply this harness text edit to %s: replace %r with %r "
+            "(candidate %s)" % (candidate.target,
+                                candidate.old_text,
+                                candidate.new_text, cid)),
+        "why": (
+            "Matched-condition probe over the same instances gave a mean "
+            "gain of %.1f points against a noise band of %.1f "
+            "(stdev %.1f) — outside the band"
+            % (verdict["mean_gain"], verdict["band"], verdict["band"] / 1.5
+               if verdict["band"] > 8.0 else 0.0)),
+        "provenance": {
+            "evidence": "probe run of candidate %s on tasks %s"
+                        % (cid, ",".join(map(str, verdict["per_task"]))),
+            "evidence_kind": "test",
+        },
     }
