@@ -56,6 +56,23 @@ def test_scan_step_maxcycles_with_shark_abort_is_classified():
     assert detected == OrcaErrorType.SCAN_STEP_NOT_CONVERGED, detected
 
 
+def test_plain_properties_abort_without_shark_stays_geometry(tmp_path):
+    """Counter-direction of the (b) pair: a PLAIN optimisation that
+    aborted in PROPERTIES without a SHARK read error keeps
+    GEOMETRY_NOT_CONVERGED (and its trust-radius fixes). Both wordings
+    must co-occur for SCAN_STEP_NOT_CONVERGED to fire."""
+    text = (
+        "        *                GEOMETRY OPTIMIZATION CYCLE   1            *\n"
+        "   Geometry convergence            NOT CONVERGED\n"
+        "  .... aborting the run\n"
+        "ORCA finished by error termination in PROPERTIES\n"
+    )
+    out = tmp_path / "plain_properties.out"
+    out.write_text(text, encoding="utf-8")
+    detected = OrcaErrorDetector.analyze_output(out)
+    assert detected == OrcaErrorType.GEOMETRY_NOT_CONVERGED, detected
+
+
 def test_scan_step_failure_names_the_unconverged_scan_step():
     from delfin.orca_recovery import RecoveryStrategy
     out = _sh1("sh1_scan_maxcycles_shark/sh1_scan_maxcycles_shark.out")
