@@ -205,3 +205,67 @@ def isc_reference_comparison(
         "unit": "ratio",
         "source": f"in-tree measurement, matched level verified: {ISC_REFERENCE['source']}",
     }
+
+
+#: Experimental adiabatic singlet-triplet splitting of formaldehyde and
+#: its provenance.  Band 0.25-0.55 eV around the operator-provided
+#: origins (T1 ~25190 cm-1, S1 ~28190 cm-1 -> ~3000 cm-1 = 0.37 eV):
+#: the review is Clouthier & Ramsay, Annu. Rev. Phys. Chem. 34, 31-58
+#: (1983), DOI 10.1146/annurev.pc.34.100183.000335 (DOI verified on
+#: annualreviews.org via DELFIN's web tools); the specific origins are
+#: operator-provided and were NOT independently verifiable from that
+#: session (publisher 403).  A criterion that grades against these
+#: numbers must say so, not silently assume them.
+EST_REFERENCE = {
+    "band_ev": (0.25, 0.55),
+    "centre_ev": 0.37,
+    "source": (
+        "Clouthier & Ramsay, Annu. Rev. Phys. Chem. 34, 31 (1983), "
+        "DOI 10.1146/annurev.pc.34.100183.000335; origins "
+        "(T1 ~25190 cm-1, S1 ~28190 cm-1) operator-provided, not "
+        "independently verified (publisher 403)"
+    ),
+}
+
+
+def est_reference_comparison(delta_est_ev: Optional[float]) -> dict:
+    """Verdict record for the adiabatic Delta E_ST vs the experimental band.
+
+    Sign first: a Delta E_ST of the wrong sign kills the TADF ranking
+    claim regardless of magnitude.  Then the cited experimental band:
+    a value outside 0.25-0.55 eV FAILS, never passes a loose
+    |dE_ST|<1 eV check (which accepted 0.889 eV -- 2.4x the
+    experimental adiabatic splitting -- on job 8181368, reviewer
+    finding F6).  Without a value the verdict is NOT GRADED.
+    """
+    if delta_est_ev is None:
+        return {
+            "criterion": "delta_E_ST_vs_reference",
+            "verdict": "NOT GRADED",
+            "value": "no Delta E_ST to compare",
+            "unit": "",
+            "source": "ESD state energies via collect_esd_results",
+        }
+    low, high = EST_REFERENCE["band_ev"]
+    if delta_est_ev <= 0:
+        return {
+            "criterion": "delta_E_ST_vs_reference",
+            "verdict": "FAIL",
+            "value": (
+                f"Delta E_ST = {delta_est_ev:.3f} eV with the wrong sign "
+                "(T1 not below S1): the TADF ranking claim fails"
+            ),
+            "unit": "eV",
+            "source": f"experimental band source: {EST_REFERENCE['source']}",
+        }
+    inside = low <= delta_est_ev <= high
+    return {
+        "criterion": "delta_E_ST_vs_reference",
+        "verdict": "PASS" if inside else "FAIL",
+        "value": (
+            f"Delta E_ST = {delta_est_ev:.3f} eV vs experimental adiabatic "
+            f"{EST_REFERENCE['centre_ev']:.2f} eV (band {low:.2f}-{high:.2f} eV)"
+        ),
+        "unit": "eV",
+        "source": f"experimental band source: {EST_REFERENCE['source']}",
+    }
