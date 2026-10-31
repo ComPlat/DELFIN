@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -46,14 +46,14 @@ _DEFAULT_RADIUS = 1.5
 class TSFiles:
     """The files one OptTS calculation offers, matched by atom content."""
 
-    out_path: Optional[Path] = None
-    inp_path: Optional[Path] = None
-    xyz_path: Optional[Path] = None
-    hess_path: Optional[Path] = None
-    reactant_path: Optional[Path] = None
-    product_path: Optional[Path] = None
-    neb_dir: Optional[Path] = None
-    problems: List[str] = field(default_factory=list)
+    out_path: Path | None = None
+    inp_path: Path | None = None
+    xyz_path: Path | None = None
+    hess_path: Path | None = None
+    reactant_path: Path | None = None
+    product_path: Path | None = None
+    neb_dir: Path | None = None
+    problems: list[str] = field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -67,11 +67,11 @@ class TSStatus:
     is_ts: bool = False
     converged: bool = False
     n_imaginary: int = 0
-    imaginary_freq: Optional[float] = None
-    charge: Optional[int] = None
-    mult: Optional[int] = None
-    elements: Tuple[str, ...] = ()
-    reasons: List[str] = field(default_factory=list)
+    imaginary_freq: float | None = None
+    charge: int | None = None
+    mult: int | None = None
+    elements: tuple[str, ...] = ()
+    reasons: list[str] = field(default_factory=list)
 
     @property
     def usable(self) -> bool:
@@ -82,15 +82,15 @@ class TSStatus:
 class ReactiveCenter:
     """The proposed constraint atoms, with the evidence for the choice."""
 
-    indices: Tuple[int, ...] = ()
-    elements: Tuple[str, ...] = ()
-    reasons: List[str] = field(default_factory=list)
+    indices: tuple[int, ...] = ()
+    elements: tuple[str, ...] = ()
+    reasons: list[str] = field(default_factory=list)
     reliability: str = "low"  # "high" | "medium" | "low"
     ambiguous: bool = False
     # per-atom score contributions, 0-based index -> labelled evidence
-    scores: Dict[int, float] = field(default_factory=dict)
-    formed_bonds: Tuple[Tuple[int, int], ...] = ()
-    broken_bonds: Tuple[Tuple[int, int], ...] = ()
+    scores: dict[int, float] = field(default_factory=dict)
+    formed_bonds: tuple[tuple[int, int], ...] = ()
+    broken_bonds: tuple[tuple[int, int], ...] = ()
 
 
 # --------------------------------------------------------------- output scan
@@ -103,7 +103,7 @@ _XYZ_TAG_RE = re.compile(r"^\s*\*\s*xyz\s+(-?\d+)\s+(\d+)", re.IGNORECASE)
 _IMAG_RE = re.compile(r"^\s*(\d+):\s*(-?\d+(?:\.\d+)?)\s+cm\*\*-1")
 
 
-def read_inp_charge_mult(inp_path: Path) -> Tuple[Optional[int], Optional[int]]:
+def read_inp_charge_mult(inp_path: Path) -> tuple[int | None, int | None]:
     """Charge/multiplicity from an ORCA input's ``* xyz N M`` tag."""
     try:
         text = Path(inp_path).read_text(encoding="utf-8", errors="ignore")
@@ -140,7 +140,7 @@ def read_ts_status(out_path: Path) -> TSStatus:
         status.reasons.append("TS optimization did not report convergence")
 
     # Imaginary-mode listing ("***imaginary mode***" lines carry index+freq).
-    imag: List[Tuple[int, float]] = []
+    imag: list[tuple[int, float]] = []
     for line in text.splitlines():
         if "***imaginary mode***" not in line:
             continue
@@ -162,7 +162,7 @@ def read_ts_status(out_path: Path) -> TSStatus:
     return status
 
 
-def read_xyz(path: Path) -> Optional[List[Tuple[str, float, float, float]]]:
+def read_xyz(path: Path) -> list[tuple[str, float, float, float]] | None:
     """First frame of an .xyz as (element, x, y, z); None if unparseable."""
     try:
         lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -174,7 +174,7 @@ def read_xyz(path: Path) -> Optional[List[Tuple[str, float, float, float]]]:
         n = int(lines[0].split()[0])
     except (ValueError, IndexError):
         return None
-    atoms: List[Tuple[str, float, float, float]] = []
+    atoms: list[tuple[str, float, float, float]] = []
     for row in lines[1:]:
         if len(atoms) >= n:
             break
@@ -204,7 +204,7 @@ _EDUKT_RE = re.compile(r"(?:edukt|reactant|reac|start|endpoint[_-]?0)", re.IGNOR
 _PRODUKT_RE = re.compile(r"(?:produkt|product|prod|endpoint[_-]?1)", re.IGNORECASE)
 
 
-def collect_ts_files(calc_dir: Path, out_path: Optional[Path] = None) -> TSFiles:
+def collect_ts_files(calc_dir: Path, out_path: Path | None = None) -> TSFiles:
     """Locate .out/.inp/.xyz/.hess (+ reactant/product) for one OptTS run.
 
     Matching is by atom content, not by name alone: a candidate geometry
@@ -217,11 +217,11 @@ def collect_ts_files(calc_dir: Path, out_path: Optional[Path] = None) -> TSFiles
 
     # -- the output's own base name first; different ORCA runs name things
     #    differently (<base>.out/<base>.inp/<base>.hess, orca_ts_*_TS_*.out...)
-    base_stems: List[str] = []
+    base_stems: list[str] = []
     if out_path is not None:
         base_stems.append(out_path.stem)
 
-    def _by_stem(suffix: str) -> Optional[Path]:
+    def _by_stem(suffix: str) -> Path | None:
         for stem in base_stems:
             cand = calc_dir / f"{stem}{suffix}"
             if cand.is_file():
@@ -242,7 +242,7 @@ def collect_ts_files(calc_dir: Path, out_path: Optional[Path] = None) -> TSFiles
         except (ValueError, OSError):
             reference = None
 
-    xyz_candidates: List[Path] = []
+    xyz_candidates: list[Path] = []
     if found.inp_path is not None:
         # ORCA writes the optimised structure as <base>.xyz next to the input.
         cand = found.inp_path.with_suffix(".xyz")
@@ -306,7 +306,7 @@ def collect_ts_files(calc_dir: Path, out_path: Optional[Path] = None) -> TSFiles
 
 # --------------------------------------------------- reactive-centre scoring
 
-def _bond_list(atoms: Sequence[Tuple[str, float, float, float]],
+def _bond_list(atoms: Sequence[tuple[str, float, float, float]],
                scale: float = BOND_SCALE) -> set:
     """Pairs (i, j), i < j, bonded by ORCA's distance criterion."""
     bonds = set()
@@ -343,7 +343,7 @@ def connectivity_changes(ts_atoms, reactant_atoms=None, product_atoms=None):
 
 def analyze_reactive_center(
     hess_path: Path,
-    ts_atoms: Sequence[Tuple[str, float, float, float]],
+    ts_atoms: Sequence[tuple[str, float, float, float]],
     reactant_atoms=None,
     product_atoms=None,
     *,
@@ -372,11 +372,11 @@ def analyze_reactive_center(
     formed, broken = connectivity_changes(ts_atoms, reactant_atoms, product_atoms)
     reacting_pairs = sorted(formed | broken)
 
-    scores: Dict[int, float] = {}
-    reasons: List[str] = []
+    scores: dict[int, float] = {}
+    reasons: list[str] = []
 
     # -- mode eigenvector (most imaginary column of $normal_modes) --------
-    mode_displacement: Dict[int, float] = {}
+    mode_displacement: dict[int, float] = {}
     try:
         from delfin.imag import _normal_mode, imaginary_modes  # noqa: PLC0415
         modes = imaginary_modes(Path(hess_path), {"allow_imaginary_freq": 0.0})

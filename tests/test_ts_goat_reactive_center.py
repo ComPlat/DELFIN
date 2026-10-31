@@ -1,12 +1,9 @@
 """Synthetic-fixture tests for the TS -> GOAT reactive-centre feature."""
 
-import math
 
 import pytest
 
 from delfin.ts_goat import (
-    ReactiveCenter,
-    TSStatus,
     analyze_reactive_center,
     build_ts_goat_input,
     collect_ts_files,
@@ -15,7 +12,6 @@ from delfin.ts_goat import (
     read_xyz,
     render_constraints_block,
 )
-
 
 # ---------------------------------------------------------------- helpers
 
@@ -157,7 +153,7 @@ def test_collect_ts_files_matches_by_atom_order(tmp_path):
     # Hessian + its matching xyz + a decoy xyz with different composition
     _write_hess(ts_dir / "TS_1.hess", atoms, [], [-300.0])
     (ts_dir / "TS_1.xyz").write_text(
-        f"3\nTS\n" + "\n".join(
+        "3\nTS\n" + "\n".join(
             f"{el} {x} {y} {z}" for el, x, y, z in atoms
         ) + "\n",
         encoding="utf-8",
