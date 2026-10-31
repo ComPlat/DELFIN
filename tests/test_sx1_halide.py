@@ -1,28 +1,37 @@
 """F1 (halide phantom-H): the checker's H expectation must not give a halide
 bound to a metal a phantom hydrogen.
 
-Semantics (QS arbitration, nacht-s11): the dative-donor reading (default
-valence minus non-metal bonds) applies ONLY to unbracketed metal neighbours
-carrying implicit H, mirroring the pin's own guard
-(delfin/manta/single_structure.py:161-163, ``if n_h <= 0: continue``).  A
-halide (n_h == 0) is read by its own H count, so no phantom H.
+Semantics (person's convention decision, 2026-10-31, superseding the phase-2a
+dative reading): the SMILES reads as WRITTEN under standard OpenSMILES (#36) --
+an unbracketed N/O on a metal is AMIDO/HYDROXO (the M-L bond counts against
+the donor's valence, i.e. H4 for ``[Pt](Cl)(Cl)(N)N``); a dative arrow that
+ORIGINATES at the donor (``N->[Pt]``) shifts to the donor reading (NH3).  The
+default-valence donor rule fires only on such a donor-originated arrow; a
+halide (no implicit H) is read by its own H count, so no phantom H.
 
-For cisplatin ``[Pt](Cl)(Cl)(N)N`` the expectation is therefore 6 H
-(2 x NH3 dative donors), while the converter emits 4 -- a REAL h_count
-finding, and the detail must say 6, never the old phantom-8 reading.
+Consequence of the convention: cisplatin ``[Pt](Cl)(Cl)(N)N`` reads H4 and the
+converter emits 4 -- NO h_count finding any more.  The real remaining defect
+(Converter loses 2 H for the ammine-donor intent, [Cu](N)... = 8 vs 12) is
+reported by the h_ambiguity INFO, which names both readings; the h_count
+finding fires when the XYZ disagrees with the SMILES as written.
 """
 from delfin.smiles_converter import check_converted_complex, smiles_to_xyz_quick
 
 
 def test_cisplatin_halide_no_phantom_h_in_detail():
-    """The detail says 6 implied H (2 x NH3), not 8 (with phantom halide H)."""
+    """Amido reading (#36): H4 SMILES vs 4 H emitted -> no h_count finding.
+
+    Old decision (superseded): the dative reading expected 6 and misflagged a
+    correct H4 frame.  The ambiguity between the two readings is now carried
+    by the h_ambiguity INFO finding instead of a wrong h_count.
+    """
     xyz, err = smiles_to_xyz_quick("[Pt](Cl)(Cl)(N)N")
     assert xyz is not None, err
     findings = check_converted_complex("[Pt](Cl)(Cl)(N)N", xyz)
-    h = [f for f in findings if f["kind"] == "h_count"]
-    assert len(h) == 1, f"expected exactly one h_count finding, got {h}"
-    detail = h[0]["detail"]
-    assert "implies 6 H" in detail, f"phantom-H reading in detail: {detail}"
+    assert [f for f in findings if f["kind"] == "h_count"] == [], findings
+    # and the ambiguity is named for the user (amido NH2 vs ammine [NH3])
+    amb = [f for f in findings if f["kind"] == "h_ambiguity"]
+    assert len(amb) == 1 and "NH2" in amb[0]["detail"] and "NH3" in amb[0]["detail"]
 
 
 def test_missing_h_still_flagged():
