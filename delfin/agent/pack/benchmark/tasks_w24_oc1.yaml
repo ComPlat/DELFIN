@@ -1,0 +1,121 @@
+version: 1
+package: W24_OC1
+# Wave 24, package OC1 -- OCCUPIER used right, through CONTROL.txt.
+# Spin-state energetics of a small first-row TM complex via DELFIN's own
+# OCCUPIER workflow. Graded on the run's physics with DELFIN's parsers
+# (correct ground state, converged, no imaginary mode), never on wording.
+# One trap: a redox-potential claim that mixes levels of theory or skips
+# the reference electrode.
+tasks:
+  - id: w24-oc1-01
+    skill: orca-spectra-spin-occupier
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In oc1/spin/ there is a start.xyz of an octahedral Fe(III) complex
+      (charge 3). Use DELFIN's OCCUPIER workflow to find the preferred
+      spin state among the candidates the workflow generates. Report the
+      multiplicities you compared, their relative Gibbs energies in
+      kcal/mol, the S2 (spin contamination) of the chosen state, and
+      confirm the chosen geometry is a minimum (no imaginary frequencies).
+      State the CONTROL settings you proposed and why, and note that the
+      run started only after they were confirmed.
+    verify: oc1_spin_states_verify.py
+    expected_signals:
+      - pattern: '(?i)(occupier)'
+        against: any
+      - pattern: '(?i)(multiplicity|spin state)'
+        against: text
+      - pattern: '(?i)(S\^?2|contamination)'
+        against: text
+      - pattern: '(?i)(imaginary|no imag|minim)'
+        against: text
+    expected_values:
+      # Fe(III) d5 octahedral with a weak-field ligand set stays high-spin
+      # (S=5/2, multiplicity 6); a strong-field ligand set can flip to
+      # low-spin (mult 2). The accept script grades the physics from the
+      # run's own files, so only a wrong scan or a wrong extraction fails.
+      - label: ground_multiplicity_in_2_6
+        value: 6
+        tolerance: 4
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(ground state is.*(without|no) (calcul|run|occupier))'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.20
+    max_tool_calls: 40
+
+  - id: w24-oc1-02
+    skill: orca-spectra-spin-occupier
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In oc1/broken_sym/ there are two optimised structures of a
+      dinuclear complex with one Cu(II) and one Fe(III) centre. Use
+      DELFIN's OCCUPIER broken-symmetry branch to estimate the exchange
+      coupling J between the two centres from the high-spin and
+      broken-symmetry solutions. Report J, the Yamaguchi-form values
+      (<S^2> of both solutions), and state which centre is site A in the
+      input (the one with the larger unpaired-electron count).
+    verify: oc1_exchange_coupling_verify.py
+    expected_values:
+      # J is graded by the accept script on the run's own files; the band
+      # here only guards the reported magnitude against a unit slip:
+      # antiferromagnetic Cu(II)-Fe(III) bridges give |J| of tens of
+      # cm^-1 (Yamaguchi form); a value outside +-1e3 cm^-1 means the
+      # conversion or the formula is wrong.
+      - label: abs_J_cm
+        value: 45.0
+        tolerance: 1000.0
+        against: text
+    expected_signals:
+      - pattern: '(?i)(broken.?sym|BS )'
+        against: any
+      - pattern: '(?i)(Yamaguchi|S\^?2.*S\^?2|<S\^?2>)'
+        against: text
+      - pattern: '(?i)(site A|unpaired)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(J = .*without.*(high.?spin|BS|broken))'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.20
+    max_tool_calls: 40
+
+  - id: w24-oc1-03
+    skill: orca-spectra-spin-occupier
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In oc1/redox/ there are optimised structures of a metallocene
+      redox couple (ferrocene and ferrocenium). Use DELFIN's OCCUPIER
+      workflow with Gibbs energies to compute the one-electron oxidation
+      potential. Report E_ox in V, the reference electrode it is
+      referenced against, and the thermodynamic relation
+      (G_ox - G_red) you applied. Do not mix levels of theory between
+      the two species: both energies must come from the same functional,
+      basis set and solvation model.
+    verify: oc1_redox_verify.py
+    expected_signals:
+      - pattern: '(?i)(occupier)'
+        against: any
+      - pattern: '(?i)(reference electrode|E_ref|vs\.? (SHE|Fc|Ag))'
+        against: text
+      - pattern: '(?i)(G_?ox|G_?red|Delta.?G|thermodynamic)'
+        against: text
+    expected_values:
+      # Fc/Fc+ oxidation: ~0.40 V vs SHE in MeCN (measured ~0.38-0.64 V
+      # depending on reference convention and solvent); the accept script
+      # grades the band 0.0-0.9 V vs the electrode named, plus the
+      # same-level rule from the run's own file provenance.
+      - label: e_ox_v
+        value: 0.40
+        tolerance: 0.45
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(E_?ox.*V.*((without|no) reference|electrode omitted))'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.20
+    max_tool_calls: 40
