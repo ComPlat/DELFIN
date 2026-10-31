@@ -172,7 +172,7 @@ interface, adapt or use parts of their codes:
 
   ***********************************
   * Starting time: Sat Oct 31 03:52:38 2026
-  * Host name:     <redacted>
+  * Host name:     fixture-host
   * Process ID:    4165608
   * Working dir.:  /scratch/slurm_tmpdir/job_8173353/delfin_8173353/run
   ***********************************

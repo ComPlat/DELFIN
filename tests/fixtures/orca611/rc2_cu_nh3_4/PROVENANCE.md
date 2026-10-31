@@ -1,6 +1,6 @@
 # PROVENANCE — rc2_cu_nh3_4 (fixture = v3 run; v1, v2 documented below)
 
-(Filled after the v3 run finishes.)
+(v3 run 8173353 complete; all values below verified from its .out by s3.)
 
 - System: [Cu(NH3)4]2+, tetraamminecopper(II). Target state: doublet
   (S=1/2), square planar, Cu(II) d9. CPCM(water).
@@ -89,7 +89,16 @@
 - Spin check: electron count = Cu(29) - 2 + 4x(7+3) = 67, odd -> at
   least doublet; d9 Cu(II) -> one unpaired electron -> exactly doublet.
   v2 measured: <S^2> = 0.7525 (ideal 0.75 for a pure doublet);
-  deviation reported, not hidden.
-- Physics gates (v3 targets): SCF converged [TBD], geometry converged
-  [TBD], 0 imaginary modes [TBD], all four Cu-N bound ~2.0-2.1 A [TBD],
-  spin mostly on Cu [TBD: Mulliken spin population].
+  deviation reported, not hidden. v3 (the fixture) measured:
+  <S^2> = 0.7525 (Deviation 0.002528, .out:912); Mulliken spin on
+  Cu 0.555072, sum 1.0000000 (rest delocalised on N donors — normal
+  Cu(II)-amine covalency, .out:1018-1038).
+- Physics gates (all verified from the v3 .out, job 8173353):
+    SCF converged yes (Termination: ... all done! at .out:7839; RKS
+    convergence clean in every cycle); geometry converged yes
+    ("THE OPTIMIZATION HAS CONVERGED" at .out:7838 + "OPTIMIZATION RUN
+    DONE"); 0 imaginary modes (lowest real 16.99 cm-1 at .out:29453,
+    FREQ block "mode 6" positive); all four Cu-N bound 2.039/2.039/
+    2.040/2.040 A (final xyz block, .out:7805-7820); spin mostly on Cu
+    (Mulliken spin population Cu 0.555072 of sum 1.0000000,
+    .out:1018-1038).
