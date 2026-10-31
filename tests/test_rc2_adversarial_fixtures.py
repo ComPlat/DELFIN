@@ -120,6 +120,8 @@ def test_rc2_provenance_documents_the_run():
         if not p.is_file():
             raise AssertionError(f"fixture not yet committed: {p}")
         text = p.read_text(encoding="utf-8", errors="replace")
+        out_text = (FIXTURES / name / f"{name}.out").read_text(
+            encoding="utf-8", errors="replace")
         # Field casing varies between the files ("Core-hours:"/"CPU
         # Efficiency" vs "core-hours"/"CPU efficiency"); the substance is
         # the presence of both numbers, so the check is case-insensitive.
@@ -130,10 +132,14 @@ def test_rc2_provenance_documents_the_run():
         lower = text.lower()
         for field in (own_job, "core-hours", "cpu efficiency"):
             assert field in lower, (name, field)
-        # The version is pinned as "ORCA 6.1.1" in the method line (the
-        # substance); a separate labelled "ORCA version:" field is not
-        # required -- the label wording varied across the three files.
-        assert "ORCA 6.1.1" in text, (name, "ORCA version not stated")
+        # The run's version must be stated from the .out banner, not the
+        # suite directory name: all three rc2 runs print
+        # "Program Version 6.1.0 - RELEASE" at :54 (verified in the
+        # committed .out files); h2o_optfreq is a true 6.1.1 build, so
+        # "orca611" names the suite, not the build.
+        assert "ORCA 6.1.0" in text, (name, "ORCA version not stated")
+        assert "Program Version 6.1.0" in out_text, \
+            (name, "version not pinned to the .out banner")
         if name == "rc2_ru_o4":
             assert re.search(r"ZORA|relativistic|ECP", text, re.IGNORECASE), \
                 (name, "relativistic treatment not documented")
