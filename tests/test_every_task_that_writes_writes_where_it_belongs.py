@@ -131,7 +131,7 @@ def test_the_counts_still_match_what_was_measured():
     """If a task file grows a new writing class, this says so rather than
     letting it inherit the checkout unnoticed."""
     counts = {"office": 0, "behavior": 0, "generic_project": 0,
-              "science": 0, "chemistry": 0, "generalist": 0, "other": 0}
+              "science": 0, "chemistry": 3, "generalist": 0, "other": 0}
     for t in _tasks():
         c = str(t.get("task_class", ""))
         if c == "office":
@@ -357,14 +357,19 @@ def test_the_counts_still_match_what_was_measured():
     # test globs every pack/benchmark/*.yaml; the production suite loads
     # only tasks_*.yaml, so the pilot never runs in a normal bench run.
     #
-    # chemistry 23 -> 26 on 2026-10-31 (CAS1, wave 25, agent/s6-cas1b): the
+    # science 41 -> 44 on 2026-10-31 (SH1, wave 24, agent/s9-sh1b): the three
+    # self-healing routing tasks in tasks_w24_sh1.yaml -- GSTEP constraint
+    # failure, unconverged scan step + SHARK abort, Cu(NH3)4 imaginary mode
+    # -> IMAG route; offline, no setup script; accept/sh1_w24_0N_*.py.
+    #
+    # chemistry 0 -> 3 on 2026-10-31 (CAS1, wave 25, agent/s6-cas1b): the
     # three tasks_w25_cas1.yaml tasks -- CASSCF active-space proposals for
     # ozone and stretched N2 (graded by re-running ActiveSpaceProposal.validate
     # on proposal.json, accept/cas1_verify.py) and one trap task (invented
     # Nactel/Nactorb keywords + a 24-orbital space that must be refused naming
     # RAS/ICE/DMRG). Offline, no setup script, no calculation.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 41, "chemistry": 26, "generalist": 22,
+                      "science": 44, "chemistry": 23, "generalist": 22,
                       "other": 77}, counts
 
 
