@@ -356,8 +356,14 @@ def test_the_counts_still_match_what_was_measured():
     # explore-pilot tasks of pilot_tasks_sp1.yaml (solo, read-only). This
     # test globs every pack/benchmark/*.yaml; the production suite loads
     # only tasks_*.yaml, so the pilot never runs in a normal bench run.
+    #
+    # chemistry 23 -> 26 on 2026-10-31 (OC1, wave 24, agent/s3-oc1b): the
+    # three tasks_w24_oc1.yaml tasks over DELFIN's OCCUPIER workflow (spin
+    # scan, broken-symmetry J, metallocene redox). No setup scripts
+    # (operator-confirmed); each accept script grades the run's physics
+    # from oc1/<case>/ outputs + result.txt. "+3 chemistry".
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 41, "chemistry": 23, "generalist": 22,
+                      "science": 41, "chemistry": 26, "generalist": 22,
                       "other": 77}, counts
 
 
