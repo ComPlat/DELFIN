@@ -38,12 +38,19 @@ def test_nofreq_invented_keyword_is_an_error():
 
 
 def test_suggestion_names_closest_real_keyword():
-    """A misspelt keyword gets the closest real keyword as suggestion."""
+    """A misspelt keyword gets the closest real keyword as suggestion.
+
+    Rewritten per QS ruling (rule 6): the old decision was a
+    title-cased user display ("TightOpt"); the new decision is the
+    catalog's casing ('tightopt', opi_keywords.json is all-lowercase)
+    matched case-insensitively — the catalog is the single source of
+    truth and a hand-written case map would drift from it.
+    """
     issues = _errors(_input("! PBE0 def2-SVP OptTight Freq\n"))
     hits = [i for i in issues if "OptTight" in i.message]
     assert hits, "misspelt keyword OptTight not flagged"
-    assert any("TightOpt" in i.suggestion for i in hits), \
-        "no closest-keyword suggestion (expected TightOpt)"
+    assert any("tightopt" in i.suggestion.lower() for i in hits), \
+        "no closest-keyword suggestion (expected catalog word 'tightopt')"
 
 
 def test_block_written_on_bang_line_is_an_error():
