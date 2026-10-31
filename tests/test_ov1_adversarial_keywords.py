@@ -42,8 +42,8 @@ def test_suggestion_names_closest_real_keyword():
     issues = _errors(_input("! PBE0 def2-SVP OptTight Freq\n"))
     hits = [i for i in issues if "OptTight" in i.message]
     assert hits, "misspelt keyword OptTight not flagged"
-    assert any("TightOpt" in i.suggestion for i in hits), \
-        "no closest-keyword suggestion (expected TightOpt)"
+    assert any("tightopt" in i.suggestion.lower() for i in hits), \
+        "no closest-keyword suggestion (expected the catalog form tightopt)"
 
 
 def test_block_written_on_bang_line_is_an_error():

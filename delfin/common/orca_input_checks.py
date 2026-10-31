@@ -50,34 +50,17 @@ def _normalize_line(text: str) -> str:
     return text.replace("\uff01", "!")
 
 
-def _camel(word: str, parts: tuple[str, str] | None) -> str:
-    """A suggestion with ORCA's canonical camel casing.
-
-    The catalog is lowercase; ORCA's documentation writes compound
-    keywords in camel case (TightOpt, VeryTightSCF). The split that
-    matched the invented word gives the token boundaries; each token is
-    capitalised, so ``tightopt`` -> ``TightOpt``. Without a split the
-    whole word is capitalised (an honest approximation, stated in the
-    docstring rather than hidden).
-    """
-    if parts and all(parts):
-        return parts[0].capitalize() + parts[1].capitalize()
-    return word.capitalize()
-
-
 def _closest(words, word):
     """The known keyword closest to ``word`` (case-blind), else "".
 
     Token-aware: an invented keyword is often a real keyword's tokens in
-    the wrong order (OptTight vs TightOpt). For each catalog word both
-    alignments of the word's best split are scored (word halves vs the
-    catalog word's own halves, both orders), so a word made of the same
-    tokens beats a superficially closer string. The catalog is all
-    lowercase; the suggestion carries ORCA's canonical camel casing
-    derived from the split that matched (see _camel).
-
-    Returns ``(suggestion, (left_half, right_half))``; the halves are the
-    catalog word's own split for the winning alignment, for casing.
+    the wrong order (OptTight vs TightOpt). The CATALOG word's own best
+    split (tight|opt matched against the full invented word) picks the
+    closest real keyword. The suggestion carries the CATALOG's casing
+    ('tightopt', straight from opi_keywords.json) -- no hand-written
+    title-case map, it would drift from the catalog (QS ruling); ORCA
+    accepts keywords case-insensitively, so the catalog form is exactly
+    what the user can type. Documented in check_keyword_line too.
     """
     from difflib import SequenceMatcher
     pool = sorted(words)
@@ -86,28 +69,23 @@ def _closest(words, word):
     def _split_ratio(k, w):
         # split the CATALOG word; each half is matched against the FULL
         # invented word. The winning split gives the token boundaries of
-        # the real keyword (tight|opt), which is what casing needs --
-        # splitting the invented word gave OptTight/TightOpt ambiguity.
+        # the real keyword (tight|opt).
         best = 0.0
-        best_parts = (k[: len(k) // 2], k[len(k) // 2:])
         for i in range(1, len(k)):
             h1, h2 = k[:i], k[i:]
             score = min(SequenceMatcher(None, h1, w).ratio(),
                         SequenceMatcher(None, h2, w).ratio())
             if score > best:
                 best = score
-                best_parts = (h1, h2)
-        return best, best_parts
+        return best
 
     ranked = []
     for k in pool:
         full = SequenceMatcher(None, w, k).ratio()
-        split, parts = _split_ratio(k, w)
-        ranked.append((-(full + split), k, parts))
+        ranked.append((-(full + _split_ratio(k, w)), k))
     ranked.sort()
     if ranked and -ranked[0][0] >= 0.5:
-        _, k, parts = ranked[0]
-        return _camel(k, parts)
+        return ranked[0][1]
     return ""
 
 
@@ -149,22 +127,28 @@ def check_keyword_line(text: str) -> list[Issue]:
     """Check every word on the ``!`` line(s) against ORCA's vocabulary."""
     from delfin.orca_knowledge import known_keyword
     issues: list[Issue] = []
-    # A line that LOOKS like a keyword line but starts with a non-ASCII
+    # A line that LOOKS like a keyword line but uses a non-ASCII
     # look-alike of `!` (U+FF01 etc.) is silently ignored by ORCA's
-    # parser too -- the whole line's keywords are dropped. That must be
-    # an error, not a silent pass (QS: real defect, kept).
+    # parser -- the whole line's keywords are dropped. Flag the line
+    # BEFORE normalisation, naming the look-alike character (QS ruling);
+    # normalize-then-scan alone can never see it, because no ASCII '!'
+    # exists on the line.
     for line in text.splitlines():
         stripped = line.lstrip()
         if not stripped or stripped[0].isascii():
             continue
-        if re.fullmatch(r"[^\w\s]+(.*)", stripped) and "!" in _normalize_line(stripped[0]):
+        import unicodedata
+        norm0 = unicodedata.normalize("NFKD", stripped[0])
+        if norm0 == "!":
             issues.append(Issue(
-                severity="error", code="non_ascii_keyword_marker",
-                message=(f"The line starts with a non-ASCII look-alike of "
-                         f"`!` (U+{ord(stripped[0]):04X}); ORCA ignores "
-                         "this line entirely."),
+                severity="error", code="lookalike_keyword_line",
+                message=(f"The line uses {stripped[0]!r} "
+                         f"(U+{ord(stripped[0]):04X}) instead of the "
+                         "ASCII `!` keyword marker; ORCA ignores this "
+                         "line entirely, so its keywords are not set."),
                 suggestion="Replace it with the ASCII `!` keyword marker.",
             ))
+            break
     text = _normalize_line(text)
     for line in re.findall(r"^\s*!(.*)$", text, re.MULTILINE):
         for word in line.split():
@@ -212,20 +196,26 @@ def check_keyword_conflicts(text: str) -> list[Issue]:
     """Keyword combinations ORCA's manual names as exclusive."""
     kw_words = []
     for line in re.findall(r"^\s*!(.*)$", _normalize_line(text), re.MULTILINE):
-        kw_words += [w.upper() for w in line.split()]
+        kw_words += line.split()
     conflicts = [("NUMFREQ", "FREQ")]
-    # canonical casing ORCA's manual writes these in: the user reading
-    # the message must see the exact keywords that conflict
-    _CANONICAL = {"NUMFREQ": "NumFreq", "FREQ": "Freq"}
+    # The message quotes each token AS THE USER WROTE IT (as-written form
+    # wins, uppercase only as fallback) -- a user reading only the message
+    # must see their own words back (QS ruling).
+    upper_words = [w.upper() for w in kw_words]
+    def _as_written(key):
+        for w in kw_words:
+            if w.upper() == key:
+                return w
+        return key
     issues: list[Issue] = []
     for a, b in conflicts:
-        if a in kw_words and b in kw_words:
-            ca, cb = _CANONICAL[a], _CANONICAL[b]
+        if a in upper_words and b in upper_words:
+            ca, cb = _as_written(a), _as_written(b)
             issues.append(Issue(
                 severity="error", code="conflicting_keywords",
                 message=f"{ca} and {cb} exclude each other.",
-                suggestion=f"Pick one: {a} for a numerical Hessian, "
-                           f"{b} for the analytic one.",
+                suggestion=f"Pick one: {ca} for a numerical Hessian, "
+                           f"{cb} for the analytic one.",
             ))
     return issues
 
