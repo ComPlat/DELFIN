@@ -122,6 +122,18 @@ SELF_EXEMPT = {
     # the LC1 licence inventory: a policy document that quotes the
     # signatures it classifies — data, not QM output.
     "tests/fixtures/lc1_synthetic/INVENTORY.md",
+    # documentation that QUOTES the signature strings (how DELFIN reads
+    # termination, what to search for) — no program output is embedded,
+    # the phrase is the name of a state, not the output itself.
+    "docs/PPKA_VALIDATION.md",
+    "docs/RETRY_LOGIC.md",
+    "docs/methodology.md",
+    # installation walkthrough quoting the version banner of the local
+    # ORCA install as a verification step — a version number, not DATA.
+    "examples/example_Job_Submission_Scripts/BwUniCluster/DELFIN_INSTALLATION_ANLEITUNG.txt",
+    # dashboard-agent corpus: transcript TEXT that mentions the phrase in
+    # prose (which file has which status); no ORCA output block is in it.
+    "tests/fixtures/choice_offer_corpus.json",
 }
 
 
