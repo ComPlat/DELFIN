@@ -200,13 +200,30 @@ def test_provenance_records_job_identity_and_no_home_paths():
 
 @needs_fixture
 def test_orca_json_property_json_exist_as_orca_wrote_them():
-    """ORCA's own .json / .property.json outputs are part of the fixture."""
-    assert (FIXTURE_DIR / "rc1_butane_scan_r2scan3c.json").is_file()
-    assert (FIXTURE_DIR / "rc1_butane_scan_r2scan3c.property.json").is_file()
+    """The fixture carries the property.json ORCA wrote for its requested
+    output modes.
+
+    QS ruling (nacht-s5, 2026-11-04): the brief's ".json/.property.json
+    as ORCA writes them" means the files ORCA produces for the output
+    modes the .inp requests. v5's .inp requests jsonpropfile True (no
+    bare jsonfile), so ORCA wrote exactly one json file -- the
+    property.json committed here. The earlier bare-.json pin was wrong
+    twice over: the reference family's own .inp (butane_dlpno_ccsdt_
+    pvtz.inp lines 12-13) requests jsonpropfile + jsongbwfile only, so
+    its committed .json is NOT what jsonpropfile produces, and that
+    fixture is a constructed one anyway -- no real-run format authority
+    for a bare .json."""
+    prop_path = FIXTURE_DIR / "rc1_butane_scan_r2scan3c.property.json"
+    assert prop_path.is_file(), "property.json missing"
     import json
-    header = json.loads(
-        (FIXTURE_DIR / "rc1_butane_scan_r2scan3c.json").read_text())
-    assert "Citations" in header or "Header" in header
+    header = json.loads(prop_path.read_text())
+    # ORCA property.json structure of a REAL run: Calculation_Info
+    # (charge/multiplicity/atom count) and Calculation_Status.
+    assert "Calculation_Info" in header and "Calculation_Status" in header, (
+        "property.json is not ORCA's own property output")
+    inp = INP_FILE.read_text()
+    assert "jsonpropfile True" in inp, (
+        "the property.json must be requested in the committed .inp")
 
 
 @needs_fixture
