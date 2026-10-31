@@ -69,6 +69,11 @@ class InstanceRecord:
     core_hours: float = 0.0
     duration_s: float = 0.0
     error: str = ""
+    # HB2 D2: the run did not measure the model (e.g. the engine never
+    # started: "engine init failed: No Anthropic API key found"). Such
+    # an instance is not a failure of the model — it is no measurement
+    # at all. Recorded with the error text, never graded, never scored.
+    unmeasured: bool = False
     # Submit path (P3): how the instance ran. "local" (default,
     # in-process) or "slurm" when a submitter was configured.
     submit_path: str = "local"
@@ -149,6 +154,7 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
     grader: Grader = config["grader"]
     accounting: Accounting = config["accounting"]
     model: str = config.get("model", "")
+    provider: str = config.get("provider", "")
     mode: str = config.get("mode", "holdout")
     n_instances = int(config.get("instances", 10))
     budget = float(config.get("daily_budget_core_hours",
@@ -257,9 +263,20 @@ def run(config: dict, *, clock: Callable[[], float] | None = None) -> RunRecord:
             inst.ran = True
         try:
             t0 = now()
-            result = runner(task, model=model)
+            result = runner(task, model=model, provider=provider)
             inst.duration_s = now() - t0
-            inst.success, inst.quality = grader.grade(task, result)
+            # HB2 D2: a result that says the run never happened is
+            # recorded as such — error text kept, never graded (a dead
+            # run is not a quality-0 failure of the model) and never
+            # counted in the score (bench_report._score excludes it).
+            unmeasured = bool(getattr(result, "unmeasured", False))
+            if unmeasured:
+                inst.unmeasured = True
+                inst.error = str(getattr(result, "error", "") or
+                                 "unmeasured (no error text)")
+            else:
+                inst.success, inst.quality = grader.grade(task, result)
+                inst.error = str(getattr(result, "error", "") or "")
         except Exception as exc:  # a failed run is recorded, not swallowed
             inst.error = "%s: %s" % (type(exc).__name__, exc)
         record.instances.append(inst)
@@ -301,6 +318,11 @@ def main(argv: Optional[list] = None) -> int:
                     "run through benchmark_runner.run_task, grade with "
                     "DELFIN's own grading, record the cost.")
     parser.add_argument("--model", default="")
+    parser.add_argument("--provider", default="",
+                        help="provider backend for the model (kit, "
+                             "anthropic, openai, ollama); default: "
+                             "derived from the model id like the bench "
+                             "CLI does")
     parser.add_argument("--instances", type=int, default=10)
     parser.add_argument("--seed-path", default="")
     parser.add_argument("--practice", action="store_true")
@@ -320,6 +342,7 @@ def main(argv: Optional[list] = None) -> int:
         instances=args.instances,
         mode="practice" if args.practice else "holdout",
         holdout_seed_path=args.seed_path,
+        provider=args.provider,
     )
     cfg["daily_budget_core_hours"] = args.budget
     record = run(cfg)
@@ -329,6 +352,19 @@ def main(argv: Optional[list] = None) -> int:
         print("refused: %s" % record.holdout_refusal_reason,
               file=sys.stderr)
         return 1
+    # HB2 D2: a round where EVERY drawn instance is unmeasured did not
+    # measure anything (the 31.10. defect: a dead baseline that looked
+    # like a failed round). Exiting 0 would let a later round read it
+    # as a real baseline; a healthy round still exits 0.
+    started = record.started()
+    if started and all(i.unmeasured for i in started):
+        print("error: every drawn instance is UNMEASURED (the runs "
+              "never happened; e.g. engine init failed) — this round "
+              "measured nothing and is not a baseline", file=sys.stderr)
+        for inst in started:
+            print("  unmeasured: %s: %s" % (inst.task_id, inst.error),
+                  file=sys.stderr)
+        return 3
     return 0
 
 
