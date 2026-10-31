@@ -48,6 +48,56 @@ def test_tadf_workflow_run_plumbing_kwargs_do_not_skip_the_check(monkeypatch):
     assert captured == {}  # run_single_tadf_xtb never called
 
 
+def test_tadf_workflow_run_one_explicit_key_does_not_vouch_for_the_others(monkeypatch):
+    """Mixed call: charge passed explicitly, xtb_method missing from both
+    config and kwargs — must raise naming xtb_method (reviewer finding F2);
+    one explicit key never vouches for the others."""
+    from delfin.workflows.contrib.tadf_xtb_workflow import TadfXtbWorkflow
+
+    captured = {}
+    monkeypatch.setattr(
+        "delfin.tadf_xtb.run_single_tadf_xtb",
+        lambda **k: captured.update(k) or "x",
+    )
+
+    wf = TadfXtbWorkflow()
+    with pytest.raises(ValueError) as excinfo:
+        wf.run(
+            config={
+                "charge": 0,
+                "excited_method": "stda",
+                "energy_window": 10.0,
+                "PAL": 4,
+                "maxcore": 1000,
+            },
+            charge=0,
+        )
+    assert "xtb_method" in str(excinfo.value)
+    assert captured == {}
+
+
+def test_tadf_workflow_run_explicit_none_counts_as_absent(monkeypatch):
+    """An explicitly passed None kwarg is treated like a missing setting."""
+    from delfin.workflows.contrib.tadf_xtb_workflow import TadfXtbWorkflow
+
+    monkeypatch.setattr("delfin.tadf_xtb.run_single_tadf_xtb", lambda **k: "x")
+
+    wf = TadfXtbWorkflow()
+    with pytest.raises(ValueError) as excinfo:
+        wf.run(
+            config={
+                "xtb_method": "XTB2",
+                "excited_method": "stda",
+                "energy_window": 10.0,
+                "PAL": 4,
+                "maxcore": 1000,
+            },
+            charge=None,
+        )
+    assert "charge" in str(excinfo.value)
+
+
+
 def _config() -> dict:
     """A parsed CONTROL.txt the way read_control_file produces one."""
     return {

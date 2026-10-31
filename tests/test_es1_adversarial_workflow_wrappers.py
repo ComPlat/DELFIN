@@ -76,7 +76,14 @@ def test_tadf_xtb_workflow_config_reaches_entry(tmp_path, monkeypatch):
 
 
 def test_tadf_xtb_workflow_kwargs_beat_config(tmp_path, monkeypatch):
-    """An explicit kwarg must win over the same value in config."""
+    """An explicit kwarg must win over the same value in config.
+
+    Rewritten along its intent after finding F2: the original pinned a
+    call that passed only ``charge`` explicitly and expected it to run,
+    which contradicts the per-key required-setting check F2 asks for
+    (one explicit key does not vouch for the others).  The intent — an
+    explicit kwarg beats the same value in config — is tested with a
+    complete call."""
     captured = {}
 
     def fake_run_single(entry, *, charge, **rest):
@@ -87,7 +94,14 @@ def test_tadf_xtb_workflow_kwargs_beat_config(tmp_path, monkeypatch):
         "delfin.tadf_xtb.run_single_tadf_xtb", fake_run_single
     )
     TadfXtbWorkflow().run(
-        config={"charge": 7},
+        config={
+            "charge": 7,
+            "xtb_method": "XTB1",
+            "excited_method": "stda",
+            "energy_window": 10.0,
+            "PAL": 4,
+            "maxcore": 1000,
+        },
         entry=object(),
         charge=2,
         workdir=tmp_path,

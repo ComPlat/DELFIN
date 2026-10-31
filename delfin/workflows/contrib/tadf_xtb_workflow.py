@@ -73,15 +73,16 @@ class TadfXtbWorkflow:
         if "workdir" in kwargs:
             params["workdir"] = kwargs["workdir"]
 
-        # Plumbing kwargs (entry, workdir, …) do not prove the physics
-        # settings are given: only an explicit kwarg that overrides one of
-        # the required keys counts.  A call whose required settings are all
-        # explicitly passed (the CLI path) runs as given; a call relying on
-        # config with a setting missing is a misconfiguration and is refused
-        # with a message naming the setting, never TypeError downstream.
-        explicit = [key for key in _REQUIRED_KEYS if key in kwargs]
+        # The refusal is per key: a required setting must come from an
+        # explicit kwarg or from CONTROL.txt.  Plumbing kwargs (entry,
+        # workdir, …) prove nothing about the physics settings, and one
+        # explicit key does not vouch for the others.  An explicit None
+        # counts as absent.  A call whose required settings are all given
+        # (the CLI path passes every one) has an empty `missing` and runs;
+        # anything else is refused with a message naming the settings,
+        # never TypeError downstream.
         missing = [key for key in _REQUIRED_KEYS if params.get(key) is None]
-        if missing and not explicit:
+        if missing:
             raise ValueError(
                 f"tadf_xtb workflow is missing required setting(s): "
                 f"{', '.join(missing)}. Set them in CONTROL.txt or pass them "
