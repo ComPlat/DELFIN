@@ -28,8 +28,10 @@ from delfin.analysis.results_overview import (
     METRICS,
     build_table,
     format_value,
+    get_smiles,
     list_calculations,
     list_rss_pngs,
+    smiles_png_bytes,
     sort_table,
 )
 
@@ -242,20 +244,51 @@ class ResultsOverviewPanel:
         return buf.getvalue().encode("utf-8-sig")  # BOM: Excel opens UTF-8
 
     def _table_bytes_xlsx(self) -> bytes:
-        """XLSX of the current table; missing values as empty cells."""
+        """XLSX of the current table; missing values as empty cells.
+
+        Column 2: SMILES 2D structure image, column 3: the SMILES text,
+        last column: the relative RSS scan PNG of the calculation.
+        """
         import openpyxl  # already a DELFIN dependency
+        from openpyxl.drawing.image import Image as XLImage
         assert self._table is not None
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Results Overview"
-        ws.append(["Rechnung"]
-                  + [c["label"] for c in self._table["columns"]])
-        for row in self._table["rows"]:
+        ws.append(["Rechnung", "SMILES 2D", "SMILES"]
+                  + [c["label"] for c in self._table["columns"]]
+                  + ["RSS PNG (relativ)"])
+        for r, row in enumerate(self._table["rows"], start=2):
             cells = []
             for c in self._table["columns"]:
                 v = row["values"].get(c["id"])
                 cells.append(v if v is not None else None)
-            ws.append([row["label"]] + cells)
+            ws.append([row["label"]] + cells + [None])
+            # Column 2: 2D structure, column 3: SMILES text.
+            smiles = get_smiles(row["path"])
+            ws.cell(row=r, column=3, value=smiles)
+            if smiles:
+                png = smiles_png_bytes(smiles)
+                if png:
+                    img = XLImage(_io.BytesIO(png))
+                    img.width = img.height = 130
+                    ws.add_image(img, f"B{r}")
+                    ws.row_dimensions[r].height = 100
+            # Last column: relative scan PNG of this calculation.
+            rel_only = [
+                p for p in list_rss_pngs(row["path"])
+                if p["rel"].endswith("scan_relative.png")
+            ]
+            if rel_only:
+                try:
+                    with open(rel_only[0]["abs"], "rb") as fh:
+                        scan_img = XLImage(_io.BytesIO(fh.read(8 * 1024 * 1024)))
+                    scan_img.height = 100
+                    last_col = 3 + len(self._table["columns"]) + 1
+                    col_letter = openpyxl.utils.get_column_letter(last_col)
+                    ws.add_image(scan_img, f"{col_letter}{r}")
+                except OSError:
+                    pass
         out = _io.BytesIO()
         wb.save(out)
         return out.getvalue()

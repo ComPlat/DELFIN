@@ -19,7 +19,7 @@ Data sources (verified against archive/403-429_403):
 from __future__ import annotations
 
 import glob
-import json
+import json as _json
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -99,8 +99,8 @@ def _load_delfin_data(calc_dir: str) -> Optional[dict]:
     path = os.path.join(calc_dir, DELFIN_DATA_NAME)
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            return json.load(fh)
-    except (OSError, json.JSONDecodeError):
+            return _json.load(fh)
+    except (OSError, _json.JSONDecodeError):
         return None
 
 
@@ -164,6 +164,35 @@ def parse_rss_dat(calc_dir: str) -> List[tuple]:
     except OSError:
         return []
     return points
+
+
+def get_smiles(calc_dir: str):
+    """SMILES from DELFIN_Data.json ``input.smiles`` (None if absent)."""
+    path = os.path.join(calc_dir, DELFIN_DATA_NAME)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            data = _json.load(fh)
+    except (OSError, _json.JSONDecodeError):
+        return None
+    value = (data.get("input") or {}).get("smiles")
+    return str(value) if value else None
+
+
+def smiles_png_bytes(smiles: str, size: int = 260):
+    """2D structure image (PNG bytes) via RDKit; None if RDKit absent
+    or the SMILES cannot be parsed."""
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.Draw import rdMolDraw2D
+    except ImportError:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    drawer = rdMolDraw2D.MolDraw2DCairo(size, size)
+    rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
+    drawer.FinishDrawing()
+    return drawer.GetDrawingText()
 
 
 def rss_metrics(calc_dir: str) -> Dict[str, Any]:
