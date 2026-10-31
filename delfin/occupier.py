@@ -464,24 +464,46 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     freq_flag = "FREQ" if resolve_occupier_compare(config) == "G" else ""
 
     # Build the '!' line
-    tokens = ["!"]
-    if qmmm_range:
-        qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
-        tokens.append(qmmm_method)
-    tokens.extend([
-        str(config['functional']),
-        rel_token,
-        str(main_basis),
-        str(config.get('disp_corr', '')),
-        str(config.get('ri_jkx', '')),
-        aux_jk_token,
-        implicit,
-        str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
-    ])
-    if freq_flag:
-        tokens.append(freq_flag)
-    tokens.append(initial_guess)
-    bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
+    # Same 3c-composite discipline as the nested writer below
+    # (occupier.py:~966): a composite (r2SCAN-3c, B97-3c, HF-3c, PBEh-3c)
+    # IS its own method -- its tailored basis, dispersion and gCP are
+    # inside the keyword (ORCA 6.1.1 manual section 3.6.3). An extra
+    # dispersion token double-counts; an extra basis token replaces the
+    # composite's basis; ZORA has no relativistic counterpart inside the
+    # composite. Emit the composite keyword + the generic runners only.
+    functional_str = str(config['functional'])
+    if functional_str.lower().endswith("-3c"):
+        composite_tokens = [functional_str]
+        if qmmm_range:
+            composite_tokens.insert(0, str(config.get('qmmm_option', 'QM/XTB')).strip())
+        for extra in (implicit, str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+                      str(config.get('ri_jkx', ''))):
+            if extra:
+                composite_tokens.append(extra)
+        if freq_flag:
+            composite_tokens.append(freq_flag)
+        if initial_guess:
+            composite_tokens.append(initial_guess)
+        bang = " ".join(["!"] + composite_tokens).strip()
+    else:
+        tokens = ["!"]
+        if qmmm_range:
+            qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
+            tokens.append(qmmm_method)
+        tokens.extend([
+            str(config['functional']),
+            rel_token,
+            str(main_basis),
+            str(config.get('disp_corr', '')),
+            str(config.get('ri_jkx', '')),
+            aux_jk_token,
+            implicit,
+            str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+        ])
+        if freq_flag:
+            tokens.append(freq_flag)
+        tokens.append(initial_guess)
+        bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
     modified_lines = []
     if broken_sym and "moinp" in broken_sym.lower():
@@ -508,6 +530,11 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     modified_lines.append(f"* xyz {charge} {multiplicity}\n")
 
     # Metals found by symbol
+    # 3c composite: its own basis covers all elements it supports
+    # (r2SCAN-3c: up to Lr, Z=103 -- ORCA 6.1.1 manual section 3.6.3),
+    # so no per-atom NewGTO override.
+    if functional_str.lower().endswith("-3c"):
+        metal_basis = None
     metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
     metal_indices = [i for i, a in enumerate(atoms) if a['elem'].capitalize() in metal_syms]
 
@@ -951,24 +978,51 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         freq_flag = "FREQ" if resolve_occupier_compare(config) == "G" else ""
 
         # Build the '!' line
-        tokens = ["!"]
-        if qmmm_range:
-            qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
-            tokens.append(qmmm_method)
-        tokens.extend([
-            str(config['functional']),
-            rel_token,                       # '' or ZORA/X2C/DKH
-            str(main_basis),
-            str(config.get('disp_corr', '')),
-            str(config.get('ri_jkx', '')),
-            aux_jk_token,                    # '' or def2/J | SARC/J
-            implicit,
-            str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
-        ])
-        if freq_flag:
-            tokens.append(freq_flag)
-        tokens.append(initial_guess)
-        bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
+        # A 3c composite functional (e.g. r2SCAN-3c, B97-3c, HF-3c, PBEh-3c)
+        # IS its own method: it carries its tailored basis (def2-mTZVPP /
+        # def2-mTZVP), its built-in dispersion correction and gCP (ORCA 6.1.1
+        # manual, section 3.6.3, "It is invoked with the simple keyword
+        # ! r2SCAN-3c"). Adding an extra dispersion token double-counts the
+        # correction, and adding the main_basisset token replaces the
+        # composite's tailored basis with the CONTROL's generic one. Emit the
+        # composite keyword alone and drop the composite-incompatible tokens.
+        functional_str = str(config['functional'])
+        if functional_str.lower().endswith("-3c"):
+            composite_tokens = [functional_str]
+            if qmmm_range:
+                composite_tokens.insert(0, str(config.get('qmmm_option', 'QM/XTB')).strip())
+            for extra in (implicit, str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+                          str(config.get('ri_jkx', ''))):
+                if extra:
+                    composite_tokens.append(extra)
+            if freq_flag:
+                composite_tokens.append(freq_flag)
+            if initial_guess:
+                composite_tokens.append(initial_guess)
+        else:
+            composite_tokens = None
+        if composite_tokens is not None:
+            tokens = ["!"] + composite_tokens
+            bang = " ".join(tokens).strip()
+        else:
+            tokens = ["!"]
+            if qmmm_range:
+                qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
+                tokens.append(qmmm_method)
+            tokens.extend([
+                str(config['functional']),
+                rel_token,                       # '' or ZORA/X2C/DKH
+                str(main_basis),
+                str(config.get('disp_corr', '')),
+                str(config.get('ri_jkx', '')),
+                aux_jk_token,                    # '' or def2/J | SARC/J
+                implicit,
+                str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+            ])
+            if freq_flag:
+                tokens.append(freq_flag)
+            tokens.append(initial_guess)
+            bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
         modified_lines = []
         if broken_sym and "moinp" in broken_sym.lower():
@@ -995,6 +1049,13 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         modified_lines.append(f"* xyz {charge} {multiplicity}\n")
 
         # Metals found by symbol
+        # A 3c composite carries its own basis for ALL elements it covers
+        # (r2SCAN-3c: all elements up to Lr, Z=103 -- ORCA 6.1.1 manual
+        # section 3.6.3). A per-atom NewGTO override would replace the
+        # composite's basis on the metal (and possibly its first sphere),
+        # so it is suppressed when the functional is a composite.
+        if functional_str.lower().endswith("-3c"):
+            metal_basis = None
         metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
         metal_indices = [i for i, a in enumerate(atoms) if a['elem'].capitalize() in metal_syms]
 
