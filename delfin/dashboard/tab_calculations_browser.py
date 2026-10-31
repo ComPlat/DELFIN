@@ -9097,6 +9097,17 @@ def create_tab(ctx):
             calc_options_dropdown.layout.display = 'block'
         elif selected and sel_lower.endswith('.out'):
             out_options = ['(Options)', 'Print Mode', 'MO Plot', 'Print NMR', 'Spin Density']
+            # 'TS -> GOAT' is offered only for a TS output; the panel itself
+            # re-checks and explains why a file does not qualify, so the
+            # dropdown never guesses from the name alone.
+            try:
+                out_path_candidate = _calc_path_for_label(selected)
+                from delfin.ts_goat import read_ts_status
+                _ts_status = read_ts_status(out_path_candidate)
+                if _ts_status.is_ts:
+                    out_options.append('TS → GOAT')
+            except Exception:
+                pass
             if rmsd_available:
                 out_options.append('RMSD')
             calc_options_dropdown.options = out_options
