@@ -24,7 +24,16 @@ import math
 import re
 from typing import List, Optional
 
-__all__ = ["rate_problem", "window_remainders", "TRUNCATION_LIMIT"]
+__all__ = [
+    "rate_problem",
+    "window_remainders",
+    "TRUNCATION_LIMIT",
+    "ISC_REFERENCE",
+    "REFERENCE_LEVEL",
+    "REFERENCE_RATIO_BAND",
+    "isc_level_matches",
+    "isc_reference_comparison",
+]
 
 _CM1_PER_HARTREE = 219474.6313705
 _FS_PER_AU = 0.02418884326585747
@@ -82,3 +91,117 @@ def rate_problem(text: Optional[str]) -> Optional[str]:
         return (f"not converged: the correlation function still had {left:.1%} of its amplitude "
                 f"when the time window (MAXTIME) ended")
     return None
+
+
+#: The in-tree converged ISC reference (this module's docstring above,
+#: measured on formaldehyde with ORCA 6.1.1, TD-DFT, LINEW 50,
+#: MAXTIME auto): ISC S1>T1 converged 2.46e7 s-1.  A comparison is
+#: made ONLY when the run's level matches REFERENCE_LEVEL.
+ISC_REFERENCE = {
+    "rate": 2.46e7,
+    "source": "delfin/common/esd_numerics.py docstring "
+    "(ORCA 6.1.1 formaldehyde, TD-DFT, LINEW 50, MAXTIME auto)",
+}
+
+#: The level the reference was measured at.  MAXTIME auto cannot be
+#: read from the output (ORCA prints the chosen window instead), so
+#: it is not checked; the docstring records it.
+REFERENCE_LEVEL = {
+    "functional": "PBE0",
+    "disp_corr": "D4",
+    "main_basisset": "def2-SVP",
+    "solvent": "",
+    "linew": 50.0,
+}
+
+#: How far the linewidth may differ and still count as the same
+#: damping.
+_LINEW_TOLERANCE_CM1 = 0.5
+
+#: Ratio band against the reference: outside it the comparison FAILS.
+#: Wide (0.2-5.0) to catch a wrong sign, an unscaled unit or a
+#: truncated window reported as converged -- not to be a precision
+#: benchmark.
+REFERENCE_RATIO_BAND = (0.2, 5.0)
+
+_LINEWIDTH_RE = re.compile(r"Homogeneous\s+linewidth\s+is:\s*([0-9.]+)\s*cm-1", re.I)
+
+
+def isc_level_matches(control: dict, esd_out_text: Optional[str]) -> "tuple[bool, str]":
+    """Verify the run's level against REFERENCE_LEVEL before comparing.
+
+    Checks functional, dispersion, basis and solvent from the CONTROL
+    dict and the homogeneous linewidth from the ESD output text.
+    Every mismatch is named in the reason; the reason also says when
+    the linewidth could not be checked.
+    """
+    mism = []
+    if str(control.get("functional", "")).upper() != REFERENCE_LEVEL["functional"]:
+        mism.append(f"functional={control.get('functional')}")
+    if str(control.get("disp_corr", "")).upper() != REFERENCE_LEVEL["disp_corr"]:
+        mism.append(f"disp_corr={control.get('disp_corr')}")
+    if str(control.get("main_basisset", "")).upper() != REFERENCE_LEVEL["main_basisset"].upper():
+        mism.append(f"basis={control.get('main_basisset')}")
+    if str(control.get("solvent", "")) != REFERENCE_LEVEL["solvent"]:
+        mism.append(f"solvent={control.get('solvent')!r}")
+    linewidth_checked = False
+    if esd_out_text:
+        m = _LINEWIDTH_RE.search(esd_out_text)
+        if m:
+            linewidth_checked = True
+            if abs(float(m.group(1)) - REFERENCE_LEVEL["linew"]) > _LINEW_TOLERANCE_CM1:
+                mism.append(f"LINEW={m.group(1)}")
+    if mism:
+        return False, "; ".join(mism)
+    if not linewidth_checked:
+        return True, ("level matches PBE0-D4/def2-SVP gas phase "
+                      "(linewidth not stated in the output; not checked)")
+    return True, "level matches PBE0-D4/def2-SVP gas phase, LINEW 50"
+
+
+def isc_reference_comparison(
+    rate: Optional[float],
+    problem: Optional[str],
+    level_ok: bool,
+    level_reason: str = "",
+) -> dict:
+    """Verdict record for ISC rate vs ISC_REFERENCE, one consumer's contract.
+
+    The comparison is level-gated: without a matching level, a rate, or
+    with a rate that has a problem (esd_numerics.rate_problem), the
+    verdict is NOT GRADED with the reason -- never a number.
+    """
+    if not level_ok:
+        return {
+            "criterion": "isc_vs_reference",
+            "verdict": "NOT GRADED",
+            "value": f"level differs: {level_reason}",
+            "unit": "",
+            "source": "CONTROL.txt + ESD output via isc_level_matches",
+        }
+    if rate is None:
+        return {
+            "criterion": "isc_vs_reference",
+            "verdict": "NOT GRADED",
+            "value": "no rate to compare",
+            "unit": "",
+            "source": "ESD ISC output",
+        }
+    if problem:
+        return {
+            "criterion": "isc_vs_reference",
+            "verdict": "NOT GRADED",
+            "value": f"rate has problem: {problem}",
+            "unit": "",
+            "source": "esd_numerics.rate_problem on the ISC output",
+        }
+    ratio = rate / ISC_REFERENCE["rate"]
+    low, high = REFERENCE_RATIO_BAND
+    return {
+        "criterion": "isc_vs_reference",
+        "verdict": "PASS" if low <= ratio <= high else "FAIL",
+        "value": f"rate/ref = {ratio:.2f} (ref {ISC_REFERENCE['rate']:.3g} s^-1, "
+        "delfin/common/esd_numerics.py docstring)",
+        "unit": "ratio",
+        "source": f"in-tree measurement, matched level verified: {ISC_REFERENCE['source']}",
+    }
