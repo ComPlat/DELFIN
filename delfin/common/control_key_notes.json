@@ -1,5 +1,5 @@
 {
-  "_meta": "Per-key notes for CONTROL.txt. The key LIST lives only in CONTROL_FIELD_SPECS (delfin/common/control_validator.py:2087-2283); this file adds knowledge, never a second list. Every read_by was traced in the DELFIN source this session, file:line, not guessed. best_practice carries a source or is omitted.",
+  "_meta": "Per-key notes for CONTROL.txt. The key LIST lives only in CONTROL_FIELD_SPECS (delfin/common/control_validator.py:2088-2283); this file adds knowledge, never a second list. Every read_by was traced in the DELFIN source this session, file:line, not guessed. best_practice carries a source or is omitted.",
   "keys": {
     "charge": {
       "meaning": "Total charge of the system, integer; shifts the electron count DELFIN computes from the input geometry (delfin/cli.py:1997 calculate_total_electrons_txt) and appears in every ORCA input header.",
@@ -16,7 +16,6 @@
       "best_practice": "OCCUPIER only when the question is spin/oxidation-state enumeration; classic otherwise."
     },
     "functional": {
-      "functionals": null,
       "meaning": "The DFT functional written into every ORCA keyword line. Names resolve case-insensitively against ORCA_FUNCTIONALS; LibXC(...) names pass through, and unknown names are passed through unchanged so ORCA itself fails fast on a typo (control_validator.py:1170-1178).",
       "valid_values": "ORCA functional name, e.g. PBE0, B3LYP, wB97X-D4, or LibXC(<name>)",
       "default": "PBE0",
@@ -89,7 +88,7 @@
     },
     "freq_type": {
       "meaning": "Analytical (FREQ) or numerical (NUMFREQ) frequencies wherever a frequency run is requested. Consumers fall back to FREQ on any other spelling, so a typo would silently switch cost, not fail: delfin/esd_input_generator.py:761-763,1260-1262 and delfin/xyz_io.py:535-538.",
-        "valid_values": "FREQ | numFREQ",
+      "valid_values": "FREQ | numFREQ",
       "default": "FREQ",
       "read_by": "delfin/common/control_validator.py:2215 (:1400-1410); consumers delfin/esd_input_generator.py:761-763, delfin/xyz_io.py:535-538, delfin/esd_module.py via input generator.",
       "best_practice": "NUMFREQ only when the method has no analytical Hessian (e.g. some double-hybrids); far more expensive. Source: ORCA 6 manual, frequencies."
@@ -227,6 +226,97 @@
       "default": "true",
       "read_by": "delfin/common/control_validator.py:2245-2246; consumed via delfin/common/tddft_settings.py.",
       "best_practice": "true default (stable on triplet-unstable references); false when excitation energies need RPA quality. Source: ORCA 6 manual, TD-DFT chapter."
+    },
+    "OCCUPIER_method": {
+      "meaning": "How OCCUPIER builds its candidate configurations: auto (enumerates spin/oxidation states itself) or manually (the user supplies the stages).",
+      "valid_values": "auto | manually",
+      "default": "auto",
+      "read_by": "delfin/common/control_validator.py:2228 (_as_occupier_method); consumed by delfin/occupier.py.",
+      "best_practice": "auto for spin-state scans of transition-metal complexes; manually only when the chemistry demands an explicit stage list. Sources: OC1 entries [R1] 10.1039/D0CP04727A, [R2] 10.1039/d4sc05471g."
+    },
+    "OCCUPIER_compare": {
+      "meaning": "Which energy OCCUPIER ranks candidate configurations by: FSPE (electronic single-point energy) or G (Gibbs free energy, which additionally runs a frequency calculation on each candidate).",
+      "valid_values": "FSPE | G",
+      "default": "FSPE",
+      "read_by": "delfin/common/control_validator.py:2191 (_as_occupier_compare); resolve_occupier_compare consumed by delfin/occupier.py:408, :895, :1136, :1266 (compare=='G' gates FREQ into the candidate inputs).",
+      "best_practice": "G for questions needing free energies (redox potentials, high-temperature spin populations): never decide redox/spin ordering from electronic energies alone -- computed spin-state splittings are strongly functional-dependent, and free-energy corrections can change the ordering. Sources: [R1] 10.1039/D0CP04727A; [R2] 10.1039/d4sc05471g (SSE17 benchmark: DFT spin-state orderings are method-dependent -- one functional's winner is a hypothesis, not a result; report functional sensitivity)."
+    },
+    "implicit_solvation_model": {
+      "meaning": "The implicit solvation model written into the ORCA keyword line (e.g. CPCM family). Empty means gas phase.",
+      "valid_values": "CPCM | CPCM(Solvent) | SMD | (empty = gas phase)",
+      "default": "(empty = gas phase)",
+      "read_by": "delfin/common/control_validator.py:2201 (_as_implicit_solvation_model); consumed via build_solvation_keyword (delfin/common/solvation.py) into every ORCA input.",
+      "best_practice": "For redox potentials: state the solvent model with every number -- gas-phase redox potentials are not comparable to any measured value. Compare only same-solvent, same-functional, same-geometry-provenance results. Sources: [R1]/[R2] as above."
+    },
+    "relativity": {
+      "meaning": "Scalar relativistic treatment. DELFIN's auto policy picks it from the metal composition (delfin/utils.py:203-217; cli.py:1983-1994 forces none for light-element systems), so an explicit value must AGREE with the system or it is overwritten.",
+      "valid_values": "none | ZORA | (values _as_relativity accepts)",
+      "default": "none",
+      "read_by": "delfin/common/control_validator.py:2212 (_as_relativity); delfin/utils.py:221 select_rel_and_aux.",
+      "best_practice": "4d/5d/4f metals for publication-grade spin-state energetics: scalar relativistics are NOT optional -- keep the auto ZORA branch (the default none is auto-decided per system by delfin/utils.py:203-217 / cli.py:1983-1994), with a SARC-ZORA basis on the metal (ORCA 6.1.1 manual, relativistic corrections chapter, ZORA+SARC section). Sources: [R1]/[R2]."
+    },
+    "allow_imaginary_freq": {
+      "meaning": "Noise floor for imaginary frequencies: the most negative frequency still accepted as numerical noise. Default -50 cm-1 is a MEASURED value (71 archived structures; 60 had modes in [-1,-50] cm-1 whose displaced single points sat within +/-1 mEh of the saddle -- control_validator.py:1227-1234 comment). Given in either sign, read as -abs(value) (imag.py:118-124 _threshold). A mode SHALLOWER than this value is skipped silently BY DESIGN; to heal a named shallow mode set an explicit value shallower than the mode (e.g. 20 for -21.86 cm-1), proposed through /control with the reason, applied only after user confirmation.",
+      "valid_values": "number in cm-1, either sign; read as -abs(value)",
+      "default": -50.0,
+      "read_by": "delfin/common/control_validator.py:2224 (_as_imag_noise_floor :1239-1252, old template value 0 read as the default); delfin/imag.py:118-124 (_threshold), :85 NOISE_FLOOR.",
+      "best_practice": "Never raise the default silently; it is a measured noise floor, not a knob. Source: delfin/common/control_validator.py:1227-1234 (measurement comment); SH1 package trace at agent/s9-sh1b e44e1f215."
+    },
+    "IMAG_scope": {
+      "meaning": "Whether the IMAG saddle-healing routine runs for every step (all) or only the initial one (initial).",
+      "valid_values": "initial | all",
+      "default": "all",
+      "read_by": "delfin/common/control_validator.py:2217 (_as_imag_scope); delfin/imag.py:615-617.",
+      "best_practice": "Default all; initial narrows cost when only the input structure was suspect. SH1 trace."
+    },
+    "IMAG_max_rounds": {
+      "meaning": "Stop rule for the IMAG loop: each round costs one frequency calculation. Per round DELFIN reads the structure's own .hess, displaces along each imaginary mode both ways, single-points each displacement of the same state, and re-optimises the lowest candidate that lies below the saddle's single point by more than IMAG_sp_energy_window, halving the amplitude up to 2x when nothing lowers the energy. If the re-optimisation fails, the saddle's results are restored unchanged.",
+      "valid_values": "positive integer",
+      "default": "2",
+      "read_by": "delfin/common/control_validator.py:2222; delfin/imag.py:475-488 (max_rounds, reason when still a saddle), :69 DEFAULT_MAX_ROUNDS comment.",
+      "best_practice": "Leave the default 2; raise only with a stated reason -- each round is a full frequency job. SH1 trace."
+    },
+    "IMAG_sp_energy_window": {
+      "meaning": "How far (Hartree) a displaced single point must lie below a single point at the saddle to be taken. The old template value 1e-3 is read as 1e-5.",
+      "valid_values": "positive float, Hartree",
+      "default": "1e-5",
+      "read_by": "delfin/common/control_validator.py:2219-2220 (_as_imag_sp_energy_window, old-value mapping at :1279); delfin/imag.py:476.",
+        "best_practice": "Leave the default; it is a noise floor on single-point differences. SH1 trace."
+    },
+    "tadf_xTB": {
+      "meaning": "Whether the xTB-based TADF screening phase runs inside the classic pipeline (a screening step, not production excitation physics).",
+      "valid_values": "yes | no (_as_yes_no)",
+      "default": "no",
+      "read_by": "delfin/workflows/pipeline.py:1010 (gate), :1013 (import); FieldSpec delfin/common/control_validator.py:2268.",
+      "best_practice": "Screening level only (sTDA-xTB / sTD-DFT-xTB; Grimme, J. Chem. Phys. 138, 244104 (2013), DOI 10.1063/1.4809578): emitter RANKING, S1-vs-T1 order and the sign/rough size of Delta E_ST. Absolute excitation energies, emission wavelengths and rates need TD-DFT or STEOM-DLPNO-CCSD / SCS double-hybrid confirmation before a number is quoted."
+    },
+    "tadf_xTB_excited_method": {
+      "meaning": "Which xTB excited-state engine computes the singlet/triplet screening spectra.",
+      "valid_values": "stda | std2 (_as_response_engine)",
+      "default": "stda",
+      "read_by": "delfin/workflows/pipeline.py:1022 (default stda); FieldSpec :2271; delfin/workflows/contrib/tadf_xtb_workflow.py:64-70 (schema name preferred, aliases kept, missing required settings refused naming them).",
+      "best_practice": "stda for the fast screen; std2 when the screening itself decides which candidate goes to production (better excited-state energetics). Still screening level -- never quote its wavelengths as production values."
+    },
+    "tadf_xTB_energy_window": {
+      "meaning": "Energy window (eV) for the screening excited-state calculation.",
+      "valid_values": "non-negative number, eV (_as_non_negative_float)",
+      "default": 10.0,
+      "read_by": "delfin/workflows/pipeline.py:1024 (default 10.0); FieldSpec :2273; tadf_xtb_workflow.py:67-73.",
+      "best_practice": "The default 10 eV covers typical emitter windows. Raise it only when a low-lying state outside the window must appear (e.g. to confirm the Delta E_ST sign across a wide family) -- the reason goes in the same sentence as the changed value, through /control with user confirmation."
+    },
+    "tadf_xTB_run_t1_opt": {
+      "meaning": "Whether the T1 geometry is optimised so the adiabatic (relaxed) Delta E_ST is produced alongside the vertical one.",
+      "valid_values": "yes | no (_as_yes_no)",
+      "default": "yes",
+      "read_by": "delfin/workflows/pipeline.py:1025 (default yes); FieldSpec :2274.",
+      "best_practice": "Keep yes for emitter decisions: the adiabatic gap is the number a TADF referee asks for -- report BOTH the vertical and the relaxed gap. Turning it off is a cost decision that must be stated."
+    },
+    "tadf_xTB_preopt": {
+      "meaning": "How the S0 geometry is prepared before the screening: none (no optimisation), xtb (xTB optimisation), crest (CREST conformer search), goat (GOAT with xTB).",
+      "valid_values": "none | xtb | crest | goat (_as_preopt_mode)",
+      "default": "none",
+      "read_by": "delfin/workflows/pipeline.py:1021, mapped to use_crest/use_goat/optimize_s0 at :1035-1037; FieldSpec :2270; dashboard env DELFIN_TADF_XTB_PREOPT (delfin/dashboard/local_runner.py:692).",
+      "best_practice": "Rigid chromophores: xtb is enough. Flexible emitters with conformer heterogeneity need crest or goat -- a wrong conformer can flip the S1/T1 order and with it the emitter decision."
     }
   }
 }
