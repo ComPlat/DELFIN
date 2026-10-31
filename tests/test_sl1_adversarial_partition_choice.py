@@ -157,7 +157,13 @@ def test_time_limit_seconds_broken_input_raises():
 
 
 def test_time_limit_seconds_extra_field_is_not_silently_minutes():
-    """FINDING (unchanged code): '1:2:3:4' falls through to the bare-minutes
-    branch and becomes 60 s instead of an error (slurm_submit.py:190-195)."""
-    assert time_limit_seconds("1:2:3:4") in (None,) or True  # documents current 60
-    assert time_limit_seconds("1:2:3:4") == 60
+    """'1:2:3:4' is not a SLURM time: it must be refused with a reason.
+
+    REWRITTEN along its intent when the defect was fixed (SL1 phase 1,
+    rule 6). The old version pinned the misbehaviour on the unchanged
+    code: a 4-field colon form fell through to the bare-minutes branch
+    and became 60 s (slurm_submit.py:190-195, reviewer F1). The new
+    decision: >3 colon fields raise ValueError.
+    """
+    with pytest.raises(ValueError):
+        time_limit_seconds("1:2:3:4")
