@@ -83,13 +83,13 @@ QM_SYNTHETIC_MARKER = "# SYNTHETIC test fixture written for DELFIN -- not ORCA o
 
 QM_OUTPUT_SIGNATURES = (
     r"^\s*\* O\s+R\s+C\s+A\s+\*$",                    # ORCA banner
-    r"ORCA TERMINATED NORMALLY",                       # normal-termination block
-    r"^\s*ORCA terminated normally",                   # lowercase variant
-    r"Program Version 6\.\d+\.\d+ -\s+RELEASE",        # ORCA version line
+    r"ORCA\s+TERMINATED\s+NORMALLY",                   # normal-termination block
+    r"^\s*ORCA\s+terminated\s+normally",               # lowercase variant
+    r"Program\s+Version\s+6\.\d+\.\d+\s+-\s+RELEASE",  # ORCA version line
     r"^\s*\* Host name:",                              # ORCA run header
     r"^\s*\* Working dir\.:",                          # ORCA run header
     r"^\|\s*\d+>",                                     # ORCA INPUT FILE echo block
-    r"THERMOCHEMISTRY AT \d+\.\d+K",                   # ORCA thermochem block
+    r"THERMOCHEMISTRY\s+AT\s+\d+\.\d+K",               # ORCA thermochem block
 )
 
 QM_OUTPUT_RE = re.compile(

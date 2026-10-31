@@ -36,7 +36,7 @@ def test_marked_synthetic_fixture_whose_body_quotes_orca_format_is_clean(scan):
     skipped, so the body's version line is flagged."""
     body = MARKER + "\n" + ORCA_VERSION_LINE + "\nORCA terminated normally\n"
     out = scan("synthetic.out", body)
-    assert out == "", out
+    assert not out, out
 
 
 def test_marker_only_on_later_line_does_not_exempt_real_signatures(scan):
@@ -64,7 +64,7 @@ def test_signature_with_permuted_whitespace_is_still_caught(scan):
     """Evasion probe: real ORCA banners/termination lines are often
     re-wrapped; extra internal whitespace must not hide the signature."""
     out = scan("wrapped.out", "  ORCA  TERMINATED  NORMALLY\n")
-    assert "TERMINATED" in out, out
+    assert any("TERMINATED" in v for v in out), out
 
 
 def test_lowercase_and_truncated_termination_variants_are_caught(scan):
