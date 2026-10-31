@@ -12,9 +12,13 @@ converged.
   24/24 HURRAY, 0 "did not converge", ORCA TERMINATED NORMALLY. Wall time 23 min
   (relaxscanact grading: operator report; .out TOTAL RUN TIME line agrees).
 - Resources: SLURM pal 2 cores, %maxcore 2000 MB, time limit 05:00:00, actual
-  ~23 min -> core-hours 2 x 0.39 h = 0.77 core-h. CPU efficiency line: taken from
-  the SLURM job accounting (delfin_8173642.out); see the job folder
-  .gate/practice/rc1_butane_scan_r2scan3c_v5/ for the raw log.
+    ~23 min -> core-hours 2 x 0.39 h = 0.77 core-h. CPU efficiency: 60.09% of
+    01:41:08 core-walltime, CPU Utilized 01:00:46 (SLURM JOB FEEDBACK block of
+    the job's own log, delfin_8173642.out:85-86; numbers quoted, account and
+    node names redacted). Node type: 1 standard compute node of the uc3
+    cluster, 4 cores per node, 2 allocated to this job (delfin_8173642.out:15,
+    78, 80-84; the node name itself is a host name and is <redacted>
+    everywhere in the committed files per the brief).
 - Estimate stated before the run: ~1.5 min/step -> 40-60 min; measured 23 min.
 - Submitted through DELFIN's submit path by the operator
   (delfin.api.submit_calculation, mode=orca, folder
@@ -65,6 +69,12 @@ converged.
   trim markers "[[trimmed: ...]]" mark the cuts; the full .out lives in the
   practice folder .gate/practice/rc1_butane_scan_r2scan3c_v5/, not committed).
 - rc1_butane_scan_r2scan3c_v5.property.json - ORCA property output, unmodified.
+  Note on JSON completeness (QS ruling 2026-11-04, option (a)): the .inp
+  requested `%output jsonpropfile True end` ONLY — no bare `jsonfile` — so
+  ORCA 6.1.0 (banner version in the .out) wrote exactly this property.json
+  and no bare .json. The fixture is complete for every file the tests read;
+  the reference fixture butane_dlpno_ccsdt_pvtz is a CONSTRUCTED fixture
+  (its .out says so) and is not a real-run format authority for this choice.
 - rc1_butane_scan_r2scan3c_v5.relaxscanact.dat - ORCA scan table (angle, energy
   in Eh per step), unmodified.
 - No .gbw committed (restart files excluded by the package rules).
