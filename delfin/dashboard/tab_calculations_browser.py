@@ -10207,6 +10207,35 @@ def create_tab(ctx):
             _calc_show_mo_plot_panel(False)
             _calc_show_spin_density_panel(True, visualize=False)
             calc_content_area.layout.display = 'block'
+        elif change['new'] == 'TS → GOAT':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
+            calc_content_area.layout.display = 'block'
+            try:
+                from .ts_goat_panel import show_ts_goat_panel
+                _ts_labels = _calc_selected_labels()
+                show_ts_goat_panel(
+                    calc_path=_calc_path_for_label(_ts_labels[0]) if _ts_labels else None,
+                    ctx=ctx,
+                    content_area=calc_content_area,
+                )
+            except Exception as exc:
+                calc_content_area.children = [
+                    widgets.HTML(
+                        '<b>TS → GOAT:</b> the preparation dialog could not '
+                        f'be opened — {type(exc).__name__}: {exc}'
+                    )
+                ]
+            _calc_reset_options_dropdown()
         elif change['new'] == 'Calc NMR':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'
