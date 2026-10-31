@@ -17,7 +17,11 @@ import pytest
 
 from delfin.orca_read import Quantity, read
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from tests.conftest import lc1_fixture_dir
+
+FIXTURES = lc1_fixture_dir("tests/fixtures/orca611")
 
 #: Same budget the recovery analyser's tail scan is held to.
 PEAK_BUDGET = 8 * 1024 * 1024

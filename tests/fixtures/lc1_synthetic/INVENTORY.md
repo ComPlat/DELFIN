@@ -36,11 +36,21 @@ the marked subset below:
 | sh1_gstep_constraints, sh1_input_error_nofreq, sh1_scan_maxcycles_shark | .out each | banner + host line, wave-23 failure copies | 063a6b558 |
 
 Tree `tests/fixtures/orca_experience/` — 8 files, run1–4 .out/.inp:
-ORCA-formatted output (banner omitted, but `Program Version 6.1.1`,
-`ORCA TERMINATED NORMALLY`, thermochemistry blocks; run1 real wall time
-"Total Wall time : 123.45s 6.0" — a constructed-looking wall time in an
-otherwise ORCA-shaped file). No synthetic marker, no construction evidence.
-Classified A: carries ORCA DATA signatures, cannot prove otherwise.
+RECLASSIFIED A -> B after operator review. Evidence per file (all four
+.out added NEW in origin commit 1c10a5ad7, `git diff 1c10a5ad7~1
+1c10a5ad7` shows `new file mode` for all 8; no host/user/Working-dir
+banner block, which every real ORCA 6.x output carries — compare
+orca611 where Host name: is at :175, Working dir. at :177):
+- run1.out (26 lines pre-marker): wall time "123.45s 6.0" — synthetic
+  decimal, and the trailing "6.0" is not valid ORCA wall-time format.
+- run2.out (23 lines): wall 456.78s synthetic; "SCF CONVERGED AFTER 5
+  CYCLES" immediately followed by "SCF NOT CONVERGED AFTER 124 CYCLES"
+  — physically impossible sequence in one real run.
+- run3.out (18 lines): wall 900.00s exactly round; geometry cycles 1
+  then 7 with nothing between.
+- run4.out (13 lines): wall 50.00s round; no sections at all.
+Conclusion: constructed, not cut from a real run. They now carry the
+SYNTHETIC first-line marker (guard rule family 2 exception).
 Git origin: 1c10a5ad7.
 
 ## (B) hand-written / synthetic — stays

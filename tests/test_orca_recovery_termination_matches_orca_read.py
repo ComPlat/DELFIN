@@ -18,7 +18,11 @@ from pathlib import Path
 from delfin import orca_read
 from delfin.orca_recovery import OrcaErrorDetector, OrcaErrorType
 
-FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from tests.test_lc1_fixtures_helper import lc1_fixture_dir
+
+FIXTURE_ROOT = lc1_fixture_dir("tests/fixtures/orca611")
 
 # name -> (orca_read TERMINATED_NORMALLY expected, analyze_output expected)
 # measured once by scratch/recorder.py over the committed fixtures.
