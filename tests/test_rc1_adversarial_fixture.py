@@ -193,7 +193,11 @@ def test_provenance_records_job_identity_and_no_home_paths():
         "core-hours missing"
     for path in (INP_FILE, OUT_FILE, PROVENANCE):
         blob = path.read_text()
-        for marker in ("/home/", "/pfs/data6", "ka_ew7404"):
+        # The account-name literal is NOT listed here on purpose: the
+        # repo-wide guard (tests/test_no_account_name_is_committed.py)
+        # covers account names in every tracked file, and writing the
+        # name into this test would trip that same guard.
+        for marker in ("/home/", "/pfs/"):
             assert marker not in blob, (
                 f"{path.name} leaks home/host path {marker!r}")
 
