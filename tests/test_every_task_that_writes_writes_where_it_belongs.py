@@ -374,9 +374,14 @@ def test_the_counts_still_match_what_was_measured():
     # on proposal.json, accept/cas1_verify.py) and one trap task (invented
     # Nactel/Nactorb keywords + a 24-orbital space that must be refused naming
     # RAS/ICE/DMRG). Offline, no setup script, no calculation.
+    #
+    # other 77 -> 81 on 2026-10-31 (MN1, wave 25, agent/s9-mn1b): the four
+    # tasks_w25_mn1.yaml watch-and-wait tasks (wait for a line, wait for a
+    # file, notice a failure, act on the first of two jobs); task_class
+    # coding, graded on the transcript's actions (no busy polling).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 44, "chemistry": 29, "generalist": 22,
-                      "other": 77}, counts
+                      "other": 81}, counts
 
 
 # ---------------------------------------------------------------------------
