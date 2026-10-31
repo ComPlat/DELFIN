@@ -247,7 +247,10 @@ def est_reference_comparison(delta_est_ev: Optional[float]) -> dict:
             "source": "ESD state energies via collect_esd_results",
         }
     low, high = EST_REFERENCE["band_ev"]
-    if delta_est_ev <= 0:
+    # Sign convention: Delta E_ST = E(S1) - E(T1), so TADF-favourable
+    # (T1 below S1) is POSITIVE here; a negative value means T1 above
+    # S1 and kills the ranking claim.
+    if delta_est_ev < 0:
         return {
             "criterion": "delta_E_ST_vs_reference",
             "verdict": "FAIL",
