@@ -1,0 +1,12 @@
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+# Invented CASSCF-style output for a CAS(18,12) ozone-like run.
+# Physics pattern from real runs: five occupations > 1.98
+# (sigma/O-2s-like), then 1.78/0.26 diradical pair, two near-empty.
+Number of active orbitals ... 12
+Number of active electrons ... 18
+
+CASSCF ITERATION  3
+N(occ)=  1.99795 1.99678 1.99544 1.99021 1.98570 1.95500 1.94990 1.94120 1.77010 0.25800 0.05900 0.04800
+
+CASSCF ITERATION  7
+N(occ)=  1.99840 1.99760 1.99690 1.99170 1.99000 1.96250 1.95630 1.94760 1.77750 0.26230 0.06300 0.05500
