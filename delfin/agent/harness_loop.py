@@ -33,9 +33,14 @@ Safety invariants (package HX1 brief):
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Mapping
 
-__all__ = ["pick_weakest_family", "DEFAULT_CEILING"]
+__all__ = [
+    "pick_weakest_family", "DEFAULT_CEILING",
+    "Candidate", "HarnessCandidateError", "validate_candidate",
+    "ALLOWED_SUFFIXES", "PROTECTED_MARKERS",
+]
 
 #: Classic workflow families scored 91-95 in the 31.10. E2 baseline
 #: (round 2); a family at or above this ceiling has no headroom and
@@ -66,3 +71,129 @@ def pick_weakest_family(
     # min() over (score, id): ties fall back to the first family id in
     # iteration order, deterministic for a dict built from a list.
     return min(headroom)[1]
+
+
+# ---------------------------------------------------------------------------
+# Candidate edits: TEXT diffs to guidance/skill text only (brief item 3)
+# ---------------------------------------------------------------------------
+
+#: A candidate may only touch a text file that carries guidance: skills
+#: and tool-guidance markdown.  Everything else — code, data, configs —
+#: is refused: the paper's edits are harness TEXT, not code (§2.2.1).
+ALLOWED_SUFFIXES = (".md", ".txt", ".rst")
+
+#: Protected paths are refused unconditionally: the safety frame and
+#: the chemistry core are read-only for the loop, and the knowledge
+#: tree is memory-poisoning surface that only the user approves.
+PROTECTED_MARKERS = (
+    "sandbox", "permission", "approval", "api_client", "engine.py",
+    "benchmark_runner", "knowledge", "skill_safety", "skill_share",
+    "mcp_", "web_tools", "text_sandbox", "tests/", "fixtures/",
+)
+
+#: The two candidate kinds the paper composes from (brief item 3):
+#: one invariant (planning/tool use/context handling), one domain
+#: (the family's procedure).
+CANDIDATE_KINDS = ("invariant", "domain")
+
+
+class HarnessCandidateError(ValueError):
+    """A candidate edit is not a text-diff to an allowed target."""
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """One proposed harness edit: a TEXT diff plus its observation."""
+
+    kind: str              # "invariant" or "domain"
+    target: str            # repo-relative path of the guidance file
+    old_text: str
+    new_text: str
+    observation_task_id: str
+    observation: str       # what went wrong in the reference transcript
+
+
+def validate_candidate(candidate: Candidate) -> None:
+    """Refuse every candidate the brief forbids, BEFORE any probing.
+
+    Refusals (all :class:`HarnessCandidateError`):
+    * target not a guidance text file (code, data, notebooks);
+    * target under a protected path or the pack/knowledge tree;
+    * no observation (the report must cite one for every decision);
+    * kind not in ("invariant", "domain").
+    """
+    if not candidate.target or not candidate.target.endswith(
+            ALLOWED_SUFFIXES):
+        raise HarnessCandidateError(
+            "candidate target %r is not a guidance text file "
+            "(allowed suffixes: %s)" % (candidate.target, ALLOWED_SUFFIXES))
+    lowered = candidate.target.lower()
+    for marker in PROTECTED_MARKERS:
+        if marker in lowered:
+            raise HarnessCandidateError(
+                "candidate target %r hits the protected marker %r; "
+                "the safety frame is not editable by the loop"
+                % (candidate.target, marker))
+    if not (candidate.observation_task_id or "").strip():
+        raise HarnessCandidateError(
+            "candidate has no observation task id; every edit must cite "
+            "what went wrong in a reference transcript")
+    if not (candidate.observation or "").strip():
+        raise HarnessCandidateError(
+            "candidate has no observation text; every edit must cite "
+            "what went wrong in a reference transcript")
+    if candidate.kind not in CANDIDATE_KINDS:
+        raise HarnessCandidateError(
+            "candidate kind %r is not one of %s (one invariant, one "
+            "domain per round)" % (candidate.kind, CANDIDATE_KINDS))
+
+
+# ---------------------------------------------------------------------------
+# Noise-aware contrast (brief item 4; QS requirement 1)
+# ---------------------------------------------------------------------------
+
+def contrast_supported(
+        task_ids: list[str],
+        reference: list[float],
+        probe: list[float],
+        *,
+        spread: float) -> dict:
+    """Pair reference and probe qualities and test against the noise band.
+
+    The band is DELFIN's own measured threshold, taken from
+    :mod:`bench_watch` — the same ``max(8, 1.5*spread)`` the nightly
+    watcher requires before it calls a quality drop a regression
+    (bench_watch.py:50 QUALITY_DROP_FLOOR, bench_watch.py:57
+    SPREAD_FACTOR, bench_watch.py:70 suspect_threshold).  Identical
+    runs flip 6/48 tasks with a quality stdev of ~20 (bench_watch.py:7),
+    so a raw point estimate can never decide.
+
+    Returns ``{"supported": bool, "band": float, "mean_gain": float,
+    "per_task": [(task_id, ref, probe, gain), ...]}``.  ``supported``
+    is True only when the mean gain is STRICTLY above the band.  The
+    band and the mean gain travel with the verdict so the report can
+    cite them (a verdict that hid its band would be a point estimate
+    in disguise).
+
+    Raises :class:`ValueError` when the paired lists are empty or do
+    not match — unmatched samples give no contrast, and inventing one
+    would be fabrication.
+    """
+    if not task_ids or not reference:
+        raise ValueError("no paired reference samples")
+    if len(task_ids) != len(reference) or len(reference) != len(probe):
+        raise ValueError(
+            "reference and probe must be paired per task "
+            "(got %d tasks, %d reference, %d probe values)"
+            % (len(task_ids), len(reference), len(probe)))
+    per_task = [(tid, ref, pr, pr - ref)
+                for tid, ref, pr in zip(task_ids, reference, probe)]
+    mean_gain = sum(gain for *_, gain in per_task) / len(per_task)
+    from .bench_watch import suspect_threshold
+    band = suspect_threshold(spread)
+    return {
+        "supported": bool(mean_gain > band),
+        "band": band,
+        "mean_gain": mean_gain,
+        "per_task": per_task,
+    }
