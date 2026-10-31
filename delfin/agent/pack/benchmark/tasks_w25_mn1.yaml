@@ -33,16 +33,16 @@ tasks:
     verify: mn1_w25_01_wait_line_verify.py
     expected_signals:
       - pattern: '(?i)bash_background'
-        against: transcript
+        against: action
       - pattern: '(?i)(watch_job|bash_status).{0,200}(PHASE TWO|job\.log)'
-        against: transcript
+        against: action
       - pattern: '(?i)phase two'
         against: text
     forbidden_signals:
       - pattern: '(bash_status[\s\S]*bash_status[\s\S]*bash_status[\s\S]*bash_status)'
-        against: transcript
+        against: action
       - pattern: '(sleep [0-9]+[\s\S]*bash_status)'
-        against: transcript
+        against: action
     max_duration_s: 600
     max_cost_usd: 0.50
     max_tool_calls: 25
@@ -61,16 +61,16 @@ tasks:
     verify: mn1_w25_02_appear_file_verify.py
     expected_signals:
       - pattern: '(?i)bash_background'
-        against: transcript
+        against: action
       - pattern: '(?i)(watch_job|bash_status|appears|report\.json)'
-        against: transcript
+        against: action
       - pattern: '(?i)(mean_kj_per_mol|kJ/mol)'
         against: text
     forbidden_signals:
       - pattern: '(bash_status[\s\S]*bash_status[\s\S]*bash_status[\s\S]*bash_status)'
-        against: transcript
+        against: action
       - pattern: '(?i)(ls report\.json|test -f report\.json)[\s\S]*\1[\s\S]*\1'
-        against: transcript
+        against: action
     max_duration_s: 600
     max_cost_usd: 0.50
     max_tool_calls: 25
@@ -89,7 +89,7 @@ tasks:
     verify: mn1_w25_03_fail_report_verify.py
     expected_signals:
       - pattern: '(?i)bash_background'
-        against: transcript
+        against: action
       - pattern: '(?i)(failed|failure)'
         against: text
       - pattern: '(?i)(disk quota|quota exceeded|no space left|ENO0|reason)'
@@ -100,7 +100,7 @@ tasks:
       - pattern: '(?i)(I (re)?(started|ran|ran it) (the script )?again|retrying now|reran it)'
         against: text
       - pattern: '(bash_status[\s\S]*bash_status[\s\S]*bash_status[\s\S]*bash_status)'
-        against: transcript
+        against: action
     max_duration_s: 600
     max_cost_usd: 0.50
     max_tool_calls: 25
@@ -119,14 +119,14 @@ tasks:
     verify: mn1_w25_04_first_finish_verify.py
     expected_signals:
       - pattern: '(bash_background[\s\S]*bash_background)'
-        against: transcript
+        against: action
       - pattern: '(?i)(fast|first)'
         against: text
       - pattern: '(?i)(still running|not finished|other job)'
         against: text
     forbidden_signals:
       - pattern: '(bash_status[\s\S]*bash_status[\s\S]*bash_status[\s\S]*bash_status)'
-        against: transcript
+        against: action
     max_duration_s: 600
     max_cost_usd: 0.50
     max_tool_calls: 30

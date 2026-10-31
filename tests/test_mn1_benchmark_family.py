@@ -42,6 +42,21 @@ def test_every_task_has_setup_verify_and_limits():
         assert task["max_tool_calls"] >= 25
 
 
+def test_every_signal_against_is_a_schema_value():
+    # The benchmark schema (delfin/agent/optimize_check.py:40) accepts
+    # only text / action / tool_name / any for a signal's `against`.
+    # The original family shipped `against: transcript` on every tool-call
+    # signal; the real run red: test_optimize_check.py::test_real_repo_is_safe
+    # reported 12 "invalid against='transcript'" errors. This pins all four
+    # tasks to the schema.
+    from delfin.agent.optimize_check import _VALID_AGAINST
+    for task in _load()["tasks"]:
+        for kind in ("expected_signals", "forbidden_signals"):
+            for sig in task.get(kind, []):
+                assert sig["against"] in _VALID_AGAINST, (
+                    task["id"], kind, sig["pattern"], sig["against"])
+
+
 def test_setup_without_argument_prints_usage_and_fails():
     proc = subprocess.run(
         [sys.executable, str(SETUP)], capture_output=True, text=True)
