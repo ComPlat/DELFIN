@@ -22,7 +22,11 @@ from delfin.orca_recovery import OrcaErrorDetector, OrcaErrorType
 # (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
 from tests.test_lc1_fixtures_helper import lc1_fixture_dir
 
-FIXTURE_ROOT = lc1_fixture_dir("tests/fixtures/orca611")
+
+def _fixture_root(name: str) -> Path:
+    """The specific orca611 subfolder: legacy path while its files are
+    committed, else the private store (skip without the env var)."""
+    return lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
 
 # name -> (orca_read TERMINATED_NORMALLY expected, analyze_output expected)
 # measured once by scratch/recorder.py over the committed fixtures.
@@ -36,7 +40,7 @@ EXPECT = {
 
 def test_recovery_verdict_matches_orca_read_termination():
     for name, (term_expected, ana_expected) in EXPECT.items():
-        out = FIXTURE_ROOT / name / f"{name}.out"
+        out = _fixture_root(name) / f"{name}.out"
         term = orca_read.read(out.parent, name, orca_read.Quantity.TERMINATED_NORMALLY)
         ana = OrcaErrorDetector.analyze_output(out)
         assert term.value is term_expected, f"{name}: orca_read term {term.value}"
@@ -45,7 +49,7 @@ def test_recovery_verdict_matches_orca_read_termination():
 
 def test_a_fixture_orca_read_says_terminated_is_never_a_recovery_error():
     for name in ("h2o_optfreq", "h2o_tddft", "o2_triplet"):
-        out = FIXTURE_ROOT / name / f"{name}.out"
+        out = _fixture_root(name) / f"{name}.out"
         term = orca_read.read(out.parent, name, orca_read.Quantity.TERMINATED_NORMALLY)
         assert term.value is True
         assert OrcaErrorDetector.analyze_output(out) is None

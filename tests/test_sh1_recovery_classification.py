@@ -14,11 +14,11 @@ from delfin.orca_recovery import OrcaErrorDetector, OrcaErrorType
 # (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
 from tests.test_lc1_fixtures_helper import lc1_fixture_dir
 
-FIXTURES = lc1_fixture_dir("tests/fixtures/orca611")
-
 
 def _sh1(name: str) -> Path:
-    return FIXTURES / name
+    """The specific orca611 subfolder: legacy path while its files are
+    committed, else the private store (skip without the env var)."""
+    return lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
 
 
 # ------------------------------------------------------------------ F1

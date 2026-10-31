@@ -47,6 +47,15 @@ licence), Molpro (output distribution restricted) — no such fixtures
 exist today; the path and signature rules block them if one appears.
 xtb and CREST are LGPL-3.0 and their output may ship.
 
+**Sequencing note (phase 2 review, F5)**: the QM-signature content scan
+applies to every non-.py tracked file from the moment the class-A
+ORCA fixtures leave the tree. Before that removal the committed
+fixture inventory (tests/fixtures/lc1_synthetic/INVENTORY.md, and
+while they exist the orca611 .out files themselves) is classified, not
+hidden; the removal commit in this package switches the guard live.
+CI green with the guard on requires that order — guard live before
+removal would flag the very files this package documents and removes.
+
 **Exception (the only one besides `# license-guard: allow`)**: a
 fixture that declares itself on its FIRST line
 
