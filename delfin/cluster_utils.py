@@ -205,6 +205,15 @@ def auto_configure_resources(config: Dict[str, Any]) -> Dict[str, Any]:
         if not cluster_info.get('job_id'):
             try:
                 from delfin.agent.calc_policy import LOGIN_LOCAL_CORES
+            except ImportError as problem:
+                # Wave-17 lesson: a silently missing cap ships PAL=192
+                # again. The cap degrades, and the degradation is visible.
+                logger.warning(
+                    "Local-run PAL cap unavailable (import failed: %s); "
+                    "auto-PAL stays at the detected %d CPUs — the local "
+                    "run may exceed calc_policy's limit.", problem,
+                    suggested_pal)
+            else:
                 if suggested_pal > LOGIN_LOCAL_CORES:
                     logger.warning(
                         "Auto-detected %d CPUs on a host outside a "
@@ -212,8 +221,6 @@ def auto_configure_resources(config: Dict[str, Any]) -> Dict[str, Any]:
                         "limit %d (delfin.agent.calc_policy).",
                         suggested_pal, LOGIN_LOCAL_CORES)
                     suggested_pal = LOGIN_LOCAL_CORES
-            except Exception:
-                pass
         updated_config['PAL'] = suggested_pal
         logger.info(f"Auto-detected {cluster_info['cpus_available']} CPUs, setting PAL={suggested_pal}")
 
