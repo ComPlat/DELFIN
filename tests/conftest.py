@@ -1660,6 +1660,28 @@ _OPI_SKIP_MARKERS = ("could not import 'opi'", "no module named 'opi'",
                      "opi (delfin[orca]) not installed", "opi not installed")
 
 
+# ---------------------------------------------------------------------------
+# Private fixture store (LC1): real ORCA output lives outside the repo.
+#
+# DELFIN_PRIVATE_FIXTURES points at the operator-managed store root, which
+# mirrors the repository paths (e.g. <root>/tests/fixtures/orca611/...).
+# Tests that genuinely need real program output (exact pinned energies,
+# format-drift coverage) read from there and SKIP when the variable is
+# absent -- they never fail in CI. See LICENSE_GUARD.md, rule family 2.
+# The helpers live in tests/test_lc1_fixtures_helper.py (an importable
+# module under tests/ -- conftest is not importable as `tests.conftest`
+# without a package __init__); re-exported here for anyone importing
+# conftest.
+# ---------------------------------------------------------------------------
+
+from test_lc1_fixtures_helper import (  # noqa: E402, F401  (tests/ is on sys.path while pytest loads conftest; the package name `tests` is not)
+    PRIVATE_FIXTURES_ENV,
+    lc1_fixture_dir,
+    private_fixtures_or_skip,
+    private_fixtures_path,
+)
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
