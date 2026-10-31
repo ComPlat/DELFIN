@@ -106,7 +106,10 @@ def test_rc2_out_carries_the_blocks_a_real_run_needs():
             if "Host name:" in line:
                 assert line.split("Host name:", 1)[1].strip() == "fixture-host", \
                     (name, "real host name leaked into the fixture")
-        for pattern in ("/home/", "/pfs/", "ka_ew7404"):
+        # Account names are covered repo-wide by
+        # tests/test_no_account_name_is_committed.py; this tuple must not
+        # name one either (a public repo must not carry it in a check).
+        for pattern in ("/home/", "/pfs/"):
             assert pattern not in text, (name, pattern)
 
 
