@@ -33,11 +33,17 @@ def private_fixtures_path(rel: str = "") -> Path:
 
 
 def private_fixtures_or_skip(rel: str) -> Path:
-    """Path inside the private store, or SKIP the test (never fail in CI)."""
+    """Path inside the private store, or SKIP (never fail in CI).
+
+    Called at import time by several consumer modules, where the skip
+    must cover the whole module; pytest raises a collection ERROR
+    instead of a skip without allow_module_level=True. Inside a test the
+    flag is harmless (the module is already collected).
+    """
     try:
         return private_fixtures_path(rel)
     except LookupError as exc:
-        pytest.skip(str(exc))
+        pytest.skip(str(exc), allow_module_level=True)
 
 
 def lc1_fixture_dir(rel: str) -> Path:
