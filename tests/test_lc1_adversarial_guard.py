@@ -9,7 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts import license_guard
+import sys
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+import license_guard  # noqa: E402
 
 MARKER = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output"
 ORCA_VERSION_LINE = " Program Version 6.1.1  -  RELEASE   -"

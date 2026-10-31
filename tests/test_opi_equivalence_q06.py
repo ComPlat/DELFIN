@@ -34,7 +34,7 @@ from opi.output.core import Output  # noqa: E402
 
 # Real ORCA fixtures live in the private store outside the repo
 # (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
-from tests.test_lc1_fixtures_helper import lc1_fixture_dir as _lc1_fixture_dir  # noqa: E402, F401
+from test_lc1_fixtures_helper import lc1_fixture_dir as _lc1_fixture_dir  # noqa: E402, F401
 
 
 def _fixture(name: str) -> Path:

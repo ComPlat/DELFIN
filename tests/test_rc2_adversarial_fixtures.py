@@ -17,7 +17,7 @@ import pytest
 
 # Real ORCA fixtures live in the private store outside the repo
 # (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
-from tests.test_lc1_fixtures_helper import lc1_fixture_dir
+from test_lc1_fixtures_helper import lc1_fixture_dir
 
 
 def _fixtures(name: str):

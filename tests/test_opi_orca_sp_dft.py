@@ -116,7 +116,7 @@ from delfin.tools.adapters.orca_sp_opi import run_sp_dft  # noqa: E402
 
 # Real ORCA fixtures live in the private store outside the repo
 # (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
-from tests.test_lc1_fixtures_helper import lc1_fixture_dir  # noqa: E402
+from test_lc1_fixtures_helper import lc1_fixture_dir  # noqa: E402
 
 FIXTURE_DIR = Path("tests/fixtures/orca611")
 

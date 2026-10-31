@@ -1674,7 +1674,7 @@ _OPI_SKIP_MARKERS = ("could not import 'opi'", "no module named 'opi'",
 # conftest.
 # ---------------------------------------------------------------------------
 
-from tests.test_lc1_fixtures_helper import (  # noqa: E402, F401
+from test_lc1_fixtures_helper import (  # noqa: E402, F401  (tests/ is on sys.path while pytest loads conftest; the package name `tests` is not)
     PRIVATE_FIXTURES_ENV,
     lc1_fixture_dir,
     private_fixtures_or_skip,

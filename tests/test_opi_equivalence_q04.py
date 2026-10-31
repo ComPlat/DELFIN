@@ -63,7 +63,7 @@ except Exception:  # pragma: no cover - environment dependent
 
 # Real ORCA fixtures live in the private store outside the repo
 # (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
-from tests.test_lc1_fixtures_helper import lc1_fixture_dir as _lc1_fixture_dir  # noqa: E402, F401
+from test_lc1_fixtures_helper import lc1_fixture_dir as _lc1_fixture_dir  # noqa: E402, F401
 
 #: The .out prints <S**2> to 6 decimals; anything closer is the same number.
 S2_TOL = 1e-6

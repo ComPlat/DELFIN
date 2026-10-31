@@ -14,7 +14,7 @@ from delfin.orca_read import Quantity, read
 
 # Real ORCA fixtures live in the private store outside the repo
 # (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
-from tests.test_lc1_fixtures_helper import lc1_fixture_dir  # noqa: E402
+from test_lc1_fixtures_helper import lc1_fixture_dir  # noqa: E402
 
 #: The .out prints energies/s2 to 8 resp. 6 decimals; OPI's JSON to full
 #: double precision. The phase-1 equivalence tests used 1e-6 (S2) and the

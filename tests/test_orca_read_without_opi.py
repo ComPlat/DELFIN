@@ -12,7 +12,7 @@ from delfin.orca_read import Quantity, read
 
 # The real ORCA fixtures live in the private store outside the repo
 # (LICENSE_GUARD.md rule family 2); every test here SKIPS without it.
-from tests.test_lc1_fixtures_helper import private_fixtures_or_skip  # noqa: E402
+from test_lc1_fixtures_helper import private_fixtures_or_skip  # noqa: E402
 
 TOL = 1e-6
 

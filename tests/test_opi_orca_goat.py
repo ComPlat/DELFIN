@@ -56,7 +56,7 @@ import delfin.orca as orca_mod  # noqa: E402
 
 # Real ORCA fixtures live in the private store outside the repo
 # (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
-from tests.test_lc1_fixtures_helper import lc1_fixture_dir  # noqa: E402
+from test_lc1_fixtures_helper import lc1_fixture_dir  # noqa: E402
 
 #: n-butane built from ideal geometry (all-trans, C-C 1.53 A, C-H 1.09 A).
 BUTANE_ELEMENTS = ("C", "C", "C", "C", "H", "H", "H", "H", "H", "H", "H", "H", "H", "H")
