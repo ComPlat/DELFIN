@@ -1,0 +1,11 @@
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+# Invented UNO-style block from a UHF reference of a stretched N2:
+# exactly six fractional occupations (indices 4-9), rest 2.0/0.0.
+UHF NATURAL ORBITALS
+--------------------
+
+Occupation Numbers:
+N[ 0]=  2.00000 N[ 1]=  2.00000 N[ 2]=  2.00000 N[ 3]=  2.00000
+N[ 4]=  1.19400 N[ 5]=  1.04700 N[ 6]=  1.04600 N[ 7]=  0.95300
+N[ 8]=  0.95300 N[ 9]=  0.80600 N[10]=  0.00000 N[11]=  0.00000
+N[12]=  0.00000
