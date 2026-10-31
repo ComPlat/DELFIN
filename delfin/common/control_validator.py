@@ -2283,6 +2283,113 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
 )
 
 
+def _metals_in_smiles(smiles: str) -> list[str]:
+    """Transition-metal element symbols named in a SMILES string.
+
+    Uses the same element-token rule as delfin/utils.py:140-145 (a bare
+    1-2 letter element token, case-normalised).  Not a full SMILES parse:
+    bracket atoms like [Pd] and plain tokens both resolve, and a 2-letter
+    match requires the second letter to be lower-case, so ``C``/``Cl`` and
+    ``N``/``Na`` do not confuse it.  Good enough to answer "would the
+    auto-relativity policy apply to this system?" -- the exact question
+    delfin/utils.py:203-217 (_should_use_rel) answers from a geometry file.
+    """
+    from delfin.utils import _TM_LIST
+
+    text = str(smiles or "")
+    found: list[str] = []
+    for match in re.finditer(r"[A-Z][a-z]?", text):
+        sym = match.group(0)
+        if sym in _TM_LIST and sym not in found:
+            found.append(sym)
+    return found
+
+
+def cross_key_consistency_notes(config: Mapping[str, Any]) -> list[str]:
+    """Cross-key consistency findings, advisory only.
+
+    Each finding fires ONLY when a key is explicitly present and its
+    meaning is CONTRADICTED by the companions or the chosen mode.  A key a
+    workflow merely does not read is not a finding: those keys were written
+    knowingly or carry defaults, and warning about them would be noise
+    (QS ruling, CT1 wave 24).
+
+    The three findings, each traced to where its contradiction bites:
+
+    1. ``solvent`` without ``implicit_solvation_model`` -- the solvation
+       keyword builder returns "" with no word (delfin/common/solvation.py:31-32)
+       and the run goes gas phase, while the reverse case (model without
+       solvent) IS warned at :34-44.  The user asked for a solvent and
+       silently does not get one.
+    2. A relativistic ``relativity`` value on a light-element system --
+       delfin/cli.py:1989-1994 overwrites it to ``none`` with an info log,
+       so the CONTROL file's value is not what runs.  The auto policy
+       (delfin/utils.py:203-217, classify_tm_presence :152-170) decides
+       relativity from the metals; the value on a heavy-metal system is
+       consistent and never warns, and a MISSING value never warns: that
+       direction is the policy's job, not a contradiction.
+    3. OCCUPIER-specific keys with an explicit non-OCCUPIER ``method`` --
+       those keys are read by the OCCUPIER workflow only, so with
+       method=classic/manually they are inert in a way the writer probably
+       did not intend.
+    """
+    notes: list[str] = []
+
+    # 1. solvent asked for, no solvation model -> silently gas phase.
+    solvent = str(config.get("solvent", "") or "").strip()
+    model = str(config.get("implicit_solvation_model", "") or "").strip()
+    if solvent and not model:
+        notes.append(
+            f"solvent={solvent} is set but implicit_solvation_model is not: "
+            f"the run goes gas phase (no CPCM/SMD keyword is written, "
+            f"delfin/common/solvation.py:31-32). Set implicit_solvation_model=CPCM or SMD, "
+            f"or clear solvent for an intentional gas-phase run."
+        )
+
+    # 2. relativity contradicted by the system's metals.
+    relativity = str(config.get("relativity", "") or "").strip().lower()
+    if relativity and relativity not in ("none", ""):
+        metals = _metals_in_smiles(config.get("SMILES", ""))
+        if metals:
+            from delfin.utils import classify_tm_presence
+
+            tm_class = classify_tm_presence(metals)
+            use_rel = tm_class in ("4d5d", "4f5f", "mixed")
+        else:
+            # No transition metals at all: cli.py:1990-1994 forces
+            # relativity=none for every metal-free system, so an explicitly
+            # relativistic value is contradicted here too.
+            use_rel = False
+            tm_class = "none"
+        if not use_rel:
+            description = (f"metals: {', '.join(metals)}, class {tm_class}"
+                           if metals else "no transition metals in the SMILES")
+            notes.append(
+                f"relativity={relativity} on a light-element system "
+                f"({description}): the run "
+                f"deactivates it and continues with relativity=none "
+                f"(delfin/cli.py:1989-1994, delfin/utils.py:203-217). "
+                f"The file's value will not run as written."
+            )
+
+    # 3. OCCUPIER keys inert under an explicit non-OCCUPIER method.
+    method = str(config.get("method", "") or "").strip().lower()
+    occupier_keys = [
+        key for key in ("OCCUPIER_method", "OCCUPIER_compare",
+                        "frequency_calculation_OCCUPIER", "geom_opt_OCCUPIER",
+                        "even_seq", "odd_seq")
+        if key in config and str(config.get(key, "") or "").strip() not in ("", "no")
+    ]
+    if method and method != "occupier" and occupier_keys:
+        notes.append(
+            f"OCCUPIER keys {', '.join(occupier_keys)} are set but method={method}: "
+            f"they are read by the OCCUPIER workflow only and are inert here "
+            f"(method is what selects the workflow, delfin/common/control_validator.py:2188)."
+        )
+
+    return notes
+
+
 def _manta_funnel_notes(validated: Mapping[str, Any]) -> list[str]:
     """Say so when the funnel cannot actually name a winner.
 
@@ -2602,6 +2709,9 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
         logger.warning("CONTROL %s=? -> %s", name, text)
 
     for note in _manta_funnel_notes(validated):
+        logger.warning("CONTROL validation: %s", note)
+
+    for note in cross_key_consistency_notes(validated):
         logger.warning("CONTROL validation: %s", note)
 
     if errors:
