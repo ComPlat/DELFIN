@@ -14975,6 +14975,151 @@ _LEAVING_BASH = re.compile(r"""(?x)
 _WORKSPACE_LOCAL_TOOLS = frozenset({"run_tests", "make_plot"})
 
 
+# Heavy computation started directly from a shell command: a
+# quantum-chemistry or MD run that loads the shared server. The filesystem
+# cage confines writes and holds network, but not CPU or wall-clock load, so
+# even a caged command in this class stays a "leave" (asks, or is refused
+# unchanged). orca is heavy in any spelling (bare name or anywhere in a
+# loaded path); crest is the conformer search; the MPI/SLURM launchers and
+# the common MD engines are their own word. The *_2mkl converter rewrites
+# ORCA output only and is not a run. Case-sensitive: an uppercase ``ORCA=1``
+# environment assignment is not a run.
+_HEAVY_COMPUTE_RE = re.compile(r"""(?x)
+    \b(?:
+        orca\b
+      | crest\b | srun\b | sbatch\b | salloc\b
+      | mpirun\b | mpiexec\b
+      | gmx\b | gromacs\b | namd2?\b | namd3\b | lmp\b | lammps\b
+      | openmm\b | pmemd\b )
+""")
+
+
+# Commands that start another program: skipped to reach the program judged.
+_HEAVY_PREFIXES = frozenset({
+    "env", "nice", "ionice", "nohup", "time", "timeout", "exec", "command",
+    "stdbuf", "taskset", "xargs",
+})
+
+
+def _xtb_exceeds_thread_limit(cmd: str, limit: int = 2) -> bool:
+    """True when ``cmd`` runs xtb with a parallel count above *limit*.
+
+    xtb names its threads ``-j N`` / ``-P N`` / ``--parallel N`` /
+    ``--parallel=N``, or attached as ``-j6`` / ``-P6``. A bare ``xtb`` with
+    no explicit count is not judged heavy here (the calc_policy layer covers
+    it under the cage in default mode); the shared-server load this class
+    guards against is an explicit run that asks for more than 2 threads.
+    """
+    try:
+        words = shlex.split(str(cmd or ""), posix=True)
+    except ValueError:
+        return False
+    if "xtb" not in words:
+        return False
+    n = len(words)
+    for i, w in enumerate(words):
+        val = ""
+        if w in ("-j", "-P", "--parallel"):
+            val = words[i + 1] if i + 1 < n else ""
+        elif w.startswith("--parallel="):
+            val = w.split("=", 1)[1]
+        elif len(w) > 2 and w[0] == "-" and w[1] in ("j", "P") \
+                and w[2:].isdigit():
+            val = w[2:]
+        if val.isdigit() and int(val) > limit:
+            return True
+    return False
+
+
+def _is_heavy_compute_command(cmd: str) -> bool:
+    """True when ``cmd`` starts a heavy quantum-chemistry or MD computation.
+
+    These are the runs ``_leaves_workspace`` must keep asking about in a
+    Bypass session even when the command would run inside the cage: the cage
+    does not bound the shared-server load they place.
+    """
+    text = str(cmd or "")
+    try:
+        segs = _split_shell_segments(text)
+    except Exception:
+        return bool(_HEAVY_COMPUTE_RE.search(text))
+    for seg in segs or [text]:
+        try:
+            words = shlex.split(seg, posix=True)
+        except ValueError:
+            if _HEAVY_COMPUTE_RE.search(seg):
+                return True
+            continue
+        # Only the program a segment starts is judged, so a read that
+        # names an ORCA file (``cat orca.out``) stays workspace work.
+        # Launcher prefixes and VAR=value assignments are skipped; a
+        # ``sh -c`` / ``bash -c`` string is judged as its own command.
+        i = 0
+        while i < len(words):
+            w = words[i]
+            if "=" in w and not w.startswith("-") and \
+                    w.split("=", 1)[0].isidentifier():
+                i += 1
+            elif w in _HEAVY_PREFIXES:
+                i += 1
+                # its options and their numeric values (nice -n 10,
+                # timeout 60s, taskset -c 0-3)
+                while i < len(words) and (words[i].startswith("-")
+                                          or words[i][:1].isdigit()):
+                    i += 1
+            else:
+                break
+        if i >= len(words):
+            continue
+        prog = words[i].rsplit("/", 1)[-1]
+        if prog in ("sh", "bash", "zsh") and "-c" in words[i + 1:]:
+            j = words.index("-c", i + 1)
+            if j + 1 < len(words) and _is_heavy_compute_command(words[j + 1]):
+                return True
+            continue
+        m = _HEAVY_COMPUTE_RE.match(prog)
+        if m and m.end() == len(prog):
+            return True
+        if _xtb_exceeds_thread_limit(" ".join(shlex.quote(x) for x in words[i:])):
+            return True
+    return False
+
+
+# Under the cage these still ask: an install outside the project's own
+# environment (a global install, a package from a URL or a path outside)
+# fails in the cage and needs the user's grant instead, and a listener is
+# reachable by every user of a shared machine's loopback.
+_CAGED_INSTALLER_RE = re.compile(r"""(?x)
+    ^\s*(?:\S*/)?(?:npm|npx|yarn|pnpm|pip3?|uv|cargo|go|gem|conda|mamba
+                 |micromamba|apt|apt-get|brew|dnf|yum)\b""")
+_CAGED_LISTENER_RE = re.compile(
+    r"http\.server|\b(?:serve|socat)\b|--bind\b|--listen\b|\bnc\s+-\w*l")
+
+
+def _caged_still_asked(seg: str) -> bool:
+    """Whether a shell segment asks even when it would run in the cage."""
+    if _CAGED_LISTENER_RE.search(seg):
+        return True
+    return bool(_CAGED_INSTALLER_RE.match(seg)) and not _project_env_command(seg)
+
+
+def _bash_runs_caged(perms) -> bool:
+    """Whether this session's shell commands run inside the filesystem cage.
+
+    The same decision the bash executor builds its argv from
+    (``_bash_isolation_decision``): a "bwrap", "landlock" or "seatbelt" kind
+    confines writes to the session roots, and the egress proxy holds
+    network. "none" (no cage on this host) and "refuse" (the command is not
+    run) do not confine anything, so under them ``_leaves_workspace`` keeps
+    its old rule.
+    """
+    try:
+        kind, _mode = _bash_isolation_decision(perms)
+        return kind in ("bwrap", "landlock", "seatbelt")
+    except Exception:
+        return False
+
+
 def _leaves_workspace(
     perms: "KitToolPermissions", action: dict, bypass: bool,
 ) -> bool:
@@ -15015,6 +15160,12 @@ def _leaves_workspace(
         if bypass:
             try:
                 full = str(action.get("command") or "")
+                # Heavy computation started directly loads the shared
+                # server: the cage confines writes and network but not CPU
+                # or wall-clock load, so a command in this class stays a
+                # leave even when it would run inside the cage.
+                if _is_heavy_compute_command(full):
+                    return True
                 if perms.matches_bash_auto_allow(full):
                     return False
                 # curl reading a server on this machine, every option one
@@ -15028,10 +15179,24 @@ def _leaves_workspace(
                 # pnpm, uv) stays too: under Bypass the cage holds it, and it
                 # fetches only from the package indexes the proxy knows.
                 segs = _split_shell_segments(full)
-                return not (segs and all(
-                    _LOOPBACK_CURL_RE.match(sg)
-                    or _project_env_command(sg)
-                    or perms.matches_bash_auto_allow(sg) for sg in segs))
+                if segs and all(_LOOPBACK_CURL_RE.match(sg)
+                                or _project_env_command(sg)
+                                or perms.matches_bash_auto_allow(sg)
+                                for sg in segs):
+                    return False
+                # A command that will run INSIDE the cage -- the same
+                # decision the executor builds its argv from
+                # (_bash_isolation_decision) -- is workspace work here: not
+                # the high-risk class (returned True above), not network
+                # (_LEAVING_BASH, also above), not heavy compute (checked
+                # first). The cage confines its writes and holds its network
+                # (the egress proxy), and the change journal can take back
+                # what it wrote. A host with no cage (kind "none" or
+                # "refuse") keeps the old rule.
+                if _bash_runs_caged(perms) and not any(
+                        _caged_still_asked(sg) for sg in segs):
+                    return False
+                return True
             except Exception:
                 return True
         return False
