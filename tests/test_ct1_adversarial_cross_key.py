@@ -36,8 +36,12 @@ def test_method_mixed_case_with_spaces_still_suppresses_or_fires():
     assert NOTES({"method": "  Occupier ", "OCCUPIER_method": "auto"}) == []
 
 
-def test_occupier_key_set_to_no_never_fires():
-    assert NOTES({"method": "classic", "OCCUPIER_method": "no"}) == []
+def test_occupier_method_not_a_yes_no_key():
+    # OCCUPIER_method is _as_occupier_method (validator:1830-1842): "no" is
+    # INVALID there and errors out in the real path, so the notes function
+    # never sees it raw. The yes/no "off" spellings are covered by the
+    # dedicated test below.
+    assert NOTES({"method": "classic", "OCCUPIER_method": "auto"}) == []
 
 
 def test_occupier_key_empty_string_never_fires():
@@ -79,15 +83,33 @@ def test_findings_are_never_validation_errors():
     for config in (
         {"charge": 0, "method": "classic", "solvent": "dmf"},
         {"charge": 0, "method": "classic", "relativity": "ZORA"},
-        {"charge": 0, "method": "classic", "OCCUPIER_method": "auto"},
+        {"charge": 0, "method": "classic", "frequency_calculation_OCCUPIER": "false"},
         {"charge": 0, "method": "classic", "relativity": "ZORA",
          "SMILES": "[Na+].[Cl-]"},
     ):
         validated = validate_control_config(dict(config))
         assert validated.get("charge", config.get("charge")) is not None
-        # the value that was attacked is still there, not dropped
+        # Coercion is expected: _as_yes_no rewrites false -> no (:1041-1043).
+        # Value preservation is asserted only for keys whose coercer is the
+        # identity for the value chosen here.
+        IDENTITY = {"charge", "method", "relativity", "SMILES"}
         for key, value in config.items():
-            assert validated.get(key, value) == value
+            if key in IDENTITY:
+                assert validated.get(key, value) == value
+
+
+def test_yes_no_off_spellings_of_occupier_keys_never_fire():
+    # Coercers run before the default comparison (fix 506a4eb5f): a raw
+    # spelling the key's own coercer maps to the default ("false"/"0"/
+    # " off " -> "no" for _as_yes_no, validator:1041-1043; geom_opt ->
+    # _as_geom_opt, default "OPT") must never fire the non-default note.
+    for key in ("frequency_calculation_OCCUPIER", "geom_opt_OCCUPIER"):
+        for value in ("false", "0", "off", "False", " OFF "):
+            notes = NOTES({"method": "classic", key: value})
+            assert notes == [], f"{key}={value!r} means OFF but fired: {notes}"
+    # A real "yes" still warns.
+    assert NOTES({"method": "classic",
+                  "frequency_calculation_OCCUPIER": "yes"}) != []
 
 
 if __name__ == "__main__":  # pragma: no cover
