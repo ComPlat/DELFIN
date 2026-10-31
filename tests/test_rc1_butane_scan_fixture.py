@@ -1,8 +1,12 @@
 """Tests for the RC1 butane relaxed-scan fixture (package RC1, wave 23).
 
 The fixture ``tests/fixtures/orca611/rc1_butane_scan_r2scan3c`` is a REAL
-ORCA 6.1.1 run: a relaxed scan of the central C-C-C-C dihedral of n-butane
-at r2SCAN-3c, 0 to 360 deg in 25 steps, starting from the GOAT global
+ORCA 6.1.0 run: a relaxed scan of the central C-C-C-C dihedral of n-butane
+at r2SCAN-3c over the full 0-360 deg circle in 15 deg steps (Scan
+D 0 1 2 3 = 180, 525, 24 — the 24 distinct angles; the original brief's
+literal "0, 360, 25" failed three times on ORCA mechanics: NoFreq rejected,
+GSTEP could not start 180 deg away, and the ±180 deg wrap point did not
+converge — see PROVENANCE.md), starting from the GOAT global
 minimum in ``butane_goat_gfn2/butane_goat_gfn2.globalminimum.xyz``.
 
 Every check reuses DELFIN's own ORCA readers; nothing is parsed a second
@@ -63,43 +67,59 @@ def test_fixture_folder_is_committed():
 def test_inp_holds_the_scan_request(out_path):
     inp = (FIXTURE / "rc1_butane_scan_r2scan3c.inp").read_text()
     assert "r2SCAN-3c" in inp
-    assert "D 0 1 2 3 = 0, 360, 25" in inp
+    # v5 scan line: 24 distinct angles, 15 deg apart, covering the full
+    # circle (180..525 spans 345 deg; the last step wraps mod 360).
+    assert "D 0 1 2 3 = 180, 525, 24" in inp
     assert "* xyz 0 1" in inp  # charge 0, multiplicity 1
     assert inp.count("\nC ") >= 4  # butane carbons present
 
 
-def test_exactly_25_scan_points(out_path):
+def test_exactly_24_scan_points(out_path):
     titles = [s.title for s in orca_out_index(out_path)]
     n = titles.count("FINAL SINGLE POINT ENERGY")
-    assert n == 25, f"expected 25 scan points, index found {n}"
+    assert n == 24, f"expected 24 scan points, index found {n}"
 
 
-def test_all_25_energies_finite(out_path):
-    energies = [_final_single_point_energy(out_path, n) for n in range(1, 26)]
+def test_all_24_energies_finite(out_path):
+    energies = [_final_single_point_energy(out_path, n) for n in range(1, 25)]
     assert all(math.isfinite(e) for e in energies)
 
 
-def test_end_point_equals_start_point(out_path):
-    start = _final_single_point_energy(out_path, 1)
-    end = _final_single_point_energy(out_path, 25)
-    assert abs(end - start) < 1e-6, "360 deg point must close on 0 deg"
+def test_profile_covers_the_full_circle(out_path):
+    """24 points x 15 deg span 345 deg; the wrap back to 180 closes the
+    circle. The grid must contain every distinct angle of the 0-360
+    profile (checked against the inp's own scan line)."""
+    inp = (FIXTURE / "rc1_butane_scan_r2scan3c.inp").read_text()
+    import re
+    m = re.search(r"D\s+0\s+1\s+2\s+3\s*=\s*([0-9.]+),\s*([0-9.]+),\s*(\d+)", inp)
+    assert m, "no Scan D line in the fixture inp"
+    start, stop, npts = float(m.group(1)), float(m.group(2)), int(m.group(3))
+    span = stop - start
+    step = span / (npts - 1)
+    assert span > 0
+    assert (span + step) % 360 == 0, "grid must close the circle"
+    angles = [start + i * step for i in range(npts)]
+    mod360 = sorted(a % 360 for a in angles)
+    assert len(set(mod360)) == npts, "angles must be distinct mod 360"
 
 
 def test_syn_is_the_highest_point(out_path):
-    energies = [_final_single_point_energy(out_path, n) for n in range(1, 26)]
-    assert max(energies) == energies[0], (
-        "the syn (0 deg) point must be the highest of the scan"
+    energies = [_final_single_point_energy(out_path, n) for n in range(1, 25)]
+    # syn = the 0/360 family = step 13 (index 12) in the v5 grid
+    assert max(energies) == energies[12], (
+        "the syn (360 deg) point must be the highest of the scan"
     )
 
 
 def test_gauche_anti_gap_in_physical_range(out_path):
-    energies = [_final_single_point_energy(out_path, n) for n in range(1, 26)]
-    anti = min(energies)
-    gauche = min(energies[3:5] + energies[19:21])  # 60 and 120 deg points
+    energies = [_final_single_point_energy(out_path, n) for n in range(1, 25)]
+    anti = min(energies)  # step 1, 180 deg
+    gauche = min(energies[7], energies[8], energies[15], energies[16])
     gap_kcal = (gauche - anti) * KCAL
     # r2SCAN-3c literature class: 0.6-0.9 kcal/mol; wide enough band to
     # not pin the fixture to a tuned value, narrow enough to catch a
-    # wrong minimum or a mis-scaled surface.
+    # wrong minimum or a mis-scaled surface. A 15-deg grid point
+    # under-reports the gap (the true minimum lies between grid points).
     assert 0.3 <= gap_kcal <= 1.5, (
         f"gauche-anti gap {gap_kcal:.3f} kcal/mol outside the expected class"
     )
@@ -112,8 +132,8 @@ def test_every_point_optimization_converged(out_path):
     converged = text.count("THE OPTIMIZATION HAS CONVERGED") + text.count(
         "OPTIMIZATION RUN DONE"
     )
-    assert converged >= 25, (
-        f"expected >= 25 converged optimisation blocks, found {converged}"
+    assert converged >= 24, (
+        f"expected >= 24 converged optimisation blocks, found {converged}"
     )
 
 
