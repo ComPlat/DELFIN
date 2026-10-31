@@ -30883,18 +30883,32 @@ _WAIT_TICK_MAX_S = 10.0
 
 
 def _retry_notice(exc_name: str, elapsed_s: float, had_partial: bool,
-                  attempt: int, max_attempts: int, delay_s: float) -> str:
+                  attempt: int, max_attempts: int, delay_s: float, *,
+                  slot_wait: bool = False, base_url: str = "") -> str:
     """What the user reads when a round is retried.
 
     The one line used to be "Transient API error; retrying", whether the
     connection dropped mid-answer or the endpoint never started. The
     second case is the ten-minute wait, and it is named as such: the
     retry does not shorten it, it queues again.
+
+    ``slot_wait`` is the case where the round never reached the endpoint
+    at all: it spent ``elapsed_s`` waiting for a LOCAL slot in the
+    host-wide gate, held by other sessions. That is not the endpoint's
+    fault, so it is never reported as "No byte from the endpoint".
     """
     tail = f"{attempt}/{max_attempts} in {delay_s:.0f}s"
     if had_partial:
         return (f"\n⏳ Transient API error ({exc_name}); retrying {tail}"
                 " — connection lost mid-answer, the reply restarts below…\n")
+    if slot_wait:
+        from .endpoint_gate import display_url
+        shown = display_url(base_url) if base_url else ""
+        where = f" on {shown}" if shown else ""
+        return (f"\n⏳ Waited {elapsed_s:.0f} s for a local slot{where} "
+                f"({exc_name}): other sessions hold it, the endpoint never "
+                f"got this request. Retrying {tail} waits for a slot "
+                "again…\n")
     if elapsed_s >= _ZERO_BYTE_CUT_S:
         return (f"\n⏳ No byte from the endpoint in {elapsed_s:.0f} s "
                 f"({exc_name}): it cut the request before the model started. "
@@ -33005,15 +33019,26 @@ class OpenAIClient(_BaseClient):
                 # (GeneratorExit), KeyboardInterrupt -- leaves it held.
                 _gslot = _GateRound()
                 try:
-                    from .endpoint_gate import for_client as _gslot_for
+                    from .endpoint_gate import (for_client as _gslot_for,
+                                                SlotWaitTimeout
+                                                as _SlotWaitTimeout)
                     _gslot.gate = _gslot_for(self._base_url, self.model)
                 except Exception:
                     _gslot.gate = None
+                    _SlotWaitTimeout = None
                 if _gslot.gate is not None:
                     _gslot.gate.acquire()
                 if _gslot.gate is not None and _gslot.gate.wait_notice:
                     yield StreamEvent(type="notice", text=(
                         f"⚠️ {_gslot.gate.wait_notice}\n"))
+                # The slot is held: the clock for THIS round's endpoint
+                # timing starts now, AFTER the (possibly long) local wait for
+                # a slot. Otherwise a session that queued 900 s for a slot in
+                # the gate would make every downstream number look like an
+                # endpoint stall -- first-byte latency, the retry deadline,
+                # the "no byte from the endpoint" notice -- when the endpoint
+                # had not even been contacted yet.
+                _round_t0 = time.monotonic()
                 _ct.start()
                 # Watch the first byte instead of parking in it: emit a
                 # visible "waiting for the model … Ns" indicator while the
@@ -33152,7 +33177,11 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
-                            _stream_attempt, _STREAM_RETRY_MAX, _delay))
+                            _stream_attempt, _STREAM_RETRY_MAX, _delay,
+                            slot_wait=isinstance(
+                                _stream_exc, _SlotWaitTimeout)
+                            if _SlotWaitTimeout is not None else False,
+                            base_url=self._base_url))
                         # A congestion signal triggered this retry: report it
                         # and free the slot BEFORE the backoff, so another
                         # session can use the endpoint while this round waits.
