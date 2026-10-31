@@ -10,8 +10,12 @@ additively with :func:`delfin.dashboard.tab_registry.register_tab`, so
 from __future__ import annotations
 
 import base64 as _base64
+import csv as _csv
 import html as _html
+import io as _io
+import json as _json
 import os
+import zipfile as _zipfile
 from typing import Any, List
 
 try:
@@ -113,6 +117,10 @@ class ResultsOverviewPanel:
             layout=widgets.Layout(width="260px"))
         self._png_opts = widgets.HBox([
             self._png_size, self._png_cols])
+        self._csv_btn = widgets.Button(description="Export CSV")
+        self._xlsx_btn = widgets.Button(description="Export XLSX")
+        self._zip_btn = widgets.Button(description="Export PNG-ZIP")
+        self._export_status = widgets.HTML()
         self._status = widgets.HTML()
         self._pngs = widgets.HTML()
         self._sortbar = widgets.HBox()
@@ -126,6 +134,9 @@ class ResultsOverviewPanel:
         self._show_pngs.observe(self._on_png_toggle, names="value")
         self._png_size.observe(self._on_png_opts_change, names="value")
         self._png_cols.observe(self._on_png_opts_change, names="value")
+        self._csv_btn.on_click(self._on_export_csv)
+        self._xlsx_btn.on_click(self._on_export_xlsx)
+        self._zip_btn.on_click(self._on_export_zip)
 
         left = widgets.VBox([
             widgets.HTML("<b>Rechnungen</b> (Mehrfachauswahl)"),
@@ -143,6 +154,9 @@ class ResultsOverviewPanel:
             self._png_opts,
             self._status,
             self._sortbar,
+            widgets.HBox([
+                self._csv_btn, self._xlsx_btn, self._zip_btn,
+                self._export_status]),
             self._pngs,
         ])
 
@@ -211,6 +225,124 @@ class ResultsOverviewPanel:
     def _on_png_opts_change(self, _change) -> None:
         if self._table is not None and self._png_mode == "inline":
             self._render()
+
+    # -- export -------------------------------------------------------------
+
+    def _table_bytes_csv(self) -> bytes:
+        """CSV of the current table (format_value strings, Excel-friendly)."""
+        assert self._table is not None
+        buf = _io.StringIO()
+        w = _csv.writer(buf, delimiter=";")
+        w.writerow(["Rechnung"]
+                   + [c["label"] for c in self._table["columns"]])
+        for row in self._table["rows"]:
+            w.writerow([row["label"]]
+                       + [format_value(row["values"].get(c["id"]))
+                          for c in self._table["columns"]])
+        return buf.getvalue().encode("utf-8-sig")  # BOM: Excel opens UTF-8
+
+    def _table_bytes_xlsx(self) -> bytes:
+        """XLSX of the current table; missing values as empty cells."""
+        import openpyxl  # already a DELFIN dependency
+        assert self._table is not None
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Results Overview"
+        ws.append(["Rechnung"]
+                  + [c["label"] for c in self._table["columns"]])
+        for row in self._table["rows"]:
+            cells = []
+            for c in self._table["columns"]:
+                v = row["values"].get(c["id"])
+                cells.append(v if v is not None else None)
+            ws.append([row["label"]] + cells)
+        out = _io.BytesIO()
+        wb.save(out)
+        return out.getvalue()
+
+    def _pngs_bytes_zip(self) -> bytes:
+        """ZIP of every selected calc's relative scan PNG."""
+        assert self._paths is not None
+        out = _io.BytesIO()
+        with _zipfile.ZipFile(out, "w", _zipfile.ZIP_DEFLATED) as zf:
+            for path in self._paths:
+                label = os.path.basename(path.rstrip("/"))
+                for p in list_rss_pngs(path):
+                    try:
+                        with open(p["abs"], "rb") as fh:
+                            data = fh.read(8 * 1024 * 1024)
+                    except OSError:
+                        continue
+                    zf.writestr(f"{label}/{p['rel']}", data)
+        return out.getvalue()
+
+    def _export_bytes(self, filename: str, payload: bytes,
+                      mime: str) -> None:
+        """Download via the same base64-blob route the browser tab uses."""
+        run_js = getattr(self._ctx, "run_js", None)
+        if not callable(run_js):
+            self._export_status.value = (
+                "<span style='color:#dc3545'>Kein JS-Kontext: Export "
+                "im Dashboard nicht moeglich.</span>")
+            return
+        b64 = _base64.b64encode(payload).decode("ascii")
+        js = (
+            "(function(){"
+            f"const fileName={_json.dumps(filename)};"
+            f"const mimeType={_json.dumps(mime)};"
+            f"const b64={_json.dumps(b64)};"
+            "try{"
+            "const bin=atob(b64);"
+            "const len=bin.length;"
+            "const bytes=new Uint8Array(len);"
+            "for(let i=0;i<len;i++){bytes[i]=bin.charCodeAt(i);}"
+            "const blob=new Blob([bytes],{type:mimeType});"
+            "const url=URL.createObjectURL(blob);"
+            "const a=document.createElement('a');"
+            "a.href=url;a.download=fileName;"
+            "document.body.appendChild(a);a.click();"
+            "setTimeout(function(){URL.revokeObjectURL(url);"
+            "if(a.parentNode){a.parentNode.removeChild(a);}},1500);"
+            "}catch(err){console.error('Download failed:', err);}"
+            "})();"
+        )
+        run_js(js)
+        self._export_status.value = (
+            f"<span style='color:#28a745'>{_html.escape(filename)} "
+            f"heruntergeladen ({len(payload) // 1024} KB).</span>")
+
+    def _on_export_csv(self, _btn=None) -> None:
+        if self._table is None:
+            self._export_status.value = (
+                "<span style='color:#dc3545'>Erst eine Tabelle "
+                "erstellen.</span>")
+            return
+        self._export_bytes("results_overview.csv", self._table_bytes_csv(),
+                           "text/csv;charset=utf-8")
+
+    def _on_export_xlsx(self, _btn=None) -> None:
+        if self._table is None:
+            self._export_status.value = (
+                "<span style='color:#dc3545'>Erst eine Tabelle "
+                "erstellen.</span>")
+            return
+        self._export_bytes("results_overview.xlsx", self._table_bytes_xlsx(),
+                           "application/vnd.openxmlformats-"
+                           "officedocument.spreadsheetml.sheet")
+
+    def _on_export_zip(self, _btn=None) -> None:
+        if not self._paths:
+            self._export_status.value = (
+                "<span style='color:#dc3545'>Erst Rechnungen "
+                "auswaehlen.</span>")
+            return
+        payload = self._pngs_bytes_zip()
+        if not payload:
+            self._export_status.value = (
+                "<span style='color:#dc3545'>Keine RSS-PNGs "
+                "gefunden.</span>")
+            return
+        self._export_bytes("rss_pngs.zip", payload, "application/zip")
 
     def _render(self) -> None:
         """Re-render table + PNG section from current state."""
