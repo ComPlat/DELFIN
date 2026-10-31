@@ -96,3 +96,17 @@ def test_cache_key_is_input_hash():
     key = oic._probe_cache_key(_input(gap_option=True))
     assert key == hashlib.sha256(_input(gap_option=True).encode()
                                  ).hexdigest()
+
+
+def test_public_path_does_not_probe_by_default(probe_calls):
+    """QS ruling: the probe stays opt-in on the real public path.
+
+    validate_orca_input calls check_all WITHOUT the probe (comment at
+    delfin/api.py documents the why: a default-on probe would spawn a
+    real ORCA process on every submit, an expensive step needs a
+    stated reason). Nothing may silently depend on the probe through
+    the default path.
+    """
+    from delfin.api import validate_orca_input
+    validate_orca_input(_input(gap_option=True))
+    assert probe_calls == []

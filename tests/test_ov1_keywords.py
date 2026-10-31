@@ -100,8 +100,6 @@ def test_public_path_validate_orca_input_reports_unknown_keyword():
     (delfin/api.py is a protected file for this builder). Once wired, the
     skip disappears and this asserts the real path.
     """
-    if not _hook_is_wired():
-        pytest.skip("api.py hook not yet applied by operator (.gate/ov1_api_hook.patch)")
     from delfin.api import validate_orca_input
     issues = [i for i in validate_orca_input(_inp("PBE0 def2-SVP NOFREQ"))
               if i.severity == "error"]
