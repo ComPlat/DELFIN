@@ -2372,20 +2372,37 @@ def cross_key_consistency_notes(config: Mapping[str, Any]) -> list[str]:
                 f"The file's value will not run as written."
             )
 
-    # 3. OCCUPIER keys inert under an explicit non-OCCUPIER method.
+    # 3. OCCUPIER keys inert under an explicit non-OCCUPIER method -- but only
+    # for a NON-DEFAULT value. The template ships OCCUPIER_compare=FSPE and
+    # OCCUPIER_method=auto, so a default-valued OCCUPIER key under
+    # method=classic is a normal file, not a contradiction (pinned by
+    # tests/test_occupier_compare_names_what_it_compares.py:201-210: a valid
+    # field is left alone -- that test pins OCCUPIER_compare explicitly, so
+    # OCCUPIER_compare is NOT watched here; its value decision is always the
+    # user's). A deliberately chosen OCCUPIER setting (a manual method, a
+    # sequence) under method=classic IS a finding.
     method = str(config.get("method", "") or "").strip().lower()
-    occupier_keys = [
-        key for key in ("OCCUPIER_method", "OCCUPIER_compare",
-                        "frequency_calculation_OCCUPIER", "geom_opt_OCCUPIER",
-                        "even_seq", "odd_seq")
-        if key in config and str(config.get(key, "") or "").strip() not in ("", "no")
-    ]
-    if method and method != "occupier" and occupier_keys:
-        notes.append(
-            f"OCCUPIER keys {', '.join(occupier_keys)} are set but method={method}: "
-            f"they are read by the OCCUPIER workflow only and are inert here "
-            f"(method is what selects the workflow, delfin/common/control_validator.py:2188)."
-        )
+    if method and method != "occupier":
+        schema_defaults = {spec.name: spec.default for spec in CONTROL_FIELD_SPECS}
+        occupier_keys = []
+        for key in ("OCCUPIER_method", "frequency_calculation_OCCUPIER",
+                    "geom_opt_OCCUPIER"):
+            if key not in config:
+                continue
+            value = str(config.get(key, "") or "").strip()
+            default = schema_defaults.get(key)
+            if value and value.lower() != str(default or "").strip().lower():
+                occupier_keys.append(key)
+        for key in ("even_seq", "odd_seq"):
+            if config.get(key):
+                occupier_keys.append(key)
+        if occupier_keys:
+            notes.append(
+                f"OCCUPIER keys {', '.join(occupier_keys)} are set (non-default) but "
+                f"method={method}: "
+                f"they are read by the OCCUPIER workflow only and are inert here "
+                f"(method is what selects the workflow, delfin/common/control_validator.py:2188)."
+            )
 
     return notes
 
