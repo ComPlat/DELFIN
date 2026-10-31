@@ -54,7 +54,35 @@ class TestFindingsNotSilent:
     def test_clean_frame_gives_no_findings(self):
         # Square-planar cisplatin, hand-built with sane distances:
         # Pt-N 2.05, Pt-Cl 2.30, N-H 1.01 A, H-N-H tetrahedral-ish.
+        # Old decision (phase 2a, superseded by the person's standard-SMILES
+        # ruling #36): unbracketed N on a metal was read as ammine (6 H) and
+        # this frame carried 6 H. Under the ruling the written SMILES
+        # [Pt](Cl)(Cl)(N)N reads amido (NH2, 4 H), so the correct clean
+        # frame carries 4 H; the two info h_ambiguity findings (one per N,
+        # naming both readings) are the designed advisory, not defects.
         cisplatin_ok = (
+            "Pt      0.000000     0.000000     0.000000\n"
+            "Cl      2.300000     0.000000     0.000000\n"
+            "Cl     -2.300000     0.000000     0.000000\n"
+            "N       0.000000     2.050000     0.000000\n"
+            "N       0.000000    -2.050000     0.000000\n"
+            "H       0.580000     2.900000     0.870000\n"
+            "H      -0.580000     2.900000     0.870000\n"
+            "H       0.580000    -2.900000    -0.870000\n"
+            "H      -0.580000    -2.900000    -0.870000\n"
+        )
+        findings = _findings("[Pt](Cl)(Cl)(N)N", cisplatin_ok)
+        blocking = [f for f in findings if f.get("severity") != "info"]
+        assert blocking == [], f"clean frame flagged: {blocking!r}"
+        # and the info advisory is present for each unbracketed donor
+        assert sum(
+            1 for f in findings if f.get("kind") == "h_ambiguity"
+        ) >= 1, f"h_ambiguity advisory missing: {findings!r}"
+
+    def test_fully_bracketed_frame_gives_no_findings_at_all(self):
+        # [Pt](Cl)(Cl)([NH3])[NH3] states every H count explicitly: no
+        # ambiguity, no info finding. This is the strict-clean case.
+        frame = (
             "Pt      0.000000     0.000000     0.000000\n"
             "Cl      2.300000     0.000000     0.000000\n"
             "Cl     -2.300000     0.000000     0.000000\n"
@@ -67,8 +95,8 @@ class TestFindingsNotSilent:
             "H      -0.580000    -2.900000    -0.870000\n"
             "H       0.000000    -2.950000     1.000000\n"
         )
-        findings = _findings("[Pt](Cl)(Cl)(N)N", cisplatin_ok)
-        assert findings == [], f"clean frame flagged: {findings!r}"
+        findings = _findings("[Pt](Cl)(Cl)([NH3])[NH3]", frame)
+        assert findings == [], f"fully bracketed clean frame flagged: {findings!r}"
 
 
 class TestSmilesAsWritten:
