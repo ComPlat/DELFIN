@@ -55,7 +55,7 @@ def test_suggestion_is_tightopt_not_opth():
 
 def test_suggestion_ranking_direct():
     assert _closest(["opt", "opth", "tightopt", "optts"], "OptTight") \
-        == "tightopt"
+        == "TightOpt"
 
 
 def test_scan_block_geometry_before_scan_is_read():

@@ -50,6 +50,21 @@ def _normalize_line(text: str) -> str:
     return text.replace("\uff01", "!")
 
 
+def _camel(word: str, parts: tuple[str, str] | None) -> str:
+    """A suggestion with ORCA's canonical camel casing.
+
+    The catalog is lowercase; ORCA's documentation writes compound
+    keywords in camel case (TightOpt, VeryTightSCF). The split that
+    matched the invented word gives the token boundaries; each token is
+    capitalised, so ``tightopt`` -> ``TightOpt``. Without a split the
+    whole word is capitalised (an honest approximation, stated in the
+    docstring rather than hidden).
+    """
+    if parts and all(parts):
+        return parts[0].capitalize() + parts[1].capitalize()
+    return word.capitalize()
+
+
 def _closest(words, word):
     """The known keyword closest to ``word`` (case-blind), else "".
 
@@ -58,26 +73,42 @@ def _closest(words, word):
     alignments of the word's best split are scored (word halves vs the
     catalog word's own halves, both orders), so a word made of the same
     tokens beats a superficially closer string. The catalog is all
-    lowercase; the suggestion keeps that canonical casing.
+    lowercase; the suggestion carries ORCA's canonical camel casing
+    derived from the split that matched (see _camel).
+
+    Returns ``(suggestion, (left_half, right_half))``; the halves are the
+    catalog word's own split for the winning alignment, for casing.
     """
     from difflib import SequenceMatcher
     pool = sorted(words)
     w = word.lower()
 
-    def _split_ratio(a, k):
+    def _split_ratio(k, w):
+        # split the CATALOG word; each half is matched against the FULL
+        # invented word. The winning split gives the token boundaries of
+        # the real keyword (tight|opt), which is what casing needs --
+        # splitting the invented word gave OptTight/TightOpt ambiguity.
         best = 0.0
-        for i in range(1, len(a)):
-            h1, h2 = a[:i], a[i:]
-            for cand in (k, k[::-1]):
-                best = max(best, min(SequenceMatcher(None, h1, cand).ratio(),
-                                     SequenceMatcher(None, h2, cand).ratio()))
-        return best
+        best_parts = (k[: len(k) // 2], k[len(k) // 2:])
+        for i in range(1, len(k)):
+            h1, h2 = k[:i], k[i:]
+            score = min(SequenceMatcher(None, h1, w).ratio(),
+                        SequenceMatcher(None, h2, w).ratio())
+            if score > best:
+                best = score
+                best_parts = (h1, h2)
+        return best, best_parts
 
-    def _score(k):
-        return SequenceMatcher(None, w, k).ratio() + _split_ratio(w, k)
-
-    ranked = sorted(((-_score(k), k) for k in pool))
-    return ranked[0][1] if ranked and -ranked[0][0] >= 0.5 else ""
+    ranked = []
+    for k in pool:
+        full = SequenceMatcher(None, w, k).ratio()
+        split, parts = _split_ratio(k, w)
+        ranked.append((-(full + split), k, parts))
+    ranked.sort()
+    if ranked and -ranked[0][0] >= 0.5:
+        _, k, parts = ranked[0]
+        return _camel(k, parts)
+    return ""
 
 
 def _known_solvent(name: str) -> bool:
@@ -118,6 +149,22 @@ def check_keyword_line(text: str) -> list[Issue]:
     """Check every word on the ``!`` line(s) against ORCA's vocabulary."""
     from delfin.orca_knowledge import known_keyword
     issues: list[Issue] = []
+    # A line that LOOKS like a keyword line but starts with a non-ASCII
+    # look-alike of `!` (U+FF01 etc.) is silently ignored by ORCA's
+    # parser too -- the whole line's keywords are dropped. That must be
+    # an error, not a silent pass (QS: real defect, kept).
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped[0].isascii():
+            continue
+        if re.fullmatch(r"[^\w\s]+(.*)", stripped) and "!" in _normalize_line(stripped[0]):
+            issues.append(Issue(
+                severity="error", code="non_ascii_keyword_marker",
+                message=(f"The line starts with a non-ASCII look-alike of "
+                         f"`!` (U+{ord(stripped[0]):04X}); ORCA ignores "
+                         "this line entirely."),
+                suggestion="Replace it with the ASCII `!` keyword marker.",
+            ))
     text = _normalize_line(text)
     for line in re.findall(r"^\s*!(.*)$", text, re.MULTILINE):
         for word in line.split():
@@ -137,6 +184,7 @@ def check_keyword_line(text: str) -> list[Issue]:
                 solvent = m.group(2)
                 if not _known_solvent(solvent):
                     close = _closest(_solvent_pool(), solvent)
+                    close = close.capitalize() if close else close
                     issues.append(Issue(
                         severity="error", code="unknown_solvent",
                         message=(f"`{m.group(1)}({solvent})` names a "
@@ -166,12 +214,16 @@ def check_keyword_conflicts(text: str) -> list[Issue]:
     for line in re.findall(r"^\s*!(.*)$", _normalize_line(text), re.MULTILINE):
         kw_words += [w.upper() for w in line.split()]
     conflicts = [("NUMFREQ", "FREQ")]
+    # canonical casing ORCA's manual writes these in: the user reading
+    # the message must see the exact keywords that conflict
+    _CANONICAL = {"NUMFREQ": "NumFreq", "FREQ": "Freq"}
     issues: list[Issue] = []
     for a, b in conflicts:
         if a in kw_words and b in kw_words:
+            ca, cb = _CANONICAL[a], _CANONICAL[b]
             issues.append(Issue(
                 severity="error", code="conflicting_keywords",
-                message=f"{a} and {b} exclude each other.",
+                message=f"{ca} and {cb} exclude each other.",
                 suggestion=f"Pick one: {a} for a numerical Hessian, "
                            f"{b} for the analytic one.",
             ))
