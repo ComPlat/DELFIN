@@ -9,6 +9,7 @@ import pytest
 from delfin.analysis_tools.conformer_shape_classification import (
     analyze_ensemble,
     ez_cip_assignment,
+    custom_torsion,
     load_ensemble,
     shape_descriptors,
 )
@@ -87,6 +88,16 @@ def test_export_preserves_coordinates_and_mapping(tmp_path):
     assert out_lines[7:10] == src_lines[2:5]
     with pytest.raises(FileExistsError):
         export_selection(source, [1, 0], "synthetic_selection")
+
+
+def test_coincident_torsion_atoms_report_error_not_nan():
+    # Coincident middle atoms make the torsion undefined; the engine must
+    # say so explicitly instead of reporting NaN with status "ok"
+    # (found by reviewer nacht-s16, adversarial probe on the base commit).
+    coords = np.array([[0., 0., 0.], [1., 0., 0.], [1., 0., 0.], [1., 1., 0.]])
+    status = custom_torsion(coords, 0, 1, 2, 3)
+    assert status.status == "error", status
+    assert status.value is None, status
 
 
 def test_bond_order_failure_is_not_a_stereochemical_guess(monkeypatch):
