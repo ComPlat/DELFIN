@@ -15085,6 +15085,24 @@ def _is_heavy_compute_command(cmd: str) -> bool:
     return False
 
 
+# Under the cage these still ask: an install outside the project's own
+# environment (a global install, a package from a URL or a path outside)
+# fails in the cage and needs the user's grant instead, and a listener is
+# reachable by every user of a shared machine's loopback.
+_CAGED_INSTALLER_RE = re.compile(r"""(?x)
+    ^\s*(?:\S*/)?(?:npm|npx|yarn|pnpm|pip3?|uv|cargo|go|gem|conda|mamba
+                 |micromamba|apt|apt-get|brew|dnf|yum)\b""")
+_CAGED_LISTENER_RE = re.compile(
+    r"http\.server|\b(?:serve|socat)\b|--bind\b|--listen\b|\bnc\s+-\w*l")
+
+
+def _caged_still_asked(seg: str) -> bool:
+    """Whether a shell segment asks even when it would run in the cage."""
+    if _CAGED_LISTENER_RE.search(seg):
+        return True
+    return bool(_CAGED_INSTALLER_RE.match(seg)) and not _project_env_command(seg)
+
+
 def _bash_runs_caged(perms) -> bool:
     """Whether this session's shell commands run inside the filesystem cage.
 
@@ -15175,7 +15193,8 @@ def _leaves_workspace(
                 # (the egress proxy), and the change journal can take back
                 # what it wrote. A host with no cage (kind "none" or
                 # "refuse") keeps the old rule.
-                if _bash_runs_caged(perms):
+                if _bash_runs_caged(perms) and not any(
+                        _caged_still_asked(sg) for sg in segs):
                     return False
                 return True
             except Exception:

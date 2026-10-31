@@ -200,3 +200,18 @@ def test_no_cage_asks_as_before(cmd, tmp_path, monkeypatch):
 ])
 def test_only_the_program_a_segment_starts_is_judged_heavy(cmd, heavy):
     assert A._is_heavy_compute_command(cmd) is heavy
+
+
+@pytest.mark.parametrize("cmd", [
+    "npm install -g typescript", "npx serve", "cargo install ripgrep",
+    "npm install https://example.org/x.tgz", "pip install requests",
+    "python3 -m http.server 8038 --bind 127.0.0.1",
+])
+def test_under_the_cage_an_install_elsewhere_or_a_listener_still_asks(
+        tmp_path, monkeypatch, cmd):
+    monkeypatch.setattr(A, "_bash_runs_caged", lambda perms: True)
+    ws = tmp_path / "wt"
+    ws.mkdir()
+    perms = KitToolPermissions(workspace=str(ws.resolve()),
+                               mode="bypassPermissions")
+    assert A._leaves_workspace(perms, {"tool": "bash", "command": cmd}, True)
