@@ -111,6 +111,16 @@ FORBIDDEN_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+# ORCA-generated GOAT ensembles must never be added to DELFIN. Matched by the
+# file names GOAT itself writes -- a broader "goat|orca in the path" rule
+# would also hit DELFIN's own knowledge cards (delfin/orca_knowledge/**.json).
+# Other ORCA output is caught by its content (output signature), not its name.
+ORCA_GENERATED_PATH_RE = re.compile(
+    r"\.(?:finalensemble|globalminimum)(?:\.\d+)?\.xyz$",
+    re.IGNORECASE,
+)
+
 ALLOW_COMMENT = "license-guard: allow"
 
 # files that legitimately contain the forbidden tokens (as patterns/docs) and
@@ -217,6 +227,8 @@ def check_path(relpath: str) -> str | None:
     """Return a message if the committed PATH itself is forbidden, else None."""
     if relpath in SELF_EXEMPT:
         return None
+    if ORCA_GENERATED_PATH_RE.search(relpath):
+        return f"forbidden ORCA-generated GOAT path: '{relpath}'"
     if FORBIDDEN_PATH_RE.search(relpath):
         return f"forbidden CCDC/CSD file path: '{relpath}'"
     return None
