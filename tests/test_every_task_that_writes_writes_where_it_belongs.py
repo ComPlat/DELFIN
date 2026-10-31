@@ -362,8 +362,13 @@ def test_the_counts_still_match_what_was_measured():
     # scan, broken-symmetry J, metallocene redox). No setup scripts
     # (operator-confirmed); each accept script grades the run's physics
     # from oc1/<case>/ outputs + result.txt. "+3 chemistry".
+    #
+    # science 41 -> 44 on 2026-10-31 (SH1, wave 24, agent/s9-sh1b): the three
+    # self-healing routing tasks in tasks_w24_sh1.yaml -- GSTEP constraint
+    # failure, unconverged scan step + SHARK abort, Cu(NH3)4 imaginary mode
+    # -> IMAG route; offline, no setup script; accept/sh1_w24_0N_*.py.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 41, "chemistry": 26, "generalist": 22,
+                      "science": 44, "chemistry": 26, "generalist": 22,
                       "other": 77}, counts
 
 
