@@ -10,11 +10,15 @@ import pytest
 
 from delfin.orca_recovery import OrcaErrorDetector, OrcaErrorType
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from test_lc1_fixtures_helper import lc1_fixture_dir
 
 
 def _sh1(name: str) -> Path:
-    return FIXTURES / name
+    """The specific orca611 subfolder: legacy path while its files are
+    committed, else the private store (skip without the env var)."""
+    return lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
 
 
 # ------------------------------------------------------------------ F1
