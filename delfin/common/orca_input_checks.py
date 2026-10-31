@@ -13,8 +13,11 @@ Sources of truth:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
+
+from delfin.orca_knowledge.probe import probe_input
 
 
 @dataclass
@@ -54,30 +57,39 @@ def _closest(words, word):
     """The known keyword closest to ``word`` (case-blind), else "".
 
     Token-aware: an invented keyword is often a real keyword's tokens in
-    the wrong order (OptTight vs TightOpt). For each catalog word both
-    alignments of the word's best split are scored (word halves vs the
-    catalog word's own halves, both orders), so a word made of the same
-    tokens beats a superficially closer string. The catalog is all
-    lowercase; the suggestion keeps that canonical casing.
+    the wrong order (OptTight vs TightOpt). The CATALOG word's own best
+    split (tight|opt matched against the full invented word) picks the
+    closest real keyword. The suggestion carries the CATALOG's casing
+    ('tightopt', straight from opi_keywords.json) -- no hand-written
+    title-case map, it would drift from the catalog (QS ruling); ORCA
+    accepts keywords case-insensitively, so the catalog form is exactly
+    what the user can type. Documented in check_keyword_line too.
     """
     from difflib import SequenceMatcher
     pool = sorted(words)
     w = word.lower()
 
-    def _split_ratio(a, k):
+    def _split_ratio(k, w):
+        # split the CATALOG word; each half is matched against the FULL
+        # invented word. The winning split gives the token boundaries of
+        # the real keyword (tight|opt).
         best = 0.0
-        for i in range(1, len(a)):
-            h1, h2 = a[:i], a[i:]
-            for cand in (k, k[::-1]):
-                best = max(best, min(SequenceMatcher(None, h1, cand).ratio(),
-                                     SequenceMatcher(None, h2, cand).ratio()))
+        for i in range(1, len(k)):
+            h1, h2 = k[:i], k[i:]
+            score = min(SequenceMatcher(None, h1, w).ratio(),
+                        SequenceMatcher(None, h2, w).ratio())
+            if score > best:
+                best = score
         return best
 
-    def _score(k):
-        return SequenceMatcher(None, w, k).ratio() + _split_ratio(w, k)
-
-    ranked = sorted(((-_score(k), k) for k in pool))
-    return ranked[0][1] if ranked and -ranked[0][0] >= 0.5 else ""
+    ranked = []
+    for k in pool:
+        full = SequenceMatcher(None, w, k).ratio()
+        ranked.append((-(full + _split_ratio(k, w)), k))
+    ranked.sort()
+    if ranked and -ranked[0][0] >= 0.5:
+        return ranked[0][1]
+    return ""
 
 
 def _known_solvent(name: str) -> bool:
@@ -118,6 +130,28 @@ def check_keyword_line(text: str) -> list[Issue]:
     """Check every word on the ``!`` line(s) against ORCA's vocabulary."""
     from delfin.orca_knowledge import known_keyword
     issues: list[Issue] = []
+    # A line that LOOKS like a keyword line but uses a non-ASCII
+    # look-alike of `!` (U+FF01 etc.) is silently ignored by ORCA's
+    # parser -- the whole line's keywords are dropped. Flag the line
+    # BEFORE normalisation, naming the look-alike character (QS ruling);
+    # normalize-then-scan alone can never see it, because no ASCII '!'
+    # exists on the line.
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped[0].isascii():
+            continue
+        import unicodedata
+        norm0 = unicodedata.normalize("NFKD", stripped[0])
+        if norm0 == "!":
+            issues.append(Issue(
+                severity="error", code="lookalike_keyword_line",
+                message=(f"The line uses {stripped[0]!r} "
+                         f"(U+{ord(stripped[0]):04X}) instead of the "
+                         "ASCII `!` keyword marker; ORCA ignores this "
+                         "line entirely, so its keywords are not set."),
+                suggestion="Replace it with the ASCII `!` keyword marker.",
+            ))
+            break
     text = _normalize_line(text)
     for line in re.findall(r"^\s*!(.*)$", text, re.MULTILINE):
         for word in line.split():
@@ -137,6 +171,7 @@ def check_keyword_line(text: str) -> list[Issue]:
                 solvent = m.group(2)
                 if not _known_solvent(solvent):
                     close = _closest(_solvent_pool(), solvent)
+                    close = close.capitalize() if close else close
                     issues.append(Issue(
                         severity="error", code="unknown_solvent",
                         message=(f"`{m.group(1)}({solvent})` names a "
@@ -164,16 +199,26 @@ def check_keyword_conflicts(text: str) -> list[Issue]:
     """Keyword combinations ORCA's manual names as exclusive."""
     kw_words = []
     for line in re.findall(r"^\s*!(.*)$", _normalize_line(text), re.MULTILINE):
-        kw_words += [w.upper() for w in line.split()]
+        kw_words += line.split()
     conflicts = [("NUMFREQ", "FREQ")]
+    # The message quotes each token AS THE USER WROTE IT (as-written form
+    # wins, uppercase only as fallback) -- a user reading only the message
+    # must see their own words back (QS ruling).
+    upper_words = [w.upper() for w in kw_words]
+    def _as_written(key):
+        for w in kw_words:
+            if w.upper() == key:
+                return w
+        return key
     issues: list[Issue] = []
     for a, b in conflicts:
-        if a in kw_words and b in kw_words:
+        if a in upper_words and b in upper_words:
+            ca, cb = _as_written(a), _as_written(b)
             issues.append(Issue(
                 severity="error", code="conflicting_keywords",
-                message=f"{a} and {b} exclude each other.",
-                suggestion=f"Pick one: {a} for a numerical Hessian, "
-                           f"{b} for the analytic one.",
+                message=f"{ca} and {cb} exclude each other.",
+                suggestion=f"Pick one: {ca} for a numerical Hessian, "
+                           f"{cb} for the analytic one.",
             ))
     return issues
 
@@ -398,8 +443,50 @@ def _geometry_value(kind: str, idx: tuple, atoms):
     return None
 
 
-def check_all(text: str) -> list[Issue]:
-    """All static simple-input checks of this module."""
-    return (check_keyword_line(text) + check_keyword_conflicts(text)
-            + check_ri_aux_basis(text) + check_blocks(text)
-            + check_scan_block(text))
+def check_all(text: str, use_probe: bool = False) -> list[Issue]:
+    """All static simple-input checks of this module.
+
+    With ``use_probe=True`` an input the static checks cannot fully
+    decide (their findings include warnings but no errors) is sent to
+    ORCA's own parser (``delfin.orca_knowledge.probe.probe_input``) and
+    a ``rejected`` verdict becomes an ``orca_parser_rejects`` error.
+    Verdicts are cached by input hash, so the same input is never
+    probed twice.
+    """
+    issues = (check_keyword_line(text) + check_keyword_conflicts(text)
+              + check_ri_aux_basis(text) + check_blocks(text)
+              + check_scan_block(text))
+    if (use_probe and issues
+            and not any(i.severity == "error" for i in issues)):
+        verdict = _probe_verdict(text)
+        if verdict["verdict"] == "rejected":
+            issues.append(Issue(
+                severity="error", code="orca_parser_rejects",
+                message="ORCA's own parser rejects this input: "
+                        + "; ".join(verdict["messages"])[:400],
+            ))
+        # "parsed"/"finished": no error. "unavailable"/"timeout"/"refused":
+        # the static warnings stand on their own (recorded above); the
+        # caller decides whether a timeout is worth blocking a submit.
+    return issues
+
+
+_PROBE_CACHE: dict[str, dict] = {}
+
+
+def _probe_cache_key(text: str) -> str:
+    """The cache key: sha256 of the input text itself."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _probe_verdict(text: str) -> dict:
+    """probe_input(text) with a module-level cache keyed by input hash."""
+    key = _probe_cache_key(text)
+    if key not in _PROBE_CACHE:
+        _PROBE_CACHE[key] = probe_input(text)
+    return _PROBE_CACHE[key]
+
+
+def clear_probe_cache() -> None:
+    """Empty the probe-verdict cache (for tests and long sessions)."""
+    _PROBE_CACHE.clear()
