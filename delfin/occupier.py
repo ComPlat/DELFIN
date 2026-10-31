@@ -49,6 +49,62 @@ logger = get_logger(__name__)
 # Global lock to prevent race conditions when multiple FoBs read input0.xyz simultaneously
 _geometry_file_lock = threading.RLock()
 
+
+def find_FSPE(filename):
+    """Scan an ORCA output bottom-up for the last FINAL SINGLE POINT ENERGY.
+
+    Module-level extraction of the nested helper that used to live inside
+    run_OCCUPIER (occupier.py:986); the parse itself is unchanged.
+    """
+    search_text = "FINAL SINGLE POINT ENERGY   "
+    try:
+        with open(filename, 'r') as file:
+            lines = file.readlines()
+    except FileNotFoundError:
+        logger.warning(f"File {filename} not found. Skipping.")
+        return None
+
+    for line in reversed(lines):
+        idx = line.find(search_text)
+        if idx != -1:
+            energy_str = line[idx + len(search_text):].strip().split()[0]
+            try:
+                return float(energy_str)
+            except ValueError:
+                logger.error(f"Could not convert '{energy_str}' to float.")
+                continue
+    logger.warning("No FINAL SINGLE POINT ENERGY found in the file.")
+    return None
+
+
+def find_G(filename):
+    """Scan an ORCA output bottom-up for the LAST 'Final Gibbs free energy'.
+
+    Fixed (OC1 audit F1): like find_FSPE this now reads the LAST block, so an
+    appended/continued thermochemistry block is not masked by a stale earlier
+    one, and one unconvertible value is skipped instead of aborting the parse
+    (the old code returned None from inside the loop, occupier.py:1019-1021).
+    """
+    search_text = "Final Gibbs free energy         ... "
+    try:
+        with open(filename, 'r') as file:
+            lines = file.readlines()
+    except FileNotFoundError:
+        logger.warning(f"File {filename} not found. Skipping.")
+        return None
+
+    for line in reversed(lines):
+        idx = line.find(search_text)
+        if idx != -1:
+            energy_str = line[idx + len(search_text):].strip().split()[0]
+            try:
+                return float(energy_str)
+            except ValueError:
+                logger.error(f"Could not convert '{energy_str}' to float.")
+                continue
+    logger.warning("No Final Gibbs free energy found in the file.")
+    return None
+
 # Safe file reader with retries to handle transient FS races
 def _read_file_lines_with_retries(
     path: Path,
@@ -983,46 +1039,6 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
 
     # ------------------------ output parsers ------------------------
 
-    def find_FSPE(filename):
-        """Scan ORCA output bottom-up for 'FINAL SINGLE POINT ENERGY'."""
-        search_text = "FINAL SINGLE POINT ENERGY   "
-        try:
-            with open(filename, 'r') as file:
-                lines = file.readlines()
-        except FileNotFoundError:
-            logger.warning(f"File {filename} not found. Skipping.")
-            return None
-
-        for line in reversed(lines):
-            idx = line.find(search_text)
-            if idx != -1:
-                energy_str = line[idx + len(search_text):].strip().split()[0]
-                try:
-                    return float(energy_str)
-                except ValueError:
-                    logger.error(f"Could not convert '{energy_str}' to float.")
-                    continue
-        logger.warning("No FINAL SINGLE POINT ENERGY found in the file.")
-        return None
-
-    def find_G(filename):
-        """Scan ORCA output for 'Final Gibbs free energy ...'."""
-        search_text = "Final Gibbs free energy         ... "
-        try:
-            with open(filename, 'r') as file:
-                for line in file:
-                    idx = line.find(search_text)
-                    if idx != -1:
-                        energy_str = line[idx + len(search_text):].strip().split()[0]
-                        try:
-                            return float(energy_str)
-                        except ValueError:
-                            logger.error(f"Could not convert '{energy_str}' to float.")
-                            return None
-        except FileNotFoundError:
-            logger.warning(f"File {filename} not found. Skipping.")
-        return None
-
     # --------------------------- main flow -------------------------
 
     try:
@@ -1133,6 +1149,7 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
             return parsed
 
         # Energy extractor: FSPE unless frequency run is requested
+        # (module-level find_FSPE / find_G, testable in isolation)
         use_gibbs = resolve_occupier_compare(config) == "G"
         finder = find_G if use_gibbs else find_FSPE
 
