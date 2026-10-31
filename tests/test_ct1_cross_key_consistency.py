@@ -98,6 +98,38 @@ def test_template_default_occupier_keys_with_method_classic_do_not_warn():
                    "OCCUPIER_compare": "FSPE"}) == []
 
 
+def test_an_invalid_occupier_method_value_never_warns():
+    """OCCUPIER_method='no' is invalid (coercer _as_occupier_method raises);
+    the consistency note only speaks about values that would run."""
+    notes = _notes({"method": "classic", "OCCUPIER_method": "no"})
+    assert notes == [], notes
+
+
+def test_geom_opt_default_is_not_warned():
+    """geom_opt_OCCUPIER's coercer is _as_geom_opt (default 'OPT'), not
+    yes/no -- a raw default-valued key must not trip the finding."""
+    assert _notes({"method": "classic", "geom_opt_OCCUPIER": "OPT"}) == []
+
+
+def test_off_spellings_map_to_the_default_through_the_coercer():
+    """Reviewer finding on 64a090dfb: raw OFF-spellings of the _as_yes_no
+    key coerce to 'no' (= default) and must not warn."""
+    for spelling in ("false", "0", "off", "False", " OFF "):
+        notes = _notes({
+            "method": "classic",
+            "frequency_calculation_OCCUPIER": spelling,
+        })
+        assert notes == [], (spelling, notes)
+
+
+def test_a_real_yes_still_warns():
+    notes = _notes({
+        "method": "classic",
+        "frequency_calculation_OCCUPIER": "yes",
+    })
+    assert any("OCCUPIER" in n for n in notes), notes
+
+
 def test_an_odd_seq_under_method_classic_warns():
     notes = _notes({"method": "classic", "even_seq": [{"index": 1, "m": 2}]})
     assert any("OCCUPIER" in n for n in notes), notes

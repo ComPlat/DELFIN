@@ -2384,13 +2384,30 @@ def cross_key_consistency_notes(config: Mapping[str, Any]) -> list[str]:
     method = str(config.get("method", "") or "").strip().lower()
     if method and method != "occupier":
         schema_defaults = {spec.name: spec.default for spec in CONTROL_FIELD_SPECS}
+        # Compare the COERCED value, not the raw one: a raw spelling that the
+        # key's own coercer maps to the default ("false"/"0"/" off " -> "no"
+        # for _as_yes_no, control_validator.py:1041-1043) is NOT a non-default
+        # setting. The production caller passes the coerced config
+        # (validate_control_config wires cross_key_consistency_notes(validated)
+        # after coercion), but the function also accepts a raw mapping.
+        coercer_by_key = {
+            "OCCUPIER_method": _as_occupier_method,
+            "frequency_calculation_OCCUPIER": _as_yes_no,
+            "geom_opt_OCCUPIER": _as_geom_opt,
+        }
         occupier_keys = []
         for key in ("OCCUPIER_method", "frequency_calculation_OCCUPIER",
                     "geom_opt_OCCUPIER"):
             if key not in config:
                 continue
-            value = str(config.get(key, "") or "").strip()
             default = schema_defaults.get(key)
+            try:
+                value = coercer_by_key[key](config.get(key))
+            except ValueError:
+                # An invalid value is the validator's error to raise elsewhere
+                # (the coercers run on the full config during validation); the
+                # consistency note only speaks about values that would run.
+                continue
             if value and value.lower() != str(default or "").strip().lower():
                 occupier_keys.append(key)
         for key in ("even_seq", "odd_seq"):
