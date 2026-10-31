@@ -1,19 +1,44 @@
 """orca_out_index / orca_out_section: an index of ORCA output sections.
 
-Reads the section banners ORCA prints in ``tests/fixtures/orca611`` outputs
-and verifies that helper lets a caller find a section by title, get its
-lines, select the n-th occurrence)Skip, and cap the returned size. Runs under
-the CI interpreter with no dependency on OPI.
+Reads the section banners ORCA prints in real ORCA output (the orca611
+runs, now in the PRIVATE store outside the repo -- LICENSE_GUARD.md rule
+family 2) and verifies that helper lets a caller find a section by
+title, get its lines, select the n-th occurrence, and cap the returned
+size. Runs under the CI interpreter with no dependency on OPI. Every
+test SKIPS without DELFIN_PRIVATE_FIXTURES (never fails in CI).
 """
+import os
+import shutil
+from pathlib import Path
+
 import pytest
 
 from delfin.tools.orca_out_index import orca_out_index, orca_out_section
 
-FIXTURES = "tests/fixtures/orca611"
+# committed fixture path when present (pre-removal compat), else private
+_LEGACY = Path("tests/fixtures/orca611")
+_PRIVATE_ENV = "DELFIN_PRIVATE_FIXTURES"
+
+
+def _fixture_dir(name: str) -> Path | None:
+    rel = f"tests/fixtures/orca611/{name}"
+    if (_LEGACY / name).is_dir():
+        return _LEGACY / name
+    root = os.environ.get(_PRIVATE_ENV, "").strip()
+    if not root:
+        return None
+    p = Path(root) / rel
+    return p if p.is_dir() else None
 
 
 def out(name):
-    return f"{FIXTURES}/{name}/{name}.out"
+    """Path to the fixture's .out; SKIPs when only the private store has it."""
+    d = _fixture_dir(name)
+    if d is None:
+        pytest.skip(
+            f"real ORCA fixtures live in the private store; set "
+            f"{_PRIVATE_ENV} to run (LICENSE_GUARD.md rule family 2)")
+    return str(d / f"{name}.out")
 
 
 def titles(name):
