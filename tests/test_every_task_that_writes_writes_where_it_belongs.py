@@ -357,6 +357,12 @@ def test_the_counts_still_match_what_was_measured():
     # test globs every pack/benchmark/*.yaml; the production suite loads
     # only tasks_*.yaml, so the pilot never runs in a normal bench run.
     #
+    # chemistry 26 -> 29 on 2026-10-31 (OC1, wave 24, agent/s3-oc1b): the
+    # three tasks_w24_oc1.yaml tasks over DELFIN's OCCUPIER workflow (spin
+    # scan, broken-symmetry J, metallocene redox). No setup scripts
+    # (operator-confirmed); each accept script grades the run's physics
+    # from oc1/<case>/ outputs + result.txt. "+3 chemistry".
+    #
     # science 41 -> 44 on 2026-10-31 (SH1, wave 24, agent/s9-sh1b): the three
     # self-healing routing tasks in tasks_w24_sh1.yaml -- GSTEP constraint
     # failure, unconverged scan step + SHARK abort, Cu(NH3)4 imaginary mode
@@ -369,7 +375,7 @@ def test_the_counts_still_match_what_was_measured():
     # Nactel/Nactorb keywords + a 24-orbital space that must be refused naming
     # RAS/ICE/DMRG). Offline, no setup script, no calculation.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 44, "chemistry": 26, "generalist": 22,
+                      "science": 44, "chemistry": 29, "generalist": 22,
                       "other": 77}, counts
 
 
