@@ -59,12 +59,22 @@ class TadfXtbWorkflow:
         if params["multiplicity"] is None:
             params["multiplicity"] = 1  # S0 ground state of the entry
         params["xtb_method"] = kwargs.get(
-            "xtb_method", cfg("xtb_method") or cfg("xtb-method")
+            "xtb_method",
+            cfg("xTB_method")
+            or cfg("xtb_method")
+            or cfg("xtb-method"),
         )
         params["excited_method"] = kwargs.get(
-            "excited_method", cfg("excited_method") or cfg("excited-method")
+            "excited_method",
+            cfg("tadf_xTB_excited_method")
+            or cfg("excited_method")
+            or cfg("excited-method"),
         )
-        params["energy_window"] = kwargs.get("energy_window", cfg("energy_window"))
+        params["energy_window"] = kwargs.get(
+            "energy_window",
+            cfg("tadf_xTB_energy_window")
+            or cfg("energy_window"),
+        )
         params["cores"] = kwargs.get("cores", cfg("PAL"))
         params["maxcore"] = kwargs.get("maxcore", cfg("maxcore"))
 
