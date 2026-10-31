@@ -68,6 +68,10 @@ ENGINE_CUTOFFS = {
                             "else not_assigned (geometric only, no CIP/bond orders)",
     "diene_conformation": "s-trans if |dihedral| > 120 deg, s-cis if < 60 deg, "
                           "else not_assigned (geometric only)",
+    "ez_cip": "CIP E/Z from XYZ coordinates plus RDKit-perceived bond orders: "
+              "a coordinate-based RECONSTRUCTION, not independently validated "
+              "stereochemistry (status unknown/not_assigned is uncertainty, "
+              "never a guessed E or Z)",
 }
 
 # Natural-language shape term -> candidate descriptors, in the order the
