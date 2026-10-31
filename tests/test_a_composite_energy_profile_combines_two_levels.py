@@ -106,3 +106,21 @@ def test_composite_requires_the_corrections_label(composite):
               "energy": "composite",
               "series": [{"files": [["dlpno_anti.out", "r2scan_anti.out"]]}]},
               out_dir=str(composite))
+
+
+def _geom(*elements):
+    rows = "".join(f"  {el}   0.0   0.0   {i:.1f}\n"
+                   for i, el in enumerate(elements))
+    return ("CARTESIAN COORDINATES (ANGSTROEM)\n"
+            "---------------------------------\n" + rows + "\n")
+
+
+def test_a_pair_of_two_different_species_is_refused():
+    elec = _geom("O", "H", "H") + _ELEC.format(e=-76.4)
+    freq = (_geom("C", "H", "H", "H", "H") + _ELEC.format(e=-40.5)
+            + _GIBBS.format(g=-40.47))
+    with pytest.raises(ValueError, match="not the same species"):
+        ep.composite_output(elec, "a.out", freq, "b.out")
+    same = _geom("O", "H", "H") + _ELEC.format(e=-76.0) + _GIBBS.format(g=-75.98)
+    rec = ep.composite_output(elec, "a.out", same, "b.out")
+    assert rec["eh"] == pytest.approx(-76.4 + 0.02)

@@ -320,6 +320,15 @@ def composite_output(elec_text: str, elec_path: str,
             f"{freq_path}: composite needs BOTH a Final Gibbs free energy "
             f"and a final electronic energy in one output (run it with "
             f"Freq), got g={g_lo}, e={e_lo}")
+    # A pair from two different molecules would add a correction to the
+    # wrong energy without any sign of it.
+    pairs = ((composition(elec_text), composition(freq_text)),
+             (total_charge(elec_text), total_charge(freq_text)))
+    if any(a is not None and b is not None and a != b for a, b in pairs):
+        raise ValueError(
+            f"{elec_path} and {freq_path} are not the same species "
+            f"(composition or charge differ); a composite pairs the "
+            f"single point and the freq output of one structure")
     corr = g_lo - e_lo
     if abs(corr) > _G_MINUS_E_MAX:
         raise ValueError(
