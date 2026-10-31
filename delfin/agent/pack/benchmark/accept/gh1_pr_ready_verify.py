@@ -79,20 +79,15 @@ def check(workspace: Path) -> tuple[bool, str, int]:
         _git(repo, "checkout", "-q", "main")
 
     # 2. feature present and suite green
-    core = (repo / "src/widgetkit/core.py").read_text(encoding="utf-8")
-    if branch not in _git(repo, "branch", "--show-current"):
-        pass
-    test_files = list((repo / "tests").glob("test_*.py"))
-    text_all = "\n".join(
-        p.read_text(encoding="utf-8") for p in test_files)
     _git(repo, "checkout", "-q", branch)
     try:
         core = (repo / "src/widgetkit/core.py").read_text(encoding="utf-8")
-        if "_" not in core or "replace" not in core and "sub" not in core:
-            return False, "the feature change is missing from core.py", 0
+        if "def normalise" not in core:
+            return False, "core.py no longer defines the feature", 0
+        test_files = list((repo / "tests").glob("test_*.py"))
         tests_all = "\n".join(
-            (repo / "tests" / p.name).read_text(encoding="utf-8")
-            for p in test_files if (repo / "tests" / p.name).is_file())
+            p.read_text(encoding="utf-8") for p in test_files
+            if p.is_file())
         if "def test_" not in tests_all:
             return False, "no tests on the branch", 0
     finally:
