@@ -60,7 +60,10 @@ def _scan_point_count() -> int:
 @needs_fixture
 def test_scan_inp_requests_the_full_dihedral_range():
     """The .inp scans the central dihedral at r2SCAN-3c, neutral singlet,
-    over a full circle (start and stop differ by 360 deg)."""
+    covering the full dihedral circle: nsteps points whose consecutive
+    gaps (mod 360) are uniform, so all distinct angles 0..345 are met.
+    v5's line "D 0 1 2 3 = 180, 525, 24" is 23 x 15 deg gaps closing
+    through the 360 wrap."""
     text = INP_FILE.read_text()
     assert "r2SCAN-3c" in text, "method keyword missing"
     assert "* xyz 0 1" in text, "charge 0 / multiplicity 1 missing"
@@ -68,10 +71,21 @@ def test_scan_inp_requests_the_full_dihedral_range():
     assert "Scan" in text and "D 0 1 2 3" in text
     m = re.search(r"=\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)", _inp_scan_block())
     assert m, "no parsable Scan D = start,stop,nsteps in .inp"
-    start, stop, _ = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert abs((stop - start) - 360) <= 1e-9 * abs(stop - start) or \
-        stop - start == 360, \
-        f"scan range {start}..{stop} is not a full dihedral circle"
+    start, stop, nsteps = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    span = stop - start
+    # ORCA Scan gives nsteps points, so the dihedral step is span/(n-1):
+    # v1 0,360,25 -> 24 x 15 deg; v5 180,525,24 -> 23 x 15 deg.
+    assert nsteps > 1, "a 1-point scan cannot cover the circle"
+    assert span % (nsteps - 1) == 0, (
+        f"scan span {span} deg is not an integer multiple of the "
+        f"{nsteps - 1} intervals")
+    gap = span // (nsteps - 1)
+    # Full circle: the wrap between the last point and the (same) first
+    # angle is 360 - last-gap; uniform coverage needs gap >= that, i.e.
+    # span + gap >= 360 (v1: 360+15; v5: 345+15=360 exactly).
+    assert span + gap >= 360, (
+        f"scan {start}..{stop} in {nsteps} points leaves the dihedral "
+        f"circle uncovered (gap {gap} deg)")
 
 
 @needs_fixture
