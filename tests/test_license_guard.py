@@ -85,11 +85,9 @@ def test_path_guard_allows_clean_paths(path):
 
 
 @pytest.mark.parametrize("path", [
-    "geometry-classification/report.md",
     "data/sample.finalensemble.xyz",
     "data/sample.globalminimum.xyz",
-    "calculations/goat_run/energies.csv",
-    "calculations/orca_job/output.xyz",
+    "calculations/run/GOAT_x.finalensemble.xyz",
 ])
 def test_orca_generated_paths_are_blocked(path):
     assert lg.check_path(path) is not None
@@ -97,3 +95,12 @@ def test_orca_generated_paths_are_blocked(path):
 
 def test_synthetic_xyz_is_allowed():
     assert lg.check_path("tests/fixtures/synthetic_ethane.xyz") is None
+
+
+@pytest.mark.parametrize("path", [
+    "delfin/orca_knowledge/cards/casscf.json",
+    "delfin/agent/pack/benchmark/keywords_groundtruth_orca.json",
+    "docs/orca_notes.md",
+])
+def test_delfins_own_orca_named_files_are_not_blocked(path):
+    assert lg.check_path(path) is None

@@ -81,14 +81,12 @@ FORBIDDEN_PATH_RE = re.compile(
 )
 
 
-# ORCA-generated GOAT output and derivatives must never be added to DELFIN.
+# ORCA-generated GOAT ensembles must never be added to DELFIN. Matched by the
+# file names GOAT itself writes -- a broader "goat|orca in the path" rule
+# would also hit DELFIN's own knowledge cards (delfin/orca_knowledge/**.json).
+# Other ORCA output is caught by its content (output signature), not its name.
 ORCA_GENERATED_PATH_RE = re.compile(
-    r"(^geometry-classification/|"
-    r"\.(?:finalensemble|globalminimum)\.xyz$|"
-    r"(?:^|/)[^/]*(?:goat|orca)[^/]*"
-    r"\.(?:xyz|out|log|trj|csv|tsv|json|hess)$|"
-    r"(?:^|/)[^/]*(?:goat|orca)[^/]*/"
-    r"(?:[^/]+/)*[^/]+\.(?:xyz|out|log|trj|csv|tsv|json|hess)$)",
+    r"\.(?:finalensemble|globalminimum)(?:\.\d+)?\.xyz$",
     re.IGNORECASE,
 )
 
