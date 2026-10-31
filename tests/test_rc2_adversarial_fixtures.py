@@ -96,8 +96,10 @@ def test_rc2_out_carries_the_blocks_a_real_run_needs():
         text = p.read_text(encoding="utf-8", errors="replace")
         assert "Program Version" in text, (name, "not a real ORCA output")
         assert "FINAL SINGLE POINT ENERGY" in text, name
-        assert "Your calculation utilizing the ANCOPT algorithm" in text, \
-            (name, "no ANCOPT/NumFreq optimization-freq summary")
+        assert "THE OPTIMIZATION HAS CONVERGED" in text, \
+            (name, "geometry optimisation did not report convergence")
+        assert "*** OPTIMIZATION RUN DONE ***" in text, \
+            (name, "no completed optimisation marker")
         assert "THERMOCHEMISTRY AT" in text, (name, "no thermochemistry block")
         assert "ORCA TERMINATED NORMALLY" in text, (name, "abnormal end")
         for line in text.splitlines():
@@ -118,10 +120,16 @@ def test_rc2_provenance_documents_the_run():
         if not p.is_file():
             raise AssertionError(f"fixture not yet committed: {p}")
         text = p.read_text(encoding="utf-8", errors="replace")
-        for field in ("8172015", "8172018", "8172021",
-                      "ORCA version", "core-hours", "CPU efficiency"):
-            assert field in text or re.search(field, text, re.IGNORECASE) or \
-                field in text, (name, field)
+        # Each PROVENANCE documents ITS OWN run id (the Cu chain documents
+        # v1/v2/v3, Fe/Ru their single job): pin the system's own id.
+        own_job = {"rc2_fe_co5": "8172015", "rc2_cu_nh3_4": "8173353",
+                   "rc2_ru_o4": "8172021"}[name]
+        for field in (own_job, "core-hours", "CPU efficiency"):
+            assert field in text, (name, field)
+        # The version is pinned as "ORCA 6.1.1" in the method line (the
+        # substance); a separate labelled "ORCA version:" field is not
+        # required -- the label wording varied across the three files.
+        assert "ORCA 6.1.1" in text, (name, "ORCA version not stated")
         if name == "rc2_ru_o4":
             assert re.search(r"ZORA|relativistic|ECP", text, re.IGNORECASE), \
                 (name, "relativistic treatment not documented")
