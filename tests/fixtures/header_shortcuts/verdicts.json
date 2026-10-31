@@ -1,0 +1,56 @@
+{
+  "_provenance": {
+    "what": "Verdict of a real node run of the dashboard header-shortcut scripts driven by the driver template in tests/test_header_shortcuts_do_not_send_chat_commands.py: the scripts were extracted from delfin/dashboard/tab_agent.py (constants _VISIBLE_LOOKUP_JS and the two keydown listeners) and delfin/dashboard/header_ui.py keys_js(), assembled into the driver, and executed with node.",
+    "when_recorded": "2026-10-24, on the cluster login node, gate session nacht-s8",
+    "node_version": "see tests/fixtures/header_shortcuts/node_version.txt",
+    "node_path": "/usr/bin/node",
+    "driver": "the JS source of each variant is pinned by its js_sha256 (SHA-256 of the newline-joined script sources). If the dashboard scripts change, the hash stops matching and the test fails with a re-record instruction.",
+    "checks_meaning": {
+      "popup_opened": "count (of 4) of Ctrl-K/Ctrl-K-with-shift-key cases where the branch popup opened",
+      "nothing_submitted": "count (of 4) where no chat command was sent",
+      "escape_closed": "count (of 4) where Escape closed the popup",
+      "standalone_hidden_sends_nothing": "a hidden standalone agent chat sent nothing on Ctrl-K",
+      "standalone_visible_submits_search": "a visible standalone agent chat submitted exactly '/search' on Ctrl-K"
+    }
+  },
+  "variant0_headerfirst0": {
+    "js_sha256": "a2c217431a72229312871faf69ac7018dcba96b2bff6de3d572aa8c41f7dae8b",
+    "checks": {
+      "popup_opened": 4,
+      "nothing_submitted": 4,
+      "escape_closed": 4,
+      "standalone_hidden_sends_nothing": true,
+      "standalone_visible_submits_search": true
+    }
+  },
+  "variant0_headerfirst1": {
+    "js_sha256": "0dbd6fd0468b4c429970595a2f3402ed84988f0f24206f2cebbe3e2a004889d0",
+    "checks": {
+      "popup_opened": 4,
+      "nothing_submitted": 4,
+      "escape_closed": 4,
+      "standalone_hidden_sends_nothing": true,
+      "standalone_visible_submits_search": true
+    }
+  },
+  "variant1_headerfirst0": {
+    "js_sha256": "f958101c2fc5c112366c54b22dc2e346dad97ecba0159493187a481297d6f224",
+    "checks": {
+      "popup_opened": 4,
+      "nothing_submitted": 4,
+      "escape_closed": 4,
+      "standalone_hidden_sends_nothing": true,
+      "standalone_visible_submits_search": true
+    }
+  },
+  "variant1_headerfirst1": {
+    "js_sha256": "3ec5c01565e2ba1c1c42477ccf93f7dd603ed9d0835400888c01e25c9ff24eac",
+    "checks": {
+      "popup_opened": 4,
+      "nothing_submitted": 4,
+      "escape_closed": 4,
+      "standalone_hidden_sends_nothing": true,
+      "standalone_visible_submits_search": true
+    }
+  }
+}

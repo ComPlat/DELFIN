@@ -40,11 +40,14 @@ URL = "https://kit.example.org/api/v1"
 
 # -- unit: keying, limits, state -------------------------------------------
 
-def test_key_is_the_base_url(runtime):
+def test_the_default_key_includes_the_model(runtime):
+    """Per-model is the default: two models behind one endpoint get distinct
+    adaptive keys, while the endpoint-wide cap key stays shared."""
     g = G.EndpointGate(URL, "m")
     assert g.enabled
     g2 = G.EndpointGate(URL + "/", "other")
-    assert g2._key == g._key          # same endpoint: ONE limit
+    assert g._key != g2._key          # different MODEL: distinct limits
+    assert g._cap_key == g2._cap_key  # same endpoint: one TOTAL cap
     g3 = G.EndpointGate("http://kit.example.org/api/v1", "m")
     assert g3._key != g._key          # different scheme: not the same host
 
@@ -82,19 +85,19 @@ def test_a_lower_setting_clamps_at_once_and_raising_climbs_back(
     AIMD state may sit anywhere at or below it). Lowering the setting
     takes effect immediately; raising it does not snap a halved limit
     back up -- it climbs again on quick successes, never above the
-    ceiling."""
+    ceiling, and never below the halving floor."""
     g = G.EndpointGate(URL, "m")
     d = g._dir()
-    (d / "state.json").write_text(json.dumps({"limit": 2}))
+    (d / "state.json").write_text(json.dumps({"limit": 6}))
     monkeypatch.setenv("DELFIN_ENDPOINT_MAX_CONCURRENCY", "4")
-    assert g.current_limit(d) == 2     # the adaptive state, at its ceiling 4
+    assert g.current_limit(d) == 4     # adaptive state 6, clamped at ceiling 4
     G.report_result(g, exception=TimeoutError(
         "no byte from the endpoint in 300s"))
-    assert g.current_limit(d) == 1
+    assert g.current_limit(d) == 2     # 4//2=2, the floor
     monkeypatch.setenv("DELFIN_ENDPOINT_MAX_CONCURRENCY", "16")
     for _ in range(G._QUICK_SUCCESS_RUN):
         G.report_result(g, first_byte_s=0.5)
-    assert g.current_limit(d) == 2     # climbing again, ceiling now 16
+    assert g.current_limit(d) == 3     # climbing again, ceiling now 16
 
 
 # -- unit: the AIMD feedback ------------------------------------------------
@@ -127,11 +130,11 @@ def test_a_stall_halves_the_shared_limit(runtime):
     assert g.current_limit(d) == 8
 
 
-def test_a_stall_never_goes_below_one(runtime):
+def test_a_stall_never_goes_below_the_halving_floor(runtime):
     g, d = _gate_with_limit(runtime, 1)
     G.report_result(g, exception=TimeoutError(
         "no byte from the endpoint in 300s"))
-    assert g.current_limit(d) == 1
+    assert g.current_limit(d) == G._HALVING_FLOOR  # floor 2, not 1
 
 
 def test_a_deterministic_failure_is_no_signal(runtime):

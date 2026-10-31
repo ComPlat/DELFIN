@@ -61,7 +61,9 @@ except Exception:  # pragma: no cover - environment dependent
     _OPI = False
 
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from test_lc1_fixtures_helper import lc1_fixture_dir as _lc1_fixture_dir  # noqa: E402, F401
 
 #: The .out prints <S**2> to 6 decimals; anything closer is the same number.
 S2_TOL = 1e-6
@@ -83,7 +85,7 @@ NOT_CONVERGED = "scf_not_converged"
 @pytest.mark.parametrize("name,mult,charge,nelec", CONVERGED_CASES)
 def test_opi_matches_on_converged_runs(name, mult, charge, nelec):
     """On converged runs DELFIN's reads equal OPI's within tolerance."""
-    d = FIXTURES / name
+    d = _lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
     out = Output(name, working_dir=d, version_check=False)
     out.parse(read_gbw_json=False)
 
@@ -107,7 +109,7 @@ def test_opi_matches_on_converged_runs(name, mult, charge, nelec):
 @pytest.mark.skipif(not _OPI, reason="OPI (delfin[orca]) not installed")
 def test_s2_deviation_agrees_on_open_shell():
     """DELFIN's Deviation equals OPI's (expected - ideal) on the UKS triplet."""
-    d = FIXTURES / "o2_triplet"
+    d = _lc1_fixture_dir("tests/fixtures/orca611/o2_triplet")
     out = Output("o2_triplet", working_dir=d, version_check=False)
     out.parse(read_gbw_json=False)
 
@@ -126,7 +128,7 @@ def test_s2_deviation_agrees_on_open_shell():
 @pytest.mark.parametrize("name", ["h2o_optfreq", "h2o_tddft"])
 def test_s2_none_on_closed_shell(name):
     """Closed-shell runs have no UHF block: DELFIN None, OPI None -- the same."""
-    d = FIXTURES / name
+    d = _lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
     delfin_dev = extract_last_uhf_deviation(str(d / f"{name}.out"))
     out = Output(name, working_dir=d, version_check=False)
     out.parse(read_gbw_json=False)
@@ -139,7 +141,7 @@ def test_s2_none_on_closed_shell(name):
 @pytest.mark.skipif(not _OPI, reason="OPI (delfin[orca]) not installed")
 def test_not_converged_behaves_sensibly():
     """On a failed run both parsers return no values; only the flags say why."""
-    d = FIXTURES / NOT_CONVERGED
+    d = _lc1_fixture_dir(f"tests/fixtures/orca611/{NOT_CONVERGED}")
     out = Output(NOT_CONVERGED, working_dir=d, version_check=False)
     out.parse(read_gbw_json=False)
 
