@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 # Same rule the register_module writer enforces (delfin/tools/platform.py:122):
 # the name becomes a file name and is imported immediately.
@@ -277,3 +277,164 @@ def write_scaffold(
             continue
         path.write_text(content, encoding="utf-8")
     return plan
+
+
+# ---------------------------------------------------------------------------
+# New-workflow scaffold — descriptor + steps + acceptance test
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WorkflowScaffoldPlan:
+    """What ``build_workflow_scaffold`` writes for a new workflow, and where."""
+
+    name: str
+    kind: str
+    spec: Dict[str, Any]
+    module_path: Path
+    test_path: Path
+    errors: List[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def _workflow_skeleton(name: str, kind: str, spec: Dict[str, Any]) -> str:
+    import json
+
+    body = '"""{} — a DELFIN workflow (scaffolded)."""\n\n'.format(name)
+    body += (
+        "from delfin.tools.workflows import WorkflowDescriptor\n"
+        "from delfin.tools._application import register_application\n\n"
+        "# The ONE contract: a WorkflowDescriptor extends Application (no\n"
+        "# parallel type).  It describes the workflow; the steps are the\n"
+        "# building blocks that run in order (a pipeline) or the jobs a\n"
+        "# classic CONTROL.txt workflow writes.  Fill in purpose/entry and\n"
+        "# extend the steps with building blocks from delfin.tools.\n"
+        "workflow = WorkflowDescriptor(\n"
+        "    name={name!r},\n"
+        "    kind={kind!r},\n"
+        "    purpose='TODO: one sentence on what this workflow is for',\n"
+        "    entry=\"run_application('{name}')\",\n"
+        "    steps={steps_repr},\n"
+        "    spec={spec_repr},\n"
+        ")\n"
+        "register_application(workflow)\n"
+    ).format(name=name, kind=kind,
+             steps_repr=json.dumps(spec.get("steps", []), indent=4, default=str),
+             spec_repr=json.dumps(spec, indent=4, default=str))
+    return body
+
+
+def build_workflow_scaffold(
+    name: str,
+    *,
+    kind: str = "pipeline",
+    directory=None,
+    register: bool = False,
+    steps: List[Dict[str, Any]] = (),
+) -> WorkflowScaffoldPlan:
+    """Scaffold a NEW workflow in the style of the existing adapter scaffold.
+
+    Plans a :class:`WorkflowScaffoldPlan` whose ``spec`` is the validated
+    PipelineSpec the workflow runs, then writes (1) a ``<name>.py`` module in
+    ``delfin/tools/adapters/`` (repo layout) or at the given directory that
+    registers a :class:`~delfin.tools.workflows.WorkflowDescriptor`, and
+    (2) an acceptance test asserting the workflow is listed and its contract
+    is intact.
+
+    The spec is checked through the SAME existing checks a real workflow
+    must pass (:func:`delfin.tools.user_workflows.check_spec`), so a scaffold
+    that would not run is refused at creation time rather than after a run.
+    """
+    from pathlib import Path
+
+    errors: List[str] = []
+    if not isinstance(name, str) or not _NAME_RE.match(name):
+        errors.append(
+            f"invalid workflow name {name!r}: it becomes a module and file "
+            "name, so it must be a plain Python identifier"
+        )
+    kk = kind if kind in ("classic-control", "pipeline", "user") else None
+    if kk is None:
+        errors.append(
+            "unknown kind: choose classic-control | pipeline | user"
+        )
+
+    spec: Dict[str, Any] = {
+        "delfin_pipeline_spec": "1",
+        "name": name,
+        "kind": "pipeline",
+        "defaults": {},
+        "steps": [dict(s) for s in steps],
+    }
+
+    # The same checks a real workflow must pass.
+    if not errors:
+        from delfin.tools import user_workflows as uw
+
+        try:
+            report = uw.check_spec(spec)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"workflow spec rejected before writing: {exc}")
+            report = None
+        if report is not None and not report["ok"]:
+            errors.extend(f"[spec] {e}" for e in report["errors"])
+
+    base = Path(directory) if directory else Path.cwd()
+    if not errors and not base.is_dir():
+        errors.append(f"target directory does not exist: {base}")
+
+    module_repr = base / f"{name}.py"
+    test_repr = base / f"test_workflow_{name}.py"
+    plan = WorkflowScaffoldPlan(
+        name=name, kind=kk or kind, spec=spec,
+        module_path=module_repr, test_path=test_repr, errors=errors,
+    )
+    if not plan.ok:
+        return plan
+
+    base.mkdir(parents=True, exist_ok=True)
+    if module_repr.exists():
+        plan.errors.append(f"{module_repr} already exists — refusing to overwrite")
+        return plan
+    module_repr.write_text(_workflow_skeleton(name, kk, spec), encoding="utf-8")
+
+    test_body = f'''"""Acceptance test for the scaffolded ``{{name}}`` workflow."""
+
+from __future__ import annotations
+
+from delfin.tools.workflows import workflow_for, register_classic_workflows
+
+
+def test_{{name}}_is_registered_as_a_pipeline_workflow():
+    "A saved umbrella workflow still lists {name} once the scaffold is imported."
+    from delfin.tools._application import list_applications
+    apps = list_applications()
+    assert "{name}" in apps, "scaffolded workflow is not registered"
+
+
+def test_{{name}}_spec_passes_the_existing_checks():
+    """The scaffolded spec must pass the checks a real workflow passes."""
+    from delfin.tools import user_workflows as uw
+    app = list_applications()["{name}"]
+    report = uw.check_spec(app.spec)
+    assert report["ok"], report["errors"]
+'''
+    plan.test_path.write_text(test_body, encoding="utf-8")
+    return plan
+
+
+def write_workflow_scaffold(
+    name: str,
+    *,
+    kind: str = "pipeline",
+    directory=None,
+    register: bool = False,
+    steps: List[Dict[str, Any]] = (),
+) -> WorkflowScaffoldPlan:
+    """Alias of :func:`build_workflow_scaffold` — the function writes the
+    files itself, matching how the test drives it and the CLI usage."""
+    return build_workflow_scaffold(
+        name, kind=kind, directory=directory, register=register, steps=steps,
+    )
