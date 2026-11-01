@@ -43,6 +43,10 @@ from pathlib import Path
 from typing import Any
 
 from .checks import applies, check_graph, findings  # noqa: F401  (re-exported)
+from .coverage import (  # noqa: F401  (re-exported)
+    CoverageError, covers_block, covered_writers, emitted_blocks,
+    is_covered, load_coverage, record,
+)
 
 CARDS_DIR = Path(__file__).with_name("cards")
 KEYWORDS_FILE = Path(__file__).with_name("opi_keywords.json")
