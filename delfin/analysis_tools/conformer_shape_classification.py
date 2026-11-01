@@ -292,10 +292,17 @@ def _conn_mol(symbols: Sequence[str], coords: np.ndarray):
 
 
 def _dihedral(p0, p1, p2, p3) -> float:
+    """Dihedral in degrees, or math.nan when it is geometrically undefined
+    (coincident adjacent atoms make the rotation axis degenerate). Callers
+    that present the value to a user must translate NaN into an explicit
+    error/not_assigned status -- a NaN must never be shown as a number."""
     b0 = np.asarray(p0) - np.asarray(p1)
     b1 = np.asarray(p2) - np.asarray(p1)
     b2 = np.asarray(p3) - np.asarray(p2)
-    b1n = b1 / np.linalg.norm(b1)
+    norm_b1 = np.linalg.norm(b1)
+    if norm_b1 == 0.0:
+        return math.nan
+    b1n = b1 / norm_b1
     v = b0 - np.dot(b0, b1n) * b1n
     w = b2 - np.dot(b2, b1n) * b1n
     x = np.dot(v, w)
@@ -504,9 +511,12 @@ def custom_torsion(coords, i0, i1, i2, i3) -> DescriptorStatus:
     if not all(0 <= i < n for i in (i0, i1, i2, i3)) or len({i0, i1, i2, i3}) != 4:
         return DescriptorStatus(None, "deg", "error",
                                 "torsion needs 4 distinct valid atom indices")
-    return DescriptorStatus(round(_dihedral(coords[i0], coords[i1],
-                                            coords[i2], coords[i3]), 1),
-                            "deg", "ok")
+    value = _dihedral(coords[i0], coords[i1], coords[i2], coords[i3])
+    if math.isnan(value):
+        return DescriptorStatus(None, "deg", "error",
+                                "torsion is undefined: coincident atoms "
+                                "i1 and i2 give a degenerate rotation axis")
+    return DescriptorStatus(round(value, 1), "deg", "ok")
 
 
 def fragment_distance(coords, sel_a, sel_b) -> DescriptorStatus:
