@@ -37,7 +37,7 @@ from delfin.agent.swarm import triage as _triage
 from delfin.agent.swarm.spec import SpecError, load_spec, validate_spec
 
 
-def available_actions() -> tuple[str, ...]:
+def available_actions(_report: dict[str, Any] | None = None) -> tuple[str, ...]:
     """The actions this tab offers, derived from SW1's real API surface.
 
     Fail-closed capability probe (QS ruling): a verb is listed only when
@@ -45,13 +45,43 @@ def available_actions() -> tuple[str, ...]:
     Start button (launch.start_members); 'merge_plan' backs the Pre-PR
     check display (merge.merge_plan, which prints commands and never
     executes); 'pause'/'resume' appear only if SW1 grows the verbs.
+    Probed here: delfin.agent.swarm (the package root), so a future
+    top-level pause_all/resume_all is picked up; the probe never imports
+    a name that does not exist (getattr with a default, not hasattr on a
+    submodule import that would raise).
     """
     verbs = ["start", "merge_plan"]
-    if hasattr(_launch, "pause_members"):
-        verbs.append("pause")
-    if hasattr(_launch, "resume_members"):
-        verbs.append("resume")
+    import delfin.agent.swarm as _swarm_pkg
+
+    for verb in ("pause_all", "resume_all"):
+        if getattr(_swarm_pkg, verb, None) is not None:
+            verbs.append(verb)
     return tuple(verbs)
+
+
+def triage_decide(item: dict[str, Any], decision: str, *,
+                  reason: str = "") -> dict[str, Any]:
+    """Approve/Deny one triage item -- through SW1's own machinery ONLY.
+
+    Approve: SW1's triage_answer (triage.py:108), which re-derives the
+    verdict itself and refuses escalations with TriageError -- the tab
+    passes NO verdict of its own (T4/D13: a caller's verdict is untrusted
+    data). Deny: SW1 ships no deny verb, so the item is left for the user
+    (fail-closed; the tab never answers on the user's behalf without SW1).
+    The dialog text and the auto-answered log come from SW1's triage_list
+    / the log entry triage_answer writes -- no tab-side log exists.
+    """
+    if decision == "approve":
+        try:
+            out = _triage.triage_answer(item, None, answer=reason)
+        except _triage.TriageError as exc:
+            # SW1's refusal is the answer to show, never swallowed.
+            return {"answered": False, "item_id": item.get("id"),
+                    "error": str(exc)}
+        return dict(out, answered=True)
+    # deny (or anything else): fail closed.
+    return {"answered": False, "item_id": item.get("id"),
+            "left_for_user": True}
 
 
 # ---------------------------------------------------------------------------
