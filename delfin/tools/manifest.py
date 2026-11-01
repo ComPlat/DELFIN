@@ -82,6 +82,29 @@ def _application_summary(app) -> Dict[str, Any]:
     }
 
 
+def _workflow_summary(wf) -> Dict[str, Any]:
+    """One line per workflow of ANY kind (classic-control / pipeline / user)."""
+    return {
+        "name": wf.name,
+        "kind": getattr(wf, "kind", "pipeline"),
+        "purpose": getattr(wf, "purpose", wf.description),
+        "entry": getattr(wf, "entry", ""),
+        "control_keys": [
+            {"name": c.name, "type": c.type, "default": c.default,
+             "changes": c.changes}
+            for c in getattr(wf, "control_keys", ())
+        ],
+        "steps": [dict(s) for s in getattr(wf, "steps", ())],
+        "artifacts": list(getattr(wf, "artifacts", ())),
+        "extension_points": [
+            {"position": e.position, "anchor": e.anchor, "receives": e.receives}
+            for e in getattr(wf, "extension_points", ())
+        ],
+        "resume": getattr(wf, "resume", ""),
+        "backend": getattr(wf, "backend", "local and Slurm"),
+    }
+
+
 # --- JSON Schemas (draft 2020-12) ----------------------------------------
 
 
@@ -233,11 +256,14 @@ def build_manifest() -> Dict[str, Any]:
     applications = [_application_summary(app)
                     for _, app in sorted(list_applications().items())]
     keys = [_keyspec_to_dict(ks) for _, ks in sorted(list_keys().items())]
+    from delfin.tools.workflows import list_workflows
+    workflows = [_workflow_summary(wf) for wf in list_workflows()]
     return {
         "delfin_tools_manifest": MANIFEST_VERSION,
         "guide": build_guide(),
         "capabilities": capabilities,
         "applications": applications,
+        "workflows": workflows,
         "keys": keys,
         "schemas": {
             "pipeline_spec": pipeline_spec_schema(),

@@ -1,0 +1,4339 @@
+[
+ {
+  "id": "property.nmr",
+  "keyword": "nmr",
+  "aliases": [
+   "nmr"
+  ],
+  "category": "properties",
+  "purpose": "Requests NMR chemical shieldings via the EPR/NMR module, computing the nuclear magnetic shielding tensor with gauge-including atomic orbitals.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%eprnmr nuclei, nmrshielding"
+  ],
+  "defaults": "",
+  "typical_use": "NMR chemical shift prediction for closed- or open-shell molecules at HF, DFT, CASSCF, MP2 or (D)LPNO-CC levels.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.1"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Property.NMR",
+  "status": "grounded"
+ },
+ {
+  "id": "property.g-tensor",
+  "keyword": "g-tensor",
+  "aliases": [
+   "g-tensor"
+  ],
+  "category": "properties",
+  "purpose": "Requests the EPR g-tensor (second derivative of the energy), which fixes the signal position in an EPR spectrum.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "somf",
+   "%eprnmr gtensor"
+  ],
+  "defaults": "",
+  "typical_use": "EPR g-tensor prediction for radicals/open-shell species at HF/DFT, CASSCF, MP2 or CC levels.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.1.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Property.G_TENSOR",
+  "status": "grounded"
+ },
+ {
+  "id": "property.uco",
+  "keyword": "uco",
+  "aliases": [
+   "uco"
+  ],
+  "category": "properties",
+  "purpose": "Writes the unrestricted-corresponding orbitals (UCOs) for an open-shell wavefunction so they can be printed or used downstream.",
+  "requires": [
+   "UHF/UKS open-shell wavefunction"
+  ],
+  "excludes": [],
+  "pairs_with": [
+   "%scf uco"
+  ],
+  "defaults": "",
+  "typical_use": "Corresponding-orbital analysis of unpaired electrons and spin-coupling descriptions.",
+  "literature": [],
+  "manual": {
+   "page": "contents/modelchemistries/hftype.html",
+   "section": "3.1.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Property.UCO",
+  "status": "draft"
+ },
+ {
+  "id": "property.nouco",
+  "keyword": "nouco",
+  "aliases": [
+   "nouco"
+  ],
+  "category": "properties",
+  "purpose": "Turns the writing of UCO orbitals off (the default).",
+  "requires": [],
+  "excludes": [
+   "uco"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/modelchemistries/hftype.html",
+   "section": "3.1.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Property.NOUCO",
+  "status": "draft"
+ },
+ {
+  "id": "property.uno",
+  "keyword": "uno",
+  "aliases": [
+   "uno"
+  ],
+  "category": "properties",
+  "purpose": "Requests UHF natural orbitals (UNOs) be produced to picture the open-shell wavefunction compactly; equivalent to %scf UHFNO true.",
+  "requires": [
+   "UHF/UKS open-shell wavefunction"
+  ],
+  "excludes": [],
+  "pairs_with": [
+   "%scf uhfno",
+   "%output P_UNO_OccNum etc."
+  ],
+  "defaults": "",
+  "typical_use": "Open-shell wavefunction analysis and as natural-orbital starting point for CASSCF or quasi-restricted orbital schemes.",
+  "literature": [],
+  "manual": {
+   "page": "contents/modelchemistries/hftype.html",
+   "section": "3.1.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Property.UNO",
+  "status": "grounded"
+ },
+ {
+  "id": "property.nouno",
+  "keyword": "nouno",
+  "aliases": [
+   "nouno"
+  ],
+  "category": "properties",
+  "purpose": "Turns the writing of UNO orbitals off (the default).",
+  "requires": [],
+  "excludes": [
+   "uno"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/modelchemistries/hftype.html",
+   "section": "3.1.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Property.NOUNO",
+  "status": "draft"
+ },
+ {
+  "id": "property.nbo",
+  "keyword": "nbo",
+  "aliases": [
+   "nbo"
+  ],
+  "category": "properties",
+  "purpose": "Activates the natural bond orbital (NBO) analysis along with NPA, via the external NBO program.",
+  "requires": [
+   "external NBO program (NBOEXE) available"
+  ],
+  "excludes": [],
+  "pairs_with": [
+   "%nbo",
+   "npa"
+  ],
+  "defaults": "",
+  "typical_use": "NBO population analysis, localized NBOs/NLMOs and donor-acceptor interactions.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nbo.html",
+   "section": "5.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Property.NBO",
+  "status": "grounded"
+ },
+ {
+  "id": "property.nonbo",
+  "keyword": "nonbo",
+  "aliases": [
+   "nonbo"
+  ],
+  "category": "properties",
+  "purpose": "Deactivates the NBO analysis (and the NPA it implies).",
+  "requires": [],
+  "excludes": [
+   "nbo",
+   "npa"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.12"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Property.NONBO",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.aim",
+  "keyword": "aim",
+  "aliases": [
+   "aim"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests production of a WFN/WFX file suitable for atoms-in-molecules (AIM) analysis of the wavefunction.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "orca_2aim utility"
+  ],
+  "defaults": "",
+  "typical_use": "Bader/AIM partitioning: generate a wavefunction file to run an external AIM program.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.AIM",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.noaim",
+  "keyword": "noaim",
+  "aliases": [
+   "noaim"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Suppresses the WFN/WFX file intended for AIM analysis.",
+  "requires": [],
+  "excludes": [
+   "aim"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOAIM",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.allpop",
+  "keyword": "allpop",
+  "aliases": [
+   "allpop"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Activates all population analyses at once.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "mulliken",
+   "loewdin",
+   "mayer",
+   "hirshfeld",
+   "mbis"
+  ],
+  "defaults": "",
+  "typical_use": "Turns on the whole built-in population analysis set with a single keyword for one self-consistent run.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.12"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.ALLPOP",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.nopop",
+  "keyword": "nopop",
+  "aliases": [
+   "nopop"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Deactivates all population analyses.",
+  "requires": [],
+  "excludes": [
+   "allpop"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.12"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOPOP",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.chelpg",
+  "keyword": "chelpg",
+  "aliases": [
+   "chelpg"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests CHELPG charges, ESF-fitted to reproduce the electrostatic potential on a regular grid around the molecule.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%chelpg grid, rmax"
+  ],
+  "defaults": "",
+  "typical_use": "ESP-fitted partial charges for molecular mechanics; usable as an in-calculation keyword or via the standalone orca_chelpg utility.",
+  "literature": [
+   "Breneman, C. M.; Wiberg, K. B. (CHELPG, cited by section 5.1.8)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.8"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.CHELPG",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.chelpglarge",
+  "keyword": "chelpg(large)",
+  "aliases": [
+   "chelpg(large)"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests CHELPG charges computed on a larger grid than the default CHELPG.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%chelpg"
+  ],
+  "defaults": "",
+  "typical_use": "Better-converged ESP-fitted charges where the default CHELPG grid is too coarse.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.8"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.CHELPG_LARGE",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.densityanalysis",
+  "keyword": "densityanalysis",
+  "aliases": [
+   "densityanalysis"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Performs a density analysis for fragments of the system.",
+  "requires": [
+   "defined fragments"
+  ],
+  "excludes": [],
+  "pairs_with": [
+   "%output P_Fragments"
+  ],
+  "defaults": "",
+  "typical_use": "Fragment charge and charge-transfer analyses requiring per-fragment electron densities.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.DENSITYANALYSIS",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.fmopop",
+  "keyword": "fmopop",
+  "aliases": [
+   "fmopop"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests Mulliken and Loewdin population of the frontier molecular orbitals (HOMO and LUMO).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "mulliken",
+   "loewdin"
+  ],
+  "defaults": "",
+  "typical_use": "Frontier-orbital atomic populations for reactive-site and donor/acceptor analysis.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.FMOPOP",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.nofmopop",
+  "keyword": "nofmopop",
+  "aliases": [
+   "nofmopop"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Turns off the frontier molecular orbital population analysis.",
+  "requires": [],
+  "excludes": [
+   "fmopop"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOFMOPOP",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.hirshfeld",
+  "keyword": "hirshfeld",
+  "aliases": [
+   "hirshfeld"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests Hirshfeld charges, an atoms-in-molecules stockholder partitioning of the electron density into atomic contributions.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%output P_Hirshfeld"
+  ],
+  "defaults": "P_Hirshfeld default off",
+  "typical_use": "Stockholder-based AIM partial charges, robust to basis set.",
+  "literature": [
+   "Hirshfeld, F. L. (stockholder partitioning, cited by section 5.1.6)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.HIRSHFELD",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.nohirshfeld",
+  "keyword": "nohirshfeld",
+  "aliases": [
+   "nohirshfeld"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Turns off the Hirshfeld population analysis.",
+  "requires": [],
+  "excludes": [
+   "hirshfeld"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOHIRSHFELD",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.loewdin",
+  "keyword": "loewdin",
+  "aliases": [
+   "loewdin"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests Loewdin population analysis, which symmetrically orthogonalizes the basis so all overlap integrals vanish.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%output P_Loewdin",
+   "%method LOEWDIN_BONDORDERTHRESH"
+  ],
+  "defaults": "P_Loewdin default on; LOEWDIN_BONDORDERTHRESH default 0.05",
+  "typical_use": "L\u00f6wdin atomic charges and Wiberg bond orders (L\u00f6wdin-orthogonalized basis).",
+  "literature": [
+   "L\u00f6wdin, P.-O.; Wiberg, K. B. (cited by section 5.1.2)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.LOEWDIN",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.noloewdin",
+  "keyword": "noloewdin",
+  "aliases": [
+   "noloewdin"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Turns off the Loewdin population analysis.",
+  "requires": [],
+  "excludes": [
+   "loewdin"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOLOEWDIN",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.mayer",
+  "keyword": "mayer",
+  "aliases": [
+   "mayer"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests Mayer population analysis, giving Mayer atomic charges and bond orders from the spin-density matrix.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%method MAYER_BONDORDERTHRESH"
+  ],
+  "defaults": "P_Mayer default on; MAYER_BONDORDERTHRESH default 0.1",
+  "typical_use": "Mayer bond-order and valence analysis.",
+  "literature": [
+   "Mayer, I. (Mayer bonding analysis, cited by section 5.1.4)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.MAYER",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.nomayer",
+  "keyword": "nomayer",
+  "aliases": [
+   "nomayer"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Turns off the Mayer population analysis.",
+  "requires": [],
+  "excludes": [
+   "mayer"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOMAYER",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.mbis",
+  "keyword": "mbis",
+  "aliases": [
+   "mbis"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests Minimal Basis Iterative Stockholder (MBIS) charges, an AIM iterative stockholder partitioning using minimal-basis pro-atomic densities.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%method MBIS_CHARGETHRESH, MBIS_LARGEPRINT"
+  ],
+  "defaults": "MBIS_CHARGETHRESH 1e-6; P_MBIS default off; MBIS_LARGEPRINT false",
+  "typical_use": "MBIS partial charges; MBIS_LARGEPRINT also prints atomic dipole, quadrupole and octupole moments.",
+  "literature": [
+   "Verstraelen, T. et al. (MBIS, cited by section 5.1.7)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.MBIS",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.nombis",
+  "keyword": "nombis",
+  "aliases": [
+   "nombis"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Turns off the MBIS population analysis.",
+  "requires": [],
+  "excludes": [
+   "mbis"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOMBIS",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.mulliken",
+  "keyword": "mulliken",
+  "aliases": [
+   "mulliken"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests the Mulliken population analysis, which divides each overlap charge equally between its two atoms.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%output P_AtCharges_M, P_OrbCharges_M, P_BondOrder_M"
+  ],
+  "defaults": "P_Mulliken default on",
+  "typical_use": "Mulliken atomic charges, orbital charges, bond orders and fragment populations (the default analysis).",
+  "literature": [
+   "Mulliken, R. S. (Mulliken population analysis, cited by section 5.1.1)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.1"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.MULLIKEN",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.nomulliken",
+  "keyword": "nomulliken",
+  "aliases": [
+   "nomulliken"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Turns off the Mulliken population analysis.",
+  "requires": [],
+  "excludes": [
+   "mulliken"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.1"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOMULLIKEN",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.npa",
+  "keyword": "npa",
+  "aliases": [
+   "npa"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests Natural Population Analysis (NPA) through the NBO interface.",
+  "requires": [
+   "external NBO program (gennbo) provided correctly"
+  ],
+  "excludes": [],
+  "pairs_with": [
+   "%output P_NPA"
+  ],
+  "defaults": "P_NPA default off",
+  "typical_use": "NPA charges; skipped silently by ORCA if the NBO program is unavailable.",
+  "literature": [
+   "Weinhold, F.; Landis, C. R. (NPA via NBO, cited by section 5.1.5)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NPA",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.nonpa",
+  "keyword": "nonpa",
+  "aliases": [
+   "nonpa"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Deactivates NPA and NBO analyses.",
+  "requires": [],
+  "excludes": [
+   "npa",
+   "nbo"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NONPA",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.reducedpop",
+  "keyword": "reducedpop",
+  "aliases": [
+   "reducedpop"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Prints reduced (per-angular-momentum) Loewdin orbital populations for each MO.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "loewdin"
+  ],
+  "defaults": "",
+  "typical_use": "Per-angular-momentum MO composition in reduced form.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.12"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.REDUCEDPOP",
+  "status": "grounded"
+ },
+ {
+  "id": "atomiccharge.noreducedpop",
+  "keyword": "noreducedpop",
+  "aliases": [
+   "noreducedpop"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Deactivates printing of reduced orbital populations per MO.",
+  "requires": [],
+  "excludes": [
+   "reducedpop"
+  ],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.12"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.NOREDUCEDPOP",
+  "status": "draft"
+ },
+ {
+  "id": "atomiccharge.resp",
+  "keyword": "resp",
+  "aliases": [
+   "resp"
+  ],
+  "category": "atomic_charge",
+  "purpose": "Requests RESP charges, CHELPG charges with a penalty (restraint) function to avoid over-fitting, using penalty values a and b.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "%chelpg RESPWA, RESPWB, RESPPENALTY, RESPWFILE, RESPQREFFILE"
+  ],
+  "defaults": "a=0.0005, b=0.1; RESPPENALTY default HYPREBOLIC",
+  "typical_use": "Restrained ESP-fitted charges for molecular-mechanics parameterisation of larger molecules.",
+  "literature": [
+   "Bayly, C. I.; Cieplak, P.; Cornell, W. D.; Kollman, P. A. (RESP, cited by section 5.1.9)"
+  ],
+  "manual": {
+   "page": "contents/spectroscopyproperties/population.html",
+   "section": "5.1.9"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "AtomicCharge.RESP",
+  "status": "grounded"
+ },
+ {
+  "id": "esd.esd",
+  "keyword": "esd",
+  "aliases": [
+   "esd"
+  ],
+  "category": "esd",
+  "purpose": "Activates the ORCA_ESD module for excited-state dynamics, computing dynamic excited-state properties (absorption, fluorescence, phosphorescence, IC, ISC, resonance Raman) via a path-integral/Fermi-golden-rule treatment.",
+  "requires": [
+   "excited-state calculation (TD-DFT or similar)"
+  ],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "Rates and spectra of radiative/non-radiative excited-state processes in molecular systems.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD",
+  "status": "grounded"
+ },
+ {
+  "id": "esd.esd_abs",
+  "keyword": "esd(abs)",
+  "aliases": [
+   "esd(abs)"
+  ],
+  "category": "esd",
+  "purpose": "Requests the absorption property within an ESD excited-state dynamics calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "One-photon absorption spectra and associated rates.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_ABS",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_cpf",
+  "keyword": "esd(cpf)",
+  "aliases": [
+   "esd(cpf)"
+  ],
+  "category": "esd",
+  "purpose": "Selects a non-default excited-state dynamics property within an ESD run. The manual/OPI do not expand the abbreviation; it corresponds to one of the requested dynamic properties of the ORCA_ESD module.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Excited-state property request within an ESD run.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_CPF",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_cpp",
+  "keyword": "esd(cpp)",
+  "aliases": [
+   "esd(cpp)"
+  ],
+  "category": "esd",
+  "purpose": "Selects a non-default excited-state dynamics property within an ESD run. The manual/OPI do not expand the abbreviation; it corresponds to one of the requested dynamic properties of the ORCA_ESD module.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Excited-state property request within an ESD run.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_CPP",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_ecd",
+  "keyword": "esd(ecd)",
+  "aliases": [
+   "esd(ecd)"
+  ],
+  "category": "esd",
+  "purpose": "Requests an electronic circular dichroism (ECD) property within ESD.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Excited-state circular dichroism spectra.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_ECD",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_fluor",
+  "keyword": "esd(fluor)",
+  "aliases": [
+   "esd(fluor)"
+  ],
+  "category": "esd",
+  "purpose": "Requests the fluorescence rate and spectrum within an ESD calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Fluorescence spectra and decay rates in excited-state runs.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_FLUOR",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_ic",
+  "keyword": "esd(ic)",
+  "aliases": [
+   "esd(ic)"
+  ],
+  "category": "esd",
+  "purpose": "Requests an internal-conversion (IC) property, requiring a nonadiabatic coupling, within ESD.",
+  "requires": [
+   "nonadiabatic coupling calculation"
+  ],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Internal-conversion rates between excited states.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_IC",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_isc",
+  "keyword": "esd(isc)",
+  "aliases": [
+   "esd(isc)"
+  ],
+  "category": "esd",
+  "purpose": "Requests an intersystem-crossing (ISC) property within an ESD calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd",
+   "soc"
+  ],
+  "defaults": "",
+  "typical_use": "Spin-forbidden intersystem-crossing rates.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_ISC",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_mcd",
+  "keyword": "esd(mcd)",
+  "aliases": [
+   "esd(mcd)"
+  ],
+  "category": "esd",
+  "purpose": "Requests a magnetic circular dichroism (MCD) property within ESD.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Excited-state magnetic circular dichroism spectra.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_MCD",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_phosp",
+  "keyword": "esd(phosp)",
+  "aliases": [
+   "esd(phosp)"
+  ],
+  "category": "esd",
+  "purpose": "Requests a phosphorescence property (phosphorescence rate and spectrum) within an ESD calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Phosphorescence (triplet-to-singlet) rate/spectra.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_PHOSP",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_rr",
+  "keyword": "esd(rr)",
+  "aliases": [
+   "esd(rr)"
+  ],
+  "category": "esd",
+  "purpose": "Requests a resonance Raman property within an ESD calculation (same as ESD(RRAMAN)).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Resonance Raman spectra in excited-state dynamics runs.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_RR",
+  "status": "draft"
+ },
+ {
+  "id": "esd.esd_rraman",
+  "keyword": "esd(rraman)",
+  "aliases": [
+   "esd(rraman)"
+  ],
+  "category": "esd",
+  "purpose": "Requests a resonance Raman property within an ESD calculation (alias of ESD(RR)).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [
+   "esd"
+  ],
+  "defaults": "",
+  "typical_use": "Resonance Raman spectra in excited-state dynamics runs.",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/esd.html",
+   "section": "5.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "Esd.ESD_RRAMAN",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.dipole",
+  "keyword": "dipole",
+  "aliases": [
+   "dipole"
+  ],
+  "category": "elprop",
+  "purpose": "Controls computation of the electric dipole moment in the %elprop block.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.dipoleatom",
+  "keyword": "dipoleatom",
+  "aliases": [
+   "dipoleatom"
+  ],
+  "category": "elprop",
+  "purpose": "Controls computation of atomic dipole moments in the %elprop block.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.efield",
+  "keyword": "efield",
+  "aliases": [
+   "efield"
+  ],
+  "category": "elprop",
+  "purpose": "Specifies an external electric field applied to the molecule, used for field-dependent properties.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.freq_imag",
+  "keyword": "freq_imag",
+  "aliases": [
+   "freq_imag"
+  ],
+  "category": "elprop",
+  "purpose": "Sets the imaginary frequency component at which dynamic polarizabilities are evaluated.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.freq_real",
+  "keyword": "freq_real",
+  "aliases": [
+   "freq_real"
+  ],
+  "category": "elprop",
+  "purpose": "Sets the real frequency component at which dynamic polarizabilities are evaluated.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.kinetic",
+  "keyword": "kinetic",
+  "aliases": [
+   "kinetic"
+  ],
+  "category": "elprop",
+  "purpose": "Requests computation of the kinetic energy expectation value.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.levelshift",
+  "keyword": "levelshift",
+  "aliases": [
+   "levelshift"
+  ],
+  "category": "elprop",
+  "purpose": "Sets a level shift for the response (polarizability) equations.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.maxdiis",
+  "keyword": "maxdiis",
+  "aliases": [
+   "maxdiis"
+  ],
+  "category": "elprop",
+  "purpose": "Sets the maximum number of DIIS vectors for the response solver.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.maxiter",
+  "keyword": "maxiter",
+  "aliases": [
+   "maxiter"
+  ],
+  "category": "elprop",
+  "purpose": "Sets the maximum number of iterations for the response solver.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.origin",
+  "keyword": "origin",
+  "aliases": [
+   "origin"
+  ],
+  "category": "elprop",
+  "purpose": "Selects the gauge origin used for the electric multipole moments.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.1"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.polar",
+  "keyword": "polar",
+  "aliases": [
+   "polar"
+  ],
+  "category": "elprop",
+  "purpose": "Requests the dipole polarizability; the value selects the method (analytic, semi-analytic or numeric).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.polaratom",
+  "keyword": "polaratom",
+  "aliases": [
+   "polaratom"
+  ],
+  "category": "elprop",
+  "purpose": "Requests per-atom (atomic) polarizabilities in the %elprop block.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.polardipquad",
+  "keyword": "polardipquad",
+  "aliases": [
+   "polardipquad"
+  ],
+  "category": "elprop",
+  "purpose": "Requests the dipole-quadrupole component of the polarizability.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.polarquadquad",
+  "keyword": "polarquadquad",
+  "aliases": [
+   "polarquadquad"
+  ],
+  "category": "elprop",
+  "purpose": "Requests the quadrupole-quadrupole component of the polarizability.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.polarvelocity",
+  "keyword": "polarvelocity",
+  "aliases": [
+   "polarvelocity"
+  ],
+  "category": "elprop",
+  "purpose": "Requests the polarizability in the velocity gauge (momentum) representation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.printlevel",
+  "keyword": "printlevel",
+  "aliases": [
+   "printlevel"
+  ],
+  "category": "elprop",
+  "purpose": "Sets the amount of printout written for the electric properties.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.quadrupole",
+  "keyword": "quadrupole",
+  "aliases": [
+   "quadrupole"
+  ],
+  "category": "elprop",
+  "purpose": "Controls computation of the electric quadrupole moment in the %elprop block.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.quadrupoleatom",
+  "keyword": "quadrupoleatom",
+  "aliases": [
+   "quadrupoleatom"
+  ],
+  "category": "elprop",
+  "purpose": "Controls computation of atomic quadrupole moments in the %elprop block.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.solver",
+  "keyword": "solver",
+  "aliases": [
+   "solver"
+  ],
+  "category": "elprop",
+  "purpose": "Selects the linear-equation solver (cg, diis or pople) for the response calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "elprop.tol",
+  "keyword": "tol",
+  "aliases": [
+   "tol"
+  ],
+  "category": "elprop",
+  "purpose": "Sets the convergence tolerance for the response equations.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/electric.html",
+   "section": "5.20.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockElprop",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.gtensor",
+  "keyword": "gtensor",
+  "aliases": [
+   "gtensor"
+  ],
+  "category": "eprnmr",
+  "purpose": "Requests the EPR g-tensor in the %eprnmr block (equivalent to the g-tensor simple keyword).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.1.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "grounded"
+ },
+ {
+  "id": "eprnmr.gtensor_1el2el",
+  "keyword": "gtensor_1el2el",
+  "aliases": [
+   "gtensor_1el2el"
+  ],
+  "category": "eprnmr",
+  "purpose": "Print the one- and two-electron contributions to the g-tensor separately.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.1.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.giao_1el",
+  "keyword": "giao_1el",
+  "aliases": [
+   "giao_1el"
+  ],
+  "category": "eprnmr",
+  "purpose": "Controls whether the one-electron GIAO integrals are evaluated analytically; required analytic for CC-EPR/NMR.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.1.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.giao_2el",
+  "keyword": "giao_2el",
+  "aliases": [
+   "giao_2el"
+  ],
+  "category": "eprnmr",
+  "purpose": "Controls whether the two-electron GIAO integrals are evaluated analytically; required analytic for CC-EPR/NMR.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.1.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.origin",
+  "keyword": "origin",
+  "aliases": [
+   "origin"
+  ],
+  "category": "eprnmr",
+  "purpose": "Selects the gauge origin for magnetic property calculation; the GIAO formalism is the default.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.1.3"
+  },
+  "parser": "accepted",
+  "parser_note": "manual spells the option 'ori'",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.dtensor",
+  "keyword": "dtensor",
+  "aliases": [
+   "dtensor"
+  ],
+  "category": "eprnmr",
+  "purpose": "Requests the zero-field-splitting (ZFS) D-tensor and selects which part to compute: ss (spin-spin), so (spin-orbit) or ssandso (both).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.3.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.dsoc",
+  "keyword": "dsoc",
+  "aliases": [
+   "dsoc"
+  ],
+  "category": "eprnmr",
+  "purpose": "Selects the spin-orbit coupling method used in the ZFS D-tensor: qro (requires !UNO), pk (Pederson-Khanna), cp (coupled-perturbed, default) or cvw (van Wullen).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.3.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.dss",
+  "keyword": "dss",
+  "aliases": [
+   "dss"
+  ],
+  "category": "eprnmr",
+  "purpose": "Selects the source of the spin density for the D-tensor spin-spin part: direct (canonical orbitals) or uno.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.3.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nuclei",
+  "keyword": "nuclei",
+  "aliases": [
+   "nuclei"
+  ],
+  "category": "eprnmr",
+  "purpose": "Selects which nuclei get which hyperfine/quadrupole properties (e.g. 'all 1H { aiso, adip }'); must follow the coordinate definition.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2.2"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockEprnmr",
+  "status": "grounded"
+ },
+ {
+  "id": "eprnmr.hfcgaugecorrection_numeric",
+  "keyword": "hfcgaugecorrection_numeric",
+  "aliases": [
+   "hfcgaugecorrection_numeric"
+  ],
+  "category": "eprnmr",
+  "purpose": "Compute the DSO gauge-correction integrals numerically (faster) for hyperfine gauge corrections.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.hfcgaugecorrection_zeff",
+  "keyword": "hfcgaugecorrection_zeff",
+  "aliases": [
+   "hfcgaugecorrection_zeff"
+  ],
+  "category": "eprnmr",
+  "purpose": "Use effective nuclear charges for the DSO gauge correction to hyperfine couplings.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.hfcgaugecorrection_angulargrid",
+  "keyword": "hfcgaugecorrection_angulargrid",
+  "aliases": [
+   "hfcgaugecorrection_angulargrid"
+  ],
+  "category": "eprnmr",
+  "purpose": "Angular grid setting (number of points) for the numerical DSO gauge correction; negative values use the DFT grid setting.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.hfcgaugecorrection_bfcutoff",
+  "keyword": "hfcgaugecorrection_bfcutoff",
+  "aliases": [
+   "hfcgaugecorrection_bfcutoff"
+  ],
+  "category": "eprnmr",
+  "purpose": "Cutoff threshold for the basis functions in the numerical DSO gauge correction; negative values use the DFT grid setting.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.hfcgaugecorrection_intacc",
+  "keyword": "hfcgaugecorrection_intacc",
+  "aliases": [
+   "hfcgaugecorrection_intacc"
+  ],
+  "category": "eprnmr",
+  "purpose": "Integration accuracy for the numerical DSO gauge correction; negative values use the DFT grid setting.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.hfcgaugecorrection_prunegrid",
+  "keyword": "hfcgaugecorrection_prunegrid",
+  "aliases": [
+   "hfcgaugecorrection_prunegrid"
+  ],
+  "category": "eprnmr",
+  "purpose": "Whether to prune the grid for the numerical DSO gauge correction; negative values use the DFT grid setting.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.hfcgaugecorrection_wcutoff",
+  "keyword": "hfcgaugecorrection_wcutoff",
+  "aliases": [
+   "hfcgaugecorrection_wcutoff"
+  ],
+  "category": "eprnmr",
+  "purpose": "Gaussian cutoff threshold for the numerical DSO gauge correction; negative values use the DFT grid setting.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.printeuler",
+  "keyword": "printeuler",
+  "aliases": [
+   "printeuler"
+  ],
+  "category": "eprnmr",
+  "purpose": "Whether to calculate and print the Euler angles via the orca_euler utility.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.3.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nmrshielding",
+  "keyword": "nmrshielding",
+  "aliases": [
+   "nmrshielding"
+  ],
+  "category": "eprnmr",
+  "purpose": "Request the NMR shielding: 1 for chosen nuclei (via Nuclei) or 2 for all nuclei (equivalent to the NMR simple keyword).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.11"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockEprnmr",
+  "status": "grounded"
+ },
+ {
+  "id": "eprnmr.spinspinrthresh",
+  "keyword": "spinspinrthresh",
+  "aliases": [
+   "spinspinrthresh"
+  ],
+  "category": "eprnmr",
+  "purpose": "Specifies the distance cutoff (in Angstrom) within which spin-spin coupling constants are calculated; default 5.0.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "grounded"
+ },
+ {
+  "id": "eprnmr.printreducedcoupling",
+  "keyword": "printreducedcoupling",
+  "aliases": [
+   "printreducedcoupling"
+  ],
+  "category": "eprnmr",
+  "purpose": "Whether to also print the reduced spin-spin coupling constants K, which are independent of the nuclear isotopes.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.11"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.locorbgbw",
+  "keyword": "locorbgbw",
+  "aliases": [
+   "locorbgbw"
+  ],
+  "category": "eprnmr",
+  "purpose": "Specifies a localization file (.loc) whose orbitals are used for the calculation of spin-spin coupling constants.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.6"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.tau",
+  "keyword": "tau",
+  "aliases": [
+   "tau"
+  ],
+  "category": "eprnmr",
+  "purpose": "Selects the treatment of the NMR current-density (gauge) dependence: 0 (gauge-variant), GI (ad-hoc gauge-invariant) or Dobson (default).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nmrref",
+  "keyword": "nmrref",
+  "aliases": [
+   "nmrref"
+  ],
+  "category": "eprnmr",
+  "purpose": "Reference absolute shielding value for a nucleus used to convert absolute shieldings into relative shifts in the simulated spectrum.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nmrspecfreq",
+  "keyword": "nmrspecfreq",
+  "aliases": [
+   "nmrspecfreq"
+  ],
+  "category": "eprnmr",
+  "purpose": "The NMR spectrometer frequency in MHz that determines the appearance of the simulated spectrum; default 400 MHz.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nmrspecequiv",
+  "keyword": "nmrspecequiv",
+  "aliases": [
+   "nmrspecequiv"
+  ],
+  "category": "eprnmr",
+  "purpose": "Defines groups of NMR-equivalent nuclei for which shieldings and couplings are averaged in the spectrum simulation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.3"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nmrcoal",
+  "keyword": "nmrcoal",
+  "aliases": [
+   "nmrcoal"
+  ],
+  "category": "eprnmr",
+  "purpose": "Line-coalescing threshold in Hz for the simulated NMR spectrum; two lines closer than this are merged. Default 1 Hz.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nmrcouplingfile",
+  "keyword": "nmrcouplingfile",
+  "aliases": [
+   "nmrcouplingfile"
+  ],
+  "category": "eprnmr",
+  "purpose": "Name of the .property.txt file from which spin-spin coupling constants are read by the NMR spectrum module.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.3"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nmrshieldingfile",
+  "keyword": "nmrshieldingfile",
+  "aliases": [
+   "nmrshieldingfile"
+  ],
+  "category": "eprnmr",
+  "purpose": "Name of the .property.txt file from which shielding tensors are read by the NMR spectrum module.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.3"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.levelshift",
+  "keyword": "levelshift",
+  "aliases": [
+   "levelshift"
+  ],
+  "category": "eprnmr",
+  "purpose": "Level shift applied to the (DIIS) response solver for the EPR/NMR equations.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.11"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.maxdiis",
+  "keyword": "maxdiis",
+  "aliases": [
+   "maxdiis"
+  ],
+  "category": "eprnmr",
+  "purpose": "Maximum number of DIIS vectors for the EPR/NMR response solver.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.11"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.maxiter",
+  "keyword": "maxiter",
+  "aliases": [
+   "maxiter"
+  ],
+  "category": "eprnmr",
+  "purpose": "Maximum number of iterations for the EPR/NMR response solver.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.11"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.solver",
+  "keyword": "solver",
+  "aliases": [
+   "solver"
+  ],
+  "category": "eprnmr",
+  "purpose": "Linear-equation solver for the EPR/NMR response: Pople (default), CG or DIIS.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.11"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockEprnmr",
+  "status": "grounded"
+ },
+ {
+  "id": "eprnmr.tol",
+  "keyword": "tol",
+  "aliases": [
+   "tol"
+  ],
+  "category": "eprnmr",
+  "purpose": "Convergence tolerance for the EPR/NMR response solver.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.11"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.printlevel",
+  "keyword": "printlevel",
+  "aliases": [
+   "printlevel"
+  ],
+  "category": "eprnmr",
+  "purpose": "Amount of EPR/NMR output; higher values give orbital-pair-level detail.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.11"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.dospinadmixture",
+  "keyword": "dospinadmixture",
+  "aliases": [
+   "dospinadmixture"
+  ],
+  "category": "eprnmr",
+  "purpose": "Requests the spin-admixture analysis for EPR properties. OPI catalogs it but this manual does not describe it in the %eprnmr section.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.ewin",
+  "keyword": "ewin",
+  "aliases": [
+   "ewin"
+  ],
+  "category": "eprnmr",
+  "purpose": "Sets an energy window (in eV) used to select orbitals/states for the EPR properties. OPI catalogs it; the manual does not expand it in %eprnmr.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.gtensor_dso_zeff",
+  "keyword": "gtensor_dso_zeff",
+  "aliases": [
+   "gtensor_dso_zeff"
+  ],
+  "category": "eprnmr",
+  "purpose": "Uses effective nuclear charges for the diamagnetic spin-orbit (DSO) contribution to the g-tensor gauge correction.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.1.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.nmrspectrum",
+  "keyword": "nmrspectrum",
+  "aliases": [
+   "nmrspectrum"
+  ],
+  "category": "eprnmr",
+  "purpose": "Controls the NMR spectrum simulation. The documented interface is the separate orca_nmrspectrum tool; the block option itself is OPI-catalogued.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/nmr.html",
+   "section": "5.21.3"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "eprnmr.zeff",
+  "keyword": "zeff",
+  "aliases": [
+   "zeff"
+  ],
+  "category": "eprnmr",
+  "purpose": "Enables use of effective nuclear charges for a gauge-correction term in the EPR/NMR modules.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/epr.html",
+   "section": "5.22.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockEprnmr",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.nroots",
+  "keyword": "nroots",
+  "aliases": [
+   "nroots"
+  ],
+  "category": "cistddft",
+  "purpose": "Number of excited states (roots) computed in a CIS or TD-DFT calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.iroot",
+  "keyword": "iroot",
+  "aliases": [
+   "iroot"
+  ],
+  "category": "cistddft",
+  "purpose": "Selects which excited state (root) is used for state-specific properties (gradients, densities).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.irootmult",
+  "keyword": "irootmult",
+  "aliases": [
+   "irootmult"
+  ],
+  "category": "cistddft",
+  "purpose": "Selects the multiplicity (singlet or triplet) of the state for state-specific properties.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.maxdim",
+  "keyword": "maxdim",
+  "aliases": [
+   "maxdim"
+  ],
+  "category": "cistddft",
+  "purpose": "Maximum dimension of the Davidson diagonalization space for the excited-state solver.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.maxiter",
+  "keyword": "maxiter",
+  "aliases": [
+   "maxiter"
+  ],
+  "category": "cistddft",
+  "purpose": "Maximum number of iterations for the excited-state (Davidson) solver.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.nguessmat",
+  "keyword": "nguessmat",
+  "aliases": [
+   "nguessmat"
+  ],
+  "category": "cistddft",
+  "purpose": "Number of guess vectors used to initialize the excited-state diagonalization.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.maxcore",
+  "keyword": "maxcore",
+  "aliases": [
+   "maxcore"
+  ],
+  "category": "cistddft",
+  "purpose": "Requested memory (MB) per core for the CIS/TD-DFT module.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.etol",
+  "keyword": "etol",
+  "aliases": [
+   "etol"
+  ],
+  "category": "cistddft",
+  "purpose": "Convergence tolerance for the excited-state energies.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.rtol",
+  "keyword": "rtol",
+  "aliases": [
+   "rtol"
+  ],
+  "category": "cistddft",
+  "purpose": "Convergence tolerance for the excited-state residuals.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.tda",
+  "keyword": "tda",
+  "aliases": [
+   "tda"
+  ],
+  "category": "cistddft",
+  "purpose": "Turns the Tamm-Dancoff approximation on or off. TDA is the default for TD-DFT in ORCA and can be switched off to recover the full (RPA-like) response.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6.4"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.spinflip",
+  "keyword": "spinflip",
+  "aliases": [
+   "spinflip"
+  ],
+  "category": "cistddft",
+  "purpose": "Enables collinear spin-flip TD-DFT (SF-TD-DFT), suitable for multireference ground states, biradicals and diradical systems.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6.8"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.triplets",
+  "keyword": "triplets",
+  "aliases": [
+   "triplets"
+  ],
+  "category": "cistddft",
+  "purpose": "Also compute triplet excited states in a triplet TD-DFT/CIS calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.soc",
+  "keyword": "soc",
+  "aliases": [
+   "soc"
+  ],
+  "category": "cistddft",
+  "purpose": "Compute spin-orbit coupling between adiabatic excited states.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6.11"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.socgrad",
+  "keyword": "socgrad",
+  "aliases": [
+   "socgrad"
+  ],
+  "category": "cistddft",
+  "purpose": "Compute the gradient of the SOC-corrected excited-state energies.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6.11"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.ntostates",
+  "keyword": "ntostates",
+  "aliases": [
+   "ntostates"
+  ],
+  "category": "cistddft",
+  "purpose": "Number of target states for the interested transition analysis (NTO).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6.14"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.ewin",
+  "keyword": "ewin",
+  "aliases": [
+   "ewin"
+  ],
+  "category": "cistddft",
+  "purpose": "Energy window (in eV) restricting which orbitals/states enter the excited-state calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.cpcmeq",
+  "keyword": "cpcmeq",
+  "aliases": [
+   "cpcmeq"
+  ],
+  "category": "cistddft",
+  "purpose": "Use the corrected linear response (CPCM equilibrium) formulation for solvatochromic shifts of excited states.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.lrcpcm",
+  "keyword": "lrcpcm",
+  "aliases": [
+   "lrcpcm"
+  ],
+  "category": "cistddft",
+  "purpose": "Enable the linear-response (LR) solvation model for excited states.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.dcorr",
+  "keyword": "dcorr",
+  "aliases": [
+   "dcorr"
+  ],
+  "category": "cistddft",
+  "purpose": "Enables the doubles correction (perturbative second-order) to CIS/DIP excited-state energies.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.donto",
+  "keyword": "donto",
+  "aliases": [
+   "donto"
+  ],
+  "category": "cistddft",
+  "purpose": "Generate and use (or compute) natural transition orbitals (NTOs) to analyze the excited states.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6.14"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.doscs",
+  "keyword": "doscs",
+  "aliases": [
+   "doscs"
+  ],
+  "category": "cistddft",
+  "purpose": "Compute the spin-connectivity / spin-crossing quantities in a spin-flip calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.dotrans",
+  "keyword": "dotrans",
+  "aliases": [
+   "dotrans"
+  ],
+  "category": "cistddft",
+  "purpose": "Perform a transition (orbital) analysis for the excited states.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6.14"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.gridx",
+  "keyword": "gridx",
+  "aliases": [
+   "gridx"
+  ],
+  "category": "cistddft",
+  "purpose": "Integration grid for the XC (exchange-correlation) part of the response calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.gridxc",
+  "keyword": "gridxc",
+  "aliases": [
+   "gridxc"
+  ],
+  "category": "cistddft",
+  "purpose": "Integration grid for the correlation part of the response calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.intaccxc",
+  "keyword": "intaccxc",
+  "aliases": [
+   "intaccxc"
+  ],
+  "category": "cistddft",
+  "purpose": "Integration accuracy for the XC matrix elements in the response calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.saveunrnatorb",
+  "keyword": "saveunrnatorb",
+  "aliases": [
+   "saveunrnatorb"
+  ],
+  "category": "cistddft",
+  "purpose": "Save the unrestricted natural orbitals (UNOs) produced by the excited-state module. Note: ORCA's %cis/%tddft parser does not accept this option name.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "rejected",
+  "parser_note": "ORCA rejects this option name in both %cis and %tddft",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "cistddft.scspar",
+  "keyword": "scspar",
+  "aliases": [
+   "scspar"
+  ],
+  "category": "cistddft",
+  "purpose": "Parameters (dimensions) for the spin-complete spin-restricted (SCS) excited-state approach.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/tddft.html",
+   "section": "5.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockCis",
+  "status": "draft"
+ },
+ {
+  "id": "rocis.nroots",
+  "keyword": "nroots",
+  "aliases": [
+   "nroots"
+  ],
+  "category": "rocis",
+  "purpose": "Number of excited states (roots) computed by (RO)CIS.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/rocis.html",
+   "section": "5.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockRocis",
+  "status": "draft"
+ },
+ {
+  "id": "rocis.maxdim",
+  "keyword": "maxdim",
+  "aliases": [
+   "maxdim"
+  ],
+  "category": "rocis",
+  "purpose": "Maximum dimension of the diagonalization (Davidson) space for the (RO)CIS states.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/rocis.html",
+   "section": "5.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockRocis",
+  "status": "draft"
+ },
+ {
+  "id": "rocis.maxiter",
+  "keyword": "maxiter",
+  "aliases": [
+   "maxiter"
+  ],
+  "category": "rocis",
+  "purpose": "Maximum number of iterations for the (RO)CIS excited-state solver.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/rocis.html",
+   "section": "5.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockRocis",
+  "status": "draft"
+ },
+ {
+  "id": "rocis.nguessmat",
+  "keyword": "nguessmat",
+  "aliases": [
+   "nguessmat"
+  ],
+  "category": "rocis",
+  "purpose": "Number of guess vectors for the (RO)CIS diagonalization.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/rocis.html",
+   "section": "5.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockRocis",
+  "status": "draft"
+ },
+ {
+  "id": "rocis.etol",
+  "keyword": "etol",
+  "aliases": [
+   "etol"
+  ],
+  "category": "rocis",
+  "purpose": "Convergence tolerance for the (RO)CIS excitation energies.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/rocis.html",
+   "section": "5.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockRocis",
+  "status": "draft"
+ },
+ {
+  "id": "rocis.rtol",
+  "keyword": "rtol",
+  "aliases": [
+   "rtol"
+  ],
+  "category": "rocis",
+  "purpose": "Convergence tolerance for the (RO)CIS excited-state residuals.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/rocis.html",
+   "section": "5.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockRocis",
+  "status": "draft"
+ },
+ {
+  "id": "rocis.docd",
+  "keyword": "docd",
+  "aliases": [
+   "docd"
+  ],
+  "category": "rocis",
+  "purpose": "Request the calculation of the circular dichroism (CD) / rotational strengths in the (RO)CIS calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/rocis.html",
+   "section": "5.7"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockRocis",
+  "status": "draft"
+ },
+ {
+  "id": "freq.numfreq",
+  "keyword": "numfreq",
+  "aliases": [
+   "numfreq"
+  ],
+  "category": "freq",
+  "purpose": "Request numerical (finite-difference) frequency calculation, available for all methods.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "grounded"
+ },
+ {
+  "id": "freq.anfreq",
+  "keyword": "anfreq",
+  "aliases": [
+   "anfreq"
+  ],
+  "category": "freq",
+  "purpose": "Request analytical frequency calculation (available for HF and DFT). Alias of the Freq simple keyword.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.scalfreq",
+  "keyword": "scalfreq",
+  "aliases": [
+   "scalfreq"
+  ],
+  "category": "freq",
+  "purpose": "Scaling factor applied to the computed frequencies (default 1.0); scaled frequencies are stored in the .hess file and printed.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "ScalFreq 1.0 (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "grounded"
+ },
+ {
+  "id": "freq.centraldiff",
+  "keyword": "centraldiff",
+  "aliases": [
+   "centraldiff"
+  ],
+  "category": "freq",
+  "purpose": "Use central differences [f(x+h)-f(x-h)]/2h rather than one-sided for the numerical Hessian (central differences is the default).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "CentralDiff true (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.restart",
+  "keyword": "restart",
+  "aliases": [
+   "restart"
+  ],
+  "category": "freq",
+  "purpose": "Restart a previous (numerical) frequency calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.increment",
+  "keyword": "increment",
+  "aliases": [
+   "increment"
+  ],
+  "category": "freq",
+  "purpose": "The step size h used for the numerical finite-difference Hessian (default 0.005).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "Increment 0.005 (also DX 0.005)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.hybrid_hess",
+  "keyword": "hybrid_hess",
+  "aliases": [
+   "hybrid_hess"
+  ],
+  "category": "freq",
+  "purpose": "Calculate a hybrid (numerical) Hessian in which a subset of the Hessian is computed analytically.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.partial_hess",
+  "keyword": "partial_hess",
+  "aliases": [
+   "partial_hess"
+  ],
+  "category": "freq",
+  "purpose": "Calculate a partial Hessian over a selected subset of atoms.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.quasirrho",
+  "keyword": "quasirrho",
+  "aliases": [
+   "quasirrho"
+  ],
+  "category": "freq",
+  "purpose": "Evaluate the vibrational entropy with the quasi-RRHO (rigid-rotor harmonic oscillator) approximation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "QuasiRRHO true (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "grounded"
+ },
+ {
+  "id": "freq.qrrhoreffreq",
+  "keyword": "qrrhoreffreq",
+  "aliases": [
+   "qrrhoreffreq"
+  ],
+  "category": "freq",
+  "purpose": "Reference frequency (in cm-1) used in the quasi-RRHO entropy correction (default 25 in ORCA; 100 in the original paper).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "QRRHORefFreq 25 (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.cutofffreq",
+  "keyword": "cutofffreq",
+  "aliases": [
+   "cutofffreq"
+  ],
+  "category": "freq",
+  "purpose": "Threshold (in cm-1) below which frequencies are excluded from spectra, thermochemistry and printout.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "CutOffFreq 1.0 (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.temp",
+  "keyword": "temp",
+  "aliases": [
+   "temp"
+  ],
+  "category": "freq",
+  "purpose": "Run the thermochemistry analysis at one or more user-specified temperatures (K); up to 16 comma-separated values.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "Temp 298.15 (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.xtbvpt2",
+  "keyword": "xtbvpt2",
+  "aliases": [
+   "xtbvpt2"
+  ],
+  "category": "freq",
+  "purpose": "Use the XTB method for the VPT2 correction of the IR spectrum (anharmonic corrections).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "XTBVPT2 True (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.delq",
+  "keyword": "delq",
+  "aliases": [
+   "delq"
+  ],
+  "category": "freq",
+  "purpose": "Displacement (in dimensionless normal coordinates) used during the VPT2 anharmonic calculation (default 0.5).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "Delq 0.5 (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.transinvar",
+  "keyword": "transinvar",
+  "aliases": [
+   "transinvar"
+  ],
+  "category": "freq",
+  "purpose": "Enforce translational invariance after computing the Hessian; works for both analytic and numeric Hessians but does not reduce cost.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "TransInvar True (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.projecttr",
+  "keyword": "projecttr",
+  "aliases": [
+   "projecttr"
+  ],
+  "category": "freq",
+  "purpose": "Project out the translational and rotational degrees of freedom in the frequency and thermochemistry analysis.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "ProjectTR True (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.dovcd",
+  "keyword": "dovcd",
+  "aliases": [
+   "dovcd"
+  ],
+  "category": "freq",
+  "purpose": "Trigger a vibrational circular dichroism (VCD) calculation together with an analytic frequency run (AnFreq + doVCD).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/vibrations.html",
+   "section": "4.7"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.nearir",
+  "keyword": "nearir",
+  "aliases": [
+   "nearir"
+  ],
+  "category": "freq",
+  "purpose": "Request the near-IR (overtones and combination bands) spectrum, computing the anharmonic frequencies (e.g. via XTB).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/vibrations.html",
+   "section": "4.7.2"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.inhessname",
+  "keyword": "inhessname",
+  "aliases": [
+   "inhessname"
+  ],
+  "category": "freq",
+  "purpose": "Name of an existing .hess file whose Hessian is used (e.g. read in via INHESSNAME) for the frequency analysis.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/spectroscopyproperties/vibrations.html",
+   "section": "4.6"
+  },
+  "parser": "unavailable",
+  "parser_note": "probe guard refuses the option because it reads a named file",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.accuracy",
+  "keyword": "accuracy",
+  "aliases": [
+   "accuracy"
+  ],
+  "category": "freq",
+  "purpose": "Sets the integration (grid) accuracy for the numerical frequency calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.finitediff",
+  "keyword": "finitediff",
+  "aliases": [
+   "finitediff"
+  ],
+  "category": "freq",
+  "purpose": "Selects the finite-difference scheme (two-sided vs one-sided, or both) for the numerical Hessian.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.hessgridx",
+  "keyword": "hessgridx",
+  "aliases": [
+   "hessgridx"
+  ],
+  "category": "freq",
+  "purpose": "Angular grid for the (numerical) Hessian elements.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.dryrun",
+  "keyword": "dryrun",
+  "aliases": [
+   "dryrun"
+  ],
+  "category": "freq",
+  "purpose": "Prepare and stop before actually running the frequency calculation.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "freq.pressure",
+  "keyword": "pressure",
+  "aliases": [
+   "pressure"
+  ],
+  "category": "freq",
+  "purpose": "Pressure (and temperature) for the thermochemistry analysis in the freq context.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/structurereactivity/frequencies.html",
+   "section": "4.6"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockFreq",
+  "status": "draft"
+ },
+ {
+  "id": "loc.locmet",
+  "keyword": "locmet",
+  "aliases": [
+   "locmet"
+  ],
+  "category": "loc",
+  "purpose": "Selects the orbital localization method (e.g. PIPEK-MEZEY, FOSTER-BOYS, IAO-based variants).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "grounded"
+ },
+ {
+  "id": "loc.locmetvirt",
+  "keyword": "locmetvirt",
+  "aliases": [
+   "locmetvirt"
+  ],
+  "category": "loc",
+  "purpose": "Localization method used for the virtual orbitals instead of LocMet (if given); defaults to LocMet.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.tol",
+  "keyword": "tol",
+  "aliases": [
+   "tol"
+  ],
+  "category": "loc",
+  "purpose": "Absolute convergence tolerance for the localization sum (default 1e-6).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "Tol 1e-6 (default)",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "grounded"
+ },
+ {
+  "id": "loc.maxiter",
+  "keyword": "maxiter",
+  "aliases": [
+   "maxiter"
+  ],
+  "category": "loc",
+  "purpose": "Maximum number of iterations in the localization procedure (default 64).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.occ",
+  "keyword": "occ",
+  "aliases": [
+   "occ"
+  ],
+  "category": "loc",
+  "purpose": "Localize the occupied space (true) or leave it.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.virt",
+  "keyword": "virt",
+  "aliases": [
+   "virt"
+  ],
+  "category": "loc",
+  "purpose": "Localize the virtual space (true).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.iaobasis",
+  "keyword": "iaobasis",
+  "aliases": [
+   "iaobasis"
+  ],
+  "category": "loc",
+  "purpose": "Basis of MOs (e.g. SCF_SV) used for the intrinsic atomic orbital (IAO) localization.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.t_core",
+  "keyword": "t_core",
+  "aliases": [
+   "t_core"
+  ],
+  "category": "loc",
+  "purpose": "Energy window (in a.u.) that selects which core occupied MOs to localize.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.t_bond",
+  "keyword": "t_bond",
+  "aliases": [
+   "t_bond"
+  ],
+  "category": "loc",
+  "purpose": "Printing threshold that classifies orbitals into bond-like orbitals.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.t_strong",
+  "keyword": "t_strong",
+  "aliases": [
+   "t_strong"
+  ],
+  "category": "loc",
+  "purpose": "Printing threshold that classifies orbitals into strongly-localized orbitals.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.orbspread",
+  "keyword": "orbspread",
+  "aliases": [
+   "orbspread"
+  ],
+  "category": "loc",
+  "purpose": "Compute and print the localized-orbital spread sqrt(<i|(r-<i|r|i>)^2|i>).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.popmethod",
+  "keyword": "popmethod",
+  "aliases": [
+   "popmethod"
+  ],
+  "category": "loc",
+  "purpose": "Population method (default MULLIKEN) used for the final analysis of the localized orbitals.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.printlevel",
+  "keyword": "printlevel",
+  "aliases": [
+   "printlevel"
+  ],
+  "category": "loc",
+  "purpose": "Amount of printing for the localization output.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.randomize",
+  "keyword": "randomize",
+  "aliases": [
+   "randomize"
+  ],
+  "category": "loc",
+  "purpose": "Use a random seed to start the localization (default true) or a fixed seed for reproducibility.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.loctol",
+  "keyword": "loctol",
+  "aliases": [
+   "loctol"
+  ],
+  "category": "loc",
+  "purpose": "Absolute threshold for the localization procedure; automatically adjusted by default.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.loctolrel",
+  "keyword": "loctolrel",
+  "aliases": [
+   "loctolrel"
+  ],
+  "category": "loc",
+  "purpose": "Relative threshold for the localization procedure.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.loctolled",
+  "keyword": "loctolled",
+  "aliases": [
+   "loctolled"
+  ],
+  "category": "loc",
+  "purpose": "Absolute localization threshold used for the PNOs within the local-correlation context.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.file",
+  "keyword": "file",
+  "aliases": [
+   "file"
+  ],
+  "category": "loc",
+  "purpose": "Name of the file holding orbitals to localize (or to write the localized orbitals to).",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "name accepted; full calc exceeded probe timeout",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.dvdmaxdim",
+  "keyword": "dvdmaxdim",
+  "aliases": [
+   "dvdmaxdim"
+  ],
+  "category": "loc",
+  "purpose": "Maximum subspace dimension for the density-matrix-variational (DVD) localization of virtual orbitals.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.dvdmaxiter",
+  "keyword": "dvdmaxiter",
+  "aliases": [
+   "dvdmaxiter"
+  ],
+  "category": "loc",
+  "purpose": "Maximum iterations for the density-matrix-variational (DVD) localization of virtual orbitals.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.dvdnroots",
+  "keyword": "dvdnroots",
+  "aliases": [
+   "dvdnroots"
+  ],
+  "category": "loc",
+  "purpose": "Number of root (target) orbitals for the density-matrix-variational (DVD) localization.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ },
+ {
+  "id": "loc.dvdnrootsfinal",
+  "keyword": "dvdnrootsfinal",
+  "aliases": [
+   "dvdnrootsfinal"
+  ],
+  "category": "loc",
+  "purpose": "Final number of root orbitals after the density-matrix-variational (DVD) localization refinement.",
+  "requires": [],
+  "excludes": [],
+  "pairs_with": [],
+  "defaults": "",
+  "typical_use": "",
+  "literature": [],
+  "manual": {
+   "page": "contents/utilitiesvisualization/utilities.html",
+   "section": "9.2.5"
+  },
+  "parser": "accepted",
+  "parser_note": "",
+  "opi": "BlockLoc",
+  "status": "draft"
+ }
+]

@@ -7193,6 +7193,15 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     # holds this list and the server's read-only block together.
     "parse_orca_output", "calc_status", "extract_spectra_table",
     "find_orca_errors", "extract_thermochem",
+    # result_checks reads a finished run; it writes nothing.
+    "result_checks",
+    # geometry_edit: xyz text in, xyz text out; no file write, no run.
+    "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
+    "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
+    "geometry_add_atom", "geometry_remove_atoms",
+    "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
+    "geometry_merge", "geometry_freeze", "geometry_constraints_block",
+    "geometry_build_smiles", "geometry_write_orca_block",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",
@@ -9535,6 +9544,18 @@ class KitToolPermissions:
     classifier_runner: Optional[Callable[[str, str], str]] = None
     classifier_messages: Any = None
     classifier_state: dict = field(default_factory=dict)
+    # The classifier's resolved model ids, set by the client's
+    # ``_attach_classifier_runner`` (model_capabilities): ``classifier_model``
+    # is the PRIMARY, asked first; ``classifier_confirm_models`` the ALLOW-
+    # confirmation chain of other families, in bench order (see the "allow
+    # needs two families" rule in _classifier_second_opinion). Empty tuple =
+    # the primary decides alone (no second family served, or an explicit
+    # configured model). Leaves both unset for callers that drive
+    # _classifier_second_opinion directly (tests), which then use a single
+    # cfg["model"] -- the old behaviour. Dataclass fields so a sub-agent's
+    # copy (dataclasses.replace) carries the same models.
+    classifier_model: Optional[str] = None
+    classifier_confirm_models: tuple = ()
     # Keys of actions the USER approved in a second-opinion dialog: not
     # asked again in this session (see _classifier_second_opinion).
     classifier_user_allowed: set = field(default_factory=set)
@@ -9981,6 +10002,9 @@ class KitToolPermissions:
         session has no business reading either, and "reachable" is what
         every read gate is built on.
         """
+        # The session scratch dir is NOT a file-tool root: it is private
+        # shell-state (TMPDIR for caged commands); the file tools use the
+        # workspace, so a locked scope reaches only the workspace.
         if self.scope_locked:
             return (self.workspace,)
         return (self.all_workspace_roots()
@@ -14960,6 +14984,151 @@ _LEAVING_BASH = re.compile(r"""(?x)
 _WORKSPACE_LOCAL_TOOLS = frozenset({"run_tests", "make_plot"})
 
 
+# Heavy computation started directly from a shell command: a
+# quantum-chemistry or MD run that loads the shared server. The filesystem
+# cage confines writes and holds network, but not CPU or wall-clock load, so
+# even a caged command in this class stays a "leave" (asks, or is refused
+# unchanged). orca is heavy in any spelling (bare name or anywhere in a
+# loaded path); crest is the conformer search; the MPI/SLURM launchers and
+# the common MD engines are their own word. The *_2mkl converter rewrites
+# ORCA output only and is not a run. Case-sensitive: an uppercase ``ORCA=1``
+# environment assignment is not a run.
+_HEAVY_COMPUTE_RE = re.compile(r"""(?x)
+    \b(?:
+        orca\b
+      | crest\b | srun\b | sbatch\b | salloc\b
+      | mpirun\b | mpiexec\b
+      | gmx\b | gromacs\b | namd2?\b | namd3\b | lmp\b | lammps\b
+      | openmm\b | pmemd\b )
+""")
+
+
+# Commands that start another program: skipped to reach the program judged.
+_HEAVY_PREFIXES = frozenset({
+    "env", "nice", "ionice", "nohup", "time", "timeout", "exec", "command",
+    "stdbuf", "taskset", "xargs",
+})
+
+
+def _xtb_exceeds_thread_limit(cmd: str, limit: int = 2) -> bool:
+    """True when ``cmd`` runs xtb with a parallel count above *limit*.
+
+    xtb names its threads ``-j N`` / ``-P N`` / ``--parallel N`` /
+    ``--parallel=N``, or attached as ``-j6`` / ``-P6``. A bare ``xtb`` with
+    no explicit count is not judged heavy here (the calc_policy layer covers
+    it under the cage in default mode); the shared-server load this class
+    guards against is an explicit run that asks for more than 2 threads.
+    """
+    try:
+        words = shlex.split(str(cmd or ""), posix=True)
+    except ValueError:
+        return False
+    if "xtb" not in words:
+        return False
+    n = len(words)
+    for i, w in enumerate(words):
+        val = ""
+        if w in ("-j", "-P", "--parallel"):
+            val = words[i + 1] if i + 1 < n else ""
+        elif w.startswith("--parallel="):
+            val = w.split("=", 1)[1]
+        elif len(w) > 2 and w[0] == "-" and w[1] in ("j", "P") \
+                and w[2:].isdigit():
+            val = w[2:]
+        if val.isdigit() and int(val) > limit:
+            return True
+    return False
+
+
+def _is_heavy_compute_command(cmd: str) -> bool:
+    """True when ``cmd`` starts a heavy quantum-chemistry or MD computation.
+
+    These are the runs ``_leaves_workspace`` must keep asking about in a
+    Bypass session even when the command would run inside the cage: the cage
+    does not bound the shared-server load they place.
+    """
+    text = str(cmd or "")
+    try:
+        segs = _split_shell_segments(text)
+    except Exception:
+        return bool(_HEAVY_COMPUTE_RE.search(text))
+    for seg in segs or [text]:
+        try:
+            words = shlex.split(seg, posix=True)
+        except ValueError:
+            if _HEAVY_COMPUTE_RE.search(seg):
+                return True
+            continue
+        # Only the program a segment starts is judged, so a read that
+        # names an ORCA file (``cat orca.out``) stays workspace work.
+        # Launcher prefixes and VAR=value assignments are skipped; a
+        # ``sh -c`` / ``bash -c`` string is judged as its own command.
+        i = 0
+        while i < len(words):
+            w = words[i]
+            if "=" in w and not w.startswith("-") and \
+                    w.split("=", 1)[0].isidentifier():
+                i += 1
+            elif w in _HEAVY_PREFIXES:
+                i += 1
+                # its options and their numeric values (nice -n 10,
+                # timeout 60s, taskset -c 0-3)
+                while i < len(words) and (words[i].startswith("-")
+                                          or words[i][:1].isdigit()):
+                    i += 1
+            else:
+                break
+        if i >= len(words):
+            continue
+        prog = words[i].rsplit("/", 1)[-1]
+        if prog in ("sh", "bash", "zsh") and "-c" in words[i + 1:]:
+            j = words.index("-c", i + 1)
+            if j + 1 < len(words) and _is_heavy_compute_command(words[j + 1]):
+                return True
+            continue
+        m = _HEAVY_COMPUTE_RE.match(prog)
+        if m and m.end() == len(prog):
+            return True
+        if _xtb_exceeds_thread_limit(" ".join(shlex.quote(x) for x in words[i:])):
+            return True
+    return False
+
+
+# Under the cage these still ask: an install outside the project's own
+# environment (a global install, a package from a URL or a path outside)
+# fails in the cage and needs the user's grant instead, and a listener is
+# reachable by every user of a shared machine's loopback.
+_CAGED_INSTALLER_RE = re.compile(r"""(?x)
+    ^\s*(?:\S*/)?(?:npm|npx|yarn|pnpm|pip3?|uv|cargo|go|gem|conda|mamba
+                 |micromamba|apt|apt-get|brew|dnf|yum)\b""")
+_CAGED_LISTENER_RE = re.compile(
+    r"http\.server|\b(?:serve|socat)\b|--bind\b|--listen\b|\bnc\s+-\w*l")
+
+
+def _caged_still_asked(seg: str) -> bool:
+    """Whether a shell segment asks even when it would run in the cage."""
+    if _CAGED_LISTENER_RE.search(seg):
+        return True
+    return bool(_CAGED_INSTALLER_RE.match(seg)) and not _project_env_command(seg)
+
+
+def _bash_runs_caged(perms) -> bool:
+    """Whether this session's shell commands run inside the filesystem cage.
+
+    The same decision the bash executor builds its argv from
+    (``_bash_isolation_decision``): a "bwrap", "landlock" or "seatbelt" kind
+    confines writes to the session roots, and the egress proxy holds
+    network. "none" (no cage on this host) and "refuse" (the command is not
+    run) do not confine anything, so under them ``_leaves_workspace`` keeps
+    its old rule.
+    """
+    try:
+        kind, _mode = _bash_isolation_decision(perms)
+        return kind in ("bwrap", "landlock", "seatbelt")
+    except Exception:
+        return False
+
+
 def _leaves_workspace(
     perms: "KitToolPermissions", action: dict, bypass: bool,
 ) -> bool:
@@ -15000,6 +15169,12 @@ def _leaves_workspace(
         if bypass:
             try:
                 full = str(action.get("command") or "")
+                # Heavy computation started directly loads the shared
+                # server: the cage confines writes and network but not CPU
+                # or wall-clock load, so a command in this class stays a
+                # leave even when it would run inside the cage.
+                if _is_heavy_compute_command(full):
+                    return True
                 if perms.matches_bash_auto_allow(full):
                     return False
                 # curl reading a server on this machine, every option one
@@ -15013,10 +15188,24 @@ def _leaves_workspace(
                 # pnpm, uv) stays too: under Bypass the cage holds it, and it
                 # fetches only from the package indexes the proxy knows.
                 segs = _split_shell_segments(full)
-                return not (segs and all(
-                    _LOOPBACK_CURL_RE.match(sg)
-                    or _project_env_command(sg)
-                    or perms.matches_bash_auto_allow(sg) for sg in segs))
+                if segs and all(_LOOPBACK_CURL_RE.match(sg)
+                                or _project_env_command(sg)
+                                or perms.matches_bash_auto_allow(sg)
+                                for sg in segs):
+                    return False
+                # A command that will run INSIDE the cage -- the same
+                # decision the executor builds its argv from
+                # (_bash_isolation_decision) -- is workspace work here: not
+                # the high-risk class (returned True above), not network
+                # (_LEAVING_BASH, also above), not heavy compute (checked
+                # first). The cage confines its writes and holds its network
+                # (the egress proxy), and the change journal can take back
+                # what it wrote. A host with no cage (kind "none" or
+                # "refuse") keeps the old rule.
+                if _bash_runs_caged(perms) and not any(
+                        _caged_still_asked(sg) for sg in segs):
+                    return False
+                return True
             except Exception:
                 return True
         return False
@@ -15358,8 +15547,13 @@ def _classifier_settings() -> Optional[dict]:
         return None
     from . import action_classifier as _ac
     rules = cfg.get("user_rules")
+    # ``explicit_model``: the user actually set agent.classifier.model. When
+    # false the model is the default and the classifier is moved onto a fast
+    # model from a family different from the session's (model_capabilities).
+    explicit_model = bool(str(cfg.get("model") or "").strip())
     return {
         "model": str(cfg.get("model") or "").strip() or _ac.DEFAULT_MODEL,
+        "explicit_model": explicit_model,
         "broad": broad,
         "rules": [str(r) for r in rules if str(r or "").strip()][:20]
         if isinstance(rules, (list, tuple)) else [],
@@ -21736,7 +21930,7 @@ class _DocToolExecutor:
         if state.get("turn") != turn:
             state.clear()
             state.update(turn=turn, allowed=set(), refused=set(),
-                         refusals=0, calls=[], stalled=False)
+                         refusals=0, calls=[], stalled_models=set())
         # The lockout holds at every point that reaches this method, in
         # every scope: after three refusals an auto-allowed command or an
         # auto-accepted edit waits for the user too. No model call.
@@ -21848,30 +22042,76 @@ class _DocToolExecutor:
         failed: list = []
         called: list = []
 
+        # The classifier's models. ``_primary`` decides first; its own
+        # refuse/ask stands at once, and an ALLOW is confirmed by a model of
+        # another family (``_confirm``, in bench order) -- "allow needs two
+        # families". cfg["model"] is the configured or default; perms carried
+        # the client's independence choice (model_capabilities). Tests and
+        # direct drivers leave perms unset and fall back to a single model
+        # (no confirmation) -- the old behaviour.
+        _primary = str(getattr(perms, "classifier_model", None)
+                       or cfg.get("model") or _ac.DEFAULT_MODEL)
+        _confirm = tuple(getattr(perms, "classifier_confirm_models", None)
+                         or ())
+        # A confirm slot identical to the primary is not a second opinion:
+        # it would only re-ask the same family. Drop it.
+        _confirm = tuple(c for c in _confirm if c != _primary)
+
+        # Effective decision chain: the primary, then the confirm families.
+        # A model stalled within the probe window is skipped, so one slow
+        # model does not latch every action of the turn -- the next usable
+        # model (the confirm family) takes over. All _CLASSIFIER_MODELS are
+        # different families, so a promoted confirm is still "another family"
+        # than the one that allowed.
+        _last_attempt = health.get("last_attempt_at")
+        _recent = (_last_attempt is not None and _classifier_clock()
+                   - _last_attempt < _CLASSIFIER_PROBE_INTERVAL_S)
+        _stalled = state.setdefault("stalled_models", set())
+        _chain = []
+        for _m in [_primary] + list(_confirm):
+            if _m in _chain or (_recent and _m in _stalled):
+                continue
+            _chain.append(_m)
+        # The first usable model is asked first; an ALLOW is confirmed by a
+        # latter one. Empty chain (everything latched) falls back to asking
+        # the primary, whose _bounded then raises -> on_error (ask/refuse).
+        _ask = _chain[0] if _chain else _primary
+        _confirms = _chain[1:] if _chain else ()
+
         def _bounded(prompt: str, model: str) -> str:
-            # The runner is the client's; the bound is the gate's, so a
-            # runner that hangs cannot hold an action for minutes. After
-            # one timeout in a turn, or while the watcher is down, the
-            # model is not waited for again until the probe interval has
-            # passed: the error behaviour applies at once (user rules and
-            # the claim guard still run, they need no model).
+            # Exactly ONE model per call (the primary, or one step of the
+            # confirmation chain, chosen by the caller). The runner is the
+            # client's; the bound is the gate's, so a runner that hangs cannot
+            # hold an action for minutes. A stall latches only THIS model
+            # (``state["stalled_models"]``), probed again after
+            # _CLASSIFIER_PROBE_INTERVAL_S, so one slow model does not block
+            # the others.
+            #
+            # ``_reasons`` is local: merged into the outer ``failed`` only
+            # when this single call gave no verdict, so a successful verdict
+            # never records a watcher failure.
+            _reasons: list = []
             last = health.get("last_attempt_at")
             recent = (last is not None and _classifier_clock() - last
                       < _CLASSIFIER_PROBE_INTERVAL_S)
-            if (health.get("down") or state.get("stalled")) and recent:
-                failed.append("down" if health.get("down") else "stalled")
-                raise TimeoutError(
-                    "no verdict: the watcher is down" if health.get("down")
-                    else "no verdict: the model timed out earlier in this "
-                    "turn")
+            if (health.get("down") or model in state.setdefault(
+                    "stalled_models", set())) and recent:
+                _reasons.append("down" if health.get("down") else "stalled")
+                failed.extend(_reasons)
+                raise TimeoutError("model latched this turn")
             for attempt in (1, 2):
                 health["last_attempt_at"] = _classifier_clock()
                 called.append(attempt)
                 box: dict = {}
 
-                def _work() -> None:
+                def _work(box=box, m=model) -> None:
+                    # Bind the worker'S OWN box and model: a timed-out thread
+                    # for an earlier model keeps running, and when it finishes
+                    # it must write its OWN box, not the current model's.
+                    # Late binding would let model A's late answer -- or A's
+                    # exception -- land in model B's result.
                     try:
-                        box["out"] = runner(prompt, model)
+                        box["out"] = runner(prompt, m)
                     except BaseException as exc:      # noqa: BLE001
                         box["exc"] = exc
 
@@ -21881,20 +22121,23 @@ class _DocToolExecutor:
                 wait_s = _classifier_timeout_s()
                 worker.join(wait_s)
                 if worker.is_alive():
-                    failed.append("timeout")
-                    state["stalled"] = True
-                    raise TimeoutError(
-                        f"no verdict within {wait_s:.0f} s")
+                    state.setdefault("stalled_models", set()).add(model)
+                    _reasons.append("timeout")
+                    break  # this model timed out; no verdict
                 if "exc" in box:
                     if attempt == 1:
                         # One short retry: a dropped connection or a 502
                         # from the proxy is usually gone a moment later.
                         time.sleep(_CLASSIFIER_RETRY_DELAY_S)
                         continue
-                    failed.append(type(box["exc"]).__name__)
+                    _reasons.append(type(box["exc"]).__name__)
+                    failed.extend(_reasons)
+                    # The model's own error, so the watcher's status names
+                    # the real cause (ConnectionError, not "no verdict").
                     raise box["exc"]
                 return str(box.get("out") or "")
-            raise TimeoutError("no verdict")      # pragma: no cover
+            failed.extend(_reasons)
+            raise TimeoutError("no verdict")
 
         # The watcher failing. An action that leaves the workspace asks,
         # or is refused when nobody can be asked: the second look was the
@@ -21917,11 +22160,46 @@ class _DocToolExecutor:
                 verdict = (_ac.screen(screened, context, cfg["rules"])
                            or _ac.Verdict(
                                "allow", "screened without the model."))
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # A screened verdict is not a model's opinion: it is a
+                # deterministic allow (or a user rule), so no second-family
+                # confirmation is owed for it.
             else:
                 verdict = _ac.judge(
-                    action, context, model=cfg["model"], runner=_bounded,
+                    action, context, model=_ask, runner=_bounded,
                     rules=cfg["rules"], default_on_error=on_error)
-            decision, reason = verdict.decision, str(verdict.reason or "")
+                decision, reason = verdict.decision, str(verdict.reason or "")
+                # "allow needs two families": the first model's own refuse/ask
+                # stands (decision is not "allow"), but an ALLOW is confirmed
+                # by a model of another family before it is granted. Gate the
+                # confirmation on the ORIGINAL _confirm (a second family is
+                # served at all) and iterate the usable _confirms. A confirm
+                # that gives no verdict (latched, timed out, failed) is
+                # skipped for the next; if NONE does, the allow is NOT granted
+                # -- it asks (or refuses when nobody can be asked). Never
+                # allowed on one vote when a second family was available; a
+                # lone allow stands only when _confirm was empty from the
+                # start (one family served, today's behaviour).
+                if decision == "allow" and _confirm:
+                    confirmed = False
+                    for cm in _confirms:
+                        vc = _ac.judge(
+                            action, context, model=cm, runner=_bounded,
+                            rules=cfg["rules"], default_on_error=on_error)
+                        if str(vc.reason or "").startswith(_ac.ERROR_PREFIX):
+                            continue  # this confirm gave no verdict; try next
+                        decision, reason = (vc.decision,
+                                            str(vc.reason or ""))
+                        confirmed = True
+                        break
+                    if not confirmed:
+                        # A second family was available but never gave a firm
+                        # verdict: not allowed on one vote.
+                        decision = "ask" if can_ask else "refuse"
+                        reason = ("the confirming model could not answer, so "
+                                  "the action needs two families to allow and "
+                                  "asks.")
+                        failed.append("no-confirmation")
         except Exception as exc:
             failed.append(type(exc).__name__)
             decision, reason = on_error, f"classifier error: {exc}"
@@ -28737,6 +29015,35 @@ def _private_tmp_dir() -> str:
     return _PRIVATE_TMP
 
 
+_SESSION_SCRATCH: Optional[str] = None
+
+
+def _session_scratch_dir() -> str:
+    """The session's persistent scratch directory, 0700, private to it.
+
+    /tmp inside a cage is fresh for every command, so a file one command
+    writes there is gone for the next, and the file tools cannot reach it
+    either. The scratch dir sits under this process's own private temp
+    directory (:func:`_private_tmp_dir`), so it inherits three properties
+    for free: 0700, never shared with another session (one process = one
+    session), and pruned when the session ends (the atexit rmtree of the
+    parent). It is exported as TMPDIR/TMP/TEMP in every cage layer and
+    bound read-write into each one, and it is on the file tools' writable
+    and readable root lists -- see KitToolPermissions.all_workspace_roots.
+    /tmp itself stays private and fresh; nothing else becomes writable.
+    """
+    global _SESSION_SCRATCH
+    if _SESSION_SCRATCH and Path(_SESSION_SCRATCH).is_dir():
+        return _SESSION_SCRATCH
+    # Created the way _private_tmp_dir is: tempfile.mkdtemp, mode 0700,
+    # inside this process's private tmp dir -- private per-process state,
+    # never a user path.
+    import tempfile
+    _SESSION_SCRATCH = tempfile.mkdtemp(prefix="scratch-",
+                                        dir=_private_tmp_dir())
+    return _SESSION_SCRATCH
+
+
 def _home_secret_paths() -> list[str]:
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -29101,7 +29408,17 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                  for name in _GIT_READ_ONLY_IN_THE_SANDBOX]
     tmp = _private_tmp_dir()
     mode = _ep.network_mode()
-    env_prefix = ["/usr/bin/env", f"TMPDIR={tmp}"] + [
+    # TMPDIR/TMP/TEMP point at the session scratch dir. The scratch dir is
+    # writable here because it lies under _private_tmp_dir(), which is in
+    # the profile's write roots (roots + [tmp] below); it is NOT one of
+    # all_workspace_roots. The private tmp dir is the fallback when the
+    # scratch dir could not be built. Package cache dirs stay under it.
+    try:
+        _scratch = _session_scratch_dir()
+    except Exception:
+        _scratch = ""
+    env_prefix = ["/usr/bin/env", f"TMPDIR={_scratch or tmp}",
+                  f"TMP={_scratch or tmp}", f"TEMP={_scratch or tmp}"] + [
         f"{k}={tmp}/{sub}" for k, sub in _package_cache_dirs()]
     port = 0
     if mode == "proxy":
@@ -29149,7 +29466,25 @@ def _landlock_argv(plain: list[str], perms, extra_write=(), *,
     # refuses the command; an unattended run proceeds on Landlock alone.
     net_args, _proxy_dir = _sandbox_network_args(perms)
     argv += net_args
-    argv += ["--tmpdir", _private_tmp_dir(), "--strict", "1" if strict else "0", "--"]
+    # The session scratch dir: writable, and TMPDIR points at it (the
+    # helper maps the in-cage path; it equals the host path here).
+    # landlock_exec.main keeps the LAST --tmpdir (tmpdir = value, which it
+    # also adds to the write roots), so there must be exactly ONE --tmpdir
+    # and it must be the scratch dir; the private tmp dir stays a write
+    # root of its own (--write) so its non-scratch uses still work, but is
+    # no longer the TMPDIR target.
+    try:
+        scratch = _session_scratch_dir()
+        argv += ["--write", scratch, "--tmpdir", scratch]
+    except Exception:
+        scratch = None
+        # Keep the TMPDIR invariant when the scratch dir cannot be made:
+        # exactly one --tmpdir, falling back to the private tmp dir (what
+        # this argv had before the scratch work), so landlock_exec still
+        # controls TMPDIR/TMP/TEMP for every program in the cage.
+        argv += ["--tmpdir", _private_tmp_dir()]
+    argv += ["--write", _private_tmp_dir(), "--strict",
+             "1" if strict else "0", "--"]
     return argv + plain
 
 
@@ -29212,6 +29547,16 @@ def _scrubbed_bash_env() -> dict:
     env = {k: v for k, v in os.environ.items()
            if k not in _SECRET_ENV_NAMES
            and not any(m in k.upper() for m in _SECRET_ENV_MARKERS)}
+    # The session scratch dir: where the commands of THIS session keep
+    # files they need across commands and the file tools must find. It
+    # replaces TMPDIR/TMP/TEMP so nothing points at the fresh per-cage
+    # /tmp; paths are absolute so a child that chdirs stays correct.
+    try:
+        _scratch = _session_scratch_dir()
+        for _t in ("TMPDIR", "TMP", "TEMP"):
+            env[_t] = _scratch
+    except Exception:
+        pass
     # Every process an agent session starts says so: `delfin-agent
     # approvals approve` and the answer functions refuse under it
     # (approval_guard), and a nested DELFIN ignores DELFIN_CLASSIFIER=off
@@ -30392,10 +30737,24 @@ def _bash_isolation_argv(
         # The host's TMPDIR (a cluster scratch path) is read-only under the
         # "/" bind; the cage's own /tmp is the writable one. Landlock and
         # Seatbelt set their private directory the same way.
+        # The session scratch dir is the exception: it is bound read-write
+        # and TMPDIR points AT it, so a file one command of this session
+        # writes there is visible to the next and to the file tools. The
+        # path inside the cage equals the host path because "/" is bound
+        # at itself; _bind-try keeps a cage from failing should the
+        # directory have been pruned between build and run.
         "--setenv", "TMPDIR", "/tmp",
         "--setenv", "TMP", "/tmp",
         "--setenv", "TEMP", "/tmp",
     ]
+    try:
+        _scratch = _session_scratch_dir()
+        args += ["--bind-try", _scratch, _scratch]
+        args += ["--setenv", "TMPDIR", _scratch,
+                 "--setenv", "TMP", _scratch,
+                 "--setenv", "TEMP", _scratch]
+    except Exception:
+        pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
     for rel in _HOME_SECRET_DIRS:
@@ -30698,18 +31057,32 @@ _WAIT_TICK_MAX_S = 10.0
 
 
 def _retry_notice(exc_name: str, elapsed_s: float, had_partial: bool,
-                  attempt: int, max_attempts: int, delay_s: float) -> str:
+                  attempt: int, max_attempts: int, delay_s: float, *,
+                  slot_wait: bool = False, base_url: str = "") -> str:
     """What the user reads when a round is retried.
 
     The one line used to be "Transient API error; retrying", whether the
     connection dropped mid-answer or the endpoint never started. The
     second case is the ten-minute wait, and it is named as such: the
     retry does not shorten it, it queues again.
+
+    ``slot_wait`` is the case where the round never reached the endpoint
+    at all: it spent ``elapsed_s`` waiting for a LOCAL slot in the
+    host-wide gate, held by other sessions. That is not the endpoint's
+    fault, so it is never reported as "No byte from the endpoint".
     """
     tail = f"{attempt}/{max_attempts} in {delay_s:.0f}s"
     if had_partial:
         return (f"\n⏳ Transient API error ({exc_name}); retrying {tail}"
                 " — connection lost mid-answer, the reply restarts below…\n")
+    if slot_wait:
+        from .endpoint_gate import display_url
+        shown = display_url(base_url) if base_url else ""
+        where = f" on {shown}" if shown else ""
+        return (f"\n⏳ Waited {elapsed_s:.0f} s for a local slot{where} "
+                f"({exc_name}): other sessions hold it, the endpoint never "
+                f"got this request. Retrying {tail} waits for a slot "
+                "again…\n")
     if elapsed_s >= _ZERO_BYTE_CUT_S:
         return (f"\n⏳ No byte from the endpoint in {elapsed_s:.0f} s "
                 f"({exc_name}): it cut the request before the model started. "
@@ -30890,6 +31263,74 @@ def _is_context_length_error(exc: Exception) -> bool:
         return True
     name = type(exc).__name__.lower()
     return "contextwindow" in name or "contextlength" in name
+
+
+def _augment_api_error(exc: Exception, request_kwargs=None) -> Exception:
+    """Attach the server's own error body to a 4xx/5xx API exception.
+
+    Input: a litellm-style exception with an integer ``status_code`` (or
+    ``status``) and the server's body in ``response.text`` / ``message``;
+    optionally ``request_kwargs`` with the request's ``messages``.
+    Output/semantics: rewrites ``exc.args`` IN PLACE -- same class, same
+    ``status_code`` -- to carry the server message/body cut to 1000
+    characters and scrubbed of credentials via :func:`_redact_tool_result`;
+    for a context-length 400 (:func:`_is_context_length_error`) adds a
+    plain-words explanation plus the measured prompt size from
+    ``estimate_schema_tokens`` over ``request_kwargs["messages"]``.
+    The final text is always the scrubbed one, so a credential inside the
+    raw ``str(exc)`` never reaches the log. Non-4xx/5xx exceptions and
+    unreadable bodies pass through unchanged. Rejected alternatives: a new
+    exception type (every classifier reads ``str(exc)`` / status), and a
+    dedupe rule that appends the body only when ``str(exc)`` does not
+    already embed it (provider-specific formatting must not decide the log
+    format). Best-effort and idempotent (guarded by
+    ``exc._delfin_augmented``).
+    """
+    if getattr(exc, "_delfin_augmented", False):
+        return exc
+    try:
+        status = getattr(exc, "status_code", None)
+        if not isinstance(status, int):
+            status = getattr(exc, "status", None)
+        if not isinstance(status, int) or not (400 <= status <= 599):
+            return exc
+        body = (getattr(getattr(exc, "response", None), "text", "") or ""
+                or getattr(exc, "message", "") or "")
+        body = str(body) if body else ""
+        # str(exc) already embeds the raw body ("Error code: 400 - {...}"),
+        # so masking must cover the whole final text, not just the body. The
+        # base is bounded too: a huge embedded body (providers repeat the
+        # full request) must not flood the log even though str(exc) carries it.
+        base = _redact_tool_result(str(exc))[:2000]
+        body_masked = _redact_tool_result(body)[:1000] if body else ""
+        extra = ""
+        # Always append the server's body: str(exc) formatting differs per
+        # provider, so whether it already embeds the body is not something
+        # the log format should depend on. Bounded at 1000 chars.
+        if body_masked:
+            extra = f" [HTTP {status} from the model endpoint: {body_masked}]"
+        if status == 400 and _is_context_length_error(exc):
+            prompt_tokens = 0
+            try:
+                msgs = (request_kwargs or {}).get("messages") or []
+                prompt_tokens = sum(estimate_schema_tokens(m) for m in msgs)
+            except Exception:
+                prompt_tokens = 0
+            extra += (
+                " The server rejected the request because the conversation"
+                " context is too long for this model; the prompt sent"
+                f" measured about {prompt_tokens} tokens (house estimate)."
+                " Compact the conversation or shorten the request.")
+        if extra or base != str(exc):
+            # Rewrite args whenever the text differs from the original: even
+            # when extra is empty (body already embedded in str(exc)) the
+            # base is the scrubbed text, so a credential inside the raw
+            # str(exc) would otherwise reach the log unmasked.
+            exc.args = (base + extra,)
+            exc._delfin_augmented = True
+    except Exception:
+        return exc
+    return exc
 
 
 def _max_subagent_depth() -> int:
@@ -31639,6 +32080,42 @@ class OpenAIClient(_BaseClient):
         try:
             permissions.classifier_runner = self._classifier_complete
         except Exception:
+            return
+        # Resolve the classifier's models from the served roster once. The
+        # classifier must be independent of the session's model (a slow one
+        # with many agents latched every action to a human, 2026-10-29). The
+        # client is the only place with both the session model and the
+        # endpoint, so it stows the resolved ids here. Cached roster only
+        # (no fetch): re-attaching on every set_permissions must not spend a
+        # /v1/models round trip each time.
+        try:
+            from . import model_capabilities as _mc
+            from .action_classifier import DEFAULT_MODEL as _default_cls
+            cfg = _classifier_settings() or {}
+            base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
+            api_key = getattr(self, "_api_key", "") or ""
+            served = _mc.kit_models_served(base_url, api_key)
+            model = getattr(self, "model", "") or ""
+            cfg_model = str(cfg.get("model") or _default_cls)
+            explicit = bool(cfg.get("explicit_model"))
+            primary = _mc.classifier_choice(
+                served=served, session_model=model,
+                cfg_model=cfg_model, cfg_explicit=explicit)
+            permissions.classifier_model = primary
+            if explicit:
+                # An explicitly configured classifier model decides alone:
+                # the user chose it, and no roster pick second-guesses it.
+                permissions.classifier_confirm_models = ()
+            else:
+                # The ALLOW-confirmation chain: bench models of a family
+                # other than the primary's, so an allow needs two families.
+                permissions.classifier_confirm_models = (
+                    _mc.classifier_confirmation(
+                        served=served, primary=primary,
+                        cfg_model=cfg_model))
+        except Exception:
+            # A roster that could not be asked leaves the configured default:
+            # the old behaviour, never a missing classifier.
             pass
 
     def _attach_subagent_runner(
@@ -32716,15 +33193,26 @@ class OpenAIClient(_BaseClient):
                 # (GeneratorExit), KeyboardInterrupt -- leaves it held.
                 _gslot = _GateRound()
                 try:
-                    from .endpoint_gate import for_client as _gslot_for
+                    from .endpoint_gate import (for_client as _gslot_for,
+                                                SlotWaitTimeout
+                                                as _SlotWaitTimeout)
                     _gslot.gate = _gslot_for(self._base_url, self.model)
                 except Exception:
                     _gslot.gate = None
+                    _SlotWaitTimeout = None
                 if _gslot.gate is not None:
                     _gslot.gate.acquire()
                 if _gslot.gate is not None and _gslot.gate.wait_notice:
                     yield StreamEvent(type="notice", text=(
                         f"⚠️ {_gslot.gate.wait_notice}\n"))
+                # The slot is held: the clock for THIS round's endpoint
+                # timing starts now, AFTER the (possibly long) local wait for
+                # a slot. Otherwise a session that queued 900 s for a slot in
+                # the gate would make every downstream number look like an
+                # endpoint stall -- first-byte latency, the retry deadline,
+                # the "no byte from the endpoint" notice -- when the endpoint
+                # had not even been contacted yet.
+                _round_t0 = time.monotonic()
                 _ct.start()
                 # Watch the first byte instead of parking in it: emit a
                 # visible "waiting for the model … Ns" indicator while the
@@ -32863,7 +33351,11 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
-                            _stream_attempt, _STREAM_RETRY_MAX, _delay))
+                            _stream_attempt, _STREAM_RETRY_MAX, _delay,
+                            slot_wait=isinstance(
+                                _stream_exc, _SlotWaitTimeout)
+                            if _SlotWaitTimeout is not None else False,
+                            base_url=self._base_url))
                         # A congestion signal triggered this retry: report it
                         # and free the slot BEFORE the backoff, so another
                         # session can use the endpoint while this round waits.
@@ -32973,6 +33465,10 @@ class OpenAIClient(_BaseClient):
                         yield StreamEvent(
                             type="message_delta", stop_reason="max_context")
                         return
+                    # The server's own error body belongs in whatever error
+                    # text reaches the user/log/JSON — not just "Error code:
+                    # 400". Augment IN PLACE before the bare raise.
+                    _stream_exc = _augment_api_error(_stream_exc, kwargs)
                     raise
                 # The proxy cannot stream this request (litellm 400:
                 # "'async for' requires ... got ModelResponse"). Retry ONCE
@@ -32982,7 +33478,16 @@ class OpenAIClient(_BaseClient):
                 nk = dict(kwargs)
                 nk["stream"] = False
                 nk.pop("stream_options", None)
-                resp = self.client.chat.completions.create(**nk)
+                try:
+                    resp = self.client.chat.completions.create(**nk)
+                except Exception as _exc:
+                    # The non-streaming retry is itself subject to the model
+                    # endpoint's 4xx/5xx: a retry that still fails on a
+                    # status-coded error must carry the server body too, or
+                    # a KIT 400 here would reach the log as a bare "Error
+                    # code: 400". Augment in place, then re-raise.
+                    _augment_api_error(_exc, kwargs)
+                    raise
                 _round_served = _served_model_of(resp) or _round_served
                 _c, _calls, _fin, (_ti, _to, _tc_cached) = \
                     _absorb_non_streaming(resp)

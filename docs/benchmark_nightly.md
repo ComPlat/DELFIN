@@ -32,7 +32,10 @@ changed, not the sample.
    graded by `config["grader"].grade(task, result)`.
    `InstanceRecord.error` is reserved for a failed run;
    accounting/sampling failures land in `skip_reason` so one broken
-   stage-1a interface cannot kill the round.
+   stage-1a interface cannot kill the round. A result whose `unmeasured`
+   flag is set (HB2: the run never happened — engine-init failure) is
+   NOT graded: the instance keeps the error text, is excluded from
+   every score, and the report names it.
 5. **Submit path.** By default the runner executes in-process and the
    record says `submit_path="local"`. With `config["submitter"]` set —
    a callable `(task, staging_lines, job_name) -> job_id` — the job
@@ -51,6 +54,16 @@ sorted keys, reproducible byte-identically:
 
 - score per tool family and per correctness level (consistency,
   reproduction, reference, trap), cost beside every score;
+- `unmeasured` (HB2): the run never happened (e.g. the engine failed
+  to start: "engine init failed: ..."). Such a result is recorded
+  with its error text on the instance (`InstanceRecord.unmeasured`,
+  `InstanceRecord.error`), is NEVER graded — a dead run is not a
+  quality-0 failure of the model — and is excluded from every score.
+  The report names it under `unmeasured`; the CLI exits **3** when
+  every started instance is unmeasured (a silent all-0 baseline like
+  the one of 2026-10-31 can no longer look like a completed round).
+  A history round in that shape is marked `history_invalid` in the
+  report and its gains are excluded from the stop verdict.
 - `weakest_queue`: the tasks under 60 quality, weakest first, as the
   next round's queue;
 - `stop`: stop after two consecutive rounds without positive
@@ -68,7 +81,7 @@ system limits must go through the submit path, never raw `sbatch`.
 The one command the person runs for a nightly round:
 
     python -m delfin.agent.bench_nightly --model M --instances N \
-        --seed-path PATH [--practice] [--budget H]
+        --seed-path PATH [--provider P] [--practice] [--budget H]
 
 - `--seed-path PATH` is the *path* of the holdout seed file outside
   the repository (a setting, not the seed). The value is read into
@@ -77,6 +90,15 @@ The one command the person runs for a nightly round:
 - Without the seed file the holdout is refused: the refusal reason is
   printed on stderr and the exit status is 1. `--practice` uses the
   public seed instead and never consults the seed file.
+- `--provider P` (HB2) names the provider backend (kit, anthropic,
+  openai, ollama). Default: derived from the model id the same way
+  DELFIN's CLI derives it (single source: `pricing.infer_provider`),
+  so `--model kit.<id>` runs on kit without a flag. Without a usable
+  provider the engine is built as Anthropic and every run dies
+  unmeasured with an engine-init error (defect D1, fixed 2026-11).
+- exit status: 0 a completed round; 1 the holdout was refused; 2 bad
+  usage; 3 the round measured nothing (every started instance
+  unmeasured).
 - stdout carries the full `RunRecord` as JSON — the input
   `bench_report.write` consumes.
 

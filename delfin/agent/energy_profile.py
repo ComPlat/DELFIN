@@ -281,6 +281,67 @@ def read_output(text: str, path: str, energy: str) -> dict:
     return _read_with_cclib(text, path, energy)
 
 
+def composite_output(elec_text: str, elec_path: str,
+                     freq_text: str, freq_path: str) -> dict:
+    """``{"eh", "imag", "atoms", "charge", "program"}`` of one composite state.
+
+    The state's Gibbs energy is built from two levels of theory, per the
+    conformer/rotamer protocol::
+
+        G = E(elec output) + (G - E)(freq output)
+
+    * ``elec_text`` / ``elec_path`` -- the high-level single point (e.g.
+      DLPNO-CCSD(T)/CBS) that carries only an electronic energy;
+    * ``freq_text`` / ``freq_path`` -- the low-level ``Opt Freq`` output
+      (e.g. r2SCAN-3c) that carries BOTH a final electronic energy and a
+      Final Gibbs free energy, so ``G - E`` of that one output is the thermal
+      correction (ZPE + vib/rot/transl + the small 1 atm PV term).
+
+    Both levels must give their number, named in the refusal. The thermal
+    correction ``G - E`` is sanity-checked against the same unit-guard as a
+    plain Gibbs read (ORCA 6.1 manual, "Vibrational frequencies and
+    thermochemistry": free energies and SCF energies are both in Eh and the
+    difference is the thermal correction, a fraction of an Eh). ``imag``,
+    ``atoms`` and ``charge`` come from the frequency output, which is the one
+    that defines the stationary-point character and the stoichiometry.
+    """
+    from delfin import energies
+
+    e_hi = energies.electronic_energy_in_text(elec_text, elec_path)
+    if e_hi is None:
+        raise ValueError(
+            f"{elec_path}: no 'FINAL SINGLE POINT ENERGY' (the high-level "
+            f"electronic energy of the composite); draw energy: electronic "
+            f"or pass the DLPNO single-point output")
+    g_lo = energies.gibbs_energy_in_text(freq_text, freq_path)
+    e_lo = energies.electronic_energy_in_text(freq_text, freq_path)
+    if g_lo is None or e_lo is None:
+        raise ValueError(
+            f"{freq_path}: composite needs BOTH a Final Gibbs free energy "
+            f"and a final electronic energy in one output (run it with "
+            f"Freq), got g={g_lo}, e={e_lo}")
+    # A pair from two different molecules would add a correction to the
+    # wrong energy without any sign of it.
+    pairs = ((composition(elec_text), composition(freq_text)),
+             (total_charge(elec_text), total_charge(freq_text)))
+    if any(a is not None and b is not None and a != b for a, b in pairs):
+        raise ValueError(
+            f"{elec_path} and {freq_path} are not the same species "
+            f"(composition or charge differ); a composite pairs the "
+            f"single point and the freq output of one structure")
+    corr = g_lo - e_lo
+    if abs(corr) > _G_MINUS_E_MAX:
+        raise ValueError(
+            f"{freq_path}: thermal correction G - E = {corr:.3f} Eh is "
+            f"larger than any real one -- a unit mix-up, not a correction; "
+            f"nothing is drawn from it")
+    return {"eh": e_hi + (g_lo - e_lo),
+            "imag": imaginary_modes(freq_text),
+            "atoms": composition(freq_text),
+            "charge": total_charge(freq_text),
+            "program": "ORCA"}
+
+
 def _read_with_cclib(text: str, path: str, energy: str) -> dict:
     try:
         import cclib

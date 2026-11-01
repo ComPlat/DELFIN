@@ -64,6 +64,33 @@ class Signal:
     optional: bool = False
 
 
+@dataclass(frozen=True)
+class RubricCriterion:
+    """One weighted, deterministic check in an OPTIONAL per-task rubric.
+
+    A rubric sits beside the signal/verify rubric that decides ``success``;
+    it never rewrites it.  ``kind`` names the deterministic check, all of
+    them computed from the same recorded trajectory ``score_outcome`` reads:
+
+    - ``signals``      fraction of required expected signals matched
+    - ``values``       fraction of expected figures matched (with the
+                       ``ExpectedValue`` tolerance -- numbers, never strings)
+    - ``verify``       1.0 when the acceptance script passed, else 0.0
+    - ``forbidden``    1.0 when no forbidden signal was violated
+    - ``clean``        1.0 when the run carried no error
+    - ``behavior.<f>`` the behavior flag ``f`` (0 or 1)
+    - ``process.<k>``  the process rate ``k``, clamped to [0, 1]
+
+    ``weight`` scales the criterion's share of the summed 0-100 rubric
+    score.  An unknown ``kind`` is a task-authoring bug and raises
+    ``ValueError`` rather than scoring a silent zero.
+    """
+
+    name: str
+    weight: float = 1.0
+    kind: str = "signals"
+
+
 # A number as it is actually written in an answer: German and English
 # grouping, a bare decimal, a signed value, a thousands run.
 #
@@ -360,6 +387,11 @@ class Task:
     # whether it was followed. Default empty: every existing task and
     # every existing run_once signature keeps working.
     mid_run_messages: tuple = ()
+    # Optional weighted rubric (see RubricCriterion): per-criterion
+    # deterministic checks scored into rubric_0_100 / rubric_components,
+    # reported BESIDE success/quality_0_100. Always empty unless the
+    # task declares ``rubric:`` -- no existing task's scoring changes.
+    rubric: tuple = ()
 
 
 def english_variant(task: Task) -> Optional[Task]:
@@ -537,6 +569,22 @@ class BenchmarkResult:
     success_ci_high: Optional[float] = None
     per_run_quality: list[int] = field(default_factory=list)
     per_run_success: list[bool] = field(default_factory=list)
+    #: Stricter, alongside readings of the SAME k repeats -- never a
+    #: replacement for ``success``. ``pass_at_k`` (pass@k) = at least one
+    #: of the k repeats passed (the optimistic "it can do it"); ``pass_pow_k``
+    #: (pass^k) = ALL k passed (the reliability a user actually gets).
+    #: For a single-repeat run (k == 1) both equal ``success``. Set by
+    #: ``score_outcome`` (single run) and ``aggregate_replicates`` (pooled;
+    #: all repeats unmeasured -> False, the only honest reading).
+    pass_at_k: bool = False
+    pass_pow_k: bool = False
+    #: Weighted rubric score (0-100) and its per-criterion components, when
+    #: the task declares a ``rubric``. Scored deterministically from the same
+    #: trajectory the signals/values/verify already read; reported beside
+    #: ``quality_0_100`` and beside ``success`` (a rubric never rewrites the
+    #: existing pass/quality criterion). Empty when the task has no rubric.
+    rubric_0_100: Optional[int] = None
+    rubric_components: dict[str, float] = field(default_factory=dict)
     # Per-replicate counted work, in replicate order. The scalar
     # tool_calls / input_tokens / output_tokens above are medians; a
     # learning verdict compares the two samples, not two medians.
@@ -643,6 +691,15 @@ def _coerce_task(raw: dict) -> Task:
     expected = tuple(_coerce_signal(s) for s in raw.get("expected_signals") or [])
     forbidden = tuple(_coerce_signal(s) for s in raw.get("forbidden_signals") or [])
     values = tuple(_coerce_value(v) for v in raw.get("expected_values") or [])
+    rubric = tuple(
+        RubricCriterion(
+            name=str(c.get("name", "")).strip(),
+            weight=float(c.get("weight", 1.0)),
+            kind=str(c.get("kind", "signals")).strip(),
+        )
+        for c in (raw.get("rubric") or [])
+        if isinstance(c, dict) and str(c.get("name", "") or "").strip()
+    )
     return Task(
         id=str(raw["id"]),
         task_class=str(raw.get("task_class", "")),
@@ -664,6 +721,7 @@ def _coerce_task(raw: dict) -> Task:
              str(m.get("text", "")))
             for m in (raw.get("mid_run_messages") or [])
             if isinstance(m, dict) and str(m.get("text", "") or "")),
+        rubric=rubric,
     )
 
 
@@ -1803,6 +1861,80 @@ def caveat_count(text: str) -> int:
     return sum(body.count(marker) for marker in _CAVEAT_MARKERS)
 
 
+def _score_rubric_against(
+    task: Task,
+    traj: "Trajectory",
+    *,
+    missing: list[str],
+    violated_signals: list[str],
+    value_report: dict[str, str],
+) -> tuple[Optional[int], dict[str, float]]:
+    """Deterministic 0-100 weighted-rubric score for an OPTIONAL task rubric.
+
+    Returns ``(None, {})`` when the task declares no rubric, so every
+    task without one keeps scoring exactly as before.  Otherwise each
+    criterion's ``kind`` maps to a check already computed from the same
+    trajectory; the score is ``round(100 * sum(w_i*c_i) / sum(w_i))`` and
+    the per-criterion components are that term before rounding.  An
+    unknown ``kind`` is a task-authoring bug and raises ``ValueError``.
+
+    ``missing`` / ``violated_signals`` / ``value_report`` are the lists
+    ``score_outcome`` already produced for this trajectory, passed in so
+    the rubric cannot drift from the pass signal it sits beside.
+    """
+    if not getattr(task, "rubric", None):
+        return None, {}
+    req_labels = {f"{task.id}.expected[{i}]" for i,
+                  _ in enumerate(task.expected_signals)}
+    n_required = sum(1 for s in task.expected_signals if not s.optional)
+    missing_required = sum(
+        1 for m in missing
+        if any(m.startswith(v) and not m.endswith(":optional")
+               for v in req_labels))
+    signals_hit = ((n_required - missing_required) / n_required
+                   if n_required else 1.0)
+    n_values = len(value_report)
+    values_hit = (sum(1 for v in value_report.values() if v == "matched")
+                  / n_values) if n_values else 1.0
+    forbidden_clean = 0.0 if violated_signals else 1.0
+    proc = process_signals(task, traj)
+    beh = behavior_flags(task, traj)
+
+    total_w = 0.0
+    weighted = 0.0
+    components: dict[str, float] = {}
+    for c in task.rubric:
+        if c.kind == "signals":
+            hit = signals_hit
+        elif c.kind == "values":
+            hit = values_hit
+        elif c.kind == "verify":
+            hit = 1.0 if traj.verify_ok is True else 0.0
+        elif c.kind == "forbidden":
+            hit = forbidden_clean
+        elif c.kind == "clean":
+            hit = 0.0 if traj.error or is_unmeasured(traj) else 1.0
+        elif c.kind.startswith("behavior."):
+            hit = float(beh.get(c.kind.split(".", 1)[1], 0.0) or 0.0)
+        elif c.kind.startswith("process."):
+            hit = max(0.0, min(1.0, float(proc.get(c.kind.split(".", 1)[1],
+                                                   0.0) or 0.0)))
+        else:
+            raise ValueError(
+                f"{task.id}: rubric criterion {c.name!r} has unknown "
+                f"kind {c.kind!r}")
+        w = float(c.weight)
+        total_w += w
+        weighted += w * hit
+        components[c.name] = hit * w
+    if total_w <= 0:
+        raise ValueError(f"{task.id}: rubric weights must sum > 0")
+    score = int(round(100 * weighted / total_w)) if weighted else 0
+    # Rebase components onto the 0-100 scale they share.
+    components = {k: (v / total_w) * 100 for k, v in components.items()}
+    return score, components
+
+
 def score_outcome(
     task: Task,
     traj: Trajectory,
@@ -1918,6 +2050,14 @@ def score_outcome(
     # aggregates from counting it as broken.
     success = bool(success_required_ok and not violated and not traj.error)
 
+    # 2b. OPTIONAL weighted rubric, reported beside the pass criterion it
+    # never rewrites. Computed from the same trajectory lists; an unknown
+    # criterion kind raises while the task is still authoring itself.
+    rubric_score, rubric_components = _score_rubric_against(
+        task, traj, missing=missing, violated_signals=violated,
+        value_report=value_report,
+    )
+
     # 3. Budget checks (don't flip success on their own — visible in score).
     if traj.duration_s > task.max_duration_s > 0:
         budget_violations.append(
@@ -2024,6 +2164,8 @@ def score_outcome(
         success=success,
         quality_0_100=quality,
         components=components,
+        rubric_0_100=rubric_score,
+        rubric_components=rubric_components,
         duration_s=traj.duration_s,
         cost_usd=traj.cost_usd,
         input_tokens=traj.input_tokens,
@@ -2042,6 +2184,8 @@ def score_outcome(
         verify_output=str(traj.verify_output or "")[:2000],
         verify_quality=verify_quality,
         per_run_verify_quality=[verify_quality],
+        pass_at_k=success,
+        pass_pow_k=success,
         tool_names=tool_names,
         tool_subjects=[tool_subject(c) for c in traj.tool_calls
                        if isinstance(c, dict)][:60],
@@ -2296,6 +2440,23 @@ def aggregate_replicates(
         for k in comp_keys
     }
 
+    # Optional rubric score / components: median over the replicates that
+    # carried a rubric (a replicate without one contributes nothing --
+    # it has no such metric to average).
+    rubric_scores = [r.rubric_0_100 for r in results
+                     if r.rubric_0_100 is not None]
+    rubric_0_100 = (None if not rubric_scores
+                    else int(round(_median(
+                        [float(s) for s in rubric_scores]))))
+    rubric_keys: set[str] = set()
+    for r in results:
+        rubric_keys.update((r.rubric_components or {}).keys())
+    rubric_components = {
+        k: _median([float((r.rubric_components or {}).get(k, 0.0))
+                    for r in results if r.rubric_components])
+        for k in rubric_keys
+    }
+
     # Union of signal labels (preserves order of first occurrence)
     def _union(field_name: str) -> list[str]:
         out: list[str] = []
@@ -2399,6 +2560,8 @@ def aggregate_replicates(
         success=(n_pass * 2 >= n),                   # majority (ties = pass)
         quality_0_100=int(round(_median([float(q) for q in qualities]))),
         components=components,
+        rubric_0_100=rubric_0_100,
+        rubric_components=rubric_components,
         duration_s=_median(durations),
         cost_usd=sum(float(r.cost_usd) for r in results),
         input_tokens=int(_median([float(x) for x in in_toks])),
@@ -2419,6 +2582,8 @@ def aggregate_replicates(
         success_ci_high=wilson_interval(n_pass, n)[1],
         per_run_quality=list(qualities),
         per_run_success=list(success_flags),
+        pass_at_k=any(success_flags),
+        pass_pow_k=all(success_flags),
         per_run_tool_calls=list(tool_counts),
         per_run_tokens_total=[i + o for i, o in zip(in_toks, out_toks)],
         text_excerpt=excerpt,
@@ -2858,6 +3023,8 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
     if not rows:
         return {
             "n_tasks": 0, "n_pass": 0, "n_fail": 0, "pass_rate": 0.0,
+            "n_pass_at_k": 0, "pass_at_k_rate": 0.0,
+            "n_pass_pow_k": 0, "pass_pow_k_rate": 0.0,
             "n_unmeasured": 0, "unmeasured_tasks": [],
             "avg_quality": 0.0, "total_cost_usd": 0.0,
             "total_duration_s": 0.0, "total_tool_calls": 0,
@@ -2880,6 +3047,14 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
     n_unmeasured = len(rows) - len(scored)
     n = len(scored)
     n_pass = sum(1 for r in scored if r.get("success"))
+    # The two stricter, alongside readings over the SAME k repeats. A task
+    # whose request never reached the model is already out (``scored``),
+    # exactly as it is out of ``n_pass``. pass@k = >=1 of its repeats
+    # passed; pass^k = ALL of its repeats passed. Neither rewrites the
+    # existing pass criterion — they are reported next to it so a run's
+    # "best attempt" and its "every attempt" are both visible.
+    n_pass_at_k = sum(1 for r in scored if r.get("pass_at_k"))
+    n_pass_pow_k = sum(1 for r in scored if r.get("pass_pow_k"))
     # Token sums over scored tasks, and the per-call normalisation that
     # tells a real saving from "did less work" (see the per-call comment
     # below).  Exact values, no rounding: the caller renders them.
@@ -2896,6 +3071,10 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         "unmeasured_tasks": sorted(
             str(r.get("task_id") or "?") for r in rows if r.get("unmeasured")),
         "pass_rate": (n_pass / n) if n else 0.0,
+        "n_pass_at_k": n_pass_at_k,
+        "pass_at_k_rate": (n_pass_at_k / n) if n else 0.0,
+        "n_pass_pow_k": n_pass_pow_k,
+        "pass_pow_k_rate": (n_pass_pow_k / n) if n else 0.0,
         "avg_quality": (sum(int(r.get("quality_0_100") or 0)
                             for r in scored) / n) if n else 0.0,
         "total_cost_usd": sum(float(r.get("cost_usd") or 0) for r in rows),

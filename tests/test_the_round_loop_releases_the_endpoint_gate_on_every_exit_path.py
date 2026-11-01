@@ -143,10 +143,15 @@ def _held_slots(gate_dir):
     return count
 
 
-def _held_slots_for_url(gate_root, base_url):
-    """Slot files under ONE endpoint key currently carrying a flock."""
-    key = G.EndpointGate(base_url)._key
-    return _held_slots(gate_root / key)
+def _held_slots_for_url(gate_root, base_url, model="qwen2.5-coder:7b"):
+    """Slots files carrying a flock for one model's round: the per-model
+    adaptive gate AND the endpoint-wide total-cap gate (both are held while
+    a request runs once per-model limits are the default)."""
+    g = G.EndpointGate(base_url, model)
+    held = _held_slots(gate_root / g._model_key)
+    if g._cap_key:
+        held += _held_slots(gate_root / g._cap_key)
+    return held
 
 
 # ---------------------------------------------------------------------------
@@ -160,15 +165,17 @@ def test_slot_released_after_success(monkeypatch, tmp_path):
     held_during = {}
 
     def _create(**kwargs):
-        # Positive control: while the request runs, the slot IS held.
+        # Positive control: while the request runs, the slots ARE held --
+        # two of them: one per-model slot and one endpoint-wide cap slot.
         held_during["n"] = _held_slots_for_url(gate_root, client._base_url)
         return stream
 
     client.client.chat.completions.create = _create
     out = _drive(client)
     assert "hello" in "".join(out)
-    assert held_during.get("n") == 1, (
-        "the round loop must hold the slot while the request runs")
+    assert held_during.get("n") == 2, (
+        "the round loop must hold the model slot and the endpoint-cap "
+        "slot while the request runs")
     assert G.EndpointGate(client._base_url).enabled
     assert _held_slots_for_url(gate_root, client._base_url) == 0
 
@@ -216,8 +223,9 @@ def test_slot_released_when_closed_at_wait_notice_yield(monkeypatch, tmp_path):
     # Hold a slot long enough for acquire() to poll and publish a wait_notice,
     # then release it so acquire() completes and the wiring can yield that
     # notice. endpoint_gate sleeps on its own clock, so acquire really waits.
-    gate = G.EndpointGate(client._base_url)
-    dirpath = gate_root / gate._key
+    # Per-model limits are the default, so the round waits on the MODEL key.
+    gate = G.EndpointGate(client._base_url, "qwen2.5-coder:7b")
+    dirpath = gate_root / gate._model_key
     dirpath.mkdir(parents=True, exist_ok=True)
     held_ev = threading.Event()
 
@@ -379,3 +387,21 @@ def test_the_slot_is_free_during_a_retry_backoff(monkeypatch, tmp_path):
     timeouts = [e for e in reports if isinstance(e, APITimeoutError)]
     assert len(timeouts) == 1, reports
     assert _held_slots_for_url(gate_root, client._base_url) == 0
+
+
+# -- the wait the user reads -------------------------------------------------
+
+def test_a_slot_wait_retry_is_named_a_local_wait():
+    """A round that spent its deadline waiting for a LOCAL slot -- not the
+    endpoint at all -- must never be reported as "No byte from the
+    endpoint". Even at 400 s (past the zero-byte cut) it is a local wait,
+    and a real endpoint stall still says "No byte from the endpoint"."""
+    import delfin.agent.api_client as A
+    long = 400.0                       # >= _ZERO_BYTE_CUT_S (300)
+    slot = A._retry_notice(
+        "SlotWaitTimeout", long, False, 2, 3, 5.0,
+        slot_wait=True, base_url="https://kit.example.org")
+    assert "local slot" in slot and "No byte from the endpoint" not in slot
+    # A genuine endpoint stall keeps its existing message.
+    stall = A._retry_notice("TimeoutError", long, False, 2, 3, 5.0)
+    assert "No byte from the endpoint" in stall

@@ -164,9 +164,13 @@ def _parse_memory_string(mem_str: str) -> Optional[int]:
 
     value, unit = match.groups()
     value = float(value)
+    unit = unit.upper()
 
-    # Convert to MB
-    if unit in ('', 'B', 'MB', 'M'):
+    # Convert to MB. 'B' alone is bytes, NOT megabytes — reading '512B'
+    # as a 512 MB allocation was a 512x overcount (reviewer F6, SL1).
+    if unit in ('B',):
+        return int(value // (1024 * 1024))
+    elif unit in ('', 'MB', 'M'):
         return int(value)
     elif unit in ('KB', 'K'):
         return int(value / 1024)
@@ -190,9 +194,33 @@ def auto_configure_resources(config: Dict[str, Any]) -> Dict[str, Any]:
     cluster_info = detect_cluster_environment()
     updated_config = config.copy()
 
-    # Auto-configure PAL (CPU cores)
+    # Auto-configure PAL (CPU cores). On a host that is NOT inside a
+    # scheduler job, the machine's core count is not what the run may
+    # use: DELFIN's own calc_policy caps a local run at
+    # calc_policy.LOGIN_LOCAL_CORES (calc_policy.py:61). Without this
+    # cap an auto-configured PAL on a 192-core workstation was 192 — a
+    # local run that exceeds the policy by 96x (SL1, measured).
     if cluster_info['cpus_available'] and not config.get('PAL'):
         suggested_pal = cluster_info['cpus_available']
+        if not cluster_info.get('job_id'):
+            try:
+                from delfin.agent.calc_policy import LOGIN_LOCAL_CORES
+            except ImportError as problem:
+                # Wave-17 lesson: a silently missing cap ships PAL=192
+                # again. The cap degrades, and the degradation is visible.
+                logger.warning(
+                    "Local-run PAL cap unavailable (import failed: %s); "
+                    "auto-PAL stays at the detected %d CPUs — the local "
+                    "run may exceed calc_policy's limit.", problem,
+                    suggested_pal)
+            else:
+                if suggested_pal > LOGIN_LOCAL_CORES:
+                    logger.warning(
+                        "Auto-detected %d CPUs on a host outside a "
+                        "scheduler job; capping PAL at the local-run "
+                        "limit %d (delfin.agent.calc_policy).",
+                        suggested_pal, LOGIN_LOCAL_CORES)
+                    suggested_pal = LOGIN_LOCAL_CORES
         updated_config['PAL'] = suggested_pal
         logger.info(f"Auto-detected {cluster_info['cpus_available']} CPUs, setting PAL={suggested_pal}")
 

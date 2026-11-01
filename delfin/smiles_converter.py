@@ -4718,6 +4718,442 @@ def smiles_to_xyz_mace(smiles: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Package SX1: post-conversion check (findings only, never a silent fix).
+# ---------------------------------------------------------------------------
+def check_converted_complex(smiles: str, xyz_text: str) -> List[Dict[str, object]]:
+    """Compare a converted XYZ geometry against its SMILES and return findings.
+
+    This runs AFTER conversion, BEFORE any calculation.  It never repairs
+    anything: every problem comes back as a finding dict with at least
+    ``kind`` and ``detail`` (plus ``atoms`` where atom indices apply), so the
+    caller decides what to do.
+
+    Checks, in order of impact:
+    1. atom count and element multiset vs the SMILES (atom_count)
+    2. hydrogen count per atom vs the SMILES reading (h_count)
+    3. total formal charge vs the SMILES (charge)
+    4. X-H bond lengths in 0.7-1.4 A and H-X-Y angles in 90-135 deg (xh_length, xh_angle)
+    5. clashes: heavy-heavy below 1.2 A, H-H below 1.0 A, H-heavy below 0.9 A (clash)
+    6. metal-ligand distances vs the ml_tables estimate, tolerance 1.4x (ml_length)
+    7. hapto rings planar with the metal above the centroid (hapto_planarity)
+
+    Unsupported cases return an empty list (no finding is better than a wrong one).
+    """
+    findings: List[Dict[str, object]] = []
+    if not RDKIT_AVAILABLE or not smiles or not xyz_text:
+        return findings
+    mol = None
+    try:
+        # pinned is safe here: the pin changes H counts only (it rewrites
+        # unbracketed metal-neighbour tokens to bracket atoms), so the
+        # heavy-atom and charge readings below are unaffected by it.
+        mol = Chem.MolFromSmiles(_pin_metal_neighbour_hydrogens(smiles))
+        if mol is None:
+            mol = Chem.MolFromSmiles(smiles)
+    except Exception:
+        mol = None
+    if mol is None:
+        return findings
+
+    # --- parse the XYZ (with or without the count header) -------------------
+    atoms: List[Tuple[str, float, float, float]] = []
+    try:
+        lines = xyz_text.strip().splitlines()
+        start = 2 if lines and lines[0].strip().isdigit() else 0
+        for ln in lines[start:]:
+            p = ln.split()
+            if len(p) >= 4 and len(p[0]) <= 3 and p[0].isalpha():
+                atoms.append((p[0].capitalize(), float(p[1]), float(p[2]), float(p[3])))
+    except (ValueError, IndexError):
+        return findings
+    if not atoms:
+        return findings
+
+    def _d(i, j):
+        _, xi, yi, zi = atoms[i]
+        _, xj, yj, zj = atoms[j]
+        return math.sqrt((xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2)
+
+    # --- 1. element multiset and atom count (heavy atoms only; the H count
+    #      is its own check below -- SMILES implicit H are legitimately added)
+    mol_elements = sorted(a.GetSymbol() for a in mol.GetAtoms() if a.GetSymbol() != "H")
+    xyz_elements = sorted(a[0] for a in atoms if a[0] != "H")
+    if mol_elements != xyz_elements:
+        missing = [e for e in mol_elements if mol_elements.count(e) > xyz_elements.count(e)]
+        extra = [e for e in xyz_elements if xyz_elements.count(e) > mol_elements.count(e)]
+        findings.append({
+            "kind": "atom_count",
+            "detail": (
+                f"SMILES has {len(mol_elements)} atoms {mol_elements}, "
+                f"XYZ has {len(xyz_elements)} {xyz_elements}; "
+                f"missing {missing[:8]}, extra {extra[:8]}"
+            ),
+        })
+
+    # --- 2. hydrogen count vs SMILES ----------------------------------------
+    # Reading rule (person's convention decision, 2026-10-31, superseding the
+    # phase-2a dative reading): the USER's SMILES reads as WRITTEN under the
+    # standard OpenSMILES rules (#36) -- an unbracketed N/O on a metal is
+    # AMIDO/HYDROXO (the M-L bond counts against the donor's valence), and an
+    # ammine/aqua is written [NH3]/[OH2].  Never normalize silently.
+    #   delfin/manta/single_structure.py:161 -- the pin mirrors this rule.
+    #   Dative exception: an arrow that ORIGINATES at the donor ("N->[Pt]",
+    # i.e. the donor is the begin atom) shifts the H to the donor reading
+    # (NH3); RDKit itself applies this (probed 09:44, probe retired to
+    # .gate/).  An arrow drawn FROM the metal ("[Pt]->N") makes RDKit read the
+    # donor as acceptor -- one H too few and likely a typo, so that case is
+    # flagged (dative_direction) instead of being silently re-read.
+    #   An unbracketed N/O/P/S on a metal is additionally reported as
+    # h_ambiguity INFO (amido NH2 vs ammine NH3) so the caller can show the
+    # user both readings before any calculation.  Findings only, always.
+    mol_user = None
+    try:
+        mol_user = Chem.MolFromSmiles(smiles)
+    except Exception:
+        mol_user = None
+    if mol_user is None:
+        mol_user = mol  # pinned fallback; reading rules below still apply
+    try:
+        _DONOR_EL = ("N", "O", "P", "S", "Se")
+        _ambig = []  # (element, implicit H) per unbracketed donor on a metal
+        for a in mol_user.GetAtoms():
+            for b in a.GetBonds():
+                if str(b.GetBondType()) != "DATIVE":
+                    continue
+                other = b.GetOtherAtom(a)
+                # Arrow drawn FROM the metal onto a lone-pair donor: RDKit
+                # reads the donor as acceptor (implicit H reduced by one,
+                # probe 09:44: [Pt](Cl)(Cl)->N gives 2 H).  Likely mistyped
+                # direction; the donor-first spelling is named.  Compare by
+                # index, not identity: RDKit Atom proxies are fresh objects
+                # per call, so `is` is unreliable.
+                if (
+                    b.GetBeginAtomIdx() == a.GetIdx()
+                    and a.GetSymbol() in _METAL_SET_SX1
+                    and other.GetSymbol() in _DONOR_EL
+                ):
+                    findings.append({
+                        "kind": "dative_direction",
+                        "detail": (
+                            f"dative arrow drawn from the metal to lone-pair "
+                            f"donor {other.GetSymbol()} (index "
+                            f"{other.GetIdx()}): RDKit then reads it as an "
+                            f"acceptor and drops one H; if the donor is meant "
+                            f"to donate, write it donor-first, e.g. "
+                            f"'{other.GetSymbol()}->[Pt]'.  Reading the SMILES "
+                            f"as written either way -- nothing is normalized."
+                        ),
+                    })
+            # Non-blocking INFO: unbracketed lone-pair donor on a metal has
+            # two chemically different readings (amido NH2 vs ammine NH3).
+            # Collected and reported once per molecule, naming every such
+            # atom, instead of one finding per atom.
+            if (
+                a.GetSymbol() in _DONOR_EL
+                and any(n.GetSymbol() in _METAL_SET_SX1 for n in a.GetNeighbors())
+                and int(a.GetNumImplicitHs()) > 0
+                and not _atom_token_is_bracketed(smiles, a.GetIdx())
+            ):
+                _ambig.append((a.GetSymbol(), int(a.GetNumImplicitHs())))
+        if _ambig:
+            parts = [
+                f"{el}H{h} (standard, amido/hydroxo) vs [{el}H{h + 1}] "
+                f"(ammine/aqua-type donor)" for el, h in _ambig
+            ]
+            findings.append({
+                "kind": "h_ambiguity",
+                "detail": (
+                    f"unbracketed lone-pair donor(s) on a metal: " + "; ".join(parts)
+                    + f".  The two readings give different formulas and "
+                    f"charges; an ammine/aqua donor is written bracketed "
+                    f"([NH3]) or with the arrow from the donor (N->[M]).  "
+                    f"DELFIN reads the SMILES as written (standard SMILES, "
+                    f"#36) and changes nothing."
+                ),
+                "severity": "info",
+            })
+        pt = Chem.GetPeriodicTable()
+        smi_h = 0
+        for a in mol_user.GetAtoms():
+            dative_from_donor = any(
+                str(b.GetBondType()) == "DATIVE"
+                and b.GetBeginAtomIdx() == a.GetIdx()
+                for b in a.GetBonds()
+            )
+            if dative_from_donor and int(a.GetNumImplicitHs()) > 0:
+                # Arrow originates at the donor: donor reading at default
+                # valence minus non-metal bonds (RDKit already shifts the
+                # implicit H this way; the explicit branch keeps the rule
+                # visible and holds when RDKit's valence model changes).
+                n_metal = sum(
+                    1 for n in a.GetNeighbors() if n.GetSymbol() in _METAL_SET_SX1
+                )
+                deg = a.GetDegree()
+                dv = pt.GetDefaultValence(a.GetAtomicNum())
+                if dv > 0 and deg - n_metal <= dv:
+                    smi_h += max(0, dv - (deg - n_metal))
+                    continue
+            smi_h += a.GetTotalNumHs()
+    except Exception:
+        smi_h = sum(a.GetTotalNumHs() for a in mol_user.GetAtoms())
+    xyz_h = sum(1 for a in atoms if a[0] == "H")
+    if smi_h != xyz_h:
+        findings.append({
+            "kind": "h_count",
+            "detail": f"SMILES implies {smi_h} H, XYZ carries {xyz_h} H",
+        })
+
+    # --- 3. total formal charge ---------------------------------------------
+    smi_charge = Chem.GetFormalCharge(mol)
+    # XYZ alone carries no formal charge; a lost/extra charged atom already
+    # shows as atom_count.  Charge check applies only when atom counts match
+    # and the SMILES charge is nonzero: then the emitter must not have neutralised.
+    if smi_charge != 0 and not findings:
+        findings_check = Chem.MolFromSmiles(smiles)
+        if findings_check is not None and Chem.GetFormalCharge(findings_check) != smi_charge:
+            findings.append({
+                "kind": "charge",
+                "detail": (
+                    f"SMILES formal charge {Chem.GetFormalCharge(findings_check)} "
+                    f"differs from normalised reading {smi_charge}"
+                ),
+            })
+
+    # --- 4. X-H bond lengths and H-X-Y angles --------------------------------
+    hs = [i for i, a in enumerate(atoms) if a[0] == "H"]
+    heavy = [i for i, a in enumerate(atoms) if a[0] != "H"]
+    for h in hs:
+        ds = sorted(
+            ((j, _d(h, j)) for j in heavy), key=lambda t: t[1]
+        )
+        if not ds:
+            continue
+        j, dmin = ds[0]
+        if not (0.7 <= dmin <= 1.4):
+            findings.append({
+                "kind": "xh_length",
+                "atoms": [h, j],
+                "detail": f"{atoms[j][0]}-H bond {dmin:.3f} A outside 0.7-1.4 A",
+            })
+        else:
+            # H-X-Y angle: the angle at X between H and X's other nearest
+            # heavy neighbour, flagged when the H points straight through.
+            xs = sorted(
+                ((k, _d(h, k)) for k in heavy if k != j), key=lambda t: t[1]
+            )
+            if xs:
+                k, _ = xs[0]
+                ang = _angle_deg(atoms, h, j, k)
+                if ang is not None and ang > 135.0:
+                    findings.append({
+                        "kind": "xh_angle",
+                        "atoms": [h, j, k],
+                        "detail": f"H-{atoms[j][0]}-{atoms[k][0]} angle {ang:.1f} deg > 135",
+                    })
+
+    # --- 5. clashes -----------------------------------------------------------
+    for i in range(len(atoms)):
+        for j in range(i + 1, len(atoms)):
+            ei, ej = atoms[i][0], atoms[j][0]
+            lim = 1.2 if (ei != "H" and ej != "H") else (
+                1.0 if (ei == "H" and ej == "H") else 0.9
+            )
+            d = _d(i, j)
+            if d < lim:
+                findings.append({
+                    "kind": "clash",
+                    "atoms": [i, j],
+                    "detail": f"{ei}-{ej} distance {d:.3f} A below {lim} A",
+                })
+
+    # --- 6. metal-ligand distances -------------------------------------------
+    metals = [
+        (i, a[0]) for i, a in enumerate(atoms)
+        if a[0] in _METAL_SET_SX1
+    ]
+    for mi, msym in metals:
+        for li in heavy:
+            if li == mi:
+                continue
+            d = _d(mi, li)
+            if d > 3.5:
+                continue  # not a coordination contact
+            try:
+                ideal = _get_ml_bond_length(msym, atoms[li][0])
+            except Exception:
+                continue
+            if ideal and d > 1.4 * ideal:
+                findings.append({
+                    "kind": "ml_length",
+                    "atoms": [mi, li],
+                    "detail": (
+                        f"{msym}-{atoms[li][0]} {d:.3f} A exceeds 1.4x "
+                        f"table value {ideal:.3f} A"
+                    ),
+                })
+
+    # --- 7. hapto planarity ----------------------------------------------------
+    findings.extend(_hapto_planarity_findings(mol, atoms, hs))
+
+    return findings
+
+
+def _angle_deg(atoms, i, j, k) -> Optional[float]:
+    """Angle at atom j (i-j-k) in degrees, None if degenerate."""
+    import math as _m
+    _, xi, yi, zi = atoms[i]
+    _, xj, yj, zj = atoms[j]
+    _, xk, yk, zk = atoms[k]
+    v1 = (xi - xj, yi - yj, zi - zj)
+    v2 = (xk - xj, yk - yj, zk - zj)
+    n1 = _m.sqrt(sum(t * t for t in v1))
+    n2 = _m.sqrt(sum(t * t for t in v2))
+    if n1 < 1e-8 or n2 < 1e-8:
+        return None
+    cos = sum(a * b for a, b in zip(v1, v2)) / (n1 * n2)
+    cos = max(-1.0, min(1.0, cos))
+    return _m.degrees(_m.acos(cos))
+
+
+def _hapto_planarity_findings(mol, atoms, hs):
+    """Flag hapto rings that are not planar with the metal over the centroid.
+
+    A hapto group is a ring (or chain) bonded to a metal through more than one
+    atom; the ring atoms must lie in one plane and the metal above the centroid.
+    """
+    findings: List[Dict[str, object]] = []
+    if not RDKIT_AVAILABLE:
+        return findings
+    metal_set = _METAL_SET_SX1
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in metal_set:
+            continue
+        mi_mol = atom.GetIdx()
+        # neighbour count from the molecule graph identifies multi-hapto groups
+        hapto_neighbours = [
+            n.GetIdx() for n in atom.GetNeighbors()
+            if n.GetSymbol() == "C"
+        ]
+        if len(hapto_neighbours) < 2:
+            continue
+        # map molecule indices to XYZ indices by element sequence
+        mol_order = [a.GetSymbol() for a in mol.GetAtoms()]
+        if sorted(mol_order) != sorted(a[0] for a in atoms):
+            continue
+        # element-sequence mapping: molecule atom i -> XYZ index via position
+        # within same-element runs (works for the converter's output ordering).
+        pos_by_el: Dict[str, int] = {}
+        order = []
+        for sym in mol_order:
+            pos_by_el.setdefault(sym, 0)
+            order.append((sym, pos_by_el[sym]))
+            pos_by_el[sym] += 1
+        count_by_el: Dict[str, int] = {}
+        xyz_index_of = {}
+        xyz_count: Dict[str, int] = {}
+        for idx, a in enumerate(atoms):
+            k = xyz_count.get(a[0], 0)
+            xyz_count[a[0]] = k + 1
+            xyz_index_of[(a[0], k)] = idx
+        for m_i, (sym, k) in enumerate(order):
+            idx = xyz_index_of.get((sym, k))
+            if idx is None:
+                idx = -1
+            if m_i == mi_mol:
+                m_xyz = idx
+        ring_atoms_xyz = []
+        for ni in hapto_neighbours:
+            sym, k = order[ni]
+            ring_atoms_xyz.append(xyz_index_of.get((sym, k), -1))
+        if m_xyz is None or any(x < 0 for x in ring_atoms_xyz):
+            continue
+        # metal must sit above the centroid: distance to centroid vs table value
+        cs = [atoms[x] for x in ring_atoms_xyz]
+        cx = sum(c[1] for c in cs) / len(cs)
+        cy = sum(c[2] for c in cs) / len(cs)
+        cz = sum(c[3] for c in cs) / len(cs)
+        mpos = atoms[m_xyz]
+        mcen = math.sqrt(
+            (mpos[1] - cx) ** 2 + (mpos[2] - cy) ** 2 + (mpos[3] - cz) ** 2
+        )
+        if mcen < 0.8 or mcen > 3.2:
+            findings.append({
+                "kind": "hapto_planarity",
+                "detail": (
+                    f"metal-centroid distance {mcen:.3f} A outside 0.8-3.2 A "
+                    f"for a multi-hapto group"
+                ),
+            })
+    return findings
+
+
+# Metals for the SX1 check, from delfin/manta/ml_tables._METALS (the table the
+# M-L distance check reads its values from).
+_METAL_SET_SX1 = set(_METALS)
+
+
+def _atom_token_is_bracketed(smiles: str, atom_idx: int) -> bool:
+    """Is this atom's token in ``smiles`` written in brackets (``[NH3]``)?
+
+    A bracket atom states its H count itself, so the h_ambiguity INFO is not
+    needed (and would be wrong: ``[NH3]`` is unambiguous).  Derived from the
+    SMILES string, not the RDKit mol, because ``MolFromSmiles`` does not keep
+    the token spelling.  Bracket tokens on non-tetrahedral stereocentres
+    (``[C@H]``) carry H and would be treated as explicit too -- correct for
+    this purpose, since a bracket token is always an explicit statement.
+    """
+    depth = 0
+    idx = -1
+    in_bracket = False
+    prev_digit_or_pct = False
+    i = 0
+    while i < len(smiles):
+        c = smiles[i]
+        if c == "[":
+            depth += 1
+            in_bracket = True
+            idx += 1
+            i += 1
+            continue
+        if c == "]":
+            depth -= 1
+            in_bracket = False
+            prev_digit_or_pct = False
+            i += 1
+            continue
+        if depth == 0:
+            if c == "%":
+                # ring closure number written as two digits: consumes the
+                # next char, is not an atom
+                i += 2
+                prev_digit_or_pct = True
+                continue
+            if c.isdigit() and prev_digit_or_pct:
+                prev_digit_or_pct = False
+                i += 1
+                continue
+            if c.isalpha() and not prev_digit_or_pct:
+                idx += 1
+                prev_digit_or_pct = c.isupper() and i + 1 < len(smiles) and smiles[i + 1].islower()
+                if prev_digit_or_pct:
+                    i += 1  # two-letter element symbol is one atom
+                i += 1
+                continue
+            prev_digit_or_pct = False
+            i += 1
+            continue
+        # inside brackets: every atom token is one atom
+        if c.isalpha():
+            idx += 1
+            prev_digit_or_pct = False
+        else:
+            prev_digit_or_pct = False
+        i += 1
+    return in_bracket and idx == atom_idx
+
+
+
+# ---------------------------------------------------------------------------
 # SELF-TEST for DELFIN_FFFREE_HAPTO_SEAT_RIGID
 #   PYTHONPATH=/home/localuser/DELFIN_dev python -m delfin.smiles_converter
 # A direct file invocation loads a DIFFERENT module copy because of the editable

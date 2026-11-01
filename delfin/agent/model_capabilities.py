@@ -997,6 +997,125 @@ def kit_models_served(base_url: str = "", api_key: str = "",
     return set(hit[1]) if hit else set()
 
 
+# ---------------------------------------------------------------------------
+# The action classifier's model: independent of the session's.
+# ---------------------------------------------------------------------------
+# The classifier (action_classifier) ran on the same model as the agents
+# (kit.deepseek-v4-flash). With ten agents on that model it produced no verdict
+# within 20 s and every later action of the turn latched to a human (measured
+# 2026-10-29: 6 harmless worktree tests asked in 20 min). The classifier is
+# moved to a fast kit.* chat model from a DIFFERENT vendor family, and its
+# own stall latches only itself, so a slow model does not gate every action.
+
+# Paid / non-local routes the endpoint never reports as served, but that a
+# stale or cross-provider roster may list; never chosen.
+_CLASSIFIER_FOREIGN_PREFIXES = ("azure.", "google.", "alias.", "standard-")
+
+# ONE table: the classifier's model lineup, in bench order. The orchestrator's
+# classifier bench (36 labelled actions x 3 repeats, DELFIN's real judge)
+# measured dangerous-autions-let-through then latency:
+#   kit.mistral-small-4-119b-a8b  1/51 dangerous,  0.8  s
+#   kit.deepseek-v4-flash         3/51              29.7 s (18 no-verdict)
+#   kit.glm-5.3-flash             0/51              91.5 s
+# The first served model here is the PRIMARY (asks first), the rest are the
+# ALLOW-confirmation chain, in this order. The lineup is one table so the
+# ranking can be re-set from a future measurement without touching code paths.
+_CLASSIFIER_MODELS = (
+    "kit.mistral-small-4-119b-a8b",
+    "kit.deepseek-v4-flash",
+    "kit.glm-5.3-flash",
+)
+
+
+def model_family(model: str) -> str:
+    """Vendor family of a served model id (lower-case).
+
+    ``kit.deepseek-v4-flash`` -> ``deepseek``, ``kit.glm-5.3-flash`` -> ``glm``,
+    ``kit.mistral-small-4-119b-a8b`` -> ``mistral``. Strips a known gateway
+    prefix (kit./azure./google.), then the leading alphabetic run. An
+    unrecognised vendor still returns its first token, so "different family"
+    stays a sane comparison.
+    """
+    base = ((model or "").strip() or "").lower()
+    if not base:
+        return ""
+    base = _base_name(model).lower()
+    for p in ("alias.", "standard-"):
+        if base.startswith(p):
+            base = base[len(p):]
+    m = _re.match(r"[a-z]+", base)
+    return m.group(0) if m else ""
+
+
+def _served_chat_kit_local(served: set) -> list:
+    """Served ids usable by the classifier: chat, on KIT's local kit.* route.
+
+    Filters out foreign/paid prefixes (azure./google./alias./standard-),
+    non-chat modalities (embedding / reranker / speech / image) and bare
+    ``/v1/models`` entries that are not kit.* locals.
+    """
+    out = []
+    for mid in served or ():
+        m = (mid or "").strip()
+        if not m:
+            continue
+        low = m.lower()
+        if low.startswith(_CLASSIFIER_FOREIGN_PREFIXES):
+            continue
+        # Only KIT's local route is free; a served id without the prefix but
+        # inside a KIT /v1/models response is still that endpoint's, so accept
+        # it when it is not a foreign route and is chat.
+        if nonchat_reason(m):
+            continue
+        out.append(m)
+    return out
+
+
+def classifier_choice(*, served: set, session_model: str,
+                      cfg_model: str, cfg_explicit: bool) -> str:
+    """The classifier's primary model id.
+
+    When ``agent.classifier.model`` was set explicitly, that. Otherwise the
+    first served model in the bench lineup (_CLASSIFIER_MODELS), which is
+    kit.mistral-small-4-119b-a8b when the endpoint serves it (fastest). Only
+    the session's family served, or a roster outside the lineup, falls back to
+    any served chat local (sole family decides alone, today's behaviour); a
+    stale/empty roster falls back to ``cfg_model`` -- never no classifier.
+    """
+    if cfg_explicit:
+        return cfg_model
+    locals_ = _served_chat_kit_local(served)
+    served_ids = {m.lower() for m in locals_}
+    for mid in _CLASSIFIER_MODELS:
+        if mid in served_ids:
+            return mid
+    # Nothing from the lineup served: whatever the endpoint offers decides
+    # alone (the whole session runs on a family no bench covers). Preserve
+    # set/roster stability by picking the first in a stable order.
+    for mid in sorted(locals_):
+        return mid
+    # A roster that offered nothing usable: fall back, never drop the watch.
+    return cfg_model
+
+
+def classifier_confirmation(*, served: set, primary: str,
+                            cfg_model: str) -> tuple:
+    """The ordered ALLOW-confirmation chain for the primary model.
+
+    ``primary``'s own refuse/ask stands at once; only an allow needs a second
+    opinion. This returns the bench models the endpoint serves from a family
+    OTHER than the primary's, in bench order. Empty tuple exactly when only
+    the primary's family is served (the primary decides alone, today's
+    behaviour) -- ``cfg_model`` is deliberately not appended: a lone family
+    is a legitimate one-vote decision, and inventing a second model the
+    endpoint does not serve would only 404 in the confirmation.
+    """
+    fam = model_family(primary)
+    served_ids = {m.lower() for m in _served_chat_kit_local(served)}
+    return tuple(m for m in _CLASSIFIER_MODELS
+                 if model_family(m) != fam and m in served_ids)
+
+
 def kit_best_model(base_url: str = "", api_key: str = "",
                    *, fetch: bool = False) -> str:
     """The best KIT model for agent work that the endpoint actually serves.
