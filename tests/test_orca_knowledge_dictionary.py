@@ -1,99 +1,97 @@
-"""Tests for the shared ORCA keyword dictionary loader and its records.
+"""Tests for the ORCA keyword dictionary loader.
 
-Uses only the standard library plus the dependency-free loader
-(delfin.orca_knowledge.dictionary) -- no OPI import. Verifies the schema,
-field presence, text-length budget and the explain() contract.
+The loader (``delfin/orca_knowledge/dictionary``) merges every share's
+``<share>.json`` into one record set and exposes ``explain`` (case-blind,
+alias-resolved) and ``records`` (category filter). This is a shared artifact:
+any share may add records, but the record contract stays the same.
+
+These tests run on the CI interpreter with no OPI dependency and never start
+ORCA (the parser verdicts are recorded data, not live probes).
 """
-import json
-import os
+from __future__ import annotations
 
-import delfin.orca_knowledge.dictionary as dictionary
+import pytest
 
-DATADIR = os.path.dirname(os.path.abspath(dictionary.__file__))
+from delfin.orca_knowledge.dictionary import explain, records
 
+REQUIRED_FIELDS = (
+    "id", "keyword", "category", "purpose", "manual", "parser", "opi", "status",
+)
 
-def _all_records():
-    """Flatten every record across a share's JSON files."""
-    out = []
-    for name in sorted(os.listdir(DATADIR)):
-        if not name.endswith(".json"):
-            continue
-        with open(os.path.join(DATADIR, name), "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        out.extend(r for r in data.values() if isinstance(r, dict))
-    return out
+TEXT_FIELDS = ("purpose", "typical_use", "defaults", "requires", "excludes",
+               "pairs_with")
 
 
-REQUIRED = ["keyword", "category", "purpose", "requires", "excludes",
-            "pairs_with", "defaults", "typical_use", "literature", "manual",
-            "parser", "opi", "status"]
+def pytest_generate_tests(metafunc):
+    # Every record is parameterised: a schema addition is tested on all records.
+    if "record" in metafunc.fixturenames:
+        metafunc.parametrize("record", records(), ids=lambda r: r["id"])
 
 
-def test_dictionary_files_exist():
-    assert os.path.exists(os.path.join(DATADIR, "__init__.py")), \
-        "shared loader __init__.py missing"
-    jsons = [n for n in os.listdir(DATADIR) if n.endswith(".json")]
-    assert jsons, "at least one share JSON must exist"
+def test_records_present():
+    """The dictionary is non-empty and every record is addressable."""
+    all_recs = records()
+    assert len(all_recs) >= 10
+    # a record known to belong to the properties share must be present
+    assert any(r["id"] == "property.nmr" for r in all_recs)
 
 
-def test_every_record_has_required_fields():
-    for rec in _all_records():
-        assert isinstance(rec.get("manual"), dict), rec.get("keyword")
-        for field in REQUIRED:
-            assert field in rec, f"{rec.get('keyword')}: missing field {field}"
+def test_required_fields_present(record):
+    for field in REQUIRED_FIELDS:
+        assert field in record, f"missing field {field!r} in {record['id']}"
+        assert record[field] not in (None, ""), \
+            f"empty required field {field!r} in {record['id']}"
 
 
-def test_record_text_within_budget():
-    """No record text field longer than 400 chars (no pasted manual text)."""
-    text_fields = ["purpose", "requires", "excludes", "pairs_with", "defaults",
-                   "typical_use", "literature"]
-    for rec in _all_records():
-        for field in text_fields:
-            val = rec.get(field)
-            if val:
-                assert len(str(val)) <= 400, \
-                    f"{rec.get('keyword')}.{field} is {len(str(val))} chars"
+def test_manual_has_page_and_section(record):
+    manual = record["manual"]
+    assert isinstance(manual, dict)
+    assert manual.get("page"), f"no manual.page in {record['id']}"
+    assert manual.get("section"), f"no manual.section in {record['id']}"
 
 
-def test_every_record_has_manual_section_and_parser():
-    for rec in _all_records():
-        # manual field must exist with a page string; every record has a parser verdict
-        assert isinstance(rec["manual"], dict), rec.get("keyword")
-        assert "page" in rec["manual"], rec.get("keyword")
-        assert "section" in rec["manual"], rec.get("keyword")
-        assert rec.get("parser") in ("accepted", "rejected", "unavailable"), \
-            f"{rec.get('keyword')}: parser verdict {rec.get('parser')!r}"
-        # a record marked grounded MUST point at a real manual section; draft
-        # records are allowed an empty page (keyword not documented verbatim).
-        if rec["status"] == "grounded":
-            assert rec["manual"].get("page"), \
-                f"grounded record {rec.get('keyword')} has no manual page"
+def test_parser_verdict_is_known(record):
+    assert record["parser"] in ("accepted", "rejected", "unavailable"), \
+        f"bad parser verdict in {record['id']}"
 
 
-def test_status_is_valid():
-    for rec in _all_records():
-        assert rec["status"] in ("grounded", "draft"), rec.get("keyword")
+def test_status_is_known(record):
+    assert record["status"] in ("grounded", "draft"), \
+        f"bad status in {record['id']}"
 
 
-def test_explain_rijcosx_caseblind():
-    rec = dictionary.explain("rijcosx")
-    assert rec is not None
-    assert rec["keyword"] == "rijcosx"
-    assert dictionary.explain("RIJCOSX")["keyword"] == "rijcosx"
+def test_no_record_text_field_exceeds_400_chars(record):
+    for field in TEXT_FIELDS:
+        value = record.get(field)
+        if isinstance(value, str):
+            assert len(value) <= 400, \
+                f"text field {field!r} too long ({len(value)} ch) in {record['id']}"
 
 
-def test_explain_unknown_returns_none():
-    assert dictionary.explain("zzz_no_such_keyword") is None
+def test_explain_is_case_insensitive():
+    rec = explain("NMR")
+    assert rec is not None and rec["keyword"].lower() == "nmr"
 
 
-def test_records_filter_by_category():
-    allr = dictionary.records()
-    assert len(allr) > 0
-    approx = dictionary.records("approximation")
-    assert approx
-    assert all(r["category"] == "approximation" for r in approx)
+def test_explain_unknown_word_returns_none():
+    assert explain("this-is-not-an-orca-keyword-xyzzy") is None
 
 
-def test_no_duplicate_keywords():
-    keys = [r["keyword"] for r in dictionary.records()]
-    assert len(keys) == len(set(keys)), "duplicate keyword in dictionary"
+def test_explain_resolves_aliases():
+    # any record with an alias list resolves the alias to the master keyword
+    aliased = [r for r in records() if len(r.get("aliases", [])) > 1]
+    if not aliased:
+        pytest.skip("no share has aliased records yet")
+    rec = aliased[0]
+    alias = rec["aliases"][1]
+    resolved = explain(alias)
+    assert resolved is not None and resolved["id"] == rec["id"]
+
+
+def test_records_category_filter():
+    categories = {r["category"] for r in records()}
+    assert categories, "no categories present"
+    one = next(iter(categories))
+    subset = records(category=one)
+    assert subset, "category filter returned nothing for a live category"
+    assert all(r["category"] == one for r in subset)

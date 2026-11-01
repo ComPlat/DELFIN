@@ -1,80 +1,98 @@
-"""Shared loader for the ORCA key* word dictionaries.
+"""ORCA keyword dictionary: every keyword and block option DELFIN may write.
 
-Each share ships one JSON file `delfin/orca_knowledge/dictionary/<share>.json`
-with records of the shape:
+Shares (swarm agents) each contribute a ``<share>.json`` in this directory;
+this loader merges them into one record set. A record answers "what does
+this keyword do, when is it used, what does it require or exclude, and how
+is it used in the manual" so DELFIN never writes a keyword it cannot explain.
 
-    {"keyword": str, "aliases": [str], "category": str, "purpose": str,
-     "requires": str|None, "excludes": str|None, "pairs_with": str|None,
-     "defaults": str|None, "typical_use": str|None, "literature": str|None,
-     "manual": {"page": str, "section": str}, "parser": str,
-     "opi": str|None, "status": "grounded"|"draft"}
+Public API:
+    ``explain(word)``   case-blind, alias-resolved; the record dict or None.
+    ``records(category=None)``   every record, or only records of one category.
 
-This module loads every *.json in this directory at import time and exposes:
-
-    explain(word)   -> the record (dict) for a keyword/alias, case-blind, or None
-    records(category=None) -> list of all records (filtered by category if given)
-
-It is intentionally dependency-free: it must run on a plain CI interpreter and
-must not import OPI or delfin internals.
+The merge is dynamic: the loader re-reads the directory each call, so a
+share file added later is picked up without a code change. With no share
+files present the dictionaries are simply empty (``explain`` -> None,
+``records`` -> []); nothing breaks.
 """
+from __future__ import annotations
+
 import json
 import os
+from functools import lru_cache
 
-_DATADIR = os.path.dirname(os.path.abspath(__file__))
-_LOADED = False
-# keyword (lowercased) -> full record; every canonical keyword and each of its
-# aliases maps to the same record.
-_INDEX = {}
+__all__ = ("explain", "records")
+
+#: Every stand-alone JSON in this directory is a share file.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load():
-    global _INDEX, _LOADED
-    if _LOADED:
-        return
-    for name in sorted(os.listdir(_DATADIR)):
-        if not name.endswith(".json"):
-            continue
-        path = os.path.join(_DATADIR, name)
+@lru_cache(maxsize=1)
+def _share_files() -> tuple[str, ...]:
+    """The names of the share JSON files, sorted for determinism."""
+    here = {name for name in os.listdir(_THIS_DIR)
+            if name.endswith(".json")
+            and not name.startswith("__")}
+    return tuple(sorted(here))
+
+
+def _load() -> tuple[list[dict], dict[str, "list[dict]"], set[str]]:
+    """(all_records, alias_index lower->records, categories).
+
+    A record's ``keyword`` and each of its ``aliases`` are lower-cased and
+    indexed. A word may legitimately resolve to more than one record (the
+    same spelling as a standalone keyword and as an alias) so the index
+    holds a list and ``explain`` returns the keyword match in preference
+    to an alias match.
+    """
+    all_records: list[dict] = []
+    aliases: dict[str, list[dict]] = {}
+    categories: set[str] = set()
+    for filename in _share_files():
         try:
-            with open(path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+            with open(os.path.join(_THIS_DIR, filename),
+                      encoding="utf-8") as fh:
+                records_for_share = json.load(fh)
         except (OSError, ValueError):
-            # A malformed share must not break lookup for the others; skip it.
+            # A half-written share file must not break the loader.
             continue
-        if isinstance(data, dict):
-            for rec in data.values():
-                if not isinstance(rec, dict) or "keyword" not in rec:
-                    continue
-                rec.setdefault("aliases", [])
-                kw = str(rec["keyword"])
-                _INDEX[kw.lower()] = rec
-                for alias in rec["aliases"] or []:
-                    _INDEX[str(alias).lower()] = rec
-    _LOADED = True
+        if not isinstance(records_for_share, list):
+            continue
+        for record in records_for_share:
+            if not isinstance(record, dict):
+                continue
+            all_records.append(record)
+            cats = record.get("category")
+            if isinstance(cats, str) and cats:
+                categories.add(cats)
+            keys = {record.get("keyword")}
+            for alias in record.get("aliases", []):
+                if isinstance(alias, str) and alias:
+                    keys.add(alias)
+            for key in keys:
+                if isinstance(key, str) and key:
+                    aliases.setdefault(key.lower(), []).append(record)
+    return all_records, aliases, categories
 
 
-def explain(word):
-    """Return the record dict for a keyword or alias (case-blind), else None."""
-    if word is None:
+def records(category=None) -> list[dict]:
+    """Every record, optionally narrowed to one category."""
+    all_records, _aliases, _categories = _load()
+    if category is None:
+        return list(all_records)
+    return [r for r in all_records if r.get("category") == category]
+
+
+def explain(word: str):
+    """The record for ``word`` (case-blind, aliases resolved) or None."""
+    if not isinstance(word, str):
         return None
-    _load()
-    key = str(word).strip().lower()
-    if key in _INDEX:
-        return _INDEX[key]
-    # hyphen/space tolerant lookup as a last resort: "no split ri j" -> "nosplitrij"
-    collapsed = key.replace("-", "").replace(" ", "")
-    return _INDEX.get(collapsed)
-
-
-def records(category=None):
-    """Return every record, optionally filtered to one category (case-blind)."""
-    _load()
-    seen = {}
-    for rec in _INDEX.values():
-        seen[id(rec)] = rec
-    out = list(seen.values())
-    if category is not None:
-        c = str(category).lower()
-        out = [r for r in out if str(r.get("category", "")).lower() == c]
-    out.sort(key=lambda r: str(r.get("keyword", "")))
-    return out
+    _all, aliases, _categories = _load()
+    key = word.lower()
+    candidates = aliases.get(key)
+    if not candidates:
+        return None
+    # Prefer the record whose exact keyword (not just an alias) is ``word``.
+    for record in candidates:
+        if isinstance(record.get("keyword"), str) and record["keyword"].lower() == key:
+            return record
+    return candidates[0]

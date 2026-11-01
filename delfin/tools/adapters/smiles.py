@@ -28,6 +28,12 @@ class SmilesToXyzAdapter(StepAdapter):
     data_keys = (
         DataKeySpec("smiles", "str", "", "Echo of the input SMILES"),
         DataKeySpec("n_atoms", "int", "", "Number of atoms in the generated structure"),
+        DataKeySpec(
+            "findings", "list", "",
+            "Post-conversion checker findings (dicts with kind/detail/severity); "
+            "empty list when the geometry is clean.  On failure carries the "
+            "conversion_failed finding.",
+        ),
     )
     requires_python = ("rdkit",)
 
@@ -48,7 +54,7 @@ class SmilesToXyzAdapter(StepAdapter):
         apply_uff = kwargs.get("apply_uff", True)
         hapto_approx = kwargs.get("hapto_approx", None)
 
-        from delfin.smiles_converter import smiles_to_xyz
+        from delfin.smiles_converter import smiles_to_xyz, check_converted_complex
 
         xyz_content, error_msg = smiles_to_xyz(
             smiles,
@@ -57,9 +63,21 @@ class SmilesToXyzAdapter(StepAdapter):
         )
 
         if error_msg or xyz_content is None:
+            # The caller owns the conversion result tuple: a conversion crash
+            # is not a bare error string but a structured finding, so pipeline
+            # consumers see WHY the structure is absent (QS arbitration,
+            # nacht-s11; the caller drops the error today).
             return self._make_result(
                 self.name, StepStatus.FAILED, work_dir, start,
                 error=error_msg or "smiles_to_xyz returned None",
+                data={
+                    "smiles": smiles,
+                    "findings": [{
+                        "kind": "conversion_failed",
+                        "detail": error_msg or "smiles_to_xyz returned None",
+                        "severity": "error",
+                    }],
+                },
             )
 
         # Write XYZ to work_dir
@@ -72,10 +90,22 @@ class SmilesToXyzAdapter(StepAdapter):
         full_xyz = f"{n_atoms}\nGenerated from {smiles}\n" + "\n".join(lines) + "\n"
         out_path.write_text(full_xyz)
 
+        # Post-conversion check (findings only, never a silent fix): the
+        # phase-1 checker runs on the written geometry; the caller surfaces
+        # its findings in data["findings"].
+        try:
+            findings = check_converted_complex(smiles, full_xyz)
+        except Exception as exc:  # findings must never fail the conversion
+            findings = [{
+                "kind": "check_error",
+                "detail": f"check_converted_complex raised: {exc}",
+                "severity": "info",
+            }]
+
         return self._make_result(
             self.name, StepStatus.SUCCESS, work_dir, start,
             geometry=out_path,
-            data={"smiles": smiles, "n_atoms": n_atoms},
+            data={"smiles": smiles, "n_atoms": n_atoms, "findings": findings},
         )
 
 

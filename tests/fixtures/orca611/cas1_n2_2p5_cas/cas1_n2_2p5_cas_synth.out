@@ -1,0 +1,8 @@
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+# Invented CASSCF-style output for a CAS(6,6) N2-like run at a
+# stretched bond. All six occupations clearly partial (healthy).
+Number of active orbitals ... 6
+Number of active electrons ... 6
+
+CASSCF ITERATION  9
+N(occ)=  1.27340 1.07060 1.07010 0.92990 0.92950 0.72660
