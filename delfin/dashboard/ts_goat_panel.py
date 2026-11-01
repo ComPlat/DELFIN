@@ -68,6 +68,14 @@ def build_ts_goat_panel(
         '<b>TS &rarr; GOAT</b> &mdash; constrained conformer search from the '
         'optimized transition state'
     )
+    # 2026-11-02 live report: the close button sat in the bottom action
+    # row and scrolled out of sight.  The title bar now carries its own
+    # close button at the right edge, always visible without scrolling.
+    title_close_btn = widgets.Button(
+        description='✕ Schließen', button_style='warning',
+        tooltip='Close TS→GOAT and restore the normal file view',
+        layout=widgets.Layout(width='120px', margin='0 0 0 auto'),
+    )
     status = widgets.HTML('')
     files_box = widgets.HTML('')
     analysis_box = widgets.HTML('')
@@ -111,15 +119,23 @@ def build_ts_goat_panel(
     anim_amp = widgets.FloatSlider(
         value=0.25, min=0.05, max=1.0, step=0.05,
         description='Amplitude:', continuous_update=False,
-        layout=widgets.Layout(width='260px'),
+        layout=widgets.Layout(width='200px'),
+    )
+    anim_speed = widgets.FloatSlider(
+        value=1.0, min=0.25, max=3.0, step=0.25,
+        description='Geschw.:', continuous_update=False,
+        tooltip='Animation speed (1 = 1.6 s per period)',
+        layout=widgets.Layout(width='180px'),
     )
     anim_arrows_toggle = widgets.Checkbox(
         value=False, description='Schwingungspfeile anzeigen',
         layout=widgets.Layout(width='240px'),
     )
     anim_row = widgets.HBox(
-        [anim_toggle, anim_play, anim_pause, anim_amp, anim_arrows_toggle],
-        layout=widgets.Layout(margin='2px 0'),
+        [anim_toggle, anim_play, anim_pause, anim_amp, anim_speed,
+         anim_arrows_toggle],
+        layout=widgets.Layout(margin='2px 0', flex_flow='row wrap',
+                              width='100%'),
     )
     constraints_label = widgets.HTML('<b>Constraint atoms (0-based ORCA indices):</b>')
     constraints_field = widgets.Text(
@@ -191,11 +207,15 @@ def build_ts_goat_panel(
     center_row = widgets.HBox([center_btn])
 
     layout = _two_column_layout(
-        title_row=title,
+        title_row=widgets.HBox([title, title_close_btn],
+            layout=widgets.Layout(display='flex', width='100%',
+                                   align_items='center')),
         left=(status, files_box, mode_label, mode_dropdown, mode_warning,
               analysis_box, constraints_label,
               widgets.HBox([constraints_field, highlight_btn, reset_prop_btn,
-                            clear_sel_btn]),
+                            clear_sel_btn],
+                           layout=widgets.Layout(flex_flow='row wrap',
+                                                 width='100%')),
               settings_row, preview_label, preview_box, btn_row,
               cancel_row),
         right=(viewer_head, viewer_out, click_sync, anim_row, center_row),
@@ -326,10 +346,16 @@ def build_ts_goat_panel(
             if displaced:
                 atoms = displaced
         try:
+            # the animation needs the displacement vectors in EVERY
+            # render (also without visible arrows); the arrows toggle
+            # only controls whether they are DRAWN.  Before this split
+            # a default-off arrows checkbox starved the animation of
+            # its payload -- nothing moved (live report 2026-11-02).
             render_in_panel(
                 atoms, indices,
                 arrows if anim_arrows_toggle.value else None,
                 output_widget=viewer_out,
+                mode_vector=state.get('mode_arrows'),
             )
         except Exception as exc:  # visible error, never a blank area
             _viewer_fallback(
@@ -371,6 +397,12 @@ def build_ts_goat_panel(
     anim_arrows_toggle.observe(
         lambda _c: _render_integrated_viewer(), names='value')
 
+    def _on_speed_change(_change=None):
+        """Write the period for the browser loop (base 1600 ms)."""
+        vid = get_viewer_id() if get_viewer_id else None
+        if vid and animate_in_panel:
+            animate_in_panel(vid, 'speed')
+
     def _on_play(_b=None):
         if not anim_toggle.value:
             return
@@ -393,6 +425,7 @@ def build_ts_goat_panel(
 
     anim_play.on_click(_on_play)
     anim_pause.on_click(_on_pause)
+    anim_speed.observe(_on_speed_change, names='value')
 
     # ---- atom click -> constraint toggle --------------------------------
     # The tab injects click JS; when the user clicks an atom, the
@@ -432,10 +465,15 @@ def build_ts_goat_panel(
         analysis_box.value = ''.join(
             f'<li>{html.escape(r)}</li>' for r in proposed.reasons
         )
+        # reliability = quality/consistency of the data; ambiguity =
+        # uniqueness of the PROPOSAL.  These are different things and
+        # must not read as one verdict (live report 2026-11-02).
         status.value = (
             f'<span style="font-size:12px;">mode {idx}: '
-            f'reliability {proposed.reliability}'
-            + (' -- <b>AMBIGUOUS</b>, review the proposal'
+            f'data quality {proposed.reliability}'
+            + (' -- <b>proposal AMBIGUOUS:</b> several contacts answer '
+               'the mode similarly strongly; review and adjust the '
+               'selection in the viewer'
                if proposed.ambiguous else '')
             + '</span>'
         )
@@ -615,6 +653,10 @@ def build_ts_goat_panel(
             pass
     click_sync.observe(_on_click_sync, names='value')
 
+    # the title-bar close button and the bottom buttons share ONE close
+    # path (no divergent callbacks)
+    title_close_btn.on_click(lambda _b: close())
+
     def _on_center(_b=None):
         if center_viewer and get_viewer_id:
             vid = get_viewer_id()
@@ -737,9 +779,22 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             from delfin.imag import displaced_geometries
             for idx, _freq in status.imaginary_modes:
                 disp = displaced_geometries(files.hess_path, idx, 0.25)
-                # pos/neg share the same magnitudes; the arrows show the
-                # +direction of the mode
-                mode_arrows_by_index[idx] = disp['pos']
+                # TRUE displacement vectors, not absolute coordinates:
+                # the animation displaces base + amp*vector, so the
+                # arrow payload must hold (displaced - base), computed
+                # in the same frame (both from the Hessian, Angstrom).
+                # Passing the absolute displaced coordinates instead
+                # made the animation move along the position vector of
+                # an unrelated geometry -- never visible as the mode
+                # (live-dashboard report 2026-11-02).
+                from delfin.imag import _hessian_atoms
+                base_atoms = _hessian_atoms(files.hess_path.read_text(
+                    encoding='utf-8', errors='ignore').splitlines())
+                mode_arrows_by_index[idx] = [
+                    (el, dx - bx, dy - by, dz - bz)
+                    for (el, dx, dy, dz), (_be, bx, by, bz)
+                    in zip(disp['pos'], base_atoms)
+                ]
             preselect = status.auto_mode_index
             if preselect is None and status.imaginary_modes:
                 preselect = status.imaginary_modes[0][0]
@@ -763,8 +818,9 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             'status_html': warn_html
             + (
                 f'<span style="font-size:12px;">{html.escape(str(Path(calc_path).name))}: '
-                f'reliability {proposed.reliability}'
-                + (' -- <b>AMBIGUOUS</b>, review the proposal'
+                f'data quality {proposed.reliability}'
+                + (' -- <b>proposal AMBIGUOUS:</b> review and adjust the '
+                   'selection in the viewer'
                    if proposed.ambiguous else '')
                 + '</span>'
             ),

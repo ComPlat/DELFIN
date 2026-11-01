@@ -56,7 +56,8 @@ def test_constraint_field_edit_updates_viewer(tmp_path):
     calls = []
     out, _r = _open_dialog(tmp_path, _FakeBackend(), extra_callbacks={
         'render_in_panel': lambda atoms, indices, arrows=None,
-                           output_widget=None: calls.append(list(indices)),
+                           output_widget=None, mode_vector=None:
+                           calls.append(list(indices)),
     })
     reg = out['registry']
     field = reg['constraints_field']

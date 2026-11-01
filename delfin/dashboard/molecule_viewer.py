@@ -7016,7 +7016,7 @@ def render_xyz_static_div(output_widget, xyz_text, width=640, height=450,
 
 def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
                                 click_sync_css='.ts-goat-click-sync',
-                                arrows=None):
+                                arrows=None, mode_vector=None):
     """The run_js one-off that instantiates the static-div viewer.
 
     Uses the already-loaded ``window.$3Dmol`` (startup bundle); binds
@@ -7073,10 +7073,11 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "    if (allAtoms[ai].serial !== serial) continue;\n"
         "    var at = allAtoms[ai];\n"
         "    viewer.addSphere({center: {x: at.x, y: at.y, z: at.z},\n"
-        "      radius: 0.72, color: 0xff8f00, opacity: 0.22});\n"
+        "      radius: 0.62, color: 0xff6d00, opacity: 0.45});\n"
+"    viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
+"      radius: 0.66, color: 0xff6d00, opacity: 0.12});\n"
         "    viewer.setStyle({serial: serial},\n"
-        "      {stick: {radius: 0.13, color: 0xff8f00}});\n"
-        "  }\n"
+                "  }\n"
         "}\n"
         "var arrows = " + arrow_payload + ";\n"
         "if (payload.show_arrows && arrows && arrows.length) {\n"
@@ -7162,10 +7163,11 @@ def ts_goat_viewer_step_js(viewer_id, direction):
         "    if (stepAtoms[bi].serial !== hSerial) continue;\n"
         "    var bt = stepAtoms[bi];\n"
         "    viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
-        "      radius: 0.72, color: 0xff8f00, opacity: 0.22});\n"
+        "      radius: 0.62, color: 0xff6d00, opacity: 0.45});\n"
+"    viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
+"      radius: 0.66, color: 0xff6d00, opacity: 0.12});\n"
         "    viewer.setStyle({serial: hSerial},\n"
-        "      {stick: {radius: 0.13, color: 0xff8f00}});\n"
-        "  }\n"
+                "  }\n"
         "}\n"
         "viewer.render();\n"
         "})();\n"
@@ -7228,10 +7230,11 @@ def ts_goat_viewer_anim_js(viewer_id, running):
         "      if (atomsNow[bi].serial !== hSerial) continue;\n"
         "      var bt = atomsNow[bi];\n"
         "      viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
-        "        radius: 0.72, color: 0xff8f00, opacity: 0.22});\n"
+        "        radius: 0.62, color: 0xff6d00, opacity: 0.45});\n"
+"      viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
+"        radius: 0.66, color: 0xff6d00, opacity: 0.12});\n"
         "      viewer.setStyle({serial: hSerial},\n"
-        "        {stick: {radius: 0.13, color: 0xff8f00}});\n"
-        "    }\n"
+                "    }\n"
         "  }\n"
         "  viewer.render();\n"
         "}, 60);\n"

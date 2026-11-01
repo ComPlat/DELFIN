@@ -566,9 +566,9 @@ def analyze_reactive_center(
     if responding_pairs:
         reasons.append(
             f"{len(responding_pairs)} contacts with relative motion along "
-            "the mode; the strongest 12 prioritised (relative motion means "
-            "the bond is forming/breaking, coherent motion of a group is "
-            "torsion)"
+            "the mode; the strongest 12 prioritised (a distance change along "
+            "the mode suggests a forming or breaking contact, but is NOT "
+            "proof; coherent motion of a group is torsion)"
         )
 
     # -- distance response along +/- mode ---------------------------------

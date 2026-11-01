@@ -133,7 +133,7 @@ def test_dropdown_selection_opens_visible_dialog(tmp_path):
     assert panel.layout.display == 'block'
     # the status line renders the reliability, not an exception
     status_html = result['registry']['status'].value
-    assert 'reliability' in status_html
+    assert 'data quality' in status_html
     assert 'ImportError' not in status_html
 
 
@@ -236,9 +236,12 @@ def _open_with_panel_viewer(tmp_path):
     backend = _FakeBackend()
     captured = {}
 
-    def render_in_panel(atoms, indices, arrows=None, output_widget=None):
+    def render_in_panel(atoms, indices, arrows=None, output_widget=None,
+                        mode_vector=None):
         captured['atoms'] = atoms
         captured['indices'] = indices
+        captured['arrows'] = arrows
+        captured['mode_vector'] = mode_vector
         captured['output_widget'] = output_widget
 
     result, _ = _open_dialog(tmp_path, backend,
@@ -399,3 +402,53 @@ def test_click_sync_widget_observes_and_routes(tmp_path):
     sync.value = str(target)
     # second click toggles back: 2 is re-added
     assert target in reg['parse_constraints'](field.value)
+
+
+def test_animation_payload_holds_displacement_vectors(tmp_path):
+    """The arrow payload must hold displacement vectors, not absolute
+    displaced coordinates (live bug 2026-11-02: the animation moved
+    along a position tuple of an unrelated frame and never showed the
+    mode).  Displacement magnitudes stay in the sub-Angstrom range."""
+    captured = {}
+
+    def _rip(atoms, indices, arrows=None, output_widget=None,
+             mode_vector=None):
+        captured['arrows'] = arrows
+        captured['mode_vector'] = mode_vector
+
+    out, _r = _open_dialog(tmp_path, _FakeBackend(), extra_callbacks={
+        'render_in_panel': _rip,
+        'get_viewer_id': lambda: 'vid1',
+        'animate_in_panel': lambda vid, run: None,
+    })
+    assert out['error'] is None
+    # the animation source travels in mode_vector on EVERY render; the
+    # visible-arrows toggle only controls whether they are DRAWN
+    vectors = captured['mode_vector']
+    assert vectors is not None, 'animation payload must carry the mode'
+    magnitudes = [
+        (a[1] ** 2 + a[2] ** 2 + a[3] ** 2) ** 0.5 for a in vectors
+    ]
+    assert max(magnitudes) < 1.0, (
+        'mode vectors must be displacement vectors (< 1 A), not '
+        'absolute coordinates of the displaced Hessian geometry')
+    assert max(magnitudes) > 0.05, 'the mode must actually displace atoms'
+
+
+def test_title_bar_carries_visible_close_button(tmp_path):
+    """The close button sits IN the title bar (right edge), reachable
+    without scrolling -- the bottom-row button had scrolled away."""
+    out, _r = _open_dialog(tmp_path, _FakeBackend(), extra_callbacks={
+        'get_viewer_id': lambda: 'vid1',
+        'animate_in_panel': lambda vid, run: None,
+    })
+    assert out['error'] is None
+    reg = out['registry']
+    btns = [w for w in _iter_widgets(reg['panel'])
+            if getattr(w, 'description', '') == '✕ Schließen']
+    assert btns, 'a close button must exist'
+    # it must be inside the first row of the panel (title bar)
+    title_row = reg['panel'].children[0].children[0]
+    assert any(getattr(w, 'description', '') == '✕ Schließen'
+               for w in title_row.children), (
+        'the close button must live in the title bar row')

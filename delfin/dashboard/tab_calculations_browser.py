@@ -10242,7 +10242,8 @@ def create_tab(ctx):
                     _render_3dmol(xyz_lines, fmt='xyz')
 
                 def _ts_render_in_panel(atoms, indices, arrows=None,
-                                        output_widget=None):
+                                        output_widget=None,
+                                        mode_vector=None):
                     """Render the TS INTO the panel's own Output widget.
 
                     The panel passes its ``viewer_out`` Output widget as
@@ -10281,10 +10282,20 @@ def create_tab(ctx):
                     )
                     if vid:
                         _ts_viewer_state['vid'] = vid
+                        # the animation displaces along mode_vector --
+                        # SEPARATE from the visible arrows toggle: the
+                        # animation data must reach the browser even
+                        # when no arrows are drawn (default).
+                        vec_payload = None
+                        if mode_vector:
+                            vec_payload = [
+                                v for a in mode_vector
+                                for v in (a[1], a[2], a[3])]
                         _run_js(_mv.ts_goat_viewer_bootstrap_js(
                             vid, width=640, height=450,
                             click_sync_css='.ts-goat-click-sync',
                             arrows=arrows_payload,
+                            mode_vector=vec_payload,
                         ))
 
                 def _ts_scroll_top():
@@ -10306,9 +10317,41 @@ def create_tab(ctx):
                     _run_js(_mv.ts_goat_viewer_center_js(vid))
 
                 def _ts_animate_in_panel(vid, running):
-                    """Start/stop the sinusoidal mode animation loop."""
+                    """Start/stop the sinusoidal mode animation loop.
+
+                    ``running='speed'`` only updates the period from the
+                    speed slider (window.__tsGoatPeriodMs); a running
+                    loop picks it up on its next tick.
+                    """
                     from delfin.dashboard import molecule_viewer as _mv
+                    if running == 'speed':
+                        period_ms = max(300, int(
+                            1600 / (_ts_anim_speed_value() or 1.0)))
+                        _run_js(
+                            "window.__tsGoatPeriodMs=" + str(period_ms) + ";")
+                        return
                     _run_js(_mv.ts_goat_viewer_anim_js(vid, running))
+
+                _ts_panel_widgets = {'items': []}
+
+                def _ts_collect_speed(widget_box):
+                    """Remember panel widgets for the speed lookup."""
+                    def _walk(w, acc):
+                        for child in getattr(w, 'children', ()):
+                            acc.append(child)
+                            _walk(child, acc)
+                        return acc
+                    try:
+                        _ts_panel_widgets['items'] = _walk(widget_box, [])
+                    except Exception:
+                        pass
+
+                def _ts_anim_speed_value():
+                    """Current speed from the panel widget, if reachable."""
+                    for w in _ts_panel_widgets['items']:
+                        if getattr(w, 'description', '') == 'Geschw.:':
+                            return getattr(w, 'value', 1.0)
+                    return 1.0
 
                 def _ts_on_close():
                     calc_ts_goat_panel.children = []
@@ -10336,6 +10379,7 @@ def create_tab(ctx):
                         + open_result['error'])]
                 else:
                     calc_ts_goat_panel.children = [open_result['panel']]
+                    _ts_collect_speed(open_result['panel'])
             _calc_reset_options_dropdown()
         elif change['new'] == 'Calc NMR':
             calc_override_input.layout.display = 'none'
