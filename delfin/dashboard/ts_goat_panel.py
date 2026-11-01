@@ -144,7 +144,6 @@ def build_ts_goat_panel(
         placeholder='e.g. 0, 2, 5 (comma- or newline-separated)',
         layout=widgets.Layout(width='95%', height='72px'),
     )
-    constraints_error = widgets.HTML('')  # shown by _validate on bad input
     highlight_btn = widgets.Button(
         description='↻ Highlight', button_style='info',
         tooltip='Re-render the viewer with the current constraint atoms highlighted',
