@@ -41,6 +41,19 @@ PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/terminal_confirm.py",
     "delfin/agent/file_confirm.py",
     "delfin/agent/mcp_isolation.py",
+    # The chemistry core is a deliverable nobody edits from a swarm
+    # member: results published from it outrank any parallel feature.
+    "delfin/api.py",
+    "delfin/smiles_converter.py",
+    "delfin/smiles_converter/**",
+    "delfin/manta/**",
+    # Protected in the wave rules as well (skills/knowledge surface):
+    "delfin/agent/web_tools.py",
+    "delfin/agent/text_sanitize.py",
+    "delfin/agent/skill_safety.py",
+    "delfin/agent/skill_share.py",
+    "delfin/agent/mcp_client.py",
+    "delfin/agent/mcp_editor.py",
 )
 
 #: Upper bound on members per swarm. Each member is a paid session with a
@@ -68,15 +81,31 @@ def load_spec(path: Path | str) -> dict[str, Any]:
 def _glob_conflicts(a: str, b: str) -> bool:
     """Do two owned globs overlap?
 
-    A pattern matches any path the other pattern's own text could name:
-    the fine pattern's text is a valid concrete path for the coarse one
-    (``delfin/agent/worktrees/**/sub/**`` matches ``delfin/agent/worktrees/**``),
-    identical globs always conflict, and two sibling globs that differ in
-    a literal segment do not.
+    Segment-wise: two globs are disjoint only when a position exists
+    where BOTH patterns have a literal segment that differs -- then no
+    path can match both. Everywhere else the answer is conservatively
+    "conflict": glob segments (``*`` crosses ``/`` in fnmatch, so
+    ``delfin/dashboard/*.py`` covers ``delfin/dashboard/sw/spec.py``),
+    nested ``**``, and a pattern exhausted before the other. Over-flag
+    is safe here: two packages sharing a contested file race; a false
+    "disjoint" is the dangerous direction.
     """
     if a == b:
         return True
-    return fnmatch(b, a) or fnmatch(a, b)
+    segs_a, segs_b = a.split("/"), b.split("/")
+    for i in range(min(len(segs_a), len(segs_b))):
+        sa, sb = segs_a[i], segs_b[i]
+        glob_a = any(m in sa for m in "*?[")
+        glob_b = any(m in sb for m in "*?[")
+        if not glob_a and not glob_b and sa != sb:
+            return False  # a literal segment differs: disjoint
+    # No separating literal segment: the shorter pattern's last segment
+    # decides -- a glob there can cross into the rest, a literal one
+    # cannot (the path would have to end there).
+    shorter = segs_a if len(segs_a) <= len(segs_b) else segs_b
+    last = shorter[-1]
+    return bool(last) and any(m in last for m in "*?[") or \
+        len(segs_a) == len(segs_b)
 
 
 def _check_protected(glob: str, pkg: str) -> None:
@@ -96,6 +125,14 @@ def validate_spec(spec: dict[str, Any]) -> None:
     if not packages or not isinstance(packages, list):
         raise SpecError("spec is missing 'packages' (a non-empty list)")
 
+    limits = spec.get("limits")
+    if limits is not None:
+        if not isinstance(limits, dict):
+            raise SpecError("'limits' must be a mapping")
+        spec = dict(spec)
+        spec.pop("limits")
+        spec.update(limits)
+
     max_sessions = spec.get("max_sessions", MAX_SESSIONS_LIMIT)
     if not isinstance(max_sessions, int) or max_sessions < 1:
         raise SpecError("max_sessions must be a positive integer")
@@ -106,6 +143,7 @@ def validate_spec(spec: dict[str, Any]) -> None:
             f"its own worktree")
     n_members = 0
     scopes: list[tuple[str, str]] = []
+    seen_names: set[str] = set()
 
     for pkg in packages:
         if not isinstance(pkg, dict):
@@ -113,6 +151,11 @@ def validate_spec(spec: dict[str, Any]) -> None:
         name = pkg.get("name")
         if not name or not isinstance(name, str):
             raise SpecError("every package needs a 'name'")
+        if name in seen_names:
+            raise SpecError(
+                f"duplicate package name '{name}' -- status and merge "
+                f"order would be ambiguous")
+        seen_names.add(name)
         owned = pkg.get("owned")
         if not owned or not isinstance(owned, list):
             raise SpecError(

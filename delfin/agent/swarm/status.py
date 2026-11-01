@@ -117,6 +117,65 @@ def subscribe(callback: Callable[[dict], None]) -> Callable[[], None]:
     return _off
 
 
+def collect_status(spec: dict[str, Any]) -> dict[str, Any]:
+    """Build a status report for a spec: phases + member health.
+
+    Read-only. Health comes from delfin.agent.session_health; a member
+    with no session record yet is 'starting'. The package phase is the
+    lowest phase of its members (a stopped/stalled member blocks the
+    whole package upward).
+    """
+    from .. import session_health as _sh
+
+    members_by_pkg: dict[str, list[dict[str, Any]]] = {}
+    waiting: list[dict[str, Any]] = []
+    try:
+        records = {r.get("session"): r for r in _sh.collect()}
+    except Exception:
+        records = {}
+    for pkg in spec.get("packages", []):
+        roles = pkg.get("roles") or {"builder": True}
+        members = []
+        for role in roles:
+            name = f"{pkg['name']}-{role}"
+            rec = records.get(name)
+            health = (rec or {}).get("state", "starting")
+            waits_on = (rec or {}).get("waits_on")
+            if waits_on:
+                waiting.append({"member": name, "waits_on": waits_on})
+            members.append({"name": name, "role": role, "health": health,
+                            "waits_on": waits_on})
+        members_by_pkg[pkg["name"]] = members
+    report = {
+        "schema_version": STATUS_SCHEMA_VERSION,
+        "goal": spec.get("goal", ""),
+        "packages": [],
+        "waiting_for_user": waiting,
+    }
+    for pkg in spec.get("packages", []):
+        members = members_by_pkg[pkg["name"]]
+        report["packages"].append({
+            "name": pkg["name"],
+            "phase": _phase_of(members),
+            "members": members,
+        })
+    return report
+
+
+def _phase_of(members: list[dict[str, Any]]) -> str:
+    """The package phase from member health states."""
+    states = {m["health"] for m in members}
+    if "stalled" in states:
+        return "blocked"
+    if "waiting" in states:
+        return "in_review"
+    if "ended" in states:
+        return "merged"
+    if "active" in states:
+        return "building"
+    return "stopped"
+
+
 def to_json(report: dict[str, Any]) -> str:
     """Serialise a status report for ``swarm status --json``."""
     return json.dumps(report, indent=2, sort_keys=True)
