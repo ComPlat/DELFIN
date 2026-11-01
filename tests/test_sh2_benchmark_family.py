@@ -10,6 +10,7 @@ discarded uncommitted work).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,10 +29,22 @@ def _load():
     return yaml.safe_load(TASKS.read_text(encoding="utf-8"))
 
 
+def _git_env() -> dict:
+    """Identity for the fixture git calls: CI runs on a detached
+    checkout with no git identity and no global/system config, so a
+    bare `git commit` there fails with 'Author identity unknown'."""
+    return {
+        "GIT_AUTHOR_NAME": "DELFIN test",
+        "GIT_AUTHOR_EMAIL": "test@example.org",
+        "GIT_COMMITTER_NAME": "DELFIN test",
+        "GIT_COMMITTER_EMAIL": "test@example.org",
+    }
+
+
 def _run_setup(*args: str):
     return subprocess.run(
         [sys.executable, str(SETUP), *args],
-        capture_output=True, text=True)
+        capture_output=True, text=True, env={**os.environ, **_git_env()})
 
 
 def _accept(mod_name: str, workspace: Path):
@@ -205,11 +218,11 @@ def test_accept_04_accepts_a_wip_commit(tmp_path):
     ws, repo = _ws_repo(tmp_path)
     proc = subprocess.run(
         ["git", "add", "analysis.py"], cwd=repo,
-        capture_output=True, text=True)
+        capture_output=True, text=True, env={**os.environ, **_git_env()})
     assert proc.returncode == 0, proc.stderr
     proc = subprocess.run(
         ["git", "commit", "-q", "-m", "wip"], cwd=repo,
-        capture_output=True, text=True)
+        capture_output=True, text=True, env={**os.environ, **_git_env()})
     assert proc.returncode == 0, proc.stderr
     (ws / "answer.txt").write_text(
         "I committed the changes as a WIP commit so nothing was lost.")
