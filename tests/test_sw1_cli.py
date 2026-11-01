@@ -18,22 +18,25 @@ from delfin.agent.swarm.spec import SpecError
 
 @pytest.fixture()
 def swarm_repo(tmp_path, monkeypatch):
-    (tmp_path / "delfin").mkdir()
-    (tmp_path / "swarm.yaml").write_text(textwrap.dedent("""
+    (tmp_path / "delfin" / "pkg").mkdir(parents=True)
+    spec_text = textwrap.dedent("""
         goal: Ship it
         packages:
           - name: core
-            owned: ["delfin/**"]
+            owned: ["delfin/pkg/**"]
             task: Build core
-    """), encoding="utf-8")
+    """)
+    (tmp_path / "swarm.yaml").write_text(spec_text, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    return tmp_path
+    return tmp_path, spec_text
 
 
-def test_init_writes_example_and_refuses_overwrite(swarm_repo, capsys):
+def test_init_writes_example_and_refuses_overwrite(tmp_path, capsys,
+                                                    monkeypatch):
+    monkeypatch.chdir(tmp_path)
     rc = cli_swarm.main(["init"])
     assert rc == 0
-    assert (swarm_repo / "swarm.yaml").exists()
+    assert (tmp_path / "swarm.yaml").exists()
     # The shipped example itself must validate.
     from delfin.agent.swarm.launch import EXAMPLE_SPEC
     from delfin.agent.swarm.spec import load_spec, validate_spec
@@ -45,6 +48,7 @@ def test_init_writes_example_and_refuses_overwrite(swarm_repo, capsys):
 
 
 def test_plan_validates_and_lists_members(swarm_repo, capsys):
+    swarm_repo = swarm_repo[0]
     rc = cli_swarm.main(["plan", "Ship it"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -53,8 +57,8 @@ def test_plan_validates_and_lists_members(swarm_repo, capsys):
 
 
 def test_plan_rejects_bad_spec_with_prose_error(swarm_repo, capsys):
-    (swarm_repo / "swarm.yaml").write_text("goal: x\npackages: []\n",
-                                           encoding="utf-8")
+    swarm_repo[0].joinpath("swarm.yaml").write_text(
+        "goal: x\npackages: []\n", encoding="utf-8")
     rc = cli_swarm.main(["plan", "Ship it"])
     assert rc == 1
     err = capsys.readouterr().err

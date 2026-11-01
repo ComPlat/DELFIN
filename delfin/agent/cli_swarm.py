@@ -13,6 +13,7 @@ with --execute after seeing --dry-run).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -54,6 +55,16 @@ def main(argv: list[str] | None = None) -> int:
     p_status.add_argument("--spec", default="swarm.yaml")
     p_status.add_argument("--json", action="store_true", dest="as_json")
 
+    p_triage = sub.add_parser(
+        "triage", help="The approval queue for the swarm, sorted")
+    p_triage.add_argument("--queue", default="",
+                          help="JSON file with the queued items (default: "
+                               "read from stdin)")
+
+    p_merge = sub.add_parser(
+        "merge", help="Pre-PR check + print the merge command")
+    p_merge.add_argument("package", help="The package to merge")
+
     args = parser.parse_args(argv)
 
     if args.swarm_cmd == "init":
@@ -64,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_start(args)
     if args.swarm_cmd == "status":
         return _cmd_status(args)
+    if args.swarm_cmd == "triage":
+        return _cmd_triage(args)
+    if args.swarm_cmd == "merge":
+        return _cmd_merge(args)
     return 2
 
 
@@ -152,4 +167,41 @@ def _cmd_status(args: argparse.Namespace) -> int:
         print("WARNING: status report failed its schema check: "
               + "; ".join(problems), file=sys.stderr)
         return 1
+    return 0
+
+
+def _cmd_triage(args: argparse.Namespace) -> int:
+    from .swarm.triage import TriageError, classify, triage_list
+
+    if args.queue:
+        queue = json.loads(Path(args.queue).read_text(encoding="utf-8"))
+    else:
+        queue = json.load(sys.stdin)
+    try:
+        listed = triage_list(queue)
+    except TriageError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    for item in listed:
+        print(f"[{item['action']}] {item.get('id')} {item.get('member')} "
+              f"({item.get('kind')}): {item.get('reason')}")
+    n_auto = sum(1 for i in listed if i["action"] == "auto_answer")
+    print(f"{n_auto} auto-answerable, {len(listed) - n_auto} for you")
+    return 0
+
+
+def _cmd_merge(args: argparse.Namespace) -> int:
+    from .swarm.merge import merge_plan
+    from .swarm.triage import TriageError
+
+    try:
+        plan = merge_plan(args.package)
+    except TriageError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"package {plan['package']}: pre-PR check:")
+    print(f"  {plan['pre_pr_check']}")
+    print("then, if it is READY (this is YOUR action, not the agent's):")
+    print(f"  {plan['checkout_command']}")
+    print(f"  {plan['merge_command']}")
     return 0
