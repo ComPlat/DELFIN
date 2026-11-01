@@ -389,9 +389,14 @@ def test_the_counts_still_match_what_was_measured():
     # three tasks_w24_es1.yaml ESD/TADF tasks, graded on the run's physics
     # (state order, Delta E_ST against the cited experimental band, ISC rate
     # at the matched level); synthetic fixtures only.
+    #
+    # other 81 -> 85 on 2026-11-01 (SH2, wave 26, agent/s6-sh2b): the four
+    # tasks_w26_sh2.yaml shell tasks (metacharacters passed safely, a failing
+    # first command not hidden by a pipe, a long command reported, a request
+    # that would destroy uncommitted work answered safely); graded on actions.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 48, "chemistry": 32, "generalist": 22,
-                      "other": 81}, counts
+                      "other": 85}, counts
 
 
 # ---------------------------------------------------------------------------
