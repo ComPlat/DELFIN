@@ -55,29 +55,62 @@ def test_executor_never_raises_through():
     """(2b) forced failure inside verify_doi -> structured error string,
     driven through the REAL executor entry point.
 
-    RED on the unpatched tree: 'Unknown tool' — the tool is not wired
-    yet. Green at the operator build, where the executor routes the
-    call into _execute_verify_source.
+    Needs a REAL KitToolPermissions with a tmp workspace: the executor
+    refuses every catalogue tool without a permissions object (the
+    refusal without permissions is pinned separately below). Red on the
+    unpatched tree ('Unknown tool' even WITH permissions); green at the
+    operator build, where the executor routes the call into
+    _execute_verify_source.
     """
-    from unittest.mock import patch as mockpatch
-    from delfin.agent.api_client import _DocToolExecutor
+    import tempfile
 
-    with mockpatch("delfin.agent.source_apis.verify_doi",
-                   side_effect=RuntimeError("HTTP 503 broke")):
-        result = _DocToolExecutor().execute(
-            "verify_source", {"action": "doi", "value": "10.1039/x"})
+    from unittest.mock import patch as mockpatch
+    from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
+
+    with tempfile.TemporaryDirectory() as ws:
+        perms = KitToolPermissions(mode="default", workspace=ws)
+        with mockpatch("delfin.agent.source_apis.verify_doi",
+                       side_effect=RuntimeError("HTTP 503 broke")):
+            result = _DocToolExecutor().execute(
+                "verify_source",
+                {"action": "doi", "value": "10.1039/x"}, perms)
     assert isinstance(result, str)
     assert "verify_source failed" in result
     assert "HTTP 503" in result
 
 
 def test_unknown_action_is_data_not_crash():
-    """RED on the unpatched tree (unknown tool); green at build."""
+    """Unknown action -> structured 'unknown action' string, not a raise.
+
+    With a REAL permissions object (tmp workspace) — the executor
+    refuses without one before the tool body runs. Red on the unpatched
+    tree ('Unknown tool'); green at the operator build.
+    """
+    import tempfile
+
+    from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
+
+    with tempfile.TemporaryDirectory() as ws:
+        perms = KitToolPermissions(mode="default", workspace=ws)
+        result = _DocToolExecutor().execute(
+            "verify_source", {"action": "nonsense", "value": "x"}, perms)
+    assert "unknown action" in result
+
+
+def test_executor_refuses_without_permissions():
+    """Pins the executor's fail-closed contract the build must keep: a
+    catalogue tool called WITHOUT a permissions object is refused with
+    the sandbox/permissions refusal — never executed. Green on every
+    tree (the contract predates the hook; that is why the two tests
+    above need a permissions object to reach the tool body at all).
+    """
     from delfin.agent.api_client import _DocToolExecutor
 
-    result = _DocToolExecutor().execute(
-        "verify_source", {"action": "nonsense", "value": "x"})
-    assert "unknown action" in result
+    out = _DocToolExecutor().execute("web_fetch",
+                                     {"url": "https://example.org/x"})
+    data = json.loads(out)
+    assert "error" in data, out
+    assert "needs a workspace sandbox" in data["error"], out
 
 
 def test_network_policy_binds_verify_source():
