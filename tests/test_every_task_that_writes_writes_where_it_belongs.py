@@ -404,9 +404,12 @@ def test_the_counts_still_match_what_was_measured():
     # tasks_w27_sw1.yaml swarm tasks (overlapping scopes refused, a valid
     # spec's dry run lists the right members/branches/scopes, triage
     # auto-answers a partner message but escalates a push request).
+    # other 88 -> 90 on 2026-11-02 (SA0, wave 27, agent/s5-sa0b): the two
+    # tasks_w27_sa0.yaml delegation tasks (a dummy expert delegated to end
+    # to end; graded on artifacts, no live model).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 48, "chemistry": 32, "generalist": 26,
-                      "other": 88}, counts
+                      "other": 90}, counts
 
 
 # ---------------------------------------------------------------------------
