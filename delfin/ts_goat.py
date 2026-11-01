@@ -68,14 +68,63 @@ class TSStatus:
     converged: bool = False
     n_imaginary: int = 0
     imaginary_freq: float | None = None
+    #: (mode index, frequency) of every imaginary mode in the FINAL
+    #: frequency block, most negative first -- drives the mode picker.
+    imaginary_modes: tuple[tuple[int, float], ...] = ()
     charge: int | None = None
     mult: int | None = None
     elements: tuple[str, ...] = ()
     reasons: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def usable(self) -> bool:
-        return self.is_ts and self.converged and self.n_imaginary == 1
+        """OptTS + convergence + at least one imaginary mode.
+
+        More than one imaginary mode no longer blocks the workflow: a
+        very small extra negative frequency (numerical noise, a flat
+        torsion) is common in practice and the user can pick the reactive
+        mode explicitly.  0 imaginary modes still blocks, with a clear
+        message; >1 adds a warning instead of a rejection.
+        """
+        return self.is_ts and self.converged and self.n_imaginary >= 1
+
+    @property
+    def auto_mode_index(self) -> int | None:
+        """The reactive mode auto-selected when several are imaginary.
+
+        If exactly one mode is CLEARLY negative and the others are only
+        very small negatives, that mode is pre-selected and the small
+        ones become warnings.  Threshold: a secondary mode counts as
+        noise below |freq| < 50 cm-1 (about the magnitude of numerical
+        Hessian noise and clearly below any chemical TS mode, which sits
+        in the several-hundred cm-1 range); deliberate and documented so
+        it can be discussed in review.
+        """
+        if self.n_imaginary <= 1:
+            return self.imaginary_modes[0][0] if self.imaginary_modes else None
+        noise_floor_cm1 = 50.0
+        clear = [
+            (i, f) for i, f in self.imaginary_modes if abs(f) >= noise_floor_cm1
+        ]
+        if len(clear) == 1:
+            self.warnings.append(
+                "multiple imaginary modes in the final frequency block: "
+                + ", ".join(f"mode {i} ({f:.1f} cm-1)"
+                            for i, f in self.imaginary_modes)
+                + " -- modes below |50| cm-1 treated as near-flat noise; "
+                "the clearly reactive mode is pre-selected, please verify."
+            )
+            return clear[0][0]
+        # several clearly negative modes: ambiguous, user must choose
+        self.warnings.append(
+            "several clearly imaginary modes in the final frequency block: "
+            + ", ".join(f"mode {i} ({f:.1f} cm-1)"
+                        for i, f in self.imaginary_modes)
+            + " -- no automatic choice is safe; please select the reactive "
+            "mode explicitly below."
+        )
+        return None
 
 
 @dataclass
@@ -139,17 +188,32 @@ def read_ts_status(out_path: Path) -> TSStatus:
     if status.is_ts and not status.converged:
         status.reasons.append("TS optimization did not report convergence")
 
-    # Imaginary-mode listing ("***imaginary mode***" lines carry index+freq).
-    imag: list[tuple[int, float]] = []
+    # Imaginary modes: ONLY the last complete frequency block of the final
+    # structure counts.  ORCA prints one such block per frequency job, and
+    # earlier (historical) blocks along the OptTS trajectory also contain
+    # imaginary modes -- a global scan would count those stale listings and
+    # wrongly reject an otherwise fine TS.  The last block is the one whose
+    # mode index can be looked up in the .hess, so prefer the .hess data
+    # when present: it is the structured source for the final geometry.
+    last_imag: list[tuple[int, float]] = []
+    block_imag: list[tuple[int, float]] = []
+    block_indices: list[int] = []
     for line in text.splitlines():
-        if "***imaginary mode***" not in line:
-            continue
-        m = re.search(r"(\d+):\s*(-?\d+(?:\.\d+)?)\s+cm\*\*-1", line)
+        m = _IMAG_RE.match(line)
         if m:
-            imag.append((int(m.group(1)), float(m.group(2))))
-    status.n_imaginary = len(imag)
-    if imag:
-        status.imaginary_freq = min(freq for _, freq in imag)
+            block_indices.append(int(m.group(1)))
+            if "***imaginary mode***" in line:
+                block_imag.append((int(m.group(1)), float(m.group(2))))
+            continue
+        # a line that is not a frequency entry closes any open block
+        if block_indices:
+            last_imag, block_imag, block_indices = block_imag, [], []
+    if block_indices:
+        last_imag = block_imag
+    status.n_imaginary = len(last_imag)
+    if last_imag:
+        status.imaginary_freq = min(freq for _, freq in last_imag)
+        status.imaginary_modes = tuple(last_imag)
     if status.is_ts and status.converged and status.n_imaginary == 0:
         status.reasons.append(
             "converged TS reported no imaginary mode in the output "
@@ -347,10 +411,13 @@ def analyze_reactive_center(
     reactant_atoms=None,
     product_atoms=None,
     *,
+    mode_index: int | None = None,
     max_atoms: int = 8,
 ) -> ReactiveCenter:
     """Propose the reactive-centre atoms from the imaginary mode + endpoints.
 
+    ``mode_index`` selects WHICH imaginary mode drives the analysis;
+    None means the most negative one (the classical reactive mode).
     Scoring combines three independent pieces of evidence so that the
     choice is NOT driven by the largest Cartesian displacement alone
     (a torsional or umbrella-like motion moves many innocent atoms):
@@ -375,24 +442,25 @@ def analyze_reactive_center(
     scores: dict[int, float] = {}
     reasons: list[str] = []
 
-    # -- mode eigenvector (most imaginary column of $normal_modes) --------
+    # -- mode eigenvector (selected or most imaginary column) -------------
     mode_displacement: dict[int, float] = {}
     try:
         from delfin.imag import _normal_mode, imaginary_modes  # noqa: PLC0415
-        modes = imaginary_modes(Path(hess_path), {"allow_imaginary_freq": 0.0})
-        if modes:
-            mode_index = modes[0][0]
+        if mode_index is None:
+            modes = imaginary_modes(Path(hess_path), {"allow_imaginary_freq": 0.0})
+            mode_index = modes[0][0] if modes else None
+        if mode_index is not None:
             text = Path(hess_path).read_text(encoding="utf-8", errors="ignore")
             vector = _normal_mode(text.splitlines(), mode_index)
-            norms = [
-                math.sqrt(sum(v * v for v in vector[3 * a:3 * a + 3]))
-                for a in range(n)
-            ]
-            biggest = max(norms) if norms else 0.0
-            if biggest > 0:
-                mode_displacement = {
-                    a: norms[a] / biggest for a in range(n) if norms[a] > 1e-6
-                }
+        norms = [
+            math.sqrt(sum(v * v for v in vector[3 * a:3 * a + 3]))
+            for a in range(n)
+        ]
+        biggest = max(norms) if norms else 0.0
+        if biggest > 0:
+            mode_displacement = {
+                a: norms[a] / biggest for a in range(n) if norms[a] > 1e-6
+            }
     except (ValueError, OSError) as exc:
         reasons.append(f"imaginary-mode eigenvector unavailable ({exc})")
 

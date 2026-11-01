@@ -14,7 +14,6 @@ pytest.importorskip(
     reason='lives on the feature branch until it is merged into main',
 )
 
-import json  # noqa: E402
 from pathlib import Path  # noqa: E402
 from unittest import mock  # noqa: E402
 
@@ -36,7 +35,7 @@ def _write_ts_fixture(dir_path: Path, name: str = 'ts_run') -> Path:
     out.write_text(
         '|  1> ! OptTS\n'
         'THE OPTIMIZATION HAS CONVERGED\n'
-        '***imaginary mode***      1:      -567.89 cm**-1\n',
+        '     1:      -567.89 cm**-1  ***imaginary mode***\n',
         encoding='utf-8',
     )
     inp = dir_path / f'{name}.inp'
@@ -161,18 +160,12 @@ def test_submit_creates_input_in_dedicated_folder(tmp_path):
     result, _rendered = _open_dialog(tmp_path, backend)
     assert result['error'] is None
     registry = result['registry']
-    # the proposed indices from the analysis are pre-filled
-    constraints = registry['parse_constraints'](
-        # value was set by _refresh_constraints_display; re-read via widget
-        registry['panel'].children  # not a Text; use the stored field
-    ) if False else None
     # simulate the user pressing Submit with the proposed indices:
     state = registry['state']
     proposed = state['proposed']
     assert proposed.indices, 'analysis should propose at least one atom'
     registry['panel']  # the dialog is attached
     # _do_submit via the on_click callback: emulate by calling submit path
-    from delfin.dashboard import ts_goat_panel as tsgp
     # reach into the closure through the returned state: use the recorded
     # show payload instead of widget internals
     files = state['files']

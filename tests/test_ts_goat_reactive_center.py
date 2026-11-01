@@ -28,15 +28,21 @@ def _write_hess(path, atoms, mode_vectors, frequencies):
     lines.append(f"{len(frequencies)}")
     for i, f in enumerate(frequencies):
         lines.append(f"{i} {f:.2f}")
-    # $normal_modes: rows = 3N, cols = n_modes; one column per block line
+    # $normal_modes: rows = 3N, cols = n_modes; one blocked-column table
+    # whose header lists every mode index (ORCA layout) so _normal_mode
+    # can pick any column.
     n3 = 3 * len(atoms)
     lines.append("$normal_modes")
     lines.append(f"{n3} {len(mode_vectors)}")
-    for mode in mode_vectors:
-        lines.append("       0")
-        for atom in mode:
-            for comp in atom:
-                lines.append(f"   {comp:.10f}        0.0000000000")
+    lines.append("  " + "  ".join(str(i) for i in range(len(mode_vectors))))
+    # each row: one dummy first token (the parser reads split()[1+col]),
+    # then one component per mode column
+    for atom_row in range(len(atoms)):
+        for comp in range(3):
+            parts = ["0.0"] + [
+                f"{mode[atom_row][comp]:.10f}" for mode in mode_vectors
+            ]
+            lines.append("  ".join(parts))
     lines.append("$end")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -55,7 +61,7 @@ def test_read_ts_status_detects_converged_optts(tmp_path):
     out.write_text(
         "! B3LYP def2-SVP OptTS\n"
         "...\n"
-        "***imaginary mode***      0:      -512.34 cm**-1\n"
+        "     0:      -512.34 cm**-1  ***imaginary mode***\n"
         "...\n"
         "HURRAY  *** THE OPTIMIZATION HAS CONVERGED ***\n",
         encoding="utf-8",
@@ -198,3 +204,97 @@ def test_build_ts_goat_input_writes_constraints(tmp_path, monkeypatch):
     text = inp.read_text(encoding="utf-8")
     assert "{ H 1 C }" in text
     assert text.index("%geom") < text.index("* xyz")
+
+
+# ------------------------------------------------- final-block & mode picker
+
+def test_last_frequency_block_counts_not_historical_ones(tmp_path):
+    """Several frequency blocks: earlier blocks contain extra imaginary
+    modes; ONLY the last complete block decides."""
+    out = tmp_path / "ts.out"
+    out.write_text(
+        "! OptTS\n"
+        # historical block: 2 imaginary modes (mid-optimisation)
+        "     0:     -812.00 cm**-1  ***imaginary mode***\n"
+        "     1:     -120.00 cm**-1  ***imaginary mode***\n"
+        "     2:       45.00 cm**-1\n"
+        "\n"
+        # final block: exactly one imaginary mode
+        "     0:     -512.34 cm**-1  ***imaginary mode***\n"
+        "     1:       80.00 cm**-1\n"
+        "HURRAY  *** THE OPTIMIZATION HAS CONVERGED ***\n",
+        encoding="utf-8",
+    )
+    status = read_ts_status(out)
+    assert status.is_ts
+    assert status.converged
+    assert status.n_imaginary == 1
+    assert status.imaginary_freq == pytest.approx(-512.34)
+    assert status.usable
+
+
+def test_two_imaginary_modes_stay_usable_with_mode_list(tmp_path):
+    """2 imaginary modes in the last block: the workflow stays usable and
+    lists both modes for the picker; nothing blocks."""
+    out = tmp_path / "ts2.out"
+    out.write_text(
+        "! OptTS\n"
+        "THE OPTIMIZATION HAS CONVERGED\n"
+        "     0:     -450.00 cm**-1  ***imaginary mode***\n"
+        "     1:     -310.00 cm**-1  ***imaginary mode***\n"
+        "     2:      100.00 cm**-1\n",
+        encoding="utf-8",
+    )
+    status = read_ts_status(out)
+    assert status.usable
+    assert status.n_imaginary == 2
+    assert [i for i, _ in status.imaginary_modes] == [0, 1]
+
+
+def test_small_second_mode_auto_preselects_clear_one(tmp_path):
+    """One clearly negative + one tiny negative mode: the clear one is
+    auto-pre-selected and the small one only warns."""
+    out = tmp_path / "ts3.out"
+    out.write_text(
+        "! OptTS\n"
+        "THE OPTIMIZATION HAS CONVERGED\n"
+        "     0:     -450.00 cm**-1  ***imaginary mode***\n"
+        "     2:      -12.00 cm**-1  ***imaginary mode***\n"
+        "     1:      100.00 cm**-1\n",
+        encoding="utf-8",
+    )
+    status = read_ts_status(out)
+    assert status.usable
+    assert status.auto_mode_index == 0
+    assert status.warnings  # the small mode surfaces as a warning
+
+
+def test_zero_imaginary_modes_blocks_with_clear_message(tmp_path):
+    out = tmp_path / "ts4.out"
+    out.write_text(
+        "! OptTS\n"
+        "THE OPTIMIZATION HAS CONVERGED\n"
+        "     0:       90.00 cm**-1\n"
+        "     1:      200.00 cm**-1\n",
+        encoding="utf-8",
+    )
+    status = read_ts_status(out)
+    assert not status.usable
+    assert any("no imaginary mode" in r.lower() for r in status.reasons)
+
+
+def test_mode_change_reproposes_reactive_center(tmp_path):
+    """Picking a different imaginary mode re-runs the analysis on THAT
+    mode and yields a different proposal."""
+    # mode 0 acts on atoms 0-1, mode 1 on atoms 1-2 (two distinct vectors)
+    modes = [
+        [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+        [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0)],
+    ]
+    hess = tmp_path / "ts.hess"
+    _write_hess(hess, _water_ts_atoms(), modes, [-450.0, -310.0])
+    rc0 = analyze_reactive_center(hess, _water_ts_atoms(), mode_index=0)
+    rc1 = analyze_reactive_center(hess, _water_ts_atoms(), mode_index=1)
+    # both proposals exist and differ in the mode-displacement evidence
+    assert rc0.indices and rc1.indices
+    assert rc0.scores != rc1.scores

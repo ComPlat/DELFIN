@@ -41,6 +41,12 @@ def build_ts_goat_panel(
     status = widgets.HTML('')
     files_box = widgets.HTML('')
     analysis_box = widgets.HTML('')
+    mode_label = widgets.HTML('<b>Reactive mode (imaginary modes of the final block):</b>')
+    mode_dropdown = widgets.Dropdown(
+        options=[], description='Mode:',
+        layout=widgets.Layout(width='320px'),
+    )
+    mode_warning = widgets.HTML('')
     constraints_label = widgets.HTML('<b>Constraint atoms (0-based ORCA indices):</b>')
     constraints_field = widgets.Text(
         placeholder='e.g. 0, 2, 5', description='',
@@ -86,7 +92,8 @@ def build_ts_goat_panel(
     ])
 
     panel.children = (
-        title, status, files_box, analysis_box, constraints_label,
+        title, status, files_box, mode_label, mode_dropdown, mode_warning,
+        analysis_box, constraints_label,
         widgets.HBox([constraints_field, highlight_btn]),
         settings_row, preview_label, preview_box, btn_row,
     )
@@ -96,6 +103,8 @@ def build_ts_goat_panel(
         'files': None, 'ts_atoms': None, 'proposed': None,
         'elements': (), 'coordinates': (), 'charge': 0, 'mult': 1,
         'mode_arrows': None,
+        'mode_arrows_by_index': {}, 'imaginary_modes': [],
+        'hess_path': None, 'reactant_path': None, 'product_path': None,
     }
 
     def _esc(text):
@@ -174,6 +183,38 @@ def build_ts_goat_panel(
         arrows = state.get('mode_arrows')
         render_viewer(state['ts_atoms'], indices, arrows)
 
+    def _on_mode_change(change=None):
+        """Re-run the reactive-centre analysis for the selected mode."""
+        if change is not None and change.get('name') != 'value':
+            return
+        idx = mode_dropdown.value
+        if idx is None or state['ts_atoms'] is None or not state['hess_path']:
+            return
+        state['mode_arrows'] = state['mode_arrows_by_index'].get(idx)
+        from delfin import ts_goat as _tg
+        reactant = (_tg.read_xyz(state['reactant_path'])
+                    if state['reactant_path'] else None)
+        product = (_tg.read_xyz(state['product_path'])
+                   if state['product_path'] else None)
+        proposed = _tg.analyze_reactive_center(
+            state['hess_path'], state['ts_atoms'], reactant, product,
+            mode_index=idx,
+        )
+        state['proposed'] = proposed
+        analysis_box.value = ''.join(
+            f'<li>{html.escape(r)}</li>' for r in proposed.reasons
+        )
+        status.value = (
+            f'<span style="font-size:12px;">mode {idx}: '
+            f'reliability {proposed.reliability}'
+            + (' -- <b>AMBIGUOUS</b>, review the proposal'
+               if proposed.ambiguous else '')
+            + '</span>'
+        )
+        _refresh_constraints_display()
+
+    mode_dropdown.observe(_on_mode_change, names='value')
+
     highlight_btn.on_click(lambda _b: _refresh_constraints_display())
 
     def show(open_result):
@@ -186,6 +227,29 @@ def build_ts_goat_panel(
         state['charge'] = open_result.get('charge', 0)
         state['mult'] = open_result.get('mult', 1)
         state['mode_arrows'] = open_result.get('mode_arrows')
+        state['mode_arrows_by_index'] = open_result.get(
+            'mode_arrows_by_index', {})
+        state['imaginary_modes'] = open_result.get('imaginary_modes', [])
+        state['hess_path'] = open_result.get('hess_path')
+        state['reactant_path'] = open_result.get('reactant_path')
+        state['product_path'] = open_result.get('product_path')
+        mode_opts = [
+            (f'mode {i} ({f:.1f} cm-1)', i)
+            for i, f in state['imaginary_modes']
+        ]
+        mode_dropdown.options = mode_opts or [('(no imaginary mode)', None)]
+        mode_dropdown.value = (
+            mode_opts[0][1] if mode_opts else None
+        )
+        # single mode: the picker is informational; multiple: the user picks
+        mode_label.layout.display = 'block' if len(mode_opts) > 1 else 'none'
+        mode_dropdown.layout.display = 'block' if len(mode_opts) > 1 else 'none'
+        mode_warning.value = (
+            '<div style="color:#e65100; font-size:12px;">'
+            '⚠ Several imaginary modes in the final frequency block -- '
+            'select the reactive mode; the constraints are re-proposed '
+            'for the selected mode.</div>'
+        ) if len(mode_opts) > 1 else ''
         status.value = open_result.get('status_html', '')
         _refresh_analysis_display()
         analysis_box.value = open_result.get('analysis_html', '')
@@ -308,12 +372,16 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
         calc_path = Path(calc_path)
         calc_dir = calc_path.parent
         status = ts_goat.read_ts_status(calc_path)
+        # Prime the multi-mode warnings/auto-selection; a >1-imaginary
+        # output stays usable -- only 0 imaginary modes blocks here.
+        _ = status.auto_mode_index
         if not status.usable:
             problems = '; '.join(status.reasons) or 'not a usable TS output'
             result['error'] = (
                 'This output is not a usable converged TS '
-                f'({problems}). GOAT needs OptTS + convergence + '
-                'exactly one imaginary mode.'
+                f'({problems}). GOAT needs an OptTS output that converged '
+                'with at least one imaginary mode in the final frequency '
+                'block.'
             )
             result['error_kind'] = 'not_usable_ts'
             return result
@@ -333,6 +401,7 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
                    if files.product_path else None)
         proposed = ts_goat.analyze_reactive_center(
             files.hess_path, ts_atoms, reactant, product,
+            mode_index=status.auto_mode_index,
         ) if files.hess_path else None
         if proposed is None:
             result['error'] = (
@@ -356,13 +425,24 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             scroll_top=callbacks['scroll_top'],
         )
         arrows = None
+        mode_arrows_by_index = {}
         try:
             from delfin.imag import displaced_geometries
-            displaced = displaced_geometries(files.hess_path, ts_atoms, modes=[0])
-            if displaced:
-                arrows = displaced[0]
+            for idx, _freq in status.imaginary_modes:
+                disp = displaced_geometries(files.hess_path, idx, 0.25)
+                # pos/neg share the same magnitudes; the arrows show the
+                # +direction of the mode
+                mode_arrows_by_index[idx] = disp['pos']
+            preselect = status.auto_mode_index
+            if preselect is None and status.imaginary_modes:
+                preselect = status.imaginary_modes[0][0]
+            arrows = mode_arrows_by_index.get(preselect)
         except Exception:
             arrows = None
+        warn_html = ''.join(
+            f'<div style="color:#e65100; font-size:12px;">⚠ {html.escape(w)}</div>'
+            for w in status.warnings
+        )
         registry['show']({
             'files': files, 'ts_atoms': ts_atoms, 'proposed': proposed,
             'elements': [a[0] for a in ts_atoms],
@@ -370,7 +450,13 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             'charge': charge if charge is not None else 0,
             'mult': mult if mult is not None else 1,
             'mode_arrows': arrows,
-            'status_html': (
+            'mode_arrows_by_index': mode_arrows_by_index,
+            'imaginary_modes': list(status.imaginary_modes),
+            'hess_path': files.hess_path,
+            'reactant_path': files.reactant_path,
+            'product_path': files.product_path,
+            'status_html': warn_html
+            + (
                 f'<span style="font-size:12px;">{html.escape(str(Path(calc_path).name))}: '
                 f'reliability {proposed.reliability}'
                 + (' -- <b>AMBIGUOUS</b>, review the proposal'
