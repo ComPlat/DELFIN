@@ -6,6 +6,7 @@ previous commit (tasks_w27_sw1.yaml did not exist).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,8 +17,15 @@ BENCH = Path("delfin/agent/pack/benchmark")
 
 
 def _run(script: Path, ws: Path) -> subprocess.CompletedProcess:
+    # The repo root on PYTHONPATH: the scripts must exercise THIS
+    # checkout's delfin (with the new swarm package), not an installed
+    # delfin from a venv, which would silently grade an older tree.
+    env = dict(os.environ)
+    repo_root = str(Path.cwd().resolve())
+    env["PYTHONPATH"] = repo_root + os.pathsep + env.get("PYTHONPATH", "")
     result = subprocess.run([sys.executable, str(script), str(ws)],
-                            capture_output=True, text=True, timeout=120)
+                            capture_output=True, text=True, timeout=120,
+                            env=env)
     return result
 
 
