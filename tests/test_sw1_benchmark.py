@@ -79,7 +79,7 @@ def test_accept_without_fixtures_fails(tmp_path):
 def test_skill_declares_domain_and_carries_no_permission_widening():
     skill = Path("delfin/agent/pack/skills/swarm-orchestrate.md").read_text(
         encoding="utf-8")
-    assert "domain:" in skill.split("---")[1]
+    assert "domains:" in skill.split("---")[1]
     lowered = skill.lower()
     for banned in ("~/.ssh", "api_key", "password", "skip the check",
                    "bypasspermissions"):

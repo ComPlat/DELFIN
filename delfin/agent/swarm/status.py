@@ -123,7 +123,9 @@ def collect_status(spec: dict[str, Any]) -> dict[str, Any]:
     Read-only. Health comes from delfin.agent.session_health; a member
     with no session record yet is 'starting'. The package phase is the
     lowest phase of its members (a stopped/stalled member blocks the
-    whole package upward).
+    whole package upward). D8: with no current run id, every member
+    reports 'starting' (fail-closed — SW2 must not read stale runs as
+    healthy).
     """
     from .. import session_health as _sh
     from .. import swarm_memory
@@ -139,6 +141,12 @@ def collect_status(spec: dict[str, Any]) -> dict[str, Any]:
         records = {r.get("session"): r for r in _sh.collect()}
     except Exception:
         records = {}
+    entries = []
+    if run_id:
+        try:
+            entries = swarm_memory.read(run_id)
+        except Exception:
+            entries = []
     for pkg in spec.get("packages", []):
         roles = pkg.get("roles") or {"builder": True}
         members = []
@@ -148,14 +156,8 @@ def collect_status(spec: dict[str, Any]) -> dict[str, Any]:
             # D8: a health record only counts for THIS run. swarm_memory
             # keeps the run id each entry was written under; a record
             # from an earlier run (or no record) means 'starting'.
-            in_this_run = False
-            try:
-                entries = swarm_memory.read(run_id)
-            except Exception:
-                entries = []
-            if run_id and entries:
-                in_this_run = any(
-                    getattr(e, "author", "") == name for e in entries)
+            in_this_run = bool(run_id) and bool(entries) and any(
+                getattr(e, "author", "") == name for e in entries)
             health = (rec or {}).get("state") if in_this_run else None
             health = health or "starting"
             waits_on = (rec or {}).get("waits_on") if in_this_run else None

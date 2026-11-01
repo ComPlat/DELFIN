@@ -35,11 +35,13 @@ class LaunchError(RuntimeError):
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                            text=True)
+    # Repo invariant: every git call in delfin/ goes through
+    # delfin.agent.safe_git (tests/test_delfins_own_git_reads_...).
+    from ..safe_git import run as _safe_git_run
+    result = _safe_git_run(list(args), cwd=repo)
     if result.returncode != 0:
         raise LaunchError(f"git {' '.join(args)} failed: "
-                          f"{result.stderr.strip()}")
+                          f"{(result.stderr or result.stdout or '').strip()}")
     return result.stdout
 
 

@@ -1,7 +1,7 @@
 ---
 name: swarm-orchestrate
 description: When a DELFIN agent swarm pays off and when one session is better, and how to build one (swarm.yaml, dry-run start, triage, merge)
-domain: agent-orchestration
+domains: agent-orchestration, code
 ---
 
 # Orchestrating an agent swarm
