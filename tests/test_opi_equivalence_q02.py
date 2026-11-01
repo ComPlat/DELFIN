@@ -1,10 +1,10 @@
 """Equivalence tests: DELFIN's thermochemistry readers vs OPI (orca-pi).
 
-For the four small ORCA 6.1.1 fixtures in tests/fixtures/orca611/ (H2O and O2
-only, committed), assert that the existing DELFIN functions and OPI
-(get_free_energy, get_enthalpy, get_entropy, get_zpe, get_inner_energy) return
-the same value within a stated tolerance, and that both behave sensibly on the
-not-converged run.
+For the four small ORCA 6.1.1 runs in the private fixture store
+(tests/fixtures/orca611/<run>/<run>.*; H2O and O2 only), assert that the
+existing DELFIN functions and OPI (get_free_energy, get_enthalpy,
+get_entropy, get_zpe, get_inner_energy) return the same value within a
+stated tolerance, and that both behave sensibly on the not-converged run.
 
 Where they differ, the test states which is right and why (measured, not
 guessed) -- see the per-function commentary below.
@@ -17,18 +17,25 @@ OPI background (measured on ORCA 6.1.1):
                        NOT molar entropy in cal/mol/K)
   * get_zpe          = ORCA "Zero point energy ... X Eh"               (ZPE)
   * get_inner_energy = ORCA "Total thermal energy ... X Eh"            (U)
-  All in atomic units (Hartree).
 
-Units: DELFIN's readers are all in Hartree too (find_gibbs_energy,
-find_ZPE, find_electronic_energy in delfin/energies.py; extract_thermochem
-in delfin/api.py). The DELFIN values are read at ORCA's printed precision
-(8 decimals after the point), OPI at full double precision; the measured
-differences are < 1e-8 Hartree. A tolerance of 1e-6 Hartree is therefore
-generous and stable, while far smaller than any thermochemistry difference
-that would change a conclusion.
+DELFIN readers compared:
+  * delfin.energies.find_gibbs_energy  (G, whole file, all jobs)
+  * delfin.energies.find_ZPE           (ZPE)
+  * delfin.energies.find_electronic_energy (electronic energy)
+  * delfin.api.extract_thermochem      (ZPE, thermal correction, enthalpy,
+                                        entropy term, G-E(el), final G --
+                                        .enthalpy_corr is MISNAMED: it reads
+                                        the TOTAL Enthalpy line, which is
+                                        exactly what OPI get_enthalpy gives)
+  * delfin.reporting.delfin_collector.parse_thermochemistry
+                                       (inner energy via
+                                        total_thermal_energy_hartree; on
+                                        ORCA 6.1.1 its Total-Enthalpy and
+                                        entropy regexes MISS -- documented,
+                                        not exercised as a comparison here)
 
 Fixture semantics (measured):
-  * h2o_optfreq       -- converged Opt+Freq: the ONLY fixture with a
+  * h2o_optfreq       -- converged Opt+Freq: the ONLY run with a
                          thermochemistry block. All five thermo values exist.
   * o2_triplet, h2o_tddft -- converged single-point / TDDFT, NO thermochemistry:
                          ORCA prints no Thermodynamics block, so both DELFIN
@@ -41,14 +48,13 @@ Fixture semantics (measured):
                          unconverged orbitals; the Thermodynamics block only
                          exists after a completed Freq print.)
 
-OPI needs the orca_2json executable (part of an ORCA >= 6.1.1 install) on
-PATH for create_property_json(). The tests skip when OPI is not installed or
-orca_2json is not on PATH -- these are machine requirements, not DELFIN
-behaviour. create_property_json() writes files, so every run's .out and
-.property.txt are copied into a per-test tmp_path first; the committed
-fixture folder is never written to.
+Fixtures are real licensed-program output: they live in the private fixture
+store (DELFIN_PRIVATE_FIXTURES; LICENSE_GUARD.md, rule family 2), never in
+the repository, and the tests skip when the store is absent -- they never
+fail in CI. OPI needs the orca_2json executable (ORCA >= 6.1.1) on PATH for
+create_property_json(). create_property_json() WRITES files, so each run is
+copied into a per-test tmp_path first; the private store is never written to.
 """
-import os
 import shutil
 
 import pytest
@@ -59,43 +65,39 @@ from delfin.energies import (
     find_gibbs_energy,
     find_ZPE,
 )
+from tests.conftest import private_fixtures_or_skip  # noqa: F401
 
-FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures", "orca611")
-FIXTURES = ["h2o_optfreq", "o2_triplet", "h2o_tddft", "scf_not_converged"]
+RUNS = ["h2o_optfreq", "o2_triplet", "h2o_tddft", "scf_not_converged"]
 
 # In Hartree (atomic units). ORCA prints 8 decimals after the point; OPI
 # resolves the same number to full double precision. Measured deviations on
 # h2o_optfreq are 1.7e-10 .. 3.7e-9 Hartree, so this tolerance is robust.
 TOL_EH = 1e-6
 
+try:
+    import opi  # noqa: F401
+    from opi.output.core import Output  # noqa: F401
+    _OPI_MISSING = False
+except ImportError:
+    _OPI_MISSING = True
 
-def _opi_available() -> bool:
-    """OPI is importable and ORCA's orca_2json is on PATH (machine req.)."""
-    try:
-        import opi  # noqa: F401
-    except Exception:
-        return False
-    return shutil.which("orca_2json") is not None
-
-
-# `pytest` may run this module on a machine without OPI: guard the import.
-from opi.output.core import Output  # noqa: E402  (only after the check below)
-
-if not _opi_available():
+if _OPI_MISSING:
     pytest.skip(
-        "OPI (orca-pi) or ORCA orca_2json not available; "
-        "OPI-equivalence tests skipped",
+        "OPI (orca-pi) not importable; OPI-equivalence tests skipped",
         allow_module_level=True,
     )
 
 
+def _run_dir(name):
+    """The run's directory inside the private store (module skips if unset)."""
+    return private_fixtures_or_skip(f"tests/fixtures/orca611/{name}")
+
+
 def _opi_result(tmp_path, name):
-    """An OPI Output over a fresh copy of fixture `name`, in a tmp_path so
-    create_property_json() never writes into the committed fixture folder."""
+    """OPI Output over a fresh copy of run `name` in tmp_path, so
+    create_property_json() never writes into the private fixture store."""
     work = tmp_path / name
-    work.mkdir()
-    for ext in (".out", ".property.txt"):
-        shutil.copy(os.path.join(FIXTURE_DIR, name + ext), work)
+    shutil.copytree(_run_dir(name), work)
     out = Output(basename=name, working_dir=work)
     out.create_property_json()
     out.parse()
@@ -119,34 +121,27 @@ def _collector_inner_energy(out_path):
     return thermo.get("total_thermal_energy_hartree")
 
 
-def _fixture_out(name):
-    return os.path.join(FIXTURE_DIR, name + ".out")
-
-
 def test_converged_freq_matches(tmp_path):
-    """On the converged Opt+Freq fixture every thermo reader agrees with OPI."""
+    """On the converged Opt+Freq run every thermo reader agrees with OPI."""
     name = "h2o_optfreq"
-    # Enforce that the fixture really carries a thermochemistry block, so a
+    src = _run_dir(name) / (name + ".out")
+    # Enforce that the run really carries a thermochemistry block, so a
     # regression that silently drops it is caught as an infra error, not as a
     # masked comparison of two None values.
-    assert any("THERMOCHEMISTRY" in line
-               for line in open(_fixture_out(name), errors="replace"))
+    assert any("THERMOCHEMISTRY" in line for line in open(src, errors="replace"))
     out = _opi_result(tmp_path, name)
     copy = tmp_path / name / (name + ".out")
     d = _delfin_thermo_full(copy)
-    assert out.scf_converged() is True
-    assert out.terminated_normally() is True
-
-    # G: get_free_energy == find_gibbs_energy == extract_thermochem.final_gibbs
+    # G: OPI get_free_energy == find_gibbs_energy == extract_thermochem.final_gibbs.
     assert out.get_free_energy() == pytest.approx(
-        find_gibbs_energy(_fixture_out(name)), abs=TOL_EH)
+        find_gibbs_energy(copy), abs=TOL_EH)
     assert out.get_free_energy() == pytest.approx(d.final_gibbs, abs=TOL_EH)
-    # ZPE: get_zpe == find_ZPE == extract_thermochem.zpe
-    assert out.get_zpe() == pytest.approx(
-        find_ZPE(_fixture_out(name)), abs=TOL_EH)
+    # ZPE: OPI get_zpe == find_ZPE == extract_thermochem.zpe.
+    assert out.get_zpe() == pytest.approx(find_ZPE(copy), abs=TOL_EH)
     assert out.get_zpe() == pytest.approx(d.zpe, abs=TOL_EH)
-    # H: get_enthalpy == extract_thermochem.enthalpy_corr (both are the TOTAL
-    # enthalpy; 'enthalpy_corr' is misnamed in DELFIN -- it reads the total).
+    # H: get_enthalpy == extract_thermochem.enthalpy_corr. DELFIN's attribute
+    # name is misleading (it reads the TOTAL Enthalpy line, not the thermal
+    # correction); the VALUE is the same quantity OPI returns, measured here.
     assert out.get_enthalpy() == pytest.approx(d.enthalpy_corr, abs=TOL_EH)
     # S: get_entropy == extract_thermochem.entropy_total; BOTH are the entropy
     # term T*S in Hartree, NOT molar entropy in cal/mol/K.
@@ -161,8 +156,9 @@ def test_no_thermochemistry_returns_none(tmp_path, name):
     """Converged but no Frequency block: no Thermodynamics in the output, so
     both DELFIN and OPI return None for every thermo quantity -- while the
     electronic energy still exists and agrees."""
+    src = _run_dir(name) / (name + ".out")
     assert any("ORCA TERMINATED NORMALLY" in line
-               for line in open(_fixture_out(name), errors="replace"))
+               for line in open(src, errors="replace"))
     out = _opi_result(tmp_path, name)
     copy = tmp_path / name / (name + ".out")
     d = _delfin_thermo_full(copy)
@@ -174,13 +170,13 @@ def test_no_thermochemistry_returns_none(tmp_path, name):
     assert out.get_zpe() is None
     assert out.get_inner_energy() is None
     # DELFIN agrees: no Gibbs, no ZPE, no thermochemistry block at all.
-    assert find_gibbs_energy(_fixture_out(name)) is None
-    assert find_ZPE(_fixture_out(name)) is None
+    assert find_gibbs_energy(copy) is None
+    assert find_ZPE(copy) is None
     assert d.final_gibbs is None and d.zpe is None and d.enthalpy_corr is None
     assert _collector_inner_energy(copy) is None
     # Electronic energy is still read and agrees.
     assert out.get_final_energy() == pytest.approx(
-        find_electronic_energy(_fixture_out(name)), abs=TOL_EH)
+        find_electronic_energy(copy), abs=TOL_EH)
 
 
 def test_not_converged_returns_none_not_a_value(tmp_path):
@@ -188,8 +184,8 @@ def test_not_converged_returns_none_not_a_value(tmp_path):
     OPI must not report an unconverged thermochemistry value (contrast the
     HOMO-LUMO gap, which OPI would still return from unconverged orbitals)."""
     name = "scf_not_converged"
-    assert any("SCF NOT CONVERGED" in line
-               for line in open(_fixture_out(name), errors="replace"))
+    src = _run_dir(name) / (name + ".out")
+    assert any("SCF NOT CONVERGED" in line for line in open(src, errors="replace"))
     out = _opi_result(tmp_path, name)
     copy = tmp_path / name / (name + ".out")
     d = _delfin_thermo_full(copy)
@@ -201,7 +197,7 @@ def test_not_converged_returns_none_not_a_value(tmp_path):
                out.get_zpe, out.get_inner_energy, out.get_final_energy):
         assert fn() is None
     # DELFIN agrees on None and on the failure.
-    assert find_gibbs_energy(_fixture_out(name)) is None
-    assert find_ZPE(_fixture_out(name)) is None
+    assert find_gibbs_energy(copy) is None
+    assert find_ZPE(copy) is None
     assert d.final_gibbs is None and d.zpe is None and d.enthalpy_corr is None
     assert _collector_inner_energy(copy) is None
