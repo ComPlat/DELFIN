@@ -110,15 +110,16 @@ def test_unknown_rubric_kind_raises():
 
 
 def test_rubric_does_not_alter_success():
-    """A task whose existing signals/verify fail still fails; the rubric is
+    """A task whose existing required signal fails still fails; the rubric is
     an alongside metric, never a way back to a pass."""
     bad = Task(
         id="t", task_class="misc", mode="solo", prompt="p",
+        expected_signals=(bm.Signal(pattern="NEVER_SAID"),),
         rubric=[RubricCriterion(name="planning", weight=1, kind="signals")],
     )
     res = bm.score_outcome(bad, _traj(text=""))
     assert res.success is False          # existing criterion unaffected
-    assert res.rubric_0_100 is not None  # ... but the rubric is still scored
+    assert res.rubric_0_100 == 0         # ... and the rubric still scored
 
 
 # ---------------------------------------------------------------------------
