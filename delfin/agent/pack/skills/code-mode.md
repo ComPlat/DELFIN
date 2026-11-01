@@ -4,8 +4,7 @@ description: >
   Write one short Python program against DELFIN's tools (as a typed API) instead
   of one tool call per model turn. Best for fan-out work: checking many job
   folders, tabulating states and energies, summarising a run tree.
-domain: code-mode
-category: workflow
+domains: code
 ---
 
 # Code Mode
