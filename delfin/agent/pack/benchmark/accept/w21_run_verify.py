@@ -15,7 +15,10 @@ deliverable has two halves, and BOTH are graded:
    charge/multiplicity diverges from CONTROL fails; a run inside the
    core cap that terminated normally passes.
 
-usage: w21_run_verify.py <workspace> <task_id>
+usage: w21_run_verify.py <workspace> [<task_id>]
+Without a task id (the runner's form, benchmark_runner.py:1349) the
+task folder is the one under the workspace that holds a spec.json;
+ambiguous when several do.
 Exit 0 = accepted, 1 = failed, 2 = usage error.
 """
 
@@ -50,18 +53,45 @@ def _fail(msg: str) -> None:
     sys.exit(1)
 
 
+def _resolve_task(ws: Path, task_id: str | None) -> tuple[str, Path]:
+    """The task id and folder, given the runner's one-argument form.
+
+    benchmark_runner.run_acceptance (benchmark_runner.py:1349) launches
+    this script with the workspace as the ONLY argument. The setup
+    (setup/w21_run_fixtures.py) pre-creates one folder per task with
+    only start.xyz/brief.txt; the attempt writes deliverables
+    (spec.json, run_evidence.json, ...) only where the agent worked.
+    With no task id, the folder holding a spec.json IS the task. The
+    two-argument form is kept (extend, never lose).
+    """
+    if task_id is not None:
+        if task_id not in _TASKS:
+            print(f"usage: unknown task id {task_id}", file=sys.stderr)
+            sys.exit(2)
+        return task_id, ws / task_id
+    candidates = sorted(
+        p.parent for p in ws.rglob("spec.json")
+        if p.parent.name in _TASKS)
+    if not candidates:
+        _fail("no task folder in the workspace holds a spec.json -- "
+              "nothing to grade")
+    if len(candidates) > 1:
+        names = ", ".join(c.name for c in candidates)
+        _fail(f"several task folders hold deliverables ({names}) -- "
+              "ambiguous without a task id")
+    return candidates[0].name, candidates[0]
+
+
 def main(argv: list[str]) -> None:
-    if len(argv) != 3:
-        print("usage: w21_run_verify.py <workspace> <task_id>",
+    if len(argv) < 2 or len(argv) > 3:
+        print("usage: w21_run_verify.py <workspace> [<task_id>]",
               file=sys.stderr)
         sys.exit(2)
-    ws, task_id = Path(argv[1]), argv[2]
-    if task_id not in _TASKS:
-        print(f"usage: unknown task id {task_id}", file=sys.stderr)
-        sys.exit(2)
+    ws = Path(argv[1])
+    task_id = argv[2] if len(argv) == 3 else None
+    task_id, d = _resolve_task(ws, task_id)
     brief, required = _TASKS[task_id]
 
-    d = ws / task_id
     if not d.is_dir():
         _fail(f"{d} missing")
 
