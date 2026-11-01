@@ -129,12 +129,16 @@ def test_analyze_reactive_center_prefers_bond_changes_over_displacement(tmp_path
     assert rc.reasons
 
 
-def test_analyze_reactive_center_flags_ambiguity_without_endpoints(tmp_path):
+def test_analyze_reactive_center_flags_ambiguity_for_wide_proposal(tmp_path):
     hess = tmp_path / "ts.hess"
     mode = [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.2, 0.0, 0.0)]
     _write_hess(hess, _water_ts_atoms(), [mode], [-400.0])
     ts_atoms = _water_ts_atoms()
-    rc = analyze_reactive_center(hess, ts_atoms)  # no endpoints
+    # a broad, non-specific mode: many atoms move together (torsion),
+    # so the proposal covers most of the molecule and must be flagged
+    mode = [(1.0, 0.0, 0.0), (0.9, 0.0, 0.0), (0.95, 0.0, 0.0)]
+    _write_hess(hess, _water_ts_atoms(), [mode], [-400.0])
+    rc = analyze_reactive_center(hess, ts_atoms)
     assert rc.ambiguous
     assert any("ambiguous" in r.lower() for r in rc.reasons)
 
@@ -173,7 +177,9 @@ def test_collect_ts_files_matches_by_atom_order(tmp_path):
     assert files.xyz_path == ts_dir / "TS_1.xyz"
     assert files.hess_path == ts_dir / "TS_1.hess"
     assert files.inp_path == ts_dir / "TS_1.inp"
-    assert files.reactant_path == ts_dir / "endpoint_reactant.xyz"
+    # endpoints are no longer collected (plain OptTS has none) but are
+    # still excluded from the TS-geometry candidates
+    assert files.reactant_path is None and files.product_path is None
     assert files.complete
 
 
@@ -377,6 +383,137 @@ def test_multiple_xyz_candidates_pick_hessian_ordered_one(tmp_path):
     _write_orca_xyz(d / "wrong_order.xyz", list(reversed(atoms)))
     _write_orca_xyz(d / "other_run_final.xyz", atoms)
     files = collect_ts_files(d, out_path=d / "TS.out")
-    assert files.reactant_path == d / "edukt.xyz"
+    assert files.reactant_path is None  # endpoints are not collected
     assert files.xyz_path == d / "other_run_final.xyz"
     assert not any("matching TS geometry" in x for x in files.problems)
+
+
+# ------------------- mode-only analysis (ORCA TS-conformer workflow) -------
+
+def test_group_torsion_proposes_only_the_reacting_pair(tmp_path):
+    """Whole groups with large absolute displacement, but the reactive
+    centre is only visible through RELATIVE atom motion.
+
+    Two fragments (atoms 0-2 and 3-5) translate rigidly (torsion-like,
+    coherent motion), while atoms 3 and 0 additionally move towards each
+    other along the mode (bond formation).  The proposal must not pick
+    the whole moving groups -- only the two atoms of the reacting pair
+    dominate the pair evidence.
+    """
+    # Chemically clean design: the reacting pair (0, 3) approaches
+    # (distance 9 -> responds), while the spectator pairs (1, 2) and
+    # (4, 5) rotate INTERNALLY around their own midpoint -- every
+    # spectator distance is preserved to 2nd order, no spectator
+    # contact responds.  The spectators show large absolute
+    # displacement (0.9 tangent) but never change a distance.
+    # The spectators sit FAR from both anchors (> 12 Angstrom, the
+    # _MAX_RELEVANT_CONTACT_BOHR window): they rotate internally with a
+    # large tangent displacement, but their distances to every reacting
+    # atom exceed the relevance window, so only the pair (0, 3) can be
+    # proposed.  (Physically, a spectator bound to an anchor that moves
+    # in the mode always shares the anchor's distance response -- one
+    # normal mode cannot separate them; the window models the chemical
+    # reality that far spectators are irrelevant for GOAT constraints.)
+    mode = [
+        (1.2, 0.0, 0.0),                      # 0: towards 3
+        (0.0, 0.9, 0.0),                      # 1: rotates with 2 (far away)
+        (0.0, -0.9, 0.0),                     # 2: rotates with 1
+        (-1.2, 0.0, 0.0),                     # 3: towards 0
+        (0.0, 0.0, 0.9),                      # 4: rotates with 5 (far away)
+        (0.0, 0.0, -0.9),                     # 5: rotates with 4
+    ]
+    atoms = [
+        ("O", 0.0, 0.0, 0.0),              # anchor A
+        ("H", 40.0, 0.0, 0.0),             # spectator pair far above
+        ("H", 40.0, 0.0, 1.0),
+        ("O", 9.0, 0.0, 0.0),              # anchor B
+        ("H", -40.0, 0.0, 0.0),            # spectator pair far below
+        ("H", -40.0, 0.0, 1.0),
+    ]
+    hess = tmp_path / "ts.hess"
+    _write_hess(hess, atoms, [mode], [-420.0])
+    rc = analyze_reactive_center(hess, atoms)
+    # the reacting pair must be in the proposal
+    assert 0 in rc.indices and 3 in rc.indices
+    # the rotating riders must NOT be proposed (no blind top-N of the
+    # biggest movers): they move coherently around their anchor
+    assert not (1 in rc.indices or 2 in rc.indices)
+    assert len(rc.indices) <= 4
+    # pair evidence, not displacement only
+    assert any("distance when the structure is displaced" in r or
+               "relative motion" in r for r in rc.reasons)
+
+
+def test_small_sensible_selection_not_top_n(tmp_path):
+    """No fixed atom count: a two-atom reaction centre stays two atoms."""
+    # 0 and 3 approach (proton transfer centre, distance 9 Bohr);
+    # 1, 2, 4, 5 are spectator pairs at > 12 Angstrom from both
+    # (outside the relevance window, internally rotating).
+    mode = [
+        (1.2, 0.0, 0.0), (0.0, 0.9, 0.0), (0.0, 0.9, 0.0),
+        (-1.2, 0.0, 0.0), (0.0, 0.0, 0.9), (0.0, 0.0, 0.9),
+    ]
+    atoms = [
+        ("O", 0.0, 0.0, 0.0),
+        ("H", 40.0, 0.0, 0.0), ("H", 40.0, 0.0, 1.0),
+        ("H", 9.0, 0.0, 0.0),
+        ("H", -40.0, 0.0, 0.0), ("H", -40.0, 0.0, 1.0),
+    ]
+    hess = tmp_path / "ts.hess"
+    _write_hess(hess, atoms, [mode], [-500.0])
+    rc = analyze_reactive_center(hess, atoms)
+    assert set(rc.indices) >= {0, 3}
+    # a proton transfer centre is small: at most the pair plus one rider
+    assert len(rc.indices) <= 3
+
+
+def test_mode_index_switch_reproposes(tmp_path):
+    """Two imaginary modes with different reactive pairs: switching the
+    selected mode must re-run the analysis and change the proposal."""
+    mode_a = [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+              (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
+    mode_b = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+              (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
+    atoms = [
+        ("O", 0.0, 0.0, 0.0), ("H", 2.4, 0.0, 0.0), ("H", -0.5, 0.9, 0.0),
+        ("O", 5.0, 0.0, 0.0), ("H", 7.4, 0.0, 0.0), ("H", 4.5, 0.9, 0.0),
+    ]
+    hess = tmp_path / "ts.hess"
+    _write_hess(hess, atoms, [mode_a, mode_b], [-450.0, -300.0])
+    rc_a = analyze_reactive_center(hess, atoms, mode_index=0)
+    rc_b = analyze_reactive_center(hess, atoms, mode_index=1)
+    assert rc_a.indices and rc_b.indices
+    # the proposals follow the selected mode's reactive pairs
+    assert 1 in rc_a.indices and 4 in rc_b.indices
+
+
+def test_endpoint_params_are_accepted_but_ignored(tmp_path):
+    """Deprecated endpoint arguments must not change the mode-only
+    result (a plain OptTS run has no endpoints)."""
+    mode = [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
+    atoms = _water_ts_atoms()
+    hess = tmp_path / "ts.hess"
+    _write_hess(hess, atoms, [mode], [-400.0])
+    rc_plain = analyze_reactive_center(hess, atoms)
+    rc_with = analyze_reactive_center(
+        hess, atoms, [atoms], [atoms[::-1]],
+    )
+    assert rc_plain.indices == rc_with.indices
+
+
+def test_collect_ts_files_still_excludes_endpoint_files_from_ts_xyz(tmp_path):
+    """Endpoint files are not collected, but also not mistaken for the
+    TS geometry when they are the only matching xyz."""
+    ts_dir = tmp_path / "TS"
+    ts_dir.mkdir()
+    atoms = _water_ts_atoms()
+    _write_hess(ts_dir / "TS.hess", atoms, [], [-300.0])
+    # an endpoint xyz that WOULD match the Hessian composition
+    (ts_dir / "edukt.xyz").write_text(
+        "3\nr\n" + "\n".join(f"{el} {x} {y} {z}" for el, x, y, z in atoms)
+        + "\n", encoding="utf-8")
+    files = collect_ts_files(ts_dir, out_path=ts_dir / "TS.out")
+    assert files.xyz_path is None
+    assert files.reactant_path is None and files.product_path is None
+    # the problem message must not demand endpoints any more
+    assert not any("reactant/product" in p for p in files.problems)

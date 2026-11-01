@@ -104,7 +104,7 @@ def build_ts_goat_panel(
         'elements': (), 'coordinates': (), 'charge': 0, 'mult': 1,
         'mode_arrows': None,
         'mode_arrows_by_index': {}, 'imaginary_modes': [],
-        'hess_path': None, 'reactant_path': None, 'product_path': None,
+        'hess_path': None,
     }
 
     def _esc(text):
@@ -154,7 +154,6 @@ def build_ts_goat_panel(
         for label, path in (
             ('Output', files.out_path), ('Input', files.inp_path),
             ('TS geometry', files.xyz_path), ('Hessian', files.hess_path),
-            ('Reactant', files.reactant_path), ('Product', files.product_path),
         ):
             rows.append(
                 f'<li><b>{label}:</b> '
@@ -192,13 +191,10 @@ def build_ts_goat_panel(
             return
         state['mode_arrows'] = state['mode_arrows_by_index'].get(idx)
         from delfin import ts_goat as _tg
-        reactant = (_tg.read_xyz(state['reactant_path'])
-                    if state['reactant_path'] else None)
-        product = (_tg.read_xyz(state['product_path'])
-                   if state['product_path'] else None)
+        # TS geometry + selected mode only -- a plain OptTS run has no
+        # reactant/product files and the analysis must not need them.
         proposed = _tg.analyze_reactive_center(
-            state['hess_path'], state['ts_atoms'], reactant, product,
-            mode_index=idx,
+            state['hess_path'], state['ts_atoms'], mode_index=idx,
         )
         state['proposed'] = proposed
         analysis_box.value = ''.join(
@@ -395,12 +391,9 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             )
             result['error_kind'] = 'no_xyz'
             return result
-        reactant = (ts_goat.read_xyz(files.reactant_path)
-                    if files.reactant_path else None)
-        product = (ts_goat.read_xyz(files.product_path)
-                   if files.product_path else None)
+        # TS geometry + selected mode only (see _on_mode_change).
         proposed = ts_goat.analyze_reactive_center(
-            files.hess_path, ts_atoms, reactant, product,
+            files.hess_path, ts_atoms,
             mode_index=status.auto_mode_index,
         ) if files.hess_path else None
         if proposed is None:
@@ -410,6 +403,29 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
                 'without it.'
             )
             result['error_kind'] = 'no_hess'
+            return result
+        # Consistency: the XYZ used for the input must match the Hessian
+        # the mode came from (same atom count and element order); and the
+        # selected mode must actually be one of the Hessian's imaginary
+        # modes, not a column from a different calculation.
+        if not ts_goat._same_composition(
+            ts_atoms, ts_goat._hessian_reference_atoms(files.hess_path)
+        ):
+            result['error'] = (
+                'TS geometry and Hessian do not match (different atom '
+                'count or element order) -- refusing to combine them.'
+            )
+            result['error_kind'] = 'inconsistent_geometry'
+            return result
+        if status.auto_mode_index is not None and all(
+            idx != status.auto_mode_index for idx, _f in status.imaginary_modes
+        ):
+            result['error'] = (
+                'Selected imaginary mode is not listed in the final '
+                'frequency block -- Hessian and output may belong to '
+                'different calculations.'
+            )
+            result['error_kind'] = 'inconsistent_mode'
             return result
         charge, mult = status.charge, status.mult
         if (charge is None or mult is None) and files.inp_path:
@@ -453,8 +469,6 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             'mode_arrows_by_index': mode_arrows_by_index,
             'imaginary_modes': list(status.imaginary_modes),
             'hess_path': files.hess_path,
-            'reactant_path': files.reactant_path,
-            'product_path': files.product_path,
             'status_html': warn_html
             + (
                 f'<span style="font-size:12px;">{html.escape(str(Path(calc_path).name))}: '

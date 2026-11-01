@@ -39,6 +39,32 @@ COVALENT_RADII = {
 }
 _DEFAULT_RADIUS = 1.5
 
+# Thresholds for the mode-based reactive-centre analysis.  All distances
+# are in Bohr because the Hessian coordinates (and therefore the mode
+# displacement via displaced_geometries) are in Bohr.
+#
+# _MAX_RELEVANT_CONTACT_BOHR: contacts farther apart than ~12 Angstrom
+# (22.7 Bohr) are chemically irrelevant for bond making/breaking; they
+# are skipped so torsional motion of distant groups cannot inflate
+# scores.  (A forming contact may still be long at the TS, hence the
+# generous limit.)
+_MAX_RELEVANT_CONTACT_BOHR = 22.7
+# _RELATIVE_MOTION_THRESHOLD: two atoms whose mode-displacement vectors
+# differ by more than 0.10 (fraction of the largest atom displacement)
+# are moving relative to each other rather than being carried along
+# coherently -- the signature of a contact that opens or closes.
+_RELATIVE_MOTION_THRESHOLD = 0.10
+# _DISTANCE_RESPONSE_THRESHOLD_BOHR: a contact must change by at least
+# ~0.05 Angstrom (0.095 Bohr) along the +/- mode for the mode to count
+# as acting on it.
+_DISTANCE_RESPONSE_THRESHOLD_BOHR = 0.095
+# _RESPONSE_FRACTION: a contact must change by at least this fraction
+# of its equilibrium distance for the mode to count as acting on it.
+# 0.04 = 4%: a bond end merely rotating (2nd-order distance change
+# of the covalent radius) stays far below, a forming/breaking
+# contact changes much more.
+_RESPONSE_FRACTION = 0.04
+
 
 # --------------------------------------------------------------------- data
 
@@ -269,6 +295,18 @@ def _same_composition(a: Sequence, b: Sequence) -> bool:
     )
 
 
+def _hessian_reference_atoms(hess_path: Path) -> list[tuple[str, float, float, float]]:
+    """Element sequence of the Hessian's $atoms block (Bohr coords).
+
+    Used as the reference for the xyz/Hessian consistency check: the TS
+    geometry may only be combined with a Hessian of the same atom count
+    and element order.
+    """
+    from delfin.imag import _hessian_atoms  # noqa: PLC0415
+    return _hessian_atoms(Path(hess_path).read_text(
+        encoding="utf-8", errors="ignore").splitlines())
+
+
 def _composition_mismatch(a: Sequence, b: Sequence) -> str:
     """Human-readable first difference between two atom orders.
 
@@ -353,28 +391,13 @@ def collect_ts_files(calc_dir: Path, out_path: Path | None = None) -> TSFiles:
             mismatch = _composition_mismatch(atoms, reference)
             xyz_rejections.append(f"{cand.name}: {mismatch}")
             continue
-        # Do not mistake reactant/product endpoint files for the TS itself.
+        # Do not mistake reactant/product endpoint files for the TS itself;
+        # they are not part of the TS->GOAT workflow (a plain OptTS run has
+        # none) but must not be picked as the TS geometry either.
         if _EDUKT_RE.search(cand.stem) or _PRODUKT_RE.search(cand.stem):
-            if _EDUKT_RE.search(cand.stem) and found.reactant_path is None:
-                found.reactant_path = cand
-            if _PRODUKT_RE.search(cand.stem) and found.product_path is None:
-                found.product_path = cand
             continue
         found.xyz_path = cand
         break
-
-    # -- reactant / product endpoints (NEB naming and Ed/Prt naming)
-    if found.reactant_path is None or found.product_path is None:
-        for cand in xyz_candidates:
-            atoms = read_xyz(cand)
-            if atoms is None:
-                continue
-            if reference is not None and not _same_composition(atoms, reference):
-                continue
-            if _EDUKT_RE.search(cand.stem) and found.reactant_path is None:
-                found.reactant_path = cand
-            elif _PRODUKT_RE.search(cand.stem) and found.product_path is None:
-                found.product_path = cand
 
     # -- NEB leftovers (e.g. *.final.interp, TS_*_NEB* folders are parents)
     neb_hits = sorted(calc_dir.glob("*.final.interp"))
@@ -394,9 +417,6 @@ def collect_ts_files(calc_dir: Path, out_path: Path | None = None) -> TSFiles:
     if found.inp_path is None:
         found.problems.append("no ORCA input (.inp) found -- charge and "
                               "multiplicity must be set manually")
-    if found.reactant_path is None and found.product_path is None:
-        found.problems.append("no reactant/product endpoint geometry found "
-                              "-- connectivity-change evidence unavailable")
     return found
 
 
@@ -446,36 +466,40 @@ def analyze_reactive_center(
     mode_index: int | None = None,
     max_atoms: int = 8,
 ) -> ReactiveCenter:
-    """Propose the reactive-centre atoms from the imaginary mode + endpoints.
+    """Propose the reactive-centre atoms from TS geometry + imaginary mode.
 
-    ``mode_index`` selects WHICH imaginary mode drives the analysis;
-    None means the most negative one (the classical reactive mode).
-    Scoring combines three independent pieces of evidence so that the
+    Per the ORCA "Transition State Conformers" tutorial, only the atoms
+    directly involved in the chemical transformation are fixed, so GOAT
+    can explore the remaining conformations freely.  The proposal uses
+    ONLY the optimised TS geometry and the selected imaginary mode --
+    no reactant/product/NEB files, which a plain OptTS run does not have.
+    Endpoint parameters are still accepted (deprecated, ignored) so old
+    call sites keep working.
+
+    Scoring combines three pieces of mode-based evidence so that the
     choice is NOT driven by the largest Cartesian displacement alone
-    (a torsional or umbrella-like motion moves many innocent atoms):
+    (a torsional or umbrella-like motion moves whole groups):
 
-    1. **Mode displacement** -- |eigenvector| per atom of the most
-       imaginary mode (scaled 0..1).
-    2. **Bond changes** -- atoms of every bond formed or broken between
-       the endpoints and the TS (strongest evidence; a proton transfer,
-       bond break or ring closure shows up here even when its atoms move
-       modestly).
-    3. **Distance response along the mode** -- for each atom pair whose
-       bond status differs between the endpoints and the TS, how much
-       that distance changes when the structure is displaced along the
-       mode in both directions (displacement *increases* a forming or
-       *decreases* a breaking contact -> the mode really acts on it).
+    1. **Mode displacement** -- |eigenvector| per atom (scaled 0..1).
+    2. **Relative motion** -- how differently two atoms move along the
+       mode; a bond that is forming or breaking shows the two ends
+       moving towards/away from each other, while a group carried along
+       by torsion moves coherently (small relative motion).
+    3. **Distance response** -- for every contact whose distance changes
+       appreciably when the structure is displaced along the mode in
+       EITHER direction (the mode really opens or closes it), and whose
+       equilibrium distance sits in the bonding-relevant window, both
+       atoms score.  This catches bond formation/breakage and proton
+       transfer even when the absolute displacements are modest.
     """
     ts_atoms = list(ts_atoms)
     n = len(ts_atoms)
-    formed, broken = connectivity_changes(ts_atoms, reactant_atoms, product_atoms)
-    reacting_pairs = sorted(formed | broken)
-
     scores: dict[int, float] = {}
     reasons: list[str] = []
+    vector = None
+    mode_displacement: dict[int, float] = {}
 
     # -- mode eigenvector (selected or most imaginary column) -------------
-    mode_displacement: dict[int, float] = {}
     try:
         from delfin.imag import _normal_mode, imaginary_modes  # noqa: PLC0415
         if mode_index is None:
@@ -499,31 +523,47 @@ def analyze_reactive_center(
     for a, rel in mode_displacement.items():
         scores[a] = scores.get(a, 0.0) + 1.0 * rel
 
-    # -- bond changes: the reacting contacts and their atoms -------------
-    reacting_atoms: set = set()
-    for i, j in reacting_pairs:
-        reacting_atoms.update((i, j))
+    # -- relative motion along the mode ----------------------------------
+    # A reacting contact has its two ends moving towards/away from each
+    # other (large relative displacement); a group riding along a torsion
+    # moves coherently (small relative displacement).
+    responding_pairs: list[tuple[int, int, float]] = []
+    if mode_displacement:
+        disp = {}
+        for a in range(n):
+            comps = vector[3 * a:3 * a + 3] if vector is not None else (0.0, 0.0, 0.0)
+            disp[a] = comps
+        for i in range(n):
+            for j in range(i + 1, n):
+                if i not in mode_displacement and j not in mode_displacement:
+                    continue
+                d0 = _distance(ts_atoms[i], ts_atoms[j])
+                if d0 > _MAX_RELEVANT_CONTACT_BOHR:
+                    continue
+                v_i, v_j = disp[i], disp[j]
+                dot = sum((v_i[k] - v_j[k]) ** 2 for k in range(3))
+                relative = math.sqrt(dot)
+                if relative > _RELATIVE_MOTION_THRESHOLD:
+                    responding_pairs.append((i, j, relative))
+
+    responding_pairs.sort(key=lambda t: -t[2])
+    for i, j, rel in responding_pairs[:12]:
         for a in (i, j):
-            scores[a] = scores.get(a, 0.0) + 2.0
-    if reacting_pairs:
-        formed_txt = ", ".join(
-            f"{ts_atoms[i][0]}{i}-{ts_atoms[j][0]}{j}" for i, j in sorted(formed)
-        ) or "none"
-        broken_txt = ", ".join(
-            f"{ts_atoms[i][0]}{i}-{ts_atoms[j][0]}{j}" for i, j in sorted(broken)
-        ) or "none"
+            scores[a] = scores.get(a, 0.0) + 1.5 * min(rel, 1.0)
+    if responding_pairs:
         reasons.append(
-            "connectivity change vs. endpoints: formed " + formed_txt
-            + ", broken " + broken_txt
-        )
-    else:
-        reasons.append(
-            "no endpoint geometries matched the TS atom order -- "
-            "connectivity-change evidence unavailable"
+            f"{len(responding_pairs)} contacts with relative motion along "
+            "the mode; the strongest 12 prioritised (relative motion means "
+            "the bond is forming/breaking, coherent motion of a group is "
+            "torsion)"
         )
 
-    # -- distance response along the mode --------------------------------
-    if mode_displacement and reacting_pairs:
+    # -- distance response along +/- mode ---------------------------------
+    # Displace the TS along the mode in both directions and see which
+    # contacts actually open or close; only those contacts prove that the
+    # selected mode acts on the bond in question.
+    response_pairs: set = set()
+    if mode_index is not None:
         from delfin.imag import displaced_geometries  # noqa: PLC0415
         try:
             displaced = displaced_geometries(Path(hess_path), mode_index, 0.25)
@@ -531,30 +571,57 @@ def analyze_reactive_center(
             displaced = None
             reasons.append(f"displacement along the mode unavailable ({exc})")
         if displaced:
-            for i, j in reacting_pairs:
-                d0 = _distance(ts_atoms[i], ts_atoms[j])
-                response = max(
-                    abs(_distance(displaced["pos"][i], displaced["pos"][j]) - d0),
-                    abs(_distance(displaced["neg"][i], displaced["neg"][j]) - d0),
-                )
-                if response > 0.05:  # the mode actually opens/closes this contact
-                    for a in (i, j):
-                        scores[a] = scores.get(a, 0.0) + 1.5
+            for i in range(n):
+                for j in range(i + 1, n):
+                    d0 = _distance(ts_atoms[i], ts_atoms[j])
+                    if d0 > _MAX_RELEVANT_CONTACT_BOHR:
+                        continue
+                    dp = abs(_distance(displaced["pos"][i], displaced["pos"][j]) - d0)
+                    dn = abs(_distance(displaced["neg"][i], displaced["neg"][j]) - d0)
+                    # a real reacting contact changes RELATIVE to its
+                    # equilibrium length; a bond whose end merely rotates
+                    # shows an absolute change that grows with d0*sin(a)
+                    # but stays a small FRACTION of a covalent length
+                    if (max(dp, dn) > _RESPONSE_FRACTION * d0
+                            and max(dp, dn) > _DISTANCE_RESPONSE_THRESHOLD_BOHR):
+                        response_pairs.add((i, j))
+            for i, j in sorted(response_pairs):
+                for a in (i, j):
+                    scores[a] = scores.get(a, 0.0) + 1.5
             reasons.append(
-                "distance response along the imaginary mode checked for every "
-                "reacting contact"
+                f"{len(response_pairs)} contacts change their distance when "
+                "the structure is displaced along the mode (+/-): they are "
+                "the contacts the selected mode acts on"
             )
 
     # -- pick the atoms ---------------------------------------------------
     ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
-    # Everything that participates in a reacting bond is in; mode-only
-    # atoms follow while their score stays clearly above the tail.
-    selected = {a for a in reacting_atoms}
-    threshold = 1.0  # one full-strength mode contribution
-    for a, score in ranked:
+    # Priority: atoms of contacts that BOTH move relatively AND respond
+    # in distance (bond forming/breaking under this mode); then contacts
+    # with only one of the two evidences; then pure displacement.  The
+    # selection stops once the score drops to a small fraction of the
+    # leader -- no fixed atom count, no blind top-N.  Displacement alone
+    # NEVER qualifies an atom: a torsion moves whole groups, so only
+    # atoms with pair evidence (relative motion or distance response)
+    # enter the proposal.
+    strong: set = set()
+    for i, j in response_pairs:
+        if any(p[0] == i and p[1] == j for p in responding_pairs):
+            strong.update((i, j))
+    # The distance response along +/- mode is the PRIMARY evidence: a
+    # contact the mode actually opens or closes.  Relative motion alone
+    # does NOT qualify an atom (torsion also produces relative motion
+    # between atoms whose distance never changes).
+    pair_evidence: set = set()
+    for i, j in response_pairs:
+        pair_evidence.update((i, j))
+    selected: set = set(strong)
+    for a, _score in ranked:
         if len(selected) >= max_atoms:
             break
-        if score >= threshold:
+        if a in selected:
+            continue
+        if a in pair_evidence:
             selected.add(a)
     indices = tuple(sorted(selected))
     elements = tuple(str(ts_atoms[a][0]) for a in indices)
@@ -565,20 +632,23 @@ def analyze_reactive_center(
         elements = tuple(str(ts_atoms[a][0]) for a in indices)
         reasons.append(
             "fallback: the four atoms with the largest mode displacement "
-            "(no connectivity evidence was available)"
+            "(no pair evidence was available)"
         )
 
     # -- reliability ------------------------------------------------------
     reliability = "low"
-    if reacting_pairs and mode_displacement:
-        reliability = "high" if len(reacting_pairs) >= 2 else "medium"
-    elif reacting_pairs:
+    if strong:
+        reliability = "high"
+    elif responding_pairs or response_pairs:
         reliability = "medium"
     ambiguous = (
-        not reacting_pairs
-        or (mode_displacement and len(selected) > max_atoms // 2)
-        or len(selected) > max_atoms
-    )
+        # no pair evidence at all -- displacement only
+        not strong and not responding_pairs and not response_pairs
+    ) or (
+        # the proposal covers most of the molecule -- not a small,
+        # chemically meaningful selection
+        len(indices) >= max(4, (n + 1) // 2)
+    ) or len(indices) > max_atoms
     if ambiguous:
         reasons.append(
             "the proposal is ambiguous -- please check and adjust the "
@@ -591,8 +661,8 @@ def analyze_reactive_center(
         reliability=reliability,
         ambiguous=ambiguous,
         scores={a: round(s, 3) for a, s in sorted(scores.items())},
-        formed_bonds=tuple(sorted(formed)),
-        broken_bonds=tuple(sorted(broken)),
+        formed_bonds=tuple(),
+        broken_bonds=tuple(),
     )
 
 
