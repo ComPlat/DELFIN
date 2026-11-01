@@ -123,3 +123,22 @@ def test_pubchem_unknown_and_missing_fields(transport):
     rec = source_apis.lookup_compound("empty-table-xyz")
     assert rec["status"] == "ok" and rec["cid"] is None
     assert rec["formula"] is None
+
+
+# --- host_for_action: the ONE mapping the security layer reads ---------------
+
+def test_host_for_action_maps_known_and_never_guesses_unknown():
+    # The rule layer (permission_rules._subjects) turns this value into
+    # the host a web_fetch(domain:) rule may match. A wrong or guessed
+    # host here would make the policy bind the WRONG host — so unknown
+    # and hostile shapes must give None, never a fallback.
+    from delfin.agent.source_apis import host_for_action
+    assert host_for_action("doi") == "api.crossref.org"
+    assert host_for_action("compound") == "pubchem.ncbi.nlm.nih.gov"
+    assert host_for_action("works") == "api.openalex.org"
+    # Case variants normalise to the SAME fixed host (closed mapping —
+    # every result is one of the three documented API hosts).
+    assert host_for_action("DOI") == "api.crossref.org"
+    for hostile in (None, "", "  ", "unknown", "scrape",
+                    "doi; rm -rf", {"action": "doi"}, ["doi"]):
+        assert host_for_action(hostile) is None, f"{hostile!r} must not map"
