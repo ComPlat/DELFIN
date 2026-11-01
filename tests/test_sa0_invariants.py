@@ -74,11 +74,12 @@ def test_run_subagent_passes_the_preset_globs(tmp_path, monkeypatch):
     real = SA._derive_perms
 
     def spy(parent_perms, mode, workspace=None, preset_tools=(),
-            preset_write_globs=()):
+            preset_write_globs=(), preset_name=""):
         captured["globs"] = tuple(preset_write_globs)
         return real(parent_perms, mode, workspace=workspace,
                     preset_tools=preset_tools,
-                    preset_write_globs=preset_write_globs)
+                    preset_write_globs=preset_write_globs,
+                    preset_name=preset_name)
 
     monkeypatch.setattr(SA, "_derive_perms", spy)
     p = SA.SubagentPreset(

@@ -1600,6 +1600,13 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 continue
             if name in _BUILTIN_PRESETS and not allow_override:
                 continue
+            if name.startswith("_"):
+                # An underscore-prefixed name marks a skeleton, not a
+                # live type (_template_subagent.md is a copy-and-fill
+                # template). It must not enter the registry: it would be
+                # offered to the model as a delegateable type and fail
+                # validate_preset's kebab-case rule.
+                continue
             description = (meta.get("description") or "").strip()
             mode = (meta.get("mode") or "default").strip() or "default"
             system_prompt = body.strip() or description or name

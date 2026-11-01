@@ -356,3 +356,12 @@ def test_builtins_kebab_case_names_are_the_keys():
     for name in SA._BUILTIN_PRESETS:
         assert name == name.strip().lower()
         assert " " not in name and "_" not in name
+
+
+def test_the_template_is_not_a_delegateable_type():
+    """_template_subagent.md is a copy-and-fill skeleton, not an agent:
+    an underscore-prefixed name is the convention for "not live" and it
+    must never appear in the registry (it would be offered to the model
+    and refuse validate_preset's kebab-case rule)."""
+    assert "_template" not in SA.SUBAGENT_PRESETS
+    assert "test_the_template" not in SA.SUBAGENT_PRESETS
