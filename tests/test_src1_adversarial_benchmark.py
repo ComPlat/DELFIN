@@ -63,6 +63,35 @@ def test_the_real_call_site_runs_the_acceptance_one_arg(tmp_path,
     assert ok is True, out
 
 
+def test_real_call_site_cwd_fallback(tmp_path, monkeypatch):
+    """Second real-shape attack: run_acceptance sets cwd=workspace; if
+    the script is ever invoked with a RELATIVE argv[1] that is not a
+    dir from its own cwd, main must fall back to cwd (= the workspace)
+    and grade it — not exit with usage. Called directly, the unit
+    contract."""
+    rec = {"status": "ok", "cid": 2244, "formula": "C9H8O4",
+           "molar_mass_g_mol": 180.16, "source": "pubchem"}
+    ws = _real_workspace(tmp_path, "src1_pubchem_property", rec)
+    (ws / "verification.json").write_text(json.dumps(rec),
+                                          encoding="utf-8")
+    (ws / "answer.txt").write_text(
+        "Aspirin: formula C9H8O4, molar mass 180.16 g/mol "
+        "(PubChem CID 2244).", encoding="utf-8")
+    monkeypatch.chdir(ws)
+    rc = src1_verify.main(["src1_verify.py", "src1_pubchem_property"])
+    assert rc == 0, "relative argv not a dir -> must grade cwd"
+
+
+def test_unknown_task_basename_fails_clearly(tmp_path: Path):
+    """A workspace named after no task (agent copied artifacts to the
+    wrong folder) must fail with a structured reason, not crash or
+    accept."""
+    ws = tmp_path / "not_a_task"
+    ws.mkdir()
+    (ws / "recorded.json").write_text("{}", encoding="utf-8")
+    assert _run(ws, "src1_verify_real_doi") == 1
+
+
 def test_usage_without_args_exits_nonzero():
     assert src1_verify.main([]) != 0
 
