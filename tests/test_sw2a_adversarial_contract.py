@@ -53,9 +53,17 @@ def test_sw2a_status_call_reuses_sw1_collect_status():
 
 def test_dashboard_tab_list_is_superset_of_main():
     """Target item 5: the tab list on main is a subset of the tab list
-    after SW2a. Checked against the real registration mechanism: the
-    tab_specs entries inside create_dashboard's source."""
+    after SW2a. Checked against the real registration mechanisms: the
+    built-in tab_specs entries inside create_dashboard's source, plus the
+    additive tab_registry (delfin/dashboard/tab_registry.py, appended to
+    tab_specs at delfin/dashboard/__init__.py:526-531). The builder
+    registers the swarm tab through the registry (order 57 area is for
+    built-ins; SW2a follows the tab_review.py pattern), so the pin moves
+    from tab_specs to registered_tabs() along its intent: the union of
+    both mechanisms must be a superset of main's built-ins and must
+    contain 'swarm'."""
     import delfin.dashboard as _dashboard
+    from delfin.dashboard import tab_registry
 
     src = inspect.getsource(_dashboard)
     ids = set()
@@ -68,7 +76,18 @@ def test_dashboard_tab_list_is_superset_of_main():
                 ids.add(value[1:-1])
     missing = set(MAIN_TAB_IDS) - ids
     assert not missing, f"main tabs vanished from tab_specs: {sorted(missing)}"
-    assert "swarm" in ids, "SW2a tab not registered in tab_specs"
+
+    registry_ids = {t.id for t in tab_registry.registered_tabs()}
+    assert "swarm" in registry_ids, (
+        "SW2a tab not registered through tab_registry "
+        f"(registered: {sorted(registry_ids)})"
+    )
+    # The built-in list is unchanged by SW2a: 'swarm' must NOT be added to
+    # the hardcoded tab_specs (that would edit create_dashboard's source).
+    assert "swarm" not in ids, (
+        "swarm was hardcoded into tab_specs instead of the additive "
+        "registry -- SW2a must not edit create_dashboard"
+    )
 
 
 def test_sw2a_tab_registers_with_widget_factory_not_business_logic():
