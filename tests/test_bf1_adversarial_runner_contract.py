@@ -97,10 +97,13 @@ def test_w21_run_does_not_exit_with_usage(tmp_path):
 
 # --- w17_longrun_wait_verify.py ------------------------------------------
 
-def test_w17_longrun_wait_waiting_rubric_is_measured(tmp_path):
-    """On main the runner cannot hand the script its longrun inputs, so
-    the waiting rubric reads 'unmeasured' and the grade is False even
-    when the collected result is right."""
+def test_w17_longrun_wait_grades_fail_not_usage(tmp_path):
+    """The waiting rubric is unmeasurable through the real caller (QS
+    ruling, 2026-11): the script must keep grading HONESTLY unmeasured —
+    a grade failure (exit 1 with 'unmeasured'), never a usage error
+    (exit 2). Measurement itself is a protected-hook request to the
+    operator, not an inference inside this script. Supersedes the
+    earlier case that demanded 'unmeasured' not appear at all."""
     ws = _ws(tmp_path)
     d = ws / "w17_longrun" / "lr_wait_for_job"
     d.mkdir(parents=True)
@@ -109,4 +112,6 @@ def test_w17_longrun_wait_waiting_rubric_is_measured(tmp_path):
     ok, out = run_acceptance(
         "w17_longrun_wait_verify.py", ws, root=Path.cwd())
     assert ok is not None, f"not run at all: {out}"
-    assert "unmeasured" not in out, out
+    assert ok is False, out
+    assert "unmeasured" in out, out
+    assert "usage" not in out, out
