@@ -2784,6 +2784,153 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
 # available (one short line each) and ``describe_tool`` to fetch the
 # full signature only when it actually plans to call it.
 
+
+# ---------------------------------------------------------------------------
+# geometry_edit MCP handlers. Each takes a structure as xyz text plus the
+# edit parameters, applies the geometry operation, and returns JSON with the
+# new structure ("xyz") and a short change record ("change"). Docstrings are
+# the MCP tool descriptions (kept short; char size noted for each).
+# ---------------------------------------------------------------------------
+
+def _ge():
+    from delfin.tools import geometry_edit as ge
+    return ge
+
+
+def _xyz_result(g):
+    ge = _ge()
+    return {"xyz": ge.to_xyz(g), "charge": g.charge, "multiplicity": g.multiplicity}
+
+
+def geometry_read_xyz(xyz: str) -> dict:
+    """Parse an xyz block into {symbols, coords, n_atoms, charge, multiplicity}."""
+    g = _ge().parse_xyz(xyz)
+    return {"symbols": g.symbols, "coords": g.coords,
+            "n_atoms": len(g), "charge": g.charge, "multiplicity": g.multiplicity}
+
+
+def geometry_set_bond(xyz: str, i: int, j: int, length: float) -> dict:
+    """Set bond length i-j (A), moving the smaller fragment: {xyz, change}."""
+    g, ch = _ge().set_bond(_ge().parse_xyz(xyz), i, j, length)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_set_angle(xyz: str, i: int, j: int, k: int, degrees: float) -> dict:
+    """Set angle i-j-k (vertex j, deg), moving the smaller fragment: {xyz, change}."""
+    g, ch = _ge().set_angle(_ge().parse_xyz(xyz), i, j, k, degrees)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_set_dihedral(xyz: str, i: int, j: int, k: int, l: int,
+                          degrees: float) -> dict:
+    """Set dihedral i-j-k-l (deg), moving the smaller fragment: {xyz, change}."""
+    g, ch = _ge().set_dihedral(_ge().parse_xyz(xyz), i, j, k, l, degrees)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_translate(xyz: str, indices: list, vector) -> dict:
+    """Translate atoms by a [dx, dy, dz] vector: {xyz, change}."""
+    g, ch = _ge().translate(_ge().parse_xyz(xyz), indices, vector)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_rotate(xyz: str, indices: list, axis, degrees: float) -> dict:
+    """Rotate atoms about an axis [x, y, z] by degrees (about centroid): {xyz, change}."""
+    g, ch = _ge().rotate(_ge().parse_xyz(xyz), indices, axis, degrees)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_add_atom(xyz: str, element: str, bonded_to: int,
+                      bond_length: float) -> dict:
+    """Add an atom bonded to bonded_to at bond_length A: {xyz, change}."""
+    g, ch = _ge().add_atom(_ge().parse_xyz(xyz), element, bonded_to, bond_length)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_remove_atoms(xyz: str, indices: list) -> dict:
+    """Remove atoms by index, renumbering the rest: {xyz, change}."""
+    g, ch = _ge().remove_atoms(_ge().parse_xyz(xyz), indices)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_replace_ligand(xyz: str, connect: int, ligand: str) -> dict:
+    """Replace the ligand on atom ``connect`` with an element or SMILES: {xyz, change}."""
+    g, ch = _ge().replace_ligand(_ge().parse_xyz(xyz), connect, ligand)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_mirror(xyz: str, plane: str = "yz") -> dict:
+    """Mirror across a coordinate plane (xy/xz/yz): {xyz, change}."""
+    g, ch = _ge().mirror(_ge().parse_xyz(xyz), plane)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_align_rmsd(mobile_xyz: str, reference_xyz: str) -> dict:
+    """Align mobile onto reference (Kabsch, same atom order): {xyz, rmsd_angstrom}."""
+    aligned, rmsd = _ge().align_rmsd(_ge().parse_xyz(mobile_xyz),
+                                     _ge().parse_xyz(reference_xyz))
+    out = _xyz_result(aligned)
+    out["rmsd_angstrom"] = rmsd
+    return out
+
+
+def geometry_merge(fragments: list) -> dict:
+    """Concatenate xyz fragments (atoms of earlier ones first): {xyz, change}."""
+    g, ch = _ge().merge_fragments(*[_ge().parse_xyz(f) for f in fragments])
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_freeze(xyz: str, indices: list) -> dict:
+    """Mark atoms as frozen for a constrained optimisation: {xyz, change}."""
+    g, ch = _ge().freeze_atoms(_ge().parse_xyz(xyz), indices)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_constraints_block(xyz: str) -> dict:
+    """ORCA %geom Constraints block for the structure's frozen atoms: {block}."""
+    g = _ge().parse_xyz(xyz)
+    return {"block": _ge().constraints_block(g)}
+
+
+def geometry_build_smiles(smiles: str) -> dict:
+    """Embed a molecule from SMILES (RDKit): {xyz, change}."""
+    g = _ge().build_from_smiles(smiles)
+    out = _xyz_result(g)
+    out["change"] = {"op": "build_from_smiles", "atoms_moved": [],
+                     "n_atoms": len(g)}
+    return out
+
+
+def geometry_write_orca_block(xyz: str, charge: int = 0,
+                              multiplicity: int = 1) -> dict:
+    """Serialize xyz as an ORCA '* xyz {charge} {mult}' block: {orca_block, xyz}."""
+    g = _ge().parse_xyz(xyz)
+    block = _ge().to_orca_block(g, charge=charge, multiplicity=multiplicity)
+    return {"orca_block": block, "xyz": _ge().to_xyz(g)}
+
+
 _TOOL_CATALOG: list[dict] = [
     # delfin-ops — environment / tool checks
     {"name": "qm_check", "category": "checks",
@@ -2951,6 +3098,40 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Detailed info about one calculation by id."},
     {"name": "calc_summary", "category": "calc-search",
      "summary": "Aggregate counts across all indexed calculations."},
+    # delfin-ops — geometry_edit: coordinate manipulation on instruction
+    # (read-only: no ORCA run, no file write; chemistry toolset group)
+    {"name": "geometry_read_xyz", "category": "geometry",
+     "summary": "Parse an xyz block into symbols/coords/charge."},
+    {"name": "geometry_set_bond", "category": "geometry",
+     "summary": "Set a bond length, moving the smaller fragment."},
+    {"name": "geometry_set_angle", "category": "geometry",
+     "summary": "Set an angle (vertex j), moving the smaller fragment."},
+    {"name": "geometry_set_dihedral", "category": "geometry",
+     "summary": "Set a dihedral, moving the smaller fragment; refuses rings."},
+    {"name": "geometry_translate", "category": "geometry",
+     "summary": "Translate selected atoms by a vector."},
+    {"name": "geometry_rotate", "category": "geometry",
+     "summary": "Rotate selected atoms about an axis by degrees."},
+    {"name": "geometry_add_atom", "category": "geometry",
+     "summary": "Add an atom at a bond length from an existing atom."},
+    {"name": "geometry_remove_atoms", "category": "geometry",
+     "summary": "Remove atoms by index, renumbering the rest."},
+    {"name": "geometry_replace_ligand", "category": "geometry",
+     "summary": "Replace a ligand with an element or SMILES fragment."},
+    {"name": "geometry_mirror", "category": "geometry",
+     "summary": "Mirror the structure across a coordinate plane."},
+    {"name": "geometry_align_rmsd", "category": "geometry",
+     "summary": "Kabsch-align two structures, report RMSD."},
+    {"name": "geometry_merge", "category": "geometry",
+     "summary": "Concatenate xyz fragments into one structure."},
+    {"name": "geometry_freeze", "category": "geometry",
+     "summary": "Mark atoms frozen for a constrained optimisation."},
+    {"name": "geometry_constraints_block", "category": "geometry",
+     "summary": "ORCA %geom Constraints block for frozen atoms."},
+    {"name": "geometry_build_smiles", "category": "geometry",
+     "summary": "Embed a 3D structure from SMILES (RDKit)."},
+    {"name": "geometry_write_orca_block", "category": "geometry",
+     "summary": "Serialise xyz as an ORCA coordinate block."},
 ]
 
 
