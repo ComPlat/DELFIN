@@ -106,15 +106,17 @@ def test_network_policy_binds_verify_source():
     assert pr._hits(rule, "verify_source", subj2, "/tmp/ws"), (
         "verify_source escaped the web_fetch domain rule")
 
-    # and the managed ceiling must see it
+    # and the managed ceiling must see it. The host comes from the
+    # action (host_for_action), never from a user-supplied url — the
+    # decided design; a url argument contributes nothing.
     pol = managed_policy.Policy(sources=(),
                                 allowed_domains_max=(("api.crossref.org",),))
     rs = pr.RuleSet(deny=(), ask=(), allow=(), policy=pol)
     assert pr._ceiling_rule(rs, "verify_source",
-                            {"url": "https://example.org/works/10.1/x"}
+                            {"action": "compound", "value": "aspirin"}
                             ) is not None, (
-        "the managed ceiling must bind verify_source")
+        "the managed ceiling must bind verify_source outside it")
     assert pr._ceiling_rule(rs, "verify_source",
-                            {"url": "https://api.crossref.org/works/10.1/x"}
+                            {"action": "doi", "value": "10.1/x"}
                             ) is None, (
         "a host inside the ceiling stays allowed")
