@@ -99,8 +99,8 @@ def test_swarm_validate_reports_ok_for_a_good_spec():
 def test_swarm_validate_reports_the_reason_for_a_bad_spec():
     rpc = _rpc()
     overlapping = dict(VALID_SPEC, packages=[
-        {"name": "a", "owned": ["delfin/**"], "roles": {"builder": True}},
-        {"name": "b", "owned": ["delfin/agent/**"], "roles": {"builder": True}},
+        {"name": "a", "owned": ["delfin/dashboard/**"], "roles": {"builder": True}},
+        {"name": "b", "owned": ["delfin/dashboard/sw/**"], "roles": {"builder": True}},
     ])
     result = rpc.swarm_validate({"spec": overlapping})
     assert result["valid"] is False
