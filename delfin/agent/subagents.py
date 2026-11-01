@@ -3120,7 +3120,7 @@ def _narrow_allowed_tools(parent_perms, preset_tools) -> Optional[frozenset]:
 
 
 def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=(),
-                  preset_write_globs=()):
+                  preset_write_globs=(), preset_name=""):
     """Clone parent_perms with the sub-agent's mode + optional workspace.
 
     Both fields are optional — the caller passes ``workspace=None`` when
@@ -3241,9 +3241,25 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=(),
         if preset_tools_edit_no_file(preset_tools):
             extra["shell_writes_need_a_person"] = True
         if workspace is not None:
-            return dataclasses.replace(
+            child = dataclasses.replace(
                 parent_perms, mode=mode, workspace=workspace, **extra)
-        return dataclasses.replace(parent_perms, mode=mode, **extra)
+        else:
+            child = dataclasses.replace(parent_perms, mode=mode, **extra)
+        # The spawner's own preset name, read by the depth-2 whitelist
+        # guard in _execute_subagent (SA0): a child may spawn only along
+        # ITS preset's may_delegate_to. Set as an ATTRIBUTE, not a
+        # dataclass field: the perms type is not ours to change, and a
+        # setattr carries through the executor call (which is what every
+        # guard reads) without a constructor argument a frozen type may
+        # not accept. A type with __slots__ drops it in the fallback
+        # below — the guard then finds no preset and refuses nothing
+        # extra; the depth cap, not the whitelist, remains the backstop.
+        if preset_name:
+            try:
+                setattr(child, "_preset_name", preset_name)
+            except Exception:
+                pass
+        return child
     except Exception:
         # Retry without the fields a pre-existing perms type may not carry,
         # but KEEP the tool narrowing: it is a restriction, and dropping a
@@ -3570,7 +3586,8 @@ def run_subagent(
         sub_perms = _derive_perms(
             parent_perms, preset.mode, workspace=sub_workspace,
             preset_tools=getattr(preset, "tools", ()) or (),
-            preset_write_globs=getattr(preset, "write_globs", ()) or ())
+            preset_write_globs=getattr(preset, "write_globs", ()) or (),
+            preset_name=preset.name)
     except SubagentPermissionsError as exc:
         if worktree_info is not None:
             try:
