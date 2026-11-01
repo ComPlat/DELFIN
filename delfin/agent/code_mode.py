@@ -83,10 +83,17 @@ class Connection:
     """One program connection: enforces the allow-list per call."""
 
     def __init__(self, executor: Callable[..., str], permissions: Any = None,
-                 rule_hit: Any = None):
+                 rule_hit: Any = None,
+                 rule_evaluator: Optional[Callable[..., Any]] = None):
         self._executor = executor
         self._permissions = permissions
         self._rule_hit = rule_hit
+        # Per-call rule evaluation (CM1 finding C): a direct call evaluates
+        # the permission rules per call (api_client.py:17772); Code Mode
+        # must not skip them. The evaluator is the agent-side matcher
+        # (_permission_rule_hit); a constant rule_hit is kept only for
+        # tests that pin one. Fails closed: an evaluator error refuses.
+        self._rule_evaluator = rule_evaluator
 
     def handle(self, request: dict) -> str:
         """One tool request from the program -> executor result or refusal."""
@@ -97,8 +104,19 @@ class Connection:
         refusal = _check_allowed(name)
         if refusal is not None:
             return json.dumps({"error": refusal}, ensure_ascii=False)
+        rule_hit = self._rule_hit
+        if self._rule_evaluator is not None:
+            try:
+                rule_hit = self._rule_evaluator(
+                    self._permissions, name, arguments)
+            except Exception:
+                return json.dumps({"error": (
+                    "Code Mode: permission rules could not be evaluated "
+                    "for this call — refused (fail closed); make the same "
+                    "call as a direct tool call instead.")},
+                    ensure_ascii=False)
         return _cap_result(self._executor(
-            name, arguments, self._permissions, self._rule_hit))
+            name, arguments, self._permissions, rule_hit))
 
 
 def serve_request(request: dict, executor: Callable[..., str],
@@ -124,14 +142,15 @@ def runner_program_path(cmd: str) -> Optional[str]:
     return None
 
 
-def rpc_socket_path(workspace: str, token: str) -> str:
-    """Unique-per-invocation socket path under the workspace.
+def rpc_socket_path(directory: str, token: str) -> str:
+    """Unique-per-invocation socket path under the given directory.
 
     The token (uuid4 hex) keeps two concurrent caged programs from
-    cross-talking; under the workspace, never in shared /tmp state.
+    cross-talking; under the directory the command runs in (the caged
+    child's own write scope, never shared /tmp state).
     """
     import uuid
-    base = os.path.join(workspace or os.getcwd(), ".code_mode_rpc")
+    base = os.path.join(directory or os.getcwd(), ".code_mode_rpc")
     os.makedirs(base, exist_ok=True)
     return os.path.join(base, "rpc-%s.sock" % (token or uuid.uuid4().hex))
 
@@ -147,10 +166,12 @@ class RpcServer:
     """
 
     def __init__(self, executor: Callable[..., str], permissions: Any = None,
-                 rule_hit: Any = None):
+                 rule_hit: Any = None,
+                 rule_evaluator: Optional[Callable[..., Any]] = None):
         self._executor = executor
         self._permissions = permissions
         self._rule_hit = rule_hit
+        self._rule_evaluator = rule_evaluator
         self._socket_path: Optional[str] = None
 
     def handle_payload(self, payload: str) -> str:
@@ -162,7 +183,8 @@ class RpcServer:
         if not isinstance(request, dict):
             return json.dumps({"error": "Code Mode: request must be an object"})
         result = Connection(self._executor, self._permissions,
-                            self._rule_hit).handle(request)
+                            self._rule_hit,
+                            rule_evaluator=self._rule_evaluator).handle(request)
         # Connection.handle already returns capped JSON; wrap as
         # {"result": ...} for the client's error/success split.
         try:

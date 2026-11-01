@@ -54,8 +54,8 @@ def test_server_passes_read_only_call_through():
 def test_socket_path_is_unique_per_invocation(tmp_path):
     """Two concurrent caged programs cannot cross-talk: the socket path is
     unique per invocation (token in the name)."""
-    a = code_mode.rpc_socket_path(workspace=str(tmp_path), token="aaa")
-    b = code_mode.rpc_socket_path(workspace=str(tmp_path), token="bbb")
+    a = code_mode.rpc_socket_path(directory=str(tmp_path), token="aaa")
+    b = code_mode.rpc_socket_path(directory=str(tmp_path), token="bbb")
     assert a != b
     assert str(tmp_path) in a  # under the workspace, not /tmp shared state
 
@@ -65,8 +65,8 @@ def test_timeout_leaves_no_stale_socket(tmp_path):
     timeout left behind is removed before binding a new one."""
     stale = os.path.join(str(tmp_path), "stale.sock")
     open(stale, "wb").close()
-    assert code_mode.rpc_socket_path(workspace=str(tmp_path),
-                                     token="s") .endswith(".sock")
+    assert code_mode.rpc_socket_path(directory=str(tmp_path),
+                                     token="s").endswith(".sock")
     server = code_mode.RpcServer(_RecordingExecutor(), permissions=None)
     server.bind(stale)  # must not raise on the stale file
     assert os.path.exists(stale)
