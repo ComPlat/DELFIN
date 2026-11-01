@@ -152,6 +152,7 @@ def plan_preview(spec_text: str) -> dict[str, Any]:
     """
     ok = validate_spec_text(spec_text)
     if not ok["ok"]:
+        _clear_previewed_spec()
         return {"ok": False, "error": ok["error"], "preview": ""}
     import tempfile
     from pathlib import Path
@@ -161,6 +162,11 @@ def plan_preview(spec_text: str) -> dict[str, Any]:
         path.write_text(spec_text, encoding="utf-8")
         spec = load_spec(path)  # validated above
         plan = _launch.plan_launch(spec)
+    # F1 (reviewer adversarial round 2): record exactly what was previewed,
+    # so the Start handler launches THAT text and not a re-read of the
+    # textarea the user may have edited since the preview (TOCTOU).
+    global last_previewed_spec_text
+    last_previewed_spec_text = spec_text
     return {"ok": True, "error": "", "preview": _launch.render_dry_run(plan),
             "goal": plan.get("goal", "")}
 
@@ -207,6 +213,21 @@ _validate_status = _status.validate_report
 _collect_status = _status.collect_status
 
 STATUS_SCHEMA_VERSION = _status.STATUS_SCHEMA_VERSION
+
+# F1: the one record of what a successful preview showed. Set by
+# plan_preview on success, cleared by _clear_previewed_spec on failure;
+# _on_start launches exactly this text or refuses.
+last_previewed_spec_text: str | None = None
+
+
+def _clear_previewed_spec() -> None:
+    """Forget the last successfully previewed spec (F1 part 2).
+
+    A failed preview must not leave a stale record Start could launch:
+    the user may have edited the textarea between preview and click.
+    """
+    global last_previewed_spec_text
+    last_previewed_spec_text = None
 
 
 # ---------------------------------------------------------------------------
@@ -327,14 +348,19 @@ def create_tab(ctx: Any):
                 f"{_html.escape(result['error'])}</span>")
 
     def _on_start(_b) -> None:
-        """The ONLY path that starts sessions; requires a fresh preview."""
-        if not spec_state["preview_ok"]:
+        """The ONLY path that starts sessions; launches the PREVIEWED text.
+
+        F1: never re-reads the textarea -- the spec the user saw in the
+        preview is the spec that starts. Without a fresh preview record
+        nothing starts.
+        """
+        if not spec_state["preview_ok"] or not last_previewed_spec_text:
             return  # nothing starts without the user having seen the plan
         import tempfile
         from pathlib import Path as _P
         with tempfile.TemporaryDirectory() as tmp:
             path = _P(tmp) / "swarm.yaml"
-            path.write_text(spec_area.value or "", encoding="utf-8")
+            path.write_text(last_previewed_spec_text, encoding="utf-8")
             spec = load_spec(path)
         try:
             result = _launch.start_members(spec, execute=True)
