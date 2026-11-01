@@ -5,10 +5,17 @@ normal view, constraint field -> viewer sync, reset/clear buttons and
 the viewer bootstrap retry loop (the "white viewer" race).
 """
 
+import sys
+from pathlib import Path
+
 import pytest
 
 widgets = pytest.importorskip("ipywidgets")
 
+# Make this file runnable from any working directory: the auto-check
+# runs pytest from another checkout, where a plain `from tests...`
+# would resolve that checkout's tests package instead of this one.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests.test_ts_goat_dialog_regression import (  # noqa: E402
     _FakeBackend,
     _open_dialog,
