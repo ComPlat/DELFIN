@@ -462,6 +462,33 @@ def parse_orca_output(path: str) -> OrcaParseResult:
     """
     from pathlib import Path as _P
     from delfin import energies as _e
+    from delfin import orca_read as _orca_read
+
+    _QUANTITY = {
+        "gibbs": _orca_read.Quantity.GIBBS,
+        "zpe": _orca_read.Quantity.ZPE,
+    }
+
+    def _quantity_via_orca_read(out_path: Path, name: str):
+        """Read one thermo quantity through delfin.orca_read.
+
+        Behaviour-identical where text is read (baseline recorder over
+        204 runs, 0 mismatches for gibbs/zpe); the old whole-file parser
+        stays as fallback when orca_read has no value.
+        """
+        try:
+            reading = _orca_read.read(str(out_path.parent),
+                                      out_path.stem, _QUANTITY[name])
+        except Exception:
+            reader = {"gibbs": _e.find_gibbs_energy,
+                      "zpe": _e.find_ZPE}[name]
+            return reader(str(out_path))
+        if reading.value is None:
+            reader = {"gibbs": _e.find_gibbs_energy,
+                      "zpe": _e.find_ZPE}[name]
+            return reader(str(out_path))
+        return reading.value
+
     from delfin.doc_server.calc_indexer import _largest_output, outcome_of_folder
     p = _P(path)
     if p.is_dir():
@@ -502,11 +529,11 @@ def parse_orca_output(path: str) -> OrcaParseResult:
     except Exception:
         pass
     try:
-        out.gibbs_free_energy = _e.find_gibbs_energy(str(p))
+        out.gibbs_free_energy = _quantity_via_orca_read(p, "gibbs")
     except Exception:
         pass
     try:
-        out.zpe = _e.find_ZPE(str(p))
+        out.zpe = _quantity_via_orca_read(p, "zpe")
     except Exception:
         pass
 
@@ -3330,6 +3357,15 @@ def validate_orca_input(inp_text: str) -> list[ValidationIssue]:
     text_low = text.lower()
 
     # --- Structural checks -----------------------------------------------
+    from delfin.common.orca_input_checks import check_all
+    # Static checks only: the ORCA-parser probe (use_probe=True) is opt-in,
+    # because it starts a real ORCA process (up to 60 s) on whatever host
+    # calls this -- login node or dashboard (QS ruling, wave 25 OV1).
+    for _issue in check_all(inp_text):
+        issues.append(ValidationIssue(
+            severity=_issue.severity, code=_issue.code,
+            message=_issue.message, suggestion=_issue.suggestion,
+        ))
     m_keyword = _re.search(r"^\s*!\s*(.+)$", text, _re.MULTILINE)
     if not m_keyword:
         issues.append(ValidationIssue(

@@ -45,10 +45,27 @@ def test_markup_in_the_growing_part_is_escaped():
     assert "<img src=x" not in html and "&lt;img" in html
 
 
-def test_a_very_long_answer_streams_as_text():
-    text = ("word " * 5000) + "\n\nmore"
-    html = tab_agent._streaming_html(text)
-    assert html.lstrip().startswith('<pre class="delfin-streaming-pre">')
+def test_a_long_answer_keeps_its_finished_formatting_across_20000_characters():
+    paragraph = "## Result\n\n**Stable** paragraph with `code`.\n\n"
+    before = paragraph * (19900 // len(paragraph))
+    after = before + paragraph * 10
+    assert len(before) < 20000 < len(after)
+    prefix = tab_agent._streaming_html(before + 'tail').split('<pre')[0]
+    html = tab_agent._streaming_html(after + 'tail')
+    assert html.startswith(prefix)
+    assert '<strong>Stable</strong>' in html
+
+
+def test_tokens_in_the_tail_reuse_completed_markdown(monkeypatch):
+    tab_agent._streaming_markdown_head.cache_clear()
+    calls = []
+    monkeypatch.setattr(tab_agent, '_md_to_html', lambda text: calls.append(text) or '<p>head</p>')
+    try:
+        for tail in ['g', 'gr', 'growing']:
+            assert '<p>head</p>' in tab_agent._streaming_html('head\n\n' + tail)
+        assert calls == ['head']
+    finally:
+        tab_agent._streaming_markdown_head.cache_clear()
 
 
 def test_the_streaming_text_is_not_styled_as_a_code_block():
