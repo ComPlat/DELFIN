@@ -292,6 +292,8 @@ _EXPECTED_READ_ONLY = {
     # many folders; reads outputs, writes nothing.
     "parse_orca_output", "calc_status", "extract_spectra_table",
     "find_orca_errors", "extract_thermochem",
+    # result_checks (2026-11-01): reads a finished run; writes nothing.
+    "result_checks",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",
