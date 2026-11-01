@@ -49,3 +49,10 @@ submits and writes stay individually approved direct tool calls.
 Many independent reads over many folders: 20 job folders' states + energies,
 every conformer of an ensemble, all .out files in a run tree. For one or two
 calls, call the tool directly.
+
+## Status
+
+Code Mode is OFF by default until the adoption measurement (the benchmark
+family in `delfin/agent/pack/benchmark/tasks_w26_cm1.yaml`, preregistered
+band) shows the gain; until then it ships disabled and this skill is the
+reference for what it will do.
