@@ -517,3 +517,28 @@ def test_collect_ts_files_still_excludes_endpoint_files_from_ts_xyz(tmp_path):
     assert files.reactant_path is None and files.product_path is None
     # the problem message must not demand endpoints any more
     assert not any("reactant/product" in p for p in files.problems)
+
+
+
+def test_marginal_contacts_do_not_dilute_the_proposal(tmp_path):
+    """A strong contact dominates; marginal responders stay out.
+
+    Real-run review (BF3H2O, 2026-11-02): four H...F contacts at
+    4-5 % response diluted the proposal.  Selection is by contact
+    strength now: only contacts responding at least half as strongly
+    as the strongest one qualify.
+    """
+    ts_dir = tmp_path / "TS"
+    ts_dir.mkdir()
+    # two far-separated bonds; only pair (0,1) responds strongly
+    atoms = [("C", 0.0, 0.0, 0.0), ("N", 3.0, 0.0, 0.0),
+             ("C", 40.0, 0.0, 0.0), ("N", 43.0, 0.0, 0.0)]
+    mode = [
+        (0.9, 0.0, 0.0),   # 0: towards 1
+        (-0.9, 0.0, 0.0),  # 1: towards 0  -> 01 responds strongly
+        (0.0, 0.05, 0.0),  # 2: marginal
+        (0.0, -0.05, 0.0),
+    ]
+    _write_hess(ts_dir / "TS.hess", atoms, [mode], [-400.0])
+    rc = analyze_reactive_center(ts_dir / "TS.hess", atoms)
+    assert rc.indices == (0, 1)

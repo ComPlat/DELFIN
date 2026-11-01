@@ -25,6 +25,8 @@ def build_ts_goat_panel(
     viewer_output=None,
     render_in_panel=None,
     on_close=None,
+    center_viewer=None,
+    get_viewer_id=None,
 ) -> dict:
     """Assemble the TS -> GOAT panel; returns a widget registry dict.
 
@@ -93,8 +95,8 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='260px'),
     )
     anim_arrows_toggle = widgets.Checkbox(
-        value=True, description='Pfeile anzeigen',
-        layout=widgets.Layout(width='170px'),
+        value=False, description='Schwingungspfeile anzeigen',
+        layout=widgets.Layout(width='240px'),
     )
     anim_row = widgets.HBox(
         [anim_toggle, anim_play, anim_pause, anim_amp, anim_arrows_toggle],
@@ -148,6 +150,11 @@ def build_ts_goat_panel(
     close_btn = widgets.Button(
         description='✕ Schließen', layout=widgets.Layout(width='110px'),
     )
+    center_btn = widgets.Button(
+        description='Ansicht zentrieren',
+        tooltip='Re-center and re-zoom the 3D view',
+        layout=widgets.Layout(width='150px'),
+    )
     cancel_btn = widgets.Button(
         description='Abbrechen',
         tooltip='Close TS→GOAT and restore the normal file view',
@@ -167,7 +174,7 @@ def build_ts_goat_panel(
                      'are highlighted):'),
         viewer_out,
         click_sync,
-        anim_row,
+        widgets.HBox([anim_row, center_btn]),
         constraints_label,
         widgets.HBox([constraints_field, highlight_btn, reset_prop_btn,
                       clear_sel_btn]),
@@ -568,6 +575,14 @@ def build_ts_goat_panel(
             pass
     click_sync.observe(_on_click_sync, names='value')
 
+    def _on_center(_b=None):
+        if center_viewer and get_viewer_id:
+            vid = get_viewer_id()
+            if vid:
+                center_viewer(vid)
+
+    center_btn.on_click(_on_center)
+
     return {
         'panel': panel, 'show': show, 'close': close,
         'state': state, 'status': status,
@@ -575,6 +590,7 @@ def build_ts_goat_panel(
         'on_atom_click': on_atom_click,
         'constraints_field': constraints_field,
         'click_sync': click_sync,
+        'center_btn': center_btn,
     }
 
 
@@ -671,6 +687,8 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             viewer_output=callbacks.get('viewer_output'),
             render_in_panel=callbacks.get('render_in_panel'),
             on_close=callbacks.get('on_close'),
+            center_viewer=callbacks.get('center_viewer'),
+            get_viewer_id=callbacks.get('get_viewer_id'),
         )
         arrows = None
         mode_arrows_by_index = {}

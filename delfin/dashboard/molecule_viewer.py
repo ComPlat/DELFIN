@@ -6973,6 +6973,7 @@ def static_viewer_html(xyz_text, width=640, height=450,
         'xyz': xyz_text,
         'highlight': list(highlight_indices or []),
         'arrows': list(arrows or []),
+        'show_arrows': False,  # 2026-11-02 user report: arrows dominated
     }
     html = (
         f'<div style="width:{width}px;height:{height}px;position:relative;'
@@ -7065,14 +7066,20 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "window.__tsGoatViewers[vid] = viewer;\n"
         "viewer.addModel(payload.xyz, 'xyz');\n"
         "viewer.setStyle({}, {stick: {radius: 0.11}, sphere: {scale: 0.28}});\n"
+        "var allAtoms = viewer.getModel().selectedAtoms({}) || [];\n"
         "for (var h = 0; h < payload.highlight.length; h++) {\n"
         "  var serial = payload.highlight[h] + 1;\n"  # 3Dmol serials are 1-based
-        "  viewer.setStyle({serial: serial},\n"
-        "    {stick: {radius: 0.14, color: 0xff8f00},\n"
-        "     sphere: {scale: 0.42, color: 0xff8f00}});\n"
+        "  for (var ai = 0; ai < allAtoms.length; ai++) {\n"
+        "    if (allAtoms[ai].serial !== serial) continue;\n"
+        "    var at = allAtoms[ai];\n"
+        "    viewer.addSphere({center: {x: at.x, y: at.y, z: at.z},\n"
+        "      radius: 0.72, color: 0xff8f00, opacity: 0.22});\n"
+        "    viewer.setStyle({serial: serial},\n"
+        "      {stick: {radius: 0.13, color: 0xff8f00}});\n"
+        "  }\n"
         "}\n"
         "var arrows = " + arrow_payload + ";\n"
-        "if (arrows && arrows.length) {\n"
+        "if (payload.show_arrows && arrows && arrows.length) {\n"
         "  var atoms = viewer.getModel().selectedAtoms({}) || [];\n"
         "  for (var a = 0; a < atoms.length && a * 3 < arrows.length; a++) {\n"
         "    var ax = arrows[a*3], ay = arrows[a*3+1], az = arrows[a*3+2];\n"
@@ -7098,6 +7105,18 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "viewer.zoomTo(); viewer.render();\n"
         "}\n"
         "boot();\n"
+        "})();\n"
+    )
+
+
+def ts_goat_viewer_center_js(viewer_id):
+    """Re-center + re-zoom the existing viewer ('Ansicht zentrieren')."""
+    return (
+        "(function(){\n"
+        "var vid = " + json.dumps(viewer_id) + ";\n"
+        "var viewer = (window.__tsGoatViewers||{})[vid];\n"
+        "if (!viewer) { console.error('DELFIN TS-GOAT: no viewer ' + vid); return; }\n"
+        "viewer.zoomTo(); viewer.render();\n"
         "})();\n"
     )
 
@@ -7136,12 +7155,19 @@ def ts_goat_viewer_step_js(viewer_id, direction):
         "}\n"
         "viewer.addModel(out.join('\\n'), 'xyz');\n"
         "viewer.setStyle({}, {stick: {radius: 0.11}, sphere: {scale: 0.28}});\n"
+        "var stepAtoms = viewer.getModel().selectedAtoms({}) || [];\n"
         "for (var h = 0; h < payload.highlight.length; h++) {\n"
-        "  viewer.setStyle({serial: payload.highlight[h] + 1},\n"
-        "    {stick: {radius: 0.14, color: 0xff8f00},\n"
-        "     sphere: {scale: 0.42, color: 0xff8f00}});\n"
+        "  var hSerial = payload.highlight[h] + 1;\n"
+        "  for (var bi = 0; bi < stepAtoms.length; bi++) {\n"
+        "    if (stepAtoms[bi].serial !== hSerial) continue;\n"
+        "    var bt = stepAtoms[bi];\n"
+        "    viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
+        "      radius: 0.72, color: 0xff8f00, opacity: 0.22});\n"
+        "    viewer.setStyle({serial: hSerial},\n"
+        "      {stick: {radius: 0.13, color: 0xff8f00}});\n"
+        "  }\n"
         "}\n"
-        "viewer.zoomTo(); viewer.render();\n"
+        "viewer.render();\n"
         "})();\n"
     )
 

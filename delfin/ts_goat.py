@@ -307,6 +307,19 @@ def _hessian_reference_atoms(hess_path: Path) -> list[tuple[str, float, float, f
         encoding="utf-8", errors="ignore").splitlines())
 
 
+def _pair_response_fraction(i, j, d0, displaced):
+    """Largest fraction-of-d0 response of one contact along +/- mode.
+
+    Returns 0.0 when no displacement data exists (the caller keeps the
+    pair as candidate evidence, decided elsewhere).
+    """
+    if not displaced:
+        return 0.0
+    dp = abs(_distance(displaced["pos"][i], displaced["pos"][j]) - d0)
+    dn = abs(_distance(displaced["neg"][i], displaced["neg"][j]) - d0)
+    return max(dp, dn) / d0 if d0 > 0 else 0.0
+
+
 def _composition_mismatch(a: Sequence, b: Sequence) -> str:
     """Human-readable first difference between two atom orders.
 
@@ -612,9 +625,28 @@ def analyze_reactive_center(
     # contact the mode actually opens or closes.  Relative motion alone
     # does NOT qualify an atom (torsion also produces relative motion
     # between atoms whose distance never changes).
+    # 2026-11-02 real-run review (BF3H2O hydrogen-bond TS): FOUR H...F
+    # contacts responded with fractions of 4.0-5.2 % -- right at the
+    # candidacy threshold -- and 71 % of the molecule was proposed.
+    # A marginal response is noise, not a bond being made: SELECT by
+    # contact strength, not by every candidate.  The strongest
+    # responding contact sets the reference; only contacts that
+    # respond at least half as strongly stay in the proposal.
+    contact_fraction: dict = {}
+    if mode_index is not None:
+        for i, j in response_pairs:
+            d0 = _distance(ts_atoms[i], ts_atoms[j])
+            contact_fraction[(i, j)] = contact_fraction.get(
+                (i, j), 0.0) or _pair_response_fraction(
+                    i, j, d0, displaced)
+    reference = max(contact_fraction.values(), default=0.0)
     pair_evidence: set = set()
+    for pair, frac in contact_fraction.items():
+        if reference > 0 and frac >= 0.5 * reference:
+            pair_evidence.update(pair)
     for i, j in response_pairs:
-        pair_evidence.update((i, j))
+        if (i, j) not in contact_fraction or reference <= 0:
+            pair_evidence.update((i, j))
     selected: set = set(strong)
     for a, _score in ranked:
         if len(selected) >= max_atoms:

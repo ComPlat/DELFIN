@@ -10280,6 +10280,7 @@ def create_tab(ctx):
                         arrows=arrows_payload,
                     )
                     if vid:
+                        _ts_viewer_state['vid'] = vid
                         _run_js(_mv.ts_goat_viewer_bootstrap_js(
                             vid, width=640, height=450,
                             click_sync_css='.ts-goat-click-sync',
@@ -10293,8 +10294,18 @@ def create_tab(ctx):
                         " if(el) el.scrollTop=0;},80);"
                     )
 
+                _ts_viewer_state = {'vid': None}
+
+                def _ts_get_viewer_id():
+                    """The last panel viewer id, for 'Ansicht zentrieren'."""
+                    return _ts_viewer_state.get('vid')
+
+                def _ts_center_viewer(vid):
+                    """Re-center the panel viewer ('Ansicht zentrieren')."""
+                    from delfin.dashboard import molecule_viewer as _mv
+                    _run_js(_mv.ts_goat_viewer_center_js(vid))
+
                 def _ts_on_close():
-                    """Restore the normal file view after TS→GOAT closes."""
                     calc_ts_goat_panel.children = []
                     calc_ts_goat_panel.layout.display = 'none'
                     calc_content_area.layout.display = 'block'
@@ -10309,6 +10320,8 @@ def create_tab(ctx):
                         'scroll_top': _ts_scroll_top,
                         'render_in_panel': _ts_render_in_panel,
                         'on_close': _ts_on_close,
+                        'center_viewer': _ts_center_viewer,
+                        'get_viewer_id': _ts_get_viewer_id,
                     },
                 )
                 if open_result['error']:
