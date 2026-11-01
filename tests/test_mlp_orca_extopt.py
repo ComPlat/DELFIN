@@ -27,9 +27,8 @@ from delfin.mlp_tools.orca_extopt import (
 
 SYN = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
 
-#: EV_TO_EH / EV_PER_ANG_TO_EH_PER_BOHR must be consistent: the gradient
-#: conversion factor equals the energy factor divided by 1 Bohr in Angstrom.
-ANG_PER_BOHR = EV_TO_EH / EV_PER_ANG_TO_EH_PER_BOHR
+#: Consistency anchor: Bohr in Angstrom = eV-per-Eh / (Eh/Bohr per eV/A).
+ANG_PER_BOHR = 27.211386245988 / EV_PER_ANG_TO_EH_PER_BOHR
 
 
 def test_unit_factors_are_consistent():
@@ -51,10 +50,12 @@ class FakeCalculator:
 
 
 def _write_xyz(tmp_path: Path, name: str) -> Path:
+    # ORCA-written xyz files carry no comment marker; the "# SYNTHETIC"
+    # marker rule applies to committed fixture files, not to files a test
+    # generates at runtime in tmp.
     xyz = tmp_path / name
     xyz.write_text(
-        SYN
-        + "3\nsynthetic water, positions in Angstrom\n"
+        "3\nsynthetic water, positions in Angstrom\n"
         + "O 0.0 0.0 0.0\n"
         + "H 0.757 0.586 0.0\n"
         + "H -0.757 0.586 0.0\n"
@@ -168,11 +169,11 @@ def test_run_wrapper_full_round_trip(tmp_path, monkeypatch):
     # E = 0^2 + (0.757^2+0.586^2) * 2 (eV) -> Eh
     e_ev = 0.757**2 + 0.586**2 + (0.757**2 + 0.586**2)
     assert float(lines[1]) == pytest.approx(e_ev * EV_TO_EH, rel=1e-9)
-    # gradient: -2x per atom, atom-major, in Eh/bohr
+    # gradient: dE/dx = -force = +2x per atom, atom-major, in Eh/bohr
     grad = [float(v) for v in lines[2:]]
     assert len(grad) == 9
     assert grad[0] == pytest.approx(0.0)
-    assert grad[3] == pytest.approx(-2.0 * 0.757 * EV_PER_ANG_TO_EH_PER_BOHR)
+    assert grad[3] == pytest.approx(2.0 * 0.757 * EV_PER_ANG_TO_EH_PER_BOHR)
     # backend and thread limits reach create_calculator
     assert fake.calls == [("ani2x", "cpu", 0, 1)]
 
@@ -205,25 +206,34 @@ def test_run_wrapper_missing_xyz_fails_clearly(tmp_path, monkeypatch):
         run_wrapper(extinp, backend="ani2x")
 
 
-def test_cli_entrypoint(tmp_path, monkeypatch):
+def test_cli_entrypoint(tmp_path):
     """The wrapper must be callable as a command line script, exactly the
-    way ORCA calls it: script <extinp> [args]."""
+    way ORCA calls it: script <extinp> [args].  The fake calculator is
+    injected inside the child process (no torch in this env)."""
     _write_xyz(tmp_path, "test_EXT.xyz")
     extinp = tmp_path / "test_EXT.extinp.tmp"
     extinp.write_text(SYN + "test_EXT.xyz\n0\n1\n1\n0\n")
-    script = Path(
-        subprocess.run(
-            [sys.executable, "-c", "import delfin.mlp_tools.orca_extopt as m; print(m.__file__)"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+    helper = tmp_path / "_fakecalc_cli.py"
+    helper.write_text(
+        "import numpy as np\n"
+        "class FakeCalculator:\n"
+        "    def get_potential_energy(self, atoms=None):\n"
+        "        return float(np.sum(atoms.positions**2))\n"
+        "    def get_forces(self, atoms=None):\n"
+        "        return -2.0 * atoms.positions\n"
+    )
+    child = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(tmp_path)!r})\n"
+        "from _fakecalc_cli import FakeCalculator\n"
+        f"import delfin.mlp_tools.orca_extopt as m\n"
+        "m.create_calculator = lambda backend, **kw: FakeCalculator()\n"
+        f"sys.exit(m.main([{str(extinp)!r}, '--backend', 'fake', '--opt', 'ignored']))\n"
     )
     result = subprocess.run(
-        [sys.executable, script, str(extinp), "--backend", "fake"],
+        [sys.executable, "-c", child],
         capture_output=True,
         text=True,
-        env={"PYTHONPATH": str(script.parents[2]), "PATH": "/usr/bin:/bin"},
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "test_EXT.engrad").exists()
