@@ -126,7 +126,13 @@ def collect_status(spec: dict[str, Any]) -> dict[str, Any]:
     whole package upward).
     """
     from .. import session_health as _sh
+    from .. import swarm_memory
 
+    # Scope health to THIS swarm run: a same-named member of an earlier
+    # run must not leak its final state into a fresh one (D8). The run
+    # id comes from swarm_memory's current-run bookkeeping; a member
+    # with no record in THIS run is 'starting'.
+    run_id = swarm_memory.current_run_id()
     members_by_pkg: dict[str, list[dict[str, Any]]] = {}
     waiting: list[dict[str, Any]] = []
     try:
@@ -139,8 +145,20 @@ def collect_status(spec: dict[str, Any]) -> dict[str, Any]:
         for role in roles:
             name = f"{pkg['name']}-{role}"
             rec = records.get(name)
-            health = (rec or {}).get("state", "starting")
-            waits_on = (rec or {}).get("waits_on")
+            # D8: a health record only counts for THIS run. swarm_memory
+            # keeps the run id each entry was written under; a record
+            # from an earlier run (or no record) means 'starting'.
+            in_this_run = False
+            try:
+                entries = swarm_memory.read(run_id)
+            except Exception:
+                entries = []
+            if run_id and entries:
+                in_this_run = any(
+                    getattr(e, "author", "") == name for e in entries)
+            health = (rec or {}).get("state") if in_this_run else None
+            health = health or "starting"
+            waits_on = (rec or {}).get("waits_on") if in_this_run else None
             if waits_on:
                 waiting.append({"member": name, "waits_on": waits_on})
             members.append({"name": name, "role": role, "health": health,

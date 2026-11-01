@@ -38,10 +38,12 @@ packages:
 QUEUE = [
     {"id": "msg-1", "member": "core-builder", "from": "core-reviewer",
      "text": "review done, APPROVED with marks 5/5/5",
-     "kind": "session_message"},
+     "kind": "session_message",
+     "roster": ["core-builder", "core-reviewer", "core-qs", "ui-builder"]},
     {"id": "push-1", "member": "core-builder", "from": "git",
      "text": "push to origin refused -- allow it?",
-     "kind": "approval"},
+     "kind": "approval",
+     "roster": ["core-builder", "core-reviewer", "core-qs", "ui-builder"]},
 ]
 
 

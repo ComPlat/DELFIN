@@ -7,6 +7,8 @@ triage).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from delfin.agent.swarm.triage import (
@@ -35,7 +37,8 @@ def swarm(tmp_path, monkeypatch):
 def test_partner_message_from_same_swarm_is_auto_answerable(swarm):
     verdict = classify({"member": "core-builder", "from": "core-reviewer",
                         "text": "review done, sent APPROVED with marks",
-                        "kind": "session_message"})
+                        "kind": "session_message",
+                        "roster": ["core-builder", "core-reviewer"]})
     assert verdict["action"] == "auto_answer"
     assert verdict["reason"].startswith("plain partner message")
 
@@ -56,7 +59,8 @@ def test_permission_request_escalates(swarm):
 
 def test_own_test_output_is_auto_answerable(swarm):
     verdict = classify({"member": "core-builder", "from": "core-builder",
-                        "text": "gate: 12 passed", "kind": "test_output"})
+                        "text": "gate: 12 passed", "kind": "test_output",
+                        "roster": ["core-builder", "core-reviewer"]})
     assert verdict["action"] == "auto_answer"
 
 
@@ -65,7 +69,8 @@ def test_triage_list_is_read_only_and_sorted(swarm):
         {"id": "b", "member": "core-builder", "from": "git",
          "text": "push refused", "kind": "approval"},
         {"id": "a", "member": "core-reviewer", "from": "core-builder",
-         "text": "hello", "kind": "session_message"},
+         "text": "hello", "kind": "session_message",
+         "roster": ["core-builder", "core-reviewer"]},
     ]
     listed = triage_list(queue)
     # Escalations first, then auto-answerables; stable within class.
@@ -73,22 +78,26 @@ def test_triage_list_is_read_only_and_sorted(swarm):
     assert listed[0]["action"] == "escalate"
 
 
-def test_triage_answer_logs_and_answers(swarm, capsys):
+def test_triage_answer_logs_and_answers(swarm, capsys, tmp_path,
+                                         monkeypatch):
+    monkeypatch.setenv("HOME", str(swarm))
     item = {"id": "a", "member": "core-builder", "from": "core-reviewer",
-            "text": "APPROVED, marks 5/5/5", "kind": "session_message"}
+            "text": "APPROVED, marks 5/5/5", "kind": "session_message",
+            "roster": ["core-builder", "core-reviewer"]}
     verdict = classify(item)
     assert verdict["action"] == "auto_answer"
     result = triage_answer(item, verdict, answer="ack")
     assert result["answered"] is True
-    assert (swarm / ".swarm" / "triage_log.jsonl").exists()
-    logged = (swarm / ".swarm" / "triage_log.jsonl").read_text(
-        encoding="utf-8")
+    logged = Path(result["logged"]).read_text(encoding="utf-8")
     assert "auto_answer" in logged and "core-builder" in logged
+    # Nothing is written inside the workspace (T4/D14).
+    assert not (swarm / ".swarm" / "triage_log.jsonl").exists()
 
 
 def test_triage_answer_refuses_escalated_items(swarm):
     item = {"id": "b", "member": "core-builder", "from": "git",
-            "text": "push refused", "kind": "approval"}
+            "text": "push refused", "kind": "approval",
+            "roster": ["core-builder", "core-reviewer"]}
     verdict = classify(item)
     with pytest.raises(TriageError, match="user"):
         triage_answer(item, verdict, answer="yes push")
