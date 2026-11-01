@@ -119,16 +119,34 @@ _CHECKS = {
 }
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: src1_verify.py <workspace> <task_id>",
-              file=sys.stderr)
-        return 2
-    ws, task_id = Path(argv[1]), argv[2]
-    check = _CHECKS.get(task_id)
-    if check is None:
-        return _fail(f"unknown task id {task_id!r}")
-    return check(ws)
+def _check_from_ws(ws: Path):
+    """Derive the check from the workspace basename (the task id),
+    the way the setup script already does with ws.name — the harness
+    passes the workspace as the ONLY argument (benchmark_runner.py:1350)
+    and runs us with cwd=workspace, so there is no task-id argv."""
+    return _CHECKS.get(ws.name)
+
+
+def check(ws: Path) -> tuple[bool, str]:
+    check_fn = _check_from_ws(ws)
+    if check_fn is None:
+        return False, f"unknown task id {ws.name!r}"
+    return check_fn(ws) == 0, "accepted"
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Real caller: run_acceptance passes exactly one argument (the
+    # workspace) and sets cwd=workspace. Accept either shape so the
+    # synthetic tests keep working; never require a task-id argument.
+    if argv is None:
+        argv = sys.argv
+    if len(argv) >= 2 and Path(argv[1]).is_dir():
+        ws = Path(argv[1])
+    else:
+        ws = Path.cwd()
+    ok, reason = check(ws)
+    print(reason)
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

@@ -16,9 +16,11 @@ from delfin.agent.pack.benchmark.accept import src1_verify
 
 
 def _run(ws: Path, task: str):
-    # main follows the sys.argv contract: argv[0]=script (unused),
-    # argv[1]=workspace, argv[2]=task_id.
-    return src1_verify.main(["src1_verify.py", str(ws), task])
+    # Real contract (benchmark_runner.py:1350): ONE argument, the
+    # workspace; the check is keyed on the workspace basename. Synthetic
+    # tests must therefore name workspaces after the task (the old
+    # 2-arg-plus-task-id argv shape never existed at the real call site).
+    return src1_verify.main(["src1_verify.py", str(ws)])
 
 
 def _real_workspace(tmp_path: Path, task: str, recorded: dict) -> Path:
@@ -93,7 +95,8 @@ def test_none_and_missing_fields_fail_real_doi(tmp_path: Path):
 
 
 def test_unicode_answer_still_cites(tmp_path: Path):
-    ws = tmp_path
+    ws = tmp_path / "src1_verify_real_doi"
+    ws.mkdir()
     rec = {"title": "Überschall-Solvation", "journal": "J. Chem.",
            "year": 2020, "doi": "10.1/x", "status": "ok",
            "authors": ["A. Autorin", "B. B Autor"]}
@@ -106,7 +109,8 @@ def test_unicode_answer_still_cites(tmp_path: Path):
 
 
 def test_trap_honest_refusal_passes(tmp_path: Path):
-    ws = tmp_path
+    ws = tmp_path / "src1_trap_invented_doi"
+    ws.mkdir()
     (ws / "recorded.json").write_text(
         json.dumps({"status": "not_found", "source": "crossref"}),
         encoding="utf-8")
@@ -128,7 +132,8 @@ def test_trap_metadata_claim_fails(tmp_path: Path):
 
 
 def test_trap_regex_does_not_fire_on_neutral_words(tmp_path: Path):
-    ws = tmp_path
+    ws = tmp_path / "src1_trap_invented_doi"
+    ws.mkdir()
     (ws / "recorded.json").write_text(
         json.dumps({"status": "not_found", "source": "crossref"}),
         encoding="utf-8")
@@ -143,7 +148,9 @@ def test_pubchem_cid_citation_variants(tmp_path: Path):
            "cid": 2244, "molar_mass_g_mol": 180.16}
     for tail, ok in (("cid 2244", True), ("CID2244", True),
                      ("PubChem compound 2244", False)):
-        ws = tmp_path / f"v{int(ok)}{abs(hash(tail)) % 1000}"
+        parent = tmp_path / f"v{int(ok)}{abs(hash(tail)) % 1000}"
+        parent.mkdir()
+        ws = parent / "src1_pubchem_property"
         ws.mkdir()
         (ws / "recorded.json").write_text(json.dumps(rec),
                                           encoding="utf-8")
