@@ -51,9 +51,12 @@ _SAFE_TEST_PATH = re.compile(r"^tests/[A-Za-z0-9_./:-]+$")
 
 #: A git ref/tag/branch: word chars, dots, underscores, slashes, dashes; never
 #: leading dash (an option), never ".." (a path escape), never whitespace.
-_SAFE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
-#: A SLURM partition name.
-_SAFE_PARTITION = re.compile(r"^[A-Za-z0-9_,-]+$")
+_SAFE_REF = re.compile(r"^(?!-)[A-Za-z0-9._/-]+$")
+#: A SLURM partition name. A comma list is legitimate, but every
+#: segment must be a name (no empty segment around a comma, which
+#: renders '--partition=,cpu' and is rejected late by SLURM) and the
+#: value must not start with '-' (which sbatch re-reads as an option).
+_SAFE_PARTITION = re.compile(r"^(?!-)[A-Za-z0-9_]+(?:,[A-Za-z0-9_]+)*$")
 #: Memory like 8000, 8G, 512M -- digits with an optional K/M/G/T suffix.
 _SAFE_MEM = re.compile(r"^[0-9]+[KMGT]?$")
 #: A SLURM job name.

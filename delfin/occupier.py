@@ -41,13 +41,82 @@ from .parallel_classic_manually import (
     normalize_parallel_token,
 )
 from .process_checker import check_and_warn_competing_processes
-from .parser import extract_last_uhf_deviation
+from .orca_read import Quantity, read
 from . import smart_recalc
 
 logger = get_logger(__name__)
 
+
+def _orca_s2_deviation(out_path) -> Optional[float]:
+    """<S**2> deviation of a finished OCCUPIER run via :mod:`delfin.orca_read`.
+
+    In the occupier flow no OPI ``*.property.json`` sits next to the run's
+    ``output*.out``, so orca_read resolves to DELFIN's established text reader
+    (``extract_last_uhf_deviation``) and returns the identical value: the last
+    ``Deviation`` of the UHF spin-contamination block, or ``None`` for a
+    closed-shell run (no UHF block), a failed run, or a missing file.
+    """
+    p = Path(out_path)
+    return read(p.parent, p.stem, Quantity.S2_DEVIATION).value
+
 # Global lock to prevent race conditions when multiple FoBs read input0.xyz simultaneously
 _geometry_file_lock = threading.RLock()
+
+
+def find_FSPE(filename):
+    """Scan an ORCA output bottom-up for the last FINAL SINGLE POINT ENERGY.
+
+    Module-level extraction of the nested helper that used to live inside
+    run_OCCUPIER (occupier.py:986); the parse itself is unchanged.
+    """
+    search_text = "FINAL SINGLE POINT ENERGY   "
+    try:
+        with open(filename, 'r') as file:
+            lines = file.readlines()
+    except FileNotFoundError:
+        logger.warning(f"File {filename} not found. Skipping.")
+        return None
+
+    for line in reversed(lines):
+        idx = line.find(search_text)
+        if idx != -1:
+            energy_str = line[idx + len(search_text):].strip().split()[0]
+            try:
+                return float(energy_str)
+            except ValueError:
+                logger.error(f"Could not convert '{energy_str}' to float.")
+                continue
+    logger.warning("No FINAL SINGLE POINT ENERGY found in the file.")
+    return None
+
+
+def find_G(filename):
+    """Scan an ORCA output bottom-up for the LAST 'Final Gibbs free energy'.
+
+    Fixed (OC1 audit F1): like find_FSPE this now reads the LAST block, so an
+    appended/continued thermochemistry block is not masked by a stale earlier
+    one, and one unconvertible value is skipped instead of aborting the parse
+    (the old code returned None from inside the loop, occupier.py:1019-1021).
+    """
+    search_text = "Final Gibbs free energy         ... "
+    try:
+        with open(filename, 'r') as file:
+            lines = file.readlines()
+    except FileNotFoundError:
+        logger.warning(f"File {filename} not found. Skipping.")
+        return None
+
+    for line in reversed(lines):
+        idx = line.find(search_text)
+        if idx != -1:
+            energy_str = line[idx + len(search_text):].strip().split()[0]
+            try:
+                return float(energy_str)
+            except ValueError:
+                logger.error(f"Could not convert '{energy_str}' to float.")
+                continue
+    logger.warning("No Final Gibbs free energy found in the file.")
+    return None
 
 # Safe file reader with retries to handle transient FS races
 def _read_file_lines_with_retries(
@@ -321,6 +390,27 @@ def _first_coordination_sphere_indices(atoms, metal_indices, scale, radii_map):
     return first
 
 
+_COMPOSITE_3C_KEYWORDS = {
+    # ORCA 6.1.1 manual, section 3.6.7, Table 3.32: the simple-input
+    # keywords of the 3c composite methods. Each keyword IS the method
+    # (own basis, own dispersion correction, gCP); nothing may be
+    # appended or overridden (section 3.6). Kept as an explicit list,
+    # not a '-3c' suffix rule, so a future non-composite name that
+    # merely ends in '-3c' is not misrouted.
+    "hf-3c",
+    "b97-3c",
+    "r2scan-3c",
+    "pbeh-3c",
+    "b3lyp-3c",
+    "wb97x-3c",
+}
+
+
+def _is_composite_3c(functional: str) -> bool:
+    """True when the functional is one of ORCA's 3c composite methods."""
+    return str(functional).strip().lower() in _COMPOSITE_3C_KEYWORDS
+
+
 def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multiplicity,
                                   solvent, found_metals, metal_basisset, main_basisset,
                                   config, broken_sym, work_dir=None):
@@ -408,24 +498,46 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     freq_flag = "FREQ" if resolve_occupier_compare(config) == "G" else ""
 
     # Build the '!' line
-    tokens = ["!"]
-    if qmmm_range:
-        qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
-        tokens.append(qmmm_method)
-    tokens.extend([
-        str(config['functional']),
-        rel_token,
-        str(main_basis),
-        str(config.get('disp_corr', '')),
-        str(config.get('ri_jkx', '')),
-        aux_jk_token,
-        implicit,
-        str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
-    ])
-    if freq_flag:
-        tokens.append(freq_flag)
-    tokens.append(initial_guess)
-    bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
+    # Same 3c-composite discipline as the nested writer below
+    # (occupier.py:~966): a composite (r2SCAN-3c, B97-3c, HF-3c, PBEh-3c)
+    # IS its own method -- its tailored basis, dispersion and gCP are
+    # inside the keyword (ORCA 6.1.1 manual section 3.6.3). An extra
+    # dispersion token double-counts; an extra basis token replaces the
+    # composite's basis; ZORA has no relativistic counterpart inside the
+    # composite. Emit the composite keyword + the generic runners only.
+    functional_str = str(config['functional'])
+    if _is_composite_3c(functional_str):
+        composite_tokens = [functional_str]
+        if qmmm_range:
+            composite_tokens.insert(0, str(config.get('qmmm_option', 'QM/XTB')).strip())
+        for extra in (implicit, str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+                      str(config.get('ri_jkx', ''))):
+            if extra:
+                composite_tokens.append(extra)
+        if freq_flag:
+            composite_tokens.append(freq_flag)
+        if initial_guess:
+            composite_tokens.append(initial_guess)
+        bang = " ".join(["!"] + composite_tokens).strip()
+    else:
+        tokens = ["!"]
+        if qmmm_range:
+            qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
+            tokens.append(qmmm_method)
+        tokens.extend([
+            str(config['functional']),
+            rel_token,
+            str(main_basis),
+            str(config.get('disp_corr', '')),
+            str(config.get('ri_jkx', '')),
+            aux_jk_token,
+            implicit,
+            str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+        ])
+        if freq_flag:
+            tokens.append(freq_flag)
+        tokens.append(initial_guess)
+        bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
     modified_lines = []
     if broken_sym and "moinp" in broken_sym.lower():
@@ -452,6 +564,11 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     modified_lines.append(f"* xyz {charge} {multiplicity}\n")
 
     # Metals found by symbol
+    # 3c composite: its own basis covers all elements it supports
+    # (r2SCAN-3c: up to Lr, Z=103 -- ORCA 6.1.1 manual section 3.6.3),
+    # so no per-atom NewGTO override.
+    if _is_composite_3c(functional_str):
+        metal_basis = None
     metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
     metal_indices = [i for i, a in enumerate(atoms) if a['elem'].capitalize() in metal_syms]
 
@@ -581,7 +698,7 @@ def _check_contamination_trigger(
         return None
 
     try:
-        deviation = extract_last_uhf_deviation(str(out_path))
+        deviation = _orca_s2_deviation(out_path)
     except Exception as exc:
         logger.debug(
             "[contamination_trigger] Could not read contamination from '%s': %s", out_path, exc
@@ -895,24 +1012,51 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         freq_flag = "FREQ" if resolve_occupier_compare(config) == "G" else ""
 
         # Build the '!' line
-        tokens = ["!"]
-        if qmmm_range:
-            qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
-            tokens.append(qmmm_method)
-        tokens.extend([
-            str(config['functional']),
-            rel_token,                       # '' or ZORA/X2C/DKH
-            str(main_basis),
-            str(config.get('disp_corr', '')),
-            str(config.get('ri_jkx', '')),
-            aux_jk_token,                    # '' or def2/J | SARC/J
-            implicit,
-            str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
-        ])
-        if freq_flag:
-            tokens.append(freq_flag)
-        tokens.append(initial_guess)
-        bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
+        # A 3c composite functional (e.g. r2SCAN-3c, B97-3c, HF-3c, PBEh-3c)
+        # IS its own method: it carries its tailored basis (def2-mTZVPP /
+        # def2-mTZVP), its built-in dispersion correction and gCP (ORCA 6.1.1
+        # manual, section 3.6.3, "It is invoked with the simple keyword
+        # ! r2SCAN-3c"). Adding an extra dispersion token double-counts the
+        # correction, and adding the main_basisset token replaces the
+        # composite's tailored basis with the CONTROL's generic one. Emit the
+        # composite keyword alone and drop the composite-incompatible tokens.
+        functional_str = str(config['functional'])
+        if _is_composite_3c(functional_str):
+            composite_tokens = [functional_str]
+            if qmmm_range:
+                composite_tokens.insert(0, str(config.get('qmmm_option', 'QM/XTB')).strip())
+            for extra in (implicit, str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+                          str(config.get('ri_jkx', ''))):
+                if extra:
+                    composite_tokens.append(extra)
+            if freq_flag:
+                composite_tokens.append(freq_flag)
+            if initial_guess:
+                composite_tokens.append(initial_guess)
+        else:
+            composite_tokens = None
+        if composite_tokens is not None:
+            tokens = ["!"] + composite_tokens
+            bang = " ".join(tokens).strip()
+        else:
+            tokens = ["!"]
+            if qmmm_range:
+                qmmm_method = str(config.get('qmmm_option', 'QM/XTB')).strip()
+                tokens.append(qmmm_method)
+            tokens.extend([
+                str(config['functional']),
+                rel_token,                       # '' or ZORA/X2C/DKH
+                str(main_basis),
+                str(config.get('disp_corr', '')),
+                str(config.get('ri_jkx', '')),
+                aux_jk_token,                    # '' or def2/J | SARC/J
+                implicit,
+                str(config.get('geom_opt_OCCUPIER', config.get('geom_opt', ''))),
+            ])
+            if freq_flag:
+                tokens.append(freq_flag)
+            tokens.append(initial_guess)
+            bang = " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
         modified_lines = []
         if broken_sym and "moinp" in broken_sym.lower():
@@ -939,6 +1083,13 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         modified_lines.append(f"* xyz {charge} {multiplicity}\n")
 
         # Metals found by symbol
+        # A 3c composite carries its own basis for ALL elements it covers
+        # (r2SCAN-3c: all elements up to Lr, Z=103 -- ORCA 6.1.1 manual
+        # section 3.6.3). A per-atom NewGTO override would replace the
+        # composite's basis on the metal (and possibly its first sphere),
+        # so it is suppressed when the functional is a composite.
+        if _is_composite_3c(functional_str):
+            metal_basis = None
         metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
         metal_indices = [i for i, a in enumerate(atoms) if a['elem'].capitalize() in metal_syms]
 
@@ -982,46 +1133,6 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         logger.info(f"Input file from '{xyz_file}' modified and saved as '{output_file_path}'")
 
     # ------------------------ output parsers ------------------------
-
-    def find_FSPE(filename):
-        """Scan ORCA output bottom-up for 'FINAL SINGLE POINT ENERGY'."""
-        search_text = "FINAL SINGLE POINT ENERGY   "
-        try:
-            with open(filename, 'r') as file:
-                lines = file.readlines()
-        except FileNotFoundError:
-            logger.warning(f"File {filename} not found. Skipping.")
-            return None
-
-        for line in reversed(lines):
-            idx = line.find(search_text)
-            if idx != -1:
-                energy_str = line[idx + len(search_text):].strip().split()[0]
-                try:
-                    return float(energy_str)
-                except ValueError:
-                    logger.error(f"Could not convert '{energy_str}' to float.")
-                    continue
-        logger.warning("No FINAL SINGLE POINT ENERGY found in the file.")
-        return None
-
-    def find_G(filename):
-        """Scan ORCA output for 'Final Gibbs free energy ...'."""
-        search_text = "Final Gibbs free energy         ... "
-        try:
-            with open(filename, 'r') as file:
-                for line in file:
-                    idx = line.find(search_text)
-                    if idx != -1:
-                        energy_str = line[idx + len(search_text):].strip().split()[0]
-                        try:
-                            return float(energy_str)
-                        except ValueError:
-                            logger.error(f"Could not convert '{energy_str}' to float.")
-                            return None
-        except FileNotFoundError:
-            logger.warning(f"File {filename} not found. Skipping.")
-        return None
 
     # --------------------------- main flow -------------------------
 
@@ -1133,6 +1244,7 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
             return parsed
 
         # Energy extractor: FSPE unless frequency run is requested
+        # (module-level find_FSPE / find_G, testable in isolation)
         use_gibbs = resolve_occupier_compare(config) == "G"
         finder = find_G if use_gibbs else find_FSPE
 
