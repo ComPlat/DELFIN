@@ -160,13 +160,29 @@ def _head_text(path: Path, size: int = 65536) -> str:
         return ""
 
 
-def _tail_text(path: Path, size: int = 65536) -> str:
-    """The last *size* bytes of a text file ('' when unreadable)."""
+#: How much of the output's tail a single-quantity text read touches. The
+#: termination marker, the final single-point energy, the thermochemistry
+#: block and the convergence/outcome phrases all live in the last megabyte
+#: of an ORCA run (the thermo block of the h2o_optfreq fixture sits about
+#: 140 kB from the end; a 500-step optimization adds only a few kB per
+#: cycle), so 1 MiB carries them at ~2.2 MB tracemalloc peak instead of
+#: the whole 100-500 MB file.
+_TAIL_BYTES = 1 * 1024 * 1024
+
+
+def _tail_text(path: Path, size: int = _TAIL_BYTES) -> str:
+    """The last *size* bytes of a text file ('' when unreadable).
+
+    Binary seek+read like doc_server.calc_indexer._tail_text, not a text
+    mode f.read(): the text-mode read of a 2 MB tail allocated ~8.5 MB
+    (decoder buffering), the binary one stays near the tail's own size.
+    """
     try:
-        with path.open(encoding="utf-8", errors="replace") as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - size))
-            return f.read()
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            n = fh.tell()
+            fh.seek(max(0, n - size))
+            return fh.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
 
@@ -262,54 +278,144 @@ def _opi_final_single_point_energy(work_dir: Path, base_name: str) -> Optional[f
 # text readers (DELFIN's established parsers, called -- never copied)
 # ---------------------------------------------------------------------------
 
-def _text_values(out_path: Path, inp_path: Path) -> dict:
-    """All text reads for one run in one pass over the .out/.inp."""
-    from delfin.api import extract_thermochem, parse_orca_output
-    from delfin.energies import find_ZPE, find_electronic_energy, find_gibbs_energy
+def _text_values(out_path: Path, inp_path: Path,
+                 quantities: Optional[set] = None,
+                 tail: Optional[str] = None) -> dict:
+    """Text reads for one run, each quantity from only the region it needs.
+
+    Every parser here reads either the bounded tail (``_TAIL_BYTES``), a
+    pre-read bounded text, or the small ``.inp`` -- never the whole output,
+    which used to cost ~200 MB peak on a 12 MB file. *quantities* limits
+    the work to the keys the caller wants (all keys when omitted); *tail*
+    passes in an already-read bounded tail so one ``read()`` call scans
+    the output once. The values are identical to the whole-file readers
+    because the markers they match live near the end of an ORCA run.
+    """
+    wanted = quantities or {
+        "final_energy", "free_energy", "zpe", "s2", "charge", "mult",
+        "term", "scf", "geometry_converged", "failure_reason",
+        "enthalpy", "inner_energy", "entropy", "nelectrons",
+    }
+    values: dict = {}
+    if "term" in wanted:
+        values["term"] = _terminated_normally_text(out_path)
+    if {"scf", "final_energy", "free_energy", "zpe", "enthalpy",
+        "inner_energy", "entropy", "geometry_converged",
+        "failure_reason", "s2"} & wanted:
+        if tail is None:
+            tail = _tail_text(out_path)
+    tail = tail or ""
+    if "scf" in wanted:
+        values["scf"] = _scf_converged_text(tail)
+    if {"final_energy", "free_energy", "zpe", "enthalpy", "inner_energy",
+        "entropy", "geometry_converged", "failure_reason", "s2"} & wanted:
+        _fill_out_text_values(values, out_path, tail, wanted)
+    if {"charge", "mult", "nelectrons"} & wanted:
+        header = _coord_header(inp_path)
+        values["charge"] = int(header.group(1)) if header else None
+        values["mult"] = int(header.group(2)) if header else None
+        if "nelectrons" in wanted:
+            values["nelectrons"] = _text_nelectrons(inp_path,
+                                                    values["charge"])
+    return values
+
+
+def _fill_out_text_values(values: dict, out_path: Path, tail: str,
+                          wanted: set) -> None:
+    """Output-side quantities, each read from the bounded tail only."""
+    from io import StringIO
+
     from delfin.parser import extract_last_uhf_deviation
 
-    text = _tail_text(out_path)
-    values: dict = {
-        "final_energy": find_electronic_energy(str(out_path)),
-        "free_energy": find_gibbs_energy(str(out_path)),
-        "zpe": find_ZPE(str(out_path)),
-        "s2": None,
-        "charge": None,
-        "mult": None,
-        "term": _terminated_normally_text(out_path),
-        "scf": _scf_converged_text(text),
-        "failure_reason": None,
-    }
-    try:
-        thermo = extract_thermochem(str(out_path.parent))
-        values["enthalpy"] = thermo.enthalpy_corr
-        values["inner_energy"] = _text_inner_energy(out_path)
-        values["entropy"] = thermo.entropy_total
-    except Exception:
-        values.setdefault("enthalpy", None)
-        values.setdefault("inner_energy", None)
-        values.setdefault("entropy", None)
+    if {"final_energy", "free_energy", "zpe", "enthalpy", "entropy",
+        "inner_energy"} & wanted:
+        _fill_thermo_and_energy(values, out_path, tail, wanted)
+    if "s2" in wanted:
+        # extract_last_uhf_deviation reads its argument in full; the
+        # argument is the bounded tail, so the read stays bounded.
+        from io import StringIO
 
-    try:
-        values["s2"] = extract_last_uhf_deviation(str(out_path))
-    except Exception:
-        values["s2"] = None
+        try:
+            values["s2"] = extract_last_uhf_deviation(StringIO(tail))
+        except Exception:
+            values["s2"] = None
+    if "geometry_converged" in wanted:
+        values["geometry_converged"] = _geometry_converged_text(tail)
+    if "failure_reason" in wanted:
+        values["failure_reason"] = _failure_reason_text(values, out_path)
 
-    try:
-        parsed = parse_orca_output(str(out_path))
-        values["geometry_converged"] = parsed.opt_converged
-        if not parsed.scf_converged:
-            values["failure_reason"] = parsed.outcome or None
-    except Exception:
-        values["geometry_converged"] = None
 
-    # charge / multiplicity from the * xyz <charge> <mult> input header
-    header = _coord_header(inp_path)
-    if header:
-        values["charge"], values["mult"] = int(header.group(1)), int(header.group(2))
-    # electron count: input geometry minus charge (OCCUPIER's derivation)
-    values["nelectrons"] = _text_nelectrons(inp_path, values["charge"])
-    return values
+def _fill_thermo_and_energy(values: dict, out_path: Path, tail: str,
+                            wanted: set) -> None:
+    """Energy and thermochemistry quantities from the bounded tail."""
+    from delfin.energies import (electronic_energy_in_text,
+                                 gibbs_energy_in_text)
+
+    # energies first: the text functions accept pre-read text, so the
+    # bounded tail is reused instead of re-reading the file.
+    if "final_energy" in wanted:
+        values["final_energy"] = electronic_energy_in_text(tail, str(out_path))
+    if "free_energy" in wanted:
+        values["free_energy"] = gibbs_energy_in_text(tail, str(out_path))
+    if "inner_energy" in wanted:
+        values["inner_energy"] = _last_float_after(
+            tail, r"Total thermal energy\s+(-?\d+\.\d+)\s*Eh")
+    if "zpe" in wanted:
+        values["zpe"] = _last_float_in_text(tail, _ZPE_PATTERNS, str(out_path))
+    if "enthalpy" in wanted:
+        values["enthalpy"] = _last_float_after(
+            tail, r"Total Enthalpy\s+\.\.\.\s+(-?\d+\.\d+)\s*Eh")
+    if "entropy" in wanted:
+        values["entropy"] = _last_float_after(
+            tail, r"Final entropy term\s+\.\.\.\s+(-?\d+\.\d+)\s*Eh")
+
+
+_ZPE_PATTERNS = (
+    r"Zero[\s-]?point\s+energy.{0,200}?([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)"
+    r"\s*(?:E[hH]|a\.u\.)?",
+    r"Zero[\s-]?point\s+correction.{0,200}?([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)"
+    r"\s*(?:E[hH]|a\.u\.)?",
+)
+
+
+def _last_float_in_text(text: str, patterns, path: str) -> Optional[float]:
+    """delfin.energies._last_float_in_text on a pre-read bounded text (the
+    original takes the same arguments; importing it here keeps one copy)."""
+    from delfin.energies import _last_float_in_text as energies_last_float
+
+    return energies_last_float(text, patterns, path)
+
+
+_GEOMETRY_DONE_PATTERNS = (
+    "OPTIMIZATION RUN DONE",
+    "THE OPTIMIZATION HAS CONVERGED",
+)
+_GEOMETRY_FAILED_PATTERNS = (
+    "OPTIMIZATION DID NOT CONVERGE",
+    "FAILED TO CONVERGE THE GEOMETRY OPTIMIZATION",
+)
+
+
+def _geometry_converged_text(text: str) -> Optional[bool]:
+    """Optimization convergence from a bounded tail (delfin.api
+    parse_orca_output semantics: True/False markers, None when absent)."""
+    if any(p in text for p in _GEOMETRY_DONE_PATTERNS):
+        return True
+    if any(p in text for p in _GEOMETRY_FAILED_PATTERNS):
+        return False
+    return None
+
+
+def _failure_reason_text(values: dict, out_path: Path) -> Optional[str]:
+    """The folder outcome phrase, or None. Same value as before: the old
+    text path took it from parse_orca_output's ``outcome`` field, which is
+    ``outcome_of_folder``'s phrase; the folder scan reads only exit-code
+    and log side files plus a bounded output tail, never the whole .out."""
+    if values.get("scf"):
+        return None
+    from delfin.doc_server.calc_indexer import outcome_of_folder
+
+    return outcome_of_folder(out_path.parent) or None
 
 
 def _coord_header(inp_path: Path):
@@ -401,6 +507,26 @@ _ENERGY_QUANTITIES = {
     Quantity.INNER_ENERGY: ("inner_energy", "inner_energy", "Eh"),
 }
 
+#: The text-read key(s) each Quantity needs -- the only work ``read()`` does
+#: on the text path. Thermochemistry quantities share the tail scan but each
+#: matches only its own pattern.
+_TEXT_KEYS = {
+    Quantity.TERMINATED_NORMALLY: {"term"},
+    Quantity.GEOMETRY_CONVERGED: {"scf", "geometry_converged",
+                                  "failure_reason"},
+    Quantity.FAILURE_REASON: {"scf", "geometry_converged",
+                              "failure_reason"},
+    Quantity.S2_DEVIATION: {"s2"},
+    Quantity.CHARGE: {"charge", "mult", "nelectrons"},
+    Quantity.MULTIPLICITY: {"charge", "mult", "nelectrons"},
+    Quantity.NUMBER_OF_ELECTRONS: {"charge", "mult", "nelectrons"},
+}
+for _q, (_opi_key, _text_key, _unit) in _ENERGY_QUANTITIES.items():
+    _TEXT_KEYS[_q] = {_text_key}
+# GIBBS/ZPE/ENTHALPY/INNER_ENERGY/ENTROPY sit in the thermochemistry block;
+# ENTROPY is not in _ENERGY_QUANTITIES but uses the same tail scan.
+_TEXT_KEYS[Quantity.ENTROPY] = {"entropy"}
+
 #: quantities whose OPI comparison showed identical values AND where OPI
 #: answers the same question -- everything else goes to the text parser.
 _OPI_FIRST = set(_ENERGY_QUANTITIES) | {Quantity.S2_DEVIATION}
@@ -437,13 +563,15 @@ def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Read
     if not out_path.is_file():
         return none(f"no {base_name}.out in the run directory")
 
-    text = _tail_text(out_path)
+    text = ""
 
     # quantities that stay on the text reader by design
     if quantity not in _OPI_FIRST:
-        return _read_text_only(work_dir, base_name, quantity, inp_path, text)
+        return _read_text_only(work_dir, base_name, quantity, inp_path)
 
-    text_values = _text_values(out_path, inp_path)
+    text = _tail_text(out_path)
+    text_values = _text_values(out_path, inp_path,
+                               _TEXT_KEYS.get(quantity), tail=text)
     text_value = text_values.get(quantity == Quantity.S2_DEVIATION
                                  and "s2" or _ENERGY_QUANTITIES[quantity][1])
 
@@ -541,10 +669,10 @@ def _reading_from_text(quantity: Quantity, text_value, text_values: dict,
 
 
 def _read_text_only(work_dir: Path, base_name: str, quantity: Quantity,
-                    inp_path: Path, text: str) -> Reading:
+                    inp_path: Path) -> Reading:
     """Quantities that never route through OPI (see module docstring)."""
     out_path = work_dir / f"{base_name}.out"
-    text_values = _text_values(out_path, inp_path)
+    text_values = _text_values(out_path, inp_path, _TEXT_KEYS.get(quantity))
     return _reading_from_text(quantity, None, text_values, note="")
 
 
