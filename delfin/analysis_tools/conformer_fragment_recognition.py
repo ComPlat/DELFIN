@@ -326,7 +326,10 @@ def recognize_fragments(path, charge=0):
         torsions = _backbone_torsions(g0, symbols, set(backbone))
         fragments.append({"kind": "torsion_points",
                           "bonds": torsions,
-                          "status": "recognized", "reason": None})
+                          "status": "recognized" if stable else "plausible",
+                          "reason": None if stable else (
+                              "bond perception differs between frames; "
+                              "first-frame only")})
 
     return {
         "input_file": str(path),
