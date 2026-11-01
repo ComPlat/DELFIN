@@ -168,11 +168,12 @@ recognize_fragments, fragment_geometry, combined_ranking`):
   "die konjugierte Dieneinheit" -> the conjugated_pi component. If the
   status is not "recognized", disclose it and ask.
 
-Terminology discipline (keep these apart):
-- maximale Ausdehnung = `dmax` (A, longest end-to-end distance);
-- Stabförmigkeit/Linearität = `npr1` (I1/I3, small = rod) with `npr2`
+Terminology discipline (keep these apart; the German terms are what the
+user types, the engine identifier is what you use):
+- "maximale Ausdehnung" = `dmax` (A, longest end-to-end distance);
+- "Stabförmigkeit/Linearität" = `npr1` (I1/I3, small = rod) with `npr2`
   as complement; a long molecule is not automatically rod-like;
-- echte Fragmentplanarität = `plane_rms_A` (A, best-plane RMS);
+- "echte Fragmentplanarität" = `plane_rms_A` (A, best-plane RMS);
   the engine's `planarity` is a PMI ratio — different property,
   never call them equivalent.
 

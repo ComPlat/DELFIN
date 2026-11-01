@@ -292,6 +292,8 @@ _EXPECTED_READ_ONLY = {
     # many folders; reads outputs, writes nothing.
     "parse_orca_output", "calc_status", "extract_spectra_table",
     "find_orca_errors", "extract_thermochem",
+    # result_checks (2026-11-01): reads a finished run; writes nothing.
+    "result_checks",
     # geometry_edit (2026-11-01): xyz text in, xyz text out; no write.
     "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
     "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
