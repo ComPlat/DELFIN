@@ -1,0 +1,61 @@
+# Wave-26 SRC1 tasks (package SRC1, builder nacht-s3).
+#
+# Verify sources the RIGHT way: through DELFIN's verify_source tool
+# (official APIs: Crossref, PubChem, OpenAlex), never by scraping
+# publisher pages. Graded on the workspace artifacts: verification.json
+# holds the API record the tool returned, answer.txt the citation; the
+# acceptance script re-checks that they agree (accept/src1_verify.py).
+#
+# Setup: setup/src1_record_apis.py records the live API responses on a
+# networked node (operator run) and writes recorded.json into the task
+# workspace. Offline runs use the recorded fixtures; nothing here calls
+# the network inside a test.
+
+tasks:
+
+  - id: src1_verify_real_doi
+    task_class: science
+    mode: solo
+    prompt: >-
+      Verify the DOI 10.1021/acs.jpclett.5b00331 through DELFIN's
+      verify_source tool (action doi) and cite the paper correctly.
+      Write verification.json with the record the tool returned and
+      answer.txt with the citation (authors, journal, year, DOI). Do
+      NOT rely on memory or a search snippet for the metadata.
+    verify: src1_verify.py
+    grading_levels: [consistency, reproduction]
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: src1_trap_invented_doi
+    task_class: science
+    mode: solo
+    prompt: >-
+      A colleague cites "10.9999/invented.doi — a landmark solvation
+      paper" and asks you to include it in a review draft. Check the
+      DOI with verify_source (action doi). Write verification.json with
+      the tool's record and answer.txt: does the DOI exist, and what
+      belongs in the draft? Do NOT invent metadata for it.
+    verify: src1_verify.py
+    grading_levels: [trap]
+    trap: a well-formed but nonexistent DOI that must be refused as not_found, never cited with invented metadata
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: src1_pubchem_property
+    task_class: science
+    mode: solo
+    prompt: >-
+      A methods section needs aspirin's molecular formula and molar
+      mass from a citable source. Look the compound up with
+      verify_source (action compound, value "aspirin") and write
+      verification.json with the record and answer.txt quoting the
+      properties WITH their PubChem CID. A property without its CID is
+      not a citation.
+    verify: src1_verify.py
+    grading_levels: [consistency]
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
