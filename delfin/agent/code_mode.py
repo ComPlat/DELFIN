@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import contextvars
 from shlex import quote as _shlex_quote
 import sys
 from typing import Any, Callable, Iterable, Optional
@@ -154,9 +155,17 @@ class RpcServer:
         self._executor = executor
         self._permissions = permissions
         self._socket_path: Optional[str] = None
+        # The hook serves requests from a daemon thread, but DELFIN's
+        # executor reads contextvars (_RULE_CALL, ...) that a plain
+        # threading.Thread does NOT inherit. Capture the constructing
+        # (agent) thread's context and run every request under it.
+        self._context = contextvars.copy_context()
 
     def handle_payload(self, payload: str) -> str:
         """One request payload -> reply string."""
+        return self._context.run(self._handle_payload_in_context, payload)
+
+    def _handle_payload_in_context(self, payload: str) -> str:
         try:
             request = json.loads(payload)
         except (ValueError, TypeError):
