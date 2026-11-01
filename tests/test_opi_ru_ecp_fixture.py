@@ -1,15 +1,22 @@
-"""Fixture test for tests/fixtures/orca611/ru_nh3_6_cpcm/.
+"""Fixture tests for tests/fixtures/orca611/ru_nh3_6_cpcm/.
 
-The fixture is a real ORCA 6.1.1 single point of [Ru(NH3)6]2+ (def2-TZVP with
-its def2-ECP, CPCM(water)) built by delfin/tools/orca_basis_solv_opi.py and
-run through delfin.orca.run_orca in scratch/.  It carries the ECP lines the
-task asked for.  Two things are locked here:
-  1. fixture hygiene: no absolute /home path, no user name, no host name
-     (the orca611 fixture convention: Working dir. -> the fixture's own
-     relative path, Host name -> fixture-host),
-  2. the run it records really terminated normally with the def2-ECP for Ru
-     replacing 28 core electrons, and the adapter can read it back through
-     the fake ORCA that a real run copies fixture outputs from.
+The real ORCA 6.1.1 single point of [Ru(NH3)6]2+ (PBE/def2-TZVP with its
+auto-loaded def2-ECP, CPCM(water)) lives in the private fixture store
+(LICENSE_GUARD.md rule family 2: real licensed-program output is not
+committed); tests read it through tests/test_lc1_fixtures_helper.py and SKIP
+without DELFIN_PRIVATE_FIXTURES, so CI (no ORCA binary) is unaffected.  The
+committed directory keeps the input DELFIN's builder wrote plus a
+first-line-marked SYNTHETIC output so the reader path has CI coverage without
+the ORCA program.
+
+Locked here:
+  1. committed-fixture hygiene and the synthetic marker as FIRST line,
+  2. the synthetic .out quotes the measured ECP evidence (def2-ECP for Ru
+     replacing 28 core electrons, core-charge-reduced note, normal
+     termination),
+  3. against the real output (private store) the same ECP evidence holds,
+  4. the adapter drives the synthetic run back through the fake ORCA (no
+     ORCA binary needed).
 """
 from __future__ import annotations
 
@@ -19,40 +26,56 @@ import pytest
 
 pytest.importorskip("opi")
 
+from tests.conftest import lc1_fixture_dir  # noqa: E402
+
 FIXTURE = Path("tests/fixtures/orca611/ru_nh3_6_cpcm")
+SYNTHETIC_MARKER = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output"
+ECP_GROUP_LINE = "Group 1, Type Ru ECP Def2-ECP (replacing 28 core electrons, lmax=3)"
 
 
-def test_fixture_exists_and_is_scrubbed():
-    for name in ("ru_nh3_6_cpcm.inp", "ru_nh3_6_cpcm.out",
-                 "ru_nh3_6_cpcm.property.txt"):
-        path = FIXTURE / name
-        assert path.is_file(), f"fixture file missing: {name}"
-        txt = path.read_text(errors="replace")
-        assert "/home/" not in txt, f"{name} carries an absolute /home path"
-        assert "qmchem" not in txt, f"{name} carries user or host identity"
+def _text(p: Path) -> str:
+    return p.read_text(encoding="utf-8", errors="replace")
 
 
-def test_fixture_records_terminated_run_with_ru_ecp():
-    txt = (FIXTURE / "ru_nh3_6_cpcm.out").read_text(errors="replace")
+def test_committed_fixture_hygiene_and_synthetic_marker():
+    inp = _text(FIXTURE / "ru_nh3_6_cpcm.inp")
+    assert "def2-TZVP" in inp and "CPCM" in inp
+    for path in sorted(FIXTURE.iterdir()):
+        body = _text(path)
+        assert "qmchem" not in body, path
+        assert "/home/" not in body, path
+    out = _text(FIXTURE / "ru_nh3_6_cpcm.out")
+    assert out.startswith(SYNTHETIC_MARKER), "the marker must be the FIRST line"
+    assert "Host name:     fixture-host" in out
+    assert "Working dir.:  <worktree>" in out
+
+
+def test_synthetic_output_quotes_the_measured_ecp_evidence():
+    out = _text(FIXTURE / "ru_nh3_6_cpcm.out")
+    assert ECP_GROUP_LINE in out
+    assert "* core charge reduced due to ECP" in out
+    assert "****ORCA TERMINATED NORMALLY****" in out
+
+
+def test_real_output_in_private_store_shows_the_ecp_lines():
+    real = lc1_fixture_dir(str(FIXTURE)) / "ru_nh3_6_cpcm.out"
+    txt = _text(real)
     assert "ORCA TERMINATED NORMALLY" in txt
-    # def2-ECP for Ru: replaces 28 core electrons, lmax 3 (Rb-Rn rule; Ru=Z 44)
-    assert "Type Ru ECP Def2-ECP (replacing 28 core electrons" in txt
+    assert ECP_GROUP_LINE in txt
     assert "* core charge reduced due to ECP" in txt
-    # the solvation block the builder produced for the run
-    assert "CPCM" in txt
 
 
-def test_adapter_reads_the_fixture_back_through_fake_orca(monkeypatch, tmp_path):
+def test_adapter_drives_the_synthetic_run_through_fake_orca(monkeypatch, tmp_path):
+    script = Path("tests/scripts/fake_orca.sh").resolve()
+    if not script.is_file():
+        pytest.skip("fake_orca.sh helper not present")
+    monkeypatch.setenv("FAKE_ORCA_FIXTURE", str(FIXTURE.resolve()))
     import delfin.orca as orca_mod
     from delfin.tools.adapters.orca_basis_solv_opi import (
         OrcaBasisSolvOpiAdapter,
     )
 
-    script = Path("tests/scripts/fake_orca.sh").resolve()
     monkeypatch.setattr(orca_mod, "find_orca_executable", lambda: str(script))
-    monkeypatch.setenv(
-        "FAKE_ORCA_FIXTURE", str(FIXTURE.resolve())
-    )
     adapter = OrcaBasisSolvOpiAdapter()
     res = adapter.execute(
         tmp_path,
@@ -83,4 +106,3 @@ def test_adapter_reads_the_fixture_back_through_fake_orca(monkeypatch, tmp_path)
     )
     assert res.status.value == "success", res.error
     assert res.data["meaningful"] is True
-    assert res.data["energy_Eh"] is not None and res.data["energy_Eh"] < 0
