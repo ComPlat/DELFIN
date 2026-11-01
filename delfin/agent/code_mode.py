@@ -107,6 +107,23 @@ def serve_request(request: dict, executor: Callable[..., str],
     return Connection(executor, permissions, rule_hit).handle(request)
 
 
+def runner_program_path(cmd: str) -> Optional[str]:
+    """The program path if ``cmd`` is a Code Mode runner invocation, else None.
+
+    Recognises ``... delfin.agent.code_mode run <program>`` in the bash
+    command text. The env var this gates grants nothing by itself: the
+    RPC server's own read-only allow-list is the boundary, so even a
+    command that names the runner to pick up the socket can only reach
+    the read-only tools through the gate.
+    """
+    import re
+    match = re.search(
+        r"delfin\.agent\.code_mode\s+run\s+([^\s;&|<>]+)", cmd or "")
+    if match:
+        return match.group(1)
+    return None
+
+
 def rpc_socket_path(workspace: str, token: str) -> str:
     """Unique-per-invocation socket path under the workspace.
 
@@ -169,17 +186,38 @@ class RpcServer:
         import socket as _socket
         self._sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         self._sock.bind(socket_path)
-        self._sock.listen(1)
+        self._sock.listen(8)
         return socket_path
 
-    def serve_one(self) -> None:
-        """Serve exactly one program connection, then close."""
+    def serve_one(self, idle_timeout_s: Optional[float] = None) -> None:
+        """Serve ONE program connection, then keep listening.
+
+        The program's client opens a fresh socket per call, so the listener
+        stays open. With ``idle_timeout_s`` a connection that never arrives
+        within the window ends the server (the program died before its
+        first call) — this is how the agent-side serve loop self-terminates
+        instead of leaking a listener per invocation.
+        """
+        if idle_timeout_s is not None:
+            self._sock.settimeout(idle_timeout_s)
         conn, _ = self._sock.accept()
-        with conn:
-            buf = conn.recv(1_000_000)
-            conn.sendall(self.handle_payload(
-                buf.decode("utf-8", errors="replace")).encode("utf-8"))
-        self._sock.close()
+        try:
+            with conn:
+                buf = conn.recv(1_000_000)
+                conn.sendall(self.handle_payload(
+                    buf.decode("utf-8", errors="replace")).encode("utf-8"))
+        finally:
+            try:
+                self._sock.settimeout(None)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        """Close the listener and unlink the socket file."""
+        try:
+            self._sock.close()
+        except OSError:
+            pass
 
 
 def make_client(rpc_path: str) -> Optional["RpcClient"]:
