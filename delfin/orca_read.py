@@ -351,9 +351,10 @@ def _final_energy_text(values: dict, out_path: Path, tail: str) -> None:
     On a multi-job output (several ``JOB NUMBER`` sections) the bounded
     tail can cut across job boundaries and the last energy in the tail
     belongs to a foreign job (11 of 200 archived runs picked a different
-    job than the whole-file reader).  Reading the whole file through
-    :func:`find_electronic_energy` there keeps the selection identical to
-    the pre-switch behaviour; single-job outputs keep the bounded tail.
+    job than the whole-file reader).  The energy is therefore always read
+    from the whole file through :func:`find_electronic_energy`, the
+    pre-switch reader, so the job selection is identical by construction;
+    ``tail`` is unused here.
     """
     from delfin.energies import find_electronic_energy
     values["final_energy"] = find_electronic_energy(str(out_path))
