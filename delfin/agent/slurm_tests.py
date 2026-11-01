@@ -331,12 +331,15 @@ def _node_visible(path: str | Path, repo: str) -> bool:
 
     The run dir holds the sbatch script and receives the copied-back logs;
     a path the compute node cannot read (a login-node-only scratchpad) would
-    lose them. Visible = under $HOME (shared in every DELFIN deployment) or
+    lose them. Visible = under $HOME (shared in every DELFIN deployment),
     under the repository itself (the caller reached it through a shared
-    checkout). A decision on any other mount is a person's, not ours.
+    checkout), or inside the caller's current working directory (a relative
+    run dir such as "." or "logs" resolves there — the checkout the CLI was
+    invoked from, shared like the repo). A decision on any other mount is a
+    person's, not ours.
     """
     p = Path(path).resolve()
-    for root in (Path.home(), Path(repo).resolve()):
+    for root in (Path.home(), Path(repo).resolve(), Path.cwd().resolve()):
         try:
             p.relative_to(root)
             return True
@@ -365,11 +368,13 @@ def cmd_test_on_slurm(args) -> int:
         return 2
     run_dir = Path(getattr(args, "run_dir", ".") or ".")
     if not _node_visible(run_dir, repo):
-        raise ValueError(
-            f"run dir {run_dir} is not on a filesystem shared with the "
-            "compute node (the job script and copied-back logs would be "
-            "invisible there). Use a shared path, e.g. under your home or "
-            "the repository.")
+        # The reviewer asked for the promised exit 2, not a traceback: the
+        # refusal is a usage error, so print the message and return 2.
+        print(f"run dir {run_dir} is not on a filesystem shared with the "
+              "compute node (the job script and copied-back logs would be "
+              "invisible there). Use a shared path, e.g. under your home or "
+              "the repository.")
+        return 2
     # OT3 (01.11. defects): render the SESSION interpreter (the placeholder
     # left the job to exit 127) and an ABSOLUTE output dir equal to the run
     # dir (a relative "logs" resolved against the node-local $LOCAL after
