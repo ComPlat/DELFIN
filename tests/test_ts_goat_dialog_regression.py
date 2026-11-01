@@ -7,14 +7,20 @@ library functions alone (those are covered by
 test_ts_goat_reactive_center.py).
 """
 
-import json
-from pathlib import Path
-from unittest import mock
-
-import ipywidgets as widgets
 import pytest
 
-from delfin.ts_goat import build_ts_goat_input
+pytest.importorskip(
+    'delfin.ts_goat',
+    reason='lives on the feature branch until it is merged into main',
+)
+
+import json  # noqa: E402
+from pathlib import Path  # noqa: E402
+from unittest import mock  # noqa: E402
+
+import ipywidgets as widgets  # noqa: E402
+
+from delfin.ts_goat import build_ts_goat_input  # noqa: E402
 
 
 # ---------------------------------------------------------------- fixtures
