@@ -82,18 +82,9 @@ def _cap_result(result: str) -> str:
 class Connection:
     """One program connection: enforces the allow-list per call."""
 
-    def __init__(self, executor: Callable[..., str], permissions: Any = None,
-                 rule_hit: Any = None,
-                 rule_evaluator: Optional[Callable[..., Any]] = None):
+    def __init__(self, executor: Any, permissions: Any = None):
         self._executor = executor
         self._permissions = permissions
-        self._rule_hit = rule_hit
-        # Per-call rule evaluation (CM1 finding C): a direct call evaluates
-        # the permission rules per call (api_client.py:17772); Code Mode
-        # must not skip them. The evaluator is the agent-side matcher
-        # (_permission_rule_hit); a constant rule_hit is kept only for
-        # tests that pin one. Fails closed: an evaluator error refuses.
-        self._rule_evaluator = rule_evaluator
 
     def handle(self, request: dict) -> str:
         """One tool request from the program -> executor result or refusal."""
@@ -104,25 +95,19 @@ class Connection:
         refusal = _check_allowed(name)
         if refusal is not None:
             return json.dumps({"error": refusal}, ensure_ascii=False)
-        rule_hit = self._rule_hit
-        if self._rule_evaluator is not None:
-            try:
-                rule_hit = self._rule_evaluator(
-                    self._permissions, name, arguments)
-            except Exception:
-                return json.dumps({"error": (
-                    "Code Mode: permission rules could not be evaluated "
-                    "for this call — refused (fail closed); make the same "
-                    "call as a direct tool call instead.")},
-                    ensure_ascii=False)
-        return _cap_result(self._executor(
-            name, arguments, self._permissions, rule_hit))
+        # Public-entry parity (CM1 operator finding): the direct path enters
+        # at KitToolExecutor.execute (api_client.py:17651), which carries
+        # deny rules, plan-mode, sandbox, role and shape checks BEFORE
+        # _dispatch_under_rules. The RPC must call the same single public
+        # entry and nothing lower; rules are evaluated inside execute.
+        return _cap_result(self._executor.execute(
+            name, arguments, self._permissions))
 
 
-def serve_request(request: dict, executor: Callable[..., str],
-                  permissions: Any = None, rule_hit: Any = None) -> str:
+def serve_request(request: dict, executor: Any,
+                  permissions: Any = None) -> str:
     """One-shot request handling (no connection state kept)."""
-    return Connection(executor, permissions, rule_hit).handle(request)
+    return Connection(executor, permissions).handle(request)
 
 
 def runner_program_path(cmd: str) -> Optional[str]:
@@ -165,13 +150,9 @@ class RpcServer:
     refused without touching the executor, whatever the client stub claims.
     """
 
-    def __init__(self, executor: Callable[..., str], permissions: Any = None,
-                 rule_hit: Any = None,
-                 rule_evaluator: Optional[Callable[..., Any]] = None):
+    def __init__(self, executor: Any, permissions: Any = None):
         self._executor = executor
         self._permissions = permissions
-        self._rule_hit = rule_hit
-        self._rule_evaluator = rule_evaluator
         self._socket_path: Optional[str] = None
 
     def handle_payload(self, payload: str) -> str:
@@ -182,9 +163,7 @@ class RpcServer:
             return json.dumps({"error": "Code Mode: malformed request payload"})
         if not isinstance(request, dict):
             return json.dumps({"error": "Code Mode: request must be an object"})
-        result = Connection(self._executor, self._permissions,
-                            self._rule_hit,
-                            rule_evaluator=self._rule_evaluator).handle(request)
+        result = Connection(self._executor, self._permissions).handle(request)
         # Connection.handle already returns capped JSON; wrap as
         # {"result": ...} for the client's error/success split.
         try:

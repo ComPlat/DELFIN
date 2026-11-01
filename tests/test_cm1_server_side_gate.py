@@ -15,7 +15,7 @@ class _RecordingExecutor:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, name, arguments, permissions, rule_hit):
+    def execute(self, name, arguments, permissions=None):
         self.calls.append(name)
         return json.dumps({"ok": name})
 

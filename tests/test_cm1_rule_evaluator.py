@@ -1,62 +1,63 @@
-"""Pin for CM1 reviewer FINDING C (rule evaluation must be per call).
+"""Rules live in the PUBLIC entry, not in the RPC layer.
 
-A DIRECT call evaluates permission rules per call (api_client.py:17772
-_permission_rule_hit) and asks on an ask-rule hit (_dispatch_under_rules
-api_client.py:18288-18295). The CM1 hook passed rule_hit=None into
-RpcServer, so every Code Mode call skipped rule evaluation — a user's
-ask rule on ANY tool name was silently bypassed over the RPC.
-
-Contract now: RpcServer accepts a rule_evaluator callable
-(perms, name, args) -> rule_hit (same shape _permission_rule_hit
-returns); it evaluates per request and hands the FRESH result to the
-executor. The red test: the executor stub must NOT always receive None.
-Seen red on c1e81ce86 (executor stub received constant None).
+Old decision this file pinned (P1d): the RPC layer evaluated permission
+rules per call via a rule_evaluator callable. SUPERSEDED by the operator's
+blocking finding (public-entry parity): the server must call
+executor.execute(name, arguments, permissions) — the single public entry —
+which evaluates deny rules, plan-mode, sandbox and shape checks itself.
+The RPC layer must carry NO rule plumbing at all. These tests pin the new
+contract.
 """
 import json
 
 from delfin.agent import code_mode
 
 
-class _StubExecutor:
+class _RecordingExecutor:
     def __init__(self):
         self.calls = []
 
+    def execute(self, name, arguments, permissions=None):
+        self.calls.append(("execute", name, arguments, permissions))
+        return json.dumps({"ok": True, "name": name})
+
+    def _dispatch_under_rules(self, name, arguments, permissions, rule_hit):
+        self.calls.append(("_dispatch_under_rules", name, arguments,
+                           permissions))
+        return json.dumps({"ok": True, "name": name})
+
+    # Any other rule plumbing the old wiring could have called.
     def __call__(self, name, arguments, permissions, rule_hit):
-        self.calls.append((name, arguments, permissions, rule_hit))
-        return json.dumps({"ok": name})
+        self.calls.append(("callable", name, arguments, permissions))
+        return json.dumps({"ok": True, "name": name})
 
 
-def test_rule_evaluator_runs_per_call_and_result_reaches_the_executor():
-    ex = _StubExecutor()
-    hits = iter(["hit1", "hit2"])
-    server = code_mode.RpcServer(
-        ex, permissions="perms",
-        rule_evaluator=lambda perms, name, args: next(hits))
-    server.handle_payload(json.dumps(
-        {"tool": "get_calc_info", "arguments": {"folders": "a"}}))
-    server.handle_payload(json.dumps(
-        {"tool": "get_calc_info", "arguments": {"folders": "b"}}))
-    assert ex.calls[0][3] == "hit1"
-    assert ex.calls[1][3] == "hit2"
+def _serve(ex, tool, arguments):
+    server = code_mode.RpcServer(ex, permissions=None)
+    return json.loads(server.handle_payload(
+        json.dumps({"tool": tool, "arguments": arguments})))
 
 
-def test_no_evaluator_stays_none_for_tests_without_rules():
-    ex = _StubExecutor()
-    server = code_mode.RpcServer(ex, permissions="perms")
-    server.handle_payload(json.dumps(
-        {"tool": "get_calc_info", "arguments": {}}))
-    assert ex.calls[0][3] is None
+def test_rpc_layer_passes_no_rule_argument_to_the_entry():
+    """The public entry receives exactly (name, arguments, permissions) —
+    no rule_hit, no evaluator result."""
+    ex = _RecordingExecutor()
+    _serve(ex, "get_calc_info", {"folder": "x"})
+    assert ex.calls == [("execute", "get_calc_info", {"folder": "x"}, None)]
 
 
-def test_evaluator_error_fails_closed_to_refusal():
-    ex = _StubExecutor()
+def test_rpc_layer_never_touches_lower_entries():
+    """Only execute() is called — never _dispatch_under_rules or the old
+    callable protocol."""
+    ex = _RecordingExecutor()
+    _serve(ex, "get_calc_info", {"folder": "x"})
+    assert [c[0] for c in ex.calls] == ["execute"]
 
-    def boom(perms, name, args):
-        raise RuntimeError("rule store unreadable")
 
-    server = code_mode.RpcServer(ex, permissions="perms",
-                                 rule_evaluator=boom)
-    reply = json.loads(server.handle_payload(json.dumps(
-        {"tool": "get_calc_info", "arguments": {}})))
-    assert "error" in reply
-    assert ex.calls == []
+def test_rpc_layer_carries_no_rule_evaluator_attribute():
+    """The plumbing is gone: neither Connection nor RpcServer accepts or
+    stores a rule evaluator."""
+    import inspect
+    for cls in (code_mode.Connection, code_mode.RpcServer):
+        params = inspect.signature(cls.__init__).parameters
+        assert not any("rule" in p for p in params), (cls, list(params))

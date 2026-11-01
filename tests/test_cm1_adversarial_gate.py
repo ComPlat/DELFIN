@@ -19,9 +19,14 @@ class _RecordingExecutor:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, name, arguments, permissions, rule_hit):
+    def execute(self, name, arguments, permissions=None):
         self.calls.append(name)
         return json.dumps({"ok": name})
+
+
+class _OldCallableProtocol:
+    """The pre-parity protocol. The server must NEVER call this — kept so
+    test_nested_tool_name_wrapper_not_executed can prove it."""
 
 
 def _server(ex=None, **kw):
@@ -93,9 +98,10 @@ def test_oversized_executor_result_capped_at_server():
     -- the reply is a truncation ERROR naming the cap, so the program learns
     it must narrow or aggregate (result data never floods the context)."""
     class _HugeExecutor(_RecordingExecutor):
-        def __call__(self, name, arguments, permissions, rule_hit):
+        def execute(self, name, arguments, permissions=None):
             self.calls.append(name)
-            return json.dumps({"data": "x" * (code_mode.MAX_RESULT_BYTES + 50)})
+            return json.dumps(
+                {"data": "x" * (code_mode.MAX_RESULT_BYTES + 50)})
 
     ex = _HugeExecutor()
     server = _server(ex)

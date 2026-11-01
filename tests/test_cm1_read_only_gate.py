@@ -2,8 +2,9 @@
 
 Phase 1 is READ-ONLY tools only. Every rule tested here:
 - a program call to a write/submit tool is refused, naming the direct route;
-- a read-only call is executed by the executor (the same _dispatch_under_rules
-  path a direct call takes) and its result is returned to the program;
+- a read-only call is executed through the PUBLIC executor entry (the same
+  execute() a direct call takes; deny rules, plan-mode, sandbox live there)
+  and its result is returned to the program;
 - a gate refusal inside the program surfaces as an error to the program,
   not silently;
 - the allow-list is enforced PER CALL: one connection may not smuggle a
@@ -41,7 +42,10 @@ class _FakeExecutor:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, name, arguments, permissions, rule_hit):
+    # CM1 public-entry parity: the server calls the PUBLIC entry
+    # (executor.execute(name, arguments, permissions)), the same one a
+    # direct call takes — rules, plan-mode, sandbox are evaluated inside.
+    def execute(self, name, arguments, permissions=None):
         self.calls.append((name, arguments))
         if name == "get_calc_info":
             return json.dumps({"calc_id": arguments.get("calc_id", ""),
@@ -99,11 +103,14 @@ def test_allow_list_is_enforced_per_call():
 
 def test_result_is_size_capped(tmp_path):
     """An oversized result is replaced by a cap note, never the raw blob."""
-    def big(name, arguments, permissions, rule_hit):
-        return json.dumps({"blob": "x" * (code_mode.MAX_RESULT_BYTES + 1000)})
+    class _BigExecutor:
+        def execute(self, name, arguments, permissions=None):
+            return json.dumps(
+                {"blob": "x" * (code_mode.MAX_RESULT_BYTES + 1000)})
 
     result = json.loads(code_mode.serve_request(
-        {"tool": "get_calc_info", "arguments": {}}, big, permissions=None))
+        {"tool": "get_calc_info", "arguments": {}}, _BigExecutor(),
+        permissions=None))
     assert "error" in result
     assert "truncated" in result["error"]
     assert len(json.dumps(result)) < code_mode.MAX_RESULT_BYTES
