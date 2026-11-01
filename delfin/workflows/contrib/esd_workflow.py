@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from delfin.common.logging import get_logger
 from delfin.workflows.registry import register
+
+logger = get_logger(__name__)
 
 
 class EsdWorkflow:
@@ -50,7 +53,10 @@ class EsdWorkflow:
                 metal_basisset=args.metal_basis,
             )
             return 0
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "ESD workflow failed: %s", exc, exc_info=True
+            )
             return 1
 
 
