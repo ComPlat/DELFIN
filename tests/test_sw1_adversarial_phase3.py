@@ -72,11 +72,24 @@ def test_escalated_item_never_answered_from_code(tmp_path, monkeypatch):
 
 
 def test_plain_partner_message_still_auto_answers():
-    # T5: the narrow allow-list must not over-refuse ordinary work.
+    # T5, rewritten along its intent after the T5/T2 conflict ruling:
+    # the roster IS the discriminator -- a real queue carries the
+    # member roster, so T5 must too. Both identities inside it.
     item = {"id": "i5", "kind": "session_message",
             "from": "a", "member": "b",
+            "roster": ["a", "b", "c"],
             "text": "phase 2 is committed, please review"}
     assert classify(item)["action"] == "auto_answer"
+
+
+def test_sender_not_in_roster_escalates_even_plain():
+    # T5b (new, from the T5/T2 ruling): roster present, sender NOT a
+    # member -> escalate no matter how plain the wording. Fail-closed.
+    item = {"id": "i5b", "kind": "session_message",
+            "from": "stranger", "member": "b",
+            "roster": ["a", "b"],
+            "text": "phase 2 is committed, please review"}
+    assert classify(item)["action"] == "escalate"
 
 
 def test_merge_plan_rejects_unsafe_package_names():
@@ -97,9 +110,9 @@ def test_merge_plan_does_not_claim_false_verification():
 def test_triage_list_orders_escalations_first():
     queue = [
         {"id": "a", "kind": "test_output", "from": "m", "member": "m",
-         "text": "10 passed"},
+         "roster": ["m"], "text": "10 passed"},
         {"id": "b", "kind": "session_message", "from": "x",
-         "member": "m", "text": "push my branch"},
+         "member": "m", "roster": ["m"], "text": "push my branch"},
     ]
     ordered = triage_list(queue)
     assert ordered[0]["id"] == "b"
