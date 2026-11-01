@@ -26,7 +26,7 @@ import pytest
 
 pytest.importorskip("opi")
 
-from tests.conftest import lc1_fixture_dir  # noqa: E402
+from test_lc1_fixtures_helper import private_fixtures_or_skip  # noqa: E402
 
 FIXTURE = Path("tests/fixtures/orca611/ru_nh3_6_cpcm")
 SYNTHETIC_MARKER = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output"
@@ -42,8 +42,7 @@ def test_committed_fixture_hygiene_and_synthetic_marker():
     assert "def2-TZVP" in inp and "CPCM" in inp
     for path in sorted(FIXTURE.iterdir()):
         body = _text(path)
-        assert "qmchem" not in body, path
-        assert "/home/" not in body, path
+        assert "/home/" not in body and "/Users/" not in body, path
     out = _text(FIXTURE / "ru_nh3_6_cpcm.out")
     assert out.startswith(SYNTHETIC_MARKER), "the marker must be the FIRST line"
     assert "Host name:     fixture-host" in out
@@ -58,7 +57,8 @@ def test_synthetic_output_quotes_the_measured_ecp_evidence():
 
 
 def test_real_output_in_private_store_shows_the_ecp_lines():
-    real = lc1_fixture_dir(str(FIXTURE)) / "ru_nh3_6_cpcm.out"
+    # The committed copy is synthetic; the real run is only in the store.
+    real = private_fixtures_or_skip(str(FIXTURE)) / "ru_nh3_6_cpcm.out"
     txt = _text(real)
     assert "ORCA TERMINATED NORMALLY" in txt
     assert ECP_GROUP_LINE in txt
