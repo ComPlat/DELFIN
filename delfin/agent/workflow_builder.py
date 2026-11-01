@@ -53,6 +53,7 @@ def _known_templates() -> Dict[str, str]:
         "conformer_screening": "conformer",
         "multi_level_opt": "multi-level",
         "esd_states": "esd excited",
+        "opi_opt_freq_dlpno": "dlpno",
     }
     return {n: hints.get(n, n.replace("_", " ")) for n in names}
 
@@ -60,11 +61,14 @@ def _known_templates() -> Dict[str, str]:
 def _pick_template(request: str) -> Optional[str]:
     text = request.lower()
     best = None
+    # The rightmost matching hint wins: the head of a request names the
+    # generic task ("opt+freq" -> classic), the tail names the
+    # distinguishing step ("...then DLPNO" -> the OPI chain).
     for name, hint in _known_templates().items():
-        if hint in text:
-            best = name
-            break
-    return best
+        pos = text.rfind(hint)
+        if pos >= 0 and (best is None or pos > best[1]):
+            best = (name, pos)
+    return best[0] if best else None
 
 
 def _smiles_of(request: str) -> Optional[str]:
@@ -84,6 +88,10 @@ _STEP_REASONS: Dict[str, str] = {
     "orca_sp": "single-point energy at the final geometry",
     "orca_tddft": "excited states / absorption spectrum at the ground-state geometry",
     "xtb_sp": "fast xTB single point for a first energy estimate",
+    "orca_opt_opi": "OPI-built DFT optimization; leaves the optimized geometry and .gbw for the next step",
+    "orca_freq_opi": "OPI-built frequencies verify the minimum and give the thermal correction",
+    "orca_dlpno_opi": "DLPNO-CCSD(T) single point on the chain's geometry, started from its orbitals",
+    "orca_opt_freq_opi": "OPI-built combined optimization + frequency",
 }
 
 
@@ -227,7 +235,10 @@ def build_workflow(request: str, *, base_template: Optional[str] = None,
         spec = uw.extend_template(base_template, new_name=f"draft_{base_template}",
                                   **(edits or {}))
     else:
-        source = "request draft"
+        # A request that names a template maps to it explicitly; the
+        # draft source records which template the request picked.
+        picked = _pick_template(request)
+        source = f"template:{picked}" if picked else "request draft"
         spec = _draft_spec(request)
 
     spec.setdefault("description", request.strip()[:200])
