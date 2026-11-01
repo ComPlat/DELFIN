@@ -399,8 +399,12 @@ def test_the_counts_still_match_what_was_measured():
     # four tasks_w26_gh1.yaml GitHub-operation tasks in a throw-away local repo
     # (own files only, red CI log reproduced, cross-review on a scratch
     # branch, count-like conflict resolved by summing); graded on repo state.
+    #
+    # science 48 -> 51 on 2026-11-01 (SRC1, wave 26, agent/s3-src1b): the
+    # three tasks_w26_src1.yaml source-verification tasks (real DOI, invented
+    # DOI refused, PubChem value with CID), graded on recorded API responses.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 48, "chemistry": 32, "generalist": 26,
+                      "science": 51, "chemistry": 32, "generalist": 26,
                       "other": 85}, counts
 
 

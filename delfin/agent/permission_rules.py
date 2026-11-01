@@ -832,6 +832,16 @@ def _subjects(name: str, args: dict, workspace: Any) -> dict:
         h = url_host(args.get("url"))
         if h:
             hosts.append(h)
+    if bare == "verify_source":
+        # SRC1 (operator decision 2026-11-01): the network policy binds
+        # this tool like web_fetch. Its target host is NOT user-supplied
+        # -- it is the fixed API host of the action, derived in ONE place
+        # (delfin.agent.source_apis.host_for_action), so a new action
+        # cannot silently bypass the rule layer. An unknown action gives
+        # no host, so nothing can talk the rule layer into one.
+        h = _source_api_host(args.get("action"))
+        if h:
+            hosts.append(h)
     return {"bash": cmd, "read": _forms(read), "write": _forms(write),
             "hosts": hosts}
 
@@ -850,16 +860,39 @@ def _hits(rule: Rule, name: str, subj: dict, workspace: Any) -> bool:
     return False
 
 
+def _source_api_host(action) -> Optional[str]:
+    """The fixed API host a verify_source action dials (or None).
+
+    Reads the mapping from delfin.agent.source_apis -- one derivation
+    place; the rule layer never keeps its own host list that could
+    drift from what the tool actually dials.
+    """
+    try:
+        from .source_apis import host_for_action
+        return host_for_action(action)
+    except Exception:
+        # source_apis unavailable -> no host -> the rule layer treats
+        # the call as having no web subject; the tool itself will fail
+        # its own import and the call goes nowhere.
+        return None
+
+
 def _ceiling_rule(rs: RuleSet, name: str, args: dict) -> Optional[Rule]:
     """The managed network ceiling as a deny rule, when ``web_fetch``
-    names a host outside it (``managed_policy.domain_within_max``)."""
+    (or a verify_source action, SRC1 2026-11-01) names a host outside
+    it (``managed_policy.domain_within_max``)."""
     pol = rs.policy
+    bare = bare_tool_name(name)
     if (pol is None or not getattr(pol, "allowed_domains_max", ())
-            or bare_tool_name(name) != "web_fetch"):
+            or bare not in ("web_fetch", "verify_source")):
         return None
     try:
         from . import managed_policy as _mp
-        if _mp.domain_within_max(url_host((args or {}).get("url")), pol):
+        if bare == "verify_source":
+            host = _source_api_host((args or {}).get("action"))
+        else:
+            host = url_host((args or {}).get("url"))
+        if _mp.domain_within_max(host, pol):
             return None
         src = pol.sources[0].path if pol.sources else ""
     except Exception:

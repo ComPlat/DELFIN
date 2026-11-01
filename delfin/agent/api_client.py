@@ -12114,6 +12114,49 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "verify_source",
+            "description": (
+                "Verify a literature or compound fact through an OFFICIAL "
+                "API (never scraping): action 'doi' resolves a DOI via "
+                "Crossref (title, authors, journal, year); action "
+                "'compound' looks a compound up in PubChem by name, SMILES "
+                "or InChIKey (CID, formula, InChIKey, molar mass); action "
+                "'works' searches scholarly works via OpenAlex. Use this "
+                "before citing a DOI or quoting a compound property; a "
+                "'not_found' answer means the identifier does not exist — "
+                "do not cite it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["doi", "compound", "works"],
+                        "description": (
+                            "Which lookup to run: doi (Crossref), compound "
+                            "(PubChem), works (OpenAlex search)."
+                        ),
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": (
+                            "The identifier: a DOI for 'doi', a compound "
+                            "name / SMILES / InChIKey for 'compound', a "
+                            "query for 'works'."
+                        ),
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "For 'works': how many hits (1-20).",
+                    },
+                },
+                "required": ["action", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "task_create",
             "description": (
                 "Add a task to this session's list; tasks survive restarts of"
@@ -18632,6 +18675,13 @@ class _DocToolExecutor:
             if name == "web_search":
                 return self._execute_web_search(arguments)
             return self._execute_web_fetch(arguments)
+
+        # SRC1: official-API source verification (Crossref / PubChem /
+        # OpenAlex) — outbound HTTP like the web tools above, no
+        # filesystem side-effects; the source_apis module enforces the
+        # same web_tools deny-list + a per-host rate limit + cache.
+        if name == "verify_source":
+            return self._execute_verify_source(arguments)
 
         if name == "remember_permission":
             if permissions is None:
@@ -28640,6 +28690,35 @@ class _DocToolExecutor:
             payload = _wt.web_fetch(url, timeout_s=timeout_s)
         except Exception as exc:
             return json.dumps({"error": f"web_fetch failed: {exc}"})
+        return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
+
+    def _execute_verify_source(self, arguments: dict) -> str:
+        """SRC1: DOI / compound / scholarly lookup through official APIs.
+
+        Read-only HTTP like web_search/web_fetch; the record from the
+        API is wrapped untrusted like every other tool result.
+        """
+        action = (arguments.get("action", "") or "").strip().lower()
+        value = (arguments.get("value", "") or "").strip()
+        if not action or not value:
+            return json.dumps({"error": (
+                "verify_source needs a non-empty action and value")})
+        try:
+            from . import source_apis as _sa
+            if action == "doi":
+                payload = _sa.verify_doi(value)
+            elif action == "compound":
+                payload = _sa.lookup_compound(value)
+            elif action == "works":
+                max_results = int(arguments.get("max_results", 5) or 5)
+                max_results = max(1, min(max_results, 20))
+                payload = {"results":
+                           _sa.search_works(value, max_results=max_results)}
+            else:
+                return json.dumps({"error": (
+                    "unknown action: use doi, compound or works")})
+        except Exception as exc:
+            return json.dumps({"error": f"verify_source failed: {exc}"})
         return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
 
     def _execute_session_search(self, arguments: dict) -> str:
