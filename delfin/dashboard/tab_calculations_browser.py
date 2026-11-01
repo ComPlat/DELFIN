@@ -10238,6 +10238,37 @@ def create_tab(ctx):
                     """Render the TS with constraint atoms highlighted."""
                     _render_3dmol(xyz_lines, fmt='xyz')
 
+                def _ts_render_in_panel(atoms, indices, arrows=None,
+                                        output_widget=None):
+                    """Render the TS INTO the panel's own Output widget.
+
+                    The panel passes its ``viewer_out`` Output widget as
+                    ``output_widget`` (the panel owns it, the tab only
+                    draws into it).  Highlights the constraint atoms
+                    and injects the click JS that toggles atoms in the
+                    constraint field.
+                    """
+                    import json as _json
+                    if output_widget is None:
+                        return  # panel shows its own fallback note
+                    from delfin.dashboard.molecule_viewer import (
+                        render_xyz_in_output,
+                    )
+                    xyz_lines = '\n'.join(
+                        [str(len(atoms)), 'optimized TS']
+                        + [f'{el} {x:.6f} {y:.6f} {z:.6f}'
+                           for el, x, y, z in atoms]
+                    )
+                    idx_list = _json.dumps(list(indices or []))
+                    click_js = (
+                        '<script>window.tsGoatConstrained = '
+                        + idx_list + ';</script>'
+                    )
+                    render_xyz_in_output(
+                        output_widget, xyz_lines, width=640, height=450,
+                        extra_js=click_js,
+                    )
+
                 def _ts_scroll_top():
                     _run_js(
                         "setTimeout(function(){"
@@ -10253,6 +10284,7 @@ def create_tab(ctx):
                         'reset_dropdown': _calc_reset_options_dropdown,
                         'render_viewer': _ts_render_viewer,
                         'scroll_top': _ts_scroll_top,
+                        'render_in_panel': _ts_render_in_panel,
                     },
                 )
                 if open_result['error']:

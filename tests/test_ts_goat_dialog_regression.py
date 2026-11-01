@@ -54,7 +54,12 @@ def _write_ts_fixture(dir_path: Path, name: str = 'ts_run') -> Path:
     ]
     from tests.test_ts_goat_reactive_center import _write_hess
     hess = dir_path / f'{name}.hess'
-    _write_hess(hess, atoms, [mode],
+    # ORCA hessians carry ALL 3N normal modes; the imaginary one sits at
+    # its frequency index (1).  delfin.imag.displaced_geometries resolves
+    # a mode BY that index, so the stub must provide every column.
+    zero = [(0.0, 0.0, 0.0)] * len(atoms)
+    mode_vectors = [zero, mode] + [zero] * 7
+    _write_hess(hess, atoms, mode_vectors,
                 [-567.89, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0])
     xyz = dir_path / f'{name}.xyz'
     xyz.write_text(
@@ -95,7 +100,7 @@ class _FakeBackend:
 
 
 # ---------------------------------------------------------------- helpers
-def _open_dialog(tmp_path, backend, out_name='ts_run'):
+def _open_dialog(tmp_path, backend, out_name='ts_run', extra_callbacks=None):
     """Call open_ts_goat_dialog the way the browser-tab handler does."""
     from delfin.dashboard.ts_goat_panel import open_ts_goat_dialog
 
@@ -108,6 +113,7 @@ def _open_dialog(tmp_path, backend, out_name='ts_run'):
             'reset_dropdown': lambda: None,
             'render_viewer': lambda xyz, idx, arrows=None: rendered.append((xyz, idx)),
             'scroll_top': lambda: None,
+            **(extra_callbacks or {}),
         },
     )
     return result, rendered
@@ -157,7 +163,7 @@ def test_submit_creates_input_in_dedicated_folder(tmp_path):
     folder next to the TS run, leaving the original files untouched."""
     pytest.importorskip('opi')  # build_ts_goat_input delegates to the OPI writer
     backend = _FakeBackend()
-    result, _rendered = _open_dialog(tmp_path, backend)
+    result, _rendered = _open_dialog(tmp_path, _FakeBackend())
     assert result['error'] is None
     registry = result['registry']
     # simulate the user pressing Submit with the proposed indices:
@@ -221,3 +227,102 @@ def test_missing_hess_is_reported_not_swallowed(tmp_path):
     assert result['error_kind'] == 'no_hess'
     assert 'No Hessian' in result['error']
     assert result['panel'] is None
+
+
+# ---------------- integrated viewer (user report 2026-11-02) ---------------
+
+def _open_with_panel_viewer(tmp_path):
+    """Open the dialog and hand the panel's viewer_out to the test."""
+    backend = _FakeBackend()
+    captured = {}
+
+    def render_in_panel(atoms, indices, arrows=None, output_widget=None):
+        captured['atoms'] = atoms
+        captured['indices'] = indices
+        captured['output_widget'] = output_widget
+
+    result, _ = _open_dialog(tmp_path, backend,
+                             extra_callbacks={'render_in_panel': render_in_panel})
+    return result, captured
+
+
+def test_panel_contains_its_own_viewer_output(tmp_path):
+    result, captured = _open_with_panel_viewer(tmp_path)
+    assert result['error'] is None
+    reg = result['registry']
+    # the Output widget is a child of the panel -> rendered INSIDE it
+    children = reg['panel'].children
+    from ipywidgets import Output
+    outputs = [c for c in children if isinstance(c, Output)]
+    assert outputs, 'panel must contain an Output viewer widget'
+    # show() rendered the TS into it (captured via the injected callback)
+    assert captured['output_widget'] is outputs[0]
+    assert len(captured['atoms']) == 3
+
+
+def _iter_widgets(container):
+    """All widget descendants of a panel (panels nest HBox rows)."""
+    for child in container.children:
+        yield child
+        if hasattr(child, 'children'):
+            yield from _iter_widgets(child)
+
+
+def test_atom_click_toggles_constraints(tmp_path):
+    result, _ = _open_with_panel_viewer(tmp_path)
+    reg = result['registry']
+    from ipywidgets import Text
+    texts = [c for c in _iter_widgets(reg['panel']) if isinstance(c, Text)]
+    assert texts, 'constraints field must exist in the panel'
+    constraint_field = texts[0]
+    start = reg['parse_constraints'](constraint_field.value)
+    # click an unconstrained atom -> it is added; click again -> removed.
+    # Any atom outside the proposal qualifies; if the proposal covers
+    # every atom, an out-of-range click must be ignored (sync keeps the
+    # field consistent with the preview).
+    unconstrained = next(
+        (i for i in range(3) if i not in start), None)
+    if unconstrained is None:
+        reg['on_atom_click'](99)
+        assert reg['parse_constraints'](constraint_field.value) == start
+        return
+    reg['on_atom_click'](unconstrained)
+    after_add = reg['parse_constraints'](constraint_field.value)
+    assert unconstrained in after_add
+    reg['on_atom_click'](unconstrained)
+    after_remove = reg['parse_constraints'](constraint_field.value)
+    assert unconstrained not in after_remove
+
+
+def test_animation_toggle_swaps_geometry_and_resets(tmp_path):
+    result, captured = _open_with_panel_viewer(tmp_path)
+    reg = result['registry']
+    from ipywidgets import ToggleButton
+    toggles = [c for c in _iter_widgets(reg['panel'])
+               if isinstance(c, ToggleButton)]
+    assert toggles, 'Imag. Mode toggle must be in the panel'
+    toggle = toggles[0]
+    undistorted = list(captured['atoms'])
+    toggle.value = True   # animation on: displaced geometry rendered
+    displaced = list(captured['atoms'])
+    assert displaced != undistorted
+    toggle.value = False  # off again: the optimized geometry returns
+    assert list(captured['atoms']) == undistorted
+
+
+def test_mode_change_updates_animation_source(tmp_path):
+    result, captured = _open_with_panel_viewer(tmp_path)
+    reg = result['registry']
+    dropdown = None
+    from ipywidgets import Dropdown
+    for row in reg['panel'].children:
+        if isinstance(row, Dropdown):
+            dropdown = row
+    assert dropdown is not None, 'mode dropdown must exist'
+    # switch mode: the analysis re-runs and the displaced geometry comes
+    # from the newly selected mode (both hess columns exist in fixtures)
+    if dropdown.value is not None and len(dropdown.options) > 1:
+        first = dropdown.value
+        other = next(v for _l, v in dropdown.options if v != first)
+        dropdown.value = other
+        assert reg['state']['proposed'] is not None

@@ -12,6 +12,7 @@ import html as html
 from pathlib import Path
 
 import ipywidgets as widgets
+from IPython.display import HTML, display
 
 
 def build_ts_goat_panel(
@@ -21,6 +22,8 @@ def build_ts_goat_panel(
     reset_dropdown,
     render_viewer,
     scroll_top,
+    viewer_output=None,
+    render_in_panel=None,
 ) -> dict:
     """Assemble the TS -> GOAT panel; returns a widget registry dict.
 
@@ -33,6 +36,11 @@ def build_ts_goat_panel(
     panel = widgets.VBox(layout=widgets.Layout(
         display='none', border='1px solid #90caf9',
         padding='8px', margin='4px 0',
+        # The browser's right column has overflow_y='hidden' and the
+        # toolbar sits above this panel in the DOM; an unbounded panel
+        # grew past the container and clipped it (user report 2026-11-02).
+        # Bound the panel and scroll INSIDE it instead.
+        max_height='720px', overflow_y='auto',
     ))
     title = widgets.HTML(
         '<b>TS &rarr; GOAT</b> &mdash; constrained conformer search from the '
@@ -41,12 +49,50 @@ def build_ts_goat_panel(
     status = widgets.HTML('')
     files_box = widgets.HTML('')
     analysis_box = widgets.HTML('')
+    # Integrated 3D viewer: an Output widget INSIDE the panel, rendered
+    # by molecule_viewer.render_xyz_in_output with the tab's click JS.
+    # The structure is always visible when the panel opens (user report
+    # 2026-11-02: the dialog only showed file info and fields).
+    viewer_out = widgets.Output(layout=widgets.Layout(
+        width='100%', height='470px', border='1px solid #bbb',
+        overflow='auto', margin='4px 0',
+    ))
     mode_label = widgets.HTML('<b>Reactive mode (imaginary modes of the final block):</b>')
     mode_dropdown = widgets.Dropdown(
         options=[], description='Mode:',
         layout=widgets.Layout(width='320px'),
     )
     mode_warning = widgets.HTML('')
+    # Imaginary-mode animation controls (user request 2026-11-02): the
+    # selected mode displaces the structure along +/- eigenvector with
+    # adjustable amplitude; arrows show the displacement directions.
+    anim_toggle = widgets.ToggleButton(
+        value=False, description='Imag. Mode anzeigen',
+        button_style='warning',
+        tooltip='Displace the TS along the selected imaginary mode',
+        layout=widgets.Layout(width='190px'),
+    )
+    anim_play = widgets.Button(
+        description='▶ Play', disabled=True,
+        layout=widgets.Layout(width='90px'),
+    )
+    anim_pause = widgets.Button(
+        description='⏸ Pause', disabled=True,
+        layout=widgets.Layout(width='90px'),
+    )
+    anim_amp = widgets.FloatSlider(
+        value=0.25, min=0.05, max=1.0, step=0.05,
+        description='Amplitude:', continuous_update=False,
+        layout=widgets.Layout(width='260px'),
+    )
+    anim_arrows_toggle = widgets.Checkbox(
+        value=True, description='Pfeile anzeigen',
+        layout=widgets.Layout(width='170px'),
+    )
+    anim_row = widgets.HBox(
+        [anim_toggle, anim_play, anim_pause, anim_amp, anim_arrows_toggle],
+        layout=widgets.Layout(margin='2px 0'),
+    )
     constraints_label = widgets.HTML('<b>Constraint atoms (0-based ORCA indices):</b>')
     constraints_field = widgets.Text(
         placeholder='e.g. 0, 2, 5', description='',
@@ -93,7 +139,13 @@ def build_ts_goat_panel(
 
     panel.children = (
         title, status, files_box, mode_label, mode_dropdown, mode_warning,
-        analysis_box, constraints_label,
+        analysis_box,
+        widgets.HTML('<b>Optimized TS structure</b> '
+                     '(drag to rotate, scroll to zoom; constraint atoms '
+                     'are highlighted):'),
+        viewer_out,
+        anim_row,
+        constraints_label,
         widgets.HBox([constraints_field, highlight_btn]),
         settings_row, preview_label, preview_box, btn_row,
     )
@@ -182,6 +234,114 @@ def build_ts_goat_panel(
         arrows = state.get('mode_arrows')
         render_viewer(state['ts_atoms'], indices, arrows)
 
+    # ---- integrated 3D viewer -------------------------------------------
+    # Rendered INSIDE this panel through the tab's Output-callbacks so
+    # the structure is visible when the panel opens (user report
+    # 2026-11-02).  The tab passes a dedicated viewer_output widget and
+    # click handler; without them the panel falls back to the tab
+    # viewer and shows a note instead of a blank area.
+
+    def _viewer_fallback(message):
+        with viewer_out:
+            viewer_out.clear_output(wait=True)
+            display(HTML(
+                f'<div style="padding:8px; color:#616161;">{html.escape(message)}</div>'
+            ))
+
+    def _render_integrated_viewer():
+        """Render TS structure + highlight + arrows INTO the panel.
+
+        ``render_in_panel(atoms, indices, arrows)`` is injected by the
+        tab and draws into ``viewer_output`` (an Output widget that is
+        a child of this panel).  Without it the panel shows a visible
+        note instead of a silent blank area.
+        """
+        atoms = state['ts_atoms']
+        if atoms is None:
+            _viewer_fallback('No TS geometry loaded.')
+            return
+        if render_in_panel is None:
+            _viewer_fallback(
+                '3D viewer not wired by the tab -- file info and '
+                'constraints still work below.')
+            return
+        indices = _parse_constraints(constraints_field.value)
+        arrows = state.get('mode_arrows')
+        if anim_toggle.value and state.get('mode_displaced'):
+            displaced = state['mode_displaced'].get(
+                mode_dropdown.value if mode_dropdown.value is not None
+                else -1)
+            if displaced:
+                atoms = displaced
+        try:
+            render_in_panel(
+                atoms, indices,
+                arrows if anim_arrows_toggle.value else None,
+                output_widget=viewer_out,
+            )
+        except Exception as exc:  # visible error, never a blank area
+            _viewer_fallback(
+                f'Viewer could not be rendered: {type(exc).__name__}: {exc}')
+
+    def _on_anim_toggle(_change=None):
+        anim_active = anim_toggle.value
+        anim_play.disabled = not anim_active
+        anim_pause.disabled = not anim_active
+        if not anim_active:
+            # back to the undistorted optimized geometry; constraint
+            # marks stay visible
+            state['mode_displaced'] = None
+        else:
+            _recompute_displaced()
+        _render_integrated_viewer()
+
+    def _recompute_displaced():
+        hess = state.get('hess_path')
+        idx = mode_dropdown.value
+        if hess is None or idx is None:
+            state['mode_displaced'] = None
+            return
+        try:
+            from delfin.imag import displaced_geometries
+            disp = displaced_geometries(hess, idx, anim_amp.value)
+            state['mode_displaced'] = {idx: disp['pos']}
+            state['mode_displaced_neg'] = {idx: disp['neg']}
+        except Exception:
+            state['mode_displaced'] = None
+
+    def _on_anim_amp(_change=None):
+        if anim_toggle.value:
+            _recompute_displaced()
+            _render_integrated_viewer()
+
+    anim_toggle.observe(_on_anim_toggle, names='value')
+    anim_amp.observe(_on_anim_amp, names='value')
+    anim_arrows_toggle.observe(
+        lambda _c: _render_integrated_viewer(), names='value')
+    anim_play.on_click(
+        lambda _b: _on_anim_toggle() if anim_toggle.value else None)
+    anim_pause.on_click(lambda _b: _render_integrated_viewer())
+
+    # ---- atom click -> constraint toggle --------------------------------
+    # The tab injects click JS; when the user clicks an atom, the
+    # viewer reports the 0-based index through this callback and the
+    # constraint field updates immediately (sync with preview/submit).
+
+    def on_atom_click(index):
+        # an out-of-range click (e.g. a stale 3Dmol event) must not
+        # corrupt the constraint field
+        n_atoms = len(state['ts_atoms'] or [])
+        if not 0 <= index < n_atoms:
+            return
+        indices = _parse_constraints(constraints_field.value)
+        if index in indices:
+            indices = [i for i in indices if i != index]
+        else:
+            indices = sorted(indices + [index])
+        constraints_field.value = ', '.join(str(i) for i in indices)
+        _refresh_preview()
+        _render_integrated_viewer()
+
     def _on_mode_change(change=None):
         """Re-run the reactive-centre analysis for the selected mode."""
         if change is not None and change.get('name') != 'value':
@@ -227,6 +387,10 @@ def build_ts_goat_panel(
             'mode_arrows_by_index', {})
         state['imaginary_modes'] = open_result.get('imaginary_modes', [])
         state['hess_path'] = open_result.get('hess_path')
+        state['mode_displaced'] = None
+        anim_toggle.value = False
+        anim_play.disabled = True
+        anim_pause.disabled = True
         state['reactant_path'] = open_result.get('reactant_path')
         state['product_path'] = open_result.get('product_path')
         mode_opts = [
@@ -250,6 +414,7 @@ def build_ts_goat_panel(
         _refresh_analysis_display()
         analysis_box.value = open_result.get('analysis_html', '')
         _refresh_constraints_display()
+        _render_integrated_viewer()
         panel.layout.display = 'block'
         scroll_top()
 
@@ -346,6 +511,7 @@ def build_ts_goat_panel(
         'panel': panel, 'show': show, 'close': close,
         'state': state, 'status': status,
         'parse_constraints': _parse_constraints,
+        'on_atom_click': on_atom_click,
     }
 
 
@@ -439,6 +605,8 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             reset_dropdown=callbacks['reset_dropdown'],
             render_viewer=callbacks['render_viewer'],
             scroll_top=callbacks['scroll_top'],
+            viewer_output=callbacks.get('viewer_output'),
+            render_in_panel=callbacks.get('render_in_panel'),
         )
         arrows = None
         mode_arrows_by_index = {}
