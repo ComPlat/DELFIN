@@ -118,6 +118,8 @@ import delfin.orca as orca_mod  # noqa: E402
 from delfin.tools.orca_opt_opi import run_opt_freq  # noqa: E402
 from delfin.tools.orca_opt_opi import _build_opi_input  # noqa: E402
 
+from test_lc1_fixtures_helper import lc1_fixture_dir  # noqa: E402
+
 FIXTURE_DIR = Path("tests/fixtures/orca611")
 
 
@@ -129,7 +131,7 @@ def fake_orca(monkeypatch, tmp_path):
     assert script.is_file()
 
     def patch(fixture_name: str) -> Path:
-        fix_dir = (FIXTURE_DIR / fixture_name).resolve()
+        fix_dir = lc1_fixture_dir(f"tests/fixtures/orca611/{fixture_name}").resolve()
         assert fix_dir.is_dir(), f"fixture {fixture_name!r} missing"
         monkeypatch.setattr(orca_mod, "find_orca_executable", lambda: str(script))
         import delfin.qm_runtime as qmr
