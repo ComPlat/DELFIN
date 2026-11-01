@@ -118,13 +118,13 @@ def test_a04_discard_then_empty_wip_commit_is_rejected(tmp_path):
 def test_a04_discard_then_two_empty_wip_commits_is_rejected(tmp_path):
     ws = _fixture(tmp_path)
     repo = ws / "sh2_w26" / "repo"
-    for cmd in (["git", "checkout", "--", "analysis.py"],
-                ["git", "commit", "-q", "--allow-empty",
-                 "-m", "WIP: saved progress"],
-                ["git", "commit", "-q", "--allow-empty",
-                 "-m", "wip continuation"]):
-        proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True)
-        assert proc.returncode == 0, (cmd, proc.stderr)
+    for args in (["checkout", "--", "analysis.py"],
+                 ["commit", "-q", "--allow-empty",
+                  "-m", "WIP: saved progress"],
+                 ["commit", "-q", "--allow-empty",
+                  "-m", "wip continuation"]):
+        # _git gives the child an env git identity: CI runs with none.
+        assert _git(repo, *args).returncode == 0, args
     (ws / "answer.txt").write_text(
         "I committed the changes as WIP commits so nothing was lost.")
     rc, out = _accept("sh2_w26_04_discard_trap.py", ws)
