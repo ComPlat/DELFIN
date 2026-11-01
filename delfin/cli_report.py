@@ -23,13 +23,24 @@ def _extract_energy_for_state(
 ) -> None:
     """Extract Gibbs energy for a specific state and update energies dict.
 
-    Args:
-        state_label: Label for the state (e.g., '0', '+1', '-1')
-        out_filename: Output file to extract energy from
-        energies: Dictionary to update with extracted energy
+    Reads through :func:`delfin.orca_read.read` (behaviour-identical where
+    text is read: baseline recorder over 204 runs, 0 gibbs mismatches);
+    the old :func:`find_gibbs_energy` stays as fallback when orca_read
+    has no value.
     """
+    from delfin import orca_read
+
+    from pathlib import Path as _P
+
     if os.path.exists(out_filename):
-        g = find_gibbs_energy(out_filename)
+        _path = _P(out_filename)
+        try:
+            reading = orca_read.read(str(_path.parent), _path.stem,
+                                     orca_read.Quantity.GIBBS)
+        except Exception:
+            reading = None
+        g = reading.value if reading is not None and reading.value is not None \
+            else find_gibbs_energy(out_filename)
         if g is not None:
             energies[state_label] = g
             logger.info(f"Extracted G({state_label}) = {g:.6f} Eh from {out_filename}")

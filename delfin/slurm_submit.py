@@ -17,6 +17,8 @@ import subprocess
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
+from delfin.common.logging import get_logger
+
 #: Partitions a site's CPU jobs may start in. SLURM starts a job listed for
 #: several partitions in whichever can run it first, "with no regard given to
 #: the partition name ordering" (sbatch(1)), so a second partition of suitable
@@ -169,8 +171,18 @@ def sbatch_command(sbatch: str, submit_script, job_dir=None) -> list:
             chosen = choose_partitions(path, Path(job_dir) if job_dir else path.parent, sbatch=sbatch)
             if chosen:
                 cmd.append(f'--partition={chosen}')
-    except Exception:
-        pass
+    except (OSError, ValueError, RuntimeError) as problem:
+        # A read or probe failure must not break the submit (the command
+        # below is what these callers ran before), but it is no longer
+        # swallowed silently: the user sees why the partition choice is
+        # missing. All three real callers (cli_step.py:223,
+        # cli_pipeline.py:292, agent/slurm_tests.py:282) call this
+        # without a try around it, so the catch covers the failure
+        # classes the probe path can raise; anything else is a bug and
+        # stays visible.
+        get_logger(__name__).warning(
+            'sbatch_command: partition choice skipped (%s); submitting '
+            'without a --partition override', problem)
     cmd.append(str(path))
     return cmd
 
@@ -179,6 +191,12 @@ def time_limit_seconds(time_limit) -> int:
     """SLURM's time formats in seconds: D-HH:MM:SS, D-HH:MM, D-HH,
     HH:MM:SS, MM:SS, or bare minutes."""
     text = str(time_limit).strip()
+    # SLURM's longest form is D-HH:MM:SS, which splits on ':' into 3 parts.
+    # A 4th field is not a SLURM time; falling through to the bare-number
+    # branch would read '1:2:3:4' as 60 s, so it is refused with the reason.
+    if len(text.split(':')) > 3:
+        raise ValueError(f'too many colon-separated fields for a SLURM time: '
+                         f'{text!r}')
     if '-' in text:
         day_part, text = text.split('-', 1)
         parts = text.split(':')

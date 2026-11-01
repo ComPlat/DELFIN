@@ -1,0 +1,44 @@
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+                       *****************
+                       * O   R   C   A *
+                       *****************
+
+  ***********************************
+  * Starting time: CONSTRUCTED fixture, no real run
+  * Host name:     fixture-host
+  ***********************************
+
+Number of atoms ...
+----------------
+ORCA SCF
+----------------
+
+Total Energy       :         -156.146070332063 Eh
+
+      ******************************************
+      *                                        *
+      *      #  DLPNO-CCSD(T1)   -  ENERGIES   #
+      *                                        *
+      ******************************************
+
+Total Correlation Energy                          :       -0.135127589041 Eh
+Initial CCSD correlation energy                   :       -0.131507699353 Eh
+Final CCSD correlation energy                     :       -0.131507699353 Eh
+Final correlation energy                          :       -0.135127589041 Eh
+E(SCF)                                    :    -156.146070332  Eh
+E(CCSD)                                   :    -156.277578031  Eh
+E(CCD(T))                                 :    -156.281197921  Eh
+Final Single Point Energy       -156.281197921276
+Maximal memory used                       :         605.4 MiB
+
+T1(DLPNO) : 0.0104
+T1(DLPNO): 0.0104
+
+       ******************************************************
+       *              SUCCESS  (CONSTRUCTED fixture)        *
+       *         Total Energy       :    -156.281197921 Eh  *
+       ******************************************************
+
+ORCA terminated normally (CONSTRUCTED fixture -- replace by a cluster run).
+
+****ORCA TERMINATED NORMALLY****

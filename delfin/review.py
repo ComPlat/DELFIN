@@ -76,6 +76,61 @@ DEFAULT_CATEGORIES: tuple[str, ...] = (
     'other',
 )
 
+# What a category code means, for the reviewer: a short label for the button and
+# one sentence (the table of docs/REVIEW_TEAM_GUIDE.md).  The code stays what is
+# stored; a category without an entry shows its code.
+CATEGORY_INFO: dict[str, tuple[str, str]] = {
+    'H': ('H atoms', 'a hydrogen is missing, stretched, at a wrong angle, points into '
+          'the metal or sits on the metal'),
+    'LAENGE_ML': ('M–L length', 'a metal-ligand or metal-metal distance visibly too '
+                  'long or too short (the ligand is still bound)'),
+    'DURCHDRINGUNG': ('Interpenetration', 'ligands or rings stuck through each other, '
+                      'a bond threaded through a ring'),
+    'CLASH': ('Clash', 'atoms too close without interpenetration (also H...H)'),
+    'METALLKONTAKT': ('Metal contact', 'a heavy atom that is not a donor sits at the '
+                      'metal (a hydrogen at the metal: H atoms)'),
+    'TOPO': ('Topology', 'a bond missing or one too many, a ligand clearly torn off, a '
+             'wrong donor atom, a fragment or counter-ion floating away or stuck '
+             'inside another'),
+    'HYB': ('Angle / hybrid.', 'a wrong angle, sp3 flat, sp2 pyramidal, a linear group '
+            'bent (also one angle at a donor)'),
+    'PLANAR': ('Planarity', 'an aromatic ring or sp2 framework not flat, an amide, '
+               'ester or conjugated bond twisted'),
+    'POLYEDER': ('Polyhedron', 'the coordination geometry at the metal is implausible'),
+    'SONST': ('Other (comment)', 'something else: always write a comment'),
+    'DONOR': ('Donor direction', 'a whole donor turned away from the metal, its lone '
+              'pair not pointing at the metal, the metal out of the donor plane'),
+    'LAENGE_KOV': ('Bond length', 'a covalent bond too long or too short'),
+    'KOLLAPS': ('Collapse', 'a ring or ligand balled up, the molecule too compact'),
+    'HAPTO': ('Hapticity', 'a pi ligand slipped, wrong hapticity'),
+    'STEREO': ('Stereo', 'wrong configuration (R/S, E/Z, atropisomer)'),
+    'KONFORMER': ('Conformer', 'an unrealistic conformation (eclipsed, a ring bent, a '
+                  'boat without reason)'),
+    'FORMEL': ('Formula', 'atoms missing or too many, an H on the wrong atom '
+               '(tautomer, protonation)'),
+    'SYMMETRIE': ('Symmetry', 'chemically equal parts visibly built unequal (equal '
+                  'ligands at different distances, a Cp ring tilted)'),
+}
+
+# Where two categories are close (the guide's list), shown with the meanings.
+CATEGORY_BOUNDARIES: tuple[str, ...] = (
+    'stuck through each other = Interpenetration; only too close = Clash',
+    'one angle at a donor = Angle / hybrid.; the whole donor turned away = Donor direction',
+    'still bound but too long = M–L length; clearly gone = Topology',
+    'a hydrogen at the metal = H atoms; a heavy atom at the metal = Metal contact',
+)
+
+
+def category_label(cat: str) -> str:
+    """The button label of category *cat* (its code when it has no entry)."""
+    return CATEGORY_INFO.get(cat, (cat, ''))[0]
+
+
+def category_meaning(cat: str) -> str:
+    """One sentence on what category *cat* means ('' when it has no entry)."""
+    return CATEGORY_INFO.get(cat, (cat, ''))[1]
+
+
 VERDICTS = ('pass', 'block')
 SCHEMA_VERSION = 1
 FINDINGS_NAME = 'findings.json'

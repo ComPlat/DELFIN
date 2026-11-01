@@ -1647,3 +1647,50 @@ def _state_maintenance_runs_once_per_test(monkeypatch):
     from delfin.agent import state_paths as _sp
     monkeypatch.setattr(_sp, "_MAINTENANCE_DONE", False)
     yield
+
+
+# ---------------------------------------------------------------------------
+# OPI-dependent tests skip where OPI (delfin[orca]) is not installed -- which
+# is every interpreter of the main CI jobs (they pin numpy<2, OPI needs
+# numpy>=2.2.6). The CI "OPI tests" job sets DELFIN_OPI_REQUIRED=1: there a
+# skip for a missing OPI is a FAILURE, so the job cannot pass by not having
+# OPI (the pattern of DELFIN_TOOLCHAIN_REQUIRED).
+# ---------------------------------------------------------------------------
+_OPI_SKIP_MARKERS = ("could not import 'opi'", "no module named 'opi'",
+                     "opi (delfin[orca]) not installed", "opi not installed")
+
+
+# ---------------------------------------------------------------------------
+# Private fixture store (LC1): real ORCA output lives outside the repo.
+#
+# DELFIN_PRIVATE_FIXTURES points at the operator-managed store root, which
+# mirrors the repository paths (e.g. <root>/tests/fixtures/orca611/...).
+# Tests that genuinely need real program output (exact pinned energies,
+# format-drift coverage) read from there and SKIP when the variable is
+# absent -- they never fail in CI. See LICENSE_GUARD.md, rule family 2.
+# The helpers live in tests/test_lc1_fixtures_helper.py (an importable
+# module under tests/ -- conftest is not importable as `tests.conftest`
+# without a package __init__); re-exported here for anyone importing
+# conftest.
+# ---------------------------------------------------------------------------
+
+from test_lc1_fixtures_helper import (  # noqa: E402, F401  (tests/ is on sys.path while pytest loads conftest; the package name `tests` is not)
+    PRIVATE_FIXTURES_ENV,
+    lc1_fixture_dir,
+    private_fixtures_or_skip,
+    private_fixtures_path,
+)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    if os.environ.get("DELFIN_OPI_REQUIRED") != "1":
+        return
+    rep = outcome.get_result()
+    if not rep.skipped:
+        return
+    reason = str(rep.longrepr[-1] if isinstance(rep.longrepr, tuple) else rep.longrepr).lower()
+    if any(m in reason for m in _OPI_SKIP_MARKERS):
+        rep.outcome = "failed"
+        rep.longrepr = f"DELFIN_OPI_REQUIRED=1 but the test skipped for a missing OPI: {reason[:200]}"

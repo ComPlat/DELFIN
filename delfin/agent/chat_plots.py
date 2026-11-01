@@ -522,9 +522,16 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
     raw = _as_columns(raw)
 
     energy = _require_str(spec, "energy", "auto").strip().lower()
-    if energy not in ("gibbs", "electronic", "auto"):
-        raise SpecError(f"energy must be gibbs, electronic or auto, "
-                        f"got {energy!r}")
+    if energy not in ("gibbs", "electronic", "composite", "auto"):
+        raise SpecError(f"energy must be gibbs, electronic, composite or "
+                        f"auto, got {energy!r}")
+    corrections = (spec.get("corrections") or "").strip()
+    if energy == "composite" and not corrections:
+        raise SpecError("energy: \"composite\" needs a \"corrections\" "
+                        "key naming the low level of theory whose thermal "
+                        "correction (G - E) is added to the high-level "
+                        "electronic energy, e.g. corrections: "
+                        "\"r2SCAN-3c\"")
     energy_note = ""
     # Each output once through the read gate: deciding which energy the
     # outputs carry reads them before they are drawn.
@@ -628,6 +635,10 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
                      f"({ref_eh:.6f} Eh), x {factor:g} {units}/Eh")
         if energy_note:
             notes.append(energy_note)
+        if energy == "composite":
+            notes.append("composite G = E(high-level single point) + "
+                         f"G_corr({corrections}); G_corr is G - E of the "
+                         "freq output")
         _check_balance(parsed, outputs, ref_file, notes)
         if energy == "gibbs":
             _standard_state_note(parsed, notes)
@@ -667,8 +678,8 @@ def _resolve_pathways(spec: dict, root: Path, reader=None):
         except ValueError as exc:
             raise SpecError(str(exc)) from None
         pathways.append(pw)
-    quantity = ({"gibbs": "ΔG", "electronic": "ΔE"}[energy] if outputs
-                else None)
+    quantity = ({"gibbs": "ΔG", "composite": "ΔG",
+                 "electronic": "ΔE"}[energy] if outputs else None)
     if quantity:
         _check_label_quantity(_require_str(spec, "ylabel", "").strip(),
                               quantity, energy)
@@ -772,6 +783,9 @@ def _state_record(key: tuple[str, ...], root: Path, reader,
     from collections import Counter
     from delfin.agent import energy_profile as ep
 
+    if energy == "composite":
+        return _composite_record(key, root, reader, texts)
+
     eh, imag, atoms, charge, programs = 0.0, 0, Counter(), 0, []
     witnessed = []
     for path in key:
@@ -800,6 +814,36 @@ def _state_record(key: tuple[str, ...], root: Path, reader,
         opi = "confirmed by OPI"
     return {"eh": eh, "imag": imag, "atoms": atoms, "charge": charge,
             "program": "/".join(dict.fromkeys(programs)), "opi": opi}
+
+
+def _composite_record(key: tuple[str, ...], root: Path, reader,
+                      texts: dict | None = None) -> dict:
+    """``{"eh", "imag", "atoms", "charge", "program"}`` of a composite state.
+
+    ``key`` must be the two-path pair ``(elec.out, freq.out)`` a composite
+    ``files`` entry produces -- the high-level single point and the low-level
+    ``Opt Freq`` output. Its Gibbs energy is E(elec) + (G - E)(freq), read by
+    :func:`delfin.agent.energy_profile.composite_output`. A pair of any other
+    length is refused, and a missing energy names the output.
+    """
+    from delfin.agent import energy_profile as ep
+
+    if len(key) != 2:
+        raise SpecError(
+            "energy: \"composite\" pairs the high-level single point with "
+            "the low-level freq output as a two-element files entry "
+            f"[elec.out, freq.out] (two outputs); got {len(key)} path(s)")
+    hi, lo = key[0], key[1]
+    hi_text, hi_res = _read_output(hi, root, reader, texts)
+    lo_text, lo_res = _read_output(lo, root, reader, texts)
+    try:
+        rec = ep.composite_output(hi_text, str(hi_res),
+                                  lo_text, str(lo_res))
+    except ValueError as exc:
+        raise SpecError(f"{exc}; nothing is drawn for a state without "
+                        f"its composite energy") from None
+    return {"eh": rec["eh"], "imag": rec["imag"], "atoms": rec["atoms"],
+            "charge": rec["charge"], "program": rec["program"], "opi": ""}
 
 
 def _opi_says(output: Path, eh: float, energy: str, reader) -> str:

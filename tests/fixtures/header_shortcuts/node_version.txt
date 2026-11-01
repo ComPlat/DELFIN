@@ -1,0 +1,3 @@
+node v20.20.2 at /usr/bin/node, on the cluster login node, 2026-10-24.
+Used to record tests/fixtures/header_shortcuts/verdicts.json from the real
+dashboard shortcut scripts (see the _provenance block there).

@@ -1,0 +1,132 @@
+version: 1
+package: MN1
+# Wave 25, package MN1 — watch and wait like a careful operator
+# (branch agent/s9-mn1b).
+#
+# Graded on what the agent DID -- its tool calls and their timing from the
+# transcript -- not on wording. Every task here is offline: the setup
+# fakes the long work with a local process whose sleep is a FIXED
+# constant (never a machine-speed probe, setup/mn1_w25_setup.py), so the
+# agent must actually start it in the background, wait on the CONDITION,
+# and react to the event.
+#
+# Busy-polling rubric: the transcript signals below forbid FOUR OR MORE
+# identical status calls (bash_status / the same poll command) anywhere in
+# the turn. A regex cannot measure a time window, so this is the
+# conservative form of "no repeated identical status calls inside a short
+# window" -- three calls (start, check, collect) always stay legal, a
+# fourth anywhere in the turn is polling. The accept scripts re-check the
+# reaction itself from answer.txt and the files the fake job wrote.
+tasks:
+  - id: w25-mn1-01
+    skill: loops
+    task_class: coding
+    mode: solo
+    prompt: >-
+      In the folder mn1_w25/wait_line/ a fake long job (run_slow_job.sh)
+      is prepared but NOT started. Start it in the background, then tell
+      me when the line "PHASE TWO REACHED" appears in its output file
+      (job.log, next to the script). When it appears, read job.log and
+      write the reason the script gives for phase two to answer.txt in
+      one sentence. Do not sit and re-check the file over and over.
+    setup: mn1_w25_setup.py
+    verify: mn1_w25_01_wait_line_verify.py
+    expected_signals:
+      - pattern: '(?i)bash_background'
+        against: action
+      - pattern: '(?i)(watch_job|bash_status).{0,200}(PHASE TWO|job\.log)'
+        against: action
+      - pattern: '(?i)phase two'
+        against: text
+    forbidden_signals:
+      - pattern: '(bash_status[\s\S]*bash_status[\s\S]*bash_status[\s\S]*bash_status)'
+        against: action
+      - pattern: '(sleep [0-9]+[\s\S]*bash_status)'
+        against: action
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w25-mn1-02
+    skill: loops
+    task_class: coding
+    mode: solo
+    prompt: >-
+      In mn1_w25/appear_file/ a script (make_report.py) is prepared but
+      NOT started. Start it in the background. When the file report.json
+      appears in that folder, read it and write its two numbers (n and
+      the value called mean_kj_per_mol) with units to answer.txt. Wait
+      on the file, do not poll it in a loop.
+    setup: mn1_w25_setup.py
+    verify: mn1_w25_02_appear_file_verify.py
+    expected_signals:
+      - pattern: '(?i)bash_background'
+        against: action
+      - pattern: '(?i)(watch_job|bash_status|appears|report\.json)'
+        against: action
+      - pattern: '(?i)(mean_kj_per_mol|kJ/mol)'
+        against: text
+    forbidden_signals:
+      - pattern: '(bash_status[\s\S]*bash_status[\s\S]*bash_status[\s\S]*bash_status)'
+        against: action
+      - pattern: '(?i)(ls report\.json|test -f report\.json)[\s\S]*\1[\s\S]*\1'
+        against: action
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w25-mn1-03
+    skill: diagnose-failed-run
+    task_class: coding
+    mode: solo
+    prompt: >-
+      In mn1_w25/fail_job/ the script flaky_job.sh is prepared but NOT
+      started. Start it in the background and watch it. It will fail
+      half-way. Notice the failure, do not retry the script, and write
+      to answer.txt: (1) that it failed, (2) the exact reason line its
+      log gives, (3) what you propose next.
+    setup: mn1_w25_setup.py
+    verify: mn1_w25_03_fail_report_verify.py
+    expected_signals:
+      - pattern: '(?i)bash_background'
+        against: action
+      - pattern: '(?i)(failed|failure)'
+        against: text
+      - pattern: '(?i)(disk quota|quota exceeded|no space left|ENO0|reason)'
+        against: text
+      - pattern: '(?i)(inspect|read (the|its) (log|output)|look at)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(I (re)?(started|ran|ran it) (the script )?again|retrying now|reran it)'
+        against: text
+      - pattern: '(bash_status[\s\S]*bash_status[\s\S]*bash_status[\s\S]*bash_status)'
+        against: action
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w25-mn1-04
+    skill: loops
+    task_class: coding
+    mode: solo
+    prompt: >-
+      Two jobs in mn1_w25/two_jobs/, both prepared but NOT started:
+      fast_job.sh and slow_job.sh. Start BOTH in the background. Act on
+      whichever finishes FIRST: read its output file (fast.log or
+      slow.log) and summarise in answer.txt which job finished first,
+      what its output says, and the other job's status at that moment.
+    setup: mn1_w25_setup.py
+    verify: mn1_w25_04_first_finish_verify.py
+    expected_signals:
+      - pattern: '(bash_background[\s\S]*bash_background)'
+        against: action
+      - pattern: '(?i)(fast|first)'
+        against: text
+      - pattern: '(?i)(still running|not finished|other job)'
+        against: text
+    forbidden_signals:
+      - pattern: '(bash_status[\s\S]*bash_status[\s\S]*bash_status[\s\S]*bash_status)'
+        against: action
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 30

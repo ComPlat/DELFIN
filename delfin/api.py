@@ -211,6 +211,25 @@ def analysis_check(*, capture: bool = True) -> CommandResult:
     return _run_cli(["analysis_check"], capture=capture)
 
 
+def result_checks(work_dir: str, base_name: str, job_type: str,
+                  reported: dict | None = None,
+                  s2_bound: float | None = None,
+                  references: dict | None = None,
+                  method: str | None = None) -> dict:
+    """Validate a finished ORCA run and the numbers an answer reports.
+
+    Thin read-only adapter over :func:`delfin.tools.result_checks.check_run`
+    (job-type consistency, traceability of reported values, <S**2>
+    bound for unrestricted runs, T1 diagnostic for DLPNO-CCSD(T),
+    plausibility against reference values).  Returns the checker's dict
+    report; see ``delfin/tools/result_checks.py`` for the schema.
+    """
+    from delfin.tools.result_checks import check_run
+    return check_run(work_dir, base_name, job_type, reported=reported,
+                     s2_bound=s2_bound, references=references,
+                     method=method)
+
+
 # ---------------------------------------------------------------------------
 # QM tool runner
 # ---------------------------------------------------------------------------
@@ -462,6 +481,33 @@ def parse_orca_output(path: str) -> OrcaParseResult:
     """
     from pathlib import Path as _P
     from delfin import energies as _e
+    from delfin import orca_read as _orca_read
+
+    _QUANTITY = {
+        "gibbs": _orca_read.Quantity.GIBBS,
+        "zpe": _orca_read.Quantity.ZPE,
+    }
+
+    def _quantity_via_orca_read(out_path: Path, name: str):
+        """Read one thermo quantity through delfin.orca_read.
+
+        Behaviour-identical where text is read (baseline recorder over
+        204 runs, 0 mismatches for gibbs/zpe); the old whole-file parser
+        stays as fallback when orca_read has no value.
+        """
+        try:
+            reading = _orca_read.read(str(out_path.parent),
+                                      out_path.stem, _QUANTITY[name])
+        except Exception:
+            reader = {"gibbs": _e.find_gibbs_energy,
+                      "zpe": _e.find_ZPE}[name]
+            return reader(str(out_path))
+        if reading.value is None:
+            reader = {"gibbs": _e.find_gibbs_energy,
+                      "zpe": _e.find_ZPE}[name]
+            return reader(str(out_path))
+        return reading.value
+
     from delfin.doc_server.calc_indexer import _largest_output, outcome_of_folder
     p = _P(path)
     if p.is_dir():
@@ -502,11 +548,11 @@ def parse_orca_output(path: str) -> OrcaParseResult:
     except Exception:
         pass
     try:
-        out.gibbs_free_energy = _e.find_gibbs_energy(str(p))
+        out.gibbs_free_energy = _quantity_via_orca_read(p, "gibbs")
     except Exception:
         pass
     try:
-        out.zpe = _e.find_ZPE(str(p))
+        out.zpe = _quantity_via_orca_read(p, "zpe")
     except Exception:
         pass
 
@@ -2757,6 +2803,153 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
 # available (one short line each) and ``describe_tool`` to fetch the
 # full signature only when it actually plans to call it.
 
+
+# ---------------------------------------------------------------------------
+# geometry_edit MCP handlers. Each takes a structure as xyz text plus the
+# edit parameters, applies the geometry operation, and returns JSON with the
+# new structure ("xyz") and a short change record ("change"). Docstrings are
+# the MCP tool descriptions (kept short; char size noted for each).
+# ---------------------------------------------------------------------------
+
+def _ge():
+    from delfin.tools import geometry_edit as ge
+    return ge
+
+
+def _xyz_result(g):
+    ge = _ge()
+    return {"xyz": ge.to_xyz(g), "charge": g.charge, "multiplicity": g.multiplicity}
+
+
+def geometry_read_xyz(xyz: str) -> dict:
+    """Parse an xyz block into {symbols, coords, n_atoms, charge, multiplicity}."""
+    g = _ge().parse_xyz(xyz)
+    return {"symbols": g.symbols, "coords": g.coords,
+            "n_atoms": len(g), "charge": g.charge, "multiplicity": g.multiplicity}
+
+
+def geometry_set_bond(xyz: str, i: int, j: int, length: float) -> dict:
+    """Set bond length i-j (A), moving the smaller fragment: {xyz, change}."""
+    g, ch = _ge().set_bond(_ge().parse_xyz(xyz), i, j, length)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_set_angle(xyz: str, i: int, j: int, k: int, degrees: float) -> dict:
+    """Set angle i-j-k (vertex j, deg), moving the smaller fragment: {xyz, change}."""
+    g, ch = _ge().set_angle(_ge().parse_xyz(xyz), i, j, k, degrees)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_set_dihedral(xyz: str, i: int, j: int, k: int, l: int,
+                          degrees: float) -> dict:
+    """Set dihedral i-j-k-l (deg), moving the smaller fragment: {xyz, change}."""
+    g, ch = _ge().set_dihedral(_ge().parse_xyz(xyz), i, j, k, l, degrees)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_translate(xyz: str, indices: list, vector) -> dict:
+    """Translate atoms by a [dx, dy, dz] vector: {xyz, change}."""
+    g, ch = _ge().translate(_ge().parse_xyz(xyz), indices, vector)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_rotate(xyz: str, indices: list, axis, degrees: float) -> dict:
+    """Rotate atoms about an axis [x, y, z] by degrees (about centroid): {xyz, change}."""
+    g, ch = _ge().rotate(_ge().parse_xyz(xyz), indices, axis, degrees)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_add_atom(xyz: str, element: str, bonded_to: int,
+                      bond_length: float) -> dict:
+    """Add an atom bonded to bonded_to at bond_length A: {xyz, change}."""
+    g, ch = _ge().add_atom(_ge().parse_xyz(xyz), element, bonded_to, bond_length)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_remove_atoms(xyz: str, indices: list) -> dict:
+    """Remove atoms by index, renumbering the rest: {xyz, change}."""
+    g, ch = _ge().remove_atoms(_ge().parse_xyz(xyz), indices)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_replace_ligand(xyz: str, connect: int, ligand: str) -> dict:
+    """Replace the ligand on atom ``connect`` with an element or SMILES: {xyz, change}."""
+    g, ch = _ge().replace_ligand(_ge().parse_xyz(xyz), connect, ligand)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_mirror(xyz: str, plane: str = "yz") -> dict:
+    """Mirror across a coordinate plane (xy/xz/yz): {xyz, change}."""
+    g, ch = _ge().mirror(_ge().parse_xyz(xyz), plane)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_align_rmsd(mobile_xyz: str, reference_xyz: str) -> dict:
+    """Align mobile onto reference (Kabsch, same atom order): {xyz, rmsd_angstrom}."""
+    aligned, rmsd = _ge().align_rmsd(_ge().parse_xyz(mobile_xyz),
+                                     _ge().parse_xyz(reference_xyz))
+    out = _xyz_result(aligned)
+    out["rmsd_angstrom"] = rmsd
+    return out
+
+
+def geometry_merge(fragments: list) -> dict:
+    """Concatenate xyz fragments (atoms of earlier ones first): {xyz, change}."""
+    g, ch = _ge().merge_fragments(*[_ge().parse_xyz(f) for f in fragments])
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_freeze(xyz: str, indices: list) -> dict:
+    """Mark atoms as frozen for a constrained optimisation: {xyz, change}."""
+    g, ch = _ge().freeze_atoms(_ge().parse_xyz(xyz), indices)
+    out = _xyz_result(g)
+    out["change"] = ch
+    return out
+
+
+def geometry_constraints_block(xyz: str) -> dict:
+    """ORCA %geom Constraints block for the structure's frozen atoms: {block}."""
+    g = _ge().parse_xyz(xyz)
+    return {"block": _ge().constraints_block(g)}
+
+
+def geometry_build_smiles(smiles: str) -> dict:
+    """Embed a molecule from SMILES (RDKit): {xyz, change}."""
+    g = _ge().build_from_smiles(smiles)
+    out = _xyz_result(g)
+    out["change"] = {"op": "build_from_smiles", "atoms_moved": [],
+                     "n_atoms": len(g)}
+    return out
+
+
+def geometry_write_orca_block(xyz: str, charge: int = 0,
+                              multiplicity: int = 1) -> dict:
+    """Serialize xyz as an ORCA '* xyz {charge} {mult}' block: {orca_block, xyz}."""
+    g = _ge().parse_xyz(xyz)
+    block = _ge().to_orca_block(g, charge=charge, multiplicity=multiplicity)
+    return {"orca_block": block, "xyz": _ge().to_xyz(g)}
+
+
 _TOOL_CATALOG: list[dict] = [
     # delfin-ops — environment / tool checks
     {"name": "qm_check", "category": "checks",
@@ -2767,6 +2960,8 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Verify MLP backends (torchani/AIMNet2/MACE)."},
     {"name": "analysis_check", "category": "checks",
      "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
+    {"name": "result_checks", "category": "checks",
+     "summary": "Validate a finished run and a chemistry answer's numbers."},
     # delfin-ops — workflow execution (mutating)
     {"name": "pipeline_prepare", "category": "workflow",
      "summary": "Generate a CONTROL.txt template (mutating)."},
@@ -2924,6 +3119,40 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Detailed info about one calculation by id."},
     {"name": "calc_summary", "category": "calc-search",
      "summary": "Aggregate counts across all indexed calculations."},
+    # delfin-ops — geometry_edit: coordinate manipulation on instruction
+    # (read-only: no ORCA run, no file write; chemistry toolset group)
+    {"name": "geometry_read_xyz", "category": "geometry",
+     "summary": "Parse an xyz block into symbols/coords/charge."},
+    {"name": "geometry_set_bond", "category": "geometry",
+     "summary": "Set a bond length, moving the smaller fragment."},
+    {"name": "geometry_set_angle", "category": "geometry",
+     "summary": "Set an angle (vertex j), moving the smaller fragment."},
+    {"name": "geometry_set_dihedral", "category": "geometry",
+     "summary": "Set a dihedral, moving the smaller fragment; refuses rings."},
+    {"name": "geometry_translate", "category": "geometry",
+     "summary": "Translate selected atoms by a vector."},
+    {"name": "geometry_rotate", "category": "geometry",
+     "summary": "Rotate selected atoms about an axis by degrees."},
+    {"name": "geometry_add_atom", "category": "geometry",
+     "summary": "Add an atom at a bond length from an existing atom."},
+    {"name": "geometry_remove_atoms", "category": "geometry",
+     "summary": "Remove atoms by index, renumbering the rest."},
+    {"name": "geometry_replace_ligand", "category": "geometry",
+     "summary": "Replace a ligand with an element or SMILES fragment."},
+    {"name": "geometry_mirror", "category": "geometry",
+     "summary": "Mirror the structure across a coordinate plane."},
+    {"name": "geometry_align_rmsd", "category": "geometry",
+     "summary": "Kabsch-align two structures, report RMSD."},
+    {"name": "geometry_merge", "category": "geometry",
+     "summary": "Concatenate xyz fragments into one structure."},
+    {"name": "geometry_freeze", "category": "geometry",
+     "summary": "Mark atoms frozen for a constrained optimisation."},
+    {"name": "geometry_constraints_block", "category": "geometry",
+     "summary": "ORCA %geom Constraints block for frozen atoms."},
+    {"name": "geometry_build_smiles", "category": "geometry",
+     "summary": "Embed a 3D structure from SMILES (RDKit)."},
+    {"name": "geometry_write_orca_block", "category": "geometry",
+     "summary": "Serialise xyz as an ORCA coordinate block."},
 ]
 
 
@@ -3149,6 +3378,15 @@ def validate_orca_input(inp_text: str) -> list[ValidationIssue]:
     text_low = text.lower()
 
     # --- Structural checks -----------------------------------------------
+    from delfin.common.orca_input_checks import check_all
+    # Static checks only: the ORCA-parser probe (use_probe=True) is opt-in,
+    # because it starts a real ORCA process (up to 60 s) on whatever host
+    # calls this -- login node or dashboard (QS ruling, wave 25 OV1).
+    for _issue in check_all(inp_text):
+        issues.append(ValidationIssue(
+            severity=_issue.severity, code=_issue.code,
+            message=_issue.message, suggestion=_issue.suggestion,
+        ))
     m_keyword = _re.search(r"^\s*!\s*(.+)$", text, _re.MULTILINE)
     if not m_keyword:
         issues.append(ValidationIssue(

@@ -536,12 +536,22 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     except (AttributeError, TypeError):
         pass
 
+    # The model switches this turn made live on the engine's client
+    # (api_client._turn_model_switches: {before, after, reason}). Read them
+    # defensively -- a stub engine without a client (the scheduler and
+    # benchmark test doubles) must keep working and report []. The read is
+    # of the client the engine owns, so `engine.client` is the only route.
+    _model_switches = getattr(
+        getattr(engine, "client", None), "_turn_model_switches", None)
+    model_switches = (list(_model_switches) if _model_switches else [])
+
     return {
         "text": (full_text or "".join(chunks)).strip(),
         "tool_calls": tool_calls,
         "input_tokens": max(0, in_after - in_before),
         "output_tokens": max(0, out_after - out_before),
         "error": error,
+        "model_switches": model_switches,
         **observer.summary(
             error=error,
             engine_stop_reason=str(
@@ -2580,7 +2590,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
         if result.n_samples > 1:
             extra = (f"  N={result.n_samples}  "
                      f"σ={result.quality_stdev:.1f}  "
-                     f"rate={result.success_rate:.0%}")
+                     f"rate={result.success_rate:.0%}  "
+                     f"pass@k={result.pass_at_k}  "
+                     f"pass^k={result.pass_pow_k}")
         print(f"  [{mark}] {task.id:<28} q={result.quality_0_100:>3}  "
               f"{result.duration_s:>5.1f}s  ${result.cost_usd:.4f}  "
               f"tool={result.tool_calls}{extra}",
@@ -2676,6 +2688,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
           f"avg-quality {s['avg_quality']:.1f}   "
           f"total ${s['total_cost_usd']:.4f}   "
           f"{s['total_duration_s']:.1f}s")
+    # The stricter, alongside readings over the same repeats (empty only
+    # in a no-op run, so guard the keys a summarise_run always now emits).
+    if s.get("n_tasks"):
+        print(f"   pass@k {s['n_pass_at_k']}/{s['n_tasks']} "
+              f"({s['pass_at_k_rate']:.0%} >=1 repeat)   "
+              f"pass^k  {s['n_pass_pow_k']}/{s['n_tasks']} "
+              f"({s['pass_pow_k_rate']:.0%} ALL repeats)")
     # Said out loud, never folded into the rate: a run that could not
     # reach the model measured nothing, and a summary that hides that is
     # how an outage becomes a baseline.
@@ -4963,6 +4982,12 @@ def build_parser() -> argparse.ArgumentParser:
     from delfin.agent import cli_new_adapter
     _na = cli_new_adapter.build_parser(sub)
     _na.set_defaults(func=cli_new_adapter.handler)
+
+    # new-workflow: the hook is exactly these two lines; everything else
+    # lives in delfin/agent/cli_new_workflow.py.
+    from delfin.agent import cli_new_workflow
+    _nw = cli_new_workflow.build_parser(sub)
+    _nw.set_defaults(func=cli_new_workflow.handler)
 
     # prcheck (package PC1)
     prcheck = sub.add_parser(

@@ -130,6 +130,22 @@ def _apply_python(
     # 5 doesn't leave a half-applied state.
     new_contents: dict[Path, str] = {}
     for rel, hunks in hunks_per_file.items():
+        # A target that names an ABSOLUTE path (the header wrote
+        # ``+++ /abs/...`` rather than ``+++ b/<rel>``) is refused:
+        # Path(workspace) / <abs> discards the workspace prefix and the
+        # applier would write to whatever absolute path the header named
+        # -- a path the caller (the gate) did not review, and possibly
+        # one outside the workspace. The diff must name workspace-relative
+        # paths. (2026-10-29: an approved patch whose header named an
+        # absolute path reported ok but never reached the intended file.)
+        if Path(rel).is_absolute():
+            return {
+                "status": "check_failed",
+                "error": (f"diff target {rel} is an absolute path and escapes workspace; "
+                          "apply_patch refuses it. Rewrite the diff header to name "
+                          "the file relative to the workspace (+++ b/<rel>)."),
+                "backend": "py",
+            }
         target = (workspace / rel).resolve()
         try:
             workspace_root = workspace.resolve()
@@ -225,8 +241,22 @@ def _parse_diff(diff_text: str) -> dict[str, list[tuple[int, int, list[str]]]]:
             pass
         elif line.startswith("+++ "):
             stripped = line[4:].strip()
-            if stripped.startswith("b/"):
-                stripped = stripped[2:]
+            # Normalize both the ``a/`` and ``b/`` prefixes the applier
+            # sees on the ``+++`` side. _files_in_diff (which the gate
+            # and the journal use) already treats both as a strip that
+            # yields the plain relative path; _parse_diff stripped only
+            # ``b/``, so a header written as ``+++ a/<rel>`` made the
+            # applier target ``a/<rel>`` while the gate reviewed and the
+            # journal recorded ``<rel>``. That divergence could apply an
+            # approved change to a DIFFERENT path than the one the user
+            # was asked about, or to an absolute path outside the
+            # workspace (2026-10-29: an approved patch to api_client.py
+            # did not reach the file). Stripping both prefixes keeps the
+            # applier's target identical to the reviewed path.
+            for _prefix in ("a/", "b/"):
+                if stripped.startswith(_prefix):
+                    stripped = stripped[2:]
+                    break
             if stripped == "/dev/null":
                 # Means deletion; we don't handle that here.
                 cur_path = None

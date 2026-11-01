@@ -356,9 +356,52 @@ def test_the_counts_still_match_what_was_measured():
     # explore-pilot tasks of pilot_tasks_sp1.yaml (solo, read-only). This
     # test globs every pack/benchmark/*.yaml; the production suite loads
     # only tasks_*.yaml, so the pilot never runs in a normal bench run.
+    #
+    # chemistry 26 -> 29 on 2026-10-31 (OC1, wave 24, agent/s3-oc1b): the
+    # three tasks_w24_oc1.yaml tasks over DELFIN's OCCUPIER workflow (spin
+    # scan, broken-symmetry J, metallocene redox). No setup scripts
+    # (operator-confirmed); each accept script grades the run's physics
+    # from oc1/<case>/ outputs + result.txt. "+3 chemistry".
+    #
+    # science 41 -> 44 on 2026-10-31 (SH1, wave 24, agent/s9-sh1b): the three
+    # self-healing routing tasks in tasks_w24_sh1.yaml -- GSTEP constraint
+    # failure, unconverged scan step + SHARK abort, Cu(NH3)4 imaginary mode
+    # -> IMAG route; offline, no setup script; accept/sh1_w24_0N_*.py.
+    #
+    # chemistry 23 -> 26 on 2026-10-31 (CAS1, wave 25, agent/s6-cas1b): the
+    # three tasks_w25_cas1.yaml tasks -- CASSCF active-space proposals for
+    # ozone and stretched N2 (graded by re-running ActiveSpaceProposal.validate
+    # on proposal.json, accept/cas1_verify.py) and one trap task (invented
+    # Nactel/Nactorb keywords + a 24-orbital space that must be refused naming
+    # RAS/ICE/DMRG). Offline, no setup script, no calculation.
+    #
+    # other 77 -> 81 on 2026-10-31 (MN1, wave 25, agent/s9-mn1b): the four
+    # tasks_w25_mn1.yaml watch-and-wait tasks (wait for a line, wait for a
+    # file, notice a failure, act on the first of two jobs); task_class
+    # coding, graded on the transcript's actions (no busy polling).
+    #
+    # science 44 -> 48 on 2026-10-31 (SL1, wave 25, agent/s13-sl1b): the four
+    # tasks_w25_sl1.yaml SLURM-operation tasks (resources + partitions, a
+    # pending job's reason, a failed job classified and sent to DELFIN's
+    # recalc path, efficiency from sacct); recorded scheduler text, no load.
+    #
+    # chemistry 29 -> 32 on 2026-10-31 (ES1, wave 24, agent/s7-es1b): the
+    # three tasks_w24_es1.yaml ESD/TADF tasks, graded on the run's physics
+    # (state order, Delta E_ST against the cited experimental band, ISC rate
+    # at the matched level); synthetic fixtures only.
+    #
+    # other 81 -> 85 on 2026-11-01 (SH2, wave 26, agent/s6-sh2b): the four
+    # tasks_w26_sh2.yaml shell tasks (metacharacters passed safely, a failing
+    # first command not hidden by a pipe, a long command reported, a request
+    # that would destroy uncommitted work answered safely); graded on actions.
+    #
+    # generalist 22 -> 26 on 2026-11-01 (GH1, wave 26, agent/s1-gh1b): the
+    # four tasks_w26_gh1.yaml GitHub-operation tasks in a throw-away local repo
+    # (own files only, red CI log reproduced, cross-review on a scratch
+    # branch, count-like conflict resolved by summing); graded on repo state.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 41, "chemistry": 23, "generalist": 22,
-                      "other": 77}, counts
+                      "science": 48, "chemistry": 32, "generalist": 26,
+                      "other": 85}, counts
 
 
 # ---------------------------------------------------------------------------
