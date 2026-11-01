@@ -25475,6 +25475,17 @@ class _DocToolExecutor:
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
         env.setdefault("LANG", "C.UTF-8")
+        # Code Mode hook (CM1): a bash command that runs a Code Mode
+        # program gets the per-invocation RPC socket path in its env, and
+        # the RPC server is started in the agent process. Every tool call
+        # the program makes goes over that socket into
+        # KitToolExecutor.execute -- the single PUBLIC entry a direct call
+        # takes (deny rules, plan-mode, sandbox, role and shape checks are
+        # evaluated inside it); the server-side allow-list is enforced
+        # before the executor. For a plain command this adds nothing: the
+        # env is unchanged and no server starts.
+        _cm_env = _code_mode_child_env(cmd, run_cwd, perms, self)
+        env.update(_cm_env)
 
         # What the command is about to overwrite.
         #
@@ -29613,6 +29624,60 @@ def env_spec(raw) -> dict:
     if isinstance(raw, dict):
         return {str(k): "" if v is None else str(v) for k, v in raw.items()}
     return {}
+
+
+def _code_mode_child_env(
+    cmd: str, run_cwd, perms, executor,
+) -> dict:
+    """Env additions for a bash command that runs a Code Mode program.
+
+    Returns ``{}`` for every other command — a plain bash call's
+    environment is unchanged and no RPC server starts. For a Code Mode
+    program the agent process starts ONE ``code_mode.RpcServer`` bound to a
+    fresh per-invocation socket under the workspace and puts only that path
+    in ``DELFIN_CODE_MODE_RPC`` for the caged child. The server hands every
+    request to ``executor.execute`` — the single public entry a direct
+    call takes (deny rules, plan-mode, sandbox, role and shape checks are
+    evaluated inside it) — after the server-side read-only allow-list.
+    The socket exists only for this child's lifetime; nothing listens
+    after the run.
+    """
+    from . import code_mode as _cm
+    program = _cm.runner_program_path(cmd)
+    if program is None:
+        return {}
+    import uuid
+    token = uuid.uuid4().hex
+    socket_path = _cm.rpc_socket_path(str(run_cwd), token)
+    # Public-entry parity: no rule plumbing here at all. The executor's
+    # execute() evaluates permission rules per call itself
+    # (api_client.py:17772 _permission_rule_hit inside _execute_pinned);
+    # anything lower (_dispatch_under_rules) would skip deny rules,
+    # plan-mode and the other preamble checks.
+    server = _cm.RpcServer(executor, permissions=perms)
+    server.bind(socket_path)
+    import threading
+    def _serve():
+        # One request per connection; the program opens a fresh socket per
+        # call. Idle past the window -> the child is gone -> stop; a later
+        # Code Mode invocation starts its own server on its own socket.
+        # Known path, stated: the idle timeout raises out of serve_one
+        # before any per-connection bookkeeping — that is the break
+        # condition, not a swallowed failure; close() then unlinks.
+        while True:
+            try:
+                server.serve_one(idle_timeout_s=_CM_SERVE_IDLE_S)
+            except OSError:
+                break
+        server.close()
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.start()
+    return {"DELFIN_CODE_MODE_RPC": socket_path}
+
+
+#: Idle window for the Code Mode RPC serve loop (the program's wall clock
+#: is capped at 120 s by default; the idle window outlasts it).
+_CM_SERVE_IDLE_S = 300.0
 
 
 def _configured_child_env(spec=None) -> dict:
