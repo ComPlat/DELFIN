@@ -400,12 +400,16 @@ def test_the_counts_still_match_what_was_measured():
     # (own files only, red CI log reproduced, cross-review on a scratch
     # branch, count-like conflict resolved by summing); graded on repo state.
     #
-    # other 85 -> 87 on 2026-11-01 (SA0, wave 27, agent/s5-sa0b): the two
+    # other 85 -> 88 on 2026-11-01 (SW1, wave 27, agent/s6-sw1b): the three
+    # tasks_w27_sw1.yaml swarm tasks (overlapping scopes refused, a valid
+    # spec's dry run lists the right members/branches/scopes, triage
+    # auto-answers a partner message but escalates a push request).
+    # other 88 -> 90 on 2026-11-02 (SA0, wave 27, agent/s5-sa0b): the two
     # tasks_w27_sa0.yaml delegation tasks (a dummy expert delegated to end
     # to end; graded on artifacts, no live model).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 48, "chemistry": 32, "generalist": 26,
-                      "other": 87}, counts
+                      "other": 90}, counts
 
 
 # ---------------------------------------------------------------------------
