@@ -484,6 +484,7 @@ def parse_orca_output(path: str) -> OrcaParseResult:
     from delfin import orca_read as _orca_read
 
     _QUANTITY = {
+        "final": _orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY,
         "gibbs": _orca_read.Quantity.GIBBS,
         "zpe": _orca_read.Quantity.ZPE,
     }
@@ -499,11 +500,13 @@ def parse_orca_output(path: str) -> OrcaParseResult:
             reading = _orca_read.read(str(out_path.parent),
                                       out_path.stem, _QUANTITY[name])
         except Exception:
-            reader = {"gibbs": _e.find_gibbs_energy,
+            reader = {"final": _e.find_electronic_energy,
+                      "gibbs": _e.find_gibbs_energy,
                       "zpe": _e.find_ZPE}[name]
             return reader(str(out_path))
         if reading.value is None:
-            reader = {"gibbs": _e.find_gibbs_energy,
+            reader = {"final": _e.find_electronic_energy,
+                      "gibbs": _e.find_gibbs_energy,
                       "zpe": _e.find_ZPE}[name]
             return reader(str(out_path))
         return reading.value
@@ -544,7 +547,7 @@ def parse_orca_output(path: str) -> OrcaParseResult:
     out.output_lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
     out.blocks_present = _orca_blocks_present(text)
     try:
-        out.final_single_point = _e.find_electronic_energy(str(p))
+        out.final_single_point = _quantity_via_orca_read(p, "final")
     except Exception:
         pass
     try:
