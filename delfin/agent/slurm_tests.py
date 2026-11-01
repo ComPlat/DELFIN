@@ -331,12 +331,15 @@ def _node_visible(path: str | Path, repo: str) -> bool:
 
     The run dir holds the sbatch script and receives the copied-back logs;
     a path the compute node cannot read (a login-node-only scratchpad) would
-    lose them. Visible = under $HOME (shared in every DELFIN deployment) or
+    lose them. Visible = under $HOME (shared in every DELFIN deployment),
     under the repository itself (the caller reached it through a shared
-    checkout). A decision on any other mount is a person's, not ours.
+    checkout), or inside the caller's current working directory (a relative
+    run dir such as "." or "logs" resolves there — the checkout the CLI was
+    invoked from, shared like the repo). A decision on any other mount is a
+    person's, not ours.
     """
     p = Path(path).resolve()
-    for root in (Path.home(), Path(repo).resolve()):
+    for root in (Path.home(), Path(repo).resolve(), Path.cwd().resolve()):
         try:
             p.relative_to(root)
             return True
