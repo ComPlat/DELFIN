@@ -23,18 +23,40 @@ from delfin.occupier import _orca_s2_deviation as occ_dev
 from delfin.parser import extract_last_uhf_deviation
 from delfin.reporting.occupier_reports import _orca_s2_deviation as rep_dev
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+_MARK = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+
+# Hand-written in ORCA's text layout (LICENSE_GUARD.md: real ORCA output is
+# not committed). The open-shell run prints two contamination blocks, so the
+# reader must return the LAST deviation.
+_UHF = ("----------------------\n UHF SPIN CONTAMINATION\n"
+        "----------------------\n\n"
+        "Expectation value of <S**2>     :     {s2:.6f}\n"
+        "Ideal value S*(S+1) for S=1.0   :     2.000000\n"
+        "Deviation                       :     {dev:.6f}\n\n")
+_DONE = "FINAL SINGLE POINT ENERGY      {e:.9f}\n" \
+        "                             ****ORCA TERMINATED NORMALLY****\n"
+_RUNS = {
+    "h2o_optfreq": _DONE.format(e=-76.4),
+    "h2o_tddft": _DONE.format(e=-76.3),
+    "o2_triplet": (_UHF.format(s2=2.0123, dev=0.0123)
+                   + _UHF.format(s2=2.0071, dev=0.0071)
+                   + _DONE.format(e=-150.2)),
+    "scf_not_converged": "SCF NOT CONVERGED AFTER 125 CYCLES\n"
+                         "ORCA finished by error termination in SCF\n",
+}
 
 
 def _copy_without_property_json(name: str, tmp_path: Path) -> Path:
-    """Copy a fixture .out/.inp (minus the OPI JSON) into tmp_path."""
+    """Write the synthetic run ``name`` as ``<name>/<name>.out`` (no OPI JSON)."""
     dst = tmp_path / name
     dst.mkdir(parents=True, exist_ok=True)
-    for suffix in (".out", ".inp"):
-        src = FIXTURES / name / f"{name}{suffix}"
-        if src.is_file():
-            (dst / src.name).write_bytes(src.read_bytes())
+    (dst / f"{name}.out").write_text(_MARK + _RUNS[name])
     return dst
+
+
+def test_the_synthetic_open_shell_run_reads_its_last_deviation(tmp_path):
+    out = _copy_without_property_json("o2_triplet", tmp_path) / "o2_triplet.out"
+    assert extract_last_uhf_deviation(str(out)) == 0.0071
 
 
 def test_text_mode_restores_the_old_path(tmp_path, monkeypatch):
