@@ -30,11 +30,15 @@ class TestRedaction:
     def test_home_path_in_blocked_reason_is_redacted(self):
         def loader(ws):
             return _tasks({"subject": "waiting", "status": "blocked",
-                           "blocked_reason": "log at /pfs/data6/home/ka/ka_ibcs/ka_ew7404/log.txt",
+                           # Synthetic account-shaped token: the guard
+                           # tests/test_no_account_name_is_committed.py
+                           # refuses real account names in tracked files,
+                           # so the fixture cannot spell one out.
+                           "blocked_reason": "log at /home/testacct/log.txt",
                            "updated_at": "2026-11-01T00:00:00"})
         out = ph.body("ws", "main", task_loader=loader,
                       git_log=lambda b, h: [], identity=IDENTITY)
-        assert "ka_ew7404" not in out
+        assert "testacct" not in out
 
     def test_secret_shaped_string_in_subject(self):
         def loader(ws):
