@@ -22,15 +22,29 @@ A slot's flock is held by an open file descriptor; the kernel releases it
 when the process dies -- crashed or killed, there is nothing to leak and
 no stale-holder sweep to run.
 
-The limit is adaptive (AIMD) and SHARED: every process reads the current
-limit before it waits and updates it after a result.
+The limit is adaptive (AIMD) and SHARED, per (endpoint, model): every
+process reads the current limit before it waits and updates it after a
+result.
 
     start   agent.endpoint_max_concurrency (default 16; 0 disables the gate)
+            is the TOTAL cap of one endpoint: how many concurrent requests
+            may hit it at all, across every model behind it.
     halve   an HTTP 429, a 503, or a request that saw no first byte within
-            the stall timeout (the "no byte from the endpoint" deadline)
-    +1      after _QUICK_SUCCESS_RUN consecutive requests that succeeded
-            quickly (first byte within _QUICK_SUCCESS_S), never above the
-            configured maximum
+            the stall timeout (the "no byte from the endpoint" deadline).
+            Each (endpoint, model) halves ONLY its OWN limit, so a slow
+            model (GLM: first byte often minutes) stops throttling the fast
+            ones (DeepSeek, Mistral) behind the same endpoint.
+    floor   the per-model halving floor is 2, not 1 (a model idling at 1
+            queue is unusable: one slow request blocks everything).
+    +1      (a) after _QUICK_SUCCESS_RUN consecutive requests that succeeded
+            quickly (first byte within _QUICK_SUCCESS_S), OR (b) after
+            _QUIET_RECOVER_S without a congestion signal -- time recovery,
+            the safety net for load where no quick success ever occurs.
+            Never above the configured maximum.
+
+When per-model limits are on, every request ALSO takes one slot in the
+endpoint's own gate (the total per-endpoint cap), so N models each at
+their own high limit cannot together exceed the endpoint's total cap.
 
 The gate never makes a request fail that would otherwise have succeeded:
 every flock error, a missing runtime directory, a corrupt state file, any
@@ -59,6 +73,20 @@ _QUICK_SUCCESS_RUN = 8
 #: KIT median first-token time (18.5 s, 2026-10-19).
 _QUICK_SUCCESS_S = 10.0
 
+#: After this long with no congestion signal the limit climbs by one again
+#: (time-based additive increase). This is the recovery that works under
+#: load, where no quick success ever occurs to trigger the run-based climb:
+#: without it a limit halved while the endpoint stayed saturated never rose
+#: again (measured 2026-10: KIT AIMD sat at 1 for hours).
+_QUIET_RECOVER_S = 120.0
+
+#: The halving floor of ONE (endpoint, model) limit. 2, not 1: a limit of 1
+#: makes a whole model nearly unusable (one slow request queues everything
+#: behind it) and the model never produces the quick success that climbs
+#: back. 1 request at a time is also below a usable queue for any real
+#: retry ladder.
+_HALVING_FLOOR = 2
+
 #: How long one wait for a slot may park on the state lock before it gives
 #: up and the request goes out ungated. A healthy holder holds it for
 #: milliseconds; anything longer means the file is stuck (NFS hiccup) and
@@ -73,6 +101,19 @@ _STATE_LOCK_TIMEOUT_S = 5.0
 #: transient-retry ladder takes over.
 _SLOT_WAIT_TIMEOUT_S = 900.0
 
+
+
+def display_url(url: str) -> str:
+    """``url`` without userinfo (``user:secret@``), for messages a user reads."""
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        p = urlsplit(str(url or ""))
+        host = p.hostname or ""
+        if p.port:
+            host = f"{host}:{p.port}"
+        return urlunsplit((p.scheme, host, p.path, "", ""))
+    except Exception:
+        return ""
 
 class SlotWaitTimeout(RuntimeError):
     """No slot became free within :data:`_SLOT_WAIT_TIMEOUT_S`."""
@@ -222,11 +263,27 @@ class EndpointGate:
     def __init__(self, base_url: str, model: str = "") -> None:
         self.base_url = base_url or ""
         self.model = model or ""
-        self._per_model = bool(
-            os.environ.get("DELFIN_ENDPOINT_PER_MODEL_LIMIT", "").strip()
-            not in ("", "0", "false", "no"))
-        self._key = _endpoint_key(self.base_url, self.model,
-                                  self._per_model)
+        # Per-model is the DEFAULT: a slow model's congestion must not
+        # throttle the fast models behind the same endpoint. The env var
+        # now only DISABLES it (flip falsy -> legacy one-limit-per-endpoint);
+        # an unset/empty value leaves the default ON.
+        raw_pm = (os.environ.get("DELFIN_ENDPOINT_PER_MODEL_LIMIT", "")
+                  .strip().lower())
+        self._per_model = raw_pm not in ("0", "false", "no", "off")
+        # The per-(endpoint, model) adaptive state: its own limit, its own
+        # slots. ``_endpoint_key`` names the endpoint-wide TOTAL cap, the
+        # slots every model behind this endpoint must also take.
+        self._model_key = _endpoint_key(self.base_url, self.model,
+                                        per_model=True)
+        self._endpoint_key = _endpoint_key(self.base_url, "", per_model=False)
+        if self._per_model:
+            self._key = self._model_key
+            self._cap_key = self._endpoint_key
+        else:
+            # Legacy mode: one limit per endpoint; there is no separate
+            # endpoint cap (the single gate already spans the endpoint).
+            self._key = self._endpoint_key
+            self._cap_key = ""
         #: Emitted as a notice while waiting for a slot (the wait/notice
         #: mechanism the stream loop already shows the user).
         self.wait_notice = ""
@@ -243,11 +300,25 @@ class EndpointGate:
 
     def _dir(self) -> Optional[Path]:
         root = gate_root()
-        if root is None:
+        if root is None or not self._key:
             return None
         try:
             from . import state_paths
             return state_paths.ensure_dir(root / self._key)
+        except Exception:
+            return None
+
+    def _cap_dir(self) -> Optional[Path]:
+        """The directory of the endpoint-wide TOTAL cap gate (empty when
+        per-model is off and the single gate already spans the endpoint)."""
+        if not self._cap_key:
+            return None
+        root = gate_root()
+        if root is None:
+            return None
+        try:
+            from . import state_paths
+            return state_paths.ensure_dir(root / self._cap_key)
         except Exception:
             return None
 
@@ -275,7 +346,16 @@ class EndpointGate:
         """Fold one result into the shared adaptive limit, returning the
         limit now in force. Atomic under the state lock; any failure is
         swallowed -- the limit is an optimisation, not a correctness
-        requirement."""
+        requirement.
+
+        Congestion (``halve``) halves the limit down to
+        :data:`_HALVING_FLOOR` and records when it happened. Every
+        non-congestion result that carries no signal -- quick or slow
+        success -- may add one back: immediately once
+        :data:`_QUICK_SUCCESS_RUN` quick successes have accumulated, or by
+        one once :data:`_QUIET_RECOVER_S` have passed without a congestion
+        signal (the recovery that works under load).
+        """
         config = _config_limit()
         if config <= 0:
             return 0
@@ -287,22 +367,49 @@ class EndpointGate:
                 except (TypeError, ValueError):
                     limit = config
                 limit = max(1, min(config, limit))
+                now = time.monotonic()
+                try:
+                    last_cong = float(
+                        state.get("last_congestion_ts", now))
+                except (TypeError, ValueError):
+                    last_cong = now
                 if halve:
-                    limit = max(1, limit // 2)
-                elif quick:
+                    limit = max(_HALVING_FLOOR, limit // 2)
+                    state["limit"] = limit
+                    # A congestion signal resets BOTH climb paths: the quick
+                    # run and the quiet-period baseline start over, or two
+                    # successes after one halving would walk the limit back
+                    # up while the endpoint is still saturated.
+                    state["quick_run"] = 0
+                    state["last_congestion_ts"] = now
+                    _write_state(dirpath, state)
+                    return limit
+                # A non-congestion result: the endpoint answered, so it has
+                # spare capacity and may recover one slot.
+                incremented = False
+                if quick:
                     run = int(state.get("quick_run", 0) or 0) + 1
-                    state["quick_run"] = run
                     if run >= _QUICK_SUCCESS_RUN and limit < config:
                         limit += 1
                         state["quick_run"] = 0
-                    state["limit"] = limit
-                    _write_state(dirpath, state)
-                    return limit
+                        incremented = True
+                    else:
+                        state["quick_run"] = run
+                else:
+                    # A slow (but successful) first byte restarts the quick
+                    # run: the endpoint was not fast. It still does not
+                    # block the quiet-period recovery -- no congestion
+                    # occurred.
+                    state["quick_run"] = 0
+                if (not incremented and now - last_cong >= _QUIET_RECOVER_S
+                        and limit < config):
+                    limit += 1
+                    incremented = True
+                if incremented:
+                    # One recovery per quiet period: re-anchor the baseline
+                    # so the next +1 needs another full quiet spell.
+                    state["last_congestion_ts"] = now
                 state["limit"] = limit
-                # A congestion signal resets the climb: the run must start
-                # over, or two successes after one halving would walk the
-                # limit back up while the endpoint is still saturated.
-                state["quick_run"] = 0
                 _write_state(dirpath, state)
                 return limit
         except Exception:
@@ -321,6 +428,15 @@ class EndpointGate:
         raises except :class:`SlotWaitTimeout` after ``timeout_s`` with no
         slot free anywhere (the caller turns that into the same
         transient-retry path a stalled request already takes).
+
+        With per-model limits on, the request ALSO takes one slot in the
+        endpoint's own total-cap gate ``_cap_dir``, so N models each at
+        their own high limit cannot together exceed the endpoint's cap.
+        Both slots are acquired under one shared deadline, in a fixed
+        order (model first, then endpoint); releasing happens in the
+        opposite order in :meth:`release`. On an endpoint-cap timeout the
+        already-taken model slot is released before re-raising, so no
+        request ever holds a model slot ungated.
         """
         if not self.enabled:
             return None
@@ -329,15 +445,58 @@ class EndpointGate:
             return None
         limit = self.current_limit(dirpath)
         deadline = time.monotonic() + max(0.0, float(timeout_s))
+        if (getattr(self, "_held_fd", None) is not None
+                or getattr(self, "_cap_fd", None) is not None):
+            # Re-entrant acquire would overwrite the outer slot's descriptor
+            # and leak its flock on release. One set of slots per gate
+            # instance; a second request in the same process gets its own
+            # EndpointGate.
+            raise RuntimeError(
+                "EndpointGate already holds a slot; build a fresh "
+                "EndpointGate for the second request")
+        fd, index = self._take_slot(dirpath, limit, deadline)
+        if fd is None:
+            return None                       # gate broken, go ungated
+        self._held_fd = fd
+        if self._cap_key:
+            cap_dir = self._cap_dir()
+            if cap_dir is None:
+                self._close(fd); self._held_fd = None
+                return None                   # cap gate broken, ungated
+            try:
+                cap_fd, _ = self._take_slot(cap_dir, _config_limit(),
+                                            deadline)
+            except SlotWaitTimeout:
+                # The endpoint is saturated by OTHER models: never leave a
+                # model slot held ungated. Free it and let the caller treat
+                # the wait as what it was -- waiting on the endpoint.
+                self._close(fd); self._held_fd = None
+                raise
+            if cap_fd is None:
+                self._close(fd); self._held_fd = None
+                return None                   # cap gate broken, ungated
+            self._cap_fd = cap_fd
+        return index
+
+    def _take_slot(self, dirpath: Path, n_slots: int,
+                   deadline: float):
+        """Flock one free slot file in ``dirpath`` within ``deadline``.
+
+        Returns ``(fd, index)`` on success, ``(None, None)`` when the gate
+        is broken (an open or flock error -- the request runs ungated),
+        and raises :class:`SlotWaitTimeout` when ``deadline`` passes with
+        every slot held. While it waits it reflects the in-use count into
+        :attr:`wait_notice`, which the stream loop surfaces to the user.
+        """
         announced = False
         while True:
             in_use = 0
-            for i in range(limit):
+            for i in range(n_slots):
                 slot = dirpath / f"slot-{i}"
                 try:
                     fd = os.open(str(slot), os.O_RDWR | os.O_CREAT, 0o600)
                 except OSError:
-                    return None                       # gate broken, go ungated
+                    return None, None         # gate broken, go ungated
                 try:
                     import fcntl
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -347,25 +506,15 @@ class EndpointGate:
                                      errno.EACCES):
                         in_use += 1
                         continue
-                    return None                       # unexpected: ungated
-                if getattr(self, "_held_fd", None) is not None:
-                    # Re-entrant acquire would overwrite the outer slot's
-                    # descriptor and leak its flock on release. One slot
-                    # per gate instance; a second request in the same
-                    # process gets its own EndpointGate.
-                    os.close(fd)
-                    raise RuntimeError(
-                        "EndpointGate already holds a slot; build a fresh "
-                        "EndpointGate for the second request")
+                    return None, None         # unexpected: ungated
                 # The fd now holds the flock for this process's lifetime;
                 # release() undoes it. A process that dies without
                 # releasing has the kernel close it: the slot frees itself.
-                self._held_fd = fd
                 if in_use:
                     self.wait_notice = (
                         f"waiting for a slot on "
                         f"{self.base_url or 'endpoint'}: {in_use} in use")
-                return i
+                return fd, i
             if not announced:
                 announced = True
                 self.wait_notice = (
@@ -373,17 +522,12 @@ class EndpointGate:
                     f" {in_use} in use")
             if time.monotonic() >= deadline:
                 raise SlotWaitTimeout(
-                    f"no slot on {self.base_url} within "
-                    f"{timeout_s:.0f}s ({limit} slots, all in use)")
+                    f"no slot on {display_url(self.base_url)} within the "
+                    f"allotted time ({n_slots} slots, all in use)")
             time.sleep(0.05)
 
-    def release(self) -> None:
-        """Free the slot this gate holds. Held in ``finally`` by the
-        caller; safe to call when nothing was acquired."""
-        fd = getattr(self, "_held_fd", None)
-        if fd is None:
-            return
-        self._held_fd = None
+    def _close(self, fd) -> None:
+        """Unflock and close one slot descriptor. Safe on any fd."""
         try:
             import fcntl
             fcntl.flock(fd, fcntl.LOCK_UN)
@@ -393,6 +537,18 @@ class EndpointGate:
             os.close(fd)
         except OSError:
             pass
+
+    def release(self) -> None:
+        """Free the slots this gate holds. Held in ``finally`` by the
+        caller; safe to call when nothing was acquired. Releases the
+        endpoint-cap slot first, then the per-model slot (the reverse of
+        the acquire order)."""
+        for attr in ("_cap_fd", "_held_fd"):
+            fd = getattr(self, attr, None)
+            if fd is None:
+                continue
+            setattr(self, attr, None)
+            self._close(fd)
 
     @contextmanager
     def slot(self, *, timeout_s: float = _SLOT_WAIT_TIMEOUT_S,

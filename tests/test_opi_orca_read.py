@@ -12,7 +12,10 @@ pytest.importorskip("opi", reason="OPI (orca-pi) not installed")
 
 from delfin.orca_read import Quantity, read
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from test_lc1_fixtures_helper import lc1_fixture_dir  # noqa: E402
+
 #: The .out prints energies/s2 to 8 resp. 6 decimals; OPI's JSON to full
 #: double precision. The phase-1 equivalence tests used 1e-6 (S2) and the
 #: text's printed precision (energies); the shadow check uses the same.
@@ -22,7 +25,7 @@ TOL = 1e-6
 def fixture_copy(name: str, tmp_path: Path) -> Path:
     dst = tmp_path / name
     dst.mkdir(parents=True, exist_ok=True)
-    for src in (FIXTURES / name).iterdir():
+    for src in lc1_fixture_dir(f"tests/fixtures/orca611/{name}").iterdir():
         (dst / src.name).write_bytes(src.read_bytes())
     return dst
 

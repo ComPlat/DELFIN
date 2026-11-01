@@ -4983,6 +4983,12 @@ def build_parser() -> argparse.ArgumentParser:
     _na = cli_new_adapter.build_parser(sub)
     _na.set_defaults(func=cli_new_adapter.handler)
 
+    # new-workflow: the hook is exactly these two lines; everything else
+    # lives in delfin/agent/cli_new_workflow.py.
+    from delfin.agent import cli_new_workflow
+    _nw = cli_new_workflow.build_parser(sub)
+    _nw.set_defaults(func=cli_new_workflow.handler)
+
     # prcheck (package PC1)
     prcheck = sub.add_parser(
         "prcheck", help="The pre-PR self-check: run, verify, then hand over")
