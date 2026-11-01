@@ -44,6 +44,24 @@ submits and writes stay individually approved direct tool calls.
 - Print a compact table or a short summary; only what you print reaches
   the model.
 
+## Example
+
+```python
+import tools_api as api
+failed, rows = [], []
+for i in range(1, 21):
+    info = api.read_calc_output(f"run_tree/job_{i:02d}")
+    if info.get("outcome") != "succeeded":
+        failed.append(info["job"])
+    else:
+        rows.append((info["job"], info["method"], info["energy_eh"]))
+print("failed:", failed)
+for job, method, energy in sorted(rows, key=lambda r: r[2]):
+    print(f"{job}  {method}  {energy:.6f}")
+```
+
+Save it as `census.py`, then `python -m delfin.agent.code_mode run census.py`.
+
 ## When to use it
 
 Many independent reads over many folders: 20 job folders' states + energies,

@@ -376,7 +376,9 @@ def run_program(program_path: str, timeout_s: float = DEFAULT_TIMEOUT_S,
             cwd=workspace or None)
     except subprocess.TimeoutExpired as exc:
         raise ProgramTimeout(
-            "Code Mode program exceeded the %.0fs limit" % timeout_s
+            "Code Mode program exceeded the %.0fs limit; batch smaller "
+            "(fewer tool calls per run) or pass a higher timeout_s next run"
+            % timeout_s
         ) from exc
     out = proc.stdout.decode("utf-8", errors="replace")
     err = proc.stderr.decode("utf-8", errors="replace")
