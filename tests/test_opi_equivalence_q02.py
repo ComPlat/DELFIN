@@ -65,7 +65,7 @@ from delfin.energies import (
     find_gibbs_energy,
     find_ZPE,
 )
-from tests.conftest import private_fixtures_or_skip  # noqa: F401
+from test_lc1_fixtures_helper import private_fixtures_or_skip  # noqa: F401
 
 RUNS = ["h2o_optfreq", "o2_triplet", "h2o_tddft", "scf_not_converged"]
 
