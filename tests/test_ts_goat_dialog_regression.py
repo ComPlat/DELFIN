@@ -271,10 +271,7 @@ def _iter_widgets(container):
 def test_atom_click_toggles_constraints(tmp_path):
     result, _ = _open_with_panel_viewer(tmp_path)
     reg = result['registry']
-    from ipywidgets import Text
-    texts = [c for c in _iter_widgets(reg['panel']) if isinstance(c, Text)]
-    assert texts, 'constraints field must exist in the panel'
-    constraint_field = texts[0]
+    constraint_field = reg['constraints_field']
     start = reg['parse_constraints'](constraint_field.value)
     # click an unconstrained atom -> it is added; click again -> removed.
     # Any atom outside the proposal qualifies; if the proposal covers
@@ -326,3 +323,78 @@ def test_mode_change_updates_animation_source(tmp_path):
         other = next(v for _l, v in dropdown.options if v != first)
         dropdown.value = other
         assert reg['state']['proposed'] is not None
+
+
+# --------------------- script-free viewer bootstrap (Voila replay fix) -----
+
+def test_static_div_carries_no_script(tmp_path):
+    """The script-free viewer markup contains the viewer div + payload
+    but NO executable script: on a later-attached panel Voila replays
+    stored output as inert HTML, so scripts in it never run (the cause
+    of the '3Dmol.js failed to load' banner, user report 2026-11-02)."""
+    import re
+    import sys
+    sys.path.insert(0, '.')
+    from delfin.dashboard.molecule_viewer import static_viewer_html
+    vid, stored = static_viewer_html(
+        '2\ntest\nO 0 0 0\nH 1 0 0\n',
+        highlight_indices=[0], arrows=[0.1, 0, 0, -0.1, 0, 0])
+    assert vid in stored
+    assert '<script type="application/json"' in stored
+    for m in re.finditer(r'<script([^>]*)>', stored):
+        assert 'type="application/json"' in m.group(1), stored
+    assert 'arrows' in stored
+
+
+def test_bootstrap_js_uses_no_cdn_and_diagnoses_missing_lib():
+    import sys
+    sys.path.insert(0, '.')
+    from delfin.dashboard.molecule_viewer import ts_goat_viewer_bootstrap_js
+    js = ts_goat_viewer_bootstrap_js('vid123', arrows=[0.0, 0.1, 0.0])
+    assert 'vid123' in js
+    assert 'cdn' not in js.lower()
+    assert 'window.$3Dmol' in js
+    assert 'DELFIN TS-GOAT: window.$3Dmol is undefined' in js
+    assert 'setClickable' in js
+    assert 'ts-goat-click-sync' in js
+
+
+def test_step_js_displaces_in_both_directions():
+    import sys
+    sys.path.insert(0, '.')
+    from delfin.dashboard.molecule_viewer import ts_goat_viewer_step_js
+    pos = ts_goat_viewer_step_js('vid123', +1)
+    neg = ts_goat_viewer_step_js('vid123', -1)
+    assert 'var sign = 1;' in pos
+    assert 'var sign = -1;' in neg
+    assert 'payload.arrows' in pos and 'payload.arrows' in neg
+    assert 'window.__tsGoatAmp' in pos
+
+
+def test_click_sync_widget_observes_and_routes(tmp_path):
+    """A click arriving through the hidden sync input must route into
+    on_atom_click and toggle the constraint field (JS -> Python)."""
+    out, _rendered = _open_dialog(tmp_path, _FakeBackend())
+    reg = out['registry']
+    sync = reg.get('click_sync')
+    assert sync is not None, 'click-sync Text widget missing from registry'
+    field = reg.get('constraints_field')
+    assert field is not None
+    start = reg['parse_constraints'](field.value)
+    # out-of-range click ignored
+    sync.value = '999'
+    assert reg['parse_constraints'](field.value) == start
+    # in-range click toggles
+    # first click toggles: if the proposal covers every atom the click
+    # REMOVES it; either way the value must change coherently
+    target = 0 if 0 not in start else (1 if 1 not in start else 2)
+    sync.value = str(target)
+    after = reg['parse_constraints'](field.value)
+    assert (target in after) != (target in start)
+    # an observe() fires only on value CHANGE: route through another
+    # value so the second click actually arrives (like two real clicks
+    # do through the JS channel).
+    sync.value = str(999 if target != 999 else 998)
+    sync.value = str(target)
+    # second click toggles back: 2 is re-added
+    assert target in reg['parse_constraints'](field.value)

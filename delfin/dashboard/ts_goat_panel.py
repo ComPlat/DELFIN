@@ -57,6 +57,12 @@ def build_ts_goat_panel(
         width='100%', height='470px', border='1px solid #bbb',
         overflow='auto', margin='4px 0',
     ))
+    # JS -> Python click channel (same pattern as the structure editor's
+    # submit-pick-sync): the viewer bootstrap writes the clicked atom's
+    # 0-based index into this hidden Text via the property setter +
+    # input event; the observe() below routes it to on_atom_click.
+    click_sync = widgets.Text(value='', layout=widgets.Layout(display='none'))
+    click_sync.add_class('ts-goat-click-sync')
     mode_label = widgets.HTML('<b>Reactive mode (imaginary modes of the final block):</b>')
     mode_dropdown = widgets.Dropdown(
         options=[], description='Mode:',
@@ -144,6 +150,7 @@ def build_ts_goat_panel(
                      '(drag to rotate, scroll to zoom; constraint atoms '
                      'are highlighted):'),
         viewer_out,
+        click_sync,
         anim_row,
         constraints_label,
         widgets.HBox([constraints_field, highlight_btn]),
@@ -507,11 +514,23 @@ def build_ts_goat_panel(
 
     constraints_field.observe(lambda _c: _refresh_preview(), names='value')
 
+    def _on_click_sync(change):
+        raw = (change.get('new') or '').strip()
+        if not raw:
+            return
+        try:
+            on_atom_click(int(raw))
+        except ValueError:
+            pass
+    click_sync.observe(_on_click_sync, names='value')
+
     return {
         'panel': panel, 'show': show, 'close': close,
         'state': state, 'status': status,
         'parse_constraints': _parse_constraints,
         'on_atom_click': on_atom_click,
+        'constraints_field': constraints_field,
+        'click_sync': click_sync,
     }
 
 

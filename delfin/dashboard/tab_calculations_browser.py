@@ -22,45 +22,10 @@ from pathlib import Path
 import ipywidgets as widgets
 import numpy as np
 from IPython.display import HTML, clear_output, display
+from rdkit import Chem, RDLogger
+from rdkit.Chem import AllChem, rdDepictor
+from rdkit.Chem.Draw import MolToImage
 
-from .constants import CALC_SEARCH_OPTIONS
-from .energy_labels import format_xyz_comment_label
-from .input_processing import (
-    parse_inp_resources,
-    parse_resource_settings,
-    smiles_to_xyz,
-    smiles_to_xyz_quick,
-    contains_metal,
-    is_smiles,
-)
-from . import upload_limits as _upload_limits
-from .helpers import (
-    disable_spellcheck, image_data_uri, js_string_literal,
-    neutralise_link_targets, save_neb_trajectory_csv,
-    save_neb_trajectory_plot_png,
-)
-from . import docx_view as _docx
-from . import pdf_view as _pdf
-from . import formula_engine as _formula_engine
-from . import spreadsheet_view as _sheet
-from . import text_view as _text_view
-from . import ketcher as _ketcher
-from . import ketcher_panel as _ketcher_panel
-from .molecule_viewer import (
-    VIEWER_CONTAINER_DYNAMIC_SCALE,
-    VIEWER_CONTAINER_HEIGHT_PX,
-    coord_to_xyz,
-    parse_xyz_frames,
-    get_viewer_profile,
-    measurement_bootstrap_js,
-    molecule_view_style_js,
-    patch_viewer_mouse_controls_js,
-    render_fukui_panel,
-    structure_viewer_fullscreen_bootstrap_js,
-    structure_viewer_fullscreen_css,
-    structure_viewer_fullscreen_kind_js,
-    viewer_disabled_html,
-)
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
 from delfin.reporting.delfin_docx_report import _orca_plot_binary
 from delfin.ssh_transfer_jobs import (
@@ -71,17 +36,53 @@ from delfin.ssh_transfer_jobs import (
 )
 from delfin.user_settings import (
     get_settings_path,
-    is_calc_unread,
     load_remote_archive_enabled,
     load_transfer_settings,
     mark_calc_as_read,
     normalize_ssh_transfer_settings,
     update_calc_running_transitions,
 )
-from rdkit import Chem, RDLogger
-from rdkit.Chem import rdDepictor, AllChem
-from rdkit.Chem.Draw import MolToImage
 
+from . import docx_view as _docx
+from . import formula_engine as _formula_engine
+from . import ketcher as _ketcher
+from . import ketcher_panel as _ketcher_panel
+from . import pdf_view as _pdf
+from . import spreadsheet_view as _sheet
+from . import text_view as _text_view
+from . import upload_limits as _upload_limits
+from .constants import CALC_SEARCH_OPTIONS
+from .energy_labels import format_xyz_comment_label
+from .helpers import (
+    disable_spellcheck,
+    image_data_uri,
+    js_string_literal,
+    neutralise_link_targets,
+    save_neb_trajectory_csv,
+    save_neb_trajectory_plot_png,
+)
+from .input_processing import (
+    contains_metal,
+    is_smiles,
+    parse_inp_resources,
+    parse_resource_settings,
+    smiles_to_xyz_quick,
+)
+from .molecule_viewer import (
+    VIEWER_CONTAINER_DYNAMIC_SCALE,
+    VIEWER_CONTAINER_HEIGHT_PX,
+    coord_to_xyz,
+    get_viewer_profile,
+    measurement_bootstrap_js,
+    molecule_view_style_js,
+    parse_xyz_frames,
+    patch_viewer_mouse_controls_js,
+    render_fukui_panel,
+    structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css,
+    structure_viewer_fullscreen_kind_js,
+    viewer_disabled_html,
+)
 
 ORCA_CPCM_TOP10_SOLVENTS = (
     "chloroform",
@@ -5074,7 +5075,9 @@ def create_tab(ctx):
         # Fallback: parse orbitals directly from selected ORCA output.
         # This is robust for OCCUPIER directories without DELFIN_Data.json.
         try:
-            from delfin.reporting.delfin_collector import parse_orbitals as _parse_orbitals
+            from delfin.reporting.delfin_collector import (
+                parse_orbitals as _parse_orbitals,
+            )
 
             parsed = _parse_orbitals(selected_path)
             if parsed:
@@ -8039,8 +8042,8 @@ def create_tab(ctx):
         calc_xyz_frame_input.max = len(frames)
         calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
         large_traj_note = (
-            f' <span style="color:#888;font-size:0.85em;">'
-            f'(large trajectory, single-frame mode)</span>'
+            ' <span style="color:#888;font-size:0.85em;">'
+            '(large trajectory, single-frame mode)</span>'
             if len(frames) > CALC_XYZ_LARGE_TRAJ_FRAMES else ''
         )
         calc_xyz_frame_total.value = f"<b>/ {len(frames)}</b>"
@@ -10248,26 +10251,40 @@ def create_tab(ctx):
                     and injects the click JS that toggles atoms in the
                     constraint field.
                     """
-                    import json as _json
                     if output_widget is None:
                         return  # panel shows its own fallback note
-                    from delfin.dashboard.molecule_viewer import (
-                        render_xyz_in_output,
-                    )
+                    from delfin.dashboard import molecule_viewer as _mv
                     xyz_lines = '\n'.join(
                         [str(len(atoms)), 'optimized TS']
                         + [f'{el} {x:.6f} {y:.6f} {z:.6f}'
                            for el, x, y, z in atoms]
                     )
-                    idx_list = _json.dumps(list(indices or []))
-                    click_js = (
-                        '<script>window.tsGoatConstrained = '
-                        + idx_list + ';</script>'
-                    )
-                    render_xyz_in_output(
+                    # py3Dmol's loader script inside a later-attached
+                    # Output never runs on Voila replay (inert HTML) --
+                    # the exact cause of the "3Dmol.js failed to load"
+                    # banner (user report 2026-11-02).  Store only the
+                    # static div + payload, then instantiate the
+                    # GLViewer through the run_js channel, which Voila
+                    # executes even for panels that come up after the
+                    # page loaded.  The library is already on the page
+                    # from the startup bundle; nothing hits a CDN.
+                    arrows_payload = None
+                    if arrows:
+                        flat = []
+                        for _el, x, y, z in arrows:
+                            flat.extend([x, y, z])
+                        arrows_payload = flat
+                    vid = _mv.render_xyz_static_div(
                         output_widget, xyz_lines, width=640, height=450,
-                        extra_js=click_js,
+                        highlight_indices=list(indices or []),
+                        arrows=arrows_payload,
                     )
+                    if vid:
+                        _run_js(_mv.ts_goat_viewer_bootstrap_js(
+                            vid, width=640, height=450,
+                            click_sync_css='.ts-goat-click-sync',
+                            arrows=arrows_payload,
+                        ))
 
                 def _ts_scroll_top():
                     _run_js(
@@ -12142,7 +12159,8 @@ def create_tab(ctx):
                                 row.append('—')
                     rows.append(row)
         calc_table_output.value = _render_extract_table_html(headers, rows)
-        import io, csv as _csv
+        import csv as _csv
+        import io
         buf = io.StringIO()
         csv_rows = [['' if c == '—' else c for c in row] for row in rows]
         _csv.writer(buf, delimiter=';').writerows([headers] + csv_rows)
@@ -13548,7 +13566,7 @@ def create_tab(ctx):
                 calc_update_view()
                 try:
                     head_bytes = min(CALC_TEXT_CHUNK_BYTES, size)
-                    with open(str(full_path), 'r', errors='ignore') as fh:
+                    with open(str(full_path), errors='ignore') as fh:
                         head_text = fh.read(head_bytes)
                     head_frames = parse_xyz_frames(head_text)
                     _calc_load_text_preview_chunk(full_path, size, 0)
@@ -14060,7 +14078,7 @@ def create_tab(ctx):
                     try:
                         if size > CALC_LOG_XYZ_EXTRACT_MAX:
                             # Read only the tail of large logs (XYZ blocks are near the end)
-                            with open(str(full_path), 'r', errors='ignore') as fh:
+                            with open(str(full_path), errors='ignore') as fh:
                                 fh.seek(max(0, size - CALC_TEXT_CHUNK_BYTES))
                                 xyz_source = fh.read()
                         else:
