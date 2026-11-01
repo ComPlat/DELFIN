@@ -118,7 +118,7 @@ def runner_program_path(cmd: str) -> Optional[str]:
     """
     import re
     match = re.search(
-        r"delfin\.agent\.code_mode\s+run\s+([^\s;&|<>]+)", cmd or "")
+        r"delfin\.agent\.code_mode\s+run\s+([^\s;&|<>$`()\']+)", cmd or "")
     if match:
         return match.group(1)
     return None
@@ -151,6 +151,7 @@ class RpcServer:
         self._executor = executor
         self._permissions = permissions
         self._rule_hit = rule_hit
+        self._socket_path: Optional[str] = None
 
     def handle_payload(self, payload: str) -> str:
         """One request payload -> reply string."""
@@ -184,6 +185,7 @@ class RpcServer:
         except FileNotFoundError:
             pass
         import socket as _socket
+        self._socket_path = socket_path
         self._sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         self._sock.bind(socket_path)
         self._sock.listen(8)
@@ -207,17 +209,28 @@ class RpcServer:
                 conn.sendall(self.handle_payload(
                     buf.decode("utf-8", errors="replace")).encode("utf-8"))
         finally:
+            # After a timeout accept() the socket timeout must be cleared for
+            # the next serve_one call. OSError here only happens when close()
+            # already ran, in which case there is nothing left to clear —
+            # this except is a no-op guard, not an error swallow.
             try:
                 self._sock.settimeout(None)
             except OSError:
                 pass
 
     def close(self) -> None:
-        """Close the listener and unlink the socket file."""
+        """Close the listener and unlink the socket file (idempotent)."""
         try:
             self._sock.close()
         except OSError:
             pass
+        path = self._socket_path
+        if path:
+            self._socket_path = None
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
 
 
 def make_client(rpc_path: str) -> Optional["RpcClient"]:
