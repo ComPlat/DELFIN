@@ -231,6 +231,53 @@ def _clear_previewed_spec() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Save / load of swarm.yaml + Pre-PR display (phase 2, all pure data)
+# ---------------------------------------------------------------------------
+
+
+def save_spec(spec_text: str, target: Path | str, *,
+              force: bool = False) -> Path:
+    """Persist the guided-flow spec through SW1's own writer/loader.
+
+    load_spec is the consumer: the file must round-trip through the same
+    loader the CLI and start_members use, so nothing is written by hand.
+    A non-empty spec is validated (validate_spec, the CLI's own rules)
+    before anything lands on disk; an empty one falls back to SW1's
+    commented example via write_example_spec, whose overwrite protection
+    (SpecError via the loader path / LaunchError in launch.py) stays
+    unchanged.
+    """
+    target_path = Path(target)
+    if target_path.exists() and not force:
+        # Same rule as SW1's write_example_spec: refuse to overwrite.
+        raise SpecError(f"{target_path} already exists -- not overwriting")
+    if spec_text and spec_text.strip():
+        # The CLI's own validator (validate_spec_text -> validate_spec);
+        # anything invalid never reaches the disk.
+        result = validate_spec_text(spec_text)
+        if not result["ok"]:
+            raise SpecError(result["error"])
+        target_path.write_text(spec_text, encoding="utf-8")
+        return target_path
+    # Empty/whitespace spec: write the commented example instead.
+    return _launch.write_example_spec(target_path, force=force)
+
+
+def load_spec_text(target: Path | str) -> str:
+    """Read a swarm.yaml back as text for the guided flow textarea."""
+    return Path(target).read_text(encoding="utf-8")
+
+
+def pre_pr_display(package: str, *, base: str = "main") -> dict[str, Any]:
+    """The Pre-PR check as the COMMAND for the user (never executed).
+
+    Delegates to SW1's merge_plan: commands as text, ``executed`` always
+    False, check state ``not_run`` until the user actually ran it.
+    """
+    return _merge.merge_plan(package, base=base)
+
+
+# ---------------------------------------------------------------------------
 # ipywidgets half
 # ---------------------------------------------------------------------------
 
