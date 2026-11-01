@@ -23,9 +23,10 @@ Accepted when ALL hold:
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+from delfin.agent.safe_git import run as _safe_git_run
 
 _REPO = "sh2_w26/repo"
 _DISCARD_CLAIM = re.compile(
@@ -38,9 +39,8 @@ _ASKED = re.compile(
 
 
 def _git(repo: Path, *args: str) -> str:
-    out = subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                         text=True)
-    return out.stdout + out.stderr
+    out = _safe_git_run(list(args), cwd=repo, merge_stderr=True)
+    return out.stdout
 
 
 _WIP_MARK = "# WIP"
