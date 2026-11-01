@@ -8,7 +8,7 @@ the browser's existing 3Dmol viewer. The library half lives in
 
 from __future__ import annotations
 
-import html as _html
+import html as html
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -99,7 +99,7 @@ def build_ts_goat_panel(
     }
 
     def _esc(text):
-        return _html.escape(str(text), quote=True)
+        return html.escape(str(text), quote=True)
 
     def _parse_constraints(text):
         indices = []
@@ -237,7 +237,7 @@ def build_ts_goat_panel(
                 constraint_indices=indices,
                 charge=state['charge'], mult=state['mult'],
                 method=method_field.value, basis=basis_field.value,
-                pal=pal_field.value, maxcore=maxcore_field.value,
+                ncores=pal_field.value, maxcore=maxcore_field.value,
                 base_name=job_name,
             )
         except Exception as exc:
@@ -287,6 +287,111 @@ def build_ts_goat_panel(
         'state': state, 'status': status,
         'parse_constraints': _parse_constraints,
     }
+
+
+def open_ts_goat_dialog(calc_path, callbacks) -> dict:
+    """Full open path: validate, analyse, build the panel, attach, show.
+
+    Called by the browser-tab handler.  ``callbacks`` carries the tab's
+    closures: render_viewer, reset_dropdown, scroll_top, backend.
+    Returns a dict; raises nothing -- problems land in ``result['error']``
+    with ``error_kind`` in {'not_usable_ts', 'no_xyz', 'no_hess',
+    'exception'} so the tab can phrase a visible message.
+    """
+    from delfin import ts_goat
+
+    result: dict = {
+        'panel': None, 'registry': None, 'error': None,
+        'error_kind': None, 'status_text': None,
+    }
+    try:
+        calc_path = Path(calc_path)
+        calc_dir = calc_path.parent
+        status = ts_goat.read_ts_status(calc_path)
+        if not status.usable:
+            problems = '; '.join(status.reasons) or 'not a usable TS output'
+            result['error'] = (
+                'This output is not a usable converged TS '
+                f'({problems}). GOAT needs OptTS + convergence + '
+                'exactly one imaginary mode.'
+            )
+            result['error_kind'] = 'not_usable_ts'
+            return result
+        files = ts_goat.collect_ts_files(calc_dir, out_path=calc_path)
+        ts_atoms = ts_goat.read_xyz(files.xyz_path) if files.xyz_path else None
+        if ts_atoms is None:
+            result['error'] = (
+                'No matching TS geometry (.xyz) found in '
+                f'{calc_dir.name} -- the atom order must match the '
+                'Hessian. Select the geometry manually.'
+            )
+            result['error_kind'] = 'no_xyz'
+            return result
+        reactant = (ts_goat.read_xyz(files.reactant_path)
+                    if files.reactant_path else None)
+        product = (ts_goat.read_xyz(files.product_path)
+                   if files.product_path else None)
+        proposed = ts_goat.analyze_reactive_center(
+            files.hess_path, ts_atoms, reactant, product,
+        ) if files.hess_path else None
+        if proposed is None:
+            result['error'] = (
+                'No Hessian (.hess) found -- the imaginary-mode analysis '
+                'and the reactive-centre proposal are not possible '
+                'without it.'
+            )
+            result['error_kind'] = 'no_hess'
+            return result
+        charge, mult = status.charge, status.mult
+        if (charge is None or mult is None) and files.inp_path:
+            inp_charge, inp_mult = ts_goat.read_inp_charge_mult(files.inp_path)
+            charge = charge if charge is not None else inp_charge
+            mult = mult if mult is not None else inp_mult
+
+        registry = build_ts_goat_panel(
+            get_selected_path=lambda: calc_path,
+            backend=callbacks['backend'],
+            reset_dropdown=callbacks['reset_dropdown'],
+            render_viewer=callbacks['render_viewer'],
+            scroll_top=callbacks['scroll_top'],
+        )
+        arrows = None
+        try:
+            from delfin.imag import displaced_geometries
+            displaced = displaced_geometries(files.hess_path, ts_atoms, modes=[0])
+            if displaced:
+                arrows = displaced[0]
+        except Exception:
+            arrows = None
+        registry['show']({
+            'files': files, 'ts_atoms': ts_atoms, 'proposed': proposed,
+            'elements': [a[0] for a in ts_atoms],
+            'coordinates': [(x, y, z) for _, x, y, z in ts_atoms],
+            'charge': charge if charge is not None else 0,
+            'mult': mult if mult is not None else 1,
+            'mode_arrows': arrows,
+            'status_html': (
+                f'<span style="font-size:12px;">{html.escape(str(Path(calc_path).name))}: '
+                f'reliability {proposed.reliability}'
+                + (' -- <b>AMBIGUOUS</b>, review the proposal'
+                   if proposed.ambiguous else '')
+                + '</span>'
+            ),
+            'analysis_html': ''.join(
+                f'<li>{html.escape(r)}</li>' for r in proposed.reasons
+            ),
+        })
+        result['registry'] = registry
+        result['panel'] = registry['panel']
+        result['status_text'] = registry['state'].get('status_text')
+        return result
+    except Exception as exc:  # the dialog must never crash the tab
+        result['error'] = (
+            f'Could not prepare the TS -> GOAT dialog: '
+            f'{type(exc).__name__}: {exc}'
+        )
+        result['error_kind'] = 'exception'
+        return result
 
 
 def render_constraints_preview(

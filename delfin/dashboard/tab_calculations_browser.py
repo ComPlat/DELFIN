@@ -1761,6 +1761,12 @@ def create_tab(ctx):
         ],
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
     )
+    # TS -> GOAT preparation panel: the dialog lives in ts_goat_panel.py
+    # and is attached here when the 'TS -> GOAT' option is selected.
+    calc_ts_goat_panel = widgets.VBox(
+        [],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
 
 
     # -- preselection widgets ----------------------------------------------
@@ -10220,21 +10226,41 @@ def create_tab(ctx):
             _calc_show_mo_plot_panel(False)
             _calc_show_spin_density_panel(False)
             calc_content_area.layout.display = 'block'
-            try:
-                from .ts_goat_panel import show_ts_goat_panel
-                _ts_labels = _calc_selected_labels()
-                show_ts_goat_panel(
-                    calc_path=_calc_path_for_label(_ts_labels[0]) if _ts_labels else None,
-                    ctx=ctx,
-                    content_area=calc_content_area,
-                )
-            except Exception as exc:
-                calc_content_area.children = [
-                    widgets.HTML(
-                        '<b>TS → GOAT:</b> the preparation dialog could not '
-                        f'be opened — {type(exc).__name__}: {exc}'
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'block'
+            _ts_labels = _calc_selected_labels()
+            _ts_path = _calc_path_for_label(_ts_labels[0]) if _ts_labels else None
+            if _ts_path is None:
+                calc_ts_goat_panel.children = [widgets.HTML(
+                    '<b>TS → GOAT:</b> select a .out file first.')]
+            else:
+                def _ts_render_viewer(xyz_lines, indices, arrows=None):
+                    """Render the TS with constraint atoms highlighted."""
+                    _render_3dmol(xyz_lines, fmt='xyz')
+
+                def _ts_scroll_top():
+                    _run_js(
+                        "setTimeout(function(){"
+                        "var el=document.querySelector('.calc-file-list');"
+                        " if(el) el.scrollTop=0;},80);"
                     )
-                ]
+
+                from .ts_goat_panel import open_ts_goat_dialog
+                open_result = open_ts_goat_dialog(
+                    _ts_path,
+                    callbacks={
+                        'backend': ctx.backend,
+                        'reset_dropdown': _calc_reset_options_dropdown,
+                        'render_viewer': _ts_render_viewer,
+                        'scroll_top': _ts_scroll_top,
+                    },
+                )
+                if open_result['error']:
+                    calc_ts_goat_panel.children = [widgets.HTML(
+                        '<b>TS → GOAT:</b> '
+                        + open_result['error'])]
+                else:
+                    calc_ts_goat_panel.children = [open_result['panel']]
             _calc_reset_options_dropdown()
         elif change['new'] == 'Calc NMR':
             calc_override_input.layout.display = 'none'
@@ -15936,6 +15962,7 @@ def create_tab(ctx):
         calc_print_mode_panel,
         calc_mo_plot_panel,
         calc_spin_density_panel,
+        calc_ts_goat_panel,
         calc_delete_confirm,
         calc_delete_status,
         calc_mol_container,
