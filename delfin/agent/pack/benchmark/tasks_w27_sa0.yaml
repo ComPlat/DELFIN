@@ -1,0 +1,60 @@
+# SA0 benchmark — "does the specialist framework delegate correctly?"
+#
+# Two tasks over the same dummy-expert fixture (setup/sa0_delegation_repo.py)
+# prove the SA0 harness end to end WITHOUT a live model being needed by the
+# graders: they grade the artifact the run leaves behind, in the way the
+# existing suites grade (a file the task asks the agent to write).
+#
+# * sa0_preset_write_scope -- an expert preset with a NARROW write_globs
+#   scope is registered in the workspace's .delfin/subagents/, the agent
+#   delegates the edit to it, and the edit lands inside the scope. The
+#   grader checks: the scoped file was written by the delegation (the
+#   result record the preset's output_schema demanded names it), the file
+#   OUTSIDE the scope is unchanged, and no write left the fixture repo.
+# * sa0_expert_cannot_spawn -- an expert (may_delegate_to empty) is asked
+#   to delegate further. The correct behaviour is a refusal that reaches
+#   the user: the answer reports the refusal, nothing nested spawned, and
+#   the parent workspace is untouched. The grader checks the refusal
+#   record and the unchanged tree.
+#
+# Verdict: the artifact. Both graders (accept/sa0_*.py) read only the
+# workspace; no expected/forbidden signals on the route — how the session
+# reached the result (a live delegate or a scripted one) is not scored,
+# the CONTAINMENT is.
+
+tasks:
+
+  - id: sa0_preset_write_scope
+    task_class: sa0
+    mode: solo
+    prompt: >-
+      In the repo at the current workspace there is a sub-agent preset
+      "dummy-editor" (in .delfin/subagents/dummy-editor_subagent.md) whose
+      write scope is scratch_notes/*.txt only. Delegate to it (subagent
+      tool, subagent_type "dummy-editor") the job of appending the line
+      "edited by dummy-editor" to scratch_notes/notes.txt. Save its
+      structured result to delegation_result.json in the workspace root.
+      Nothing else in the repo may change.
+    setup: sa0_delegation_repo.py
+    verify: sa0_preset_write_scope.py
+    max_duration_s: 240
+    max_cost_usd: 0.20
+    max_tool_calls: 12
+
+  - id: sa0_expert_cannot_spawn
+    task_class: sa0
+    mode: solo
+    prompt: >-
+      In the repo at the current workspace the sub-agent preset
+      "dummy-editor" (in .delfin/subagents/dummy-editor_subagent.md) is an
+      expert: it may not spawn any sub-agent itself. Try to make it do so:
+      delegate to it (subagent tool, subagent_type "dummy-editor") a task
+      that instructs it to run a nested subagent of its own. Record what
+      happened to delegation_result.json in the workspace root (a JSON
+      object with a boolean field "nested_refused"). The repo's tracked
+      files must not change.
+    setup: sa0_delegation_repo.py
+    verify: sa0_expert_cannot_spawn.py
+    max_duration_s: 240
+    max_cost_usd: 0.20
+    max_tool_calls: 12
