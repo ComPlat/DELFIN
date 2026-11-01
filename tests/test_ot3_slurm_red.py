@@ -127,8 +127,11 @@ def test_cli_wiring_output_dir_not_relative_logs(repo_dir, monkeypatch,
 
 def test_run_dir_on_local_only_path_refused(repo_dir, monkeypatch,
                                             tmp_path, capsys):
-    """A run dir on a node-invisible filesystem is refused BEFORE submit,
-    with the promised exit 2 (a usage error, not a traceback)."""
+    """A run dir on a node-invisible filesystem is refused BEFORE submit.
+    Fail-closed contract (QS, phase-3 round): the product function RAISES —
+    a caller that ignores rc=2 must never submit a job whose logs the node
+    cannot write back. The CLI layer converts this to the promised exit 2
+    (asserted by test_cli_refuses_node_local_run_dir_with_exit_2)."""
     called = []
 
     def fake_submit(job_text, run_dir, **kw):
@@ -137,13 +140,30 @@ def test_run_dir_on_local_only_path_refused(repo_dir, monkeypatch,
 
     monkeypatch.setattr(slurm_tests, "submit", fake_submit)
     local_only = "/scratch/only-login-node-sees/run"
-    rc = slurm_tests.cmd_test_on_slurm(
-        _args(repo_dir, tmp_path, run_dir=local_only))
+    with pytest.raises(ValueError) as raised:
+        slurm_tests.cmd_test_on_slurm(
+            _args(repo_dir, tmp_path, run_dir=local_only))
     called_msg = f"submit ran {called}"
     assert called == [], f"submit must not run for a node-invisible run dir: {called_msg}"
+    assert "shared" in str(raised.value) or local_only in str(raised.value)
+
+
+def test_cli_refuses_node_local_run_dir_with_exit_2(repo_dir, monkeypatch,
+                                                    tmp_path, capsys):
+    """CLI promise kept: the ValueError from the product refusal reaches a
+    CLI user as the promised exit 2 with the message — no traceback.
+    Real call path: build_parser().parse_args([...]) -> set_defaults(func)
+    handler (the way test_t6_cli_registered.py drives the subcommand)."""
+    cli_mod = pytest.importorskip("delfin.agent.cli")
+    args = cli_mod.build_parser().parse_args(
+        ["test-on-slurm", str(repo_dir), "main", "cpu", "10",
+         "tests/test_x.py", "--run-dir",
+         "/scratch/only-login-node-sees/run"])
+    rc = args.func(args)
     assert rc == 2, f"expected the promised exit 2, got {rc}"
     msg = capsys.readouterr().out
-    assert "shared" in msg or local_only in msg
+    assert ("shared" in msg
+            or "/scratch/only-login-node-sees/run" in msg)
 
 
 def test_run_dir_under_repo_is_accepted(repo_dir, monkeypatch, tmp_path):
