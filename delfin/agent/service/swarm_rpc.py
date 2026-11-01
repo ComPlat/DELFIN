@@ -101,7 +101,22 @@ def swarm_start(params: dict[str, Any]) -> dict[str, Any]:
     dry_run = params.get("dryRun", True)
     if dry_run is None:
         dry_run = True
-    confirmed = bool(params.get("confirm", False))
+    # A strict boolean: a truthy string or int must not become a
+    # confirmation (F1). The protocol gate enforces boolean too; this is
+    # the wrapper's own gate, so the module keeps its double-gate
+    # promise independently of the boundary.
+    confirmed = params.get("confirm") is True
+    # Any confirm that is PRESENT and not strictly true is an invalid
+    # confirmation attempt: refuse it with a reason, even on a dry run
+    # (F1 -- the TUI shows what was wrong, the plan is still returned).
+    bad_confirm = params.get("confirm") is not None and not confirmed
+    reason = None
+    if bad_confirm:
+        reason = ("confirm must be a boolean true (got "
+                  f"{params.get('confirm')!r})")
+    elif not dry_run:
+        reason = ("execute needs confirm=true: the user has not "
+                  "approved this plan in the UI")
     if dry_run or not confirmed:
         plan = _launch.plan_launch(spec)
         return {
@@ -110,9 +125,7 @@ def swarm_start(params: dict[str, Any]) -> dict[str, Any]:
             "members": plan["members"],
             "dry_run_text": _launch.render_dry_run(plan),
             "started": [],
-            "refused": None if dry_run else
-            "execute needs confirm=true: the user has not approved "
-            "this plan in the UI",
+            "refused": reason,
         }
     try:
         return _launch.start_members(spec, execute=True)
