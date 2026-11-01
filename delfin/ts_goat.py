@@ -227,7 +227,14 @@ def read_ts_status(out_path: Path) -> TSStatus:
 
 
 def read_xyz(path: Path) -> list[tuple[str, float, float, float]] | None:
-    """First frame of an .xyz as (element, x, y, z); None if unparseable."""
+    """First frame of an .xyz as (element, x, y, z); None if unparseable.
+
+    ORCA writes a comment line that may itself contain 4+ tokens
+    ("Coordinates from ORCA-job ... E -401.250208837948" -- the energy is
+    part of the comment), so a non-atom line must be SKIPPED, not treated
+    as a parse error.  A line counts as an atom line only when the second
+    through fourth tokens parse as floats; anything else is a comment.
+    """
     try:
         lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
@@ -246,9 +253,10 @@ def read_xyz(path: Path) -> list[tuple[str, float, float, float]] | None:
         if len(parts) < 4:
             continue
         try:
-            atoms.append((parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
+            x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
         except ValueError:
-            return None
+            continue  # comment / non-atom line -- skip, do not abort
+        atoms.append((parts[0], x, y, z))
     return atoms if len(atoms) == n else None
 
 
@@ -259,6 +267,23 @@ def _same_composition(a: Sequence, b: Sequence) -> bool:
     return all(
         str(x[0]).capitalize() == str(y[0]).capitalize() for x, y in zip(a, b)
     )
+
+
+def _composition_mismatch(a: Sequence, b: Sequence) -> str:
+    """Human-readable first difference between two atom orders.
+
+    Coordinates are deliberately NOT compared: a Hessian stores positions
+    in Bohr, an .xyz in Angstrom, and a small numeric mismatch must not
+    reject a genuinely matching geometry.  Only count and element order
+    (order-sensitive, as ORCA requires) are compared.
+    """
+    if len(a) != len(b):
+        return (f"atom count {len(a)} != Hessian {len(b)}")
+    for i, (x, y) in enumerate(zip(a, b)):
+        if str(x[0]).capitalize() != str(y[0]).capitalize():
+            return (f"element order differs at index {i}: "
+                    f"xyz has {x[0]}, Hessian has {y[0]}")
+    return "identical"
 
 
 # -------------------------------------------------------------- file finding
@@ -298,6 +323,7 @@ def collect_ts_files(calc_dir: Path, out_path: Path | None = None) -> TSFiles:
     # -- geometry: prefer an optimised-structure file that matches the
     #    Hessian's element order
     reference = None
+    xyz_rejections: list[str] = []
     if found.hess_path is not None:
         from delfin.imag import _hessian_atoms  # noqa: PLC0415 -- reuse of the parser
         try:
@@ -321,8 +347,11 @@ def collect_ts_files(calc_dir: Path, out_path: Path | None = None) -> TSFiles:
     for cand in xyz_candidates:
         atoms = read_xyz(cand)
         if atoms is None:
+            xyz_rejections.append(f"{cand.name}: unparseable (no atom lines)")
             continue
         if reference is not None and not _same_composition(atoms, reference):
+            mismatch = _composition_mismatch(atoms, reference)
+            xyz_rejections.append(f"{cand.name}: {mismatch}")
             continue
         # Do not mistake reactant/product endpoint files for the TS itself.
         if _EDUKT_RE.search(cand.stem) or _PRODUKT_RE.search(cand.stem):
@@ -357,8 +386,11 @@ def collect_ts_files(calc_dir: Path, out_path: Path | None = None) -> TSFiles:
         found.problems.append("no Hessian (.hess) found -- imaginary-mode "
                               "analysis is not possible without it")
     if found.xyz_path is None:
-        found.problems.append("no matching TS geometry (.xyz) found "
-                              "(atom order must match the Hessian)")
+        msg = ("no matching TS geometry (.xyz) found "
+               "(atom order must match the Hessian)")
+        if xyz_rejections:
+            msg += " -- candidates checked: " + "; ".join(xyz_rejections)
+        found.problems.append(msg)
     if found.inp_path is None:
         found.problems.append("no ORCA input (.inp) found -- charge and "
                               "multiplicity must be set manually")

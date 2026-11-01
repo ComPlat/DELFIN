@@ -298,3 +298,85 @@ def test_mode_change_reproposes_reactive_center(tmp_path):
     # both proposals exist and differ in the mode-displacement evidence
     assert rc0.indices and rc1.indices
     assert rc0.scores != rc1.scores
+
+
+# ------------------------ geometry matching regression (real ORCA files) ---
+
+_ORCA_COMMENT = (
+    "Coordinates from ORCA-job /scratch/slurm_tmpdir/job_1/run/base "
+    "E -401.250208837948"
+)
+
+
+def _write_orca_xyz(path, atoms, comment=_ORCA_COMMENT):
+    """ORCA-style xyz: comment line carries 4+ tokens incl. an energy."""
+    lines = [str(len(atoms)), comment]
+    lines += [f"{el} {x:.10f} {y:.10f} {z:.10f}" for el, x, y, z in atoms]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_orca_comment_line_with_energy_is_not_an_atom(tmp_path):
+    # regression: 'Coordinates from ORCA-job ... E -401.25' made read_xyz
+    # abort with float('from') -> every candidate was silently dropped and
+    # the dialog reported 'No matching TS geometry'.
+    import delfin.ts_goat as tg
+
+    d = tmp_path / "final"
+    d.mkdir()
+    atoms = _water_ts_atoms()
+    _write_orca_xyz(d / "Opt_TS.xyz", atoms)
+    parsed = tg.read_xyz(d / "Opt_TS.xyz")
+    assert parsed is not None and [a[0] for a in parsed] == [a[0] for a in atoms]
+    # coordinates survive the comment line exactly
+    assert abs(parsed[0][1] - atoms[0][1]) < 1e-9
+
+
+def test_collect_matches_xyz_with_divergent_basename(tmp_path):
+    d = tmp_path / "final"
+    d.mkdir()
+    atoms = _water_ts_atoms()
+    _write_hess(d / "Opt_TS_recalc_1.hess", atoms, [], [-300.0])
+    _write_orca_xyz(d / "geometry_optimised.xyz", atoms)  # divergent name
+    files = collect_ts_files(d, out_path=d / "Opt_TS_recalc_1.out")
+    assert files.xyz_path == d / "geometry_optimised.xyz"
+    # .inp is genuinely absent here -> its hint stays, nothing about xyz
+    assert not any("matching TS geometry" in x for x in files.problems)
+
+
+def test_collect_reports_rejection_reason_per_candidate(tmp_path):
+    d = tmp_path / "final"
+    d.mkdir()
+    atoms = _water_ts_atoms()
+    _write_hess(d / "TS.hess", atoms, [], [-300.0])
+    # same count but reordered elements -> genuinely incompatible
+    _write_orca_xyz(d / "TS.xyz", list(reversed(atoms)))
+    files = collect_ts_files(d, out_path=d / "TS.out")
+    assert files.xyz_path is None
+    assert any("element order" in p.lower() for p in files.problems), files.problems
+
+
+def test_bohr_vs_angstrom_coordinates_do_not_reject(tmp_path):
+    # composition matching compares element ORDER only; a Hessian stores
+    # coordinates in Bohr, an .xyz in Angstrom -- that must not matter.
+    import delfin.ts_goat as tg
+
+    atoms = _water_ts_atoms()
+    # Hessian atoms come in Bohr (large values); xyz in Angstrom (small)
+    xyz_atoms = [(el, x / 1.889726, y / 1.889726, z / 1.889726)
+                 for el, x, y, z in atoms]
+    assert tg._same_composition(xyz_atoms, atoms) is True
+
+
+def test_multiple_xyz_candidates_pick_hessian_ordered_one(tmp_path):
+    d = tmp_path / "final"
+    d.mkdir()
+    atoms = _water_ts_atoms()
+    _write_hess(d / "TS.hess", atoms, [], [-300.0])
+    # three candidates: reactant (endpoint), wrong order, right order
+    _write_orca_xyz(d / "edukt.xyz", atoms)
+    _write_orca_xyz(d / "wrong_order.xyz", list(reversed(atoms)))
+    _write_orca_xyz(d / "other_run_final.xyz", atoms)
+    files = collect_ts_files(d, out_path=d / "TS.out")
+    assert files.reactant_path == d / "edukt.xyz"
+    assert files.xyz_path == d / "other_run_final.xyz"
+    assert not any("matching TS geometry" in x for x in files.problems)
