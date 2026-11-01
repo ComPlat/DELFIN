@@ -68,6 +68,10 @@ ENGINE_CUTOFFS = {
                             "else not_assigned (geometric only, no CIP/bond orders)",
     "diene_conformation": "s-trans if |dihedral| > 120 deg, s-cis if < 60 deg, "
                           "else not_assigned (geometric only)",
+    "ez_cip": "CIP E/Z from XYZ coordinates plus RDKit-perceived bond orders: "
+              "a coordinate-based RECONSTRUCTION, not independently validated "
+              "stereochemistry (status unknown/not_assigned is uncertainty, "
+              "never a guessed E or Z)",
 }
 
 # Natural-language shape term -> candidate descriptors, in the order the
@@ -156,6 +160,33 @@ def list_descriptors():
     return dict(DESCRIPTOR_DOC)
 
 
+#: Literature source per descriptor, DOI verified 2026-11-01 through
+#: DELFIN's web tools. "DELFIN operational" marks a definition this
+#: repository introduces; it carries no citation on purpose.
+DESCRIPTOR_SOURCES = {
+    "rg": "Theodorou & Suter, Macromolecules 1985, 18, 1206-1214, "
+          "DOI 10.1021/ma00148a028 (gyration tensor framework)",
+    "dmax": "Euclidean pairwise distance; DELFIN operational",
+    "asphericity": "Theodorou & Suter, Macromolecules 1985, 18, 1206-1214, "
+                   "DOI 10.1021/ma00148a028",
+    "eccentricity": "Sauer & Schwarz, J. Chem. Inf. Comput. Sci. 2003, 43, "
+                    "987-1003, DOI 10.1021/ci025599w (inertia framework)",
+    "npr1": "Sauer & Schwarz, J. Chem. Inf. Comput. Sci. 2003, 43, "
+            "987-1003, DOI 10.1021/ci025599w",
+    "npr2": "Sauer & Schwarz, J. Chem. Inf. Comput. Sci. 2003, 43, "
+            "987-1003, DOI 10.1021/ci025599w",
+    "planarity": "Sauer & Schwarz (PMI basis), DOI 10.1021/ci025599w; "
+                 "the (t2-t1)/(t3-t1) normalization is DELFIN operational",
+    "acylindricity": "Theodorou & Suter framework, DOI 10.1021/ma00148a028; "
+                     "normalized here (DELFIN operational)",
+    "kappa2": "Theodorou & Suter, Macromolecules 1985, 18, 1206-1214, "
+              "DOI 10.1021/ma00148a028",
+    "compacity": "DELFIN operational (rg/dmax); no literature definition",
+    "foldedness": "DELFIN operational (1 - rg/(dmax/2 * sqrt(3/5))); "
+                  "no literature definition",
+}
+
+
 def describe_descriptor(name):
     """Definition, unit, weighting and caveats for one descriptor name.
 
@@ -166,7 +197,9 @@ def describe_descriptor(name):
         raise KeyError(
             f"unknown descriptor {name!r}; available: {sorted(DESCRIPTOR_DOC)}"
         )
-    return {"name": name, "definition": doc}
+    return {"name": name, "definition": doc,
+            "source": DESCRIPTOR_SOURCES.get(name),
+            "source_reference": "docs/CONFORMER_GEOMETRY_DESCRIPTORS.md"}
 
 
 def _load_result(path, weighting, selections, use_cache):
