@@ -348,10 +348,13 @@ def test_geometry_toolset_hidden_for_non_chemistry_workspace(tmp_path):
     ]
     assert geometry_names, "geometry catalog must be non-empty"
     all_tools = [
-        {"name": n, "category": "geometry", "summary": ""} for n in geometry_names
+        # real advertised-set shape: OpenAI tool dicts whose function name is
+        # the MCP tool name (tool_group maps mcp__delfin-ops__* -> chemistry)
+        {"function": {"name": f"mcp__delfin-ops__{n}"}}
+        for n in geometry_names
     ]
     remaining = drop_hidden(all_tools, ts.hidden_groups())
-    surviving = {t["name"] for t in remaining}
+    surviving = {t["function"]["name"] for t in remaining}
     assert not (surviving & set(geometry_names)), (
         "geometry tools leaked into a non-chemistry advertised set"
     )
