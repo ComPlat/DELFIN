@@ -137,11 +137,14 @@ def build_ts_goat_panel(
         layout=widgets.Layout(margin='2px 0', flex_flow='row wrap',
                               width='100%'),
     )
-    constraints_label = widgets.HTML('<b>Constraint atoms (0-based ORCA indices):</b>')
-    constraints_field = widgets.Text(
-        placeholder='e.g. 0, 2, 5', description='',
-        layout=widgets.Layout(width='260px'),
+    constraints_label = widgets.HTML(
+        '<b>Constraint atoms (0-based ORCA indices):</b>')
+    constraints_count = widgets.HTML('')
+    constraints_field = widgets.Textarea(
+        placeholder='e.g. 0, 2, 5 (comma- or newline-separated)',
+        layout=widgets.Layout(width='95%', height='72px'),
     )
+    constraints_error = widgets.HTML('')
     highlight_btn = widgets.Button(
         description='↻ Highlight', button_style='info',
         tooltip='Re-render the viewer with the current constraint atoms highlighted',
@@ -153,7 +156,7 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='170px'),
     )
     clear_sel_btn = widgets.Button(
-        description='Alle Markierungen entfernen',
+        description='Alle Constraints entfernen',
         tooltip='Clear every constraint (fully manual selection)',
         layout=widgets.Layout(width='200px'),
     )
@@ -176,7 +179,9 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='200px'),
     )
     preview_label = widgets.HTML('<b>ORCA input preview:</b>')
-    preview_box = widgets.HTML('')
+    preview_box = widgets.HTML('', layout=widgets.Layout(
+        max_height='22em', overflow_y='auto', width='100%',
+        border='1px solid #cfd8dc'))
     submit_btn = widgets.Button(
         description='▶ Submit GOAT job', button_style='success',
         tooltip='Write the input into a new folder and submit it',
@@ -211,7 +216,7 @@ def build_ts_goat_panel(
             layout=widgets.Layout(display='flex', width='100%',
                                    align_items='center')),
         left=(status, files_box, mode_label, mode_dropdown, mode_warning,
-              analysis_box, constraints_label,
+              analysis_box, constraints_label, constraints_count,
               widgets.HBox([constraints_field, highlight_btn, reset_prop_btn,
                             clear_sel_btn],
                            layout=widgets.Layout(flex_flow='row wrap',
@@ -248,11 +253,48 @@ def build_ts_goat_panel(
                 indices.append(idx)
         return indices
 
+    def _update_constraint_count(indices, n_atoms):
+        """Atom count, share and a factual wide-selection warning.
+
+        A large fixed fraction restricts the GOAT conformer search
+        heavily (ORCA TS-conformer tutorial: only the atoms directly
+        involved in the transformation should be fixed); the user
+        decides, so this is a warning, not a block.
+        """
+        if not n_atoms:
+            constraints_count.value = ''
+            return
+        n_sel = len(set(indices))
+        share = 100.0 * n_sel / n_atoms
+        color = '#e65100' if share > 30 else '#2e7d32'
+        warn = ''
+        if share > 30:
+            warn = (' <span style="color:#e65100;">&#9888; heavy '
+                    'restriction of the conformer search</span>')
+        constraints_count.value = (
+            f'<span style="color:{color}; font-size:11px;">'
+            f'{n_sel} of {n_atoms} atoms selected '
+            f'({share:.0f}% fixed){warn}</span>')
+
+    def _sync_basis_field():
+        """Basis sets apply to orbital methods only.
+
+        For semi-empirical/force-field methods (XTB, GFN*, MM) a basis
+        like def2-SVP is not a real parameter; the field is disabled so
+        a stale value can neither mislead the user nor enter the input.
+        """
+        method = (method_field.value or '').strip()
+        semi = method.lower().startswith(('xtb', 'gfn', 'mm'))
+        basis_field.disabled = semi
+        if semi:
+            basis_field.value = ''
+
     def _refresh_preview():
         indices = _parse_constraints(constraints_field.value)
         atoms = state['ts_atoms'] or []
         n_atoms = len(atoms)
         bad = [i for i in indices if i >= n_atoms]
+        _update_constraint_count(indices, n_atoms)
         preview_box.value = (
             '<pre style="font-size:11px;">' + _esc(
                 render_constraints_preview(
@@ -462,8 +504,27 @@ def build_ts_goat_panel(
             state['hess_path'], state['ts_atoms'], mode_index=idx,
         )
         state['proposed'] = proposed
-        analysis_box.value = ''.join(
+        # Structure the analysis: a short verdict up top, the full
+        # contact statistics folded away (live report 2026-11-02: the
+        # plain reasons list buried the essential facts under 800+
+        # contacts of diagnostics).
+        head = (
+            f'<b>Proposal: {len(proposed.indices)} atoms</b>'
+            f' &mdash; data quality: {proposed.reliability}'
+            + (' &mdash; <b style="color:#e65100;">AMBIGUOUS:</b> '
+               'several contacts answer the mode similarly strongly; '
+               'review the selection in the viewer'
+               if proposed.ambiguous else
+               ' &mdash; proposal unambiguous')
+        )
+        detail = ''.join(
             f'<li>{html.escape(r)}</li>' for r in proposed.reasons
+        )
+        analysis_box.value = (
+            f'<div style="font-size:12px;">{head}</div>'
+            '<details style="font-size:11px; margin-top:2px;">'
+            '<summary>Diagnosis details (contact statistics)</summary>'
+            f'<ul style="margin:2px 0 0 14px;">{detail}</ul></details>'
         )
         # reliability = quality/consistency of the data; ambiguity =
         # uniqueness of the PROPOSAL.  These are different things and
@@ -639,6 +700,9 @@ def build_ts_goat_panel(
     reset_prop_btn.on_click(_on_reset_proposal)
     clear_sel_btn.on_click(_on_clear_selection)
 
+    method_field.observe(
+        lambda _c: (_sync_basis_field(), _refresh_preview()),
+        names='value')
     constraints_field.observe(lambda _c: (_refresh_preview(),
                                           _render_integrated_viewer()),
                               names='value')
