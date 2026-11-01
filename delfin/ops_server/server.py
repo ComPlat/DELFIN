@@ -1795,6 +1795,97 @@ def tool_hyperpol(extra_args: str = "", allow_mutate: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
+# geometry_edit — coordinate manipulation on instruction (read-only wrappers
+# over delfin.tools.geometry_edit; chemistry toolset group, never always-on).
+# ---------------------------------------------------------------------------
+
+def tool_geometry_read_xyz(xyz: str) -> str:
+    """Parse an xyz block into symbols, coords, charge, multiplicity."""
+    return _dumps(delfin_api.geometry_read_xyz(xyz))
+
+
+def tool_geometry_set_bond(xyz: str, i: int, j: int, length: float) -> str:
+    """Set the i-j bond length (Angstrom), moving the smaller fragment."""
+    return _dumps(delfin_api.geometry_set_bond(xyz, i, j, length))
+
+
+def tool_geometry_set_angle(xyz: str, i: int, j: int, k: int,
+                            degrees: float) -> str:
+    """Set the i-j-k angle (vertex j, degrees), moving the smaller fragment."""
+    return _dumps(delfin_api.geometry_set_angle(xyz, i, j, k, degrees))
+
+
+def tool_geometry_set_dihedral(xyz: str, i: int, j: int, k: int, l: int,
+                               degrees: float) -> str:
+    """Set the i-j-k-l dihedral (degrees); refuses a dihedral across a ring."""
+    return _dumps(delfin_api.geometry_set_dihedral(xyz, i, j, k, l, degrees))
+
+
+def tool_geometry_translate(xyz: str, indices: list, vector) -> str:
+    """Translate the selected atoms by a 3-vector (Angstrom)."""
+    return _dumps(delfin_api.geometry_translate(xyz, indices, vector))
+
+
+def tool_geometry_rotate(xyz: str, indices: list, axis, degrees: float) -> str:
+    """Rotate the selected atoms about an axis through a centre by degrees."""
+    return _dumps(delfin_api.geometry_rotate(xyz, indices, axis, degrees))
+
+
+def tool_geometry_add_atom(xyz: str, element: str, bonded_to: int,
+                           bond_length: float) -> str:
+    """Add an atom at a bond length from an existing atom."""
+    return _dumps(delfin_api.geometry_add_atom(xyz, element, bonded_to,
+                                               bond_length))
+
+
+def tool_geometry_remove_atoms(xyz: str, indices: list) -> str:
+    """Remove atoms by index; the remaining atoms are renumbered."""
+    return _dumps(delfin_api.geometry_remove_atoms(xyz, indices))
+
+
+def tool_geometry_replace_ligand(xyz: str, connect: int, ligand: str) -> str:
+    """Replace the ligand on atom ``connect`` with an element or SMILES."""
+    return _dumps(delfin_api.geometry_replace_ligand(xyz, connect, ligand))
+
+
+def tool_geometry_mirror(xyz: str, plane: str = "yz") -> str:
+    """Mirror the structure across a coordinate plane (xy/xz/yz)."""
+    return _dumps(delfin_api.geometry_mirror(xyz, plane))
+
+
+def tool_geometry_align_rmsd(mobile_xyz: str, reference_xyz: str) -> str:
+    """Kabsch-align a mobile structure onto a reference; report the RMSD."""
+    return _dumps(delfin_api.geometry_align_rmsd(mobile_xyz, reference_xyz))
+
+
+def tool_geometry_merge(fragments: list) -> str:
+    """Concatenate xyz fragments into one structure (earlier atoms first)."""
+    return _dumps(delfin_api.geometry_merge(fragments))
+
+
+def tool_geometry_freeze(xyz: str, indices: list) -> str:
+    """Mark atoms frozen for a following constrained optimisation."""
+    return _dumps(delfin_api.geometry_freeze(xyz, indices))
+
+
+def tool_geometry_constraints_block(xyz: str) -> str:
+    """ORCA %geom Constraints block for the structure's frozen atoms."""
+    return _dumps(delfin_api.geometry_constraints_block(xyz))
+
+
+def tool_geometry_build_smiles(smiles: str) -> str:
+    """Embed a 3D structure from SMILES (RDKit)."""
+    return _dumps(delfin_api.geometry_build_smiles(smiles))
+
+
+def tool_geometry_write_orca_block(xyz: str, charge: int = 0,
+                                   multiplicity: int = 1) -> str:
+    """Serialise an xyz block as an ORCA coordinate block."""
+    return _dumps(delfin_api.geometry_write_orca_block(xyz, charge,
+                                                       multiplicity))
+
+
+# ---------------------------------------------------------------------------
 # Server bootstrap
 # ---------------------------------------------------------------------------
 
@@ -1837,6 +1928,23 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="extract_thermochem")(_safe("extract_thermochem", tool_extract_thermochem))
     mcp.tool(name="extract_energy_table")(_safe("extract_energy_table", tool_extract_energy_table))
     mcp.tool(name="find_calculation_extreme")(_safe("find_calculation_extreme", tool_find_calculation_extreme))
+    # geometry_edit — coordinate manipulation on instruction (read-only)
+    mcp.tool(name="geometry_read_xyz")(_safe("geometry_read_xyz", tool_geometry_read_xyz))
+    mcp.tool(name="geometry_set_bond")(_safe("geometry_set_bond", tool_geometry_set_bond))
+    mcp.tool(name="geometry_set_angle")(_safe("geometry_set_angle", tool_geometry_set_angle))
+    mcp.tool(name="geometry_set_dihedral")(_safe("geometry_set_dihedral", tool_geometry_set_dihedral))
+    mcp.tool(name="geometry_translate")(_safe("geometry_translate", tool_geometry_translate))
+    mcp.tool(name="geometry_rotate")(_safe("geometry_rotate", tool_geometry_rotate))
+    mcp.tool(name="geometry_add_atom")(_safe("geometry_add_atom", tool_geometry_add_atom))
+    mcp.tool(name="geometry_remove_atoms")(_safe("geometry_remove_atoms", tool_geometry_remove_atoms))
+    mcp.tool(name="geometry_replace_ligand")(_safe("geometry_replace_ligand", tool_geometry_replace_ligand))
+    mcp.tool(name="geometry_mirror")(_safe("geometry_mirror", tool_geometry_mirror))
+    mcp.tool(name="geometry_align_rmsd")(_safe("geometry_align_rmsd", tool_geometry_align_rmsd))
+    mcp.tool(name="geometry_merge")(_safe("geometry_merge", tool_geometry_merge))
+    mcp.tool(name="geometry_freeze")(_safe("geometry_freeze", tool_geometry_freeze))
+    mcp.tool(name="geometry_constraints_block")(_safe("geometry_constraints_block", tool_geometry_constraints_block))
+    mcp.tool(name="geometry_build_smiles")(_safe("geometry_build_smiles", tool_geometry_build_smiles))
+    mcp.tool(name="geometry_write_orca_block")(_safe("geometry_write_orca_block", tool_geometry_write_orca_block))
     # Imaginary-frequency + functional-comparison helpers
     mcp.tool(name="extract_imaginary_frequencies")(_safe("extract_imaginary_frequencies", tool_extract_imaginary_frequencies))
     mcp.tool(name="compare_calculations")(_safe("compare_calculations", tool_compare_calculations))
