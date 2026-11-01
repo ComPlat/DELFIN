@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import delfin.agent.pr_helper as ph
 
-IDENTITY = {"home": "/home/testacct", "account": "testacct",
+IDENTITY = {"home": "/home/fixtureacct", "account": "fixtureacct",
             "host": "fixture-host"}
 
 
@@ -19,12 +19,12 @@ def _tasks(*records):
 class TestRedaction:
     def test_home_path_in_task_subject_is_redacted(self):
         def loader(ws):
-            return _tasks({"subject": "fix path under /home/testacct/x",
+            return _tasks({"subject": "fix path under /home/fixtureacct/x",
                            "status": "in_progress",
                            "updated_at": "2026-11-01T00:00:00"})
         out = ph.body("ws", "main", task_loader=loader,
                       git_log=lambda b, h: [], identity=IDENTITY)
-        assert "/home/testacct" not in out
+        assert "/home/fixtureacct" not in out
         assert "[redacted]" in out
 
     def test_home_path_in_blocked_reason_is_redacted(self):
@@ -34,11 +34,11 @@ class TestRedaction:
                            # tests/test_no_account_name_is_committed.py
                            # refuses real account names in tracked files,
                            # so the fixture cannot spell one out.
-                           "blocked_reason": "log at /home/testacct/log.txt",
+                           "blocked_reason": "log at /home/fixtureacct/log.txt",
                            "updated_at": "2026-11-01T00:00:00"})
         out = ph.body("ws", "main", task_loader=loader,
                       git_log=lambda b, h: [], identity=IDENTITY)
-        assert "testacct" not in out
+        assert "fixtureacct" not in out
 
     def test_secret_shaped_string_in_subject(self):
         def loader(ws):
@@ -50,11 +50,11 @@ class TestRedaction:
         assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in out
 
     def test_commit_subject_and_body_redacted(self):
-        commits = [{"hash": "abc1234", "subject": "touch /home/testacct/y",
-                    "body": "Control: tests/x.py, /home/testacct/z evidence"}]
+        commits = [{"hash": "abc1234", "subject": "touch /home/fixtureacct/y",
+                    "body": "Control: tests/x.py, /home/fixtureacct/z evidence"}]
         out = ph.body("ws", "main", task_loader=lambda ws: [],
                       git_log=lambda b, h: commits, identity=IDENTITY)
-        assert "/home/testacct" not in out
+        assert "/home/fixtureacct" not in out
 
     def test_host_name_redacted(self):
         commits = [{"hash": "abc1234", "subject": "built on fixture-host",
