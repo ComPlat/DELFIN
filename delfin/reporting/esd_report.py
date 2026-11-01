@@ -155,6 +155,40 @@ def generate_esd_report(summary: ESDSummary, output_path: Path) -> None:
             )
         _emit_section(lines, "IC rate constants:", ic_lines)
 
+    if summary.fluor:
+        fluor_lines = []
+        for trans, record in sorted(summary.fluor.items()):
+            details = []
+            if record.temperature is not None:
+                details.append(f"T={_fmt_float(record.temperature, '{:.2f}')} K")
+            if record.delta_cm1 is not None:
+                details.append(f"Δ0-0={_fmt_float(record.delta_cm1, '{:.2f}')} cm^-1")
+            detail_str = f" ({', '.join(details)})" if details else ""
+            fluor_lines.append(
+                f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}{_problem(record)}"
+            )
+        _emit_section(lines, "FLUOR rate constants (s^-1):", fluor_lines)
+
+    if summary.phosp:
+        phosp_lines = []
+        for trans, record in sorted(summary.phosp.items()):
+            details = []
+            if record.temperature is not None:
+                details.append(f"T={_fmt_float(record.temperature, '{:.2f}')} K")
+            if record.delta_cm1 is not None:
+                details.append(f"Δ0-0={_fmt_float(record.delta_cm1, '{:.2f}')} cm^-1")
+            detail_str = f" ({', '.join(details)})" if details else ""
+            phosp_lines.append(
+                f"  {trans} (mean of Ms sublevels): {_fmt_rate(record.rate_mean)} s^-1"
+                f"{detail_str}{_problem(record)}"
+            )
+            for ms_index, rate in enumerate(record.sublevel_rates, start=1):
+                if rate is not None:
+                    phosp_lines.append(
+                        f"  {trans} (Ms={ms_index - 2:+d}): {_fmt_rate(rate)} s^-1"
+                    )
+        _emit_section(lines, "PHOSP rate constants (s^-1):", phosp_lines)
+
     if len(lines) == 3:
         lines.append("")
         lines.append("No ESD data available.")
