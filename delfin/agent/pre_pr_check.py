@@ -294,8 +294,6 @@ def _guard_area(source: str, rel: str, guard_path: str = "") -> str:
     if re.search(r"Path\([\"']delfin", source) or re.search(
             r"(glob|rglob|walk|iterdir)\([\"']?delfin", source):
         return "delfin/"
-    if "# guard test" in source:
-        return "delfin/"
     if guard_path:
         guard_dir = guard_path.rsplit("/", 1)[0] if "/" in guard_path else ""
         if guard_dir and re.search(

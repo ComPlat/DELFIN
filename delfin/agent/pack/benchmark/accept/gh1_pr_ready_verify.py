@@ -78,12 +78,17 @@ def check(workspace: Path) -> tuple[bool, str, int]:
     finally:
         _git(repo, "checkout", "-q", "main")
 
-    # 2. feature present and suite green
+    # 2. feature present and suite green. The feature is graded from the
+    #    DIFF (A03, reviewer nacht-s2): a string predicate cannot work --
+    #    "def normalise" already sits on main, so it passed a branch
+    #    carrying only a test. The branch must change src/widgetkit/ AND
+    #    tests/.
+    if not any(n.startswith("src/widgetkit/") for n in changed):
+        return False, "the branch carries no feature change in src/widgetkit/", 0
+    if not any(n.startswith("tests/") for n in changed):
+        return False, "the branch carries no test for the feature", 0
     _git(repo, "checkout", "-q", branch)
     try:
-        core = (repo / "src/widgetkit/core.py").read_text(encoding="utf-8")
-        if "def normalise" not in core:
-            return False, "core.py no longer defines the feature", 0
         test_files = list((repo / "tests").glob("test_*.py"))
         tests_all = "\n".join(
             p.read_text(encoding="utf-8") for p in test_files
