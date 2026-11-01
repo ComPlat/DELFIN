@@ -5524,6 +5524,15 @@ def build_parser() -> argparse.ArgumentParser:
     resume_p.add_argument("session", help="The session's -n name")
     resume_p.set_defaults(func=cmd_resume)
 
+    # swarm -- build and run agent swarms (package SW1). The body lives
+    # in cli_swarm.py, owned and tested there; this is the only hunk in
+    # cli.py (same pattern as the prcheck subcommand).
+    from .cli_swarm import main as _swarm_main
+    _swarm_p = sub.add_parser(
+        "swarm",
+        help="Build and run agent swarms (init/plan/start/status)")
+    _swarm_p.set_defaults(func=_swarm_main)
+
     pins_p = sub.add_parser(
         "mcp-pins",
         help="MCP tool descriptions pinned on first use, and changes that "
