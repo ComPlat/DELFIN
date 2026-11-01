@@ -393,13 +393,20 @@ def _optimize_xyz_openbabel(
         # silently inherits them.  That makes a SMILES' output depend on
         # whatever was optimised before it in the same process.
         #
-        # Fix: obtain a FRESH force-field instance per call via
-        # ``OBForceField.FindForceField`` (which constructs a new object
-        # rather than handing back the cached singleton).  Each
-        # optimisation starts from a clean, constraint-free force-field
-        # state, so the result depends only on this call's own input.
-        # Falls back to the shared singleton only if the fresh-instance
-        # lookup is somehow unavailable.
+        # Fix: obtain a force-field instance per call via
+        # ``OBForceField.FindForceField``.  VERIFIED 2026-11-01 (#504):
+        # FindForceField does NOT hand back a fresh C++ object — it wraps
+        # ONE shared process-wide force-field instance in a new SWIG
+        # wrapper each call (a ``SetConstraints`` through one wrapper is
+        # visible through the next: the fixed-atom bit vector counts the
+        # constraint).  A previous optimisation therefore leaves its
+        # constraint set on the object this call receives, and the
+        # parameterisation probe below would run against a polluted
+        # constraint state.  Reset to a pristine ``OBFFConstraints``
+        # immediately after the instance is obtained, BEFORE the probe's
+        # ``Setup``, so the marker measures this call's own
+        # parameterisation.  This call's own constraints are applied later
+        # (``SetConstraints`` at the soft-donor block), so nothing is lost.
         ff = None
         try:
             ff = pybel.ob.OBForceField.FindForceField("uff")
@@ -407,6 +414,10 @@ def _optimize_xyz_openbabel(
             ff = None
         if ff is None:
             ff = pybel._forcefields["uff"]
+        try:
+            ff.SetConstraints(pybel.ob.OBFFConstraints())
+        except Exception:
+            pass
         # Welle-5i Agent A (2026-05-17): extreme-formal-charge OB-UFF fallback.
         # OB-UFF has no parameters for metals whose OB-perceived |formal charge|
         # exceeds normal coordination chemistry (e.g. user SMILES ``[Mo-4]``,
