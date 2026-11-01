@@ -56,13 +56,14 @@ def test_cli_report_gibbs_via_orca_read():
     assert energies["0"] == -197.5
 
 
-def test_collect_gibbs_from_dir_via_orca_read():
+def test_collect_gibbs_from_dir_via_orca_read(tmp_path):
     """energies.collect_gibbs_energies_from_dir reads gibbs via orca_read."""
+    (tmp_path / "initial.out").write_text("# SYNTHETIC test fixture\n")
     with mock.patch.object(orca_read, "read",
                            return_value=_fake_reading(-100.0)) as mock_read:
-        energies.collect_gibbs_energies_from_dir(str(FIX))
+        energies.collect_gibbs_energies_from_dir(tmp_path)
     mock_read.assert_called_once()
     args = mock_read.call_args.args
-    assert args[0] == str(FIX)
-    assert args[1] == "butane_dlpno_ccsdt_pvtz"
+    assert args[0] == str(tmp_path)
+    assert args[1] == "initial"
     assert args[2] == orca_read.Quantity.GIBBS
