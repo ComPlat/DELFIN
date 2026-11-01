@@ -63,7 +63,11 @@ _GEOM_CONVERGED_MARKERS = (
     ("FAILED TO CONVERGE THE GEOMETRY OPTIMIZATION", False),
 )
 
-_T1_RE = re.compile(r"T1 diagnostic\s+\.\.\.\s+([-+]?\d+\.\d+)")
+# Both spellings ORCA prints: the DLPNO module's "T1(DLPNO) : 0.0104"
+# and the FOD-style "T1 diagnostic ... 0.006287935".
+_T1_RE = re.compile(
+    r"T1(?:\s+diagnostic|\(DLPNO\))\s*(?:\.\.\.)?\s*:?\s*([-+]?\d+\.\d+)"
+)
 
 _JOB_TYPES = ("minimum", "ts", "sp", "other")
 

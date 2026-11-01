@@ -20,14 +20,20 @@ import pytest
 
 from delfin.tools.result_checks import T1_THRESHOLD, check_run
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+# The real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2): real output is never committed. Every
+# test that reads one SKIPS without the store; constructed stubs cover the
+# bad cases without it, so this file still answers in plain CI.
+from test_lc1_fixtures_helper import private_fixtures_or_skip  # noqa: E402
 
 
 def _copy_fixture(name: str, tmp_path: Path) -> Path:
+    """Copy a real-ORCA fixture run from the private store into tmp."""
+    src = private_fixtures_or_skip(f"tests/fixtures/orca611/{name}")
     dst = tmp_path / name
     dst.mkdir(parents=True, exist_ok=True)
-    for src in (FIXTURES / name).iterdir():
-        (dst / src.name).write_bytes(src.read_bytes())
+    for f in src.iterdir():
+        (dst / f.name).write_bytes(f.read_bytes())
     return dst
 
 
@@ -232,6 +238,47 @@ def test_t1_below_threshold_is_reported_not_flagged(tmp_path):
     assert t1["threshold"] == T1_THRESHOLD
     assert t1["flagged"] is False
     assert report["ok"] is True
+
+
+def test_t1_dlpno_variant_line_is_read(tmp_path):
+    # ORCA also prints the diagnostic as "T1(DLPNO) : 0.0104"; the
+    # reader must recognise both spellings, not only "T1 diagnostic ...".
+    body = (
+        "SCF CONVERGED AFTER  8 ITERATIONS\n"
+        "T1(DLPNO) : 0.0104\n"
+        "ORCA TERMINATED NORMALLY\n"
+    )
+    d = _stub(tmp_path, "dlpno_variant", body, inp_text="#\n")
+    report = check_run(d, "dlpno_variant", job_type="sp", method="DLPNO-CCSD(T)")
+    t1 = report["t1_diagnostic"]
+    assert t1["present"] is True
+    assert t1["value"] == pytest.approx(0.0104, abs=1e-9)
+    assert t1["flagged"] is False
+    assert report["ok"] is True
+
+
+def test_committed_dlpno_synth_fixture_t1_read_and_scf_flagged(tmp_path):
+    # The committed synthetic DLPNO-CCSD(T1) fixture (orca611, "CONSTRUCTED
+    # fixture" header): T1(DLPNO) : 0.0104, no "SCF CONVERGED AFTER" line
+    # but "ORCA SCF ... Total Energy" converged output, terminated normally.
+    # The checker reads the T1 value and does NOT wave the unstated SCF
+    # through: a normally-terminated run must state its SCF outcome, so
+    # the run is reported not-ok with the scf_converged check failing.
+    src = (Path(__file__).parent / "fixtures" / "orca611"
+           / "butane_dlpno_ccsdt_pvtz")
+    d = tmp_path / "butane_dlpno_ccsdt_pvtz"
+    d.mkdir(parents=True)
+    for f in src.iterdir():
+        (d / f.name).write_bytes(f.read_bytes())
+    report = check_run(d, "butane_dlpno_ccsdt_pvtz", job_type="sp",
+                       method="DLPNO-CCSD(T)")
+    t1 = report["t1_diagnostic"]
+    assert t1["present"] is True
+    assert t1["value"] == pytest.approx(0.0104, abs=1e-9)
+    assert t1["flagged"] is False
+    assert report["ok"] is False
+    assert any(c["check"] == "scf_converged" and not c["passed"]
+               for c in report["checks"])
 
 
 def test_t1_above_threshold_is_flagged(tmp_path):
