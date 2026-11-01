@@ -48,7 +48,28 @@ import urllib.parse
 
 from . import web_tools
 
-__all__ = ["verify_doi", "lookup_compound", "search_works", "clear_cache"]
+__all__ = ["verify_doi", "lookup_compound", "search_works", "clear_cache",
+           "host_for_action"]
+
+
+# --- the fixed host per action -----------------------------------------------
+
+# ONE derivation place for the action -> API host mapping. The
+# permission rule layer reads it (permission_rules._subjects) so the
+# managed network policy and web_fetch(domain:) rules bind verify_source
+# like they bind web_fetch (operator decision 2026-11-01, closing s4's
+# P2 finding). An unknown action answers None — never a guessable
+# fallback host.
+_ACTION_HOSTS = {
+    "doi": "api.crossref.org",
+    "compound": "pubchem.ncbi.nlm.nih.gov",
+    "works": "api.openalex.org",
+}
+
+
+def host_for_action(action) -> "str | None":
+    """The fixed API host an action dials, or None for an unknown action."""
+    return _ACTION_HOSTS.get(str(action or "").strip().lower())
 
 
 # --- guarded transport -------------------------------------------------------
