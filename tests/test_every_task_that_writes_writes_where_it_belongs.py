@@ -384,8 +384,13 @@ def test_the_counts_still_match_what_was_measured():
     # tasks_w25_sl1.yaml SLURM-operation tasks (resources + partitions, a
     # pending job's reason, a failed job classified and sent to DELFIN's
     # recalc path, efficiency from sacct); recorded scheduler text, no load.
+    #
+    # science 48 -> 51 on 2026-11-01 (CM1, wave 26, agent/s9-cm1b): the three
+    # tasks_w26_cm1.yaml Code Mode adoption tasks (run-tree census, failure
+    # triage, per-method statistics over a 20-folder recorded fixture); setup
+    # cm1_run_tree_fixture.py; accept/cm1_{census,triage,methods}_verify.py.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 48, "chemistry": 29, "generalist": 22,
+                      "science": 51, "chemistry": 29, "generalist": 22,
                       "other": 81}, counts
 
 

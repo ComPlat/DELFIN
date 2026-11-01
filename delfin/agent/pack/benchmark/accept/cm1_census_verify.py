@@ -56,8 +56,15 @@ def main(argv: list[str]) -> int:
         if job not in text or energy not in text:
             fails.append(f"per-method lowest {key}: {job} / {energy} Eh missing")
 
-    if str(EXPECT["r2scan_n"]) not in text or str(EXPECT["b3lyp_n"]) not in text:
-        fails.append("group sizes 15 and 5 not stated")
+    # Per-method group sizes must appear ADJACENT to the method name (a
+    # bare "15"/"5" elsewhere — e.g. inside energy digits or job_05/job_15
+    # tokens — used to satisfy the old substring check: reviewer finding D).
+    if not (re.search(r"(?i)\b15\b[^.\n]{0,40}r2SCAN", text)
+            or re.search(r"(?i)r2SCAN[^.\n]{0,40}\b15\b", text)):
+        fails.append("r2SCAN group size 15 not stated adjacent to the method")
+    if not (re.search(r"(?i)\b5\b[^.\n]{0,40}B3LYP", text)
+            or re.search(r"(?i)B3LYP[^.\n]{0,40}\b5\b", text)):
+        fails.append("B3LYP group size 5 not stated adjacent to the method")
 
     # A cross-method "lowest overall" claim is the defect this task hunts.
     m = re.search(r"(?i)lowest.{0,60}(overall|across|global)", text)
