@@ -119,12 +119,51 @@ def test_run_dir_on_local_only_path_refused(tmp_path, monkeypatch, capsys):
         run_dir="/scratch/someone/ot3",
     )
 
-    # Phase-3 contract (builder's fix, endorsed in review): the command
-    # catches the ValueError, prints the refusal message and returns 2 —
-    # never a traceback. The refusal must happen BEFORE any submission.
-    rc = slurm_tests.cmd_test_on_slurm(args)
-    assert rc == 2, rc
+    # Final contract (QS ruling, builder 8b85829a6): the refusal is
+    # fail-closed in the product — cmd_test_on_slurm RAISES ValueError and
+    # submit is never reached — while the promised exit 2 lives at the CLI
+    # wrapper (cli.py:6029-6039), which catches and prints. Assert both
+    # layers of the contract.
+    with pytest.raises(ValueError) as raised:
+        slurm_tests.cmd_test_on_slurm(args)
+    assert "/scratch/someone/ot3" in str(raised.value)
+    assert "shared" in str(raised.value)
     assert submitted == [], "submit was called despite the refusal"
+
+
+def test_cli_wrapper_returns_2_on_refusal(tmp_path, monkeypatch, capsys):
+    # The CLI layer (cli.py:6029-6039) must turn the fail-closed ValueError
+    # into the promised exit 2 with the message on stdout — no traceback.
+    # Driven through the REAL wiring: the handler cli.py actually registers
+    # (t6.set_defaults), not cmd_test_on_slurm directly.
+    submitted = []
+
+    def fake_submit(text, run_dir):
+        submitted.append((text, run_dir))
+        return "99999"
+
+    monkeypatch.setattr(slurm_tests, "submit", fake_submit)
+
+    import types
+    args = types.SimpleNamespace(
+        repo=str(tmp_path / "repo"),
+        ref="abc123",
+        partition="cpu",
+        minutes=10,
+        tests=["tests/test_x.py"],
+        run_dir="/scratch/someone/ot3",
+    )
+    # The registered handler is a closure inside the parser builder; get it
+    # the way the product does: build the parser and read set func off the
+    # parsed args namespace.
+    from delfin.agent import cli as cli_mod
+    parser = cli_mod.build_parser()
+    parsed = parser.parse_args(
+        ["test-on-slurm", str(tmp_path / "repo"), "abc123", "cpu", "10",
+         "tests/test_x.py", "--run-dir", "/scratch/someone/ot3"])
+    rc = parsed.func(parsed)
+    assert rc == 2, rc
+    assert submitted == [], "CLI wrapper submitted despite the refusal"
     captured = capsys.readouterr()
     assert "/scratch/someone/ot3" in captured.out
     assert "shared" in captured.out
