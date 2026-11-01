@@ -2590,7 +2590,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
         if result.n_samples > 1:
             extra = (f"  N={result.n_samples}  "
                      f"σ={result.quality_stdev:.1f}  "
-                     f"rate={result.success_rate:.0%}")
+                     f"rate={result.success_rate:.0%}  "
+                     f"pass@k={result.pass_at_k}  "
+                     f"pass^k={result.pass_pow_k}")
         print(f"  [{mark}] {task.id:<28} q={result.quality_0_100:>3}  "
               f"{result.duration_s:>5.1f}s  ${result.cost_usd:.4f}  "
               f"tool={result.tool_calls}{extra}",
@@ -2686,6 +2688,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
           f"avg-quality {s['avg_quality']:.1f}   "
           f"total ${s['total_cost_usd']:.4f}   "
           f"{s['total_duration_s']:.1f}s")
+    # The stricter, alongside readings over the same repeats (empty only
+    # in a no-op run, so guard the keys a summarise_run always now emits).
+    if s.get("n_tasks"):
+        print(f"   pass@k {s['n_pass_at_k']}/{s['n_tasks']} "
+              f"({s['pass_at_k_rate']:.0%} >=1 repeat)   "
+              f"pass^k  {s['n_pass_pow_k']}/{s['n_tasks']} "
+              f"({s['pass_pow_k_rate']:.0%} ALL repeats)")
     # Said out loud, never folded into the rate: a run that could not
     # reach the model measured nothing, and a summary that hides that is
     # how an outage becomes a baseline.

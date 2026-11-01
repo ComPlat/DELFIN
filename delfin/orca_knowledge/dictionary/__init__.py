@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from functools import lru_cache
 
 __all__ = ("explain", "records")
@@ -89,6 +90,15 @@ def explain(word: str):
     _all, aliases, _categories = _load()
     key = word.lower()
     candidates = aliases.get(key)
+    if not candidates:
+        # hyphen/underscore/case tolerant fallback: the manual writes the
+        # same keyword with dashes (``NoSplit-RI-J``) that the input allows
+        # without them (``NoSplitRIJ``).
+        collapsed = re.sub(r"[-_ ]", "", key)
+        for akey, recs in aliases.items():
+            if re.sub(r"[-_ ]", "", akey) == collapsed:
+                candidates = recs
+                break
     if not candidates:
         return None
     # Prefer the record whose exact keyword (not just an alias) is ``word``.
