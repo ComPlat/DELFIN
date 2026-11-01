@@ -393,8 +393,9 @@ def _run_mlp_job(xyz_file: str, delfin_pal: str) -> int:
 
     backend = str(os.environ.get('DELFIN_MLP_BACKEND') or 'ani2x').strip() or 'ani2x'
     task = str(os.environ.get('DELFIN_MLP_TASK') or 'optimize').strip().lower().replace('-', '_')
-    if task not in ('optimize', 'single_point'):
-        print(f"ERROR: unknown DELFIN_MLP_TASK {task!r}: use 'optimize' or 'single_point'")
+    if task not in ('optimize', 'single_point', 'rank'):
+        print(f"ERROR: unknown DELFIN_MLP_TASK {task!r}: "
+              "use 'optimize', 'single_point' or 'rank'")
         return 1
     if not xyz_file:
         print('ERROR: DELFIN_XYZ_FILE not set for mlp mode')
@@ -425,6 +426,19 @@ def _run_mlp_job(xyz_file: str, delfin_pal: str) -> int:
         except ValueError:
             print('ERROR: DELFIN_MLP_FMAX must be a number and DELFIN_MLP_STEPS an integer')
             return 1
+    elif task == 'rank':
+        # Batch ranking: DELFIN_MLP_BATCH_FILE names the multi-structure XYZ
+        # that is ranked WHOLE — one job for N structures, never N jobs.  The
+        # result schema is the adapter's (delfin/tools/adapters/mlp.py
+        # MlpRankAdapter): ranking [{index, energy_eV}], n_structures, backend.
+        batch_file = str(os.environ.get('DELFIN_MLP_BATCH_FILE') or '').strip()
+        if not batch_file:
+            print("ERROR: DELFIN_MLP_BATCH_FILE not set for the 'rank' task")
+            return 1
+        if not Path(batch_file).is_file():
+            print(f'ERROR: batch ensemble file not found: {batch_file}')
+            return 1
+        kwargs['ensemble'] = batch_file
 
     summary = {
         'task': task, 'backend': backend, 'device': device, 'gpu': gpu_name,
