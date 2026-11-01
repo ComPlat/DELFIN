@@ -21,6 +21,8 @@ Checks:
 import sys
 from pathlib import Path
 
+import pytest
+
 from delfin.agent import slurm_tests
 
 
@@ -96,7 +98,7 @@ def test_cli_wiring_output_dir_not_relative_logs(tmp_path, monkeypatch):
     assert 'OUTPUT_DIR="' + str(Path(run_dir).resolve()) + '"' in text
 
 
-def test_run_dir_on_local_only_path_refused(tmp_path, monkeypatch):
+def test_run_dir_on_local_only_path_refused(tmp_path, monkeypatch, capsys):
     # A path like /scratch (login-node scratchpad) is invisible to the
     # compute node; the command must refuse it BEFORE any submission.
     submitted = []
@@ -107,22 +109,25 @@ def test_run_dir_on_local_only_path_refused(tmp_path, monkeypatch):
 
     monkeypatch.setattr(slurm_tests, "submit", fake_submit)
 
-    class Args:
-        repo = str(tmp_path / "repo")
-        ref = "abc123"
-        partition = "cpu"
-        minutes = 10
-        tests = ["tests/test_x.py"]
-        run_dir = "/scratch/someone/ot3"
+    import types
+    args = types.SimpleNamespace(
+        repo=str(tmp_path / "repo"),
+        ref="abc123",
+        partition="cpu",
+        minutes=10,
+        tests=["tests/test_x.py"],
+        run_dir="/scratch/someone/ot3",
+    )
 
-    raised = None
-    try:
-        slurm_tests.cmd_test_on_slurm(Args())
-    except ValueError as exc:
-        raised = exc
-    assert raised is not None, "local-only run dir accepted, logs will be lost"
-    assert "/scratch" in str(raised) or "shared" in str(raised).lower(), raised
-    assert not submitted, "submit ran despite the shared-filesystem refusal"
+    # Phase-3 contract (builder's fix, endorsed in review): the command
+    # catches the ValueError, prints the refusal message and returns 2 —
+    # never a traceback. The refusal must happen BEFORE any submission.
+    rc = slurm_tests.cmd_test_on_slurm(args)
+    assert rc == 2, rc
+    assert submitted == [], "submit was called despite the refusal"
+    captured = capsys.readouterr()
+    assert "/scratch/someone/ot3" in captured.out
+    assert "shared" in captured.out
 
 
 def test_export_is_exactly_all():
