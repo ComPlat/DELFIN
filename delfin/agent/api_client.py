@@ -7193,6 +7193,13 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     # holds this list and the server's read-only block together.
     "parse_orca_output", "calc_status", "extract_spectra_table",
     "find_orca_errors", "extract_thermochem",
+    # geometry_edit: xyz text in, xyz text out; no file write, no run.
+    "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
+    "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
+    "geometry_add_atom", "geometry_remove_atoms",
+    "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
+    "geometry_merge", "geometry_freeze", "geometry_constraints_block",
+    "geometry_build_smiles", "geometry_write_orca_block",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",
