@@ -10293,6 +10293,12 @@ def create_tab(ctx):
                         " if(el) el.scrollTop=0;},80);"
                     )
 
+                def _ts_on_close():
+                    """Restore the normal file view after TS→GOAT closes."""
+                    calc_ts_goat_panel.children = []
+                    calc_ts_goat_panel.layout.display = 'none'
+                    calc_content_area.layout.display = 'block'
+
                 from .ts_goat_panel import open_ts_goat_dialog
                 open_result = open_ts_goat_dialog(
                     _ts_path,
@@ -10302,6 +10308,7 @@ def create_tab(ctx):
                         'render_viewer': _ts_render_viewer,
                         'scroll_top': _ts_scroll_top,
                         'render_in_panel': _ts_render_in_panel,
+                        'on_close': _ts_on_close,
                     },
                 )
                 if open_result['error']:
@@ -14304,6 +14311,12 @@ def create_tab(ctx):
         # construction. Still keyed by folder as well, so the same name in
         # another directory still opens.
         state['last_opened_label'] = (state['current_path'], name)
+        # a newly opened file ends the TS→GOAT session for the previous
+        # .out (single-selection panel is bound to one concrete output)
+        if calc_ts_goat_panel.children:
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'none'
+            calc_content_area.layout.display = 'block'
         _calc_open_item(label)
 
     def calc_on_open_request(change):
@@ -14322,6 +14335,13 @@ def create_tab(ctx):
     def calc_on_selection_change(change):
         _calc_update_explorer_action_state()
         labels = [label for label in (change['new'] or ()) if label and not label.startswith('(')]
+        # TS→GOAT belongs to one concrete .out: any other selection
+        # (another file, an .xyz, nothing) hides the panel so the normal
+        # preview shows and no stale constraints/viewer stay around.
+        if calc_ts_goat_panel.children and len(labels) != 1:
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'none'
+            calc_content_area.layout.display = 'block'
         if len(labels) == 1:
             # The click bridge above has usually opened this one already.  This
             # path still serves keyboard navigation, and stands in whenever the

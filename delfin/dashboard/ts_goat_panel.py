@@ -24,6 +24,7 @@ def build_ts_goat_panel(
     scroll_top,
     viewer_output=None,
     render_in_panel=None,
+    on_close=None,
 ) -> dict:
     """Assemble the TS -> GOAT panel; returns a widget registry dict.
 
@@ -109,6 +110,16 @@ def build_ts_goat_panel(
         tooltip='Re-render the viewer with the current constraint atoms highlighted',
         layout=widgets.Layout(width='140px'),
     )
+    reset_prop_btn = widgets.Button(
+        description='Auswahl zurücksetzen',
+        tooltip='Restore the automatic reactive-centre proposal',
+        layout=widgets.Layout(width='170px'),
+    )
+    clear_sel_btn = widgets.Button(
+        description='Alle Markierungen entfernen',
+        tooltip='Clear every constraint (fully manual selection)',
+        layout=widgets.Layout(width='200px'),
+    )
     method_label = widgets.HTML('<b>Method for the GOAT search:</b>')
     method_field = widgets.Text(
         value='XTB', description='Method:', layout=widgets.Layout(width='240px'),
@@ -135,7 +146,12 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='200px'),
     )
     close_btn = widgets.Button(
-        description='Close', layout=widgets.Layout(width='90px'),
+        description='✕ Schließen', layout=widgets.Layout(width='110px'),
+    )
+    cancel_btn = widgets.Button(
+        description='Abbrechen',
+        tooltip='Close TS→GOAT and restore the normal file view',
+        layout=widgets.Layout(width='110px'),
     )
     btn_row = widgets.HBox([submit_btn, close_btn])
     settings_row = widgets.HBox([
@@ -153,8 +169,10 @@ def build_ts_goat_panel(
         click_sync,
         anim_row,
         constraints_label,
-        widgets.HBox([constraints_field, highlight_btn]),
+        widgets.HBox([constraints_field, highlight_btn, reset_prop_btn,
+                      clear_sel_btn]),
         settings_row, preview_label, preview_box, btn_row,
+        widgets.HBox([cancel_btn]),
     )
 
     # ---- state ----------------------------------------------------------
@@ -427,8 +445,21 @@ def build_ts_goat_panel(
 
     def close(_button=None):
         panel.layout.display = 'none'
+        # restore the normal file view: the options dropdown goes back
+        # to '(Options)' so TS→GOAT can be re-opened cleanly, and the
+        # regular content area (file preview) becomes visible again.
+        try:
+            reset_dropdown()
+        except Exception:
+            pass
+        if on_close:
+            try:
+                on_close()
+            except Exception:
+                pass
 
     close_btn.on_click(close)
+    cancel_btn.on_click(close)
 
     def on_submit(_button):
         indices = _parse_constraints(constraints_field.value)
@@ -512,7 +543,20 @@ def build_ts_goat_panel(
 
     submit_btn.on_click(on_submit)
 
-    constraints_field.observe(lambda _c: _refresh_preview(), names='value')
+    def _on_reset_proposal(_b):
+        proposed = state.get('proposed')
+        indices = list(getattr(proposed, 'indices', None) or [])
+        constraints_field.value = ', '.join(str(i) for i in indices)
+
+    def _on_clear_selection(_b):
+        constraints_field.value = ''
+
+    reset_prop_btn.on_click(_on_reset_proposal)
+    clear_sel_btn.on_click(_on_clear_selection)
+
+    constraints_field.observe(lambda _c: (_refresh_preview(),
+                                          _render_integrated_viewer()),
+                              names='value')
 
     def _on_click_sync(change):
         raw = (change.get('new') or '').strip()
@@ -626,6 +670,7 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             scroll_top=callbacks['scroll_top'],
             viewer_output=callbacks.get('viewer_output'),
             render_in_panel=callbacks.get('render_in_panel'),
+            on_close=callbacks.get('on_close'),
         )
         arrows = None
         mode_arrows_by_index = {}
