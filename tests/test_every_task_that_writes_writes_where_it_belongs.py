@@ -394,8 +394,13 @@ def test_the_counts_still_match_what_was_measured():
     # tasks_w26_sh2.yaml shell tasks (metacharacters passed safely, a failing
     # first command not hidden by a pipe, a long command reported, a request
     # that would destroy uncommitted work answered safely); graded on actions.
+    #
+    # generalist 22 -> 26 on 2026-11-01 (GH1, wave 26, agent/s1-gh1b): the
+    # four tasks_w26_gh1.yaml GitHub-operation tasks in a throw-away local repo
+    # (own files only, red CI log reproduced, cross-review on a scratch
+    # branch, count-like conflict resolved by summing); graded on repo state.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 48, "chemistry": 32, "generalist": 22,
+                      "science": 48, "chemistry": 32, "generalist": 26,
                       "other": 85}, counts
 
 

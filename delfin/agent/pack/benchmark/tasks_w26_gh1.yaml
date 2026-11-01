@@ -1,0 +1,112 @@
+# tasks_w26_gh1: GitHub operation correctness (wave 26, package GH1).
+#
+# The real failures of the last waves, each measured as a task in a
+# throw-away local git repository (setup/gh1_repo.py core; never the
+# real remote; graded on the resulting repo state and the commands
+# used):
+#
+#   w26-gh1-01  bring a feature to a PR-ready branch, committing only
+#               the files the branch owns (probe/scratch files stay
+#               out; main stays untouched; nothing foreign merged in)
+#   w26-gh1-02  a red CI log is given: find the named failing test by
+#               id (the name also occurs in two other files),
+#               reproduce it locally, fix the cause, keep the rest
+#               untouched
+#   w26-gh1-03  cross-review a partner branch WITHOUT merging it into
+#               the builder branch (a scratch branch is the route; the
+#               graded artifact is answer.txt)
+#   w26-gh1-04  a merge conflict on a shared counts module is resolved
+#               by SUMMING both sides, not by picking one
+#
+# Offline validation: scripted correct/wrong/untouched solutions per
+# task in tests/test_gh1_w26_tasks_score_the_end_state.py (the
+# test_c1_w17_code_tasks_score_the_end_state.py pattern).
+tasks:
+
+  - id: w26-gh1-01
+    task_class: generalist
+    mode: solo
+    behavior: verify
+    setup: gh1_pr_ready.py
+    verify: gh1_pr_ready_verify.py
+    prompt: >-
+      Im Repository widgetkit/ liegt ein kleines Python-Paket. Arbeite
+      an einem Feature-Zweig: benenne in src/widgetkit/core.py
+      zusaetzlich underscores in Leerzeichen um (der Test dafuer fehlt
+      noch), schreib den Test dazu und sorge dafuer, dass die ganze
+      Testsuite gruen ist. Halte den Branch PR-bereit: nur die Dateien
+      des Features gehoeren in die Commits, main bleibt unangetastet,
+      es wird nichts von anderen Branches gemerged.
+    prompt_en: >-
+      widgetkit/ holds a small Python package. Work on a feature
+      branch: in src/widgetkit/core.py, additionally convert
+      underscores to spaces (the test for that is still missing),
+      write the test, and make the whole test suite green. Keep the
+      branch PR-ready: only the feature's files belong in the commits,
+      main stays untouched, and nothing from other branches is merged.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: w26-gh1-02
+    task_class: generalist
+    mode: solo
+    behavior: verify
+    setup: gh1_red_ci.py
+    verify: gh1_red_ci_verify.py
+    prompt: >-
+      Die CI dieses Repositories ist rot. Der Log liegt in
+      .github-ci-log.txt. Finde den fehlgeschlagenen Test, reproduziere
+      ihn lokal, behebe die Ursache und sorge dafuer, dass die ganze
+      Testsuite gruen ist. Alles andere bleibt unangetastet.
+    prompt_en: >-
+      This repository's CI is red. The log sits in
+      .github-ci-log.txt. Find the failing test, reproduce it locally,
+      fix the cause, and make the whole test suite green. Everything
+      else stays untouched.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: w26-gh1-03
+    task_class: generalist
+    mode: solo
+    behavior: verify
+    setup: gh1_cross_review.py
+    verify: gh1_cross_review_verify.py
+    prompt: >-
+      Du sollst den Branch partner/feature dieses Repositories
+      querelesen (Cross-Review). Lies den Diff, pruefe ihn auf echte
+      Defekte, und schreib deine Bewertung in answer.txt: was gefunden,
+      was in Ordnung, was blockiert. Achte darauf, dass dein eigener
+      Branch unangetastet bleibt -- lies den Partner, merge ihn nicht.
+    prompt_en: >-
+      You are asked to cross-review this repository's partner/feature
+      branch. Read the diff, check it for real defects, and write your
+      assessment to answer.txt: what was found, what is fine, what
+      blocks. Keep your own branch untouched -- read the partner, do
+      not merge it.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  - id: w26-gh1-04
+    task_class: generalist
+    mode: solo
+    behavior: verify
+    setup: gh1_count_conflict.py
+    verify: gh1_count_conflict_verify.py
+    prompt: >-
+      In diesem Repository steht ein Merge-Konflikt auf
+      metrics/counts.py an (Merge in progress). Beide Seiten haben den
+      Zaehler erhoeht. Loese den Konflikt so, wie Zaehler zu behandeln
+      sind: beide Seiten addieren, nicht eine Seite uebernehmen. Danach
+      muss die Testsuite gruen sein.
+    prompt_en: >-
+      This repository has a merge conflict pending on metrics/counts.py
+      (merge in progress). Both sides bumped the counter. Resolve the
+      conflict the way counters are handled: sum both sides, do not
+      pick one. The test suite must be green afterwards.
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 30
