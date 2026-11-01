@@ -389,8 +389,12 @@ def test_the_counts_still_match_what_was_measured():
     # three tasks_w24_es1.yaml ESD/TADF tasks, graded on the run's physics
     # (state order, Delta E_ST against the cited experimental band, ISC rate
     # at the matched level); synthetic fixtures only.
+    #
+    # science 48 -> 51 on 2026-11-01 (SRC1, wave 26, agent/s3-src1b): the
+    # three tasks_w26_src1.yaml source-verification tasks (real DOI, invented
+    # DOI refused, PubChem value with CID), graded on recorded API responses.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 48, "chemistry": 32, "generalist": 22,
+                      "science": 51, "chemistry": 32, "generalist": 22,
                       "other": 81}, counts
 
 
