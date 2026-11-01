@@ -78,34 +78,43 @@ def test_unknown_action_is_data_not_crash():
     assert "unknown action" in result
 
 
-def test_network_policy_does_not_bind_verify_source():
-    """THE FINDING: network rules are web_fetch-shaped; verify_source
-    escapes them. Red until the transport carries the host through the
-    rule layer (or the executor asks permission like web_fetch)."""
-    from delfin.agent import permission_rules as pr
+def test_network_policy_binds_verify_source():
+    """The operator's decision (2026-11-01): the policy BINDS the new
+    tool. verify_source doi->Crossref / compound->PubChem are outbound
+    HTTP like web_fetch, so a web_fetch(domain:) deny/ask rule and the
+    managed allowed_domains_max ceiling must stop it the same way.
 
-    subj = pr._subjects(  # the same builder web_fetch uses
+    RED on the pre-fix tree (the escape this package found); green once
+    s3's permission_rules.py fix teaches the rule layer the
+    verify_source host. If it goes red again after a refactor, the
+    escape is back.
+    """
+    from delfin.agent import managed_policy, permission_rules as pr
+
+    # sanity: web_fetch itself is bound (unchanged behaviour)
+    subj = pr._subjects(
         "web_fetch", {"url": "https://api.crossref.org/works/10.1/x"},
         "/tmp/ws")
     rule = pr.parse_rule("web_fetch(domain:api.crossref.org)")
     assert pr._hits(rule, "web_fetch", subj, "/tmp/ws"), (
-        "sanity: the rule does bind web_fetch")
+        "sanity: the rule binds web_fetch")
 
-    # now the new tool, same host, through the same rule layer
+    # the new tool, same host, must meet the same rule
     subj2 = pr._subjects(
         "verify_source", {"action": "doi", "value": "10.1039/x"},
         "/tmp/ws")
-    assert not pr._hits(rule, "verify_source", subj2, "/tmp/ws"), (
-        "unexpected: the rule binds verify_source (fixed?)")
-    # and the managed ceiling does not see it either: _ceiling_rule's
-    # gate is the NAME check (permission_rules.py:858) — it fires only
-    # when bare_tool_name(name) == "web_fetch". A real RuleSet whose
-    # policy is the managed Policy dataclass, empty, yields None for
-    # the new tool through the same branch.
-    from delfin.agent import managed_policy
-    rs = pr.RuleSet(deny=(), ask=(), allow=(),
-                    policy=managed_policy.Policy(sources=()))
+    assert pr._hits(rule, "verify_source", subj2, "/tmp/ws"), (
+        "verify_source escaped the web_fetch domain rule")
+
+    # and the managed ceiling must see it
+    pol = managed_policy.Policy(sources=(),
+                                allowed_domains_max=(("api.crossref.org",),))
+    rs = pr.RuleSet(deny=(), ask=(), allow=(), policy=pol)
     assert pr._ceiling_rule(rs, "verify_source",
-                            {"url": "https://pubchem.ncbi.nlm.nih.gov/x"}
+                            {"url": "https://example.org/works/10.1/x"}
+                            ) is not None, (
+        "the managed ceiling must bind verify_source")
+    assert pr._ceiling_rule(rs, "verify_source",
+                            {"url": "https://api.crossref.org/works/10.1/x"}
                             ) is None, (
-        "the ceiling must not bind verify_source (fixed if this fails)")
+        "a host inside the ceiling stays allowed")
