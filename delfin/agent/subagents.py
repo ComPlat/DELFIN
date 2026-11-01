@@ -1173,6 +1173,36 @@ class SubagentPreset:
     # name, so a definition works with any provider. Writer presets keep
     # the parent model whatever this says (see _resolve_subagent_model).
     model: str = ""
+    # The expert's write scope (SA0, wave 27): globs matched against the
+    # path relative to the workspace, the same shape and enforcement the
+    # executor already applies to ``write_allow_globs``
+    # (api_client._write_in_scope). Applied by ``_derive_perms`` as the
+    # child's ``write_allow_globs``. A parent that already carries a scope
+    # hands on only globs PROVEN to lie inside it (fnmatch on the glob's
+    # literal prefix); one that cannot be proven refuses the delegation —
+    # never widen. Empty means no preset-level restriction (today's
+    # behaviour for every existing preset).
+    write_globs: tuple[str, ...] = ()
+    # The structured output contract this preset returns by default, used
+    # when the caller passes no ``output_schema``. An explicit caller
+    # schema still wins. None keeps today's free-prose behaviour.
+    output_schema: Optional[dict] = None
+    # Department bookkeeping: ``department`` groups experts under one
+    # manager; ``may_delegate_to`` is the whitelist a department manager
+    # may spawn (depth > 1 only along it — the call-side guard sits in
+    # the protected ``_execute_subagent``). Experts (no field, or an
+    # empty one) delegate to nobody. ``display_name`` is a human-facing
+    # label only — ``name`` stays the stable key everywhere, so renaming
+    # a display name never breaks a reference.
+    department: str = ""
+    may_delegate_to: tuple[str, ...] = ()
+    display_name: str = ""
+    # The user setting that switches this department on. Empty (the
+    # default) means always on, which is what every preset today does.
+    # A department whose setting is off is not loaded into the registry,
+    # so it is neither offered to the model nor accepted when called
+    # (api_client refuses an unknown subagent_type).
+    enabled_setting: str = ""
 
 
 # Tools that cannot mutate anything: they read files, code, documents,
@@ -1348,6 +1378,126 @@ def _parse_preset_tools(raw: object) -> tuple[str, ...]:
     return tuple(p for p in parts if p)
 
 
+def _parse_preset_globs(raw: object) -> tuple[str, ...]:
+    """Read a ``write_globs:`` frontmatter value as a tuple of globs.
+
+    Same two shapes as ``tools:`` (comma list or inline YAML list). Empty
+    means no preset-level restriction, matching the ``tools`` default.
+    """
+    return _parse_preset_tools(raw)
+
+
+def _parse_preset_schema(raw: object) -> Optional[dict]:
+    """Read an ``output_schema:`` frontmatter value as a JSON-Schema dict.
+
+    The frontmatter parser (skills._parse_frontmatter) is flat and
+    line-based, so a schema ships as inline JSON on one line:
+    ``output_schema: {"type": "object", ...}``. A dict (inline YAML) is
+    accepted as-is; a JSON string is parsed. None (absent or unreadable)
+    keeps the free-prose default — a typo never silently turns a
+    structured agent free-form.
+    """
+    if isinstance(raw, dict) and raw:
+        return raw
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            return None
+        if isinstance(obj, dict) and obj:
+            return obj
+    return None
+
+
+def _parse_preset_names(raw: object) -> tuple[str, ...]:
+    """Read ``may_delegate_to:`` as a tuple of preset names."""
+    return _parse_preset_tools(raw)
+
+
+def _setting_on(key: str) -> bool:
+    """True when the user setting ``key`` is truthy (department switch).
+
+    The key is dotted, e.g. ``agent.departments.structure``. Missing
+    settings or an unknown path are OFF — a department ships behind a
+    switch that defaults to off. Never raises.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        cfg = load_settings() or {}
+        for part in key.split("."):
+            if not isinstance(cfg, dict):
+                return False
+            cfg = cfg.get(part)
+        return bool(cfg)
+    except Exception:
+        return False
+
+
+def _glob_literal_prefix(glob: str) -> str:
+    """The leading part of a glob that matches literal characters only.
+
+    ``tests/test_sa0*.py`` -> ``tests/test_sa0``, ``delfin/**`` ->
+    ``delfin/``. This is the provable part: a child glob whose literal
+    prefix does not start with the parent's literal prefix could match a
+    path the parent's scope cannot reach, and cannot be proven contained.
+    """
+    out = []
+    for ch in glob:
+        if ch in "*?[]":
+            break
+        out.append(ch)
+    return "".join(out)
+
+
+def _globs_inside(child_globs, parent_globs) -> bool:
+    """True when every child glob is provably inside the parent's scope.
+
+    A parent with NO scope is unconstrained, so any child glob fits.
+    Otherwise containment is proven against the EXECUTOR's own glob
+    semantics (``api_client._write_glob_regex``: ``*`` = ``[^/]*``, no
+    ``**``), not plain fnmatch — the two differ (``tests*`` matches
+    ``tests_evil/x.py`` under fnmatch, but no path is matched by the
+    executor the same way a parent glob could). Every representative
+    string the child glob can match must be matched by at least one
+    parent glob's executor regex; a single escape means containment is
+    NOT proven and the caller refuses — never widen. Representatives
+    replace each wildcard in the child glob with 'x' (one character),
+    'x/x' (spanning a slash) and '' (empty), so a difference in how a
+    pattern treats slashes or empty runs cannot slip through.
+    """
+    parent_globs = tuple(parent_globs or ())
+    if not parent_globs:
+        return True
+    import itertools
+    try:
+        from .api_client import _write_glob_regex
+        parent_regexes = [_write_glob_regex(str(pg)) for pg in parent_globs]
+    except Exception:
+        # The matcher is unavailable (tests, a refactor): refuse rather
+        # than prove with different semantics. A restriction that cannot
+        # be verified is not granted.
+        return False
+    for cg in child_globs or ():
+        if not any(cg.startswith(_glob_literal_prefix(pg))
+                   for pg in parent_globs):
+            return False
+        wildcards = [i for i, ch in enumerate(cg) if ch in "*?"]
+        # The executor's ``*``/``?`` never cross a slash, ``**`` does —
+        # the representatives follow exactly that.
+        slots = [("", "x") if cg[i] == "*" else
+                 ("x",) if cg[i] == "?" else
+                 ("", "x", "x/x", "x/x/x")
+                 for i in wildcards]
+        for combo in itertools.product(*slots):
+            chars = list(cg)
+            for i, fill in zip(reversed(wildcards), reversed(combo)):
+                chars[i:i + 1] = fill
+            candidate = "".join(chars)
+            if not any(rx.fullmatch(candidate) for rx in parent_regexes):
+                return False
+    return True
+
+
 def _md_preset_search_dirs() -> list[Path]:
     """Directories scanned for ``*_subagent.md`` user-extensible presets."""
     return [
@@ -1422,9 +1572,13 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
     powerful while preventing accidental pack-shipped overrides.
     """
     registry = dict(_BUILTIN_PRESETS)
-    pack_dir = Path(__file__).resolve().parent / "pack" / "agents"
-    user_dir = Path.home() / ".delfin" / "subagents"
-    for d, allow_override in ((pack_dir, False), (user_dir, True)):
+    # Pack presets cannot override a built-in; user presets may.
+    override_by_dir = {
+        Path(__file__).resolve().parent / "pack" / "agents": False,
+        Path.home() / ".delfin" / "subagents": True,
+    }
+    for d in _md_preset_search_dirs():
+        allow_override = override_by_dir.get(d, True)
         if not d.is_dir():
             continue
         try:
@@ -1449,6 +1603,12 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
             description = (meta.get("description") or "").strip()
             mode = (meta.get("mode") or "default").strip() or "default"
             system_prompt = body.strip() or description or name
+            enabled = (meta.get("enabled_setting") or "").strip()
+            if enabled and not _setting_on(enabled):
+                # A department behind a switch defaults to off: not
+                # loaded into the registry, so the model is never offered
+                # the type and a call hits the unknown-type refusal.
+                continue
             registry[name] = SubagentPreset(
                 name=name,
                 description=description or f"Custom subagent '{name}'",
@@ -1456,6 +1616,13 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 mode=mode,
                 tools=_parse_preset_tools(meta.get("tools")),
                 model=_parse_preset_model(meta.get("model")),
+                write_globs=_parse_preset_globs(meta.get("write_globs")),
+                output_schema=_parse_preset_schema(meta.get("output_schema")),
+                department=(meta.get("department") or "").strip(),
+                may_delegate_to=_parse_preset_names(
+                    meta.get("may_delegate_to")),
+                display_name=(meta.get("display_name") or "").strip(),
+                enabled_setting=enabled,
             )
     return registry
 
@@ -2759,7 +2926,8 @@ def _narrow_allowed_tools(parent_perms, preset_tools) -> Optional[frozenset]:
     return kept or frozenset({_PRESET_ALLOWS_NOTHING})
 
 
-def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
+def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=(),
+                  preset_write_globs=()):
     """Clone parent_perms with the sub-agent's mode + optional workspace.
 
     Both fields are optional — the caller passes ``workspace=None`` when
@@ -2774,6 +2942,16 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
     would be advertising dressed as security — anything reaching the
     executor by another route would still run. The advertised surface
     narrows too, because it is built from these same fields.
+
+    ``preset_write_globs`` is the role's write scope
+    (``SubagentPreset.write_globs``, SA0). It becomes the child's
+    ``write_allow_globs``, which the executor already enforces on every
+    write (``api_client._write_in_scope``). When the parent already
+    carries a scope, the child's globs must be PROVEN to lie inside it
+    (``_globs_inside``); one that cannot be proven refuses the whole
+    delegation — the child is never handed a wider scope than the parent.
+    The derivation refuses (``SubagentPermissionsError``) rather than
+    dropping the restriction, the same rule the tool list follows.
     """
     if parent_perms is None:
         return None
@@ -2821,10 +2999,30 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
             and "web_search" in narrowed):
         narrowed = (frozenset(narrowed - {"web_search"})
                     or frozenset({_PRESET_ALLOWS_NOTHING}))
+    # Write-scope check FIRST, outside the copy machinery: a refusal here
+    # must not be swallowed by the fallback paths below, which drop
+    # restrictions to recover from an error — that is how a fallback
+    # becomes a hole.
+    child_globs = tuple(preset_write_globs or ())
+    parent_globs = tuple(getattr(parent_perms, "write_allow_globs",
+                                 ()) or ())
+    if child_globs:
+        if not _globs_inside(child_globs, parent_globs):
+            # A restriction that cannot be carried is refused, never
+            # dropped: handing the child the parent's (wider or
+            # absent) scope instead would widen it.
+            raise SubagentPermissionsError(
+                "the sub-agent's write_globs "
+                + ", ".join(child_globs)
+                + " cannot be proven to lie inside the parent's "
+                "write scope " + (", ".join(parent_globs) or "(none)")
+                + ", so the delegation was refused")
     try:
         extra = {"subagent_depth": depth}
         if narrowed is not None:
             extra["session_allowed_tools"] = narrowed
+        if child_globs:
+            extra["write_allow_globs"] = child_globs
         # dataclasses.replace copies field VALUES, so a mutable one is
         # shared by reference. read_tracker is the stale-write guard's
         # memory of "this file was read at this mtime, so overwriting it is
@@ -2860,6 +3058,12 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
         # hole.
         reduced = (
             {"session_allowed_tools": narrowed} if narrowed is not None else {})
+        if child_globs:
+            # Same rule as the tool list: a restriction that CAN be
+            # carried is not dropped on a fallback. If the type cannot
+            # carry it either, the replace raises and the refusal below
+            # fires — never a child with the parent's wider scope.
+            reduced["write_allow_globs"] = child_globs
         if (preset_tools_edit_no_file(preset_tools)
                 and hasattr(parent_perms, "shell_writes_need_a_person")):
             reduced["shell_writes_need_a_person"] = True
@@ -3163,10 +3367,17 @@ def run_subagent(
             worktree_info = None
 
     sub_workspace = worktree_info.path if worktree_info else None
+    # The preset's own structured-output contract is the default when the
+    # caller passes none; an explicit caller schema still wins.
+    if not (isinstance(output_schema, dict) and output_schema):
+        preset_schema = getattr(preset, "output_schema", None)
+        if isinstance(preset_schema, dict) and preset_schema:
+            output_schema = preset_schema
     try:
         sub_perms = _derive_perms(
             parent_perms, preset.mode, workspace=sub_workspace,
-            preset_tools=getattr(preset, "tools", ()) or ())
+            preset_tools=getattr(preset, "tools", ()) or (),
+            preset_write_globs=getattr(preset, "write_globs", ()) or ())
     except SubagentPermissionsError as exc:
         if worktree_info is not None:
             try:

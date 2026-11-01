@@ -66,19 +66,15 @@ def test_write_globs_output_schema_and_names_parse_from_frontmatter(
         "may_delegate_to: []\n"
         "display_name: Mole\n"
         "enabled_setting: agent.departments.structure\n"
-        "output_schema:\n"
-        "  type: object\n"
-        "  properties:\n"
-        "    verdict: {type: string}\n"
-        "  required: [verdict]\n"
+        'output_schema: {"type": "object", "properties": '
+        '{"verdict": {"type": "string"}}, "required": ["verdict"]}\n'
         "---\n"
         "You edit xyz files.\n",
         encoding="utf-8")
     monkeypatch.setattr(SA, "_md_preset_search_dirs", lambda: [tmp_path])
     monkeypatch.setattr(SA, "_BUILTIN_PRESETS", {})
-    monkeypatch.setattr(SA.SUBAGENT_PRESETS, "clear", lambda: None)
+    monkeypatch.setattr(SA, "_setting_on", lambda key: True)
     reg = SA._build_preset_registry()
-    SA.SUBAGENT_PRESETS.update(reg)
     p = reg["xyz-editor"]
     assert p.write_globs == ("delfin/workflows/xyz/*",)
     assert p.department == "structure"
@@ -140,21 +136,48 @@ def test_a_glob_inside_the_parent_scope_passes(tmp_path):
 
 def test_scope_proof_matches_a_real_path(tmp_path):
     """The refusal must be provable, not a string heuristic: the same
-    literal-prefix rule must accept what a real path would match."""
+    executor regex rule must accept what a real path would match."""
     parent = _Perms(
         workspace=str(tmp_path), write_allow_globs=("tests/*.py",))
+    # ``tests/*.py`` (executor: * = [^/]*) does NOT contain a deeper
+    # directory glob: no glob can be proven contained there, so this
+    # delegation refuses.
+    with pytest.raises(SA.SubagentPermissionsError):
+        SA._derive_perms(
+            parent, "default", preset_tools=(),
+            preset_write_globs=("tests/a/*.py",))
+    # A single-segment child glob IS contained.
     child = SA._derive_perms(
         parent, "default", preset_tools=(),
-        preset_write_globs=("tests/a/…b*.py".replace("…", ""),))
-    assert child.write_allow_globs == ("tests/a/b*.py",)
+        preset_write_globs=("tests/test_sa0*.py",))
+    assert child.write_allow_globs == ("tests/test_sa0*.py",)
     # And the child's scope genuinely contains the file it needs...
     from delfin.agent import api_client as A
     kp = A.KitToolPermissions(
         workspace=str(tmp_path), mode="default",
         write_allow_globs=child.write_allow_globs)
-    assert A._write_in_scope(tmp_path / "tests" / "a" / "b_test.py", kp)
+    assert A._write_in_scope(tmp_path / "tests" / "test_sa0_x.py", kp)
     # ...and refuses one the parent could have written.
     assert not A._write_in_scope(tmp_path / "delfin" / "x.py", kp)
+    # A parent glob with ** contains deep child globs.
+    parent2 = _Perms(
+        workspace=str(tmp_path), write_allow_globs=("tests/**",))
+    child2 = SA._derive_perms(
+        parent2, "default", preset_tools=(),
+        preset_write_globs=("tests/a/*.py",))
+    assert child2.write_allow_globs == ("tests/a/*.py",)
+
+
+def test_tests_star_cannot_smuggle_a_deeper_directory(tmp_path):
+    """The reviewer's attack: plain fnmatch would accept ``tests*`` under
+    ``tests/*`` because fnmatch's ``*`` crosses slashes; the executor's
+    does not, so containment must be refused."""
+    parent = _Perms(
+        workspace=str(tmp_path), write_allow_globs=("tests/*.py",))
+    with pytest.raises(SA.SubagentPermissionsError):
+        SA._derive_perms(
+            parent, "default", preset_tools=(),
+            preset_write_globs=("tests_evil/*.py",))
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +196,35 @@ _DEFAULT_SCHEMA = {
 }
 
 
-def test_preset_schema_used_when_the_caller_passes_none():
+def _client_round(text: str):
+    """A fake client whose one streamed round emits *text*."""
+    from types import SimpleNamespace
+
+    def _fake_event(**kwargs):
+        return SimpleNamespace(
+            type=kwargs.get("type", "text_delta"),
+            text=kwargs.get("text", ""),
+            tool_name=kwargs.get("tool_name", ""),
+            tool_input=kwargs.get("tool_input", ""),
+            tool_output=kwargs.get("tool_output", ""),
+            input_tokens=kwargs.get("input_tokens", 0),
+            output_tokens=kwargs.get("output_tokens", 0),
+        )
+
     client = MagicMock()
+    client.stream_message = MagicMock(side_effect=[iter([
+        _fake_event(type="text_delta", text=text),
+        _fake_event(type="message_delta", input_tokens=10,
+                    output_tokens=5),
+    ])])
     client._permissions = None
     client.set_permissions = MagicMock()
+    return client
+
+
+def test_preset_schema_used_when_the_caller_passes_none():
+    good = json.dumps({"verdict": "ok", "evidence": ["a.py"]})
+    client = _client_round(good)
     p = _preset(output_schema=_DEFAULT_SCHEMA)
     with _registry_hook({"xyz-editor": p}):
         res = SA.run_subagent(
@@ -192,9 +240,8 @@ def test_caller_schema_wins_over_the_preset_default():
     caller_schema = {"type": "object",
                      "properties": {"n": {"type": "integer"}},
                      "required": ["n"]}
-    client = MagicMock()
-    client._permissions = None
-    client.set_permissions = MagicMock()
+    good = json.dumps({"n": 7})
+    client = _client_round(good)
     p = _preset(output_schema=_DEFAULT_SCHEMA)
     with _registry_hook({"xyz-editor": p}):
         res = SA.run_subagent(
