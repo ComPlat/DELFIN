@@ -95,11 +95,10 @@ def explain(word: str):
         # same keyword with dashes (``NoSplit-RI-J``) that the input allows
         # without them (``NoSplitRIJ``).
         collapsed = re.sub(r"[-_ ]", "", key)
-        if collapsed != key:
-            for akey, recs in aliases.items():
-                if re.sub(r"[-_ ]", "", akey) == collapsed:
-                    candidates = recs
-                    break
+        for akey, recs in aliases.items():
+            if re.sub(r"[-_ ]", "", akey) == collapsed:
+                candidates = recs
+                break
     if not candidates:
         return None
     # Prefer the record whose exact keyword (not just an alias) is ``word``.
