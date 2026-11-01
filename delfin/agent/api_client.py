@@ -27386,6 +27386,30 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 "prompt must brief the sub-agent thoroughly (>=20 chars)"
             )})
+        # SA0 (wave 27): above depth 0 a sub-agent may spawn only along
+        # its preset's may_delegate_to whitelist. Experts (empty or
+        # absent whitelist) delegate to nobody; a department manager may
+        # spawn only the experts it names. The depth cap below already
+        # caps HOW deep; this decides WHO. depth == 0 (the main session)
+        # is unrestricted — delegation is an option it takes, never a
+        # gate (the "extend, never lose" rule). The refusal names the
+        # target so the parent can re-plan. Sits BEFORE the runner check:
+        # a guard must fire on the call's own merits, not depend on what
+        # infrastructure happens to be attached.
+        _spawner_preset = _sa.SUBAGENT_PRESETS.get(
+            str(getattr(perms, "_preset_name", "") or ""))
+        if perms is not None and getattr(
+                perms, "subagent_depth", 0) > 0 and _spawner_preset:
+            _whitelist = tuple(getattr(_spawner_preset, "may_delegate_to",
+                                       ()) or ())
+            if sa_type not in _whitelist:
+                return json.dumps({
+                    "error": (
+                        f"{sa_type!r} is not in "
+                        f"{_spawner_preset.name!r}'s may_delegate_to "
+                        "whitelist — this sub-agent may only delegate to: "
+                        + (", ".join(_whitelist) or "(nobody; it is an "
+                        "expert and experts do not spawn)"))})
         if perms is None or perms.subagent_runner is None:
             return json.dumps({
                 "error": "subagent runner not attached",
