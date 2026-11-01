@@ -186,6 +186,50 @@ def tool_analysis_check() -> str:
     return _format_result(delfin_api.analysis_check(), action="analysis_check")
 
 
+def tool_result_checks(work_dir: str, base_name: str, job_type: str,
+                       reported: str = "", s2_bound: float | None = None,
+                       references: str = "", method: str = "") -> str:
+    """Validate a finished ORCA run and the numbers a chemistry answer reports.
+
+    Runs the job-type, traceability, spin and T1 checks from
+    delfin.tools.result_checks on the run in ``work_dir`` named
+    ``base_name`` (its *.out without extension), holding the output to
+    the reported-value/plausibility contracts the task supplies.
+
+    Args:
+        work_dir: directory of the run (its ``<base_name>.out``).
+        base_name: the run's base name (its ``.out`` without extension).
+        job_type: what the job is claimed to be: "minimum", "ts", "sp"
+            or "other".
+        reported: optional JSON object ``{label: {"value": n,
+            "source": path}}`` — the numbers the answer reports and the
+            output file each was read from. A value with no source is
+            flagged "not_computed".
+        s2_bound: for an unrestricted run (UKS), the largest acceptable
+            ``<S**2>`` deviation.
+        references: optional JSON object ``{label: {"expected": n,
+            "tolerance": n}}`` — plausibility targets from the task.
+        method: the electronic-structure method; only a
+            "DLPNO-CCSD(T)" run must report a T1 diagnostic.
+
+    Returns: the checker's JSON report: "ok" (bool, the overall
+    verdict), "convergence", "job_type", "spin", "t1_diagnostic",
+    "traceability", "plausibility", and "checks" (one entry per check
+    with check/passed/detail). Missing values are null, never an error.
+    """
+    import json as _json
+
+    def _parse_obj(text: str) -> dict:
+        text = (text or "").strip()
+        return _json.loads(text) if text else {}
+
+    report = delfin_api.result_checks(
+        work_dir=work_dir, base_name=base_name, job_type=job_type,
+        reported=_parse_obj(reported), s2_bound=s2_bound,
+        references=_parse_obj(references), method=method or None)
+    return _dumps(report)
+
+
 def tool_list_dashboard_patterns() -> str:
     """List the names of operational-pattern recipes available on demand.
 
@@ -1918,6 +1962,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="csp_check")(_safe("csp_check", tool_csp_check))
     mcp.tool(name="mlp_check")(_safe("mlp_check", tool_mlp_check))
     mcp.tool(name="analysis_check")(_safe("analysis_check", tool_analysis_check))
+    mcp.tool(name="result_checks")(_safe("result_checks", tool_result_checks))
     mcp.tool(name="list_dashboard_patterns")(_safe("list_dashboard_patterns", tool_list_dashboard_patterns))
     mcp.tool(name="get_dashboard_pattern")(_safe("get_dashboard_pattern", tool_get_dashboard_pattern))
     # P1 — output parsing (read-only, structured returns)

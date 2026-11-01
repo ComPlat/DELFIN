@@ -39,6 +39,13 @@ options) — cite the section; never recite keyword names from memory.
 - Never report Gibbs energies from a structure with unexplained imaginary
   modes without an explicit warning in the answer.
 - Keywords only with manual citation; no submits without confirmation.
+- Before stating any number, run the `result_checks` tool (delfin-ops)
+  on the finished run: it verifies the job-type claim (minimum: 0
+  imaginary modes; TS: exactly 1, mode named), SCF/geometry
+  convergence, the `<S**2>` bound for unrestricted runs, the T1
+  diagnostic for DLPNO-CCSD(T), and that each reported value traces to
+  the output file it was read from. Values it flags `not_computed` or
+  `untested` must not be stated as results.
 
 ## Output format
 **Purpose** → **Input** (section cited) → **Mode analysis** →
