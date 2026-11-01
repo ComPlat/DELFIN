@@ -977,15 +977,23 @@ def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str, *,
     conf = confinement(SandboxConfig(mode, allow_network, 0))
     if conf.filesystem != "landlock":
         return base
-    from .api_client import _landlock_hide_paths, _private_tmp_dir
+    from .api_client import (_landlock_hide_paths, _private_tmp_dir,
+                             _session_scratch_dir)
     from . import landlock_exec as _ll
     repo = str(Path(repo_dir).resolve())
     argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
             "--write", repo]
+    # The session scratch dir: writable, and the tmpdir the helper maps.
+    try:
+        scratch = _session_scratch_dir()
+        argv += ["--write", scratch]
+        tmpdir = scratch
+    except Exception:
+        tmpdir = _private_tmp_dir()
     for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
         argv += ["--hide", h]
     strict = "1" if conf.network_restricted else "0"
-    return argv + ["--tmpdir", _private_tmp_dir(),
+    return argv + ["--tmpdir", tmpdir,
                    "--net", conf.landlock_net,
                    "--strict", strict, "--"] + base
 
@@ -1131,6 +1139,18 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
         elif is_file:
             args += ["--ro-bind", "/dev/null", str(p)]
     args += ["--bind", repo, repo]
+    # The session scratch dir: bound read-write, TMPDIR/TMP/TEMP point at
+    # it (in-cage path == host path, "/" is bound at itself), so a file
+    # one command writes survives to the next and the file tools reach it.
+    try:
+        from .api_client import _session_scratch_dir
+        scratch = _session_scratch_dir()
+        args += ["--bind-try", scratch, scratch]
+        args += ["--setenv", "TMPDIR", scratch,
+                 "--setenv", "TMP", scratch,
+                 "--setenv", "TEMP", scratch]
+    except Exception:
+        pass
     for d in late_masks:
         args += ["--tmpfs", d]
     # The run's own hidden paths, after every bind like the masks above.
@@ -1190,6 +1210,27 @@ def _firejail_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
         args.append(f"--blacklist={p}")
     args += [f"--chdir={repo}", "bash", "-c", cmd]
     return args
+
+
+def _command_env(mode: str) -> dict:
+    """The scrubbed environment for a command run under sandbox ``mode``.
+
+    ``_scrubbed_bash_env`` points TMPDIR/TMP/TEMP at the session scratch dir,
+    which is correct for the layers that bind that dir read-write into their
+    cage (bwrap, Landlock, Seatbelt, and no lock): a file one command writes
+    to $TMPDIR survives to the next and the file tools reach it. firejail is
+    the exception: it runs ``--private-tmp`` and does not bind the scratch
+    dir, so inside its cage a TMPDIR naming the host scratch would point at a
+    path that does not exist and mktemp plus every TMPDIR/TMP/TEMP user would
+    fail. For firejail keep the variables at /tmp (firejail's private
+    writable tmp), restoring the behaviour that predates the scratch dir.
+    """
+    from .api_client import _scrubbed_bash_env
+    env = _scrubbed_bash_env()
+    if mode == "firejail":
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            env[key] = "/tmp"
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -1344,13 +1385,14 @@ def run_agent_command(
     try:
         # Every mode: the shell's scrubbed environment (no provider keys),
         # its own session and process group, no terminal, the whole group
-        # ended at exit and at the timeout.
-        from .api_client import _scrubbed_bash_env
+        # ended at exit and at the timeout. TMPDIR points at the session
+        # scratch dir except under firejail (which does not bind it): see
+        # ``_command_env`` (which applies _scrubbed_bash_env itself).
         from . import contained_run as _contained
         proc = _contained.run(
             argv,
             cwd=str(repo_dir),
-            env=_scrubbed_bash_env(),
+            env=_command_env(cfg.mode),
             timeout=cfg.timeout_s,
             budget=True,
         )

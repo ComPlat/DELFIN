@@ -65,15 +65,15 @@ _FACTS = {
     ],
     "sp1_benchmark_runner_entry": [
         ("delfin/agent/benchmark_runner.py", 1450, "run_task"),
-        ("delfin/agent/benchmark.py", 296, "class Task"),
+        ("delfin/agent/benchmark.py", 323, "class Task"),
     ],
     "sp1_pilot_harness": [
         ("delfin/agent/explore_pilot.py", 255, "run_pilot"),
         ("delfin/agent/explore_pilot.py", 225, "verify_citations"),
     ],
     "sp1_scoring_result": [
-        ("delfin/agent/benchmark.py", 1806, "score_outcome"),
-        ("delfin/agent/benchmark.py", 488, "BenchmarkResult"),
+        ("delfin/agent/benchmark.py", 1938, "score_outcome"),
+        ("delfin/agent/benchmark.py", 520, "BenchmarkResult"),
     ],
     "sp1_pilot_wiring": [
         ("delfin/agent/explore_pilot.py", 167, "child_runner"),

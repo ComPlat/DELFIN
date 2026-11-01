@@ -29,7 +29,7 @@ if [ ! -d "$fix" ]; then
   exit 2
 fi
 
-for ext in out gbw property.json json property.txt densities engrad hess opt xyz; do
+for ext in out gbw property.json json property.txt densities engrad hess opt xyz globalminimum.xyz finalensemble.xyz; do
   if [ -f "$fix/$fix_base.$ext" ]; then
     cp "$fix/$fix_base.$ext" "$dir/$base.$ext"
   fi

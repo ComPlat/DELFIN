@@ -190,7 +190,8 @@ def _redact_secrets(text: str, findings: list) -> str:
     return text
 
 
-def scrub_secrets(text: str, *, exact_only: bool = False) -> str:
+def scrub_secrets(text: str, *, exact_only: bool = False,
+                  exact_values: "list[str] | tuple[()] | None" = None) -> str:
     """``text`` without any credential DELFIN holds and without anything
     shaped like one, for text that is KEPT (memory) or PASSED ON (another
     session's inbox, a tool result in the transcript).
@@ -203,13 +204,28 @@ def scrub_secrets(text: str, *, exact_only: bool = False) -> str:
     run the (super-linear) regex scan on a very large text but still cannot
     let the one value it is certain about through: the exact-value pass is
     a handful of ``str.replace`` calls and is bounded by the text length.
+
+    ``exact_values`` (OT2): the held-credential values resolved ONCE by a
+    caller that scrubs many texts in a row (e.g. the OTLP export resolves
+    them once per export instead of once per span). Pass a list to use
+    exactly those values — the lookup (file + keyring + env, see
+    ``web_tools._known_secret_values``) is then skipped; pass an EMPTY
+    tuple to request "no exact pass" explicitly (the degraded shape that
+    today results from the lookup raising — the pattern scan still runs).
+    The default ``None`` keeps the per-call lookup: default behaviour is
+    unchanged, byte for byte.
     Never raises; returns the input when scrubbing itself fails.
     """
     if not text:
         return text
+    if exact_values is None:
+        try:
+            from .web_tools import _known_secret_values
+            exact_values = _known_secret_values()
+        except Exception:
+            exact_values = ()
     try:
-        from .web_tools import _known_secret_values
-        for secret in sorted(set(_known_secret_values()), key=len, reverse=True):
+        for secret in sorted(set(exact_values), key=len, reverse=True):
             if secret in text:
                 text = text.replace(secret, "[redacted:credential]")
     except Exception:
