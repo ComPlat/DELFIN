@@ -26,6 +26,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
@@ -325,6 +326,25 @@ def result(
 # .gate patch for the operator (that file is not in this package's write
 # scope); the handler itself lives here and carries the real tests.
 
+def _node_visible(path: str | Path, repo: str) -> bool:
+    """Is ``path`` on a filesystem the compute node can see?
+
+    The run dir holds the sbatch script and receives the copied-back logs;
+    a path the compute node cannot read (a login-node-only scratchpad) would
+    lose them. Visible = under $HOME (shared in every DELFIN deployment) or
+    under the repository itself (the caller reached it through a shared
+    checkout). A decision on any other mount is a person's, not ours.
+    """
+    p = Path(path).resolve()
+    for root in (Path.home(), Path(repo).resolve()):
+        try:
+            p.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def cmd_test_on_slurm(args) -> int:
     """``delfin-agent test-on-slurm <repo> <ref> <partition> <minutes> <tests...>``.
 
@@ -343,7 +363,20 @@ def cmd_test_on_slurm(args) -> int:
         print("usage: delfin-agent test-on-slurm <repo> <ref> <partition> "
               "<minutes> <tests/...>")
         return 2
-    job_text = build_job(repo, ref, tests, partition, minutes)
-    job_id = submit(job_text, getattr(args, "run_dir", "."))
+    run_dir = Path(getattr(args, "run_dir", ".") or ".")
+    if not _node_visible(run_dir, repo):
+        raise ValueError(
+            f"run dir {run_dir} is not on a filesystem shared with the "
+            "compute node (the job script and copied-back logs would be "
+            "invisible there). Use a shared path, e.g. under your home or "
+            "the repository.")
+    # OT3 (01.11. defects): render the SESSION interpreter (the placeholder
+    # left the job to exit 127) and an ABSOLUTE output dir equal to the run
+    # dir (a relative "logs" resolved against the node-local $LOCAL after
+    # `cd` and the logs were lost).
+    job_text = build_job(repo, ref, tests, partition, minutes,
+                         python=sys.executable,
+                         output_dir=str(Path(run_dir).resolve()))
+    job_id = submit(job_text, run_dir)
     print(job_id)
     return 0
