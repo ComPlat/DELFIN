@@ -126,8 +126,9 @@ def test_cli_wiring_output_dir_not_relative_logs(repo_dir, monkeypatch,
 # ---------------------------------------------------------------- B3
 
 def test_run_dir_on_local_only_path_refused(repo_dir, monkeypatch,
-                                            tmp_path):
-    """A run dir on a node-invisible filesystem is refused BEFORE submit."""
+                                            tmp_path, capsys):
+    """A run dir on a node-invisible filesystem is refused BEFORE submit,
+    with the promised exit 2 (a usage error, not a traceback)."""
     called = []
 
     def fake_submit(job_text, run_dir, **kw):
@@ -136,11 +137,12 @@ def test_run_dir_on_local_only_path_refused(repo_dir, monkeypatch,
 
     monkeypatch.setattr(slurm_tests, "submit", fake_submit)
     local_only = "/scratch/only-login-node-sees/run"
-    with pytest.raises(ValueError) as exc:
-        slurm_tests.cmd_test_on_slurm(
-            _args(repo_dir, tmp_path, run_dir=local_only))
-    assert called == [], "submit must not run for a node-invisible run dir"
-    msg = str(exc.value)
+    rc = slurm_tests.cmd_test_on_slurm(
+        _args(repo_dir, tmp_path, run_dir=local_only))
+    called_msg = f"submit ran {called}"
+    assert called == [], f"submit must not run for a node-invisible run dir: {called_msg}"
+    assert rc == 2, f"expected the promised exit 2, got {rc}"
+    msg = capsys.readouterr().out
     assert "shared" in msg or local_only in msg
 
 

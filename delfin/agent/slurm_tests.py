@@ -368,11 +368,13 @@ def cmd_test_on_slurm(args) -> int:
         return 2
     run_dir = Path(getattr(args, "run_dir", ".") or ".")
     if not _node_visible(run_dir, repo):
-        raise ValueError(
-            f"run dir {run_dir} is not on a filesystem shared with the "
-            "compute node (the job script and copied-back logs would be "
-            "invisible there). Use a shared path, e.g. under your home or "
-            "the repository.")
+        # The reviewer asked for the promised exit 2, not a traceback: the
+        # refusal is a usage error, so print the message and return 2.
+        print(f"run dir {run_dir} is not on a filesystem shared with the "
+              "compute node (the job script and copied-back logs would be "
+              "invisible there). Use a shared path, e.g. under your home or "
+              "the repository.")
+        return 2
     # OT3 (01.11. defects): render the SESSION interpreter (the placeholder
     # left the job to exit 127) and an ABSOLUTE output dir equal to the run
     # dir (a relative "logs" resolved against the node-local $LOCAL after
