@@ -399,9 +399,13 @@ def test_the_counts_still_match_what_was_measured():
     # four tasks_w26_gh1.yaml GitHub-operation tasks in a throw-away local repo
     # (own files only, red CI log reproduced, cross-review on a scratch
     # branch, count-like conflict resolved by summing); graded on repo state.
+    #
+    # other 85 -> 87 on 2026-11-01 (SA0, wave 27, agent/s5-sa0b): the two
+    # tasks_w27_sa0.yaml delegation tasks (a dummy expert delegated to end
+    # to end; graded on artifacts, no live model).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 48, "chemistry": 32, "generalist": 26,
-                      "other": 85}, counts
+                      "other": 87}, counts
 
 
 # ---------------------------------------------------------------------------
