@@ -1,6 +1,9 @@
 """SRC1 acceptance: re-check the agent's artifacts against the record.
 
-Usage: python src1_verify.py <workspace> <task_id>
+Usage: benchmark_runner.run_acceptance runs this as
+`python src1_verify.py <workspace>` (cwd=workspace, ONE argument);
+standalone, `python src1_verify.py [<workspace>]` — default: the
+current directory. The task is the workspace basename.
 
 The workspace holds recorded.json (the API record the setup wrote /
 the operator recorded) and the agent's verification.json + answer.txt.
