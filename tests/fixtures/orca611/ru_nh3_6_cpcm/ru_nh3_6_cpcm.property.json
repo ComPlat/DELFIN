@@ -1,0 +1,12 @@
+{
+  "molecule": {"natoms": 25},
+  "results_properties": {
+    "geometries": [
+      {
+        "single_point_data": {
+          "finalenergy": -322.4321
+        }
+      }
+    ]
+  }
+}
