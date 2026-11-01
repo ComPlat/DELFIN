@@ -146,7 +146,15 @@ def test_guard_that_only_mentions_the_area_does_not_over_select(repo):
         '# a unit test file, only a comment mentions delfin/\n'
         'def t(): pass\n')
     (repo / "tests" / "test_r3_direct_scheduler_call_guard.py").write_text(
-        '# guard test\n')
+        # Fixture follows the REAL r3 guard's source shape
+        # (tests/test_r3_direct_scheduler_call_guard.py:26 'import ast'): a
+        # guard is selected because its SOURCE scans the area, not because
+        # a comment says so — the forgeable '# guard test' marker branch
+        # was removed in cdc2e668c (reviewer finding A04). The comment-only
+        # file above stays the red case: it is NOT selected.
+        'import pathlib\n'
+        'for p in pathlib.Path("delfin").rglob("*.py"):\n'
+        '    pass\n')
     _commit_all(repo, "guards")
     _git(repo, "branch", "guards")
     (repo / "delfin" / "agent").mkdir()

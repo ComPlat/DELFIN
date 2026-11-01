@@ -211,6 +211,25 @@ def analysis_check(*, capture: bool = True) -> CommandResult:
     return _run_cli(["analysis_check"], capture=capture)
 
 
+def result_checks(work_dir: str, base_name: str, job_type: str,
+                  reported: dict | None = None,
+                  s2_bound: float | None = None,
+                  references: dict | None = None,
+                  method: str | None = None) -> dict:
+    """Validate a finished ORCA run and the numbers an answer reports.
+
+    Thin read-only adapter over :func:`delfin.tools.result_checks.check_run`
+    (job-type consistency, traceability of reported values, <S**2>
+    bound for unrestricted runs, T1 diagnostic for DLPNO-CCSD(T),
+    plausibility against reference values).  Returns the checker's dict
+    report; see ``delfin/tools/result_checks.py`` for the schema.
+    """
+    from delfin.tools.result_checks import check_run
+    return check_run(work_dir, base_name, job_type, reported=reported,
+                     s2_bound=s2_bound, references=references,
+                     method=method)
+
+
 # ---------------------------------------------------------------------------
 # QM tool runner
 # ---------------------------------------------------------------------------
@@ -2941,6 +2960,8 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Verify MLP backends (torchani/AIMNet2/MACE)."},
     {"name": "analysis_check", "category": "checks",
      "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
+    {"name": "result_checks", "category": "checks",
+     "summary": "Validate a finished run and a chemistry answer's numbers."},
     # delfin-ops — workflow execution (mutating)
     {"name": "pipeline_prepare", "category": "workflow",
      "summary": "Generate a CONTROL.txt template (mutating)."},
