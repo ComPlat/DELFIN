@@ -33,10 +33,12 @@ def test_executor_wraps_result_untrusted():
     the wrapped one — nothing escapes raw.
     """
     import pathlib
-    patch = pathlib.Path(
-        "/pfs/data6/home/ka/ka_ibcs/ka_ew7404/software/delfin/"
-        ".delfin/worktrees/runde3-s3/.gate/"
-        "src1_verify_source_registration.patch")
+    # The registration patch lives only in the reviewer's tree (never
+    # committed); resolve it relative to the repository root and skip
+    # when it is absent — CI must not depend on a machine path.
+    patch = pathlib.Path(".gate", "src1_verify_source_registration.patch")
+    if not patch.is_file():
+        pytest.skip("registration patch not present in this tree")
     text = patch.read_text()
     body = text.split("def _execute_verify_source")[1].split(
         "def _execute_session_search")[0]
