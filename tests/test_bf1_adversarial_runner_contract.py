@@ -43,7 +43,10 @@ def _cas1_good_answer(ws: Path, task_id: str, trap: bool = False) -> None:
             "proposal validated", encoding="utf-8")
         (d / "proposal.json").write_text(json.dumps(
             {"n_electrons": 6, "n_orbitals": 5,
-             "justification": "pi system"}),
+             "justification": "pi system",
+             "named_orbital_classes":
+                 ["2 pi bonding + 3 pi* antibonding electrons in the "
+                  "pi/pi* orbitals"]}),
             encoding="utf-8")
 
 
