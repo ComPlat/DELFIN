@@ -15,6 +15,24 @@ import ipywidgets as widgets
 from IPython.display import HTML, display
 
 
+def _two_column_layout(title_row, left, right):
+    """Title bar + left (info/settings) | right (3D viewer) columns.
+
+    On narrow browser windows ipywidgets' FlexBox wraps the columns
+    below each other, so no separate mobile layout is needed.
+    """
+    body = widgets.HBox(
+        [widgets.VBox(tuple(left)), widgets.VBox(tuple(right))],
+        layout=widgets.Layout(
+            display='flex', flex_flow='row wrap', width='100%',
+        ),
+    )
+    left_box, right_box = body.children
+    left_box.layout = widgets.Layout(flex='1 1 46%', min_width='340px')
+    right_box.layout = widgets.Layout(flex='1 1 54%', min_width='380px')
+    return widgets.VBox((title_row, body))
+
+
 def build_ts_goat_panel(
     *,
     get_selected_path,
@@ -27,6 +45,7 @@ def build_ts_goat_panel(
     on_close=None,
     center_viewer=None,
     get_viewer_id=None,
+    animate_in_panel=None,
 ) -> dict:
     """Assemble the TS -> GOAT panel; returns a widget registry dict.
 
@@ -161,26 +180,27 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='110px'),
     )
     btn_row = widgets.HBox([submit_btn, close_btn])
+    cancel_row = widgets.HBox([cancel_btn])
     settings_row = widgets.HBox([
         widgets.VBox([method_label, method_field, basis_field]),
         widgets.VBox([pal_field, maxcore_field, slurm_time_field]),
     ])
+    viewer_head = widgets.HTML(
+        '<b>Optimized TS structure</b> (drag to rotate, scroll to zoom; '
+        'constraint atoms are highlighted):')
+    center_row = widgets.HBox([center_btn])
 
-    panel.children = (
-        title, status, files_box, mode_label, mode_dropdown, mode_warning,
-        analysis_box,
-        widgets.HTML('<b>Optimized TS structure</b> '
-                     '(drag to rotate, scroll to zoom; constraint atoms '
-                     'are highlighted):'),
-        viewer_out,
-        click_sync,
-        widgets.HBox([anim_row, center_btn]),
-        constraints_label,
-        widgets.HBox([constraints_field, highlight_btn, reset_prop_btn,
-                      clear_sel_btn]),
-        settings_row, preview_label, preview_box, btn_row,
-        widgets.HBox([cancel_btn]),
+    layout = _two_column_layout(
+        title_row=title,
+        left=(status, files_box, mode_label, mode_dropdown, mode_warning,
+              analysis_box, constraints_label,
+              widgets.HBox([constraints_field, highlight_btn, reset_prop_btn,
+                            clear_sel_btn]),
+              settings_row, preview_label, preview_box, btn_row,
+              cancel_row),
+        right=(viewer_head, viewer_out, click_sync, anim_row, center_row),
     )
+    panel.children = (layout,)
 
     # ---- state ----------------------------------------------------------
     state = {
@@ -350,9 +370,29 @@ def build_ts_goat_panel(
     anim_amp.observe(_on_anim_amp, names='value')
     anim_arrows_toggle.observe(
         lambda _c: _render_integrated_viewer(), names='value')
-    anim_play.on_click(
-        lambda _b: _on_anim_toggle() if anim_toggle.value else None)
-    anim_pause.on_click(lambda _b: _render_integrated_viewer())
+
+    def _on_play(_b=None):
+        if not anim_toggle.value:
+            return
+        _recompute_displaced()
+        vid = get_viewer_id() if get_viewer_id else None
+        if vid and animate_in_panel:
+            # periodical sinus animation entirely in the browser; the
+            # static render keeps its optimised geometry meanwhile
+            animate_in_panel(vid, True)
+        else:
+            _render_integrated_viewer()
+
+    def _on_pause(_b=None):
+        vid = get_viewer_id() if get_viewer_id else None
+        if vid and animate_in_panel:
+            animate_in_panel(vid, False)
+        # back to the undistorted geometry, marks stay
+        state['mode_displaced'] = None
+        _render_integrated_viewer()
+
+    anim_play.on_click(_on_play)
+    anim_pause.on_click(_on_pause)
 
     # ---- atom click -> constraint toggle --------------------------------
     # The tab injects click JS; when the user clicks an atom, the
@@ -689,6 +729,7 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             on_close=callbacks.get('on_close'),
             center_viewer=callbacks.get('center_viewer'),
             get_viewer_id=callbacks.get('get_viewer_id'),
+            animate_in_panel=callbacks.get('animate_in_panel'),
         )
         arrows = None
         mode_arrows_by_index = {}

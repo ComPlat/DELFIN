@@ -10305,6 +10305,11 @@ def create_tab(ctx):
                     from delfin.dashboard import molecule_viewer as _mv
                     _run_js(_mv.ts_goat_viewer_center_js(vid))
 
+                def _ts_animate_in_panel(vid, running):
+                    """Start/stop the sinusoidal mode animation loop."""
+                    from delfin.dashboard import molecule_viewer as _mv
+                    _run_js(_mv.ts_goat_viewer_anim_js(vid, running))
+
                 def _ts_on_close():
                     calc_ts_goat_panel.children = []
                     calc_ts_goat_panel.layout.display = 'none'
@@ -10322,6 +10327,7 @@ def create_tab(ctx):
                         'on_close': _ts_on_close,
                         'center_viewer': _ts_center_viewer,
                         'get_viewer_id': _ts_get_viewer_id,
+                        'animate_in_panel': _ts_animate_in_panel,
                     },
                 )
                 if open_result['error']:

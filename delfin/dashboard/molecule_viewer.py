@@ -7172,6 +7172,74 @@ def ts_goat_viewer_step_js(viewer_id, direction):
     )
 
 
+def ts_goat_viewer_anim_js(viewer_id, running):
+    """Start/stop a self-contained sinusoidal mode animation.
+
+    A setInterval loop inside the browser displaces the model
+    ``A*sin(2*pi*t/T)`` along the stored mode arrows around the
+    optimised geometry (t in [0, T)), then re-renders -- no kernel
+    round-trip per frame.  ``A`` is the display amplitude only
+    (``window.__tsGoatAmp``); the reactive-centre analysis uses its
+    own fixed reference displacement.  Highlights travel with the
+    atoms because the sphere centers are recomputed per frame from
+    the displaced coordinates.
+    """
+    return (
+        "(function(){\n"
+        "var vid = " + json.dumps(viewer_id) + ";\n"
+        "var viewer = (window.__tsGoatViewers||{})[vid];\n"
+        "if (!viewer) { console.error('DELFIN TS-GOAT: no viewer ' + vid); return; }\n"
+        "var dataEl = document.getElementById(vid + '_data');\n"
+        "if (!dataEl) return;\n"
+        "var payload = JSON.parse(dataEl.textContent);\n"
+        "window.__tsGoatAnimStop = window.__tsGoatAnimStop || {};\n"
+        "var existing = window.__tsGoatAnimStop[vid];\n"
+        "if (existing) { clearInterval(existing); delete window.__tsGoatAnimStop[vid]; }\n"
+        + ("" if running else "return;\n") +
+        "var arrows = payload.arrows || [];\n"
+        "var lines = payload.xyz.split('\\n');\n"
+        "var n = parseInt(lines[0], 10) || 0;\n"
+        "var base = [];\n"
+        "for (var a = 0; a < n; a++) {\n"
+        "  var row = lines[2 + a].split(/\\s+/);\n"
+        "  base.push([parseFloat(row[1]), parseFloat(row[2]), parseFloat(row[3])]);\n"
+        "}\n"
+        "var period = (window.__tsGoatPeriodMs || 1600);\n"
+        "var t0 = performance.now();\n"
+        "var timer = setInterval(function(){\n"
+        "  var phase = ((performance.now() - t0) % period) / period;\n"
+        "  var disp = Math.sin(2 * Math.PI * phase);\n"
+        "  var amp = window.__tsGoatAmp || 0.25;\n"
+        "  var out = [lines[0], 'mode animation'];\n"
+        "  for (var a = 0; a < n; a++) {\n"
+        "    var x = base[a][0] + disp * amp * (arrows[a*3] || 0);\n"
+        "    var y = base[a][1] + disp * amp * (arrows[a*3+1] || 0);\n"
+        "    var z = base[a][2] + disp * amp * (arrows[a*3+2] || 0);\n"
+        "    out.push(lines[2 + a].split(/\\s+/)[0] + ' ' + x.toFixed(6)\n"
+        "      + ' ' + y.toFixed(6) + ' ' + z.toFixed(6));\n"
+        "  }\n"
+        "  viewer.clear();\n"
+        "  viewer.addModel(out.join('\\n'), 'xyz');\n"
+        "  viewer.setStyle({}, {stick: {radius: 0.11}, sphere: {scale: 0.28}});\n"
+        "  var atomsNow = viewer.getModel().selectedAtoms({}) || [];\n"
+        "  for (var h = 0; h < payload.highlight.length; h++) {\n"
+        "    var hSerial = payload.highlight[h] + 1;\n"
+        "    for (var bi = 0; bi < atomsNow.length; bi++) {\n"
+        "      if (atomsNow[bi].serial !== hSerial) continue;\n"
+        "      var bt = atomsNow[bi];\n"
+        "      viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
+        "        radius: 0.72, color: 0xff8f00, opacity: 0.22});\n"
+        "      viewer.setStyle({serial: hSerial},\n"
+        "        {stick: {radius: 0.13, color: 0xff8f00}});\n"
+        "    }\n"
+        "  }\n"
+        "  viewer.render();\n"
+        "}, 60);\n"
+        "window.__tsGoatAnimStop[vid] = timer;\n"
+        "})();\n"
+    )
+
+
 def coord_to_xyz(coord_text):
     """Convert TURBOMOLE ``coord`` format to XYZ.
 

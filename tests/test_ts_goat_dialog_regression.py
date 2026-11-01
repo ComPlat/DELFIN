@@ -250,8 +250,9 @@ def test_panel_contains_its_own_viewer_output(tmp_path):
     result, captured = _open_with_panel_viewer(tmp_path)
     assert result['error'] is None
     reg = result['registry']
-    # the Output widget is a child of the panel -> rendered INSIDE it
-    children = reg['panel'].children
+    # the Output widget is a descendant of the panel (two-column layout
+    # nests it inside the right column) -> rendered INSIDE it
+    children = _iter_widgets(reg['panel'])
     from ipywidgets import Output
     outputs = [c for c in children if isinstance(c, Output)]
     assert outputs, 'panel must contain an Output viewer widget'
@@ -312,7 +313,7 @@ def test_mode_change_updates_animation_source(tmp_path):
     reg = result['registry']
     dropdown = None
     from ipywidgets import Dropdown
-    for row in reg['panel'].children:
+    for row in _iter_widgets(reg['panel']):
         if isinstance(row, Dropdown):
             dropdown = row
     assert dropdown is not None, 'mode dropdown must exist'
