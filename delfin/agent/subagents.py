@@ -1645,6 +1645,199 @@ def subagent_type_names() -> list[str]:
     return list(SUBAGENT_PRESETS.keys())
 
 
+# Paths an expert must never claim as its write scope: the safety frame
+# (SA0 package brief). A glob is refused when its literal prefix enters
+# one of these files or the pack directory — the model may not widen,
+# shadow or rewrite any of them through a delegated writer.
+_PROTECTED_GLOB_PREFIXES: tuple[str, ...] = (
+    "delfin/agent/api_client",
+    "delfin/agent/engine",
+    "delfin/agent/sandbox",
+    "delfin/agent/permission_rules",
+    "delfin/agent/approval_guard",
+    "delfin/agent/turn_outcome",
+    "delfin/agent/benchmark_runner",
+    "delfin/agent/kit_",
+    "delfin/agent/web_tools",
+    "delfin/agent/text_sanitize",
+    "delfin/agent/mcp_",
+    "delfin/agent/skill_safety",
+    "delfin/agent/skill_share",
+    "delfin/agent/skills",
+    "delfin/agent/pack/",
+    "delfin/api.py",
+    "delfin/smiles_converter",
+)
+
+
+def _known_preset_tool_names() -> frozenset[str]:
+    """The tool names a preset may list, built the way api_client builds
+    its real registered surface for T4 grounding (api_client.py:~17718):
+    write tools + DELFIN-only tools + the doc tools, plus the reporting
+    channel a preset already ships with (subagent_message). Read-only
+    catalogue names (explore's measured surface) are included via the
+    preset definitions themselves — a NEW preset listing a tool an
+    existing preset lists must not be refused for it.
+    """
+    names: set[str] = set()
+    try:
+        from .api_client import (
+            _WRITE_TOOL_NAMES,
+            _DELFIN_ONLY_TOOL_NAMES,
+            _DOC_TOOLS_OPENAI,
+        )
+        names |= set(_WRITE_TOOL_NAMES)
+        names |= set(_DELFIN_ONLY_TOOL_NAMES)
+        for t in _DOC_TOOLS_OPENAI:
+            n = str(t.get("name") or (t.get("function") or {}).get("name")
+                    or "")
+            if n:
+                names.add(n)
+    except Exception:
+        pass
+    # The union of tools every shipped preset actually lists: these are
+    # registered by construction (their presets execute today).
+    for p in SUBAGENT_PRESETS.values():
+        names |= set(p.tools or ())
+    names.add("subagent_message")
+    names.discard("")
+    return frozenset(names)
+
+
+def _kebab_case(name: str) -> bool:
+    return bool(re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name))
+
+
+def validate_preset(path_or_text: str) -> list[str]:
+    """Check one preset definition; return its problems (empty = valid).
+
+    The agent-builder expert's one check (operator brief, 2026-11-01):
+    required fields, unique kebab-case id, tools from the known
+    catalogue, write_globs inside the repo and never a protected path,
+    may_delegate_to only known presets, a valid output_schema, and no
+    override of a built-in or pack preset. Takes a file path or the
+    definition text itself. Every problem names the field that caused
+    it; a file that cannot be read is ONE problem, never a traceback.
+    Never raises.
+    """
+    try:
+        text = ""
+        source = str(path_or_text or "")
+        if source.strip().startswith("---"):
+            text = source
+        else:
+            p = Path(source)
+            if p.suffix == ".md" or "\n" not in source:
+                try:
+                    text = p.read_text(encoding="utf-8")
+                except OSError as exc:
+                    return [f"cannot read preset file {source!r}: {exc}"]
+            else:
+                text = source
+        from .skills import _parse_frontmatter
+        meta, body = _parse_frontmatter(text)
+    except Exception as exc:
+        return [f"preset check failed while reading: {exc}"]
+
+    problems: list[str] = []
+    name = (meta.get("name") or "").strip()
+    if not name:
+        problems.append("frontmatter field 'name' is required")
+    elif not _kebab_case(name):
+        problems.append(
+            f"name {name!r} is not kebab-case (lowercase words, hyphens)")
+    if not (meta.get("description") or "").strip():
+        problems.append("frontmatter field 'description' is required")
+    if not body.strip():
+        problems.append(
+            "preset body (the expert's system prompt) is empty")
+
+    # Unique id: not a built-in, not a pack preset, not a live user one.
+    if name:
+        if name in _BUILTIN_PRESETS:
+            problems.append(
+                f"name {name!r} overrides built-in preset 'explore' family: "
+                f"{name!r} already exists as a built-in preset; "
+                "the agent-builder may not override it")
+        pack_dir = Path(__file__).resolve().parent / "pack" / "agents"
+        try:
+            pack_ids = {p.stem.replace("_subagent", "") for p in
+                        pack_dir.glob("*_subagent.md")}
+            pack_ids |= {n for n in SUBAGENT_PRESETS
+                         if n not in _BUILTIN_PRESETS
+                         and n not in pack_ids}
+        except OSError:
+            pack_ids = set()
+        if name in pack_ids and name not in _BUILTIN_PRESETS:
+            problems.append(
+                f"name {name!r} overrides an existing pack preset "
+                f"{name!r}; the agent-builder may not override it")
+
+    # Tools from the known catalogue.
+    known = _known_preset_tool_names()
+    for tool in _parse_preset_tools(meta.get("tools")):
+        if tool not in known:
+            problems.append(
+                f"tools: {tool!r} is not a known tool; known are e.g. "
+                + ", ".join(sorted(known)[:6]))
+
+    # write_globs: inside the repo, never a protected path. The file
+    # NAME is checked as well as the id: a preset named for a protected
+    # file is at least confusing and at worst a social-engineering
+    # handle for edits that bypass the protected-file rule.
+    for glob in _parse_preset_globs(meta.get("write_globs")):
+        g = glob.strip().replace("\\", "/")
+        if g.startswith("/") or ".." in g.split("/"):
+            problems.append(
+                f"write_globs: {glob!r} points outside the repository")
+            continue
+        if any(g.startswith(pre) or g.startswith(pre.replace("/", ""))
+               for pre in _PROTECTED_GLOB_PREFIXES):
+            problems.append(
+                f"write_globs: {glob!r} covers a protected path "
+                "(the safety frame is never an expert's write scope)")
+    if name and any(
+            name == (base := pre.rsplit("/", 1)[-1]).replace("_", "-")
+            or base.replace("_", "-") in name
+            for pre in _PROTECTED_GLOB_PREFIXES
+            if "/" in pre and not pre.endswith("/")):
+        problems.append(
+            f"name {name!r} names a protected file; the agent-builder "
+            "does not write presets for safety-frame files")
+
+    # may_delegate_to: only known presets.
+    for target in _parse_preset_names(meta.get("may_delegate_to")):
+        if target not in SUBAGENT_PRESETS:
+            problems.append(
+                f"may_delegate_to: {target!r} is not a known preset")
+
+    # output_schema: valid JSON, an object, validates a conforming sample.
+    raw_schema = meta.get("output_schema")
+    if raw_schema is not None and _parse_preset_schema(raw_schema) is None:
+        # Present but unparseable: invalid JSON, a list, a bare string —
+        # each is one named problem, never a silent free-form default.
+        problems.append(
+            f"output_schema: {str(raw_schema)[:60]!r} is not a valid "
+            "JSON-Schema object")
+    schema = _parse_preset_schema(raw_schema)
+    if isinstance(schema, dict) and schema:
+        sample: dict = {}
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for prop, spec in props.items():
+                t = spec.get("type") if isinstance(spec, dict) else None
+                sample[prop] = {"string": "x", "integer": 1,
+                                "number": 1.0, "boolean": True}.get(
+                    t if isinstance(t, str) else "", "x")
+        errs = validate_json_schema(sample, schema)
+        if errs:
+            problems.append(
+                "output_schema: does not validate a conforming sample ("
+                + "; ".join(errs[:3]) + ")")
+
+    return problems
+
+
 def list_subagents() -> list[dict]:
     return [
         {
