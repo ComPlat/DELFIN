@@ -26,12 +26,24 @@ PROBE_MARK = "def test_probe"
 SCRATCH_MARK = "throwaway notes, do not commit"
 
 
+def _env(repo: Path) -> dict:
+    # The fixture's pinned gitconfig + a synthetic identity so the
+    # branch's commits work on any CI runner (no global gitconfig).
+    return {"GIT_CONFIG_GLOBAL": str(repo.parent.parent / "gitconfig"),
+            "GIT_AUTHOR_NAME": "Widgetkit CI",
+            "GIT_AUTHOR_EMAIL": "ci@widgetkit.invalid",
+            "GIT_COMMITTER_NAME": "Widgetkit CI",
+            "GIT_COMMITTER_EMAIL": "ci@widgetkit.invalid",
+            "GIT_TERMINAL_PROMPT": "0", "PATH": "/usr/bin:/bin"}
+
+
 def _git(repo: Path, *args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=str(repo),
-                          capture_output=True, text=True,
-                          env={"GIT_CONFIG_GLOBAL": str(
-                              repo.parent.parent / "gitconfig"),
-                              "GIT_TERMINAL_PROMPT": "0", "PATH": "/usr/bin:/bin"})
+    # DELFIN's own git calls go through safe_git (repo guard); the env
+    # adds the fixture's pinned gitconfig on top of safe_git's cleaned
+    # environment. stderr stays separate (safe_git merges only on
+    # merge_stderr=True), so the RuntimeError below is unchanged.
+    from delfin.agent import safe_git
+    proc = safe_git.run(args, repo, env=_env(repo))
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)}: {proc.stderr[:200]}")
     return proc.stdout.strip()

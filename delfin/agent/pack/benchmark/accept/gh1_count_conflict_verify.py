@@ -24,8 +24,12 @@ def _env(repo: Path) -> dict:
 
 
 def _git(repo: Path, *args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=str(repo),
-                          capture_output=True, text=True, env=_env(repo))
+    # DELFIN's own git calls go through safe_git (repo guard); the env
+    # adds the fixture's pinned gitconfig on top of safe_git's cleaned
+    # environment. stderr stays separate (safe_git merges only on
+    # merge_stderr=True), so the RuntimeError below is unchanged.
+    from delfin.agent import safe_git
+    proc = safe_git.run(args, repo, env=_env(repo))
     if proc.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)}: {proc.stderr[:200]}")
     return proc.stdout.strip()

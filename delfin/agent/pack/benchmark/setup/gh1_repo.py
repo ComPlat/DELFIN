@@ -23,7 +23,6 @@ script's own directory (setup/).
 """
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -33,12 +32,31 @@ from generalist_repo import (  # noqa: E402
     Precondition, ToolchainMissing, _quiet_env, commit, expect, git, main,
     mark_base, new_repo, pytest_rc, write,
 )
+from delfin.agent import safe_git  # noqa: E402
 
 __all__ = [
     "Precondition", "ToolchainMissing", "commit", "expect", "git", "main",
     "mark_base", "new_repo", "pytest_rc", "write",
-    "feature_branch", "counts_conflict", "base_sha",
+    "feature_branch", "counts_conflict", "base_sha", "identity_env",
 ]
+
+
+def identity_env(repo: Path) -> dict:
+    """A fixed git identity for the fixture's child processes.
+
+    CI runners have no git identity; repo-local config from
+    ``new_repo`` covers most commits, but every commit also carries
+    this env so the fixture is independent of any global gitconfig.
+    Never a real account: synthetic benchmark names only.
+    """
+    return {
+        "GIT_AUTHOR_NAME": "Widgetkit CI", "GIT_AUTHOR_EMAIL":
+        "ci@widgetkit.invalid",
+        "GIT_COMMITTER_NAME": "Widgetkit CI", "GIT_COMMITTER_EMAIL":
+        "ci@widgetkit.invalid",
+        "GIT_CONFIG_GLOBAL": str(repo.parent / "gitconfig"),
+        "GIT_TERMINAL_PROMPT": "0",
+    }
 
 
 def feature_branch(repo: Path, name: str, files: dict[str, str],
@@ -86,9 +104,15 @@ def counts_conflict(repo: Path, counts_rel: str, base_value: int,
                  **(partner_files or {})})
     commit(repo, "partner: add lookup helper")
     git(repo, "checkout", "-q", "main")
-    proc = subprocess.run(
-        ["git", "merge", "--no-commit", "--no-ff", "partner/count"],
-        cwd=str(repo), capture_output=True, text=True, env=_quiet_env())
+    # safe_git, not a bare subprocess: DELFIN's own git reads/writes go
+    # through safe_git (the repo guard). The identity env makes the
+    # merge commit independent of any CI gitconfig.
+    proc = safe_git.run(
+        ["merge", "--no-commit", "--no-ff", "partner/count"],
+        repo, env=identity_env(repo))
+    if proc.returncode not in (0, 1):
+        raise Precondition(
+            f"merge neither conflicted nor started: {proc.stderr[:200]}")
     if proc.returncode == 0:
         raise Precondition(
             f"merge did not conflict: {proc.stdout[:200]}")
