@@ -1,0 +1,66 @@
+{
+    "Calculation_Info": {
+        "Charge": 0,
+        "Mult": 1,
+        "NumOfAtoms": 14,
+        "NumOfElectrons": 28,
+        "NumOfBasisFuncts": 0
+    },
+    "Calculation_Status": {
+        "Status": "NORMAL TERMINATION",
+        "progName": "ProgMDCI",
+        "version": "6.1.1"
+    },
+    "Calculation_Timings": {
+        "CONSTRUCTED": 0.0
+    },
+    "Geometries": [
+        {
+            "Energy": [
+                {
+                    "Method": "SCF",
+                    "Mult": [
+                        [
+                            1
+                        ]
+                    ],
+                    "totalenergy": [
+                        [
+                            -156.146070332063
+                        ]
+                    ]
+                },
+                {
+                    "Method": "MDCI(SD)",
+                    "Mult": [
+                        [
+                            1
+                        ]
+                    ],
+                    "totalenergy": [
+                        [
+                            -156.277578031416
+                        ]
+                    ]
+                },
+                {
+                    "Method": "MDCI(SD(T))",
+                    "Mult": [
+                        [
+                            1
+                        ]
+                    ],
+                    "totalenergy": [
+                        [
+                            -156.281197921276
+                        ]
+                    ]
+                }
+            ],
+            "Single_Point_Data": {
+                "Converged": true,
+                "FinalEnergy": -156.281197921276
+            }
+        }
+    ]
+}
