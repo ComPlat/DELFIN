@@ -399,6 +399,43 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         perms = getattr(engine, "kit_permissions", None)
         return str(getattr(perms, "mode", "") or "")
 
+    # The progress watchdog (hg1): a stall's class and age, reported as
+    # one stream-json event + one status line per entered stall and per
+    # reporting cadence. Ticked by the wait/notice callbacks; never
+    # acts (the per-class safe action is in the event's `action` field,
+    # for the caller to honour). Settings are read here, per turn, the
+    # same way run_limits reads its knobs.
+    from . import progress_watchdog as _pw
+    try:
+        from delfin.user_settings import load_settings as _lw
+        _agent_cfg = (_lw() or {}).get("agent") or {}
+    except Exception:
+        _agent_cfg = {}
+    _watchdog = _pw.ProgressWatchdog(
+        limits=_pw.resolve_limits(_agent_cfg),
+        tick_s=_pw.resolve_tick_s(_agent_cfg))
+    _gate_state = {"seen": False}   # a slot-wait notice has gone by
+
+    def _watchdog_tick():
+        """One classification tick on the engine's activity snapshot.
+
+        The snapshot is the state the engine's own stream loop writes
+        (activity.py); a stub engine without one keeps working. The
+        gate-queue latches from the slot-wait notice: the tick right
+        after it classifies as gate-queue, then the latch clears so a
+        later plain model-wait is named as such."""
+        snap = getattr(getattr(engine, "activity", None),
+                       "snapshot", lambda: None)()
+        if snap is None:
+            return
+        gate = "waiting for a slot" if _gate_state["seen"] else ""
+        _gate_state["seen"] = False
+        ev, line = _watchdog.tick(snap, gate_notice=gate)
+        if ev is not None and emit is not None:
+            emit(ev)
+            if line:
+                emit({"type": "notice", "text": line})
+
     observer = turn_outcome.TurnObserver(
         emit=emit, mode=_mode,
         workspace=(getattr(getattr(engine, "kit_permissions", None),
@@ -429,6 +466,12 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         # model's answer, and _run_once's return contract says "text"
         # is the answer. Emitted with its own type so stream-json
         # readers and the CLI renderer can tell the two apart.
+        if "waiting for a slot on" in str(text or ""):
+            # The endpoint gate is queueing this request (endpoint_gate
+            # wait_notice): the next watchdog tick classifies as
+            # gate-queue, not model-wait. Cleared by any later tick
+            # that follows a slot being taken.
+            _gate_state["seen"] = True
         if text and emit is not None:
             emit({"type": "notice", "text": text})
 
@@ -439,6 +482,7 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         # record. A stream-json consumer can now overwrite its status
         # field instead of appending sixty entries that differ only in
         # the number of seconds.
+        _watchdog_tick()
         if text and emit is not None:
             emit({"type": "wait", "text": text})
 
