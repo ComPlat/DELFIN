@@ -58,15 +58,21 @@ def test_mlp_preopt_key_is_documented_in_the_key_notes():
     notes = json.loads(
         (Path(__file__).resolve().parents[1] / "delfin" / "common"
          / "control_key_notes.json").read_text(encoding="utf-8"))
-    entry = notes.get("mlp_preopt")
+    entry = notes.get("keys", {}).get("mlp_preopt")
     assert entry, "mlp_preopt is not in control_key_notes.json"
     assert "none" in entry.get("valid_values", "")
 
 
-def test_mlp_preopt_is_in_the_config_defaults():
-    from delfin.config import DEFAULT_CONFIG_VALUES
+def test_mlp_preopt_default_comes_from_the_schema_and_template_stays_opt_in():
+    from delfin.common.control_validator import CONTROL_FIELD_SPECS
 
-    assert DEFAULT_CONFIG_VALUES.get("mlp_preopt") == "none"
+    spec = next(s for s in CONTROL_FIELD_SPECS if s.name == "mlp_preopt")
+    assert spec.default == "none"
+    # the shipped CONTROL_TEMPLATE does not set the key: a user's file
+    # without it runs exactly as before
+    from delfin import define
+
+    assert "mlp_preopt" not in getattr(define, "CONTROL_TEMPLATE", "")
 
 
 # --------------------------------------------------------- pipeline hook ---
