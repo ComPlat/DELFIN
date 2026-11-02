@@ -413,8 +413,12 @@ def test_the_counts_still_match_what_was_measured():
     # other 88 -> 90 on 2026-11-02 (SA0, wave 27, agent/s5-sa0b): the two
     # tasks_w27_sa0.yaml delegation tasks (a dummy expert delegated to end
     # to end; graded on artifacts, no live model).
+    #
+    # science 51 -> 54 on 2026-11-02 (SRC1, wave 26, agent/s3-src1b): the
+    # three tasks_w26_src1.yaml source-verification tasks (real DOI, invented
+    # DOI refused, PubChem value with CID), graded on recorded API responses.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 51, "chemistry": 32, "generalist": 26,
+                      "science": 54, "chemistry": 32, "generalist": 26,
                       "other": 90}, counts
 
 
