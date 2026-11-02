@@ -25,8 +25,10 @@ export interface SwarmStatus {
   waiting_for_user: Record<string, unknown>[]
 }
 
-/** A triage item as swarm.triage.list returns it. */
-export interface TriageItem {
+/** A triage item as swarm.triage.list returns it: the fields the view
+ *  reads, over the raw record the service gave (the answer goes with the
+ *  RAW record; the service re-derives the verdict there). */
+export interface TriageItem extends Record<string, unknown> {
   item_id: string
   package?: string
   question?: string
@@ -35,7 +37,7 @@ export interface TriageItem {
 
 export interface SwarmPlanResult {
   goal: string
-  members: Record<string, unknown>[]
+  members?: Record<string, unknown>[]
   dry_run_text: string
 }
 
@@ -51,7 +53,6 @@ export interface SwarmViewDeps {
   keymap: Keymap
   now: () => number
   askStatus(): Promise<SwarmStatus>
-  askPlan(specYaml: string): Promise<SwarmPlanResult>
   askValidate(specYaml: string): Promise<{ valid: boolean; errors: string[] }>
   askStart(specYaml: string, confirm: boolean): Promise<SwarmStartResult>
   askTriage(): Promise<Record<string, unknown>[]>
@@ -79,7 +80,7 @@ export interface SwarmViewState {
   queue: TriageItem[]
   loading: boolean
   /** The new-swarm flow's held plan: a start waits on the user. */
-  pendingStart: { specYaml: string; plan: SwarmPlanResult } | null
+  pendingStart: { specYaml: string; plan: SwarmStartResult } | null
   /** A queue row taken for an answer; it goes out only after confirm. */
   pendingAnswer: { item: TriageItem } | null
 }
@@ -111,18 +112,19 @@ export function createSwarmView(deps: SwarmViewDeps) {
     }))
 
   const waits = (): TriageItem[] =>
-    (state.queue ?? []).map((raw) => ({
-      item_id: String(raw.item_id ?? ""),
-      package: raw.package === undefined ? undefined : String(raw.package ?? ""),
-      question: raw.question === undefined ? undefined : String(raw.question ?? ""),
-      raw,
+    (state.queue ?? []).map((q) => ({
+      item_id: String(q.item_id ?? ""),
+      package: q.package === undefined ? undefined : String(q.package ?? ""),
+      question: q.question === undefined ? undefined : String(q.question ?? ""),
+      raw: (q.raw ?? q) as Record<string, unknown>,
     }))
 
   const refresh = async (): Promise<void> => {
     setState({ loading: true })
     try {
       const st = await deps.askStatus()
-      const items = await deps.askTriage().catch(() => [])
+      const items = (await deps.askTriage().catch(() => [] as Record<string, unknown>[]))
+        .map((raw) => ({ ...raw, item_id: String(raw.item_id ?? ""), raw }))
       setState({ status: st, queue: items, open: true, loading: false })
     } catch (error) {
       setState({ loading: false })
@@ -167,7 +169,7 @@ export function createSwarmView(deps: SwarmViewDeps) {
       return { answered: false }
     })
     if (done.answered) {
-      setState({ pendingAnswer: null, queue: state.queue.filter((q) => q !== held.item.raw) })
+      setState({ pendingAnswer: null, queue: state.queue.filter((q) => q.raw !== held.item.raw) })
       deps.note(`answered ${held.item.package ?? held.item.item_id}`)
       return true
     }

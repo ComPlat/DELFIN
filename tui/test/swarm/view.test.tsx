@@ -8,7 +8,7 @@
  * (module missing). They go green with the view in place.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { createSwarmView, type SwarmSpec, type SwarmStatus } from "../../src/swarm/view"
+import { createSwarmView, type SwarmStatus } from "../../src/swarm/view"
 import { Keymap } from "../../src/keymap/keymap"
 
 const now = 1700000000
@@ -36,8 +36,6 @@ function makeView(st = status()) {
     keymap: new Keymap(),
     now: () => now,
     askStatus: async () => { requests.push({ method: "swarm.status", params: {} }); return st },
-    askPlan: async (spec) => { requests.push({ method: "swarm.plan", params: { specYaml: spec } });
-      return { goal: "goal", members: [], dry_run_text: "plan: 2 members" } },
     askValidate: async (spec) => { requests.push({ method: "swarm.validate", params: { specYaml: spec } });
       return { valid: true, errors: [] } },
     askStart: async (spec, confirm) => { requests.push({ method: "swarm.start",
