@@ -386,7 +386,17 @@ class _Writer:
         # atoms ({ C N C }), bonds ({ B N1 N2 C }) or angles ({ A 1 2 3 C })
         # per manual optimisation section 4.5.
         if "ts_mode" in geom:
-            geom["ts_mode"] = TSMode.from_string(geom.pop("ts_mode"))
+            # TSMode.from_string accepts only the bracketed string form
+            # ('{ M 1 }' per manual section 4.5.1); map an int x (follow mode
+            # x uphill) or a list ['M', 1] onto it -- anything else is a user
+            # error and stays one.
+            raw = geom.pop("ts_mode")
+            if isinstance(raw, int):
+                raw = f"{{ M {raw} }}"
+            elif isinstance(raw, (list, tuple)) and raw and str(raw[0]).upper() \
+                    in {"A", "B", "D", "M"}:
+                raw = "{ " + " ".join(str(part) for part in raw) + " }"
+            geom["ts_mode"] = TSMode.from_string(raw)
         # keep constraints as a list of strings for OPI's coercion
         # Single-coordinate scan -> OPI Scan object (or its string).
         if scan:
