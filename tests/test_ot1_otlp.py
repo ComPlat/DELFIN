@@ -69,6 +69,10 @@ def test_text_timeline_marks_longest(tmp_path, monkeypatch):
 
 
 def test_perf_10k_tool_calls(tmp_path, monkeypatch):
+    """10k tool-call spans built in memory, bounded on process CPU time
+    (OT3: wall clock on a contended CI runner is not the exporter's cost)."""
+    import gc
+
     import delfin.agent.otel_export as oe
     monkeypatch.setattr(tool_trace, "_DIR", tmp_path / "tool_traces")
     monkeypatch.setattr(turn_metrics, "_DIR", tmp_path / "turn_metrics")
@@ -87,14 +91,38 @@ def test_perf_10k_tool_calls(tmp_path, monkeypatch):
                         role="assistant", total_ms=600_000, ttft_ms=10,
                         output_chars=1, tool_calls=10_000)
     from delfin.agent import otel_export
-    t0 = time.monotonic()
+    gc.collect()
+    t0 = time.process_time()
     spans = otel_export.spans("ot1perf")
-    elapsed = time.monotonic() - t0
+    elapsed = time.process_time() - t0
     assert len(spans) >= 10_000
     assert elapsed < 5.0, elapsed
 
 
+def _time_export_cpu(session: str, tmp_path) -> tuple[float, bool]:
+    """Exporter cost in process CPU seconds, not wall clock.
+
+    OT3: on a contended CI runner wall clock diverges from CPU time (the
+    #507 shard saw 6.4 s wall for a 1.9 s export after ~110 predecessor
+    files). The bound therefore measures the exporter's own work — process
+    CPU time, after a gc.collect() so unrelated heap growth from
+    predecessor tests is not charged to the exporter. The intent is kept:
+    10k spans export in well under a few seconds; the 5.0 s bound is NOT
+    raised. Reviewer OT3: one export total — the timed call IS the
+    assertion call, the helper returns the export's result alongside.
+    """
+    import gc
+    from delfin.agent import otel_export
+    gc.collect()
+    t0 = time.process_time()
+    out = otel_export.write_otlp_json(session, tmp_path / "big.json")
+    elapsed = time.process_time() - t0
+    return elapsed, bool(out)
+
+
 def test_perf_10k_write_otlp(tmp_path, monkeypatch):
+    """10k spans through the file exporter, bounded on process CPU time
+    (OT3: wall clock on a contended CI runner is not the exporter's cost)."""
     import delfin.agent.otel_export as oe
     monkeypatch.setattr(tool_trace, "_DIR", tmp_path / "tool_traces")
     monkeypatch.setattr(turn_metrics, "_DIR", tmp_path / "turn_metrics")
@@ -110,8 +138,6 @@ def test_perf_10k_write_otlp(tmp_path, monkeypatch):
     turn_metrics.record("ot1perf2", provider="kit", model="m",
                         role="assistant", total_ms=600_000, ttft_ms=10,
                         output_chars=1, tool_calls=10_000)
-    from delfin.agent import otel_export
-    t0 = time.monotonic()
-    otel_export.write_otlp_json("ot1perf2", tmp_path / "big.json")
-    elapsed = time.monotonic() - t0
+    elapsed, ok = _time_export_cpu("ot1perf2", tmp_path)
+    assert ok, "export must succeed"
     assert elapsed < 5.0, elapsed
