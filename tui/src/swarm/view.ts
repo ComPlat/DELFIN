@@ -233,6 +233,23 @@ export function createSwarmView(deps: SwarmViewDeps) {
       else close()
       return true
     }
+    // The confirmation keys, while a plan or an answer is held (the
+    // agents view's question keys): y confirms the HELD thing only,
+    // n lets it go; any other key is neither. Not while typing.
+    if (!typing && state.pendingStart && key.name === "n") {
+      setState({ pendingStart: null })
+      deps.note("the plan is let go: /swarm new starts again")
+      return true
+    }
+    if (!typing && state.pendingStart && key.name === "y") {
+      void confirmStart()
+      return true
+    }
+    if (!typing && state.pendingAnswer && key.name === "n") {
+      setState({ pendingAnswer: null })
+      deps.note("the answer is let go")
+      return true
+    }
     if (km.matches("agentsUp", key) || km.matches("agentsDown", key)) {
       if (typing) return true
       const up = km.matches("agentsUp", key)

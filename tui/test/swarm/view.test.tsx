@@ -48,7 +48,7 @@ function makeView(st = status()) {
     askAnswer: async (item, answer) => { requests.push({ method: "swarm.triage.answer",
       params: { item, answer } }); return { answered: true, item_id: String(item.item_id) } },
     note: (text) => { drafts.push(text) },
-    draft: () => drafts.join("\n"),
+    draft: () => "",
   })
   return { view, requests, notes: drafts }
 }
@@ -169,5 +169,27 @@ describe("keyboard-first navigation", () => {
     const sent = await view.confirmAnswer("yes")
     expect(sent).toBe(true)
     expect(requests.some((r) => r.method === "swarm.triage.answer")).toBe(true)
+  })
+
+  test("y confirms a held plan, n lets it go, another key is neither", async () => {
+    const { view, requests } = makeView()
+    await view.refresh()
+    await view.newSwarm("goal: do the thing")
+    expect(view.state.pendingStart).toBeTruthy()
+    const y = { name: "y", sequence: "y", ctrl: false, meta: false, shift: false }
+    const n = { name: "n", sequence: "n", ctrl: false, meta: false, shift: false }
+    const other = { name: "z", sequence: "z", ctrl: false, meta: false, shift: false }
+    // z is neither: the plan stays held.
+    view.handleKey(other as never)
+    expect(view.state.pendingStart).toBeTruthy()
+    view.handleKey(n as never)
+    expect(view.state.pendingStart).toBe(null)
+    expect(requests.filter((r) => r.method === "swarm.start").length).toBe(1)  // the dry run only
+    await view.newSwarm("goal: again")
+    view.handleKey(y as never)
+    // y is the explicit confirmation: the held spec goes out confirmed.
+    const start = requests.filter((r) => r.method === "swarm.start").pop()!
+    expect(start.params.confirm).toBe(true)
+    expect(start.params.dryRun).toBe(false)
   })
 })
