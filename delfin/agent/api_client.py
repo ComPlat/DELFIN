@@ -7185,6 +7185,9 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "search_calcs", "get_calc_info", "calc_summary",
     # --- DELFIN ops server: checks ---
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
+    # mlp_list_backends (2026-11-02): reads the backend availability table;
+    # computes and writes nothing.
+    "mlp_list_backends",
     # --- DELFIN ops server: output parsing (reads .out files) ---
     # A tool the ops server registers as read-only but that is missing
     # here is refused in default mode with "no approval dialog

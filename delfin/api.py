@@ -2808,6 +2808,213 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
 
 
 # ---------------------------------------------------------------------------
+# MLP agent tools (wave19 m4).  Thin, fail-closed wrappers over
+# delfin.mlp_tools.calculators: an xyz string goes in, a JSON dict comes out.
+# A missing backend package or an invalid value is reported as
+# ok=False (+ available/install_hint where it is an availability problem),
+# never raised -- the agent gets a diagnosis, not a traceback.  An MLP
+# energy or geometry is a screening / starting-guess quantity: the handlers
+# label every result that way so it is never read as a final answer.
+# ---------------------------------------------------------------------------
+
+#: Where a missing backend's package is documented.
+_MLP_INSTALL_HINTS = {
+    "ani2x": "pip install torchani (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+    "aimnet2": "pip install aimnet2calc (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+    "mace_off": "pip install mace-torch (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+    "chgnet": "pip install chgnet (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+    "m3gnet": "pip install matgl (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+    "schnetpack": "pip install schnetpack (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+    "nequip": "pip install nequip (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+    "alignn": "pip install alignn (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+}
+
+
+def _mlp_install_hint(backend: str) -> str:
+    from delfin.mlp_tools.calculators import _BACKEND_ALIASES
+
+    key = _BACKEND_ALIASES.get(str(backend).lower().strip(), backend)
+    return _MLP_INSTALL_HINTS.get(
+        key, "see delfin/mlp_tools/SETUP_GUIDE.txt")
+
+
+def _mlp_error(message: str, *, available: bool | None = None,
+               backend: str = "") -> dict:
+    out = {"ok": False, "error": message}
+    if available is not None:
+        out["available"] = available
+        out["reason"] = message
+        hint = _mlp_install_hint(backend)
+        if hint:
+            out["install_hint"] = hint
+    return out
+
+
+def _mlp_read_atoms(xyz: str):
+    """Read an xyz string into an ase.Atoms object."""
+    import io
+    import ase.io
+
+    atoms = ase.io.read(io.StringIO(xyz), format="xyz")
+    if isinstance(atoms, list):
+        # a multi-structure block; the single-structure tools need one
+        raise ValueError(
+            "expected exactly one structure, got %d (for a conformer "
+            "ensemble use mlp_rank)" % len(atoms))
+    return atoms
+
+
+def _mlp_write_atoms(atoms) -> str:
+    """Write an ase.Atoms object as xyz text."""
+    import io
+    import ase.io
+
+    buf = io.StringIO()
+    ase.io.write(buf, atoms, format="xyz")
+    return buf.getvalue()
+
+
+def _mlp_run(caller, backend: str, **kwargs) -> dict:
+    """Call a calculators-layer function, fail-closed."""
+    from delfin.mlp_tools.calculators import _BACKEND_ALIASES
+
+    if not isinstance(backend, str) or not backend.strip():
+        return _mlp_error(
+            "'backend' must be a non-empty string; accepted backends: "
+            + ", ".join(sorted(set(_BACKEND_ALIASES))))
+    if backend.lower().strip() not in _BACKEND_ALIASES:
+        return _mlp_error(
+            "unknown MLP backend %r; accepted backends: " % backend
+            + ", ".join(sorted(set(_BACKEND_ALIASES)))
+            + " (aliases accepted, e.g. 'mace' = 'mace_off')")
+    try:
+        return caller(**kwargs)
+    except ModuleNotFoundError as exc:
+        return _mlp_error(
+            "backend %r is not usable on this machine: %s" % (backend, exc),
+            available=False, backend=backend)
+    except (ImportError, ValueError) as exc:
+        # ImportError: a backend import beyond the top-level module;
+        # ValueError: the adapter's own fail-closed refusals (unknown
+        # backend, unsupported element, charge/mult the backend cannot
+        # model) or ase.io failing to read the xyz.
+        message = str(exc)
+        if isinstance(exc, ValueError) and "backend" not in message \
+                and "element" not in message and "charge" not in message \
+                and "mult" not in message and "structure" not in message:
+            # an xyz parse problem, not a refusal: no availability claim
+            return _mlp_error(message)
+        return _mlp_error(message)
+
+
+def mlp_list_backends() -> dict:
+    """List MLP backends with availability, elements and install hint."""
+    from delfin.mlp_tools import collect_mlp_summary
+
+    summary = collect_mlp_summary()
+    out = {"ok": True, "backends": summary["backends"],
+           "torch_version": summary["torch_version"],
+           "cuda": summary["cuda"]}
+    for entry in out["backends"]:
+        if not entry["installed"]:
+            entry["install_hint"] = _mlp_install_hint(
+                entry["name"].lower().replace("-", "_"))
+    return out
+
+
+def mlp_single_point(xyz: str, backend: str = "ani2x", *, charge: int = 0,
+                     mult: int = 1, device: str = "cpu") -> dict:
+    """MLP single-point energy/forces for one xyz structure.
+
+    Screening quantity in eV; not comparable with DFT energies.
+    """
+    def _run(**kw):
+        from delfin.mlp_tools.calculators import single_point as calc_sp
+        atoms = _mlp_read_atoms(xyz)
+        result = calc_sp(atoms, backend=backend, charge=charge, mult=mult,
+                         device=device)
+        result["ok"] = True
+        result["forces"] = [[float(c) for c in row] for row in result["forces"]]
+        result["energy_eV"] = result.pop("energy")
+        return result
+
+    return _mlp_run(_run, backend, xyz=xyz)
+
+
+def mlp_optimize(xyz: str, backend: str = "ani2x", *, fmax: float = 0.05,
+                 steps: int = 200, optimizer: str = "LBFGS", charge: int = 0,
+                 mult: int = 1, device: str = "cpu") -> dict:
+    """Optimise one xyz structure with an MLP; returns the geometry.
+
+    The returned geometry is a starting guess for a DFT optimisation,
+    never a final structure.
+    """
+    def _run(**kw):
+        from delfin.mlp_tools.calculators import optimize_geometry as calc_opt
+        atoms = _mlp_read_atoms(xyz)
+        result = calc_opt(atoms, backend=backend, fmax=fmax, steps=steps,
+                          optimizer=optimizer, charge=charge, mult=mult,
+                          device=device)
+        result["ok"] = True
+        result["energy_eV"] = result["energy"]
+        result["xyz"] = _mlp_write_atoms(atoms)
+        return result
+
+    return _mlp_run(_run, backend, xyz=xyz)
+
+
+def mlp_rank(xyz_ensemble: str, backend: str = "ani2x", *, charge: int = 0,
+             mult: int = 1, device: str = "cpu") -> dict:
+    """Rank a multi-structure xyz ensemble by MLP energy, lowest first.
+
+    Screening ranking in eV; final ordering needs DFT single points.
+    """
+    def _run(**kw):
+        import io
+        import ase.io
+        from delfin.mlp_tools.calculators import rank_structures
+        structures = ase.io.read(io.StringIO(xyz_ensemble), format="xyz",
+                                 index=":")
+        if len(structures) < 2:
+            raise ValueError(
+                "mlp_rank needs an ensemble of at least 2 structures "
+                "in one xyz block; got %d (for one structure use "
+                "mlp_single_point)" % len(structures))
+        ranking = rank_structures(structures, backend=backend, charge=charge,
+                                  mult=mult, device=device)
+        return {"ok": True, "backend": backend,
+                "n_structures": len(structures),
+                "ranking": [{"index": idx, "energy_eV": energy}
+                            for idx, energy in ranking]}
+
+    return _mlp_run(_run, backend, xyz=xyz_ensemble)
+
+
+def mlp_preoptimize(xyz: str, backend: str = "ani2x", *, fmax: float = 0.05,
+                    steps: int = 200, charge: int = 0, mult: int = 1,
+                    device: str = "cpu") -> dict:
+    """MLP pre-optimisation: relax a starting geometry before ORCA.
+
+    Returns an optimised geometry (``xyz``) to hand to the DFT step plus
+    the MLP screening energy; the DFT energy of that geometry is the only
+    final number.
+    """
+    defaults = {"fmax": 0.05, "steps": 200}
+    out = mlp_optimize(xyz, backend=backend, fmax=fmax, steps=steps,
+                       optimizer="LBFGS", charge=charge, mult=mult,
+                       device=device)
+    if out.get("ok"):
+        out["note"] = (
+            "MLP pre-optimisation: geometry is a starting guess for DFT; "
+            "confirm all final energies and properties with DFT/ORCA "
+            "(the MLP energy is a screening value, not comparable with "
+            "DFT energies).")
+        out["fmax"] = fmax if fmax is not None else defaults["fmax"]
+        out["steps"] = steps if steps is not None else defaults["steps"]
+    return out
+
+
+# ---------------------------------------------------------------------------
 # geometry_edit MCP handlers. Each takes a structure as xyz text plus the
 # edit parameters, applies the geometry operation, and returns JSON with the
 # new structure ("xyz") and a short change record ("change"). Docstrings are
@@ -2961,6 +3168,16 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Verify CSP (genarris) availability."},
     {"name": "mlp_check", "category": "checks",
      "summary": "Verify MLP backends (torchani/AIMNet2/MACE)."},
+    {"name": "mlp_list_backends", "category": "checks",
+     "summary": "List MLP backends with availability and elements (read-only)."},
+    {"name": "mlp_single_point", "category": "ml",
+     "summary": "MLP single-point energy/forces for an xyz (screening, eV)."},
+    {"name": "mlp_optimize", "category": "ml",
+     "summary": "Optimise an xyz with an MLP; starting-guess geometry."},
+    {"name": "mlp_rank", "category": "ml",
+     "summary": "Rank a conformer ensemble by MLP energy (lowest first)."},
+    {"name": "mlp_preoptimize", "category": "ml",
+     "summary": "MLP pre-optimisation before ORCA; confirm with DFT."},
     {"name": "analysis_check", "category": "checks",
      "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
     {"name": "result_checks", "category": "checks",

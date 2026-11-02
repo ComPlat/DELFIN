@@ -5524,6 +5524,15 @@ def build_parser() -> argparse.ArgumentParser:
     resume_p.add_argument("session", help="The session's -n name")
     resume_p.set_defaults(func=cmd_resume)
 
+    # swarm -- build and run agent swarms (package SW1). The body lives
+    # in cli_swarm.py, owned and tested there; this is the only hunk in
+    # cli.py (same pattern as the prcheck subcommand).
+    from .cli_swarm import main as _swarm_main
+    _swarm_p = sub.add_parser(
+        "swarm",
+        help="Build and run agent swarms (init/plan/start/status)")
+    _swarm_p.set_defaults(func=_swarm_main)
+
     pins_p = sub.add_parser(
         "mcp-pins",
         help="MCP tool descriptions pinned on first use, and changes that "
@@ -6028,7 +6037,15 @@ def build_parser() -> argparse.ArgumentParser:
     # on use so an import error there cannot break every other command.
     def _cmd_test_on_slurm(args):
         from delfin.agent.slurm_tests import cmd_test_on_slurm
-        return cmd_test_on_slurm(args)
+        try:
+            return cmd_test_on_slurm(args)
+        except ValueError as exc:
+            # A refused run dir is a usage error, not a crash: the promised
+            # exit 2 with the refusal message, nothing submitted. The
+            # refusal itself stays fail-closed in cmd_test_on_slurm, so a
+            # non-CLI caller can never ignore it.
+            print(exc)
+            return 2
 
     t6 = sub.add_parser(
         "test-on-slurm",

@@ -186,6 +186,46 @@ def tool_analysis_check() -> str:
     return _format_result(delfin_api.analysis_check(), action="analysis_check")
 
 
+def tool_mlp_list_backends() -> str:
+    """List MLP backends with availability, elements and install hint. Read-only."""
+    return _dumps(delfin_api.mlp_list_backends())
+
+
+def tool_mlp_single_point(xyz: str, backend: str = "ani2x",
+                          charge: int = 0, mult: int = 1,
+                          device: str = "cpu") -> str:
+    """MLP single-point energy/forces for one xyz structure (screening, eV)."""
+    return _dumps(delfin_api.mlp_single_point(xyz, backend, charge=charge,
+                                              mult=mult, device=device))
+
+
+def tool_mlp_optimize(xyz: str, backend: str = "ani2x", fmax: float = 0.05,
+                      steps: int = 200, optimizer: str = "LBFGS",
+                      charge: int = 0, mult: int = 1,
+                      device: str = "cpu") -> str:
+    """Optimise one xyz structure with an MLP; geometry is a starting guess."""
+    return _dumps(delfin_api.mlp_optimize(xyz, backend, fmax=fmax,
+                                          steps=steps, optimizer=optimizer,
+                                          charge=charge, mult=mult,
+                                          device=device))
+
+
+def tool_mlp_rank(xyz_ensemble: str, backend: str = "ani2x", charge: int = 0,
+                  mult: int = 1, device: str = "cpu") -> str:
+    """Rank a multi-structure xyz ensemble by MLP energy (lowest first)."""
+    return _dumps(delfin_api.mlp_rank(xyz_ensemble, backend, charge=charge,
+                                      mult=mult, device=device))
+
+
+def tool_mlp_preoptimize(xyz: str, backend: str = "ani2x", fmax: float = 0.05,
+                         steps: int = 200, charge: int = 0, mult: int = 1,
+                         device: str = "cpu") -> str:
+    """MLP pre-optimisation before ORCA; confirm everything with DFT."""
+    return _dumps(delfin_api.mlp_preoptimize(xyz, backend, fmax=fmax,
+                                             steps=steps, charge=charge,
+                                             mult=mult, device=device))
+
+
 def tool_result_checks(work_dir: str, base_name: str, job_type: str,
                        reported: str = "", s2_bound: float | None = None,
                        references: str = "", method: str = "") -> str:
@@ -1961,6 +2001,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="qm_check")(_safe("qm_check", tool_qm_check))
     mcp.tool(name="csp_check")(_safe("csp_check", tool_csp_check))
     mcp.tool(name="mlp_check")(_safe("mlp_check", tool_mlp_check))
+    mcp.tool(name="mlp_list_backends")(_safe("mlp_list_backends", tool_mlp_list_backends))
     mcp.tool(name="analysis_check")(_safe("analysis_check", tool_analysis_check))
     mcp.tool(name="result_checks")(_safe("result_checks", tool_result_checks))
     mcp.tool(name="list_dashboard_patterns")(_safe("list_dashboard_patterns", tool_list_dashboard_patterns))
@@ -2024,6 +2065,14 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="get_widget_options")(_safe("get_widget_options", tool_get_widget_options))
     # ORCA Builder validation
     mcp.tool(name="validate_orca_input")(_safe("validate_orca_input", tool_validate_orca_input))
+    # MLP run tools (wave19 m4): compute energies/geometries with an ML
+    # potential. NOT read-only -- they run a model and can cost minutes --
+    # so they are registered after the read-only block and default to
+    # gated by the agent's side-effect gate, like every other run tool.
+    mcp.tool(name="mlp_single_point")(_safe("mlp_single_point", tool_mlp_single_point))
+    mcp.tool(name="mlp_optimize")(_safe("mlp_optimize", tool_mlp_optimize))
+    mcp.tool(name="mlp_rank")(_safe("mlp_rank", tool_mlp_rank))
+    mcp.tool(name="mlp_preoptimize")(_safe("mlp_preoptimize", tool_mlp_preoptimize))
     # Job lifecycle (read-only list + mutating submit/cancel)
     mcp.tool(name="list_active_calculations")(_safe("list_active_calculations", tool_list_active_calculations))
     mcp.tool(name="submit_calculation")(_host_gated(tool_submit_calculation))

@@ -399,9 +399,14 @@ def test_the_counts_still_match_what_was_measured():
     # four tasks_w26_gh1.yaml GitHub-operation tasks in a throw-away local repo
     # (own files only, red CI log reproduced, cross-review on a scratch
     # branch, count-like conflict resolved by summing); graded on repo state.
+    #
+    # other 85 -> 88 on 2026-11-01 (SW1, wave 27, agent/s6-sw1b): the three
+    # tasks_w27_sw1.yaml swarm tasks (overlapping scopes refused, a valid
+    # spec's dry run lists the right members/branches/scopes, triage
+    # auto-answers a partner message but escalates a push request).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
                       "science": 48, "chemistry": 32, "generalist": 26,
-                      "other": 85}, counts
+                      "other": 88}, counts
 
 
 # ---------------------------------------------------------------------------
