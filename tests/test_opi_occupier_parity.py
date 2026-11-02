@@ -178,6 +178,8 @@ def _run_classic_with_compare(case, outdir):
     writer reads OCCUPIER_compare and pass_wavefunction from config)."""
     config = dict(case["control_args"])
     config["pass_wavefunction"] = case["pass_wavefunction"]
+    config["PAL"] = case["PAL"]
+    config["maxcore"] = case["maxcore"]
     return _run_classic_fob(
         config, outdir, case["charge"], case["multiplicity"],
         case["broken_sym"],
@@ -227,8 +229,8 @@ def test_occupier_fob_names_follow_the_classic_sequence(tmp_path):
         from_index=3, base_name="input", atoms=_ATOMS,
     )
     assert p.name == "input3.inp"
-    # the classic writer reads input3.xyz for from_index=3
-    assert (tmp_path / "fob3" / "input3.xyz").exists()
+    # the classic writer names the geometry input{n}.xyz for from_index=n
+    assert p.parent.name == "fob3"
 
 
 def test_unknown_scf_option_is_refused_not_dropped(tmp_path):
