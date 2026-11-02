@@ -28,9 +28,9 @@ from delfin.agent.outcome_tracker import CycleOutcome, load_outcomes, outcomes_f
 _TASK_KEYWORDS: dict[str, list[str]] = {
     "chemistry": [
         "orca", "xtb", "dft", "basis set", "functional", "solvent",
-        "energy", "optimization", "frequency", "neb", "scan", "md ",
-        "thermochemistry", "spin", "multiplicity", "charge",
-        "method", "dispersion", "relativistic", "ecp",
+        "optimization", "frequency", "neb",
+        "thermochemistry", "spin", "multiplicity",
+        "dispersion", "relativistic", "ecp", "molecular dynamics",
     ],
     "dashboard": [
         "dashboard", "tab_", "widget", "voila", "ipywidget", "ui ",
@@ -45,11 +45,20 @@ _TASK_KEYWORDS: dict[str, list[str]] = {
 
 
 def classify_task(text: str) -> str:
-    """Classify a task into a task class based on keyword matching."""
+    """Classify a task into a task class based on keyword matching.
+
+    Keywords match as whole words only: a substring hit like ``"md "``
+    firing inside "simd kernel" or "test" inside "latest" would inject
+    the chemistry or dashboard prompt block into an unrelated task.
+    """
     lower = (text or "").lower()
     scores: dict[str, int] = {}
     for cls, keywords in _TASK_KEYWORDS.items():
-        scores[cls] = sum(1 for kw in keywords if kw in lower)
+        scores[cls] = sum(
+            1
+            for kw in keywords
+            if re.search(rf"\b{re.escape(kw.strip())}\b", lower)
+        )
     best = max(scores, key=scores.get)  # type: ignore[arg-type]
     return best if scores[best] > 0 else "coding"
 
