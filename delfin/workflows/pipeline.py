@@ -1439,6 +1439,102 @@ def _structure_kept_by_recalc(config: Dict[str, Any], workdir: Path, smiles: Opt
     return ""
 
 
+# ---------------------------------------------------------------------------
+# MLP pre-optimisation (wave19 m4, opt-in via the CONTROL key mlp_preopt).
+# Off (default) nothing runs and nothing is written.  On, the start
+# geometry is relaxed with the chosen ML potential BEFORE the ORCA steps;
+# the result is a better starting geometry, nothing more -- every final
+# energy still comes from DFT.  A failed MLP step never stops the run:
+# the run continues on the original geometry and says so.
+# ---------------------------------------------------------------------------
+
+#: Thread caps for an MLP step on a shared host (no GPU assumed here;
+#: GPU and heavy runs belong on the cluster via sbatch).
+_MLP_PREOPT_THREADS = 2
+#: Force convergence and step budget for a pre-optimisation (screening
+#: quality: a few force cycles suffice; the DFT optimisation finishes it).
+_MLP_PREOPT_FMAX = 0.05
+_MLP_PREOPT_STEPS = 200
+
+
+def _run_mlp_preoptimize(atoms, backend: str, *, charge: int, mult: int,
+                         device: str = "cpu") -> dict:
+    """Optimise ``atoms`` with the MLP backend; test seam, fail-closed caller."""
+    from delfin.mlp_tools.calculators import optimize_geometry
+
+    return optimize_geometry(
+        atoms, backend=backend, charge=charge, mult=mult, device=device,
+        fmax=_MLP_PREOPT_FMAX, steps=_MLP_PREOPT_STEPS)
+
+
+def _apply_mlp_preopt(config: Dict[str, Any], start_path: Path, *,
+                      charge: int, mult: int) -> Optional[dict]:
+    """Relax start.txt's coordinates with the CONTROL key's MLP, when set.
+
+    Returns the optimiser summary (truthy) when the geometry was
+    replaced, None when nothing ran or the step failed -- in every None
+    case start.txt keeps its original coordinates and the run proceeds.
+    """
+    backend = str(config.get("mlp_preopt", "none") or "none").strip().lower()
+    if backend in ("", "none", "no", "off", "false"):
+        return None
+
+    from delfin.define import _coordinate_lines
+
+    body = start_path.read_text(encoding="utf-8", errors="ignore")
+    atom_lines = _coordinate_lines(body)
+    if not atom_lines:
+        logger.warning(
+            "[mlp_preopt] %s has no coordinate block; skipping the MLP "
+            "pre-optimisation and continuing on the original geometry.",
+            start_path.name)
+        return None
+
+    xyz_path = start_path.with_name("mlp_preopt_start.xyz")
+    xyz_path.write_text(
+        f"{len(atom_lines)}\nwritten by DELFIN mlp_preopt from {start_path.name}\n"
+        + "\n".join(line.strip() for line in atom_lines) + "\n",
+        encoding="utf-8")
+
+    import os
+    import ase.io
+
+    # Deliberate thread cap: an MLP step here runs on a shared login or
+    # compute node, never owns it. GPU runs belong on the cluster.
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(var, str(_MLP_PREOPT_THREADS))
+
+    try:
+        atoms = ase.io.read(str(xyz_path), format="xyz")
+        result = _run_mlp_preoptimize(atoms, backend, charge=charge, mult=mult)
+    except Exception as exc:  # noqa: BLE001 -- the ORCA run must not die here
+        logger.warning(
+            "[mlp_preopt] MLP pre-optimisation with %r failed: %s. "
+            "Continuing the run on the original geometry of %s.",
+            backend, exc, start_path.name)
+        return None
+    if not result.get("converged"):
+        logger.warning(
+            "[mlp_preopt] MLP optimisation with %r did not converge after "
+            "%s steps; keeping the original geometry of %s.",
+            backend, result.get("n_steps"), start_path.name)
+        return None
+
+    # Write the relaxed geometry back in DELFIN's coordinate-block format
+    # (bare atom rows, no xyz header) so every downstream reader sees the
+    # same shape it always has.
+    relaxed = "\n".join(
+        f"{sym} {pos[0]:.6f} {pos[1]:.6f} {pos[2]:.6f}"
+        for sym, pos in zip(atoms.get_chemical_symbols(),
+                            atoms.get_positions()))
+    start_path.write_text(relaxed + "\n", encoding="utf-8")
+    logger.info(
+        "[mlp_preopt] Start geometry relaxed with %s (MLP E=%.4f eV, "
+        "%d steps). Screening value only -- final energies come from DFT.",
+        backend, result.get("energy", float("nan")), result.get("n_steps", 0))
+    return result
+
+
 def _keep_built_structure(config: Dict[str, Any], workdir: Path) -> str:
     """The reason normalize_input_file kept the structure, for the pre-optimisation steps after it."""
     reason = config.get("_keep_built_structure")
@@ -1817,6 +1913,11 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
             logger.warning("Could not create geometry backup '%s': %s", start_path, exc)
 
     work_path = start_path if start_path.exists() else result_path
+
+    # Opt-in MLP pre-optimisation (wave19 m4): only when the CONTROL key
+    # mlp_preopt names a backend. Off, nothing runs and nothing changes.
+    _apply_mlp_preopt(config, start_path, charge=int(config.get("charge", 0) or 0),
+                      mult=int(config.get("multiplicity_global_opt", 1) or 1))
 
     config.setdefault('input_file_original', str(result_path))
     config['input_file_backup'] = str(start_path)
