@@ -317,6 +317,13 @@
       "default": "none",
       "read_by": "delfin/workflows/pipeline.py:1021, mapped to use_crest/use_goat/optimize_s0 at :1035-1037; FieldSpec :2270; dashboard env DELFIN_TADF_XTB_PREOPT (delfin/dashboard/local_runner.py:692).",
       "best_practice": "Rigid chromophores: xtb is enough. Flexible emitters with conformer heterogeneity need crest or goat -- a wrong conformer can flip the S1/T1 order and with it the emitter decision."
+    },
+    "mlp_preopt": {
+      "meaning": "ML potential the start geometry is relaxed with BEFORE the ORCA steps: none (default, geometry runs as built) or an MLP backend name. A screening step: the relaxed geometry is a starting guess, every final energy comes from DFT.",
+      "valid_values": "none | ani2x | aimnet2 | mace_off | chgnet | m3gnet | schnetpack | nequip | alignn (aliases, e.g. mace = mace_off) (_as_mlp_preopt)",
+      "default": "none",
+      "read_by": "delfin/workflows/pipeline.py _apply_mlp_preopt, called from normalize_input_file; FieldSpec :2306.",
+      "best_practice": "Use on element-clean, closed-shell organic systems whose builder geometry is poor (large flexible molecules, many rotatable bonds): a cheaper, better starting geometry shortens the DFT optimisation. Off (keep the default) for metals, open-shell or charged systems unless the backend models them (only aimnet2 takes charge/mult; the adapter refuses the rest fail-closed, delfin/tools/adapters/mlp.py). Never trust MLP energies: they are screening values, not comparable with DFT."
     }
   }
 }
