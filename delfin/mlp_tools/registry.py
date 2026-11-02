@@ -482,8 +482,6 @@ def _factory_for(spec: BackendSpec) -> Callable:
     if spec.name in legacy._FACTORIES:
         return legacy._FACTORIES[spec.name]
 
-    import types
-
     def _unsupported(*args, **kwargs):
         raise NotImplementedError(
             f"Factory for backend '{spec.name}' is registered but not "
