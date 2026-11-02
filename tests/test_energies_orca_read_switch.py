@@ -1,11 +1,10 @@
-"""Call-site switch tests: gibbs/ZPE readers go through delfin.orca_read.
+"""Call-site switch tests: energy readers go through delfin.orca_read.
 
 The switch is proven behaviour-identical by the baseline recorder
-(scratch/baseline_full.json, 204 runs, 0 mismatches for gibbs/ZPE/
-enthalpy/inner). FINAL energy is NOT switched: on 11 of 200 archive runs
-the orca_read bounded-tail reader picks a different occurrence than the
-whole-file reader (scr/baseline mismatch list), which is a behaviour
-change.
+(scratch/baseline_full.json, 204 runs, 0 mismatches) and, after fixing
+orca_read's multi-job FINAL selection (whole-file read on multi-job
+outputs), by the final-job comparison over 199 archived runs with 0
+mismatches.
 """
 from pathlib import Path
 from unittest import mock
@@ -36,9 +35,7 @@ def test_parse_orca_output_gibbs_and_zpe_via_orca_read():
                        if c.args and len(c.args) >= 3]
     assert orca_read.Quantity.GIBBS in read_quantities
     assert orca_read.Quantity.ZPE in read_quantities
-    # FINAL must NOT be switched (bounded-tail reader differs from the
-    # whole-file reader on multi-job outputs).
-    assert orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY not in \
+    assert orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY in \
         read_quantities
     assert result.gibbs_free_energy == -197.0
     assert result.zpe == 0.1

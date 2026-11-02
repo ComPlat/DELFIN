@@ -46,7 +46,8 @@ ALLOWED = {
     "delfin/cluster_utils.py",
     "delfin/dashboard/backend_slurm.py",
     "delfin/dashboard/tab_calculations_browser.py",
-    "delfin/mlp_tools/__init__.py",
+    # mlp_tools/__init__.py migrated to scheduler_client.query (its sinfo
+    # probe); removed from the list so the bloat check stays honest.
     "delfin/slurm_submit.py",
 }
 
