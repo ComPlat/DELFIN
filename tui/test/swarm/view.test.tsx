@@ -114,26 +114,22 @@ describe("the new-swarm flow", () => {
   })
 
   test("an invalid spec never reaches a start", async () => {
-    const { view, requests } = makeView()
-    await view.refresh()
-    const broken = makeView({ ...status(), packages: [] })
-    void broken
-    // Validation fails -> no plan, no start, a note says why.
-    const v = makeView()
-    void v
+    // Validation fails -> no plan, no start; the notes say why.
+    const notes: string[] = []
+    const starts: unknown[] = []
     const bad = createSwarmView({
       keymap: new Keymap(), now: () => now,
       askStatus: async () => status(),
-      askPlan: async () => { throw new Error("no plan") },
       askValidate: async () => ({ valid: false, errors: ["members: empty"] }),
-      askStart: async () => ({ dry_run: true, goal: "x", started: [] }),
+      askStart: async () => { starts.push("start"); return { dry_run: true, goal: "x", started: [] } },
       askTriage: async () => [],
       askAnswer: async () => ({ answered: true }),
-      note: () => {}, draft: () => "",
-    })
+      note: (t) => notes.push(t), draft: () => "",
+    }) as never as { state: { pendingStart: unknown }; newSwarm(g: string): Promise<boolean> }
     await bad.newSwarm("goal: broken")
     expect(bad.state.pendingStart).toBeFalsy()
-    expect(requests.length).toBe(0)
+    expect(starts.length).toBe(0)
+    expect(notes.join("\n")).toContain("not valid")
   })
 
   test("the flow edits the spec in an editor when one is offered", async () => {
