@@ -7185,6 +7185,9 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "search_calcs", "get_calc_info", "calc_summary",
     # --- DELFIN ops server: checks ---
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
+    # mlp_list_backends (2026-11-02): reads the backend availability table;
+    # computes and writes nothing.
+    "mlp_list_backends",
     # --- DELFIN ops server: output parsing (reads .out files) ---
     # A tool the ops server registers as read-only but that is missing
     # here is refused in default mode with "no approval dialog
@@ -25475,6 +25478,17 @@ class _DocToolExecutor:
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
         env.setdefault("LANG", "C.UTF-8")
+        # Code Mode hook (CM1): a bash command that runs a Code Mode
+        # program gets the per-invocation RPC socket path in its env, and
+        # the RPC server is started in the agent process. Every tool call
+        # the program makes goes over that socket into
+        # KitToolExecutor.execute -- the single PUBLIC entry a direct call
+        # takes (deny rules, plan-mode, sandbox, role and shape checks are
+        # evaluated inside it); the server-side allow-list is enforced
+        # before the executor. For a plain command this adds nothing: the
+        # env is unchanged and no server starts.
+        _cm_env = _code_mode_child_env(cmd, run_cwd, perms, self)
+        env.update(_cm_env)
 
         # What the command is about to overwrite.
         #
@@ -27386,6 +27400,30 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 "prompt must brief the sub-agent thoroughly (>=20 chars)"
             )})
+        # SA0 (wave 27): above depth 0 a sub-agent may spawn only along
+        # its preset's may_delegate_to whitelist. Experts (empty or
+        # absent whitelist) delegate to nobody; a department manager may
+        # spawn only the experts it names. The depth cap below already
+        # caps HOW deep; this decides WHO. depth == 0 (the main session)
+        # is unrestricted — delegation is an option it takes, never a
+        # gate (the "extend, never lose" rule). The refusal names the
+        # target so the parent can re-plan. Sits BEFORE the runner check:
+        # a guard must fire on the call's own merits, not depend on what
+        # infrastructure happens to be attached.
+        _spawner_preset = _sa.SUBAGENT_PRESETS.get(
+            str(getattr(perms, "_preset_name", "") or ""))
+        if perms is not None and getattr(
+                perms, "subagent_depth", 0) > 0 and _spawner_preset:
+            _whitelist = tuple(getattr(_spawner_preset, "may_delegate_to",
+                                       ()) or ())
+            if sa_type not in _whitelist:
+                return json.dumps({
+                    "error": (
+                        f"{sa_type!r} is not in "
+                        f"{_spawner_preset.name!r}'s may_delegate_to "
+                        "whitelist — this sub-agent may only delegate to: "
+                        + (", ".join(_whitelist) or "(nobody; it is an "
+                        "expert and experts do not spawn)"))})
         if perms is None or perms.subagent_runner is None:
             return json.dumps({
                 "error": "subagent runner not attached",
@@ -29613,6 +29651,60 @@ def env_spec(raw) -> dict:
     if isinstance(raw, dict):
         return {str(k): "" if v is None else str(v) for k, v in raw.items()}
     return {}
+
+
+def _code_mode_child_env(
+    cmd: str, run_cwd, perms, executor,
+) -> dict:
+    """Env additions for a bash command that runs a Code Mode program.
+
+    Returns ``{}`` for every other command — a plain bash call's
+    environment is unchanged and no RPC server starts. For a Code Mode
+    program the agent process starts ONE ``code_mode.RpcServer`` bound to a
+    fresh per-invocation socket under the workspace and puts only that path
+    in ``DELFIN_CODE_MODE_RPC`` for the caged child. The server hands every
+    request to ``executor.execute`` — the single public entry a direct
+    call takes (deny rules, plan-mode, sandbox, role and shape checks are
+    evaluated inside it) — after the server-side read-only allow-list.
+    The socket exists only for this child's lifetime; nothing listens
+    after the run.
+    """
+    from . import code_mode as _cm
+    program = _cm.runner_program_path(cmd)
+    if program is None:
+        return {}
+    import uuid
+    token = uuid.uuid4().hex
+    socket_path = _cm.rpc_socket_path(str(run_cwd), token)
+    # Public-entry parity: no rule plumbing here at all. The executor's
+    # execute() evaluates permission rules per call itself
+    # (api_client.py:17772 _permission_rule_hit inside _execute_pinned);
+    # anything lower (_dispatch_under_rules) would skip deny rules,
+    # plan-mode and the other preamble checks.
+    server = _cm.RpcServer(executor, permissions=perms)
+    server.bind(socket_path)
+    import threading
+    def _serve():
+        # One request per connection; the program opens a fresh socket per
+        # call. Idle past the window -> the child is gone -> stop; a later
+        # Code Mode invocation starts its own server on its own socket.
+        # Known path, stated: the idle timeout raises out of serve_one
+        # before any per-connection bookkeeping — that is the break
+        # condition, not a swallowed failure; close() then unlinks.
+        while True:
+            try:
+                server.serve_one(idle_timeout_s=_CM_SERVE_IDLE_S)
+            except OSError:
+                break
+        server.close()
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.start()
+    return {"DELFIN_CODE_MODE_RPC": socket_path}
+
+
+#: Idle window for the Code Mode RPC serve loop (the program's wall clock
+#: is capped at 120 s by default; the idle window outlasts it).
+_CM_SERVE_IDLE_S = 300.0
 
 
 def _configured_child_env(spec=None) -> dict:

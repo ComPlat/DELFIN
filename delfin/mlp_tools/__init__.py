@@ -301,13 +301,14 @@ def collect_mlp_summary() -> dict:
     try:
         import shutil
         if shutil.which("sinfo"):
-            import subprocess
-            r = subprocess.run(
-                ["sinfo", "-h", "-o", "%P"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if r.returncode == 0:
-                for line in r.stdout.strip().split("\n"):
+            # Routed through delfin.scheduler_client (throttled + cached);
+            # the direct-call guard forbids a scheduler command run anywhere
+            # else.  Kind is derived from argv, not spelled at the call site.
+            from delfin import scheduler_client
+            argv = ["sinfo", "-h", "-o", "%P"]
+            stdout = scheduler_client.query(scheduler_client.kind_of_argv(argv), argv)
+            if stdout:
+                for line in stdout.strip().split("\n"):
                     name = line.strip().rstrip("*")
                     if "gpu" in name.lower():
                         gpu_partition = name
