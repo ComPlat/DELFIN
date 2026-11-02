@@ -42,6 +42,7 @@ _BUILTIN_DYNAMIC_TABS = (
     "delfin.dashboard.tab_ketcher",
     "delfin.dashboard.tab_reaction_graph",
     "delfin.dashboard.tab_review",
+    "delfin.dashboard.tab_swarm",
 )
 
 

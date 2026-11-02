@@ -27,6 +27,8 @@ export const WINDOW_COMMANDS = [
     category: "session", takesArgs: true, source: "window" },
   { name: "/resume", summary: "open another session in this window (running here or saved)",
     category: "session", takesArgs: true, source: "window" },
+  { name: "/swarm", summary: "manage swarms: packages, members, what waits on you (SW2b)",
+    category: "session", takesArgs: false, source: "window" },
 ]
 
 /** The session a `/resume <id>` line asks for, or null for another line

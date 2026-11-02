@@ -74,7 +74,14 @@ FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
 ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
-                    "session.setTitle", "attention.answer", "attention.dismiss"})
+                    "session.setTitle", "attention.answer", "attention.dismiss",
+                    # A swarm is created, started and answered by the
+                    # user, never by an agent session: the same rule that
+                    # keeps an agent from answering its own approvals
+                    # (attention.answer) keeps it from launching a swarm
+                    # or answering the swarm's queue for itself.
+                    "swarm.start", "swarm.pause", "swarm.resume",
+                    "swarm.triage.answer"})
 
 UNKNOWN_SESSION = protocol.UNKNOWN_SESSION
 WORKER_GONE = protocol.WORKER_GONE
@@ -876,6 +883,16 @@ class Supervisor:
             problem = protocol.params_problem(SERVICE_REQUESTS[method], params)
             if problem:
                 return fail(protocol.INVALID_PARAMS, problem)
+            # Package SW2b: swarm.* methods live in swarm_rpc.py, not
+            # on this class -- dispatch them by module. Their handlers
+            # take only params (no client, no await) and are sync, so
+            # they run in a thread; every state-changing one confirms
+            # inside swarm_rpc itself (swarm.start double gate).
+            if method.startswith("swarm."):
+                import asyncio as _asyncio
+                from . import swarm_rpc as _swarm_rpc
+                fn = getattr(_swarm_rpc, method.replace(".", "_"))
+                return answer(await _asyncio.to_thread(fn, params))
             handler = getattr(self, "_m_" + method.replace(".", "_"))
             return answer(await handler(client, params))
         except WorkerFailed as exc:
