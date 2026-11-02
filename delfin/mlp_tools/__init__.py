@@ -18,6 +18,18 @@ import os
 from pathlib import Path
 from typing import Optional
 
+# Unified MLP backend registry (task m1) — lazily imported so that this
+# package keeps working with zero ML packages installed.
+def describe_mlp_backends() -> list[dict]:
+    """Describe every registered MLP backend for agent/workflow use.
+
+    Thin wrapper over ``delfin.mlp_tools.registry.describe_backends``;
+    see that module for the full contract (capabilities, availability,
+    device policy, literature keys).
+    """
+    from delfin.mlp_tools.registry import describe_backends
+    return describe_backends()
+
 
 def get_mlp_tools_root() -> Path:
     """Return the root directory of the mlp_tools package."""
