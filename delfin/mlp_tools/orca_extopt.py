@@ -406,7 +406,6 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
     from opi.core import Calculator
     from opi.input import Input
     from opi.input.blocks.block_method import BlockMethod
-    from opi.input.structures import Atom, Structure
     from opi.input.simple_keywords.base import SimpleKeyword
 
     def _kw(name: str) -> str:
@@ -425,20 +424,13 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
     method.Ext_Params = ext_params
     inp.add_blocks(method)
 
-    atoms = [
-        Atom(str(el), coordinates=(float(x), float(y), float(z)))
-        for el, (x, y, z) in zip(elements, coordinates)
-    ]
-    structure = Structure(atoms, charge=charge, multiplicity=mult)
-
-    calc = Calculator(base_name, working_dir=work_dir, version_check=False)
-    calc.input = inp
-    calc.structure = structure
     if scan is not None:
         from opi.input.blocks.block_geom import BlockGeom, Scan
 
         geom = BlockGeom()
-        geom.Scan = Scan(
+        # pydantic field "scan"; NOT attribute-style Scan (raises
+        # "BlockGeom object has no field Scan").
+        geom.scan = Scan(  # type: ignore[assignment]
             mode=str(scan["mode"]).upper(),
             atom1=int(scan["atom1"]),
             atom2=int(scan["atom2"]),
@@ -449,9 +441,53 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
             steps=scan.get("steps"),
             valuelist=scan.get("valuelist"),
         )
-        calc.input.add_blocks(geom)
+        inp.add_blocks(geom)
+
+    calc = Calculator(base_name, working_dir=work_dir, version_check=False)
+    calc.input = inp
+    from opi.input.structures import Atom, Structure
+
+    calc.structure = Structure(
+        [
+            Atom(str(el), coordinates=(float(x), float(y), float(z)))
+            for el, (x, y, z) in zip(elements, coordinates)
+        ],
+        charge=charge,
+        multiplicity=mult,
+    )
+    # ORCA's ExtOpt re-reads its own basename_EXT.xyz at every step
+    # (manual 4.1.10), so the structure must be given as *xyzfile, not
+    # inline.  OPI always writes the structure inline; replace that
+    # section with the *xyzfile line after write_input.
     calc.write_input(force=True)
-    return Path(work_dir) / f"{base_name}.inp"
+    out_path = Path(work_dir) / f"{base_name}.inp"
+    text = out_path.read_text()
+    # OPI writes the structure inline as
+    #   "* xyz <charge> <mult>\n<atom lines>\n*\n" (Calculator.write_input),
+    # NOT the Structure.to_xyz_block() format.  Replace the whole span
+    # with the *xyzfile line: ORCA's ExtOpt re-reads basename_EXT.xyz at
+    # every step (manual 4.1.10).
+    lines = text.splitlines()
+    try:
+        start = next(
+            i for i, ln in enumerate(lines) if ln.strip().lower().startswith("* xyz")
+        )
+        end = next(
+            i for i in range(start + 1, len(lines)) if lines[i].strip() == "*"
+        )
+    except StopIteration:
+        raise RuntimeError(
+            "OPI did not write the expected inline '* xyz' geometry section; "
+            f"cannot convert {base_name}.inp to *xyzfile form"
+        )
+    xyz_name = f"{base_name}.xyz"
+    xyz_lines = [str(len(elements)), ""]
+    for el, (x, y, z) in zip(elements, coordinates):
+        xyz_lines.append(f"{el} {float(x):.10f} {float(y):.10f} {float(z):.10f}")
+    (Path(work_dir) / xyz_name).write_text("\n".join(xyz_lines) + "\n")
+    lines[start:end + 1] = [f"*xyzfile {charge} {mult} {xyz_name}"]
+    out_path.write_text("\n".join(lines) + "\n")
+    return out_path
 
 
 def _write_plain_input(keywords, elements, coordinates, charge, mult,
