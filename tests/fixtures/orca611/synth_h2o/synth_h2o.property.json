@@ -1,0 +1,18 @@
+{
+    "Calculation_Info": {"Charge": 0, "Mult": 1, "progName": "ORCA", "version": "6.1.1"},
+    "Calculation_Status": {"Status": "NORMAL TERMINATION"},
+    "Geometries": [
+        {
+            "Single_Point_Data": {"Converged": true, "FinalEnergy": -76.32126902150691},
+            "thermochemistry_energies": [
+                {
+                    "zpe": 0.021202376295716842,
+                    "innerenergyu": -76.29723134165184,
+                    "enthalpyh": -76.29628713260958,
+                    "entropys": 0.0214440701709188,
+                    "freeenergyg": -76.3177312027805
+                }
+            ]
+        }
+    ]
+}
