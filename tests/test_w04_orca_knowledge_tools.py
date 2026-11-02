@@ -48,37 +48,25 @@ def test_orca_explain_returns_the_card_fields():
 
 
 def test_orca_check_input_evaluates_cards_on_a_calc_description():
-    """A calc description that trips a shipped card must yield findings."""
-    import delfin.orca_knowledge as ok
+    """A described calculation gets findings (executable checks) plus the
+    relevant verified statement cards for its method/job."""
+    import json
 
-    store = ok.cards()
-    if not store:
-        pytest.skip("no verified cards shipped")
-    # Build a calc description from the first card's own condition so the
-    # test stays true whatever the shipped store contains.
-    from delfin.orca_knowledge.checks import applies
-
-    hit = None
-    for card in store:
-        calc = {"keywords": [], "blocks": {}, "method_family": "dft",
-                "job": "opt", "charge": 0, "mult": 1,
-                "elements": ["Fe"], "orca_version": "6.1.1"}
-        cond = card.get("applies")
-        if not cond:
-            continue
-        # minimal satisfied description: flip fields until applies
-        for kw in _cond_keywords(cond):
-            calc["keywords"].append(kw)
-        if applies(card, calc):
-            hit = (card, calc)
-            break
-    if hit is None:
-        pytest.skip("no card with a constructible description")
-    card, calc = hit
     from delfin import api
+
+    calc = {"keywords": ["CASSCF"], "blocks": {}, "method_family": "casscf",
+            "job": "sp", "charge": 0, "mult": 1, "elements": [],
+            "orca_version": "6.1.1"}
     out = api.orca_check_input(json.dumps(calc))
     assert out["ok"] is True
-    assert any(f["id"] == card["id"] for f in out["findings"])
+    assert isinstance(out["findings"], list)
+    # The shipped store is v1: statement cards without executable checks.
+    # The tool must still surface the cards that describe THIS calc.
+    assert out["n_relevant_cards"] > 0
+    ids = {c["id"] for c in out["relevant_cards"]}
+    assert "casscf.active-space.mandatory" in ids
+    for card in out["relevant_cards"]:
+        assert card["statement"] and card["sources"]
 
 
 def test_orca_check_input_refuses_free_text_and_reports_bad_json():

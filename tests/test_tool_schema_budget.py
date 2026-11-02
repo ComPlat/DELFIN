@@ -241,7 +241,13 @@ _BASELINE_TOKENS = 11_422
 # budget, so the budget moves +42, 10_178 -> 10_220.
 # Both arrived on main the same day; measured together: 10_176 + 11
 # (memory's remember schema) + 44 (make_plot energy_profile) = 10_231.
-_TOKEN_BUDGET = 10_231
+# Wave 14/w04 (2026-11-01): three ORCA-on-demand / workflow-routing tools
+# (orca_explain, orca_check_input, workflow_candidates). Trimmed first --
+# one-sentence description each, bare types, no parameter prose. Measured:
+# 70 + 76 + 89 = 235 tokens; the budget moves by exactly that, 10_231 ->
+# 10_466. Their payload (dictionary records, knowledge cards, the ranking
+# with CONTROL keys) lives in the tool RESULTS, not the schema.
+_TOKEN_BUDGET = 10_466
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -253,6 +259,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
     "session_message", "session_search", "skill_propose_patch",
     "subagent_message", "show_molecule", "make_plot", "skill_share",
+    "orca_explain", "orca_check_input", "workflow_candidates",
 })
 
 

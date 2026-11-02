@@ -11171,6 +11171,59 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "orca_explain",
+            "description": (
+                "Purpose, requirements and manual section of one ORCA "
+                "keyword; from the shipped dictionary, nothing runs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "word": {"type": "string"},
+                },
+                "required": ["word"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "orca_check_input",
+            "description": (
+                "Check a described ORCA calculation (JSON) against the "
+                "knowledge cards; returns findings with sources."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "calc_description": {"type": "string"},
+                },
+                "required": ["calc_description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "workflow_candidates",
+            "description": (
+                "Rank DELFIN workflows for a calculation request; each "
+                "candidate with reason and the CONTROL keys to set."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_text": {"type": "string"},
+                    "available": {"type": "array",
+                                  "items": {"type": "string"}},
+                },
+                "required": ["task_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "show_molecule",
             "description": (
                 "Show .xyz (multi-frame too) or .cube in 3D, .smi/.mol/.sdf "
