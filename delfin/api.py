@@ -206,19 +206,6 @@ def mlp_check(*, capture: bool = True) -> CommandResult:
     return _run_cli(["mlp_check"], capture=capture)
 
 
-def mlp_backends() -> list[dict]:
-    """Describe every registered MLP backend for the agent.  Read-only.
-
-    Thin read-only adapter over ``delfin.mlp_tools.registry.describe_backends``
-    (task m1): name, availability with reason + install hint, scope
-    (organic / transition metals / periodic / charged), capabilities,
-    device policy and literature reference keys.  Works with zero ML
-    packages installed (missing backends are reported, not guessed).
-    """
-    from delfin.mlp_tools.registry import describe_backends
-    return describe_backends()
-
-
 def analysis_check(*, capture: bool = True) -> CommandResult:
     """Check analysis tools (Multiwfn, CENSO, ANMR, morfeus).  Read-only."""
     return _run_cli(["analysis_check"], capture=capture)
@@ -2921,17 +2908,18 @@ def _mlp_run(caller, backend: str, **kwargs) -> dict:
 
 
 def mlp_list_backends() -> dict:
-    """List MLP backends with availability, elements and install hint."""
-    from delfin.mlp_tools import collect_mlp_summary
+    """List MLP backends with availability, elements and install hint.
 
-    summary = collect_mlp_summary()
-    out = {"ok": True, "backends": summary["backends"],
-           "torch_version": summary["torch_version"],
-           "cuda": summary["cuda"]}
-    for entry in out["backends"]:
-        if not entry["installed"]:
-            entry["install_hint"] = _mlp_install_hint(
-                entry["name"].lower().replace("-", "_"))
+    Since wave19 m1 this answers from the delfin.mlp_tools registry, which
+    registers every backend the calculator factory knows plus the
+    state-of-the-art molecular models (MACE-MP-0, MACE-OMOL, fairchem
+    UMA/eSEN, Orb, SevenNet, xtb, GPUMA): capabilities, scope (organic /
+    transition metals / periodic / charged), device policy, availability
+    with reason + install hint, and literature reference keys.
+    """
+    from delfin.mlp_tools.registry import describe_backends
+
+    out = {"ok": True, "backends": describe_backends()}
     return out
 
 

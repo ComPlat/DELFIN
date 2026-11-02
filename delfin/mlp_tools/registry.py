@@ -382,6 +382,7 @@ def describe_backend(name: str) -> dict:
     return {
         "name": spec.name,
         "available": available,
+        "installed": available,
         "reason": reason,
         "install_hint": spec.install_hint,
         "description": spec.description,

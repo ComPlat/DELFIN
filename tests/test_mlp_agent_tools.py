@@ -249,13 +249,13 @@ def test_api_handlers_exist_and_are_documented():
 def test_list_backends_answers_from_the_m1_registry():
     """mlp_list_backends reports every registry backend with m1 fields."""
     from delfin.api import mlp_list_backends
-    from delfin.mlp_tools.registry import REGISTRY
+    from delfin.mlp_tools.registry import backend_names
 
     out = mlp_list_backends()
     reg_names = {b["name"] for b in out["backends"]}
-    assert reg_names == set(REGISTRY), (reg_names, set(REGISTRY))
+    assert reg_names == set(backend_names()), (reg_names, set(backend_names()))
     for entry in out["backends"]:
-        for key in ("capabilities", "scope", "references", "device_policy"):
+        for key in ("capabilities", "scope", "literature", "device_policy"):
             assert key in entry, (entry["name"], key)
         assert isinstance(entry["available"], bool)
         if not entry["available"]:
