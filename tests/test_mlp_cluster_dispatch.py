@@ -98,9 +98,8 @@ def test_dry_run_writes_script_and_does_not_submit(tmp_path, cluster_env, monkey
     """submit=False (the default) never runs sbatch."""
     called = []
     monkeypatch.setattr(
-        cd.subprocess, "run",
-        lambda *a, **k: called.append(a)
-        or type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})())
+        cd.scheduler_client, "query",
+        lambda *a, **k: called.append(a) or "")
     out = cd.write_and_submit(
         cluster_env, job_dir=tmp_path, xyz=_xyz(tmp_path),
         backend="ani2x", task="optimize", job_name="mlp_opt",
