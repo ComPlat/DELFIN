@@ -29,6 +29,22 @@ scope is REFUSED before any model runs, never computed silently wrong.
   ranks a conformer ensemble through `mlp_rank`, re-using the adapter
   tables (single source of truth).
 
+## Agent tools (MCP, `mcp__delfin-ops__*`)
+
+Registered like every other DELFIN tool; the agent calls them by name:
+
+- `mlp_list_backends` — availability, element scope, version and install
+  hint per backend. Read-only: passes the agent's gate untouched.
+- `mlp_single_point`, `mlp_optimize`, `mlp_rank`, `mlp_preoptimize` — the
+  run tools. They compute (a model runs, minutes on CPU), so they are NOT
+  on the read-only allowlist: in default mode the side-effect gate asks
+  before each call, like the calculation runners. Each takes an xyz
+  string and answers JSON; an unknown backend or a missing package comes
+  back as `ok=false` with `available`/`reason`/`install_hint` — a
+  diagnosis, never a traceback. `mlp_preoptimize` returns the relaxed
+  geometry as `xyz` plus `note`: the geometry is a starting guess for the
+  DFT step, never a final structure.
+
 ## What each model covers (declared, with sources, enforced)
 
 | Backend | Elements | Charge/mult | Valid for | NOT valid for |
@@ -75,11 +91,36 @@ source — that is the adapter telling you the physics, not a bug.
   pre-screen" in the answer.
 - **Not good**: reaction barriers < ~1 kcal/mol, binding energies for
   publication, spin-state splittings on metals, anything charged outside
-  `aimnet2`'s scope — DFT (ORCA) must follow or replace it.
-- A minimum is only verified with zero imaginary frequencies from a Hessian
-  — an MLP optimization alone never verifies one.
+  `aimnet2`'s scope — DFT (ORCA) must follow or replace it. Metals,
+  open-shell species and charged species are out of scope for
+  ani2x/mace_off outright (the adapter refuses them); only `aimnet2`
+  accepts charge and multiplicity, and its spin physics is the model's,
+  not a variational treatment — confirm with DFT whenever the spin state
+  is part of the question. A minimum is only verified with zero imaginary
+  frequencies from a Hessian — an MLP optimization alone never verifies
+  one.
+- **Always confirm final energies with DFT.** Every MLP number is a
+  screening value in eV on the model's own scale — not comparable with
+  DFT energies, not with another backend's energies, and not a
+  publication number. A relaxed geometry is a *starting guess*: the DFT
+  energy of that geometry is the only final number. Label every MLP
+  result "MLP pre-screen" and follow it with the ORCA/DFT step that
+  decides.
 - CHGNet/M3GNet/ALIGNN are materials-scoped (periodic, MP/JARVIS-trained):
   for molecular chemistry prefer ani2x/aimnet2/mace_off.
+
+## The `mlp_preopt` CONTROL key
+
+`mlp_preopt = none | ani2x | aimnet2 | mace_off | ...` in CONTROL.txt
+relaxes the start geometry with the chosen MLP BEFORE the ORCA steps
+(off by default: nothing runs, the inputs are byte-identical). Use it
+when the builder geometry is poor — large flexible molecules, many
+rotatable bonds — and the system is element-clean and closed-shell
+(elsewhere the adapter refuses). A failed or non-converged MLP step never
+stops the run: the original geometry is kept, the run continues, and the
+warning says so. FieldSpec `:2306` in
+`delfin/common/control_validator.py`; notes in
+`delfin/common/control_key_notes.json` (key `mlp_preopt`).
 
 ## References
 

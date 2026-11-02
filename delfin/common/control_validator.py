@@ -1063,6 +1063,28 @@ def _as_preopt_mode(value: Any) -> str:
     raise ValueError("must be none/no, xtb, crest, or goat")
 
 
+def _as_mlp_preopt(value: Any) -> str:
+    """The ML potential the start geometry is relaxed with before ORCA.
+
+    ``none`` (default, the shipped behaviour: no MLP runs at all) or the
+    canonical name of one of the backends delfin.mlp_tools.calculators
+    knows; aliases are normalised (``mace`` -> ``mace_off``).
+    """
+    from delfin.mlp_tools.calculators import _BACKEND_ALIASES
+
+    text = str(value or "none").strip().lower()
+    if not text or text in {"no", "false", "off", "0", "none"}:
+        return "none"
+    canon = _BACKEND_ALIASES.get(text)
+    if canon is None:
+        raise ValueError(
+            "mlp_preopt must be none or an MLP backend name ("
+            + ", ".join(sorted(set(_BACKEND_ALIASES.values())))
+            + "; aliases accepted, e.g. 'mace' = 'mace_off'), got "
+            + repr(value))
+    return canon
+
+
 def _as_global_optimizer(value: Any) -> str:
     """GOAT, CREST, or nothing at all.
 
@@ -2280,6 +2302,14 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("logK_exp", _as_str, default=""),
     FieldSpec("thdy_smiles_converter", _as_smiles_converter, default="NORMAL"),
     FieldSpec("thdy_preopt", _as_preopt_mode, default="xtb"),
+    # MLP pre-optimisation (wave19 m4): opt-in. The default keeps the
+    # shipped behaviour -- the ORCA steps run on the geometry as built.
+    FieldSpec("mlp_preopt", _as_mlp_preopt, default="none",
+              help="ML potential the start geometry is relaxed with before "
+                   "the ORCA steps: none (default) or ani2x, aimnet2, "
+                   "mace_off, chgnet, m3gnet. A screening step only: the "
+                   "geometry is a starting guess, every final energy comes "
+                   "from DFT."),
 )
 
 

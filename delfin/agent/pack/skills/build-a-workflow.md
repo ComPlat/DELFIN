@@ -8,7 +8,9 @@ description: Build the user a new DELFIN workflow — draft from DELFIN's catalo
 
 ## 1. Use DELFIN's workflows first
 A new workflow starts from a named template (`delfin/tools/templates/`,
-e.g. `classic_opt_freq`) or a saved user workflow — never a step list
+e.g. `classic_opt_freq`, or the OPI chain `opi_opt_freq_dlpno`:
+OPI-built `orca_opt_opi` → `orca_freq_opi` → DLPNO-CCSD(T) single point
+with knowledge-store-validated inputs) or a saved user workflow — never a step list
 invented in chat. Extending means `user_workflows.extend_template`:
 add, remove, replace or override, and the result is a NEW spec; the
 original template or saved workflow is never modified.
