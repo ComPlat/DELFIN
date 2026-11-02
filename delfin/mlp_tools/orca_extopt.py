@@ -420,7 +420,9 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
     inp.memory = 1000
 
     method = BlockMethod()
-    method.ProgExt = wrapper_path  # type: ignore[assignment]
+    # Manual 4.1.10 (structurereactivity/optimizations.txt lines 1571-1577):
+    # ProgExt takes the wrapper path quoted.
+    method.ProgExt = f'"{wrapper_path}"'  # type: ignore[assignment]
     method.Ext_Params = ext_params
     inp.add_blocks(method)
 

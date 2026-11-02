@@ -43,11 +43,10 @@ def test_opt_input_contains_extopt_and_progext(work_dir):
     assert path.name == "extopt.inp"
     assert "extopt" in text.lower()
     assert "opt" in text.lower()
-    # ProgExt in the %method block.  OPI writes the path unquoted via
-    # InputFilePath; the manual's example quotes it, but quotes are only
-    # required for paths containing whitespace.
+    # ProgExt in the %method block, quoted: manual 4.1.10 example
+    # (structurereactivity/optimizations.txt lines 1571-1577).
     assert "%method" in text.lower()
-    assert "progext delfin-mlp-extopt" in text.lower()
+    assert 'progext "delfin-mlp-extopt"' in text.lower()
     assert "ext_params" in text.lower()
 
 

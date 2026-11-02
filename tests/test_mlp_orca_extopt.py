@@ -17,6 +17,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import child_env
+
 from delfin.mlp_tools.orca_extopt import (
     EV_TO_EH,
     EV_PER_ANG_TO_EH_PER_BOHR,
@@ -234,6 +236,7 @@ def test_cli_entrypoint(tmp_path):
         [sys.executable, "-c", child],
         capture_output=True,
         text=True,
+        env=child_env(tmp_path),
     )
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "test_EXT.engrad").exists()
