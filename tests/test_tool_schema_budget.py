@@ -241,7 +241,15 @@ _BASELINE_TOKENS = 11_422
 # budget, so the budget moves +42, 10_178 -> 10_220.
 # Both arrived on main the same day; measured together: 10_176 + 11
 # (memory's remember schema) + 44 (make_plot energy_profile) = 10_231.
-_TOKEN_BUDGET = 10_231
+# verify_source (SRC1, wave 26, 2026-11-02): one tool, three official-API
+# lookups (DOI via Crossref, compound via PubChem, works via OpenAlex) instead
+# of three tools. It arrived at +257 tokens; trimmed before measuring -- the
+# action enum describes itself, the value line is one clause, the refusal
+# rule stays ("not_found: it does not exist, do not cite it") because live
+# runs cite invented DOIs without it -- to +135 (description 37, parameter
+# descriptions 15, structure 83). Main had 3 tokens of slack (10_228), so
+# the budget moves +132, 10_231 -> 10_363.
+_TOKEN_BUDGET = 10_363
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -253,6 +261,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
     "session_message", "session_search", "skill_propose_patch",
     "subagent_message", "show_molecule", "make_plot", "skill_share",
+    "verify_source",
 })
 
 
