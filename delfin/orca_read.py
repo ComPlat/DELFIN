@@ -345,16 +345,30 @@ def _fill_out_text_values(values: dict, out_path: Path, tail: str,
         values["failure_reason"] = _failure_reason_text(values, out_path)
 
 
+def _final_energy_text(values: dict, out_path: Path, tail: str) -> None:
+    """The final single point energy with the old reader's job selection.
+
+    On a multi-job output (several ``JOB NUMBER`` sections) the bounded
+    tail can cut across job boundaries and the last energy in the tail
+    belongs to a foreign job (11 of 200 archived runs picked a different
+    job than the whole-file reader).  The energy is therefore always read
+    from the whole file through :func:`find_electronic_energy`, the
+    pre-switch reader, so the job selection is identical by construction;
+    ``tail`` is unused here.
+    """
+    from delfin.energies import find_electronic_energy
+    values["final_energy"] = find_electronic_energy(str(out_path))
+
+
 def _fill_thermo_and_energy(values: dict, out_path: Path, tail: str,
                             wanted: set) -> None:
     """Energy and thermochemistry quantities from the bounded tail."""
-    from delfin.energies import (electronic_energy_in_text,
-                                 gibbs_energy_in_text)
+    from delfin.energies import gibbs_energy_in_text
 
     # energies first: the text functions accept pre-read text, so the
     # bounded tail is reused instead of re-reading the file.
     if "final_energy" in wanted:
-        values["final_energy"] = electronic_energy_in_text(tail, str(out_path))
+        _final_energy_text(values, out_path, tail)
     if "free_energy" in wanted:
         values["free_energy"] = gibbs_energy_in_text(tail, str(out_path))
     if "inner_energy" in wanted:
