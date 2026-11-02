@@ -206,6 +206,19 @@ def mlp_check(*, capture: bool = True) -> CommandResult:
     return _run_cli(["mlp_check"], capture=capture)
 
 
+def mlp_backends() -> list[dict]:
+    """Describe every registered MLP backend for the agent.  Read-only.
+
+    Thin read-only adapter over ``delfin.mlp_tools.registry.describe_backends``
+    (task m1): name, availability with reason + install hint, scope
+    (organic / transition metals / periodic / charged), capabilities,
+    device policy and literature reference keys.  Works with zero ML
+    packages installed (missing backends are reported, not guessed).
+    """
+    from delfin.mlp_tools.registry import describe_backends
+    return describe_backends()
+
+
 def analysis_check(*, capture: bool = True) -> CommandResult:
     """Check analysis tools (Multiwfn, CENSO, ANMR, morfeus).  Read-only."""
     return _run_cli(["analysis_check"], capture=capture)
@@ -2961,6 +2974,8 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Verify CSP (genarris) availability."},
     {"name": "mlp_check", "category": "checks",
      "summary": "Verify MLP backends (torchani/AIMNet2/MACE)."},
+    {"name": "mlp_backends", "category": "checks",
+     "summary": "List all registered MLP backends with availability, capabilities, scope and literature keys (registry, task m1)."},
     {"name": "analysis_check", "category": "checks",
      "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
     {"name": "result_checks", "category": "checks",
