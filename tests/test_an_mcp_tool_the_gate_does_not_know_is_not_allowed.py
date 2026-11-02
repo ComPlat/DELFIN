@@ -286,6 +286,11 @@ _EXPECTED_READ_ONLY = {
     "search_calcs", "get_calc_info", "calc_summary",
     # delfin-ops
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
+    # mlp_list_backends (2026-11-02): reads the backend availability
+    # table from delfin.mlp_tools; computes and writes nothing. The MLP
+    # run tools (mlp_single_point, mlp_optimize, mlp_rank,
+    # mlp_preoptimize) deliberately stay off this list: they compute.
+    "mlp_list_backends",
     # calc_status (2026-09-11): one folder's state with the evidence; reads
     # markers, logs, the state file and the output's tail, writes nothing.
     # extract_spectra_table (2026-09-11): the spectroscopy overview over
