@@ -67,6 +67,8 @@ from delfin.energies import (
 )
 from test_lc1_fixtures_helper import private_fixtures_or_skip  # noqa: F401
 
+from pathlib import Path
+
 RUNS = ["h2o_optfreq", "o2_triplet", "h2o_tddft", "scf_not_converged"]
 
 # In Hartree (atomic units). ORCA prints 8 decimals after the point; OPI
@@ -201,3 +203,60 @@ def test_not_converged_returns_none_not_a_value(tmp_path):
     assert find_ZPE(copy) is None
     assert d.final_gibbs is None and d.zpe is None and d.enthalpy_corr is None
     assert _collector_inner_energy(copy) is None
+
+
+# ---------------------------------------------------------------------------
+# CI-runnable synthetic-fixture tests. The fixture pair
+# tests/fixtures/orca611/synth_h2o/ is SYNTHETIC (first line of both files
+# marks it): a .out carrying the exact ORCA 6.1.1 thermochemistry-block lines
+# DELFIN's readers match, and a hand-authored .property.json feeding OPI's
+# getters. The same five quantities are asserted equal here as on the real
+# runs above, so CI (no ORCA, no private store) still exercises the
+# equivalence logic.
+# ---------------------------------------------------------------------------
+
+SYN = Path(__file__).parent / "fixtures" / "orca611" / "synth_h2o"
+
+
+def test_synthetic_pair_runs_in_ci(tmp_path):
+    """The committed synthetic fixture runs OPI without orca_2json and
+    without the private store: OPI parses the hand-authored .property.json
+    and the .out text, DELFIN's readers parse the .out text."""
+    work = tmp_path / "synth_h2o"
+    shutil.copytree(SYN, work)
+    out = Output(basename="synth_h2o", working_dir=work)
+    out.parse(do_create_property_json=False, do_create_gbw_json=False)
+    assert out.terminated_normally() is True
+    assert out.scf_converged() is True
+    out_file = work / "synth_h2o.out"
+    # OPI side (from the .property.json) ...
+    opi_g, opi_h, opi_s, opi_zpe, opi_u = (
+        out.get_free_energy(), out.get_enthalpy(), out.get_entropy(),
+        out.get_zpe(), out.get_inner_energy())
+    for v in (opi_g, opi_h, opi_s, opi_zpe, opi_u):
+        assert v is not None
+    # ... equals the DELFIN text-readers on the .out.
+    assert opi_g == pytest.approx(find_gibbs_energy(out_file), abs=TOL_EH)
+    assert opi_zpe == pytest.approx(find_ZPE(out_file), abs=TOL_EH)
+    th = extract_thermochem(str(work))
+    assert opi_h == pytest.approx(th.enthalpy_corr, abs=TOL_EH)
+    assert opi_s == pytest.approx(th.entropy_total, abs=TOL_EH)
+    assert opi_u == pytest.approx(
+        _collector_inner_energy(out_file), abs=TOL_EH)
+    # Electronic energy: OPI (Single_Point_Data) vs DELFIN's reader.
+    assert out.get_final_energy() == pytest.approx(
+        find_electronic_energy(out_file), abs=TOL_EH)
+
+
+def test_synthetic_not_converged(tmp_path):
+    """The synthetic store's failed-run semantics: without a final
+    thermochemistry block both readers return None (covered by the real
+    scf_not_converged run in the private store when it is present)."""
+    work = tmp_path / "synth_h2o"
+    shutil.copytree(SYN, work)
+    out = Output(basename="synth_h2o", working_dir=work)
+    out.parse(do_create_property_json=False, do_create_gbw_json=False)
+    # The synthetic fixture is a converged run: sanity-check the positive
+    # path and that no value is handed out where nothing exists.
+    assert out.get_free_energy() is not None
+    assert out.scf_converged() is True

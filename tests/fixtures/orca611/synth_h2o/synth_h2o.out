@@ -1,0 +1,18 @@
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+Program Version 6.1.1 - RELEASE
+                       -------------------
+                       SCF SETTINGS
+                       -------------------
+      SCF iter.  1: SUCCESS
+                       ------------------
+                       THERMOCHEMISTRY AT 298.15 K
+                       ------------------
+Temperature         ... 298.15 K
+Zero point energy               ...   0.02120238 Eh    13.30 kcal/mol
+Total thermal energy            ...  -76.29723134 Eh
+Total thermal energy -76.29723134 Eh
+Total Enthalpy                  ...  -76.29628713 Eh
+Final entropy term             ...    0.02144407 Eh    13.46 kcal/mol
+Final Gibbs free energy         ...  -76.31773120 Eh
+       FINAL SINGLE POINT ENERGY     -76.32126902150691
+****ORCA TERMINATED NORMALLY****
