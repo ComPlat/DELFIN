@@ -3109,6 +3109,8 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Purpose/requirements/manual section of one ORCA keyword."},
     {"name": "orca_check_input", "category": "validation",
      "summary": "Check a described ORCA calc against knowledge cards."},
+    {"name": "workflow_candidates", "category": "workflow",
+     "summary": "Rank DELFIN workflows for a request; CONTROL keys included."},
     # delfin-docs (other MCP server, listed for cross-reference)
     {"name": "search_docs", "category": "literature",
      "summary": "TF-IDF search over indexed PDFs."},
@@ -4843,6 +4845,26 @@ def _card_matches(card: dict, calc: dict) -> bool:
     return False
 
 
+def workflow_candidates(task_text: str, available=None) -> list:
+    """Rank DELFIN's existing workflows against a calculation request.
+
+    Rule: an existing workflow first; extend it when it lacks a step;
+    compose from the ORCA building blocks only when nothing fits. This
+    tool is the deterministic (no model call) first step: it returns the
+    ranked candidates, each with the reason it matched and the CONTROL
+    keys to set. An empty list means nothing fits — extend or compose.
+
+    Args:
+        task_text: the request as the chemist phrases it, e.g.
+            ``redox potential of this Fe complex``.
+        available: optional list of workflow names to rank among
+            (default: everything registered).
+    """
+    from delfin.tools.workflow_candidates import workflow_candidates as _rank
+
+    return _rank(task_text, available)
+
+
 def explain_delfin_feature(name: str) -> dict:
     """Return a curated explanation of one DELFIN feature/concept.
 
@@ -6544,4 +6566,5 @@ __all__ = [
     # ORCA knowledge on demand (wave14/w04)
     "orca_explain",
     "orca_check_input",
+    "workflow_candidates",
 ]
