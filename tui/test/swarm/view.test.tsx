@@ -184,6 +184,23 @@ describe("keyboard-first navigation", () => {
     expect(requests.filter((r) => r.method === "swarm.start").length).toBe(1)
   })
 
+  test("a goal with backslashes or quotes stays one exact goal scalar (CodeQL js/incomplete-sanitization)", async () => {
+    // The spec line is a YAML double-quoted scalar; a JSON string is one.
+    // The old builder escaped quotes but not backslashes: "a\\" ended the
+    // scalar early and the rest of the line became YAML.
+    for (const goal of ["a\\", "a\\\"b", 'x" packages: [y]', "tab\there"]) {
+      const { view, requests } = makeView()
+      await view.refresh()
+      await view.newSwarm(goal)
+      const plan = requests.find((r) => r.method === "swarm.start")
+      expect(plan).toBeTruthy()
+      const yaml = String(plan!.params.specYaml)
+      expect(yaml.split("\n").length).toBe(2)
+      expect(yaml.startsWith("goal: ")).toBe(true)
+      expect(JSON.parse(yaml.slice("goal: ".length).trimEnd())).toBe(goal.trim().replace(/\s+/g, " "))
+    }
+  })
+
   test("y confirms a held plan, n lets it go, another key is neither", async () => {
     const { view, requests } = makeView()
     await view.refresh()

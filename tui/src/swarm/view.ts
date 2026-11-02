@@ -180,10 +180,12 @@ export function createSwarmView(deps: SwarmViewDeps) {
     // The goal is one line, as one quoted scalar: a typed line must never
     // add spec structure (a "goal: x\npackages: [...]" line would change
     // the spec's shape). Newlines fold to spaces, quotes are doubled in
-    // the double-quoted form.
+    // the double-quoted form: JSON.stringify escapes backslashes, quotes
+    // and control characters, and a JSON string is a valid YAML
+    // double-quoted scalar.
     const goal = goalText.trim().replace(/\s+/g, " ")
     if (!goal) return false
-    const specYaml = `goal: "${goal.replace(/"/g, '\\"')}"\n`
+    const specYaml = `goal: ${JSON.stringify(goal)}\n`
     const check = await deps.askValidate(specYaml).catch(() => ({ valid: false, errors: ["validation failed"] }))
     if (!check.valid) {
       deps.note(`the spec is not valid: ${check.errors.join("; ")}`)
