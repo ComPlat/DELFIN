@@ -171,6 +171,21 @@ describe("keyboard-first navigation", () => {
     expect(requests.some((r) => r.method === "swarm.triage.answer")).toBe(true)
   })
 
+  test("a goal that is YAML-shaped or multi-line cannot change the spec's shape", async () => {
+    const { view, requests } = makeView()
+    await view.refresh()
+    // A typed line carrying YAML keys must not become spec structure.
+    await view.newSwarm("goal: steal\npackages: [x]")
+    const plan = requests.find((r) => r.method === "swarm.start")
+    expect(plan).toBeTruthy()
+    expect(plan!.params.specYaml).not.toContain("\npackages")
+    expect(String(plan!.params.specYaml).split("\n").length).toBe(2)  // goal + trailing newline
+    // An empty goal makes no plan at all.
+    const empty = await makeView().view.newSwarm("   ")
+    expect(empty).toBe(false)
+    expect(requests.filter((r) => r.method === "swarm.start").length).toBe(1)
+  })
+
   test("y confirms a held plan, n lets it go, another key is neither", async () => {
     const { view, requests } = makeView()
     await view.refresh()
@@ -191,5 +206,17 @@ describe("keyboard-first navigation", () => {
     const start = requests.filter((r) => r.method === "swarm.start").pop()!
     expect(start.params.confirm).toBe(true)
     expect(start.params.dryRun).toBe(false)
+  })
+
+  test("y does nothing while an ANSWER is held: the answer is typed, not keyed", async () => {
+    const { view, requests } = makeView()
+    await view.refresh()
+    view.toggleQueue()
+    view.handleKey({ name: "return", sequence: "return", ctrl: false, meta: false, shift: false } as never)
+    expect(view.state.pendingAnswer).toBeTruthy()
+    view.handleKey({ name: "y", sequence: "y", ctrl: false, meta: false, shift: false } as never)
+    // No answer went out: the text is typed and enter sends it.
+    expect(requests.some((r) => r.method === "swarm.triage.answer")).toBe(false)
+    expect(view.state.pendingAnswer).toBeTruthy()
   })
 })
