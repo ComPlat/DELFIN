@@ -12119,15 +12119,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "verify_source",
             "description": (
-                "Verify a literature or compound fact through an OFFICIAL "
-                "API (never scraping): action 'doi' resolves a DOI via "
-                "Crossref (title, authors, journal, year); action "
-                "'compound' looks a compound up in PubChem by name, SMILES "
-                "or InChIKey (CID, formula, InChIKey, molar mass); action "
-                "'works' searches scholarly works via OpenAlex. Use this "
-                "before citing a DOI or quoting a compound property; a "
-                "'not_found' answer means the identifier does not exist — "
-                "do not cite it."
+                "Check a DOI (Crossref), a compound (PubChem) or find works "
+                "(OpenAlex) via official APIs before citing. not_found: it "
+                "does not exist, do not cite it."
             ),
             "parameters": {
                 "type": "object",
@@ -12135,22 +12129,16 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "action": {
                         "type": "string",
                         "enum": ["doi", "compound", "works"],
-                        "description": (
-                            "Which lookup to run: doi (Crossref), compound "
-                            "(PubChem), works (OpenAlex search)."
-                        ),
                     },
                     "value": {
                         "type": "string",
                         "description": (
-                            "The identifier: a DOI for 'doi', a compound "
-                            "name / SMILES / InChIKey for 'compound', a "
-                            "query for 'works'."
+                            "DOI, compound name/SMILES/InChIKey, or query."
                         ),
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "For 'works': how many hits (1-20).",
+                        "description": "works: hits, 1-20.",
                     },
                 },
                 "required": ["action", "value"],
