@@ -91,3 +91,38 @@ ensemble. Discoverable through the shared workflow registry
   solids with molecular-scope models. A minimum is verified only by a
   Hessian with zero imaginary frequencies — never by an MLP optimization
   alone.
+
+## Backend registry (task m1)
+
+`delfin/mlp_tools/registry.py` is the uniform layer the agent and the
+workflows share. The legacy `create_calculator` surface in
+`calculators.py` is unchanged; the registry adds:
+
+- **16 registered backends**: the 8 legacy potentials (ANI-2x, AIMNet2,
+  MACE-OFF, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN) plus the current
+  molecular state of the art — MACE-MP-0, MACE-OMOL, UMA/eSEN (fairchem,
+  OMol25), Orb (OrbMol/orb-v3), SevenNet — and xtb (GFN2/GFN-FF via
+  tblite, or xtb-python) as the semi-empirical baseline, plus GPUMA as a
+  GPU-batch-optimiser entry point.
+- **Availability reporting that never guesses**: a backend whose package
+  (or weights) are missing reports `available=False` with a reason and an
+  install hint. GPUMA is wired only from the installed package's own
+  metadata; if absent it is registered unavailable with the reason.
+
+    ```python
+    from delfin.mlp_tools import describe_mlp_backends
+    from delfin.mlp_tools.registry import create_calculator, describe_backend
+
+    describe_mlp_backends()               # full list: availability, scope,
+                                          # charge support, literature keys
+    describe_backend("mace_mp")           # one entry in detail
+    calc = create_calculator("aimnet2",
+                             device="auto", charge=-1, mult=2)
+    ```
+
+- **`device="auto"`** (opt-in): cuda if `torch.cuda.is_available()`, else
+  cpu with OMP/MKL threads capped at 2. An explicit `device=` always wins;
+  the legacy default remains `device="cpu"`.
+- **Charge/spin fail-closed**: `charge`/`mult` are passed only to
+  charge-aware models (aimnet2) and refused with a clear `ValueError` for
+  all others — never silently ignored.
