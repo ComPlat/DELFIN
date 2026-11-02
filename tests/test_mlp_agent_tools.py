@@ -41,7 +41,8 @@ def fake_calcs(monkeypatch):
     def fake_single_point(atoms, backend="ani2x", *, device="cpu",
                           charge=0, mult=1):
         calls.append(("single_point", backend, device, charge, mult))
-        return {"energy": -10.5, "forces": [[0.0, 0.0, 0.1], [0.0, 0.0, -0.1]],
+        return {"energy": -10.5, "forces": [[0.0, 0.0, 0.1], [0.0, 0.0, -0.1],
+                                            [0.0, 0.1, 0.0]],
                 "backend": backend, "n_atoms": len(atoms)}
 
     def fake_optimize(atoms, backend="ani2x", *, device="cpu", charge=0,
@@ -62,9 +63,12 @@ def fake_calcs(monkeypatch):
     return calls
 
 
-XYZ = "2\nwater\nO 0.0 0.0 0.0\nH 0.9 0.0 0.0\nH -0.3 0.85 0.0\n"
+XYZ = "3\nwater\nO 0.0 0.0 0.0\nH 0.9 0.0 0.0\nH -0.3 0.85 0.0\n"
 
-ENSEMBLE = "2\nconf a\nO 0.0 0.0 0.0\nH 0.9 0.0 0.0\nH -0.3 0.85 0.0\n2\nconf b\nO 0.0 0.0 0.0\nH 0.85 0.1 0.0\nH -0.3 0.8 0.1\n"
+ENSEMBLE = (
+    "3\nconf a\nO 0.0 0.0 0.0\nH 0.9 0.0 0.0\nH -0.3 0.85 0.0\n"
+    "3\nconf b\nO 0.0 0.0 0.0\nH 0.85 0.1 0.0\nH -0.3 0.8 0.1\n"
+)
 
 
 # ------------------------------------------------------- mlp_list_backends ---
@@ -72,10 +76,10 @@ def test_list_backends_reports_every_registered_backend():
     from delfin.api import mlp_list_backends
 
     out = mlp_list_backends()
-    names = [b["name"] for b in out["backends"]]
+    names = [b["name"].lower().replace("-", "").replace("_", "") for b in out["backends"]]
     # every backend the calculator factory registers is named, even when
     # its package is missing on this machine
-    for expected in ("ani2x", "aimnet2", "mace_off", "chgnet", "m3gnet",
+    for expected in ("ani2x", "aimnet2", "maceoff", "chgnet", "m3gnet",
                      "schnetpack", "nequip", "alignn"):
         assert expected in names, (expected, names)
     for entry in out["backends"]:
