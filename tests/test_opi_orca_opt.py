@@ -276,6 +276,30 @@ class TestBuildEmitsValidInput:
             )
         assert "holds one coordinate" in str(exc.value)
 
+    def test_ts_mode_is_refused_opi_emits_inline_form_orca_rejects(
+            self, tmp_path):
+        """ORCA 6.1.1 parses TS_Mode only as a sub-block inside %geom
+        ('TS_Mode / { M 0 } / end'; probe: 'finished'; the inline
+        'ts_mode { M 1 }' line OPI 2.0.0 emits probes 'rejected' with
+        'Unrecognized symbol in GEOM block line').  ts_mode is refused
+        instead of hand-rolling the sub-block as a string template."""
+        with pytest.raises(ValueError) as exc:
+            _build_opi_input(
+                work_dir=tmp_path,
+                elements=H2O_ELEMENTS,
+                coordinates=H2O_COORDS,
+                charge=0,
+                mult=1,
+                functional="BP86",
+                basis="def2-SVP",
+                task="optts",
+                geom_options={"ts_mode": ["M", 1]},
+                base_name="tsmode",
+                maxcore=1000,
+                ncores=1,
+            )
+        assert "ts_mode" in str(exc.value)
+
     def test_invalid_scan_coordinate_is_refused(self, tmp_path):
         with pytest.raises(ValueError):
             _build_opi_input(

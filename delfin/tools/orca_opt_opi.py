@@ -369,7 +369,6 @@ class _Writer:
         from opi.input.blocks.block_geom import (
             BlockGeom,
             Scan,
-            TSMode,
         )
         from opi.input.blocks.block_irc import BlockIrc
         from opi.input.blocks.block_freq import BlockFreq
@@ -378,7 +377,7 @@ class _Writer:
         blocks: list[Any] = []
 
         geom = dict(geom_options or {})
-        # A TSMode string for OptTS is accepted by OPI's validator; map the
+        # Single-coordinate scan -> OPI Scan object (or its string).
         # option name to the OPI block field.  Constraints: BlockGeom's
         # ``constraints`` field validator (block_geom.Constraint.constraint_init)
         # already coerces a list of strings ("{ B 0 1 C }", ...) into OPI
@@ -386,17 +385,21 @@ class _Writer:
         # atoms ({ C N C }), bonds ({ B N1 N2 C }) or angles ({ A 1 2 3 C })
         # per manual optimisation section 4.5.
         if "ts_mode" in geom:
-            # TSMode.from_string accepts only the bracketed string form
-            # ('{ M 1 }' per manual section 4.5.1); map an int x (follow mode
-            # x uphill) or a list ['M', 1] onto it -- anything else is a user
-            # error and stays one.
-            raw = geom.pop("ts_mode")
-            if isinstance(raw, int):
-                raw = f"{{ M {raw} }}"
-            elif isinstance(raw, (list, tuple)) and raw and str(raw[0]).upper() \
-                    in {"A", "B", "D", "M"}:
-                raw = "{ " + " ".join(str(part) for part in raw) + " }"
-            geom["ts_mode"] = TSMode.from_string(raw)
+            # ORCA 6.1.1 accepts TS_Mode only as a sub-block inside %geom
+            # ('TS_Mode\n    { M 0 }\n    end'; probe run in this session,
+            # manual structurereactivity/optimizations_TS.txt TS_Mode table
+            # '{M 0}').  OPI 2.0.0 renders its TSMode object as the inline
+            # 'ts_mode { M 1 }' one-liner, which ORCA's parser rejects
+            # ('Unrecognized symbol in GEOM block line').  Refuse rather
+            # than hand-roll the line.
+            raise ValueError(
+                "geom_options['ts_mode']: OPI 2.0.0 renders TSMode as an "
+                "inline 'ts_mode { M 1 }' line inside %geom, but ORCA "
+                "6.1.1 only parses TS_Mode as a sub-block ('TS_Mode\\n"
+                "    { M 0 }\\n    end'); hand-rolling the line would "
+                "violate the no-string-template rule, so ts_mode is "
+                "refused until OPI gains the sub-block form."
+            )
         # keep constraints as a list of strings for OPI's coercion
         # Single-coordinate scan -> OPI Scan object (or its string).
         if scan:
