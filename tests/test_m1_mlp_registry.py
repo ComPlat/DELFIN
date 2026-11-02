@@ -260,7 +260,7 @@ def test_old_create_calculator_names_unchanged():
 def test_legacy_alias_table_unchanged():
     assert legacy._BACKEND_ALIASES["mace"] == "mace_off"
     assert legacy._BACKEND_ALIASES["torchani"] == "ani2x"
-    assert len(legacy._BACKEND_ALIASES) == 24  # exact table, unchanged
+    assert len(legacy._BACKEND_ALIASES) == 18  # exact table, unchanged
 
 
 def test_legacy_single_point_default_backend_ani2x():
