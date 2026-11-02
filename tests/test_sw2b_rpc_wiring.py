@@ -117,3 +117,66 @@ def test_unhooked_tree_answers_method_not_found_for_swarm_status():
     the protocol side is already defined, so this documents the name
     contract; the reachability case above fails without swarm_rpc."""
     assert "swarm.status".replace(".", "_") == "swarm_status"
+
+
+# ---------------------------------------- privilege gate (operator finding)
+# An agent session's own process connects watch-only (may_act False). The
+# four state-changing swarm methods must sit in supervisor.ACTING, so
+# _dispatch refuses them NOT_ALLOWED for that connection; the four
+# read-only ones must stay OUT, so a watch-only window keeps reading
+# status/plan/validate/triage.list.
+
+STATE_CHANGING = ["swarm.start", "swarm.pause", "swarm.resume",
+                  "swarm.triage.answer"]
+READ_ONLY = ["swarm.status", "swarm.plan", "swarm.validate",
+             "swarm.triage.list"]
+
+
+class _Sentinel:
+    """A client stand-in that records what _dispatch sends."""
+
+
+class _FakeClient:
+    def __init__(self, may_act: bool):
+        self.may_act = may_act
+        self.greeted = True
+        self.closed = False
+        self.sent: list[dict] = []
+
+    def send(self, message: dict) -> None:
+        self.sent.append(message)
+
+
+def _dispatch_answer(method: str, params: dict, may_act: bool) -> dict:
+    """One swarm.* request through the supervisor's real _dispatch, on a
+    Supervisor stand-in that has no sessions (the swarm branch touches
+    nothing of it); whatever _dispatch fails with is returned."""
+    import asyncio
+    from delfin.agent.service import supervisor as sup
+
+    inst = object.__new__(sup.Supervisor)
+    inst.closing = False
+    client = _FakeClient(may_act)
+    asyncio.run(inst._dispatch(client, {"id": 1, "method": method,
+                                        "params": params}))
+    assert client.sent, "dispatch sent nothing"
+    return client.sent[-1]
+
+
+def test_agent_origin_connection_is_refused_for_state_changing_swarm():
+    """may_act=False + each state-changing method -> NOT_ALLOWED. Red
+    before the ACTING addition in the hook patch: _dispatch then falls
+    through to METHOD_NOT_FOUND instead."""
+    for method in STATE_CHANGING:
+        answer = _dispatch_answer(method, {}, may_act=False)
+        assert answer.get("error", {}).get("code") == protocol.NOT_ALLOWED, (
+            method, answer)
+
+
+def test_agent_origin_connection_still_reads_the_queue_and_status():
+    """The read-only half must not be caught by the gate: a watch-only
+    connection serves swarm.status (and dispatches the rest without the
+    NOT_ALLOWED code). Red if the four read-only methods were wrongly
+    added to ACTING."""
+    answer = _dispatch_answer("swarm.status", {}, may_act=False)
+    assert answer.get("error", {}).get("code") != protocol.NOT_ALLOWED, answer
