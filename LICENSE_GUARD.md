@@ -95,9 +95,10 @@ and WEIGHT licence are separate things and both are declared per backend
 - **Gated weights** need the user's own acceptance of the upstream terms.
   DELFIN's job is to say so, with the URL, not to work around the gate.
 - **Non-commercial weights** (e.g. MACE foundation models under the
-  Academic Software License) are flagged `non_commercial=True`; a CONTROL
-  or tool option `refuse_noncommercial_mlp_weights` makes DELFIN refuse
-  such backends so commercial users cannot trip over them.
+  Academic Software License) are flagged `non_commercial=True`; the
+  option `refuse_noncommercial_weights=True` (on `mlp_preoptimize` and
+  `registry.create_calculator`) makes DELFIN refuse such backends so
+  commercial users cannot trip over them.
 - **Every optional MLIP dependency DELFIN can call must have a cited
   upstream licence** in the registry; anything not yet verified against
   the upstream text is marked `verified=False`, never guessed.
