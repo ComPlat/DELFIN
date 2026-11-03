@@ -1,4 +1,5 @@
 """Checks for the portable launcher's security-sensitive return routing."""
+import json
 import importlib.util
 from pathlib import Path
 import socket
@@ -344,7 +345,7 @@ def _bootstrap_env(tmp_path, home):
     import os
     root, python, hook = _installed_like_an_editable_finder(tmp_path)
     env = dict(os.environ)
-    for key in ('CONDA_PREFIX', 'DELFIN_PERSON', 'DELFIN_RUNTIME_DIR'):
+    for key in ('CONDA_PREFIX', 'DELFIN_PERSON', 'DELFIN_RUNTIME_DIR', 'DELFIN_SETTINGS_DEFAULTS'):
         env.pop(key, None)
     env.update(PATH='/usr/bin:/bin', HOME=str(home), VIRTUAL_ENV=str(root), PYTHONPATH=hook)
     return env, python
@@ -374,7 +375,8 @@ def test_people_mode_gives_each_person_a_home_of_their_own(tmp_path):
     (home / '.delfin/agent_sessions').mkdir()
     env, _ = _bootstrap_env(tmp_path, home)
     probe = ('import os; print("HOME=" + os.environ["HOME"]); print("RUN=" + os.environ["DELFIN_RUNTIME_DIR"]);'
-             ' print("WHO=" + os.environ["DELFIN_PERSON"]); print("CWD=" + os.getcwd())')
+             ' print("WHO=" + os.environ["DELFIN_PERSON"]); print("CWD=" + os.getcwd());'
+             ' print("DEFAULTS=" + os.environ["DELFIN_SETTINGS_DEFAULTS"])')
     results = {name: _run_bootstrap(env, home, probe, person=name) for name in ('anna', 'bert')}
     for name, result in results.items():
         assert result.returncode == 0, result.stderr
@@ -384,12 +386,19 @@ def test_people_mode_gives_each_person_a_home_of_their_own(tmp_path):
         assert f'WHO={name}' in result.stdout
         assert f'CWD={person_home}/agent_workspace' in result.stdout
         assert stat.S_IMODE(person_home.stat().st_mode) == 0o700
-        # Shared by link: the account's credentials and its DELFIN settings
-        # (user_settings.SETTINGS_FILE_NAME, e.g. the tab choice); private: sessions.
-        from delfin.user_settings import SETTINGS_FILE_NAME
+        # Shared by link: the account's credentials; private: sessions. The
+        # DELFIN settings (user_settings.SETTINGS_FILE_NAME) are layered: the
+        # account's file is named as the defaults, the person has their own.
+        from delfin.user_settings import SETTINGS_FILE_NAME, SETTINGS_DEFAULTS_ENV
         assert (person_home / '.delfin/credentials.json').resolve() == (home / '.delfin/credentials.json').resolve()
-        assert (person_home / SETTINGS_FILE_NAME).resolve() == (home / SETTINGS_FILE_NAME).resolve()
+        own = person_home / SETTINGS_FILE_NAME
+        assert own.is_file() and not own.is_symlink()
+        assert json.loads(own.read_text()) == {}
+        assert stat.S_IMODE(own.stat().st_mode) == 0o600
+        assert SETTINGS_DEFAULTS_ENV == 'DELFIN_SETTINGS_DEFAULTS'
+        assert f'DEFAULTS={home / SETTINGS_FILE_NAME}' in result.stdout
         assert not (person_home / '.delfin/agent_sessions').exists()
+    assert json.loads((home / '.delfin_settings.json').read_text()) == {'ui': {'tabs': {'hidden': ['submit']}}}
 
 
 def test_people_mode_is_off_unless_the_account_owner_enables_it(tmp_path):
@@ -423,6 +432,16 @@ def test_tmux_gets_home_and_delfin_settings_of_this_person(monkeypatch):
     assert 'HOME=/srv/account/people/anna' in words
     assert 'DELFIN_PERSON=anna' in words
     assert 'DELFIN_RUNTIME_DIR=/srv/account/people/anna/.run' in words
+
+
+def test_tmux_gets_the_settings_defaults_of_the_account(monkeypatch):
+    # The dashboard and the agent service the person starts read the
+    # account's settings under their own; the variable must reach them.
+    monkeypatch.setenv('HOME', '/srv/account/people/anna')
+    monkeypatch.setenv('DELFIN_SETTINGS_DEFAULTS', '/srv/account/.delfin_settings.json')
+    words = launcher.shell_environment().split()
+    assert 'DELFIN_SETTINGS_DEFAULTS=/srv/account/.delfin_settings.json' in words
+    assert 'DELFIN_SETTINGS_DEFAULTS=/srv/account/.delfin_settings.json' in launcher.working_shell_command('/w')
 
 
 def test_new_dashboard_tmux_session_is_named_for_the_person(monkeypatch):
@@ -464,26 +483,72 @@ def test_a_server_can_make_keep_session_its_default(tmp_path):
     assert 'KEEP=1' in result.stdout
 
 
-def test_people_mode_replaces_an_own_settings_copy_by_the_link(tmp_path):
-    # A person home made before the settings link existed holds its own
-    # copy; the account's defaults never reach it. It is kept aside and
-    # linked, and a second connection changes nothing more.
+def _people_home(tmp_path):
     home = tmp_path / 'home'
     (home / '.config/delfin').mkdir(parents=True)
     (home / '.config/delfin/launcher-people.conf').write_text('')
     (home / '.delfin_settings.json').write_text('{"agent": {"permission_profile": "all_free"}}')
     person_home = home / 'people' / 'anna'
     person_home.mkdir(parents=True)
-    (person_home / '.delfin_settings.json').write_text('{"agent": {"permission_profile": "plan"}}')
+    return home, person_home
+
+
+def test_people_mode_turns_a_settings_link_into_an_own_empty_file(tmp_path):
+    # The earlier layout linked the person's settings to the account's. The
+    # link's content was the account's, which is now the defaults layer: the
+    # link goes, an empty personal file takes its place, the account's file
+    # is untouched, and a second connection changes nothing more.
+    home, person_home = _people_home(tmp_path)
+    own = person_home / '.delfin_settings.json'
+    own.symlink_to(home / '.delfin_settings.json')
     env, _ = _bootstrap_env(tmp_path, home)
-    probe = 'print("OK")'
     for _ in range(2):
-        result = _run_bootstrap(env, home, probe, person='anna')
+        result = _run_bootstrap(env, home, 'print("OK")', person='anna')
         assert result.returncode == 0, result.stderr
-    link = person_home / '.delfin_settings.json'
-    assert link.is_symlink() and link.resolve() == (home / '.delfin_settings.json').resolve()
-    kept = list(person_home.glob('.delfin_settings.json.before-shared-*'))
-    assert len(kept) == 1 and '"plan"' in kept[0].read_text()
+    assert own.is_file() and not own.is_symlink()
+    assert json.loads(own.read_text()) == {}
+    assert json.loads((home / '.delfin_settings.json').read_text()) == {'agent': {'permission_profile': 'all_free'}}
+    assert not list(person_home.glob('.delfin_settings.json.before-shared-*'))
+
+
+def test_people_mode_keeps_an_own_settings_file_and_does_not_apply_a_kept_copy(tmp_path):
+    # An own file is the person's choices: kept as it is, not moved aside.
+    # A copy kept by the earlier layout (*.before-shared-*) stays where it is
+    # and is not merged back.
+    home, person_home = _people_home(tmp_path)
+    own = person_home / '.delfin_settings.json'
+    own.write_text('{"agent": {"permission_profile": "plan"}}')
+    kept = person_home / '.delfin_settings.json.before-shared-20261101000000'
+    kept.write_text('{"agent": {"model": "old"}}')
+    env, _ = _bootstrap_env(tmp_path, home)
+    result = _run_bootstrap(env, home, 'import os; print("DEFAULTS=" + os.environ["DELFIN_SETTINGS_DEFAULTS"])', person='anna')
+    assert result.returncode == 0, result.stderr
+    assert f'DEFAULTS={home}/.delfin_settings.json' in result.stdout
+    assert json.loads(own.read_text()) == {'agent': {'permission_profile': 'plan'}}
+    assert json.loads(kept.read_text()) == {'agent': {'model': 'old'}}
+    assert list(person_home.glob('.delfin_settings.json.before-shared-*')) == [kept]
+
+
+def test_people_mode_leaves_a_settings_link_elsewhere_alone(tmp_path):
+    # Only the account's link is the earlier layout; a link the person made
+    # to another file is their own setup, and a dangling one is not written
+    # through.
+    home, person_home = _people_home(tmp_path)
+    own = person_home / '.delfin_settings.json'
+    own.symlink_to(tmp_path / 'elsewhere.json')
+    env, _ = _bootstrap_env(tmp_path, home)
+    result = _run_bootstrap(env, home, 'print("OK")', person='anna')
+    assert result.returncode == 0, result.stderr
+    assert own.is_symlink() and not (tmp_path / 'elsewhere.json').exists()
+
+
+def test_the_account_without_people_mode_gets_no_settings_layer(tmp_path):
+    home = tmp_path / 'home'
+    home.mkdir()
+    env, _ = _bootstrap_env(tmp_path, home)
+    result = _run_bootstrap(env, home, 'import os; print("DEFAULTS=" + os.environ.get("DELFIN_SETTINGS_DEFAULTS", "-"))', person='anna')
+    assert result.returncode == 0, result.stderr
+    assert 'DEFAULTS=-' in result.stdout
 
 
 def _run_bootstrap_with_key(env, home, payload_code, key):
