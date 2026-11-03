@@ -1936,6 +1936,13 @@ def tool_geometry_rotate(xyz: str, indices: list, axis, degrees: float) -> str:
     return _dumps(delfin_api.geometry_rotate(xyz, indices, axis, degrees))
 
 
+def tool_trajectory_xyz(orca_out: str) -> str:
+    """Every CARTESIAN COORDINATES (ANGSTROEM) block of an ORCA output
+    (relaxed scan, opt, IRC) as one multi-frame xyz {xyz, n_frames};
+    write xyz to a file and show_molecule opens the rotation movie."""
+    return _dumps(delfin_api.trajectory_xyz(orca_out))
+
+
 def tool_geometry_add_atom(xyz: str, element: str, bonded_to: int,
                            bond_length: float) -> str:
     """Add an atom at a bond length from an existing atom."""
@@ -2042,6 +2049,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="geometry_set_dihedral")(_safe("geometry_set_dihedral", tool_geometry_set_dihedral))
     mcp.tool(name="geometry_translate")(_safe("geometry_translate", tool_geometry_translate))
     mcp.tool(name="geometry_rotate")(_safe("geometry_rotate", tool_geometry_rotate))
+    mcp.tool(name="trajectory_xyz")(_safe("trajectory_xyz", tool_trajectory_xyz))
     mcp.tool(name="geometry_add_atom")(_safe("geometry_add_atom", tool_geometry_add_atom))
     mcp.tool(name="geometry_remove_atoms")(_safe("geometry_remove_atoms", tool_geometry_remove_atoms))
     mcp.tool(name="geometry_replace_ligand")(_safe("geometry_replace_ligand", tool_geometry_replace_ligand))
