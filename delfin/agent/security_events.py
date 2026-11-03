@@ -149,6 +149,7 @@ _KINDS = {
     "gh_alias_refused": ("🚫", "gh alias that hides a guarded command"),
     "gh_extension_refused": ("🚫", "gh extension install refused"),
     "git_config_program": ("⚙", "Git setting that runs a program"),
+    "env_root_prefix": ("📦", "Environment under the conda root prefix"),
     # The user's permission rules (permission_rules.py).
     "permission_rule_deny": ("⛔", "Refused by a permission rule"),
     "permission_rule_ask": ("❓", "Asked by a permission rule"),
