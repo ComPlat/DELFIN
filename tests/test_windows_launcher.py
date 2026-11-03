@@ -382,7 +382,7 @@ def test_people_mode_gives_each_person_a_home_of_their_own(tmp_path):
         assert f'HOME={person_home}' in result.stdout
         assert f'RUN={person_home}/.run' in result.stdout
         assert f'WHO={name}' in result.stdout
-        assert f'CWD={person_home}/work' in result.stdout
+        assert f'CWD={person_home}/agent_workspace' in result.stdout
         assert stat.S_IMODE(person_home.stat().st_mode) == 0o700
         # Shared by link: the account's credentials and its DELFIN settings
         # (user_settings.SETTINGS_FILE_NAME, e.g. the tab choice); private: sessions.

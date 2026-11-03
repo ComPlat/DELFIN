@@ -222,6 +222,23 @@ What only a person can do, in this order:
   so a tab a later DELFIN adds stays hidden; a change in the dashboard's
   Settings tab is reset by the next deploy, edit the file instead. Shared by
   everyone through the launcher's people mode.
+- Agent tab defaults on this box: `~/.config/delfin/pi-agent.conf` (key=value):
+  `mode=solo` (Code), `provider=kit`, `model=kit.deepseek-v4-flash`,
+  `permission_profile=all_free` (Bypass), `effort=` (empty: the model
+  profile's default, shown as "Medium (profile default)"). `pi_install.sh`
+  writes it into `~/.delfin_settings.json` on every deploy, so a choice made in
+  the tab lasts until the next deploy; edit the file to change the default.
+  Shared by everyone through the launcher's people mode; each person's agent
+  works in `~/people/<name>/agent_workspace`.
+  Bypass asks nothing for work inside the folders the agent may use; the cage
+  (bwrap + Landlock) stays, and network, `git push`, installs outside the
+  project environment and anything uncaged still ask. A managed policy
+  (`/etc/delfin/managed_policy.json`) that lists `bypassPermissions` in
+  `disallowed_modes`, or one that cannot be read (fail-closed:
+  `FAIL_CLOSED_MODES` in `delfin/agent/managed_policy.py`), refuses Bypass.
+  The policy `pi_bootstrap.sh` writes requires the cage and refuses the CLI
+  backends but no mode; check `cat /etc/delfin/managed_policy.json` if it was
+  edited.
 - tmux on the box waits 50 ms for escape sequences (`~/.tmux.conf`): with
   tmux 3.5's 10 ms the terminal's answer to tmux's capability query arrived
   too late over SSH/VPN and showed up as `^[[?61;1;6;...c` in the pane.

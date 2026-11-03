@@ -235,7 +235,7 @@ mkdir -p ~/.config/delfin && touch ~/.config/delfin/launcher-people.conf
 From then on the app sends the Windows user name (lower case, `a-z0-9_-`),
 and the server uses `~/people/<name>` as that connection's home: own DELFIN
 sessions and chats, own dashboard with its own port and token, own agent
-service (`DELFIN_RUNTIME_DIR`), own working directory `~/people/<name>/work`
+service (`DELFIN_RUNTIME_DIR`), own agent workspace `~/people/<name>/agent_workspace` (the dashboard agent's working folder)
 and tmux sessions named `delfin-win-<name>-<port>-...`. Reconnecting from the
 same Windows user returns to that person's dashboard. Shared by link with the
 account: the installation, credentials and settings, tools, caches, git and

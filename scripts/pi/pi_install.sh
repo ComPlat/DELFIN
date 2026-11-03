@@ -151,19 +151,43 @@ set_up_extras() {
             "export DELFIN_MCP_ISOLATION=builtin" >> "$ROOT/agent.env"
         echo "==> agent.env: DELFIN_MCP_ISOLATION=builtin"
     fi
-    # Sessions start on the KIT toolbox (DELFIN's own, caged tool loop) unless
-    # a provider was chosen: the CLI default would be refused by the policy.
-    "$VENV_PY" - <<'EOF' || echo "warning: could not set the default provider" >&2
-import json
-from delfin.user_settings import get_settings_path, load_settings, save_settings
-path = get_settings_path()
-raw = json.loads(path.read_text()) if path.exists() else {}
-if not str((raw.get("agent") or {}).get("provider") or "").strip():
-    settings = load_settings()
-    settings.setdefault("agent", {}).update(
-        {"provider": "kit", "model": "kit.deepseek-v4-flash"})
+    # The agent tab's defaults on this box (~/.config/delfin/pi-agent.conf),
+    # written into the DELFIN settings on every deploy, like pi-tabs.conf.
+    # Through the launcher's people mode every person shares the settings
+    # file, so these are everyone's defaults. Sessions start on the KIT
+    # toolbox (DELFIN's own, caged tool loop): the CLI default would be
+    # refused by the policy. An empty value (effort) means the model
+    # profile's default. permission_profile all_free is the tab's "Bypass".
+    local agent_conf="$HOME/.config/delfin/pi-agent.conf"
+    if [[ ! -f "$agent_conf" ]]; then
+        mkdir -p "$HOME/.config/delfin"
+        printf '%s\n' "# Agent tab defaults on this box (key=value). Applied by pi_install.sh on every deploy." \
+            "# mode: solo = Code; permission_profile: ask_all | repo_free | all_free (= Bypass)." \
+            "# effort empty = the model profile's default." \
+            "mode=solo" "provider=kit" "model=kit.deepseek-v4-flash" \
+            "permission_profile=all_free" "effort=" > "$agent_conf"
+    fi
+    "$VENV_PY" - "$agent_conf" <<'EOF' || echo "warning: could not apply $agent_conf" >&2
+import sys
+from delfin.user_settings import load_settings, save_settings
+KEYS = ("mode", "provider", "model", "permission_profile", "effort")
+wanted = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, _, value = (part.strip() for part in line.partition("="))
+    if key not in KEYS:
+        print(f"warning: pi-agent.conf: unknown key {key!r}", file=sys.stderr)
+        continue
+    wanted[key] = value or None
+settings = load_settings()
+agent = settings.setdefault("agent", {})
+changed = {k: v for k, v in wanted.items() if agent.get(k) != v}
+if changed:
+    agent.update(changed)
     save_settings(settings)
-    print("==> default provider: kit (kit.deepseek-v4-flash)")
+print("==> agent defaults: " + " ".join(f"{k}={wanted[k] or '(profile default)'}" for k in KEYS if k in wanted))
 EOF
     [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
         || echo "warning: clone of $DELFIN_GIT_URL failed" >&2
