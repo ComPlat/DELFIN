@@ -623,9 +623,13 @@ class Bridge:
                 preview = self._redactor().text(str(req.get("preview") or ""))
                 options = {o.get("key") for o in req.get("options", [])}
                 # Always-explicit stays explicit: a request the approval
-                # screen marks protected is shown but never phone-approved.
+                # screen marks protected, or the existing outward
+                # classifier (auto_guard) marks outward -- git push, gh pr
+                # create/merge, forge API writes, mail, uploads -- is shown
+                # but never phone-approved.
+                outward = self._outward(req)
                 approvable = ("y" in options and len(preview) <= 1400
-                              and not flags.get("protected"))
+                              and not flags.get("protected") and not outward)
                 items.append({
                     "tool": str(req.get("tool") or ""),
                     "text": _truncate(preview, 300),
@@ -657,6 +661,20 @@ class Bridge:
             # answer must apply to the same live request that was shown.
             self._approvals_raw[key] = item.pop("_req")
         return {"ok": True, "items": items, "check": self._approvals_check(items)}
+
+    def _outward(self, req: dict) -> bool:
+        """True when the existing classifier (auto_guard) marks this
+        request outward: it publishes or sends something. One classifier,
+        not a second list: the same rules the agent's own guard applies
+        to git push, gh pr create/merge, forge API writes, mail, uploads
+        and the outward MCP tools. Never raises (an error refuses)."""
+        from delfin.agent import auto_guard
+        name = str(req.get("tool") or "")
+        text = str(req.get("preview") or "")
+        # The preview holds the command as the screen shows it ("$ cmd");
+        # auto_guard matches shell commands either way.
+        verdict = auto_guard.classify_call(name, {"command": text})
+        return bool(verdict and verdict.kind in {"outward", "protected"})
 
     def _approvals_check(self, items: list) -> str:
         """The code an answer must carry: an HMAC over the whole shown
