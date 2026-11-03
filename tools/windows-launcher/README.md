@@ -252,8 +252,21 @@ sessions and chats, own dashboard with its own port and token, own agent
 service (`DELFIN_RUNTIME_DIR`), own agent workspace `~/people/<name>/agent_workspace` (the dashboard agent's working folder)
 and tmux sessions named `delfin-win-<name>-<port>-...`. Reconnecting from the
 same Windows user returns to that person's dashboard. Shared by link with the
-account: the installation, credentials and settings, tools, caches, git and
-SSH setup. Without the file the name is ignored and nothing changes.
+account: the installation, credentials, tools, caches, git and SSH setup.
+Without the file the name is ignored and nothing changes.
+
+DELFIN's settings come in two layers. The account's `~/.delfin_settings.json`
+holds the defaults; the launcher exports `DELFIN_SETTINGS_DEFAULTS` naming it,
+and DELFIN reads it under the person's own `~/people/<name>/.delfin_settings.json`.
+A change a person makes in the dashboard is written to their own file only,
+and only what differs from the defaults is kept there, so a later change of a
+default (for example by `pi_install.sh`) reaches everyone who did not set that
+value themselves. A person file that was a link to the account's file (the
+earlier layout) is replaced by an empty file of its own on the next connection;
+its content was the account's, so nothing is lost. A copy kept from before that
+layout (`.delfin_settings.json.before-shared-<date>`) is **not** applied again;
+take what you want from it in the dashboard's Settings tab, or merge it into
+the person's file by hand.
 
 This keeps people from getting in each other's way; it does **not** keep
 them apart. They are one Unix user: everyone can read every file of the

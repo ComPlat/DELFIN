@@ -172,9 +172,9 @@ printf 'DELFIN: Environment found: %s\n' "$python"
 # Several people on one server account (opt-in by the account owner): each
 # Windows user gets a home of their own under ~/people, so sessions,
 # dashboard, token, agent service and workspace do not collide. Shared by
-# link: the account's credentials and settings, tools, caches, git and SSH
-# setup, and the installation itself. Not a security boundary between them:
-# they are one Unix user.
+# link: the account's credentials, tools, caches, git and SSH setup, and the
+# installation itself. Not a security boundary between them: they are one
+# Unix user.
 if [ -n "$person" ] && [ -f "$HOME/.config/delfin/launcher-people.conf" ]; then
     case "$person" in
         *[!a-z0-9_-]*|-*) printf '%s\n' 'DELFIN: Invalid person name.' >&2; exit 1 ;;
@@ -182,19 +182,27 @@ if [ -n "$person" ] && [ -f "$HOME/.config/delfin/launcher-people.conf" ]; then
     shared=$HOME
     person_home="$shared/people/$person"
     (umask 077 && mkdir -p "$person_home/.delfin" "$person_home/.run" "$person_home/agent_workspace")
-    # DELFIN's settings are ~/.delfin_settings.json (user_settings.SETTINGS_FILE_NAME).
-    # A person whose home predates the link holds an own copy, which the
-    # account's defaults (pi_install.sh: pi-agent.conf, pi-tabs.conf) never
-    # reach: it is moved aside, kept, and replaced by the link.
-    settings_copy="$person_home/.delfin_settings.json"
-    if [ -f "$shared/.delfin_settings.json" ] && [ -f "$settings_copy" ] && [ ! -L "$settings_copy" ]; then
-        mv -- "$settings_copy" "$settings_copy.before-shared-$(date +%Y%m%d%H%M%S)"
+    # DELFIN's settings are ~/.delfin_settings.json (user_settings.SETTINGS_FILE_NAME),
+    # in two layers: the account's file holds the defaults (pi_install.sh:
+    # pi-agent.conf, pi-tabs.conf) and is read under the person's own file
+    # (DELFIN_SETTINGS_DEFAULTS), which keeps only what that person changed.
+    # A person file that is still a link to the account's becomes an empty
+    # file of its own: its content was the account's, so nothing is lost. A
+    # copy kept from before (*.before-shared-*) is not applied again.
+    settings_own="$person_home/.delfin_settings.json"
+    if [ -L "$settings_own" ] && { [ "$settings_own" -ef "$shared/.delfin_settings.json" ] \
+            || [ "$(readlink -- "$settings_own")" = "$shared/.delfin_settings.json" ]; }; then
+        rm -f -- "$settings_own"
     fi
-    for item in delfin .local .cache .ssh .gitconfig .tmux.conf .delfin_settings.json .delfin/credentials.json .delfin/tools .delfin/doc_index.json; do
+    if [ ! -e "$settings_own" ] && [ ! -L "$settings_own" ]; then
+        (umask 077 && printf '{}\n' > "$settings_own")
+    fi
+    for item in delfin .local .cache .ssh .gitconfig .tmux.conf .delfin/credentials.json .delfin/tools .delfin/doc_index.json; do
         if [ -e "$shared/$item" ] && [ ! -e "$person_home/$item" ] && [ ! -L "$person_home/$item" ]; then
             ln -s "$shared/$item" "$person_home/$item"
         fi
     done
+    export DELFIN_SETTINGS_DEFAULTS="$shared/.delfin_settings.json"
     export HOME="$person_home" DELFIN_PERSON="$person" DELFIN_RUNTIME_DIR="$person_home/.run"
     # The dashboard's agent works in its launch folder (DELFIN_LAUNCH_CWD).
     if [ -z "$directory" ]; then cd -- "$person_home/agent_workspace"; fi
