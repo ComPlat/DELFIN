@@ -2753,6 +2753,80 @@ def _uncommitted_note(workspace) -> str:
         return ""
 
 
+_HOME_VAR_PREFIX_RE = re.compile(r"^(?:\$HOME|\$\{HOME\})(?=/|$)")
+
+_PYTHON_NAME_RE = re.compile(r"python[0-9.]*")
+
+# Options of venv, virtualenv and `uv venv` that take the next word as
+# their value; that word is not an environment directory. `-p` is
+# virtualenv's and uv's --python.
+_ENV_TOOL_VALUE_OPTS = frozenset({
+    "--prompt", "-p", "--python", "--activators", "--extra-search-dir",
+    "--creator", "--seeder", "--discovery", "--app-data", "--pip",
+    "--setuptools", "--wheel", "-i", "--index-url", "--extra-index-url",
+    "-f", "--find-links", "--cache-dir", "--link-mode", "--index-strategy",
+    "--keyring-provider", "--exclude-newer", "--config-file", "--directory",
+    "--project",
+})
+
+def _env_creation_dirs(name: str, rest: list) -> "list[str] | None":
+    """The directories an environment-creating command writes, or None
+    when *name* / *rest* is not such a command.
+
+    Input: the program's base name and its arguments after quote removal.
+    Output, per form:
+      * ``python* -m venv|virtualenv ARGS``, ``virtualenv ARGS``,
+        ``uv venv ARGS``: every positional of ARGS (venv takes several
+        directories), the values of the options in
+        ``_ENV_TOOL_VALUE_OPTS`` excluded; ``uv venv`` with none is
+        ``.venv``;
+      * ``conda|mamba|micromamba [env] create|install|update|upgrade|
+        remove|uninstall``: the value of ``-p`` / ``--prefix`` /
+        ``--prefix=`` and of ``p`` in a short-option cluster; an empty
+        list for ``-n NAME`` (the environment is under the program's root
+        prefix, which the command text does not name).
+    An empty list means "recognised, no directory named"; the caller then
+    reads no further targets from the segment.
+
+    Rejected: the first positional only (the rule this replaces) --
+    ``python3 -m venv --prompt p /x`` and ``python3 -m venv .venv /x``
+    named their outside directory second; matching on the name
+    ``python``/``python3`` only -- ``python3.11`` and ``/usr/bin/python3.11``
+    were not read at all.
+    """
+    from . import sandbox as _sandbox
+    if _PYTHON_NAME_RE.fullmatch(name):
+        module, args = _sandbox._python_module(rest)
+        if module not in ("venv", "virtualenv"):
+            return None
+    elif name == "virtualenv":
+        args = rest
+    elif name == "uv" and rest[:1] == ["venv"]:
+        args = rest[1:]
+    elif name in _sandbox._CONDA_PROGRAMS:
+        got = _sandbox.conda_env_writes(rest)
+        return None if got is None else list(got[1])
+    else:
+        return None
+    if any(a in ("-h", "--help", "--version") for a in args):
+        return []
+    dirs: list = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in _ENV_TOOL_VALUE_OPTS:
+            skip = True
+            continue
+        if a.startswith("-"):
+            continue
+        dirs.append(a)
+    if not dirs and name == "uv":
+        dirs.append(".venv")
+    return dirs
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -2793,6 +2867,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
                     tok = parts[0]
                 else:
                     tok = tok.strip("'\"")
+            # `$HOME` / `${HOME}` is the one variable whose value the shell
+            # takes from the same place `~` does; skipped like every other
+            # `$` word, `echo x > $HOME/f` and `python3 -m venv $HOME/x`
+            # wrote into the home directory with no target to refuse.
+            # Other variables stay skipped: their value is set by the
+            # command or its environment, and this scanner cannot read it.
+            tok = _HOME_VAR_PREFIX_RE.sub("~", tok, count=1)
             if not tok or tok.startswith("-") or tok.startswith("$"):
                 return
             if any(c in tok for c in "*?[]"):        # globs: not a literal path
@@ -3003,12 +3084,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
                     if a.startswith("of="):
                         _add(a[3:])
                 continue
-            if name in ("python", "python3") and "venv" in rest:
-                # python -m venv <dir>
-                tail = [a for a in rest[rest.index("venv") + 1:]
-                        if not a.startswith("-")]
-                if tail:
-                    _add(tail[0])
+            _env_dirs = _env_creation_dirs(name, rest)
+            if _env_dirs is not None:
+                # The directory an environment is created in: python -m
+                # venv|virtualenv, virtualenv, uv venv, conda|mamba|
+                # micromamba create|install|update|remove -p|--prefix.
+                for a in _env_dirs:
+                    _add(a)
                 continue
             if (name in ("python", "python3") or name.startswith("python3.")) \
                     and "ensurepip" in rest:
@@ -3035,7 +3117,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 # prefix, which is either the workspace (fine) or a path
                 # the venv target rule above already covers.
                 continue
-            if name in ("virtualenv", "uv") and rest:
+            if name == "uv" and rest:
                 tail = [a for a in rest if not a.startswith("-")]
                 if tail:
                     _add(tail[-1])
@@ -22997,6 +23079,52 @@ class _DocToolExecutor:
                         f"that could not be checked ('{cmd[:120]}'). Do NOT "
                         "retry it or work around it." + self._said_why(perms))
                 _approved_here = True
+            # An environment under a conda / mamba / micromamba root prefix
+            # (`create -n NAME`, `install -n NAME`, `env create -f FILE`,
+            # `-r ROOT`): the directory is the program's configuration, not
+            # the command text, so the write-target gate cannot judge it.
+            # Asked in every mode, Bypass included, for each call; refused
+            # with nobody to ask. The yes is the decision: neither the
+            # classifier nor the cage admission is consulted after it.
+            # Measured before: Bypass ran it unasked whenever the watcher
+            # was off or allowing.
+            from .sandbox import root_prefix_env_command as _env_root_rule
+            _env_root = _env_root_rule(_prose_blanked(cmd))
+            _env_root_approved = False
+            if _env_root:
+                _record_security_event("env_root_prefix", "bash", cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: `{_env_root}` creates or changes an "
+                        "environment under the program's root prefix, "
+                        "outside the workspace, and nobody can be asked "
+                        "here. Tell the user the command and why the "
+                        "environment is needed, or create it in the "
+                        "workspace with -p ./<dir>.")
+                try:
+                    ok = bool(_ask_confirm(perms,
+                        "bash", {"command": cmd},
+                        "[ENVIRONMENT UNDER THE ROOT PREFIX]\n"
+                        f"`{_env_root}` writes an environment under the "
+                        "program's root prefix, outside the workspace.\n\n$ "
+                        + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for this environment TIMED OUT — the "
+                            "user is away, this is not a refusal. Do not run "
+                            "it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied `{_env_root}` ('{cmd[:120]}'). Do NOT "
+                        "retry it or work around it." + self._said_why(perms))
+                _approved_here = True
+                _env_root_approved = True
             # A command this session promises to confine (locked scope,
             # forced isolation) on a host where no layer can confine it.
             # _bash_isolation_argv would refuse it at run time; asked here
@@ -23264,6 +23392,10 @@ class _DocToolExecutor:
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
                 # The classifier is the one second look this profile has.
+                # A root-prefix environment the user just approved in its
+                # own dialog runs on that yes.
+                if _env_root_approved:
+                    return None
                 return self._classifier_second_opinion(perms, name, args, mode)
             if perms.matches_bash_auto_allow(cmd):
                 # The list matches the command's spelling, not its purpose.
@@ -25015,10 +25147,16 @@ class _DocToolExecutor:
                 # target outside every writable root and not an ephemeral
                 # sink is refused ONCE with the directory route (the same
                 # grant the write path names), never asked as a read.
+                # Compared as written and as the path it names: the read
+                # scan expands `$HOME/x` where the write scan reads `~/x`.
                 try:
                     _res = path.resolve(strict=False)
+                    _writes = _bash_write_targets(scan)
+                    _write_paths = {
+                        Path(w).expanduser().resolve(strict=False)
+                        for w in _writes if Path(w).expanduser().is_absolute()}
                     _is_dead_write = (
-                        target in set(_bash_write_targets(scan))
+                        (target in set(_writes) or _res in _write_paths)
                         and not _is_ephemeral_sink(
                             _res, getattr(perms, "workspace", None))
                         and perms.find_root_for(_res) is None)
