@@ -109,7 +109,13 @@ def build_ts_goat_panel(
     mode_label = widgets.HTML('<b>Reactive mode (imaginary modes of the final block):</b>')
     mode_dropdown = widgets.Dropdown(
         options=[], description='Mode:',
-        layout=widgets.Layout(width='100%', max_width='380px'),
+        # Reserve enough width for the frequency AND the native dropdown
+        # arrow.  A percentage width here shrank to a tiny select in
+        # Voila, obscuring the last digits of the imaginary frequency.
+        style={'description_width': '48px'},
+        layout=widgets.Layout(
+            width='340px', min_width='320px', max_width='100%',
+            flex='0 0 340px'),
     )
     mode_warning = widgets.HTML('')
     # Imaginary-mode animation: validated orca_pltvib frames are
@@ -133,17 +139,44 @@ def build_ts_goat_panel(
         tooltip='Show the optimized TS geometry again',
         layout=widgets.Layout(width='140px'),
     )
+    # Separate labels from the slider widgets so Voila cannot squeeze
+    # each track between an 80px label and its numeric readout. Each
+    # slider now gets a large usable horizontal drag target.
     anim_amp = widgets.FloatSlider(
         value=0.25, min=0.05, max=1.0, step=0.05,
-        description='Amplitude:', continuous_update=False,
-        tooltip='Displacement amplitude in Angstrom (frames are re-scaled)',
-        layout=widgets.Layout(width='230px'),
+        description='', continuous_update=False, readout=True,
+        readout_format='.2f',
+        tooltip='Displacement amplitude (frames are rescaled)',
+        style={'description_width': '0px'},
+        layout=widgets.Layout(
+            flex='1 1 260px', width='100%', min_width='250px'),
     )
     anim_speed = widgets.FloatSlider(
         value=1.0, min=0.25, max=3.0, step=0.25,
-        description='Speed:', continuous_update=False,
+        description='', continuous_update=False, readout=True,
+        readout_format='.2f',
         tooltip='Playback speed (1 = 5 frames per second)',
-        layout=widgets.Layout(width='210px'),
+        style={'description_width': '0px'},
+        layout=widgets.Layout(
+            flex='1 1 260px', width='100%', min_width='250px'),
+    )
+    amp_group = widgets.HBox(
+        [widgets.HTML('<b style="font-size:12px;">Amplitude</b>',
+                      layout=widgets.Layout(width='80px',
+                                            flex='0 0 80px')),
+         anim_amp],
+        layout=widgets.Layout(
+            flex='1 1 390px', min_width='345px', align_items='center',
+            gap='6px'),
+    )
+    speed_group = widgets.HBox(
+        [widgets.HTML('<b style="font-size:12px;">Speed</b>',
+                      layout=widgets.Layout(width='62px',
+                                            flex='0 0 62px')),
+         anim_speed],
+        layout=widgets.Layout(
+            flex='1 1 370px', min_width='325px', align_items='center',
+            gap='6px'),
     )
     # One visible Play action: it loads the trajectory on demand.  The
     # previous "Imaginary Mode" toggle + "Generate / Load" button duplicated
@@ -154,9 +187,10 @@ def build_ts_goat_panel(
             layout=widgets.Layout(flex_flow='row wrap', width='100%',
                                   gap='5px', margin='2px 0')),
          widgets.HBox(
-            [anim_amp, anim_speed],
-            layout=widgets.Layout(flex_flow='row wrap', width='100%',
-                                  gap='8px', margin='2px 0')),
+            [amp_group, speed_group],
+            layout=widgets.Layout(
+                display='flex', flex_flow='row wrap', width='100%',
+                gap='12px', margin='5px 0 2px 0')),
          anim_status],
     )
     constraints_label = widgets.HTML(
@@ -695,7 +729,7 @@ def build_ts_goat_panel(
         state['reactant_path'] = open_result.get('reactant_path')
         state['product_path'] = open_result.get('product_path')
         mode_opts = [
-            (f'mode {i} ({f:.1f} cm-1)', i)
+            (f'Mode {i}: {f:.1f} cm⁻¹', i)
             for i, f in state['imaginary_modes']
         ]
         mode_dropdown.options = mode_opts or [('(no imaginary mode)', None)]
