@@ -102,6 +102,13 @@ def pull_main(repo, *, read=None, write=None) -> dict:
     repo = _repo_of(repo)
     if not _is_git(repo):
         return _not_git()
+    # A local project has no origin: Pull is unavailable, with the reason,
+    # before any lock is taken or git pull is run (branch_list's answer,
+    # the one the dashboard header shows).
+    from delfin.dashboard import branch_list as BL
+    no_pull = BL.pull_unavailable(repo)
+    if no_pull:
+        return {"ok": False, "unavailable": True, "text": no_pull}
     try:
         with GW.dashboard_git_write_lock(repo, "git pull"):
             if GW.ensure_git_index_lock_clear(repo, "Pull"):
