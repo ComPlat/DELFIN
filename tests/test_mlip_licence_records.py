@@ -19,7 +19,9 @@ sys.path.insert(0, str(REPO))
 
 from delfin.mlp_tools import registry  # noqa: E402
 
-WEIGHT_SUFFIXES = (".pt", ".pth", ".ckpt", ".safetensors", ".npz")
+# The weight suffixes this test forbids in the tree; .npz is named here to
+# be refused, not loaded.
+WEIGHT_SUFFIXES = (".pt", ".pth", ".ckpt", ".safetensors", ".npz")  # license-guard: allow
 
 TOKEN_RE_STRINGS = (
     "hf_[A-Za-z0-9]{30,}",       # HuggingFace user access token literal
