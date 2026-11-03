@@ -1061,6 +1061,65 @@ _CHAT_MORPH_TAG = ('<img src="" alt="" style="display:none" onerror="'
                    + _html.escape(_CHAT_MORPH_JS, quote=True) + '">')
 
 
+# Where the agent tab starts on the page (--delfin-agent-top), measured in
+# the browser; see the call site in create_tab for why it is measured.
+#
+# The measurement sets the untrimmed top, reads the page's overflow and
+# sets the trimmed top, all in one task. The untrimmed value makes the tab
+# taller by the trim (12 px at 1920x1080), and reading scrollHeight forces
+# a layout at that height: the chat host is 12 px taller in it, so a host
+# scrolled to its end is clamped 12 px up, and the second write does not
+# give that back. Measured 2026-11-03 on a real page, per animation frame:
+# every 1.5 s (the interval below) the host's scrollTop went 1511 -> 1499,
+# idle or streaming, only with the reader at the end (scrolled up, the
+# clamp has nothing to cut). The chat's scroll listener undid it in the
+# next frame unless the reader had touched wheel or pointer within 300 ms;
+# then the 12 px stayed on screen until the next output pulled the view
+# down again.
+#
+# Now:
+# - The interval re-measures only when the input changed: the tab's top,
+#   the window height, or the overflow at the CURRENT value. In steady
+#   state that is nothing, so nothing is written and no intermediate
+#   layout happens.
+# - A re-measurement (a resize, the page settling) puts every chat host
+#   that was at its end back at its end, in the same task, before paint.
+# Rejected: computing the trimmed top without the intermediate write. The
+# overflow at the untrimmed value is not observable from the trimmed
+# layout (a page that does not overflow reports 0, not how much room is
+# left), so it needs the layout it measures.
+_MEASURE_AGENT_TOP_JS = (
+    "(function(){if(window.__delfinAgentTop)return;"
+    "window.__delfinAgentTop=1;var de=document.documentElement;"
+    "var done='';"
+    "function scrollers(el){var out=[];"
+    "for(var p=el.parentElement;p;p=p.parentElement){"
+    "var oy=getComputedStyle(p).overflowY;"
+    "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
+    "return out;}"
+    "function overflow(ss){var o=0;for(var k=0;k<ss.length;k++)"
+    "o=Math.max(o,ss[k].scrollHeight-ss[k].clientHeight);return o;}"
+    "function m(){"
+    "var rs=document.querySelectorAll('.delfin-agent-root');"
+    "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
+    "var ss=scrollers(r),k,y=0;"
+    "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
+    "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
+    "var key=t+'|'+window.innerHeight+'|'+overflow(ss);"
+    "if(key===done)return;"
+    "var hs=r.querySelectorAll('.delfin-agent-chat-host'),ends=[];"
+    "for(k=0;k<hs.length;k++){var h=hs[k];"
+    "if(h.clientHeight&&h.scrollHeight-h.scrollTop-h.clientHeight<=1)ends.push(h);}"
+    "de.style.setProperty('--delfin-agent-top',t+'px');"
+    "var over=overflow(ss);"
+    "if(over>0&&over<200&&r.offsetHeight-over>=320){"
+    "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
+    "for(k=0;k<ends.length;k++)ends[k].scrollTop=ends[k].scrollHeight;"
+    "done=t+'|'+window.innerHeight+'|'+overflow(ss);"
+    "return;}}"
+    "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
+
+
 def _chat_value(transcript_html: str) -> str:
     """The value of the chat widget for ``transcript_html``.
 
@@ -4608,6 +4667,49 @@ def _make_plot_card_html(tool_output) -> str | None:
     )
 
 
+def _view_image_card_html(tool_output) -> str | None:
+    """The chat card for a successful ``view_image`` result, or None.
+
+    Input: the tool's JSON result (``status``, ``path``, ``mime``). Output:
+    the chat's artifact preview of that image (``_render_artifact_inline``:
+    base64 ``<img>`` with its header's width/height, so the box is
+    reserved before the image decodes; over the inline cap, a one-line
+    "too large" card). Without it the model sees the image and the user
+    does not, and an answer saying "the image is in the chat" is false.
+
+    No access beyond the tool's: the path must be absolute and already
+    resolved (the executor reports the resolved path it read), so a link
+    placed there after the read is not followed; the suffix's type must be
+    the reported ``mime`` and one ``view_image`` accepts. None for an
+    error, any other shape, or a file that is gone; the caller then
+    escapes the result like any tool output.
+    """
+    import json as _json
+    from delfin.agent.image_input import _ALLOWED_MIMES
+
+    try:
+        payload = _json.loads(tool_output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return None
+    raw, mime = payload.get("path"), payload.get("mime")
+    if not isinstance(raw, str) or mime not in _ALLOWED_MIMES:
+        return None
+    path = Path(raw)
+    try:
+        if not path.is_absolute() or path.resolve() != path:
+            return None
+    except (OSError, RuntimeError):
+        return None
+    if _ARTIFACT_MIME.get(path.suffix.lower()) != mime:
+        return None
+    try:
+        return _render_artifact_inline(path)
+    except Exception:
+        return None
+
+
 def _render_xyz_summary(path) -> tuple[int, str] | None:
     """Parse an XYZ file and return ``(atom_count, summary_string)``.
 
@@ -4678,6 +4780,7 @@ _ARTIFACT_MIME = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".gif": "image/gif",
+    ".webp": "image/webp",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".xyz": "chemical/x-xyz",
@@ -4987,7 +5090,7 @@ def _render_artifact_inline(path) -> str | None:
 def _img_box(data: bytes) -> str:
     """`` width="W" height="H"`` read from an image's header, or "".
 
-    Input: the image's bytes (PNG, GIF, JPEG or SVG text). Output: the two
+    Input: the image's bytes (PNG, GIF, JPEG, WebP or SVG text). Output: the two
     attributes for its ``<img>``. With them the browser reserves the box
     before the data URI is decoded; without them an image is 0 px tall
     until then, and Python replaces the whole transcript on every update,
@@ -5001,6 +5104,21 @@ def _img_box(data: bytes) -> str:
             w, h = struct.unpack(">II", data[16:24])
         elif data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
             w, h = struct.unpack("<HH", data[6:10])
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 30:
+            # The first chunk: lossy (VP8), lossless (VP8L) or extended
+            # (VP8X) -- three header layouts, per the WebP container spec.
+            chunk = data[12:16]
+            if chunk == b"VP8 ":
+                w, h = struct.unpack("<HH", data[26:30])
+                w, h = w & 0x3FFF, h & 0x3FFF
+            elif chunk == b"VP8L":
+                bits = int.from_bytes(data[21:25], "little")
+                w, h = (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+            elif chunk == b"VP8X":
+                w = int.from_bytes(data[24:27], "little") + 1
+                h = int.from_bytes(data[27:30], "little") + 1
+            else:
+                return ""
         elif data[:2] == b"\xff\xd8":
             i, w, h = 2, 0, 0
             while i + 9 < len(data):
@@ -5079,7 +5197,7 @@ def _render_artifact_body(path) -> str | None:
     name_html = _html.escape(p.name)
 
     # ---- Images via base64 ---------------------------------------------
-    if suffix in (".png", ".jpg", ".jpeg", ".gif"):
+    if suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
         try:
             data = p.read_bytes()
         except OSError:
@@ -10720,28 +10838,7 @@ def create_tab(ctx):
     # during startup replaced it before the browser executed it (measured
     # 2026-10-20: window.__delfinAgentTop undefined, the 140px fallback in
     # use on every page since 2026-10-09).
-    _measure_top_js = (
-        "(function(){if(window.__delfinAgentTop)return;"
-        "window.__delfinAgentTop=1;var de=document.documentElement;"
-        "function scrollers(el){var out=[];"
-        "for(var p=el.parentElement;p;p=p.parentElement){"
-        "var oy=getComputedStyle(p).overflowY;"
-        "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
-        "return out;}"
-        "function m(){"
-        "var rs=document.querySelectorAll('.delfin-agent-root');"
-        "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
-        "var ss=scrollers(r),k,y=0;"
-        "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
-        "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
-        "de.style.setProperty('--delfin-agent-top',t+'px');"
-        "var over=0;for(k=0;k<ss.length;k++)"
-        "over=Math.max(over,ss[k].scrollHeight-ss[k].clientHeight);"
-        "if(over>0&&over<200&&r.offsetHeight-over>=320){"
-        "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
-        "return;}}"
-        "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
-    ctx.add_init_js(_measure_top_js)
+    ctx.add_init_js(_MEASURE_AGENT_TOP_JS)
 
     if not _yaml_ok:
         missing_html = widgets.HTML(
@@ -13565,8 +13662,15 @@ def create_tab(ctx):
         )
 
     def _turn_thread_alive() -> bool:
+        """True while the turn's thread runs on after its turn was ended
+        from outside (Stop). The worker asks this itself, from its own
+        cleanup, as the last thing it does for the UI: there it is alive by
+        definition, and a True from that call left Stop enabled and red
+        after every turn, because nothing asks again once the thread has
+        exited. The thread asking about itself is a finished turn."""
         t = state.get("_turn_thread")
-        return bool(t is not None and t.is_alive())
+        return bool(t is not None and t.is_alive()
+                    and t is not threading.current_thread())
 
     def _update_button_states():
         engine = state["engine"]
@@ -21134,6 +21238,19 @@ def create_tab(ctx):
                             _pl = _cv.card_payload(tool_output, "plot")
                             _shown = set(state.get("_emitted_artifacts") or ())
                             _shown.add(str(Path(_pl["path"]).resolve()))
+                            state["_emitted_artifacts"] = _shown
+                            return
+                    # view_image: the model is sent the image; the user
+                    # sees it here, drawn from the resolved path the tool
+                    # read. An error result falls through and is escaped.
+                    if tool_name == "view_image" and _raw_name in (
+                            "view_image", "mcp__delfin-docs__view_image"):
+                        _card = _view_image_card_html(tool_output)
+                        if _card is not None:
+                            _append_tool_message(_card)
+                            import json as _json_vi
+                            _shown = set(state.get("_emitted_artifacts") or ())
+                            _shown.add(_json_vi.loads(tool_output)["path"])
                             state["_emitted_artifacts"] = _shown
                             return
                     if tool_name == "skill_propose_patch":

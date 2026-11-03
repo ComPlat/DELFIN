@@ -152,9 +152,12 @@ set_up_extras() {
         echo "==> agent.env: DELFIN_MCP_ISOLATION=builtin"
     fi
     # The agent tab's defaults on this box (~/.config/delfin/pi-agent.conf),
-    # written into the DELFIN settings on every deploy, like pi-tabs.conf.
-    # Through the launcher's people mode every person shares the settings
-    # file, so these are everyone's defaults. Sessions start on the KIT
+    # written into the account's DELFIN settings on every deploy, like
+    # pi-tabs.conf. In the launcher's people mode that file is read under
+    # each person's own (DELFIN_SETTINGS_DEFAULTS), so these are everyone's
+    # defaults and a person's own choice survives the deploy. The variable
+    # is cleared for the apply: it writes the account's file, whole, and
+    # never a person's. Sessions start on the KIT
     # toolbox (DELFIN's own, caged tool loop): the CLI default would be
     # refused by the policy. An empty value (effort) means the model
     # profile's default. permission_profile all_free is the tab's "Bypass".
@@ -167,7 +170,7 @@ set_up_extras() {
             "mode=solo" "provider=kit" "model=kit.glm-5.3-flash" \
             "permission_profile=all_free" "effort=" > "$agent_conf"
     fi
-    "$VENV_PY" - "$agent_conf" <<'EOF' || echo "warning: could not apply $agent_conf" >&2
+    env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$agent_conf" <<'EOF' || echo "warning: could not apply $agent_conf" >&2
 import sys
 from delfin.user_settings import load_settings, save_settings
 KEYS = ("mode", "provider", "model", "permission_profile", "effort")
@@ -215,7 +218,8 @@ EOF
     # The dashboard tabs this box shows (tab ids, ~/.config/delfin/pi-tabs.conf),
     # applied on every deploy against the tabs the code has now, so a tab a
     # later DELFIN adds stays hidden too. Settings cannot be hidden (fixed).
-    # Through the launcher's people mode every person shares this setting.
+    # The account's file again: everyone's default in the launcher's people
+    # mode, a person's own tab choice stays theirs.
     local tabs_conf="$HOME/.config/delfin/pi-tabs.conf"
     if [[ ! -f "$tabs_conf" ]]; then
         mkdir -p "$HOME/.config/delfin"
@@ -223,7 +227,7 @@ EOF
             "# Applied by pi_install.sh on every deploy. All ids: grep \"'id':\" delfin/dashboard/__init__.py" \
             "agent home archive office" > "$tabs_conf"
     fi
-    "$VENV_PY" - "$tabs_conf" "$ROOT/src/delfin/dashboard/__init__.py" <<'EOF' || echo "warning: could not apply $tabs_conf" >&2
+    env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$tabs_conf" "$ROOT/src/delfin/dashboard/__init__.py" <<'EOF' || echo "warning: could not apply $tabs_conf" >&2
 import re, sys
 from delfin.user_settings import load_settings, save_settings
 shown = [w for line in open(sys.argv[1], encoding="utf-8")
@@ -251,14 +255,28 @@ EOF
 }
 
 restart_dashboard() {
-    # Only a running dashboard picks up the new code: `restart` STARTS a
-    # stopped unit, and an admin who stopped it (e.g. until access is
-    # secured) must not have it switched back on by a deploy.
-    if systemctl is-active --quiet delfin-dashboard 2>/dev/null; then
-        sudo -n systemctl restart delfin-dashboard 2>/dev/null \
-            && echo "==> dashboard restarted" || true
-    else
-        echo "==> dashboard not running: left stopped"
+    # Only a running service picks up the new code: `restart` STARTS a
+    # stopped unit, and an admin who stopped one (e.g. until access is
+    # secured) must not have it switched back on by a deploy. The agent
+    # service goes before the messenger bridge that talks to it; running
+    # agent sessions are interrupted (a kept session resumes). A unit the
+    # sudo rule does not cover yet (a box bootstrapped before the rule named
+    # it) is reported with the command an admin runs, never left silent.
+    local unit stale=""
+    for unit in delfin-agent-service delfin-messenger-bridge delfin-messenger-gateway delfin-dashboard; do
+        if ! systemctl cat "$unit" >/dev/null 2>&1; then
+            continue
+        elif ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+            echo "==> $unit not running: left stopped"
+        elif sudo -n systemctl restart "$unit" 2>/dev/null; then
+            echo "==> $unit restarted"
+        else
+            stale+=" $unit"
+        fi
+    done
+    if [[ -n "$stale" ]]; then
+        echo "warning: still on the previous code until an admin runs: sudo systemctl restart$stale" >&2
+        echo "         (once, as the admin, so deploys restart them: re-run pi_bootstrap.sh, AGENT_SUDO=service)" >&2
     fi
 }
 
