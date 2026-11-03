@@ -186,21 +186,51 @@ def test_numbers_do_not_leak_credentials(scheduled_bridge):
 
 # -- the phone's words: ok <n> / nein <n> / zeige <n>, and the push --------
 
-def test_ok_and_nein_and_zeige_route_to_the_bridge(scheduled_bridge):
-    bridge, _, _ = scheduled_bridge
-    listing = asyncio.run(bridge._run_command({"cmd": "approvals"}))
+def test_ok_and_nein_and_zeige_route_to_the_bridge(scheduled_bridge, tmp_path, monkeypatch):
+    """The real gateway Rooms over the real (monkeypatched-transport)
+    service bridge: the phone's words drive the real broker."""
+    bridge, _, calls = scheduled_bridge
+    from delfin.messenger import gateway as gw
+    from delfin.messenger import store
+
+    class Daemon:
+        sent = []
+        async def send_chat(self, chat, text):
+            self.sent.append((chat, text))
+            return {"chatItems": [{"chatItem": {"meta": {"itemId": 1}}}]}
+        async def events(self):
+            return
+            yield
+
+    monkeypatch.setenv("DELFIN_MESSENGER_DIR", str(tmp_path))
+    store.save("1")
+
+    class SyncBridge:
+        """The gateway's sync facade over the real bridge's async
+        dispatcher (in production this is the Unix socket client)."""
+        def ask(self, command):
+            return asyncio.run(bridge._run_command(command))
+
+    daemon = Daemon()
+    rooms = gw.Rooms(daemon, SyncBridge())
+    listing = asyncio.run(rooms.ask({"cmd": "approvals"}))
     n = listing["items"][0]["n"]
+    rooms._approval_shown.add((listing["items"][0]["sessionId"],
+                               listing["items"][0]["requestId"]))
+    rooms._approval_check = listing["check"]
 
     async def run():
-        await bridge._run_command({"cmd": "approvals"})
-        return (await bridge.approval_command(f"ok {n}"),
-                await bridge.approval_command(f"nein {n}"),
-                await bridge.approval_command(f"zeige {n}"))
+        zeige = await rooms.approval_command(f"zeige {n}")
+        ok = await rooms.approval_command(f"ok {n}")
+        return ok, zeige
 
-    ok, nein, zeige = asyncio.run(run())
-    assert "ok" in str(ok).lower() or ok.get("ok"), ok
-    assert nein.get("ok") is True, nein
+    ok, zeige = asyncio.run(run())
+    assert "freigegeben" in str(ok), ok
     assert "rm -r results" in str(zeige), zeige
+    assert any(m == "permission.reply" for m, _ in calls)
+    # the used number is gone: the same answer is refused, the check stale
+    stale = asyncio.run(rooms.approval_command(f"ok {n}"))
+    assert "Fehler" in str(stale), stale
 
 
 def test_pending_approvals_arrive_in_one_batched_message():
@@ -221,9 +251,11 @@ def test_pending_approvals_arrive_in_one_batched_message():
             if command.get("cmd") == "approvals":
                 return {"items": [
                     {"n": 1, "tool": "bash", "text": "rm -r results",
-                     "session": "morning run", "approvable": True},
+                     "session": "morning run", "sessionId": "s2",
+                     "requestId": "p1", "approvable": True},
                     {"n": 2, "tool": "write_file", "text": "delfin/agent/sandbox.py: +2",
-                     "session": "morning run", "approvable": False}],
+                     "session": "morning run", "sessionId": "s2",
+                     "requestId": "p2", "approvable": False}],
                     "check": "abc123"}
             return {"ok": True}
 
@@ -238,15 +270,38 @@ def test_pending_approvals_arrive_in_one_batched_message():
         assert len(texts) == 1, texts
         assert "rm -r results" in texts[0]
         assert "sandbox.py" in texts[0]
-        assert "ok 1" in texts[0] and "nein 2" in texts[0]
+        assert "ok 1" in texts[0] and "am Dashboard" in texts[0]
+        # a protected request is shown, never phone-approvable
         assert "abc123" not in texts[0]  # the check is never quoted back
         # a second cycle sends nothing new
         asyncio.run(rooms.approvals_news())
         assert len(daemon.sent) == 1
 
 
-def test_an_answer_with_wrong_check_gets_a_clear_refusal(scheduled_bridge):
+def test_an_answer_with_wrong_check_gets_a_clear_refusal(scheduled_bridge, tmp_path, monkeypatch):
     bridge, _, calls = scheduled_bridge
-    asyncio.run(bridge._run_command({"cmd": "approvals"}))
-    reply = asyncio.run(bridge.approval_command("ok 1"))
-    assert "Fehler" in str(reply) or "error" in reply.lower() or "Prüfung" in str(reply)
+    from delfin.messenger import gateway as gw
+    from delfin.messenger import store
+
+    class Daemon:
+        sent = []
+        async def send_chat(self, chat, text):
+            self.sent.append((chat, text))
+            return {"chatItems": [{"chatItem": {"meta": {"itemId": 1}}}]}
+        async def events(self):
+            return
+            yield
+
+    monkeypatch.setenv("DELFIN_MESSENGER_DIR", str(tmp_path))
+    store.save("1")
+
+    class SyncBridge:
+        def ask(self, command):
+            return asyncio.run(bridge._run_command(command))
+
+    rooms = gw.Rooms(Daemon(), SyncBridge())
+    asyncio.run(rooms.ask({"cmd": "approvals"}))
+    rooms._approval_check = "wrong"
+    reply = asyncio.run(rooms.approval_command("ok 1"))
+    assert "Fehler" in str(reply), reply
+    assert not any(m == "permission.reply" for m, _ in calls)

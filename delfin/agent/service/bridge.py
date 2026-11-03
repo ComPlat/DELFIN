@@ -31,7 +31,14 @@ Commands (one JSON object per line, both ways):
                                              permission profile "default",
                                              enabled for the messenger
     {"cmd": "schedules", "after"?}        -> the user's schedules and the runs
-                                             recorded after ``after``
+                                            recorded after ``after``
+    {"cmd": "approvals"}                  -> every pending approval of the
+                                            service's sessions, numbered,
+                                            with the check to answer with
+    {"cmd": "answer", "n"?, "ok"?, "check"?, "id"?, "text"?}
+                                          -> the numbered approval (n, ok,
+                                             check) or a session question
+                                             (id, text; scope unchanged)
     {"cmd": "schedule", "action", "id"?, "text"?, "session"?, "check"?}
                                           -> new (a proposal), ok (with the
                                              check it was shown), show, pause,
@@ -45,6 +52,8 @@ Outgoing events (one JSON object per line):
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -81,7 +90,9 @@ COMMANDS = {
     "status": {},
     "sessions": {},
     "pending": {},
-    "answer": {"id": "string", "text": "string"},
+    "approvals": {},
+    "answer": {"n": "integer?", "ok": "boolean?", "check": "string?",
+               "id": "string?", "text": "string?"},
     "prompt": {"session": "string?", "text": "string"},
     "stop": {},
     "create": {"name": "string?"},
@@ -213,6 +224,9 @@ class Bridge:
         self._service: object | None = None
         self._pump_task: object | None = None
         self._issued: dict[str, tuple] = {}
+        self._approvals_numbered: dict[tuple, int] = {}
+        self._approvals_issued: dict[tuple, float] = {}
+        self._approvals_raw: dict[tuple, dict] = {}
         self._created: list[float] = []
 
     # -- the service side ---------------------------------------------------------------
@@ -380,6 +394,8 @@ class Bridge:
                 return f"missing {key}"
             if kind.startswith("boolean") and not isinstance(value, bool):
                 return f"{key} must be a boolean"
+            if kind.startswith("integer") and not isinstance(value, int):
+                return f"{key} must be an integer"
             if kind.startswith("string") and not isinstance(value, str):
                 return f"{key} must be a string"
         extra = set(params) - {k.split("?")[0] for k in spec}
@@ -583,7 +599,124 @@ class Bridge:
             })
         return {"ok": True, "items": items}
 
-    async def _cmd_answer(self, _params: dict) -> dict:
+    async def _cmd_approvals(self, _params: dict) -> dict:
+        """Every pending approval of every session of this service --
+        interactive, scheduled, unattended -- numbered, one short entry per
+        request, with the HMAC check to answer with. Numbers stay stable
+        while a request waits; a request that is gone frees its number."""
+        listing = await self._request("sessions.list")
+        rows = listing.get("sessions") or []
+        items = []
+        seen: dict[str, tuple] = {}
+        for row in rows:
+            sid = str(row.get("sessionId") or row.get("id") or "")
+            title = self._redactor().text(_truncate(str(row.get("title") or "")))
+            live = await self._request("session.pending", {"sessionId": sid})
+            for req in live.get("pending", []):
+                if str(req.get("kind")) not in {"confirm", "plan"}:
+                    continue
+                rid = str(req.get("requestId") or "")
+                flags = req.get("flags") or {}
+                what = ("shell" if flags.get("shell")
+                        else "write" if flags.get("write")
+                        else "read" if flags.get("outsideRead") else "")
+                preview = self._redactor().text(str(req.get("preview") or ""))
+                options = {o.get("key") for o in req.get("options", [])}
+                # Always-explicit stays explicit: a request the approval
+                # screen marks protected is shown but never phone-approved.
+                approvable = ("y" in options and len(preview) <= 1400
+                              and not flags.get("protected"))
+                items.append({
+                    "tool": str(req.get("tool") or ""),
+                    "text": _truncate(preview, 300),
+                    "risk": what,
+                    "session": title,
+                    "sessionId": sid,
+                    "requestId": rid,
+                    "approvable": approvable,
+                    "_req": req,
+                })
+        if not items:
+            return {"ok": True, "items": [], "check": ""}
+        # The numbers: stable while a request waits, freed when it is gone.
+        order = [(i["sessionId"], i["requestId"]) for i in items]
+        now = time.monotonic()
+        self._approvals_numbered = {
+            key: num for key, num in self._approvals_numbered.items()
+            if key in set(order) and now - self._approvals_issued.get(key, now) < 600}
+        start = (max(self._approvals_numbered.values()) + 1
+                 if self._approvals_numbered else 1)
+        for i, key in enumerate(order, start):
+            if key not in self._approvals_numbered:
+                self._approvals_numbered[key] = i
+                self._approvals_issued[key] = now
+        for item in items:
+            key = (item["sessionId"], item["requestId"])
+            item["n"] = self._approvals_numbered[key]
+            # The unchanged request, kept only inside this process: the
+            # answer must apply to the same live request that was shown.
+            self._approvals_raw[key] = item.pop("_req")
+        return {"ok": True, "items": items, "check": self._approvals_check(items)}
+
+    def _approvals_check(self, items: list) -> str:
+        """The code an answer must carry: an HMAC over the whole shown
+        listing, so a message from another chat, a stale listing or a
+        guessed number cannot approve. With no key (tests, headless) a
+        plain fingerprint of the same payload -- never a constant."""
+        from delfin.agent import trust_store
+        payload = json.dumps(
+            [[i["n"], i["sessionId"], i["requestId"], i["text"]] for i in items],
+            sort_keys=True, ensure_ascii=False).encode()
+        tag = trust_store.mac("user_approvals", payload)
+        return tag if tag else "sha:" + hashlib.sha256(payload).hexdigest()
+
+    def _approvals_check_ok(self, items: list, tag: str) -> bool:
+        from delfin.agent import trust_store
+        payload = json.dumps(
+            [[i["n"], i["sessionId"], i["requestId"], i["text"]] for i in items],
+            sort_keys=True, ensure_ascii=False).encode()
+        good = trust_store.check_mac("user_approvals", payload, tag)
+        if good is None:  # no key: only the fingerprint form can match
+            good = hmac.compare_digest(
+                "sha:" + hashlib.sha256(payload).hexdigest(), str(tag or ""))
+        return bool(good)
+
+    async def _cmd_answer(self, params: dict) -> dict:
+        """A numbered approval (n, ok, check) or a session-scoped answer
+        (id, text). The numbered path answers every session of the service,
+        so it is bound to the HMAC check the listing showed."""
+        n, ok, check = params.get("n"), params.get("ok"), params.get("check")
+        if n is not None or check is not None or ok is not None:
+            if not isinstance(n, int) or not isinstance(ok, bool) or not isinstance(check, str) or not check:
+                return {"error": "Antwortform: ok <nummer> / nein <nummer>, mit der beigelegten Prüfung der Anfrage."}
+            approvals = await self._cmd_approvals({})
+            items = approvals.get("items", [])
+            item = next((i for i in items if i["n"] == n), None)
+            if item is None:
+                return {"error": f"Keine offene Anfrage mit der Nummer {n}. Mit approvals die offenen ansehen."}
+            if not self._approvals_check_ok(items, check):
+                return {"error": "Prüfung stimmt nicht oder die Anfrage hat sich geändert. Erst approvals, dann antworten."}
+            if not item["approvable"]:
+                return {"error": "Diese Anfrage ist immer ausdrücklich: bitte am Dashboard freigeben."}
+            key = (item["sessionId"], item["requestId"])
+            shown = self._approvals_raw.get(key)
+            live = await self._request("session.pending", {"sessionId": item["sessionId"]})
+            req = next((r for r in live.get("pending", [])
+                        if r.get("requestId") == item["requestId"]), None)
+            if req is None or shown is None or json.dumps(req, sort_keys=True) != json.dumps(shown, sort_keys=True):
+                return {"error": "Anfrage nicht mehr offen oder geändert. Mit approvals die offenen ansehen."}
+            # Consume before awaiting: concurrent replies cannot approve twice;
+            # the service applies a requestId once regardless.
+            self._approvals_raw.pop(key, None)
+            reply = await self._request("permission.reply", {
+                "sessionId": item["sessionId"], "requestId": item["requestId"],
+                "choice": "y" if ok else "n"})
+            return {"ok": bool(reply.get("applied")),
+                    "error": None if reply.get("applied") else "Anfrage bereits erledigt."}
+        code = str(params.get("id") or "")
+        text = str(params.get("text") or "")
+        if not code or not text:
+            return {"error": "Use a session-scoped question or approval reply."}
         return {"error": "Use a session-scoped question or approval reply."}
 
     async def _cmd_prompt(self, params: dict) -> dict:
