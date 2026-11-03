@@ -1373,6 +1373,90 @@ def requires_a_working_sandbox(fn):
     )(fn)
 
 
+# ---------------------------------------------------------------------------
+# No external agent CLI, no remote model endpoint
+# ---------------------------------------------------------------------------
+# On 2026-11-03 a dashboard agent-tab test found an external agent CLI on
+# PATH, listed that provider first, and sent 13 prompts to it; the CLI
+# then ran commands in the pytest temp folders. The mechanism (discovery,
+# spawn and connect tripwires, the session environment strip) lives in
+# tests/external_agent_guard.py and is installed in pytest_configure; this
+# fixture turns what it recorded during a test into that test's failure.
+import external_agent_guard as _external_agent_guard  # noqa: E402
+
+
+#: (next test's nodeid, refusal) recorded while no test ran.
+_AGENT_TRIPS_OUTSIDE_TESTS: list = []
+
+
+@pytest.fixture()
+def fake_agent_cli(tmp_path_factory, monkeypatch):
+    """Stub ``claude``/``codex`` first on PATH; returns the stub directory.
+
+    Each stub appends ``"$0 $*"`` to ``<dir>/calls.log`` and exits 0. The
+    real binaries and non-loopback connections remain refused."""
+    stub = _external_agent_guard.make_stub_dir(
+        str(tmp_path_factory.mktemp("fake-agent-cli")))
+    monkeypatch.setenv("PATH", stub + os.pathsep + os.environ.get("PATH", ""))
+    return Path(stub)
+
+
+@pytest.fixture(autouse=True)
+def _no_external_agent_is_reached(request):
+    """Fail the test that resolved or spawned a host agent CLI, or opened a
+    non-loopback connection; the refusal itself raised in place already."""
+    # Recorded while no test ran: a module-level probe at collection (a
+    # "is the network reachable?" skipif, which the guard answers "no") or
+    # a thread an earlier test left running. Not this test's doing, so it
+    # is named in the terminal summary instead of failing this test.
+    _AGENT_TRIPS_OUTSIDE_TESTS.extend(
+        (request.node.nodeid, t) for t in _external_agent_guard.take_trips())
+    if request.node.get_closest_marker(_external_agent_guard.MARKER):
+        request.getfixturevalue("fake_agent_cli")
+    yield
+    trips = _external_agent_guard.take_trips()
+    if trips:
+        pytest.fail(
+            "external agent tripwire: this test tried to reach an external "
+            "agent CLI or a remote endpoint (use a fake, or "
+            "@pytest.mark.fake_agent_cli for a stub CLI):\n  "
+            + "\n  ".join(trips[:20]), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _model_lists_are_offline(monkeypatch):
+    """A provider's model list on a non-loopback host answers as an
+    unreachable host would: ``urllib.request.urlopen`` of a URL whose path
+    ends in ``/models``, ``/api/tags`` or ``/api/show`` raises URLError.
+
+    Measured 2026-11-03: building the dashboard agent tab with a test key
+    (tab_agent ``_fetch_models``), engine construction and the KIT fallback
+    model (model_capabilities ``resolve``/``kit_models_served``) connected
+    to ki-toolbox.scc.kit.edu:443 from 26 test files on every run. A list
+    is a read, never a prompt, so it is answered here instead of failing
+    those tests; any other non-loopback request (a prompt, a classifier
+    call) still meets the tripwire. A loopback server (a local Ollama
+    stand-in) is still asked, and a test that patches urlopen itself wins."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    original = urllib.request.urlopen
+
+    def _urlopen(url, *a, **k):
+        full = getattr(url, "full_url", url)
+        parts = urllib.parse.urlsplit(str(full))
+        path = parts.path.rstrip("/")
+        if (path.endswith(("/models", "/api/tags", "/api/show"))
+                and not _external_agent_guard._is_loopback(parts.hostname or "")):
+            raise urllib.error.URLError(
+                "model list offline in the test suite (conftest)")
+        return original(url, *a, **k)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    yield
+
+
 # Secret API keys delfin resolves, each from the env OR ~/.delfin/credentials.json.
 _SECRET_KEY_VARS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
@@ -1511,16 +1595,24 @@ def pytest_configure(config):
         "(DELFIN_PRIVATE_FIXTURES); select locally with "
         "`pytest -m private_fixtures`, excluded in CI by SKIP behaviour",
     )
+    config.addinivalue_line(
+        "markers",
+        "fake_agent_cli: discovery of an external agent CLI by name finds a "
+        "stub (argv logged to <stub dir>/calls.log, exit 0); the real binaries "
+        "and non-loopback connections stay refused (tests/external_agent_guard.py)",
+    )
     import os
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
+    _external_agent_guard.install(is_credential)
     _hypothesis_store_outside_the_checkout()
     _private_tmp_of_the_suite()
 
 
 def pytest_unconfigure(config):
     import os
+    _external_agent_guard.uninstall()
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()
@@ -1587,6 +1679,16 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     would turn dozens of passing tests red in one commit; naming them lets
     the list be worked down while the restore above already stops the harm.
     """
+    outside = _AGENT_TRIPS_OUTSIDE_TESTS + [
+        ("(after the last test)", t) for t in _external_agent_guard.take_trips()]
+    if outside:
+        terminalreporter.write_sep(
+            "=", f"{len(outside)} external-agent tripwire refusal(s) outside a test")
+        terminalreporter.write_line(
+            "Refused while no test ran (collection-time probes, threads left "
+            "running); listed with the test that ran next:")
+        for nodeid, trip in outside[:40]:
+            terminalreporter.write_line(f"  before {nodeid}: {trip}")
     if not _DELFIN_ENV_LEAKS:
         return
     by_test: dict[str, list[str]] = {}
