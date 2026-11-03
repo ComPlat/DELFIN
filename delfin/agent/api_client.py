@@ -2753,6 +2753,146 @@ def _uncommitted_note(workspace) -> str:
         return ""
 
 
+_HOME_VAR_PREFIX_RE = re.compile(r"^(?:\$HOME|\$\{HOME\})(?=/|$)")
+
+_PYTHON_NAME_RE = re.compile(r"python[0-9.]*")
+
+# Options of venv, virtualenv and `uv venv` that take the next word as
+# their value; that word is not an environment directory. `-p` is
+# virtualenv's and uv's --python.
+_ENV_TOOL_VALUE_OPTS = frozenset({
+    "--prompt", "-p", "--python", "--activators", "--extra-search-dir",
+    "--creator", "--seeder", "--discovery", "--app-data", "--pip",
+    "--setuptools", "--wheel", "-i", "--index-url", "--extra-index-url",
+    "-f", "--find-links", "--cache-dir", "--link-mode", "--index-strategy",
+    "--keyring-provider", "--exclude-newer", "--config-file", "--directory",
+    "--project",
+})
+
+_CONDA_PROGRAMS = frozenset({"conda", "mamba", "micromamba"})
+# conda / mamba / micromamba subcommands that write the environment named
+# by -p / --prefix (`env create|update|remove` included).
+_CONDA_WRITING_SUBCOMMANDS = frozenset({
+    "create", "install", "update", "upgrade", "remove", "uninstall"})
+# Short options of those subcommands that take a value; in a cluster the
+# value is the rest of the word (`-yp /x`, `-p/x`).
+_CONDA_SHORT_VALUE_OPTS = frozenset("npcfr")
+
+
+def _python_module_args(rest: list) -> "tuple[str, list] | None":
+    """(module, its arguments) of ``python [options] -m module ...``.
+
+    Interpreter options before ``-m`` are passed over (``-I``, ``-Im``,
+    ``-X opt``, ``-W arg``); ``-mvenv`` is read as ``-m venv``. None for a
+    script, ``-c`` or no ``-m``.
+    """
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a in ("-X", "-W"):
+            i += 2
+            continue
+        if a[:2] in ("-X", "-W"):
+            i += 1
+            continue
+        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
+            flags = a[1:]
+            if "c" in flags.split("m", 1)[0]:
+                return None
+            if "m" in flags:
+                tail = flags.split("m", 1)[1]
+                if tail:
+                    return tail, rest[i + 1:]
+                if i + 1 < len(rest):
+                    return rest[i + 1], rest[i + 2:]
+                return None
+            i += 1
+            continue
+        if a.startswith("--"):
+            i += 1
+            continue
+        return None
+    return None
+
+
+def _env_creation_dirs(name: str, rest: list) -> "list[str] | None":
+    """The directories an environment-creating command writes, or None
+    when *name* / *rest* is not such a command.
+
+    Input: the program's base name and its arguments after quote removal.
+    Output, per form:
+      * ``python* -m venv|virtualenv ARGS``, ``virtualenv ARGS``,
+        ``uv venv ARGS``: every positional of ARGS (venv takes several
+        directories), the values of the options in
+        ``_ENV_TOOL_VALUE_OPTS`` excluded; ``uv venv`` with none is
+        ``.venv``;
+      * ``conda|mamba|micromamba [env] create|install|update|upgrade|
+        remove|uninstall``: the value of ``-p`` / ``--prefix`` /
+        ``--prefix=`` and of ``p`` in a short-option cluster; an empty
+        list for ``-n NAME`` (the environment is under the program's root
+        prefix, which the command text does not name).
+    An empty list means "recognised, no directory named"; the caller then
+    reads no further targets from the segment.
+
+    Rejected: the first positional only (the rule this replaces) --
+    ``python3 -m venv --prompt p /x`` and ``python3 -m venv .venv /x``
+    named their outside directory second; matching on the name
+    ``python``/``python3`` only -- ``python3.11`` and ``/usr/bin/python3.11``
+    were not read at all.
+    """
+    if _PYTHON_NAME_RE.fullmatch(name):
+        mod = _python_module_args(rest)
+        if mod is None or mod[0] not in ("venv", "virtualenv"):
+            return None
+        args = mod[1]
+    elif name == "virtualenv":
+        args = rest
+    elif name == "uv" and rest[:1] == ["venv"]:
+        args = rest[1:]
+    elif name in _CONDA_PROGRAMS:
+        words = [a for a in rest if not a.startswith("-")]
+        sub = words[1] if words[:1] == ["env"] and len(words) > 1 else (
+            words[0] if words else "")
+        if sub not in _CONDA_WRITING_SUBCOMMANDS:
+            return None
+        out: list = []
+        for i, a in enumerate(rest):
+            nxt = rest[i + 1] if i + 1 < len(rest) else ""
+            if a in ("-p", "--prefix"):
+                if nxt:
+                    out.append(nxt)
+            elif a.startswith("--prefix="):
+                out.append(a.split("=", 1)[1])
+            elif a.startswith("-") and not a.startswith("--"):
+                for k, ch in enumerate(a[1:], start=1):
+                    if ch in _CONDA_SHORT_VALUE_OPTS:
+                        if ch == "p":
+                            val = a[k + 1:].lstrip("=") or nxt
+                            if val:
+                                out.append(val)
+                        break
+        return out
+    else:
+        return None
+    if any(a in ("-h", "--help", "--version") for a in args):
+        return []
+    dirs: list = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in _ENV_TOOL_VALUE_OPTS:
+            skip = True
+            continue
+        if a.startswith("-"):
+            continue
+        dirs.append(a)
+    if not dirs and name == "uv":
+        dirs.append(".venv")
+    return dirs
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -2793,6 +2933,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
                     tok = parts[0]
                 else:
                     tok = tok.strip("'\"")
+            # `$HOME` / `${HOME}` is the one variable whose value the shell
+            # takes from the same place `~` does; skipped like every other
+            # `$` word, `echo x > $HOME/f` and `python3 -m venv $HOME/x`
+            # wrote into the home directory with no target to refuse.
+            # Other variables stay skipped: their value is set by the
+            # command or its environment, and this scanner cannot read it.
+            tok = _HOME_VAR_PREFIX_RE.sub("~", tok, count=1)
             if not tok or tok.startswith("-") or tok.startswith("$"):
                 return
             if any(c in tok for c in "*?[]"):        # globs: not a literal path
@@ -3003,12 +3150,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
                     if a.startswith("of="):
                         _add(a[3:])
                 continue
-            if name in ("python", "python3") and "venv" in rest:
-                # python -m venv <dir>
-                tail = [a for a in rest[rest.index("venv") + 1:]
-                        if not a.startswith("-")]
-                if tail:
-                    _add(tail[0])
+            _env_dirs = _env_creation_dirs(name, rest)
+            if _env_dirs is not None:
+                # The directory an environment is created in: python -m
+                # venv|virtualenv, virtualenv, uv venv, conda|mamba|
+                # micromamba create|install|update|remove -p|--prefix.
+                for a in _env_dirs:
+                    _add(a)
                 continue
             if (name in ("python", "python3") or name.startswith("python3.")) \
                     and "ensurepip" in rest:
@@ -3035,7 +3183,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 # prefix, which is either the workspace (fine) or a path
                 # the venv target rule above already covers.
                 continue
-            if name in ("virtualenv", "uv") and rest:
+            if name == "uv" and rest:
                 tail = [a for a in rest if not a.startswith("-")]
                 if tail:
                     _add(tail[-1])
@@ -25000,10 +25148,16 @@ class _DocToolExecutor:
                 # target outside every writable root and not an ephemeral
                 # sink is refused ONCE with the directory route (the same
                 # grant the write path names), never asked as a read.
+                # Compared as written and as the path it names: the read
+                # scan expands `$HOME/x` where the write scan reads `~/x`.
                 try:
                     _res = path.resolve(strict=False)
+                    _writes = _bash_write_targets(scan)
+                    _write_paths = {
+                        Path(w).expanduser().resolve(strict=False)
+                        for w in _writes if Path(w).expanduser().is_absolute()}
                     _is_dead_write = (
-                        target in set(_bash_write_targets(scan))
+                        (target in set(_writes) or _res in _write_paths)
                         and not _is_ephemeral_sink(
                             _res, getattr(perms, "workspace", None))
                         and perms.find_root_for(_res) is None)

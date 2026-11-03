@@ -254,7 +254,7 @@ def test_an_allowing_second_opinion_does_not_start_it(
 def test_the_refusal_names_the_route_that_works(
         ws, outside, started, monkeypatch, mode, cmd):
     _cage(monkeypatch, "none")
-    _token, out = _drive(ws, mode, "headless", cmd.format(o=outside),
+    _token, out = _drive(ws, mode, "yes", cmd.format(o=outside),
                          started)
     assert "--add-dir" in out or "grant the directory" in out, out
 
