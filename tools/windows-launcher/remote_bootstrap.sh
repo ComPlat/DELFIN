@@ -9,6 +9,26 @@ tunnel_path=${6:-}
 keep=${7:-0}
 working=${8:-0}
 person=${9:-}
+login_key=${10:-}
+# One line, nothing else: grep below checks line by line, so a second line
+# would pass unchecked and land in authorized_keys without the restriction.
+case "$login_key" in *$'\n'*|*$'\r'*) login_key='' ;; esac
+# Remember login: the app sends this PC's public key (one ed25519 key per
+# Windows user) on every connection; the first one, still with the password,
+# adds it to the account's authorized_keys, the next ones log in with it.
+# The key line is restricted to what the launcher uses (port forwarding for
+# the dashboard tunnel, a pty), so it opens no agent, X11 or ~/.ssh/rc.
+# ~/.config/delfin/launcher-no-keys.conf makes a server refuse it.
+if [ -n "$login_key" ] && [ ! -f "$HOME/.config/delfin/launcher-no-keys.conf" ]; then
+    if printf '%s\n' "$login_key" | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9@._-]{1,64})?$'; then
+        key_body=$(printf '%s' "$login_key" | cut -d' ' -f2)
+        if ! grep -qsF " $key_body" "$HOME/.ssh/authorized_keys"; then
+            (umask 077 && mkdir -p "$HOME/.ssh" \
+                && printf 'restrict,port-forwarding,pty %s\n' "$login_key" >> "$HOME/.ssh/authorized_keys") \
+                && printf '%s\n' 'DELFIN: Login key of this PC registered; the next connection needs no password.'
+        fi
+    fi
+fi
 # The account owner may make Keep session this server's default
 # (~/.config/delfin/launcher-keep.conf, e.g. a shared agent box): every
 # connection then keeps its dashboard after a disconnect, whatever the app's

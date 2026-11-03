@@ -78,6 +78,17 @@ Two options are visible without opening Advanced settings:
 
 - **Working shell (Ctrl+B, then N)**: disabled by default for new saved
   connections. Enable it to open/reuse a tmux window named `DELFIN-work`.
+- **Remember login on this PC (SSH key)** (advanced settings, on by default):
+  the app makes one ed25519 key per Windows user
+  (`%USERPROFILE%\.ssh\delfin_launcher_ed25519`, no passphrase, protected by
+  the Windows account) and sends its public half with every connection. The
+  first connection still asks for the password; `remote_bootstrap.sh` then adds
+  the key to the server's `~/.ssh/authorized_keys` as
+  `restrict,port-forwarding,pty ...` (only the dashboard tunnel and a terminal:
+  no agent, no X11, no `~/.ssh/rc`). Later connections log in with the key.
+  A server that requires a password or OTP as well keeps asking for it. Revoke
+  a PC by deleting its `delfin-launcher-<name>` line on the server; a server
+  account with `~/.config/delfin/launcher-no-keys.conf` never adds keys.
 - **Keep session after disconnect**: disabled by default for new saved connections.
   A server whose account has `~/.config/delfin/launcher-keep.conf` (the
   Raspberry Pi agent box sets it) keeps every connection's dashboard, whatever
