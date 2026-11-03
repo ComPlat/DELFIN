@@ -36,6 +36,28 @@ from delfin.analysis.results_overview import (
 )
 
 
+def RO_CARD_H(title: str, hint: str = "") -> str:
+    """Section header for the selection cards."""
+    hint_html = (f" <span style='font-size:12px;color:#64748b;"
+                 f"font-weight:400'>{_html.escape(hint)}</span>"
+                 if hint else "")
+    return (f"<div style='font-weight:600;font-size:14px;color:#1e293b;"
+            f"padding:6px 2px 4px'>{_html.escape(title)}{hint_html}</div>")
+
+
+def RO_TAB_HEADER() -> str:
+    """Top banner of the tab: title chip + subtitle."""
+    return (
+        "<div style='background:linear-gradient(90deg,#0f172a,#1e3a5f);"
+        "border-radius:10px;padding:14px 18px;margin-bottom:10px'>"
+        "<div style='color:#f8fafc;font-size:18px;font-weight:700'>"
+        "Results Overview</div>"
+        "<div style='color:#94a3b8;font-size:12px;margin-top:2px'>"
+        "Rechnungen auswählen, Größen wählen, Werte vergleichen - "
+        "Redoxpotentiale, Multiplicitäten, RSS-Energetik; Export als "
+        "CSV / XLSX / PNG-ZIP</div></div>")
+
+
 def rows_to_markdownish(columns: List[dict], rows: List[dict],
                         sorted_by: Any = None) -> str:
     """Build an HTML table for the status widget from parsed rows.
@@ -160,27 +182,32 @@ class ResultsOverviewPanel:
         self._zip_btn.on_click(self._on_export_zip)
 
         left = widgets.VBox([
-            widgets.HTML("<b>Rechnungen</b> (Mehrfachauswahl)"),
+            widgets.HTML(RO_CARD_H("Rechnungen", "Mehrfachauswahl")),
             self._calc_select,
             self._rescan_btn,
         ])
         right = widgets.VBox([
-            widgets.HTML("<b>Größen</b> (Mehrfachauswahl)"),
+            widgets.HTML(RO_CARD_H("Größen", "Mehrfachauswahl")),
             self._metric_select,
             self._refresh_btn,
         ])
         self.widget = widgets.VBox([
-            widgets.HBox([left, right]),
+            widgets.HTML(RO_TAB_HEADER()),
+            widgets.HBox([left, right],
+                         layout=widgets.Layout(
+                             gap="24px", align_items="flex-start")),
             self._custom_acc,
-            self._show_pngs,
-            self._png_opts,
             self._status,
             self._sortbar,
             widgets.HBox([
                 self._csv_btn, self._xlsx_btn, self._zip_btn,
-                self._export_status]),
+                self._export_status],
+                layout=widgets.Layout(gap="10px", align_items="center")),
+            self._show_pngs,
+            self._png_opts,
             self._pngs,
         ])
+        self.widget.add_class("ro-tab-root")
 
     # -- helpers ------------------------------------------------------------
 
@@ -654,6 +681,35 @@ class ResultsOverviewPanel:
         """
         return """
 (function () {
+  if (window.__roStyle) { return; }
+  window.__roStyle = true;
+  var css = document.createElement('style');
+  css.textContent = [
+    ".ro-tab .widget-button{border-radius:8px;border:1px solid #cbd5e1;",
+    "background:#fff;padding:5px 14px;font-size:13px}",
+    ".ro-tab .widget-button:hover{border-color:#2563eb;background:#eff6ff}",
+    ".ro-tab .widget-button-primary{background:#2563eb;color:#fff;",
+    "border-color:#1d4ed8;font-weight:600}",
+    ".ro-tab .widget-select select,.ro-tab .widget-selectmultiple select",
+    "{border:1px solid #cbd5e1;border-radius:8px;padding:4px;",
+    "font-size:13px;background:#fff}",
+    ".ro-tab .widget-selectmultiple select:focus",
+    "{outline:2px solid #93c5fd}",
+    ".ro-tab .widget-slider .ui-slider-handle{border-radius:50%;",
+    "border-color:#2563eb;background:#2563eb}",
+    ".ro-tab .widget-accordion .widget-accordion-title",
+    "{background:#f1f5f9;border-radius:8px;font-weight:600}",
+    ".ro-tab .widget-checkbox label{font-size:13px}"
+  ].join("");
+  document.head.appendChild(css);
+  // Tag the tab root so the CSS only applies here.
+  window.__roTagTab = setInterval(function () {
+    document.querySelectorAll(".jupyter-widgets").forEach(function (w) {
+      if (!w.closest(".ro-tab") && w.querySelector(".ro-tab-root")) {
+        w.classList.add("ro-tab");
+      }
+    });
+  }, 1500);
   if (window.__roSortBind) { return; }
   window.__roSortBind = function (root) {
     (root || document).querySelectorAll('a.ro-sort').forEach(function (a) {
