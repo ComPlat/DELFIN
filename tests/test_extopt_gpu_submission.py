@@ -85,7 +85,7 @@ def test_local_cpu_limits_declared():
 
 
 def test_no_gpu_partition_cpu_config_plans_local(tmp_path):
-    req = _request(tmp_path)
+    req = _request(tmp_path, allow_local=True)
     plan = plan_extopt_job(req, cfg=_cpu_cfg())
     assert plan.mode == "local"
     assert plan.pal <= LOCAL_CPU_LIMITS.cores
