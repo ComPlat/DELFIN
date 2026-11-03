@@ -1914,6 +1914,25 @@ def _loop(ctx, args: str) -> CommandResult:
     return CommandResult(output=text, prompt=prompt)
 
 
+def _profile(ctx, args: str) -> CommandResult:
+    from . import workspace_profiles
+    words = str(args or "").strip().split()
+    usage = "usage: /profile [workspace] frei|standard"
+    word = words[-1] if words else ""
+    target = words[0] if len(words) == 2 else str(ctx.workspace)
+    if len(words) not in (1, 2) or word.lower() not in (
+            "frei", "free", "standard", "default"):
+        return CommandResult(output=usage)
+    try:
+        result = workspace_profiles.set_from_word(target, word)
+    except PermissionError as exc:
+        return CommandResult(output=f"profile refused: {exc}")
+    except ValueError as exc:
+        return CommandResult(output=f"profile: {exc}")
+    return CommandResult(output=f"profile {result['workspace']}: "
+                                f"{result['profile']} (confirmed)")
+
+
 def _schedule(ctx, args: str) -> CommandResult:
     from . import schedule_commands
     return CommandResult(output=schedule_commands.handle(
@@ -2127,6 +2146,10 @@ BUILTINS: dict[str, ReplCommand] = {
                     "Your schedules: list | add <when> <task> | ok | pause | "
                     "run | delete | log",
                     _schedule, True),
+        ReplCommand("/profile", "workspace",
+                    "Freedom profile of a workspace: [path] frei|standard "
+                    "(free = scheduled runs in bypass inside the cage)",
+                    _profile, True),
         ReplCommand("/auto", "workspace",
                     "Auto mode: on | off | needs — work on without input",
                     _auto, True),

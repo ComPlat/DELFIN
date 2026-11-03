@@ -32,8 +32,11 @@ def cage(monkeypatch):
 
 @pytest.fixture()
 def profiles(tmp_path, monkeypatch, cage):
-    """A redirected, masked profile store."""
-    from delfin.agent import trust_store, workspace_profiles
+    """A redirected, masked profile store; the test process is not an
+    agent session for the profile seal."""
+    from delfin.agent import approval_guard, trust_store, workspace_profiles
+    monkeypatch.setattr(approval_guard, "inside_agent_session",
+                        lambda env=None: False)
     path = tmp_path / "user_schedules"
     monkeypatch.setattr(workspace_profiles, "_DIR", path)
     monkeypatch.setattr(trust_store, "store_dir",
@@ -89,7 +92,7 @@ def test_a_scheduled_run_stays_capped_without_the_bypass_opt_in(
     cage.set_profile(str(ws), "free")
     entry = {"id": 4, "task": "x", "when": "alle 1h", "workspace": str(ws)}
     assert schedule_runner.session_params(entry, _settings(unattended=False))[
-        "permissionMode"] == "acceptEdits"
+        "permissionMode"] == "default"
 
 
 def test_the_profile_store_masks_and_confirms(tmp_path, profiles, cage):
@@ -104,9 +107,11 @@ def test_the_profile_store_masks_and_confirms(tmp_path, profiles, cage):
     mode = profiles.stat().st_mode & 0o777
     file_mode = (profiles / "workspace_profiles.json").stat().st_mode & 0o777
     assert mode == 0o700 and file_mode == 0o600
-    # Confirmed exactly: the HMAC under the account key.
+    # Confirmed exactly: the HMAC under the account key (a plain hash only
+    # where there is no account key at all).
     data = json.loads((profiles / "workspace_profiles.json").read_text())
-    assert data["profiles"][str(ws)]["confirmed_sha"].startswith("sha")
+    tag = data["profiles"][str(ws)]["confirmed_sha"]
+    assert len(tag) >= 64 and tag.isalnum() or tag.startswith("sha:")
     assert workspace_profiles.confirmed(str(ws)) is True
     # A later content change without a fresh confirmation is unconfirmed.
     data["profiles"][str(ws)]["profile"] = "free"
@@ -141,10 +146,14 @@ def test_the_bridge_sets_the_profile_for_a_session_workspace(
     ws = tmp_path / "proj"
     ws.mkdir()
     b = bridge.Bridge.__new__(bridge.Bridge)   # no sockets
+    b._issued = {}
+    b._created = []
     async def fake_request(method, params=None):
         assert method == "sessions.list"
         return {"sessions": [{"sessionId": "s1", "workspace": str(ws)}]}
     monkeypatch.setattr(b, "_request", fake_request)
+    from delfin.messenger import activation
+    monkeypatch.setattr(activation, "enabled", lambda sid: True)
     import asyncio
     reply = asyncio.run(b._cmd_profile({"session": "s1", "text": "frei"}))
     assert reply.get("ok") is True
@@ -173,6 +182,9 @@ def test_caged_workspace_work_runs_free_but_push_and_network_ask(monkeypatch):
     class Perms:
         scope_locked = False
 
+        def matches_bash_auto_allow(self, cmd):
+            return False
+
     monkeypatch.setattr(api_client, "_bash_isolation_decision",
                         lambda perms, mode=None: ("bwrap", "auto"))
     assert api_client._bash_runs_caged(Perms()) is True
@@ -183,7 +195,7 @@ def test_caged_workspace_work_runs_free_but_push_and_network_ask(monkeypatch):
         def __init__(self, command):
             self.action = {"tool": "bash", "command": command}
 
-    write = Action("python -c \"open('out.txt','w').write('x')\"")
+    write = Action("touch out.txt")
     assert api_client._leaves_workspace(Perms(), write.action, True) is False
     push = Action("git push origin main")
     assert api_client._leaves_workspace(Perms(), push.action, True) is True

@@ -88,6 +88,8 @@ COMMANDS = {
     "schedules": {"after": "string?"},
     "schedule": {"action": "string", "id": "string?", "text": "string?",
                  "session": "string?", "check": "string?"},
+    "profile": {"session": "string?", "workspace": "string?",
+                "text": "string"},
 }
 
 #: Schedules made from the phone per window of CREATE_WINDOW_S.
@@ -661,6 +663,45 @@ class Bridge:
                 "confirmed": bool(e["confirmed"]), "check": schedules.fingerprint(e),
                 "runUsd": e.get("budget_run_usd"), "dayUsd": e.get("budget_day_usd"),
                 "minutes": e.get("max_minutes")}
+
+    async def _cmd_profile(self, params: dict) -> dict:
+        """Set a workspace's freedom profile from the phone.
+
+        ``profil <session|ordner> frei|standard`` -- a session's own
+        workspace (exact, enabled ID, like every room command) or a
+        named folder. ``frei`` is refused with the reason where the host
+        cannot hold a shell command in the cage, and the word is
+        validated before anything is stored. The store is the user's,
+        masked like the schedules; the phone is the user.
+        """
+        from delfin.agent import workspace_profiles
+        word = str(params.get("text") or "").strip().lower()
+        if word not in {"frei", "free", "standard", "default"}:
+            return {"error": "profil <sitzung|ordner> frei|standard"}
+        sid = str(params.get("session") or "")
+        workspace = str(params.get("workspace") or "")
+        if not workspace and sid:
+            if not activation.enabled(sid):
+                return {"error": "SimpleX ist für diese Sitzung "
+                                 "ausgeschaltet. In TUI/Dashboard mit "
+                                 "/sync aktivieren."}
+            listing = await self._request("sessions.list")
+            row = next((r for r in listing.get("sessions", [])
+                        if str(r.get("sessionId") or r.get("id") or "") == sid),
+                       None)
+            workspace = str((row or {}).get("workspace") or "")
+            if not workspace:
+                return {"error": "Diese Sitzung ist nicht verfügbar. "
+                                 "Kein anderer Agent wurde angesprochen."}
+        if not workspace:
+            return {"error": "profil <sitzung|ordner> frei|standard"}
+        try:
+            result = workspace_profiles.set_from_word(workspace, word)
+        except PermissionError as exc:
+            return {"error": str(exc)}
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"ok": True, **result}
 
     async def _cmd_schedules(self, params: dict) -> dict:
         """The schedules (cut) and the runs after ``after``, within one line."""
