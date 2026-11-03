@@ -251,6 +251,28 @@ def _check_python_deps(ctx: dict) -> list[dict]:
     return out
 
 
+def _check_optional_tools(ctx: dict) -> list[dict]:
+    """Optional chemistry programs, one row per install group.
+
+    The table and the presence probe are ``optional_tools`` -- the same
+    the Pi's post-install smoke step reads -- so the doctor and the deploy
+    name the same groups. Nothing is imported or run here (``find_spec``
+    and the tool resolver): importing torch alone takes seconds on a Pi.
+    ``python -m delfin.agent.optional_tools smoke`` runs the computations.
+    """
+    from . import optional_tools as ot
+    out: list[dict] = []
+    for group in ot.GROUPS:
+        status, detail = ot.availability(group)
+        if status == ot.OK:
+            out.append(_row(f"optional: {group.name}", PASS, detail))
+            continue
+        fix = (f"{group.install}  (Raspberry Pi: {ot.pi_hint(group)}; "
+               "scripts/pi/README.md)")
+        out.append(_row(f"optional: {group.name}", WARN, detail, fix))
+    return out
+
+
 def _check_test_runner(ctx: dict) -> list[dict]:
     """Can the agent run the suite in the interpreter it would use.
 
@@ -1156,6 +1178,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("credentials", "_check_credentials"),
     ("chemistry binaries", "_check_binaries"),
     ("python deps", "_check_python_deps"),
+    ("optional chemistry", "_check_optional_tools"),
     ("test runner", "_check_test_runner"),
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
