@@ -89,6 +89,39 @@ store carry the `private_fixtures` marker (auto-applied to every
 module importing the helper), so a local run can select them with
 `pytest -m private_fixtures`. See docs/PRIVATE_FIXTURE_STORE.md.
 
+### 4. Third-party ML potentials and model weights (family 4)
+
+The MLIP registry (`delfin/mlp_tools/registry.py`) can call optional
+third-party packages (orca-mlips, fairchem, mace, orb-models,
+aimnetcentral, gpuma, torchani, ...) and load model weights. CODE licence
+and WEIGHT licence are separate things and both are declared per backend
+(`code_licence` / `weight_licence`, enforced by
+`tests/test_mlip_licence_records.py`).
+
+- **No weights or checkpoints in the repo.** Never commit, vendor or
+  download model files into this tree: `*.pt`, `*.pth`, `*.ckpt`,
+  `*.safetensors`, `*.npz`, or any trained-model file. Weights stay in the
+  user's own cache (HF cache, backend download cache); a test blocks
+  tracked weight files.
+- **No tokens.** DELFIN never reads, prints, logs or stores Hugging Face
+  or other access tokens. Gated checkpoints (UMA) are the user's own
+  acceptance + their own login, outside DELFIN.
+- **Gated weights** need the user's own acceptance of the upstream terms.
+  DELFIN's job is to say so, with the URL, not to work around the gate.
+- **Non-commercial weights** (e.g. MACE foundation models under the
+  Academic Software License) are flagged `non_commercial=True`; the
+  option `refuse_noncommercial_weights=True` (on `mlp_preoptimize` and
+  `registry.create_calculator`) makes DELFIN refuse such backends so
+  commercial users cannot trip over them.
+- **Every optional MLIP dependency DELFIN can call must have a cited
+  upstream licence** in the registry; anything not yet verified against
+  the upstream text is marked `verified=False`, never guessed.
+- **What an installer may do:** hint only (`pip install <pkg>` in an
+  install_hint string). DELFIN never installs an MLIP package or weights
+  on its own.
+- Every backend's `weight_licence.url` names the model card / licence page
+  the user must check before depending on the checkpoint.
+
 ## Escape hatch
 
 `# license-guard: allow` on the offending line — for a deliberate,
