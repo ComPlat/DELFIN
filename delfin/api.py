@@ -3344,6 +3344,10 @@ _TOOL_CATALOG: list[dict] = [
     {"name": "mlp_extopt_plan", "category": "ml",
      "summary": "Plan an ORCA+ExtOpt MLP job (dry run: input + sbatch/local "
                 "script, nothing submitted; provider delfin|orca_mlips)."},
+    {"name": "analysis_check", "category": "checks",
+     "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
+    {"name": "result_checks", "category": "checks",
+     "summary": "Validate a finished run and a chemistry answer's numbers."},
     {"name": "mlp_setup_probe", "category": "checks",
      "summary": "Probe GPU partitions, CUDA, ORCA, conda and MLIP envs (read-only)."},
     {"name": "mlp_setup_plan", "category": "checks",
@@ -3354,10 +3358,6 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Write the MLIP settings diff via save_settings (mutating)."},
     {"name": "mlp_setup_verify", "category": "ml",
      "summary": "Write the MLIP verify job (dry run; submit via bash sbatch, asked)."},
-    {"name": "analysis_check", "category": "checks",
-     "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
-    {"name": "result_checks", "category": "checks",
-     "summary": "Validate a finished run and a chemistry answer's numbers."},
     # delfin-ops — workflow execution (mutating)
     {"name": "pipeline_prepare", "category": "workflow",
      "summary": "Generate a CONTROL.txt template (mutating)."},
