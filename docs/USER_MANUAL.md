@@ -1884,6 +1884,16 @@ Launch with `/explore`, `/review`, `/plan`, `/delegate <task>`, or let the agent
 
 Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
 
+### A workspace folder without git: local projects
+
+Worktrees, branches, parallel writing subagents and sessions in their own worktree need git. When one of them is requested in a workspace folder that is not a git repository (for example your default `agent_workspace`), the agent asks you once whether the folder should become a **local** repository. A yes runs `git init` (branch `main`), writes a `.gitignore` and makes one first commit of what is there. Kept out of that commit, and of later ones: QM program output and artifacts (`*.out`, `*.gbw`, `*.hess`, `*.engrad`, `*.densities`, `*.tmp`, `*.opt`, ..., and any file whose content is ORCA output whatever its name -- ORCA output may not be redistributed, see LICENSE_GUARD.md), checkpoints and model weights (`*.ckpt`, `*.pt`, `*.pth`, `*.safetensors`), archives, files above 10 MB (listed by name), nested repositories and secrets (`.env`, `credentials*`, `*.key`, `id_*`). An existing `.gitignore` is extended, not replaced. No remote is added: nothing leaves the machine, and adding a remote (`git remote add origin <url>`) is your step. A no leaves the folder unchanged and is not asked again in that session. Refused without a question: your home directory itself, system paths, a mount point, a folder inside another repository, plan mode and auto iterations.
+
+With a local project:
+
+- `orchestrate` gives each writing subagent its own worktree and branch; with `"merge": true` the finished worktrees are merged back into the folder, uncommitted, for review. A conflict is reported (`merges[].status = "conflict"`) and leaves the folder as it was, the conflicting worktree kept for a manual merge. A writer that asked for its own worktree never runs in the folder itself.
+- Several sessions in the same workspace: start each in its own worktree ("Own worktree" in the dashboard's new-session form; `session.create` with `worktree: true` in the agent service -- with `initProject: true` once you agreed to make a plain folder a local project). The trees live in `<workspace>/.delfin/worktrees/`, each on a `session/...` branch. `session.merge` brings a finished session's commits and changes back into the folder (refused while a session still works in that tree); a conflict is reported and nothing is written.
+- The branch views list the local branches; Pull is disabled with the reason (there is no `origin`).
+
 ### Memory and sessions
 
 | What | Where | Lives |
