@@ -27,13 +27,16 @@ def _two_column_layout(title_row, left, right):
         [widgets.VBox(tuple(left)), widgets.VBox(tuple(right))],
         layout=widgets.Layout(
             display='flex', flex_flow='row wrap', width='100%',
+            gap='12px', align_items='flex-start',
         ),
     )
     left_box, right_box = body.children
+    # The outer panel owns scrolling. Nested scrolling on the left made
+    # the controls and Submit button inaccessible at laptop heights.
     left_box.layout = widgets.Layout(
-        flex='1 1 46%', min_width='340px',
-        max_height='720px', overflow_y='auto')
-    right_box.layout = widgets.Layout(flex='1 1 54%', min_width='380px')
+        flex='1 1 38%', min_width='300px', gap='7px')
+    right_box.layout = widgets.Layout(
+        flex='2 1 56%', min_width='380px', gap='5px')
     return widgets.VBox((title_row, body))
 
 
@@ -66,11 +69,12 @@ def build_ts_goat_panel(
         # toolbar sits above this panel in the DOM; an unbounded panel
         # grew past the container and clipped it (user report 2026-11-02).
         # Bound the panel and scroll INSIDE it instead.
-        max_height='720px', overflow_y='auto',
+        max_height='calc(100vh - 180px)', overflow_y='auto',
     ))
     title = widgets.HTML(
-        '<b>TS &rarr; GOAT</b> &mdash; constrained conformer search from the '
-        'optimized transition state'
+        '<b>TS &rarr; GOAT</b> '
+        '<span style="color:#607d8b;font-size:12px;">'
+        'Constrained conformer search from an optimized TS</span>'
     )
     # 2026-11-02 live report: the close button sat in the bottom action
     # row and scrolled out of sight.  The title bar now carries its own
@@ -88,8 +92,8 @@ def build_ts_goat_panel(
     # The structure is always visible when the panel opens (user report
     # 2026-11-02: the dialog only showed file info and fields).
     viewer_out = widgets.Output(layout=widgets.Layout(
-        width='100%', height='470px', border='1px solid #bbb',
-        overflow='auto', margin='4px 0',
+        width='100%', height='450px', border='1px solid #d5dfe5',
+        overflow='hidden', margin='2px 0',
     ))
     # JS -> Python click channel (same pattern as the structure editor's
     # submit-pick-sync): the viewer bootstrap writes the clicked atom's
@@ -100,7 +104,7 @@ def build_ts_goat_panel(
     mode_label = widgets.HTML('<b>Reactive mode (imaginary modes of the final block):</b>')
     mode_dropdown = widgets.Dropdown(
         options=[], description='Mode:',
-        layout=widgets.Layout(width='320px'),
+        layout=widgets.Layout(width='100%', max_width='380px'),
     )
     mode_warning = widgets.HTML('')
     # Imaginary-mode animation: validated orca_pltvib frames are
@@ -121,7 +125,7 @@ def build_ts_goat_panel(
     )
     anim_status = widgets.HTML('')
     anim_play = widgets.Button(
-        description='▶ Play', disabled=True,
+        description='▶ Play', disabled=False,
         tooltip='Play the vibration trajectory in a loop',
         layout=widgets.Layout(width='90px'),
     )
@@ -139,62 +143,65 @@ def build_ts_goat_panel(
         value=0.25, min=0.05, max=1.0, step=0.05,
         description='Amplitude:', continuous_update=False,
         tooltip='Displacement amplitude in Angstrom (frames are re-scaled)',
-        layout=widgets.Layout(width='200px'),
+        layout=widgets.Layout(width='230px'),
     )
     anim_speed = widgets.FloatSlider(
         value=1.0, min=0.25, max=3.0, step=0.25,
         description='Speed:', continuous_update=False,
         tooltip='Playback speed (1 = 5 frames per second)',
-        layout=widgets.Layout(width='180px'),
+        layout=widgets.Layout(width='210px'),
     )
     anim_arrows_toggle = widgets.Checkbox(
         value=False, description='Show Displacement Arrows',
         tooltip='Draw mode displacement arrows on the static geometry',
         layout=widgets.Layout(width='240px'),
     )
+    # One visible Play action: it loads the trajectory on demand.  The
+    # previous "Imaginary Mode" toggle + "Generate / Load" button duplicated
+    # that action and left Play disabled in the default state.
     anim_row = widgets.VBox(
         [widgets.HBox(
-            [anim_toggle, anim_generate, anim_play, anim_pause, anim_reset],
+            [anim_play, anim_pause, anim_reset],
             layout=widgets.Layout(flex_flow='row wrap', width='100%',
-                                  margin='2px 0')),
+                                  gap='5px', margin='2px 0')),
          widgets.HBox(
-            [anim_amp, anim_speed, anim_arrows_toggle],
+            [anim_amp, anim_speed],
             layout=widgets.Layout(flex_flow='row wrap', width='100%',
-                                  margin='2px 0')),
-         anim_status],
+                                  gap='8px', margin='2px 0')),
+         anim_arrows_toggle, anim_status],
     )
     constraints_label = widgets.HTML(
         '<b>Constraint atoms (0-based ORCA indices):</b>')
     constraints_count = widgets.HTML('')
     constraints_field = widgets.Textarea(
         placeholder='e.g. 0, 2, 5 (comma- or newline-separated)',
-        layout=widgets.Layout(width='95%', height='72px'),
+        layout=widgets.Layout(width='100%', height='58px'),
     )
     highlight_btn = widgets.Button(
-        description='↻ Highlight', button_style='info',
+        description='Apply', button_style='info',
         tooltip='Re-render the viewer with the current constraint atoms highlighted',
         layout=widgets.Layout(width='140px'),
     )
     reset_prop_btn = widgets.Button(
-        description='Reset Selection',
+        description='Reset',
         tooltip='Restore the automatic reactive-centre proposal',
-        layout=widgets.Layout(width='170px'),
+        layout=widgets.Layout(width='105px'),
     )
     clear_sel_btn = widgets.Button(
-        description='Clear Constraints',
+        description='Clear',
         tooltip='Clear every constraint (fully manual selection)',
-        layout=widgets.Layout(width='200px'),
+        layout=widgets.Layout(width='105px'),
     )
     method_label = widgets.HTML('<b>Method for the GOAT search:</b>')
     method_field = widgets.Text(
-        value='XTB', description='Method:', layout=widgets.Layout(width='240px'),
+        value='XTB', description='Method:', layout=widgets.Layout(width='190px'),
     )
     basis_field = widgets.Text(
         value='', placeholder='def2-SVP (DFT only)',
         description='Basis:', layout=widgets.Layout(width='240px'),
     )
     pal_field = widgets.IntText(
-        value=12, description='Cores:', layout=widgets.Layout(width='200px'),
+        value=12, description='Cores:', layout=widgets.Layout(width='155px'),
     )
     maxcore_field = widgets.IntText(
         value=1000, description='MB/core:', layout=widgets.Layout(width='200px'),
@@ -205,7 +212,7 @@ def build_ts_goat_panel(
     )
     preview_label = widgets.HTML('<b>ORCA input preview:</b>')
     preview_box = widgets.HTML('', layout=widgets.Layout(
-        max_height='22em', overflow_y='auto', width='100%',
+        max_height='18em', overflow_y='auto', width='100%',
         border='1px solid #cfd8dc'))
     submit_btn = widgets.Button(
         description='▶ Submit GOAT job', button_style='success',
@@ -225,30 +232,52 @@ def build_ts_goat_panel(
         tooltip='Close TS→GOAT and restore the normal file view',
         layout=widgets.Layout(width='110px'),
     )
-    btn_row = widgets.HBox([submit_btn, close_btn])
-    cancel_row = widgets.HBox([cancel_btn])
-    settings_row = widgets.HBox([
-        widgets.VBox([method_label, method_field, basis_field]),
-        widgets.VBox([pal_field, maxcore_field, slurm_time_field]),
-    ])
+    # Keep the essential decisions visible.  Source filenames, raw atom
+    # indices, advanced scheduling options and full ORCA input start folded.
+    constraint_editor = widgets.Accordion(
+        children=[constraints_field], selected_index=None)
+    constraint_editor.set_title(0, 'Edit atom indices')
+    advanced_settings = widgets.Accordion(
+        children=[widgets.VBox([basis_field, maxcore_field, slurm_time_field])],
+        selected_index=None)
+    advanced_settings.set_title(0, 'Advanced settings')
+    input_details = widgets.Accordion(
+        children=[preview_box], selected_index=None)
+    input_details.set_title(0, 'Generated ORCA input')
+    source_details = widgets.Accordion(
+        children=[widgets.VBox([files_box, analysis_box])],
+        selected_index=None)
+    source_details.set_title(0, 'Analysis & source files')
+    settings_row = widgets.HBox(
+        [method_field, pal_field],
+        layout=widgets.Layout(display='flex', flex_flow='row wrap',
+                              gap='8px', width='100%'))
+    constraint_actions = widgets.HBox(
+        [reset_prop_btn, clear_sel_btn],
+        layout=widgets.Layout(display='flex', flex_flow='row wrap',
+                              gap='6px', width='100%'))
+    btn_row = widgets.HBox(
+        [submit_btn, cancel_btn],
+        layout=widgets.Layout(display='flex', flex_flow='row wrap',
+                              gap='8px', width='100%'))
     viewer_head = widgets.HTML(
-        '<b>Optimized TS structure</b> (drag to rotate, scroll to zoom; '
-        'constraint atoms are highlighted):')
-    center_row = widgets.HBox([center_btn])
+        '<b>Optimized TS structure</b> '
+        '<span style="font-size:11px;color:#607d8b;">'
+        'Click atoms to toggle constraints; drag to rotate</span>')
+    # Add centering alongside playback (instead of a third control row).
+    anim_row.children[0].children = (
+        anim_play, anim_pause, anim_reset, center_btn)
 
     layout = _two_column_layout(
         title_row=widgets.HBox([title, title_close_btn],
             layout=widgets.Layout(display='flex', width='100%',
                                    align_items='center')),
-        left=(status, files_box, mode_label, mode_dropdown, mode_warning,
-              analysis_box, constraints_label, constraints_count,
-              widgets.HBox([constraints_field, highlight_btn, reset_prop_btn,
-                            clear_sel_btn],
-                           layout=widgets.Layout(flex_flow='row wrap',
-                                                 width='100%')),
-              settings_row, preview_label, preview_box, btn_row,
-              cancel_row),
-        right=(viewer_head, viewer_out, click_sync, anim_row, center_row),
+        left=(status, constraints_label, constraints_count,
+              constraint_actions, constraint_editor, method_label,
+              settings_row, advanced_settings, input_details,
+              source_details, btn_row),
+        right=(viewer_head, mode_dropdown, mode_warning,
+               viewer_out, click_sync, anim_row),
     )
     panel.children = (layout,)
 
@@ -291,15 +320,16 @@ def build_ts_goat_panel(
             return
         n_sel = len(set(indices))
         share = 100.0 * n_sel / n_atoms
-        color = '#e65100' if share > 30 else '#2e7d32'
+        color = '#b26a00' if share > 30 else '#486776'
         warn = ''
         if share > 30:
-            warn = (' <span style="color:#e65100;">&#9888; heavy '
-                    'restriction of the conformer search</span>')
+            warn = (' <span style="color:#b26a00;" '
+                    'title="A large fixed fraction restricts GOAT sampling">'
+                    '&#9888; restrictive</span>')
         constraints_count.value = (
             f'<span style="color:{color}; font-size:11px;">'
-            f'{n_sel} of {n_atoms} atoms selected '
-            f'({share:.0f}% fixed){warn}</span>')
+            f'{n_sel} / {n_atoms} atoms constrained '
+            f'({share:.0f}%){warn}</span>')
 
     def _sync_basis_field():
         """Basis sets apply to orbital methods only.
@@ -311,6 +341,7 @@ def build_ts_goat_panel(
         method = (method_field.value or '').strip()
         semi = method.lower().startswith(('xtb', 'gfn', 'mm'))
         basis_field.disabled = semi
+        basis_field.layout.display = 'none' if semi else 'block'
         if semi:
             basis_field.value = ''
 
@@ -440,7 +471,10 @@ def build_ts_goat_panel(
 
     def _set_anim_buttons():
         has_frames = bool(state.get('traj') and state['traj'].frames)
-        anim_play.disabled = not has_frames
+        # Play generates the trajectory on first click; it must not start
+        # disabled just because the trajectory has not been loaded yet.
+        anim_play.disabled = (not state.get('hess_path')
+                              or mode_dropdown.value is None)
         anim_pause.disabled = not has_frames
         anim_reset.disabled = not has_frames
 
@@ -578,6 +612,14 @@ def build_ts_goat_panel(
         idx = mode_dropdown.value
         if idx is None or state['ts_atoms'] is None or not state['hess_path']:
             return
+        # A different mode invalidates the loaded XYZ frames.  Stop the
+        # previous playback before another trajectory can be generated.
+        vid = get_viewer_id() if get_viewer_id else None
+        if vid and animate_in_panel:
+            animate_in_panel(vid, False)
+        state['traj'] = None
+        anim_status.value = ''
+        _set_anim_buttons()
         state['mode_arrows'] = state['mode_arrows_by_index'].get(idx)
         from delfin import ts_goat as _tg
         # TS geometry + selected mode only -- a plain OptTS run has no
@@ -612,19 +654,18 @@ def build_ts_goat_panel(
         # uniqueness of the PROPOSAL.  These are different things and
         # must not read as one verdict (live report 2026-11-02).
         status.value = (
-            f'<span style="font-size:12px;">mode {idx}: '
-            f'data quality {proposed.reliability}'
-            + (' -- <b>proposal AMBIGUOUS:</b> several contacts answer '
-               'the mode similarly strongly; review and adjust the '
-               'selection in the viewer'
-               if proposed.ambiguous else '')
+            f'<span style="font-size:12px;color:#526a76;">'
+            f'Data quality: {_esc(proposed.reliability)}'
+            + (' &middot; <b>Proposal needs review</b>'
+               if proposed.ambiguous else
+               ' &middot; Proposal consistent')
             + '</span>'
         )
         _refresh_constraints_display()
 
     mode_dropdown.observe(_on_mode_change, names='value')
 
-    highlight_btn.on_click(lambda _b: _refresh_constraints_display())
+    highlight_btn.on_click(lambda _b: _render_integrated_viewer())
 
     def show(open_result):
         """Open the panel with a prepared analysis (from the tab handler)."""
@@ -643,7 +684,7 @@ def build_ts_goat_panel(
         state['mode_displaced'] = None
         state['traj'] = None
         anim_toggle.value = False
-        anim_play.disabled = True
+        anim_play.disabled = False
         anim_pause.disabled = True
         anim_reset.disabled = True
         anim_status.value = ''
@@ -658,23 +699,37 @@ def build_ts_goat_panel(
             mode_opts[0][1] if mode_opts else None
         )
         # single mode: the picker is informational; multiple: the user picks
-        mode_label.layout.display = 'block' if len(mode_opts) > 1 else 'none'
-        mode_dropdown.layout.display = 'block' if len(mode_opts) > 1 else 'none'
+        mode_label.layout.display = 'none'
+        mode_dropdown.layout.display = 'block'
         mode_warning.value = (
             '<div style="color:#e65100; font-size:12px;">'
             '⚠ Several imaginary modes in the final frequency block -- '
             'select the reactive mode; the constraints are re-proposed '
             'for the selected mode.</div>'
         ) if len(mode_opts) > 1 else ''
-        status.value = open_result.get('status_html', '')
+        proposed = state['proposed']
+        status.value = (
+            f'<span style="font-size:12px;color:#526a76;">'
+            f'Data quality: {_esc(proposed.reliability)}'
+            + (' &middot; <b>Proposal needs review</b>'
+               if proposed.ambiguous else
+               ' &middot; Proposal consistent')
+            + '</span>'
+        )
         _refresh_analysis_display()
-        analysis_box.value = open_result.get('analysis_html', '')
+        analysis_box.value = (
+            '<ul style="font-size:11px;margin:4px 0 4px 16px;">'
+            + open_result.get('analysis_html', '') + '</ul>')
         _refresh_constraints_display()
         _render_integrated_viewer()
         panel.layout.display = 'block'
         scroll_top()
 
     def close(_button=None):
+        # Stop browser-side playback before detaching the viewer.
+        vid = get_viewer_id() if get_viewer_id else None
+        if vid and animate_in_panel:
+            animate_in_panel(vid, False)
         panel.layout.display = 'none'
         # restore the normal file view: the options dropdown goes back
         # to '(Options)' so TS→GOAT can be re-opened cleanly, and the
