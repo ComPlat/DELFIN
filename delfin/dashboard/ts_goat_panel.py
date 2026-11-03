@@ -607,9 +607,8 @@ def build_ts_goat_panel(
             indices = [i for i in indices if i != index]
         else:
             indices = sorted(indices + [index])
+        # The field observer updates the preview and viewer exactly once.
         constraints_field.value = ', '.join(str(i) for i in indices)
-        _refresh_preview()
-        _render_integrated_viewer()
 
     def _on_mode_change(change=None):
         """Re-run the reactive-centre analysis for the selected mode."""
@@ -863,7 +862,9 @@ def build_ts_goat_panel(
         if not raw:
             return
         try:
-            on_atom_click(int(raw))
+            # The JS click bridge adds a changing sequence suffix so
+            # two consecutive clicks on the same atom still trigger observe.
+            on_atom_click(int(raw.split(':', 1)[0]))
         except ValueError:
             pass
     click_sync.observe(_on_click_sync, names='value')
