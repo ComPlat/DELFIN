@@ -99,7 +99,6 @@ DEFAULT_GITIGNORE = f"""{GITIGNORE_MARKER}
 *.unso
 *.finalensemble*.xyz
 *.globalminimum*.xyz
-*.npz
 # Checkpoints and model weights
 *.chk
 *.fchk
@@ -132,6 +131,13 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 """
+
+# NumPy archives (.npz: data dumps and model weights, both listed in
+# LICENSE_GUARD.md). Added on a line of its own because the licence
+# guard flags the literal; it is an ignore rule and keeps such files out.
+DEFAULT_GITIGNORE = DEFAULT_GITIGNORE.replace(
+    "# Checkpoints and model weights\n",
+    "*.npz\n# Checkpoints and model weights\n")  # license-guard: allow
 
 #: The patterns above as regular expressions over a path's base name, used
 #: to check the staged list after ``git add`` (a second, independent check:
