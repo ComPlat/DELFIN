@@ -17357,6 +17357,20 @@ class _PayloadHit(str):
         return obj
 
 
+# The note of a successful view_image result. Who sees the image is said
+# per surface because the executor does not know which one runs it: the
+# model always (the image is attached to its next message), the user in
+# the dashboard chat (drawn there as a card from the result's path), and
+# nobody else in the terminal UI or a messenger unless it is sent there.
+# The earlier note said only the first, and a model answered that the
+# image was visible in the chat on a surface where it was not.
+VIEW_IMAGE_NOTE = (
+    "The image is shown to you in the next message — look at it and "
+    "describe / use what you SEE. The user sees it only in the dashboard "
+    "chat, where it appears as a card; in the terminal UI or a messenger "
+    "they do not see it unless you send it there.")
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -20249,11 +20263,12 @@ class _DocToolExecutor:
         pend.append(img)
         return json.dumps({
             "status": "ok",
-            "path": str(full),
+            # The resolved path that was read: the dashboard draws its card
+            # from this file and no other.
+            "path": str(img.source_path or full),
             "mime": img.mime,
             "bytes": img.size_bytes(),
-            "note": ("The image is shown to you in the next message — look at "
-                     "it and describe / use what you SEE."),
+            "note": VIEW_IMAGE_NOTE,
         })
 
     def _execute_show_molecule(

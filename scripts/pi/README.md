@@ -40,7 +40,13 @@ Free inside the frame, and nothing widens the frame but a person:
   only through the egress proxy. Inside it, commands run without a question;
   writes in default mode are asked.
 - The agent user `delfin` has no root (`AGENT_SUDO=service`: it may restart
-  and query `delfin-dashboard`, nothing else). What runs outside the cage --
+  and query DELFIN's own services -- `delfin-dashboard`, `delfin-agent-service`,
+  `delfin-messenger-bridge`, `delfin-messenger-gateway` -- nothing else). A
+  deploy restarts every one of them that is running, so they all run the new
+  code (running agent sessions are interrupted; a kept session resumes). A box
+  bootstrapped before this rule named all four: re-run `pi_bootstrap.sh` once
+  as the admin; until then the deploy prints the `sudo systemctl restart ...`
+  an admin has to run. What runs outside the cage --
   the shell of a CLI backend, the MCP servers, the agent process -- runs with
   that user's rights only. Administration is the login user's (`pi`).
   `AGENT_SUDO=none` drops even the service rule; `AGENT_SUDO=full` restores
@@ -210,7 +216,12 @@ What only a person can do, in this order:
   Windows launcher's people mode (`~/.config/delfin/launcher-people.conf`;
   `DELFIN_PI_PEOPLE=0` leaves it off). Each Windows user gets
   `~/people/<name>` as home: own sessions, dashboard and token, tmux and agent
-  service, sharing the installation, the account's credentials and settings.
+  service, sharing the installation and the account's credentials. Settings
+  are layered: the account's `~/.delfin_settings.json` is everyone's defaults
+  (`DELFIN_SETTINGS_DEFAULTS`, exported by the launcher), each person's
+  `~/people/<name>/.delfin_settings.json` keeps only that person's changes.
+  A copy kept from an earlier layout (`.delfin_settings.json.before-shared-*`)
+  is not applied again; merge it by hand if it is still wanted.
   `delfin-people` lists who is there; `delfin-people --attach NAME` shows that
   person's dashboard session. They are one Unix user: everyone can read
   everything in the account, credentials included. Put only neutral, project
@@ -226,15 +237,18 @@ What only a person can do, in this order:
   ids shown (default `agent home archive office`; Settings is always shown).
   `pi_install.sh` applies it on every deploy against the tabs the code has,
   so a tab a later DELFIN adds stays hidden; a change in the dashboard's
-  Settings tab is reset by the next deploy, edit the file instead. Shared by
-  everyone through the launcher's people mode.
+  Settings tab is reset by the next deploy, edit the file instead. It is the
+  default for everyone in the launcher's people mode; a person who changes
+  the tabs in their own dashboard keeps that change across deploys.
 - Agent tab defaults on this box: `~/.config/delfin/pi-agent.conf` (key=value):
   `mode=solo` (Code), `provider=kit`, `model=kit.glm-5.3-flash`,
   `permission_profile=all_free` (Bypass), `effort=` (empty: the model
   profile's default, shown as "Medium (profile default)"). `pi_install.sh`
-  writes it into `~/.delfin_settings.json` on every deploy, so a choice made in
-  the tab lasts until the next deploy; edit the file to change the default.
-  Shared by everyone through the launcher's people mode; each person's agent
+  writes it into the account's `~/.delfin_settings.json` on every deploy, so a
+  choice made in the account's own tab lasts until the next deploy; edit the
+  file to change the default. In the launcher's people mode these are
+  everyone's defaults: a person's own choice is kept in their file across
+  deploys, a value they never set follows the default. Each person's agent
   works in `~/people/<name>/agent_workspace`.
   Bypass asks nothing for work inside the folders the agent may use; the cage
   (bwrap + Landlock) stays, and network, `git push`, installs outside the
