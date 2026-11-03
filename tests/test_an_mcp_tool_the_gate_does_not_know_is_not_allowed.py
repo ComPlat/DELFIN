@@ -291,6 +291,10 @@ _EXPECTED_READ_ONLY = {
     # run tools (mlp_single_point, mlp_optimize, mlp_rank,
     # mlp_preoptimize) deliberately stay off this list: they compute.
     "mlp_list_backends",
+    # mlp_setup_probe / _plan / _verify_result (2026-11-03): inventory,
+    # proposal, result-file read; write nothing. mlp_setup_configure and
+    # mlp_setup_verify write (settings, job directory) and stay off.
+    "mlp_setup_probe", "mlp_setup_plan", "mlp_setup_verify_result",
     # calc_status (2026-09-11): one folder's state with the evidence; reads
     # markers, logs, the state file and the output's tail, writes nothing.
     # extract_spectra_table (2026-09-11): the spectroscopy overview over

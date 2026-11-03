@@ -3485,7 +3485,8 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
 #     stop-all, pause, resume, doctor --repair, where --attach|--write,
 #     jobs watch --on|--off, test-on-slurm.
 #   delfin, read-only: -h/--help, -V/--version, doctor [--json],
-#     qm_check, csp_check, mlp_check, analysis_check.
+#     qm_check, csp_check, mlp_check, analysis_check, mlp_setup
+#     probe|plan|result.
 #   delfin, acting: the bare program (a workflow run), every flag form
 #     (--define, --recalc, --cleanup, --purge, --json ...), cleanup, stop,
 #     co2, run_orca, qm_run, tadf_xtb, hyperpol, cluster, review; and every
@@ -3562,6 +3563,12 @@ _DELFIN_READ_ONLY_SUBCOMMANDS: tuple = (
     ("qm_check", (), (), True),
     ("csp_check", (), (), False),
     ("mlp_check", (), (), False),
+    # mlp_setup: the inventory, the plan and a verify job's result read;
+    # install, configure, verify and remove act and stay asked.
+    ("mlp_setup\\s+probe", ("--json",), (), False),
+    ("mlp_setup\\s+plan", ("--json",),
+     ("--backend", "--partition", "--env-name", "--cuda"), False),
+    ("mlp_setup\\s+result", ("--json",), ("--job-dir",), False),
     ("analysis_check", (), (), False),
 )
 
@@ -7188,6 +7195,12 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     # mlp_list_backends (2026-11-02): reads the backend availability table;
     # computes and writes nothing.
     "mlp_list_backends",
+    # mlp_setup_probe / mlp_setup_plan / mlp_setup_verify_result
+    # (2026-11-03): host inventory, a proposal and a verify job's result
+    # file; they run read-only probes and write nothing. The settings write
+    # (mlp_setup_configure) and the verify job writer (mlp_setup_verify)
+    # stay off this list.
+    "mlp_setup_probe", "mlp_setup_plan", "mlp_setup_verify_result",
     # --- DELFIN ops server: output parsing (reads .out files) ---
     # A tool the ops server registers as read-only but that is missing
     # here is refused in default mode with "no approval dialog

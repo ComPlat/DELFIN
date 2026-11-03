@@ -3056,6 +3056,75 @@ def mlp_extopt_plan(
     }
 
 
+def mlp_setup_probe() -> dict:
+    """Read-only inventory for an orca-mlips set-up on this host.
+
+    Slurm GPU partitions and gres (through delfin.scheduler_client), the
+    NVIDIA driver (nvidia-smi only where present), CUDA toolkit/modules,
+    ORCA >= 6.1, micromamba/mamba/conda, environments with orca-mlips /
+    fairchem / mace / orb / aimnet and their orca-mlips-* ProgExt commands,
+    and the runtime.slurm / runtime.mlp settings. Installs, writes and
+    submits nothing; a missing part is a stated absence.
+    """
+    from delfin.mlp_tools.guided_setup import probe
+    return probe()
+
+
+def mlp_setup_plan(*, backend: str = "", partition: str = "",
+                   env_name: str = "delfin-mlip", cuda: str = "") -> dict:
+    """Proposal for an orca-mlips set-up: partition, backend with its code
+    and weight licence records, the install commands (shown, not run), the
+    settings diff it would write, and the removal command. Read-only."""
+    from delfin.mlp_tools import guided_setup as gs
+    found = gs.probe()
+    plan = gs.propose(found, backend=backend, partition=partition,
+                      env_name=env_name, cuda=cuda)
+    plan["settings_diff"] = gs.configure(plan["settings"])["diff"]
+    plan["probe_summary"] = found["summary"]
+    plan["how_to_install"] = (
+        "Run each command in `commands` (kind 'run') as its own bash call; "
+        "the shell gate asks for every install command in every mode. "
+        "Commands of kind 'manual' are for the user to run themselves.")
+    return plan
+
+
+def mlp_setup_configure(*, backend: str = "", partition: str = "",
+                        env_name: str = "delfin-mlip", cuda: str = "",
+                        write: bool = False) -> dict:
+    """The settings diff of the plan; written through save_settings only
+    with write=True (runtime.slurm.gpu_partitions, runtime.mlp.*)."""
+    from delfin.mlp_tools import guided_setup as gs
+    plan = gs.propose(gs.probe(), backend=backend, partition=partition,
+                      env_name=env_name, cuda=cuda)
+    if write and not plan["partition"]:
+        out = gs.configure(plan["settings"])
+        out["error"] = ("not written: no GPU partition (" + plan["partition_reason"]
+                        + "); pass partition")
+        return out
+    return gs.configure(plan["settings"], write=bool(write))
+
+
+def mlp_setup_verify(*, backend: str = "", job_dir: str = "",
+                     orca: str = "orca") -> dict:
+    """Dry run: write the verify job (water energy+gradient via orca-mlips,
+    cold vs warm call timing, short ExtOpt Opt) for the configured GPU
+    partition. Submits nothing; returns the sbatch command to run."""
+    from delfin.mlp_tools import guided_setup as gs
+    b = backend or gs.load_mlp_backend() or gs.default_backend()[0]
+    return gs.prepare_verify_job(gs.cluster_config(), backend=b,
+                                 job_dir=Path(job_dir) if job_dir else Path.cwd() / "mlp_verify",
+                                 orca=orca)
+
+
+def mlp_setup_verify_result(job_dir: str) -> dict:
+    """Read a verify job directory: pass/fail, the timings, and on failure
+    the likely causes (CUDA mismatch, login, partition, module, env)."""
+    from delfin.mlp_tools import guided_setup as gs
+    res = gs.read_verify_result(Path(job_dir))
+    res["summary"] = gs.verify_summary(res)
+    return res
+
+
 def mlp_preoptimize(xyz: str, backend: str = "ani2x", *, fmax: float = 0.05,
                     steps: int = 200, charge: int = 0, mult: int = 1,
                     device: str = "cpu",
@@ -3275,6 +3344,16 @@ _TOOL_CATALOG: list[dict] = [
     {"name": "mlp_extopt_plan", "category": "ml",
      "summary": "Plan an ORCA+ExtOpt MLP job (dry run: input + sbatch/local "
                 "script, nothing submitted; provider delfin|orca_mlips)."},
+    {"name": "mlp_setup_probe", "category": "checks",
+     "summary": "Probe GPU partitions, CUDA, ORCA, conda and MLIP envs (read-only)."},
+    {"name": "mlp_setup_plan", "category": "checks",
+     "summary": "orca-mlips set-up plan: partition, backend+licences, commands (read-only)."},
+    {"name": "mlp_setup_verify_result", "category": "checks",
+     "summary": "Read an MLIP verify job: pass/fail, timings, likely cause (read-only)."},
+    {"name": "mlp_setup_configure", "category": "ml",
+     "summary": "Write the MLIP settings diff via save_settings (mutating)."},
+    {"name": "mlp_setup_verify", "category": "ml",
+     "summary": "Write the MLIP verify job (dry run; submit via bash sbatch, asked)."},
     {"name": "analysis_check", "category": "checks",
      "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
     {"name": "result_checks", "category": "checks",
