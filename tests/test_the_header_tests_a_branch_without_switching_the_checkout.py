@@ -218,7 +218,13 @@ def test_the_dashboard_no_longer_switches_or_stashes_the_shared_checkout():
     assert "description='SWITCH'" not in src
     assert not re.search(r"_run_git_\w+\([^)]*'stash'", src)
     assert not re.search(r"_run_git_write\([^)]*'switch'", src)
-    assert "'pull', '--ff-only', 'origin', 'main'" in src
+    # The pull moved to delfin/agent/branch_ops.pull_main (UI-free, shared
+    # with the Pi's /pull): the dashboard delegates, and the
+    # fast-forward-only literal is pinned where the command now runs.
+    import delfin.agent.branch_ops as _BO
+    assert "branch_ops.pull_main(rd)" in src
+    assert "'pull', '--ff-only', 'origin', 'main'" in \
+        Path(_BO.__file__).read_text()
     assert "BranchPanel(" in src and "preview_bar(" in src
 
 

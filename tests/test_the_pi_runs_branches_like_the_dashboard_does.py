@@ -126,9 +126,9 @@ def test_pull_refuses_a_non_fast_forward(repo):
          str(other))
     _commit(other, "c.txt")
     _run(other, "push", "-q", "origin", "main")
-    # the checkout makes its own commit on main (diverged)
+    # the checkout makes its own commit on main (diverged); a push would
+    # be refused, which is the situation the checkout is in
     _commit(repo, "d.txt")
-    _run(repo, "push", "-q", "origin", "main")
     _run(other, "pull", "-q", "--rebase", "origin", "main")
     _commit(other, "e.txt")
     _run(other, "push", "-q", "origin", "main")
