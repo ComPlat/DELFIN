@@ -616,20 +616,44 @@ def mark_running_died(sa_id: str, error: str = "") -> None:
     _running_update(sa_id, entry)
 
 
-def read_running(*, include_dead: bool = False) -> dict:
+def entry_session(entry) -> str:
+    """The top-level session id a running entry or finished record belongs to.
+
+    ``""`` for a record written before ownership was recorded, or by a run
+    whose permissions carried no ``task_session_id`` (a bare library call).
+    Such a record belongs to no session: a session-scoped listing leaves it
+    out, and ``list_finished(unassigned=True)`` is the one way to list it.
+    """
+    try:
+        return str((entry or {}).get("owner_session") or "").strip()
+    except AttributeError:
+        return ""
+
+
+def read_running(*, include_dead: bool = False,
+                 session: Optional[str] = None) -> dict:
     """Live registry: {id: {type, description, started_at, actions, last_action}}.
 
     Entries whose owning process is gone are left out: they are leftovers
     from a killed or crashed session, not work in flight. So are entries
     whose run ended without a report (``died``) -- the process is fine,
     the run is not. Pass ``include_dead=True`` to see both, marked with
-    ``dead: True``."""
+    ``dead: True``.
+
+    ``session``: ``None`` (default) returns every entry of the account --
+    the answer the by-id lookups (``subagent_result``, notes, the drain)
+    need. A session id returns only the entries whose ``owner_session`` is
+    that id; an entry without an owner matches no session (see
+    ``entry_session``)."""
+    want = None if session is None else str(session).strip()
     out: dict = {}
     try:
         for f in _RUNNING_DIR.glob("*.json"):
             try:
                 entry = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
+                continue
+            if want is not None and (not want or entry_session(entry) != want):
                 continue
             if entry.get("died"):
                 if include_dead:
@@ -950,6 +974,7 @@ def _save_subagent_session(
     interactions: list[dict],
     error: str = "",
     worktree: dict | None = None,
+    owner_session: str = "",
 ) -> None:
     """Persist a finished subagent conversation for later resumption.
 
@@ -963,6 +988,9 @@ def _save_subagent_session(
     returns an id, so without storing it here the account of the tree
     reached nobody — including the one case that has to be said out loud,
     a tree kept because the run left processes in it.
+
+    ``owner_session`` is the top-level session whose turn started the run
+    (``""`` when none was known); the dashboard archive is scoped by it.
     """
     try:
         record = {
@@ -970,6 +998,7 @@ def _save_subagent_session(
             "subagent_type": subagent_type,
             "description": (description or "")[:200],
             "finished_at": time.time(),
+            "owner_session": (owner_session or "").strip(),
             "messages": [
                 {"role": m.get("role", ""),
                  "content": _trim_for_store(str(m.get("content", "")))}
@@ -1048,30 +1077,77 @@ def load_subagent_session(sa_id: str) -> dict | None:
         return None
 
 
-def list_finished(last_n: int = _SESSIONS_LIST_LIMIT) -> list[dict]:
+# (path -> ((mtime_ns, size), summary)). A session-scoped listing has to
+# read past the other sessions' records to fill its own limit, and the
+# dashboard asks every 1.5 s while a delegate runs; a finished record is
+# up to ~100 KB of stored conversation, of which the listing needs six
+# fields. Keyed by mtime and size so a resumed run (same file, rewritten)
+# is read again.
+_FINISHED_SUMMARY_CACHE: dict = {}
+
+
+def _finished_summary(p: Path) -> Optional[dict]:
+    try:
+        st = p.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+    hit = _FINISHED_SUMMARY_CACHE.get(str(p))
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        summary = {
+            "sa_id": rec.get("sa_id", p.stem),
+            "subagent_type": rec.get("subagent_type", ""),
+            "description": rec.get("description", ""),
+            "finished_at": rec.get("finished_at", 0),
+            "error": rec.get("error", ""),
+            "owner_session": entry_session(rec),
+        }
+    except Exception:
+        return None
+    if len(_FINISHED_SUMMARY_CACHE) > 4096:
+        _FINISHED_SUMMARY_CACHE.clear()
+    _FINISHED_SUMMARY_CACHE[str(p)] = (key, summary)
+    return summary
+
+
+def list_finished(last_n: int = _SESSIONS_LIST_LIMIT, *,
+                  session: Optional[str] = None,
+                  unassigned: bool = False) -> list[dict]:
     """Most recently finished subagent sessions, newest first.
 
     The limit applies at READ time only — older session files stay on
     disk untouched.
+
+    Scope: ``session=None`` and ``unassigned=False`` (default) list the
+    whole account, as before. ``session=<id>`` lists only the records that
+    session's turns started (``owner_session``); ``unassigned=True`` lists
+    only records with no owner -- written before ownership was recorded, or
+    by a run without a session. The limit counts the records IN scope, so
+    another session's newer runs cannot push this session's out.
     """
     try:
         files = sorted(_SESSIONS_DIR.glob("*.json"),
                        key=lambda p: p.stat().st_mtime, reverse=True)
     except Exception:
         return []
+    want = None if session is None else str(session).strip()
+    limit = max(1, int(last_n or _SESSIONS_LIST_LIMIT))
     out: list[dict] = []
-    for p in files[: max(1, int(last_n or _SESSIONS_LIST_LIMIT))]:
-        try:
-            rec = json.loads(p.read_text(encoding="utf-8"))
-            out.append({
-                "sa_id": rec.get("sa_id", p.stem),
-                "subagent_type": rec.get("subagent_type", ""),
-                "description": rec.get("description", ""),
-                "finished_at": rec.get("finished_at", 0),
-                "error": rec.get("error", ""),
-            })
-        except Exception:
+    for p in files:
+        if len(out) >= limit:
+            break
+        summary = _finished_summary(p)
+        if summary is None:
             continue
+        owner = summary.get("owner_session", "")
+        if unassigned and owner:
+            continue
+        if want is not None and (not want or owner != want):
+            continue
+        out.append(dict(summary))
     return out
 
 
@@ -3745,6 +3821,28 @@ def run_subagent(
         sub_perms.subagent_id = _sa_id
     except Exception:
         pass
+    # The session the run belongs to: the one that reserved it (a
+    # background run -- the thread reads the client's CURRENT permissions,
+    # which a dashboard switched to another session would already have
+    # re-pointed), else the parent's task_session_id, which a nested
+    # delegate's permissions inherit from the top level via
+    # dataclasses.replace in _derive_perms. A resume run without a session
+    # keeps the owner its stored record had.
+    try:
+        _reserved = read_running(include_dead=True).get(_sa_id) or {}
+    except Exception:
+        _reserved = {}
+    _sa_owner = (entry_session(_reserved)
+                 or str(getattr(parent_perms, "task_session_id", "") or "").strip()
+                 or entry_session(prior))
+    # Only a reservation makes a run a background one. The Background panel
+    # lists background work; a foreground run blocks the turn that is on
+    # screen, and before it carried an owner the panel left it out.
+    _sa_foreground = not bool(_reserved)
+    _sa_scope = {
+        **({"owner_session": _sa_owner} if _sa_owner else {}),
+        **({"foreground": True} if _sa_foreground else {}),
+    }
     _sa_started = time.time()
     _sa_actions: list[str] = []
     # Rich live transcript (text the subagent writes + tool calls with brief
@@ -3761,6 +3859,7 @@ def run_subagent(
             "actions": _sa_actions[-12:],
             "last_action": _sa_actions[-1] if _sa_actions else "",
             "transcript": _sa_transcript[-40:],
+            **_sa_scope,
         })
 
     def _sa_flush_text() -> None:
@@ -3777,6 +3876,7 @@ def run_subagent(
         "actions": [],
         "last_action": "",
         "transcript": [],
+        **_sa_scope,
     })
 
     try:
@@ -3990,6 +4090,7 @@ def run_subagent(
         interactions=all_interactions,
         error=error,
         worktree=worktree_summary,
+        owner_session=_sa_owner,
     )
     # Persist a telemetry record so the dashboard /agents stats command
     # and the subagent-pane can show real costs/durations across runs.
@@ -4675,6 +4776,7 @@ __all__ = [
     "extract_json_object",
     "load_subagent_session",
     "list_finished",
+    "entry_session",
     "get_subagent_result",
     "reserve_running",
     "post_note",

@@ -27047,7 +27047,13 @@ class _DocToolExecutor:
         text = str(arguments.get("message") or "").strip()
         if me:
             return json.dumps(_sa.post_reply(me, text), ensure_ascii=False)
-        running = _sa.read_running() or {}
+        # The session's own delegates. The registry is account-wide, and
+        # unscoped a session listed -- and with to="all" wrote into -- the
+        # delegates another session had started. Without a session id (a
+        # bare executor) the old account-wide answer stays.
+        _own = str(getattr(perms, "task_session_id", "") or "").strip()
+        running = (_sa.read_running(session=_own) if _own
+                   else _sa.read_running()) or {}
         if to.lower() in ("all", "*", "everyone"):
             # One fact to every delegate, in one call. The alternative was
             # a channel BETWEEN siblings, and this is the mandated form of
@@ -27085,6 +27091,15 @@ class _DocToolExecutor:
             }, ensure_ascii=False)
         if not text:
             return json.dumps({"error": "message is required."})
+        if _own and to not in running:
+            # post_note resolves the id account-wide; another session's
+            # delegate is not this session's to direct.
+            return json.dumps({
+                "error": (f"no delegate {to!r} of this session is running; "
+                          "if it finished, its answer is in its report "
+                          "(subagent_result)."),
+                "delegates": sorted(running),
+            }, ensure_ascii=False)
         if _sa.post_note(to, text):
             return json.dumps({"status": "sent", "to": to})
         if to not in running:
