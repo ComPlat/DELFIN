@@ -44,7 +44,9 @@ comment (:func:`with_unsure`); readers of the review look for that word (or
 ``unsure``) in the comment, so the file format stays as it was.
 
 ``delfin review summary <review.json>`` prints the counts per verdict and per
-category and writes the records as CSV.
+category and writes the records as CSV.  ``delfin review assign | merge |
+unpack | submit`` share a set out to a team of reviewers and bring their
+ratings back together (:mod:`delfin.review_team`).
 """
 
 from __future__ import annotations
@@ -73,6 +75,61 @@ DEFAULT_CATEGORIES: tuple[str, ...] = (
     'wrong isomer',
     'other',
 )
+
+# What a category code means, for the reviewer: a short label for the button and
+# one sentence (the table of docs/REVIEW_TEAM_GUIDE.md).  The code stays what is
+# stored; a category without an entry shows its code.
+CATEGORY_INFO: dict[str, tuple[str, str]] = {
+    'H': ('H atoms', 'a hydrogen is missing, stretched, at a wrong angle, points into '
+          'the metal or sits on the metal'),
+    'LAENGE_ML': ('M–L length', 'a metal-ligand or metal-metal distance visibly too '
+                  'long or too short (the ligand is still bound)'),
+    'DURCHDRINGUNG': ('Interpenetration', 'ligands or rings stuck through each other, '
+                      'a bond threaded through a ring'),
+    'CLASH': ('Clash', 'atoms too close without interpenetration (also H...H)'),
+    'METALLKONTAKT': ('Metal contact', 'a heavy atom that is not a donor sits at the '
+                      'metal (a hydrogen at the metal: H atoms)'),
+    'TOPO': ('Topology', 'a bond missing or one too many, a ligand clearly torn off, a '
+             'wrong donor atom, a fragment or counter-ion floating away or stuck '
+             'inside another'),
+    'HYB': ('Angle / hybrid.', 'a wrong angle, sp3 flat, sp2 pyramidal, a linear group '
+            'bent (also one angle at a donor)'),
+    'PLANAR': ('Planarity', 'an aromatic ring or sp2 framework not flat, an amide, '
+               'ester or conjugated bond twisted'),
+    'POLYEDER': ('Polyhedron', 'the coordination geometry at the metal is implausible'),
+    'SONST': ('Other (comment)', 'something else: always write a comment'),
+    'DONOR': ('Donor direction', 'a whole donor turned away from the metal, its lone '
+              'pair not pointing at the metal, the metal out of the donor plane'),
+    'LAENGE_KOV': ('Bond length', 'a covalent bond too long or too short'),
+    'KOLLAPS': ('Collapse', 'a ring or ligand balled up, the molecule too compact'),
+    'HAPTO': ('Hapticity', 'a pi ligand slipped, wrong hapticity'),
+    'STEREO': ('Stereo', 'wrong configuration (R/S, E/Z, atropisomer)'),
+    'KONFORMER': ('Conformer', 'an unrealistic conformation (eclipsed, a ring bent, a '
+                  'boat without reason)'),
+    'FORMEL': ('Formula', 'atoms missing or too many, an H on the wrong atom '
+               '(tautomer, protonation)'),
+    'SYMMETRIE': ('Symmetry', 'chemically equal parts visibly built unequal (equal '
+                  'ligands at different distances, a Cp ring tilted)'),
+}
+
+# Where two categories are close (the guide's list), shown with the meanings.
+CATEGORY_BOUNDARIES: tuple[str, ...] = (
+    'stuck through each other = Interpenetration; only too close = Clash',
+    'one angle at a donor = Angle / hybrid.; the whole donor turned away = Donor direction',
+    'still bound but too long = M–L length; clearly gone = Topology',
+    'a hydrogen at the metal = H atoms; a heavy atom at the metal = Metal contact',
+)
+
+
+def category_label(cat: str) -> str:
+    """The button label of category *cat* (its code when it has no entry)."""
+    return CATEGORY_INFO.get(cat, (cat, ''))[0]
+
+
+def category_meaning(cat: str) -> str:
+    """One sentence on what category *cat* means ('' when it has no entry)."""
+    return CATEGORY_INFO.get(cat, (cat, ''))[1]
+
 
 VERDICTS = ('pass', 'block')
 SCHEMA_VERSION = 1
@@ -283,21 +340,38 @@ class ReviewSession:
     position: int = 0
     order: list[tuple[str, int]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # The files this reviewer was given by a team assignment, in the order
+    # they are shown (None: every file of the folder, in name order).
+    assigned: list[str] | None = None
 
     # -- opening -----------------------------------------------------------
     @classmethod
     def open(cls, source, *, name: str = '', review_path=None, blind: bool = False,
              seed: int = 0, findings_path=None,
              categories: Iterable[str] | None = None,
-             default_categories: Iterable[str] | None = None) -> ReviewSession:
+             default_categories: Iterable[str] | None = None,
+             files: Sequence[str] | None = None) -> ReviewSession:
         """Open a multi-frame XYZ file or a folder of them and resume its review.
 
         *categories* replaces the stored list; *default_categories* is used
         only by a review that has none stored yet, so a list set up before
         a new review is opened is kept and a resumed review keeps its own.
+        *files* (a folder only) restricts the review to these file names,
+        shown in this order: the share of one reviewer in a team
+        (:mod:`delfin.review_team`).
         """
         source = Path(source).expanduser()
-        if source.is_dir():
+        missing: list[str] = []
+        if source.is_dir() and files is not None:
+            folder = source
+            paths = []
+            for fname in dict.fromkeys(str(f) for f in files):
+                path = source / fname
+                if path.is_file():
+                    paths.append(path)
+                else:
+                    missing.append(fname)
+        elif source.is_dir():
             folder = source
             paths = sorted(p for p in source.glob('*.xyz') if p.is_file())
         elif source.is_file():
@@ -310,6 +384,9 @@ class ReviewSession:
         index = read_index(folder)
         frames: list[Frame] = []
         warnings: list[str] = []
+        if missing:
+            warnings.append(f'{len(missing)} assigned file(s) not in the folder '
+                            f'(first: {missing[0]})')
         files_meta = data.setdefault('files', {})
         for path in paths:
             rel = path.name
@@ -347,7 +424,9 @@ class ReviewSession:
             findings_path = folder / FINDINGS_NAME
         session = cls(source=source, review_path=review_path, frames=frames,
                       data=data, findings=read_findings(findings_path),
-                      warnings=warnings)
+                      warnings=warnings,
+                      assigned=([p.name for p in paths]
+                                if files is not None and source.is_dir() else None))
         session.set_mode(blind, seed)
         return session
 
@@ -637,8 +716,8 @@ def iter_records(data: dict[str, Any]):
             yield fname, int(key), rec, bool(sha and rec.get('sha256') != sha)
 
 
-def write_csv(data: dict[str, Any], path: Path) -> None:
-    """One row per rating, and one with an empty verdict per comment on an unrated frame."""
+def csv_rows(data: dict[str, Any]):
+    """The rows :func:`write_csv` writes (``CSV_FIELDS`` + ``stale``), in file and frame order."""
     files = data.get('files', {})
     rows = list(iter_records(data))
     rated = {(f, i) for f, i, _, stale in rows if not stale}
@@ -648,29 +727,35 @@ def write_csv(data: dict[str, Any], path: Path) -> None:
             if str(key).isdigit() and (fname, int(key)) not in rated:
                 rows.append((fname, int(key), rec, bool(sha and rec.get('sha256') != sha)))
     rows.sort(key=lambda row: (row[0], row[1]))
+    for fname, idx, rec, stale in rows:
+        meta = files.get(fname, {})
+        yield {
+            'file': fname,
+            'frame': idx,
+            'label': rec.get('label', ''),
+            'verdict': rec.get('verdict', ''),
+            'categories': ';'.join(rec.get('categories') or []),
+            'note': rec.get('note', ''),
+            'timestamp': rec.get('timestamp', ''),
+            'sha256': rec.get('sha256', ''),
+            'blind_number': rec.get('blind_number', ''),
+            'smiles': rec.get('smiles') or (meta.get('index') or {}).get('smiles', ''),
+            'file_comment': meta.get('comment', ''),
+            'atoms': ';'.join(str(i) for i in rec.get('atoms') or []),
+            'atoms_by_category': ';'.join(
+                f'{c}:' + ','.join(str(i) for i in v)
+                for c, v in (rec.get('atoms_by_category') or {}).items()),
+            'stale': 'yes' if stale else '',
+        }
+
+
+def write_csv(data: dict[str, Any], path: Path) -> None:
+    """One row per rating, and one with an empty verdict per comment on an unrated frame."""
     with open(path, 'w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS + ('stale',))
         writer.writeheader()
-        for fname, idx, rec, stale in rows:
-            meta = files.get(fname, {})
-            writer.writerow({
-                'file': fname,
-                'frame': idx,
-                'label': rec.get('label', ''),
-                'verdict': rec.get('verdict', ''),
-                'categories': ';'.join(rec.get('categories') or []),
-                'note': rec.get('note', ''),
-                'timestamp': rec.get('timestamp', ''),
-                'sha256': rec.get('sha256', ''),
-                'blind_number': rec.get('blind_number', ''),
-                'smiles': rec.get('smiles') or (meta.get('index') or {}).get('smiles', ''),
-                'file_comment': meta.get('comment', ''),
-                'atoms': ';'.join(str(i) for i in rec.get('atoms') or []),
-                'atoms_by_category': ';'.join(
-                    f'{c}:' + ','.join(str(i) for i in v)
-                    for c, v in (rec.get('atoms_by_category') or {}).items()),
-                'stale': 'yes' if stale else '',
-            })
+        for row in csv_rows(data):
+            writer.writerow(row)
 
 
 def summarize(data: dict[str, Any]) -> dict[str, Any]:
@@ -709,7 +794,7 @@ def format_summary(summary: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CLI: delfin review summary <review.json>
+# CLI: delfin review summary <review.json>  (and assign | merge | unpack | submit)
 # ---------------------------------------------------------------------------
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -721,7 +806,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument('--csv', default=None,
                    help='CSV to write (default: next to the review file)')
     s.add_argument('--no-csv', action='store_true', help='Only print, write no CSV')
+    # Sharing a set out to a team of reviewers and bringing it back together.
+    from delfin import review_team
+    review_team.add_parsers(sub)
     args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.cmd in review_team.COMMANDS:
+        return review_team.run(args)
     if args.cmd != 'summary':
         parser.print_help()
         return 2
@@ -744,7 +834,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     'CATEGORY_FILE_NAME', 'DEFAULT_CATEGORIES', 'Frame', 'ReviewSession', 'UNSURE_WORD',
-    'blinded_order', 'clean_categories', 'default_review_path', 'format_summary',
+    'blinded_order', 'clean_categories', 'csv_rows', 'default_review_path', 'format_summary',
     'is_unsure', 'load_review', 'main', 'parse_frames', 'read_category_file',
     'read_findings', 'read_index', 'summarize', 'with_unsure', 'write_csv',
 ]

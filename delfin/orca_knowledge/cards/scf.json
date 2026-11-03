@@ -1,0 +1,1498 @@
+[
+ {
+  "id": "scf.slowconv-tm-default",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "SlowConv selects SCF solver parameters appropriate for difficult cases; most transition metal complexes fall into this category.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SlowConv"
+  ],
+  "when": {
+   "system": "transition metal complex or other difficult SCF case"
+  },
+  "recommend": {
+   "set": [
+    "SlowConv"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.11 Keywords, Table 2.11"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.veryslowconv",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "VerySlowConv selects appropriate SCF solver parameters for very difficult cases where SlowConv is not enough.",
+  "orca": ">=6.0",
+  "keywords": [
+   "VerySlowConv"
+  ],
+  "when": {
+   "system": "pathological SCF convergence, e.g. open-shell transition metal complexes that do not converge with SlowConv"
+  },
+  "recommend": {
+   "set": [
+    "VerySlowConv"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.11 Keywords, Table 2.11"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.convergence-integral-threshold",
+  "topic": "scf",
+  "kind": "check",
+  "statement": "The Convergence keywords (SloppySCF ... ExtremeSCF) set both the SCF target tolerances and the integral accuracy (Thresh, TCut, BFCut; Table 2.9). If the integral error is larger than the convergence criterion, a direct SCF cannot converge, so a manually loosened Thresh/TCut, or TolE/TolRMSP tightened in %scf without tightening Thresh, must be avoided.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SloppySCF",
+   "LooseSCF",
+   "NormalSCF",
+   "StrongSCF",
+   "TightSCF",
+   "VeryTightSCF",
+   "ExtremeSCF"
+  ],
+  "when": {
+   "condition": "Thresh/TCut set manually, or SCF tolerances tightened in %scf instead of via a Convergence keyword"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.1 Convergence"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "The quoted fact is correct, but as kind=requirement/severity=error triggered by any tightened convergence keyword it would flag every TightSCF input as an error. The compound keywords already tighten Thresh/TCut themselves (Table 2.9); the actionable hazard is a manually set Thresh/TCut (or a %scf TolE override) that leaves the integral error larger than the target tolerance.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.tightscf-tm",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "TightSCF is often used for calculations on transition metal complexes; its thresholds are TolE=1e-8, TolRMSP=5e-9, TolMaxP=1e-7, TolErr=5e-7, Thresh=2.5e-11.",
+  "orca": ">=6.0",
+  "keywords": [
+   "TightSCF"
+  ],
+  "when": {
+   "system": "transition metal complex"
+  },
+  "recommend": {
+   "set": [
+    "TightSCF"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.1 Convergence"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.default-conv-sufficient",
+  "topic": "scf",
+  "kind": "default",
+  "statement": "The default SCF convergence criteria (NormalSCF; the manual places the default between Medium and Strong) are reasonable and sufficient for most purposes. For a cursory look at populations weaker convergence (e.g. LooseSCF) may be sufficient, whereas other cases may require stronger than default convergence (e.g. TightSCF).",
+  "orca": ">=6.0",
+  "keywords": [
+   "NormalSCF",
+   "LooseSCF"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.1 Convergence"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Drops the second half of the sentence ('other cases may require stronger than default convergence'), so an agent reading it would never tighten. The manual also describes the default as 'between medium and strong' rather than naming it; NormalSCF is listed in Table 2.10 and is the ORCA default name, which is fine to keep.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.scfconvn-not-recommended",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "The SCFCONV<n> keywords (n=6-12) set TolE=10^-n and most other tolerances to appropriate values, but Z_Tol, TolRMSP and TolMAXP are not adjusted; the manual therefore recommends using the Convergence keywords (StrongSCF, TightSCF, ...) instead.",
+  "orca": ">=6.0",
+  "keywords": [],
+  "avoid": [
+   "SCFCONV<n> where Z_Tol/TolRMSP/TolMAXP matter"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.1 Convergence, after Table 2.9; Table 2.11"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.convcheckmode1-dangerous",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "ConvCheckMode=1 accepts convergence as soon as one criterion is met, which is dangerous: if any criterion is too weak the result is unreliable. ConvCheckMode=0 requires all criteria (it may accept one missed criterion if the others are overachieved; used by ExtremeSCF); the default ConvCheckMode=2 checks the change in total energy (TolE) and in the one-electron energy (1e3*TolE).",
+  "orca": ">=6.0",
+  "keywords": [],
+  "when": {
+   "condition": "ConvCheckMode is set explicitly in the %scf block"
+  },
+  "avoid": [
+   "ConvCheckMode=1"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.1 Convergence"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Content correct, but keywords=['TightSCF'] is wrong (TightSCF sets ConvCheckMode 2, so a matcher would attach a 'dangerous' warning to every TightSCF input), and kind=incompatibility is wrong: nothing is incompatible, it is a risky setting. Also ConvCheckMode=0 accepts convergence when one criterion misses but the others are overachieved.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.convforced-posthf",
+  "topic": "scf",
+  "kind": "default",
+  "statement": "ConvForced defaults to ConvForced=1 for Post-HF methods, excited-states runs and broken-symmetry calculations, breaking off if the SCF did not meet the convergence criteria; this default can be overwritten with ConvForced=0.",
+  "orca": ">=6.0",
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.1 Convergence"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.nonconverged-props-refused",
+  "topic": "scf",
+  "kind": "requirement",
+  "statement": "Properties and numerical calculations (NumGrad, NumFreq) will not be performed on non-converged wavefunctions, irrespective of the chosen ConvForced value.",
+  "orca": ">=6.0",
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.1 Convergence"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.cnvdamp-cnvzerner-exclusive",
+  "topic": "scf",
+  "kind": "incompatibility",
+  "statement": "Static damping (CNVDamp=true) and dynamic Zerner damping (CNVZerner=true) are mutually exclusive convergers; damping is most useful in the early stages of an SCF before the calculation is within the convergence radius of DIIS or SOSCF.",
+  "orca": ">=6.0",
+  "avoid": [
+   "CNVDamp true together with CNVZerner true"
+  ],
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.2 Dynamic and Static Damping"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.damping-factor-range",
+  "topic": "scf",
+  "kind": "limit",
+  "statement": "The damping factor must be less than 1 (permissible range 0 to 0.999999, not checked by the program); for a factor larger than 1 no new density is admixed and the calculation cannot proceed.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "DampFac is set in the %scf block"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.2 Dynamic and Static Damping"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.damperr-small-hard-cases",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "DampErr is the DIIS error (or orbital gradient for SOSCF) below which damping is turned off; the default is 0.1 Eh, but in difficult cases it is a good idea to choose DampErr much smaller, e.g. 0.001. With !SlowConv this is chosen automatically to some extent.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SlowConv"
+  ],
+  "when": {
+   "condition": "damping is used together with DIIS or SOSCF in a difficult case"
+  },
+  "recommend": {
+   "set": [
+    "DampErr much smaller than the default 0.1, e.g. 0.001"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.2 Dynamic and Static Damping"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.dampfac-large-hard-cases",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "To guide a hard SCF into the convergence regime, start with a large damping factor (DampFac=0.90 or even larger) and turn damping off at a relatively small DIIS error (e.g. DampErr=0.02); this increases the number of cycles but may make the calculation converge. The DampFac default is 0.7.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "poor SCF convergence, especially open-shell"
+  },
+  "recommend": {
+   "set": [
+    "DampFac=0.90 or larger",
+    "DampErr=0.02 or smaller"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.9 Tips and Tricks: Converging SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.levelshift-large-hard-cases",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "Large level shifts (e.g. shift shift 0.5 erroff 0 end) increase the number of iterations but stabilize the converger; level shifting shifts the virtual orbitals up so occupied and virtual orbitals mix less and near-degenerate states do not flip.",
+  "orca": ">=6.0",
+  "keywords": [
+   "LShift"
+  ],
+  "when": {
+   "condition": "poor SCF convergence or state flipping in near-degenerate cases"
+  },
+  "recommend": {
+   "set": [
+    "large level shift, e.g. Shift Shift 0.5 ErrOff 0 end"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.3 Level Shifting; 2.6.9 Tips and Tricks"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.diis-maxeq-values",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "DIISMaxEq is the maximum number of old Fock matrices remembered (default 5); values of 5-7 have been recommended while other users store 10-15. If standard DIIS does not achieve convergence, experimenting with this parameter can be worthwhile.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DIIS"
+  ],
+  "when": {
+   "condition": "DIIS convergence is slow or absent"
+  },
+  "recommend": {
+   "set": [
+    "DIISMaxEq 5-7 (up to 10-15 possible)"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.4 Direct Inversion in Iterative Subspace (DIIS)"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.diis-defaults",
+  "topic": "scf",
+  "kind": "default",
+  "statement": "DIIS defaults: DIISStart=0.2 Eh (DIIS usually starts after 0-3 cycles), DIISMaxIt=12, DIISMaxEq=5, DIISBFac=1.05. If DIIS causes problems early in the SCF, start it later by lowering DIISStart (e.g. 0.1); DIISMaxIt is the cycle after which DIIS is started irrespective of the error value.",
+  "orca": ">=6.0",
+  "keywords": [
+   "DIIS"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.4 Direct Inversion in Iterative Subspace (DIIS)"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Defaults are correct, but the DIISMaxIt sentence is wrong in direction: DIISMaxIt is the maximum number of cycles after which DIIS starts irrespective of the error (an upper bound on the start), not a way to 'start DIIS later'. Lowering DIISStart is the way to delay DIIS.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.soscf-only-late",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "SOSCF is less robust than DIIS and can even diverge when the orbital gradient is large, so it should only be invoked in the very end of the SCF where DIIS shows trailing convergence; SOSCFStart (default 0.01) is the orbital-gradient/DIIS-error threshold at which it starts, SOSCFMaxIt (default 1000) the latest iteration to start it. SOSCF is useful when DIIS gets stuck at an error around 0.001 or 0.0001.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SOSCF"
+  ],
+  "when": {
+   "condition": "DIIS gets stuck at an error around 0.001 or 0.0001"
+  },
+  "avoid": [
+   "starting SOSCF at the beginning of an SCF with a large orbital gradient"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.6 Approximate Second Order SCF (SOSCF)"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.kdiis-scope",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "KDIIS (Kollmar's DIIS) combines DIIS extrapolation with first-order perturbation theory, is diagonalization-free, and is reported to be superior to standard DIIS in many cases but not always; it is invoked with !KDIIS and is available for RHF, UHF and CASSCF.",
+  "orca": ">=6.0",
+  "keywords": [
+   "KDIIS"
+  ],
+  "when": {
+   "condition": "standard DIIS convergence is slow or absent, for RHF/UHF/CASSCF"
+  },
+  "recommend": {
+   "set": [
+    "KDIIS"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.5 Kolmar's DIIS (KDIIS)"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.trah-first-hard-cases",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "For troublesome or lacking SCF convergence the TRAH (trust-region augmented Hessian) algorithm should be used; in exact arithmetic and absent numerical noise TRAH will always converge, achieving quadratic convergence near the solution. If it does not converge, increase MaxIter or tighten numerical thresholds (e.g. grid accuracy).",
+  "orca": ">=6.0",
+  "keywords": [
+   "TRAH"
+  ],
+  "when": {
+   "condition": "DIIS fails or converges poorly"
+  },
+  "recommend": {
+   "set": [
+    "TRAH"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.4 (end); 2.6.7.5 Practical Notes"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.autotrah-automatic",
+  "topic": "scf",
+  "kind": "default",
+  "statement": "Unless disabled with !NoTRAH or %scf AutoTRAH false, TRAH is switched on automatically when convergence problems are present (AutoTRAH, default true). After AutoTRAHIter (default 20) iterations, a linear fit of log10 of the gradient norm over the last AutoTRAHNInter (default 10) iterations gives a slope s; if s < AutoTRAHTol (default 1.125), the standard SCF is stopped and TRAH continues from the current orbitals.",
+  "orca": ">=6.0",
+  "keywords": [
+   "TRAH",
+   "NoTRAH"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.7 Trust-Region Augmented Hessian (TRAH) SCF, 2.6.7.1 AutoTRAH; 2.6.4 (end)"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Defaults and switches are correct; the trigger condition is garbled ('slope s is slower than AutoTRAHTol'). The manual: linear fit of log10(||g||) over the last AutoTRAHNInter iterations; TRAH starts if the convergence rate is slower than 10^-s with s < AutoTRAHTol, continuing from the current orbitals.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.trah-rohf-roks-unsupported",
+  "topic": "scf",
+  "kind": "limit",
+  "statement": "TRAH is implemented for RHF, RKS, UHF and UKS; ROHF and ROKS are not yet supported. It supports RIJ, RIJONX, RIJK and RIJCOSX and is compatible with solvation models such as C-PCM and SMD.",
+  "orca": ">=6.0",
+  "keywords": [
+   "TRAH"
+  ],
+  "when": {
+   "method": "ROHF or ROKS"
+  },
+  "avoid": [
+   "TRAH for ROHF/ROKS"
+  ],
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.7.3 Performance and Implementation Details"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.trah-libxc",
+  "topic": "scf",
+  "kind": "limit",
+  "statement": "Some functionals lack ORCA-native kernels (e.g. PWPB95); use LIBXC(...) to get TRAH support for them.",
+  "orca": ">=6.0",
+  "keywords": [
+   "TRAH"
+  ],
+  "when": {
+   "condition": "TRAH with a functional lacking an ORCA-native kernel"
+  },
+  "recommend": {
+   "set": [
+    "LIBXC(<functional>)"
+   ]
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.7.5 Practical Notes, LibXC Compatibility"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.trah-precond-full-ri",
+  "topic": "scf",
+  "kind": "requirement",
+  "statement": "For TRAH preconditioning with Precond=FULL, which uses the exact Hessian for a subset of important MO pairs (helping small RHF/UHF systems but not necessarily large molecules or DFT), RI and the auxiliary basis (/C) must be provided.",
+  "orca": ">=6.0",
+  "keywords": [
+   "TRAH"
+  ],
+  "when": {
+   "condition": "%scf trah Precond FULL"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.7.4 Input Parameters"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.trah-local-minimum",
+  "topic": "scf",
+  "kind": "default",
+  "statement": "With TRAH the converged SCF solution is a true local minimum of the energy with respect to orbital rotations (not a saddle point) within the chosen wavefunction space, but not necessarily the global minimum; a lower state (or an RHF->UHF instability) may still exist and is checked with a stability analysis or other guesses.",
+  "orca": ">=6.0",
+  "keywords": [
+   "TRAH"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6 Self-Consistent-Field (SCF), introduction"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Misread: the manual is not imposing a requirement on the user but stating a property of the TRAH result (it converges to a true local minimum, never a saddle point). As kind=requirement it would make the agent treat 'local minimum' as a precondition. Chemistry: the minimum is only within the chosen space (an RHF/RKS minimum can still be unstable towards UHF/UKS), and it need not be the lowest state. Id also contains a typo ('trau').",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.smearing-not-with-soscf",
+  "topic": "scf",
+  "kind": "incompatibility",
+  "statement": "Finite-temperature SCF (fractional occupation numbers or FOD analysis) cannot be used together with SOSCF methods.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SOSCF",
+   "FracOcc",
+   "Smear",
+   "FOD"
+  ],
+  "avoid": [
+   "SOSCF together with Smear/FracOcc/FOD"
+  ],
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.8 Finite Temperature SCF, Note"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.smear-default-temp",
+  "topic": "scf",
+  "kind": "keyword",
+  "statement": "!Smear enables Fermi-like occupation-number smearing with SmearTemp=5000 K (and also computes FOD); the temperature is set with %scf SmearTemp <K>, and !NoSmear disables it. Gradients can be computed with smearing. Smearing yields fractional occupations, so the energy and density differ from the ground-state SCF solution; for a production result use the smeared orbitals only as a guess and re-converge without smearing. Not combinable with SOSCF.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Smear"
+  ],
+  "recommend": {
+   "set": [
+    "Smear only to generate starting orbitals in near-hopeless cases, then re-converge with NoSmear (MORead)"
+   ]
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.8 Finite Temperature SCF; Table 2.11"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "avoid": [
+   "reporting energies/properties from a smeared SCF as ground-state results"
+  ],
+  "review_note": "Text-supported, but the recommend field ('SmearTemp 5000 for very difficult convergence') has no caveat. Chemistry: smearing converges a different (finite-temperature, fractionally occupied) state; its energy, density and gradient are not those of the ground-state determinant. Smeared orbitals must be used only as a guess and the final calculation re-converged without smearing (NoSmear / MORead). Also !Smear additionally computes FOD, and it cannot be combined with SOSCF.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.fracocc-scope",
+  "topic": "scf",
+  "kind": "limit",
+  "statement": "FracOcc provides only a very basic implementation of fractional occupation numbers, meant for orbitally degenerate states in UHF/UKS to avoid symmetry breaking; it averages occupations over degenerate orbital sets of the initial guess (criterion 1e-3 Eh). The program prints a warning whenever it uses fractional occupations, and the fractionally occupied orbitals should be checked to be the intended ones.",
+  "orca": ">=6.0",
+  "keywords": [
+   "FracOcc"
+  ],
+  "when": {
+   "method": "UHF/UKS on an orbitally degenerate molecule or atom"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.8.1 Fractional Occupation Numbers"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.fracocc-cmatrix-problem",
+  "topic": "scf",
+  "kind": "incompatibility",
+  "statement": "Using GuessMode=CMatrix together with FracOcc causes problems: CMatrix guess orbitals have no orbital energies, so the program would average occupation numbers over ALL orbitals, which makes no sense.",
+  "orca": ">=6.0",
+  "keywords": [
+   "FracOcc"
+  ],
+  "avoid": [
+   "GuessMode CMatrix together with FracOcc"
+  ],
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.8.1 Fractional Occupation Numbers, Note"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.fod-defaults",
+  "topic": "scf",
+  "kind": "default",
+  "statement": "The !FOD keyword performs the fractional-occupation-number-weighted density (FOD) analysis with default settings TPSS/def2-TZVP, TightSCF, SmearTemp=5000 K.",
+  "orca": ">=6.0",
+  "keywords": [
+   "FOD",
+   "TightSCF",
+   "Smear"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.11 Keywords, Table 2.11"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.strategy-small-basis-first",
+  "topic": "scf",
+  "kind": "procedure",
+  "statement": "Standard strategy for poor SCF convergence (DFT): (1) converge a small-basis (SV) calculation with a LSD or BP functional and RI, Convergence=Loose, MaxIter~200, using SlowConv or VerySlowConv with large damping; (2) restart with the target basis via those orbitals and GuessMode=CMatrix using a pure GGA functional (e.g. BP86); (3) converge with the target functional and grid. If DIIS gets stuck around 0.001, switch on SOSCF or better TRAH from that point.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SlowConv",
+   "VerySlowConv",
+   "LooseSCF",
+   "SOSCF",
+   "TRAH"
+  ],
+  "when": {
+   "condition": "SCF does not converge, almost invariably open-shell situations"
+  },
+  "recommend": {
+   "set": [
+    "small-basis loose-convergence pre-calculation, then CMatrix projection to the target basis"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.9 Tips and Tricks: Converging SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.check-units-and-starting-orbitals",
+  "topic": "scf",
+  "kind": "check",
+  "statement": "Most SCF convergence problems come from unreasonable structures: check that coordinates are in the correct units (Angstrom or Bohr) and were recognized as such by the program, and inspect the starting orbitals (Print[P_GuessOrb]=1); if their occupation pattern is wrong, reorder them with Rotate.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "SCF convergence is poor"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.9 Tips and Tricks: Converging SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.uhf-try-rohf-first",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "If a UHF calculation has convergence trouble, try ROHF first (especially SAHF or CAHF) and then go to the UHF calculation.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "UHF does not converge"
+  },
+  "recommend": {
+   "set": [
+    "ROHF (SAHF or CAHF) first, then UHF from those orbitals"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.9 Tips and Tricks: Converging SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.s2-check-open-shell",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "For open-shell systems, especially transition metal complexes, it is highly recommended to check the <S^2> expectation value (spin contamination), the UCO (unrestricted corresponding orbital) overlaps and visualize the corresponding orbitals, and look at the spin population on the atoms contributing to the singly occupied orbitals.",
+  "orca": ">=6.0",
+  "when": {
+   "system": "open-shell, especially transition metal complexes"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6 Self-Consistent-Field (SCF), Tip"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.stability-purpose",
+  "topic": "stability",
+  "kind": "check",
+  "statement": "The SCF stability analysis evaluates the electronic Hessian with respect to orbital rotations at the SCF solution and finds its lowest eigenvalues: one or more negative eigenvalues mean the solution is a saddle point, not a true local minimum, in the space considered (RHF/RKS->UHF/UKS or UHF/UKS->UHF/UKS). A stable result does not prove that the solution is the global minimum. Typical case: stretched bonds of diatomics, where the guess symmetry yields a restricted instead of the often preferred unrestricted solution.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SCFSTAB"
+  ],
+  "when": {
+   "condition": "suspicion that the SCF converged to a saddle point (e.g. open-shell singlet, stretched bond)"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/stabilityanalysis.html",
+    "section": "2.16 SCF Stability Analysis"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Omits the essential qualifier 'in the space considered in the analysis'. A stable result only means no lower solution reachable by RHF->UHF or UHF->UHF rotations; it is not a proof of the global minimum, and an agent should not over-read it.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.stability-request",
+  "topic": "stability",
+  "kind": "keyword",
+  "statement": "An SCF stability analysis with default settings is requested via STABILITY, SCFSTABILITY, SCFSTAB or STAB on the simple input line (%scf STABPerform true; default false). For UHF/UKS the SCF is restarted by default with new unrestricted start orbitals if an instability is detected (STABRestartUHFifUnstable true); to search for a broken-symmetry singlet the calculation must therefore be run as UHF/UKS (e.g. HFTyp UHF), as in the manual's H2 example.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SCFSTAB",
+   "STABILITY",
+   "SCFSTABILITY",
+   "STAB"
+  ],
+  "recommend": {
+   "set": [
+    "SCFSTAB to request the analysis"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/stabilityanalysis.html",
+    "section": "2.16 SCF Stability Analysis"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Keyword 'NoSCFSTAB' is not on the cited page (unsupported). Also useful to state that the automatic restart only applies to UHF/UKS: to find a broken-symmetry solution of a closed-shell-guess singlet the calculation must be run as UHF/UKS (the manual example uses HFTyp UHF with STABPerform true).",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.stability-available-types",
+  "topic": "stability",
+  "kind": "limit",
+  "statement": "The SCF stability analysis is available for RHF/RKS and UHF/UKS only: it analyzes RHF/RKS in the space of UHF/UKS or UHF/UKS in the space of UHF/UKS, so it is only available for the SCF parts of DFT and HF.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SCFSTAB"
+  ],
+  "when": {
+   "method": "anything other than RHF/RKS/UHF/UKS"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/stabilityanalysis.html",
+    "section": "2.16 SCF Stability Analysis"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.stability-rijk-unsupported",
+  "topic": "stability",
+  "kind": "incompatibility",
+  "statement": "For the SCF stability analysis NORI, RIJONX and RIJCOSX are supported but RI-JK is not; finite-temperature calculations and relativistic calculations (beside ECPs) are also not possible at this time.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SCFSTAB"
+  ],
+  "avoid": [
+   "SCFSTAB together with RI-JK"
+  ],
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/stabilityanalysis.html",
+    "section": "2.16 SCF Stability Analysis, Current limitations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.stability-single-point-only",
+  "topic": "stability",
+  "kind": "limit",
+  "statement": "Only single-point-like calculations are supported by the SCF stability analysis. For a geometry optimization one must use the guess MORead feature to employ the orbitals obtained in the analysis, and extract a geometry and run a separate calculation if the SCF stability of a structure is of interest.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SCFSTAB",
+   "MORead"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/stabilityanalysis.html",
+    "section": "2.16 SCF Stability Analysis, Current limitations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.stability-three-roots-enough",
+  "topic": "stability",
+  "kind": "recommendation",
+  "statement": "Since one is usually only interested in whether the SCF solution is stable or not, three roots (STABNRoots 3, default) are sufficient to find the lowest eigenvalue of the stability Hessian; StabMaxDim, StabMaxIter, StabNGuess and the convergence criteria were chosen with the same philosophy.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SCFSTAB"
+  ],
+  "recommend": {
+   "set": [
+    "keep the default STABNRoots 3 for a qualitative stable/unstable answer"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/stabilityanalysis.html",
+    "section": "2.16 SCF Stability Analysis"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.stability-not-black-box",
+  "topic": "stability",
+  "kind": "recommendation",
+  "statement": "The SCF stability analysis must not be used blindly: critically evaluate its result in terms of the energy difference and by investigating the orbitals (printout or plotting). The automatic orbital window can also be influenced by the %method FrozenCore settings, and curtailing the orbital window (STABORBWIN/STABEWIN) drastically can change the results to the point of qualitative failure.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SCFSTAB"
+  ],
+  "avoid": [
+   "using the stability analysis as a black box"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/stabilityanalysis.html",
+    "section": "2.16 SCF Stability Analysis"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "scf.stability-hcore-guess-symmetry",
+  "topic": "stability",
+  "kind": "error-pattern",
+  "statement": "A symmetric/restricted initial guess such as the HCORE guess (and often other guess options) does not yield the unrestricted solution; the SCF stability analysis detects this as an instability and can restart the SCF with new unrestricted start orbitals.",
+  "orca": ">=6.0",
+  "keywords": [
+   "SCFSTAB",
+   "HCore"
+  ],
+  "when": {
+   "condition": "HCore guess (or other symmetric guess) with HFTyp UHF converges to a restricted-like solution"
+  },
+  "recommend": {
+   "set": [
+    "SCFSTAB to detect and restart from the unstable solution"
+   ]
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/stabilityanalysis.html",
+    "section": "2.16 SCF Stability Analysis, example input"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.patom",
+  "topic": "guess",
+  "kind": "keyword",
+  "statement": "!PAtom selects the polarized-atom guess: an all-electron extended Hueckel calculation in a minimal basis of stored atomic SCF orbitals. Its densities are close to the atomic ones, orbitals on one center are exactly orthogonal, the initial electron distribution reflects the molecular shape, and there are well-defined singly occupied orbitals for ROHF calculations. It needs no DFT grid (used by HF-3c for that reason). Note: the initial-guess page calls PAtom the default, but other 6.1 manual pages and ORCA output indicate PModel is the default guess.",
+  "orca": ">=6.0",
+  "keywords": [
+   "PAtom"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.4 Hueckel and PAtom Guesses"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "The cited sentence does call PAtom 'the default guess', but the 6.1 manual contradicts itself: the 3c-methods page says HF-3c selects PATOM 'since the grid construction for the default guess can take more time', and the orca_2mkl section speaks of converging 'from the PModel guess' - both imply PModel is the default, which is also what ORCA 5/6 output reports ('INITIAL GUESS: MODEL POTENTIAL'). A card asserting PAtom as default would mislead the agent about what an input without Guess does. Id also has a typo ('patomp').",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.pmodel-recommendation",
+  "topic": "guess",
+  "kind": "recommendation",
+  "statement": "The PModel guess builds and diagonalizes a Kohn-Sham matrix from a superposition of spherical neutral-atom densities (available for relativistic and nonrelativistic methods); it is valid for HF and DFT but not for semiempirical models, costs usually less than one SCF iteration, and is usually the method of choice (particularly for molecules containing heavy elements) unless more accurate starting orbitals are available (MORead).",
+  "orca": ">=6.0",
+  "keywords": [
+   "PModel"
+  ],
+  "when": {
+   "system": "HF or DFT calculation without better starting orbitals, especially molecules with heavy elements"
+  },
+  "recommend": {
+   "set": [
+    "PModel"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.3 PModel Guess"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Content correct, but 'when: ... or when PAtom performs poorly' presupposes PAtom is the default; PModel is the default in practice (see guess.patomp-default). Recommending !PModel explicitly is harmless but redundant.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.hcore-poor",
+  "topic": "guess",
+  "kind": "recommendation",
+  "statement": "The HCore guess (diagonalization of the one-electron matrix) is very simple but usually a disaster because it produces orbitals that are far too compact; prefer the default PModel guess (or PAtom) unless there is a specific reason, e.g. trying alternative guesses for a non-converging SCF.",
+  "orca": ">=6.0",
+  "keywords": [
+   "HCore",
+   "PAtom",
+   "PModel"
+  ],
+  "avoid": [
+   "HCore as the initial guess without a specific reason"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.1 One Electron Matrix Guess"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "HCore assessment is verbatim correct, but 'prefer PAtom (default)' carries the default error. Also 2.6.9 lists HCore as something to try when other guesses fail and the stability page uses it for illustration, so 'avoid without a specific reason' is right.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.hueckel-basis-quality",
+  "topic": "guess",
+  "kind": "limit",
+  "statement": "The extended Hueckel guess performs a minimal-basis (STO-3G) extended Hueckel calculation and projects the MOs onto the actual basis; it may not be very good because the STO-3G basis is so poor.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Hueckel"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.4 Hueckel and PAtom Guesses"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.guessmode-choice",
+  "topic": "guess",
+  "kind": "recommendation",
+  "statement": "When guess orbitals must be projected onto the target basis, GuessMode=FMatrix is simpler and faster and produces a fairly reasonable guess for most wavefunctions; GuessMode=CMatrix fits each MO subspace separately via corresponding orbitals and may be preferable in certain cases, especially when restarting ROHF calculations, but is not expected to be grossly superior for most cases.",
+  "orca": ">=6.0",
+  "keywords": [
+   "MORead"
+  ],
+  "when": {
+   "condition": "restart from orbitals of a different basis set, or ROHF restart"
+  },
+  "recommend": {
+   "set": [
+    "FMatrix by default; CMatrix when restarting ROHF calculations"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.2 Basis Set Projection"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.autostart-default",
+  "topic": "guess",
+  "kind": "default",
+  "statement": "AutoStart (default true) makes single-point calculations automatically restart from an existing .gbw file of the same name if it contains orbitals and the necessary information: Guess is set to MORead, the existing file renamed to BaseName.ges and MOInp set to it. Disable with AutoStart false or !NoAutoStart. AutoStart is ignored for geometry optimizations, where MORead/MOInp with a differently named .gbw file must be used.",
+  "orca": ">=6.0",
+  "keywords": [
+   "AutoStart",
+   "NoAutoStart",
+   "MORead"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.6 AutoStart feature; Table 2.68"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.moread-overwrite-danger",
+  "topic": "guess",
+  "kind": "error-pattern",
+  "statement": "When restarting with !moread and %moinp, the input .gbw file of the earlier calculation must have a different name than the new calculation: at the very beginning of a calculation a new .gbw file is written, and if the names are the same the old file is overwritten and all information is lost. Rename the .gbw file first (good practice in general), or use the AutoStart feature instead.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Moread",
+   "AutoStart"
+  ],
+  "when": {
+   "condition": "!moread with %moinp pointing at a file of the same name as the new calculation"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.5 Restarting SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.rescue-old-gbw",
+  "topic": "guess",
+  "kind": "procedure",
+  "statement": "To read a .gbw file from an older ORCA release, use !rescue moread noiter with %moinp \"name.gbw\" to produce an up-to-date .gbw. When rescue is invoked only the orbital coefficients are read from the file and everything else comes from the input, so the geometry and basis set of the old .gbw and the new input must match.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Rescue",
+   "Moread"
+  ],
+  "when": {
+   "condition": "input .gbw file was written by an older ORCA release"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.5 Restarting SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.moread-noiter-linear-dep",
+  "topic": "guess",
+  "kind": "incompatibility",
+  "statement": "If redundant components were removed from the basis (linear dependence), !moread noiter must not be used to read SCF orbitals from a previous calculation because it leads to wrong results; use !moread (without noiter) instead if the whole calculation cannot be done in one go.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Moread"
+  ],
+  "avoid": [
+   "moread noiter when the basis had linearly dependent functions removed"
+  ],
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.5 Restarting SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.crash-restart-gbw",
+  "topic": "guess",
+  "kind": "procedure",
+  "statement": "The current orbitals are stored in the .gbw file in every SCF cycle. After a crash, a single-point job can be restarted from these orbitals by re-running the same input (AutoStart picks up the .gbw of the same name). AutoStart is ignored for geometry optimizations: there, copy the .gbw to a different name and read it with !MORead and %moinp.",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "a job crashed mid-SCF and should be continued"
+  },
+  "recommend": {
+   "set": [
+    "single point: re-run the same input (AutoStart)",
+    "optimization: rename the .gbw and use MORead/%moinp"
+   ]
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.5 Restarting SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Overgeneralized. 'Just re-running' picks up the .gbw only through AutoStart, which works for single points and is ignored for geometry optimizations (there the .gbw must be renamed and read with MORead/MOInp). An agent re-running a crashed optimization as written would restart from a fresh guess.",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.same-basis-projection",
+  "topic": "guess",
+  "kind": "default",
+  "statement": "When restarting within the same ORCA version, neither the geometry nor the basis set stored in name.gbw needs to match the present ones; the program checks consistency and performs an orbital projection. If the two basis sets are identical it by default only reorthogonalizes and renormalizes the input orbitals, which can be overruled by explicitly setting GuessMode to CMatrix or FMatrix in the %scf block.",
+  "orca": ">=6.0",
+  "keywords": [
+   "MORead"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.5 Restarting SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.calcguessenergy-noiter",
+  "topic": "guess",
+  "kind": "procedure",
+  "statement": "!CALCGUESSENERGY NOITER reads the given orbitals, computes the density and the one Fock matrix needed for the energy, and moves on with no orbital updates; it can combine, for example, DFT orbitals with DLPNO-CCSD(T). Be careful with the results because these orbitals are not variational anymore.",
+  "orca": ">=6.0",
+  "keywords": [
+   "CalcGuessEnergy",
+   "NoIter"
+  ],
+  "when": {
+   "condition": "the energy (or a property such as an MP2 energy) of a given density is wanted without re-converging"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.9 Calculating only the energy of an input density; Table 2.68"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.guessmix-broken-symmetry",
+  "topic": "guess",
+  "kind": "keyword",
+  "statement": "!GUESSMIX automatically mixes 50% of the alpha LUMO into the alpha HOMO, equivalent to a 45-degree rotation, breaking the initial-guess symmetry; it is useful when an open-shell singlet needs alpha and beta orbitals to start differently. The angle is set with %scf guessmix <degrees> (default 45).",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "open-shell singlet or trivially symmetry-broken guess wanted"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.8 Automatically Breaking of the Initial Guess Symmetry"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.rotate-broken-symmetry",
+  "topic": "guess",
+  "kind": "procedure",
+  "statement": "To obtain broken-symmetry solutions (e.g. transition metal dimers) with Rotate: first perform a high-spin calculation, identify the pairs of MOs that are symmetric and antisymmetric combinations of each other, use them as initial guess and apply 45-degree rotations to each pair to localize the starting MOs. If the broken-symmetry solution exists there is a good chance of finding it this way.",
+  "orca": ">=6.0",
+  "when": {
+   "system": "transition metal dimer or other broken-symmetry case"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/initialguess.html",
+    "section": "2.20.7 Changing the Order of Initial Guess MOs and Breaking the Initial Guess Symmetry"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.cation-or-closedshell-start",
+  "topic": "guess",
+  "kind": "recommendation",
+  "statement": "For hard open-shell SCF cases: start from the orbitals of a related closed-shell species (closed-shell MO calculations tend to converge better), from a more positive cation (cation calculations tend to converge better), from a smaller basis set, or from a Hartree-Fock solution in DFT (HF tends to converge better because of its larger HOMO-LUMO gap, with exceptions).",
+  "orca": ">=6.0",
+  "when": {
+   "condition": "open-shell SCF does not converge"
+  },
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.9 Tips and Tricks: Converging SCF Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "verified_by": "reviewer-scf"
+ },
+ {
+  "id": "guess.smearing-helps-hopeless",
+  "topic": "scf",
+  "kind": "recommendation",
+  "statement": "Finite-temperature SCF distributes the electrons by Fermi statistics over the available orbitals (the chemical potential keeps the electron count correct) and may help to converge the SCF in near-hopeless cases; set it with %scf SmearTemp <K> (or !Smear for 5000 K). The result has fractional occupations and is not the ground-state SCF solution, so use the smeared orbitals as a guess (MORead) and re-converge without smearing for production energies; smearing cannot be combined with SOSCF.",
+  "orca": ">=6.0",
+  "keywords": [
+   "Smear"
+  ],
+  "when": {
+   "condition": "SCF convergence is near hopeless, e.g. near-degenerate open shells"
+  },
+  "recommend": {
+   "set": [
+    "Smear (SmearTemp 5000) only as a last-resort guess generator, followed by a re-convergence without smearing"
+   ]
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/scf.html",
+    "section": "2.6.8 Finite Temperature SCF"
+   }
+  ],
+  "status": "verified",
+  "author": "p01",
+  "review_note": "Text-supported, but it recommends smearing as a convergence fix without saying that the smeared SCF is a different (finite-temperature, fractional-occupation) solution. An agent following it would report a smeared energy as the ground-state result. Must add: use only to obtain orbitals, then re-converge without smearing; not with SOSCF.",
+  "verified_by": "reviewer-scf"
+ }
+]

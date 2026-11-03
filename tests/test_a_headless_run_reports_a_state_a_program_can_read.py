@@ -331,7 +331,8 @@ def test_the_result_keys_are_pinned():
     from delfin.agent.repl import TURN_KEYS
     assert TURN_KEYS == frozenset({
         "text", "tool_calls", "input_tokens", "output_tokens", "error",
-        "schema_version", "stop_reason", "denials", "files_changed"})
+        "schema_version", "stop_reason", "denials", "files_changed",
+        "model_switches"})
     assert TO.SCHEMA_VERSION == 1
 
 

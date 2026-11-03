@@ -83,6 +83,9 @@ _KINDS = {
     # A second approval of the same kind in a turn whose first one went
     # unanswered: not asked again, refused, and the panel says so.
     "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
+    # AM1: an unattended session hit the three-refusal lock; it pauses and
+    # leaves one message for the operator instead of waiting for nobody.
+    "unattended_pause": ("⏸", "Unattended session paused after three refusals"),
     "isolation":      ("🔒", "Filesystem isolation active"),
     "isolation_missing": ("⚠", "Filesystem isolation NOT active"),
     # A client built without a permissions policy runs only the index tools.
@@ -127,6 +130,9 @@ _KINDS = {
     # code it showed (file_confirm reads it; cli refuses to write it).
     "approval_code_refused": ("🚫", "Approval answer without the session's code"),
     "approval_code_missing": ("🚫", "Approval answer not written: no code"),
+    # A request for more rights right after the user said no: refused, not
+    # put to them (api_client._confirm_widening).
+    "widening_after_refusal": ("🚫", "More rights requested right after a refusal (not asked)"),
     # A hand-over directory every session on the repository can write.
     "handover_root":  ("📂", "Shared hand-over directory in use"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
@@ -181,6 +187,7 @@ _KINDS = {
     # through unseen. It only ever adds friction.
     "read_only_shape":   ("✅", "Harmless command form approved by rule"),
     "caged_unasked":     ("🧱", "Command run unasked inside the filesystem cage"),
+    "calculation_admitted": ("🧪", "Calculation started unasked: setup and resources checked"),
     "classifier_ask":    ("❓", "Action classifier asked the user"),
     "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),

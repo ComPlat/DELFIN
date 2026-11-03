@@ -248,6 +248,7 @@ ctx = create_dashboard(backend="auto")   # SLURM when available, else local
 | **Job Status** | Queue monitoring (local/SLURM), resource usage, fairshare and limits, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc CENSO/ANMR` |
 | **Archive** | Archive browser with statistics |
+| **Review** | Rate structures by eye, frame by frame (pass or block, defect categories, the atoms of each defect); team review: [docs/REVIEW_TEAM_GUIDE.md](docs/REVIEW_TEAM_GUIDE.md) |
 | **Remote Archive** | Browse and transfer results on a remote machine over SSH |
 | **Office** | Documents and spreadsheets, with an agent that has no chemistry tools |
 | **Literature** | The indexed literature corpus |
@@ -547,7 +548,7 @@ DELFIN's workflows (ORCA, xTB, CREST and the other engines) run on your machines
 |------|-------------|-------------------------|
 | Hosted model providers | the provider's API; the KIT Toolbox provider uses the fixed endpoint `https://ki-toolbox.scc.kit.edu/api/v1` | choose a local model server |
 | Agent tools `web_search` and `web_fetch` | a fixed set of public search services (`delfin/agent/web_tools.py`) and the URL fetched | not available; the other tools are unaffected |
-| CLI terminal tab (`delfin-voila --claude-terminal`) | the browser loads xterm.js from `cdn.jsdelivr.net` (pinned version, SRI hash); the CLI it runs talks to its own provider | not available; no local copy of xterm.js is supported yet |
+| CLI terminal panel (`delfin-voila --agent-terminal COMMAND`) | the browser loads xterm.js from `cdn.jsdelivr.net` (pinned version, SRI hash); the CLI it runs talks to its own provider | not available; no local copy of xterm.js is supported yet |
 | Diagrams in the agent chat | mermaid from `cdn.jsdelivr.net` (pinned version, SRI hash), fetched only when a diagram appears | place `mermaid.min.js` in `delfin/dashboard/static/`; without it the diagram is shown as source text |
 | 3D structure viewers | none: the bundled `delfin/dashboard/static/3Dmol-min.js` is loaded at start, and no viewer fetches a copy from elsewhere (the page's Content-Security-Policy would refuse it) | works with the bundled copy |
 | Ketcher editor, xtb and g-xTB installers | GitHub, once, on first use and after confirmation (Ketcher and every binary or source archive an installer fetches itself: one pinned version, refused unless its SHA-256 matches; packages installed through conda or pip: see docs/RELEASING.md) | install on a machine with network access and copy the files |

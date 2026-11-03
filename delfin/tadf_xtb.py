@@ -881,6 +881,26 @@ def _load_entries(
     return unique_entries
 
 
+def screening_note() -> str:
+    """What an xTB screening may claim, and what confirms it.
+
+    sTDA-xTB (Grimme & Bannwarth, J. Chem. Phys. 145, 054103 (2016),
+    DOI 10.1063/1.4959605) and sTD-DFT-xTB are screening methods: typical
+    errors are a few tenths of an eV in excitation energies, so only the
+    ranking (state order, sign and rough size of Delta E_ST) is a claim;
+    absolute energies, emission wavelengths and any rate derived from
+    them must be confirmed at a wavefunction/functional level (TD-DFT
+    with a validated functional, or STEOM-CCSD / a SCS double hybrid)
+    before they are quoted as results.
+    """
+    return (
+        "Screening estimate (sTDA-xTB / sTD-DFT-xTB, DOI 10.1063/1.4959605): "
+        "rank/order only (S1 vs T1 order, sign of Delta E_ST); confirm at "
+        "TD-DFT or STEOM-CCSD/SCS-double-hybrid level before quoting "
+        "absolute energies, emission wavelengths or rates."
+    )
+
+
 def _print_result(result: TadfXtbResult) -> None:
     def _fmt(value: Optional[float], digits: int) -> str:
         if value is None:
@@ -925,6 +945,19 @@ def _print_result(result: TadfXtbResult) -> None:
         parts.append(f"DeltaEST_rel_est={_fmt(result.delta_est_relaxed_est_ev, 3)} eV")
     parts.append(f"workdir={result.workdir}")
     print(f"{result.label}: " + ", ".join(parts))
+    print(f"  NOTE: {screening_note()}")
+
+
+def _payload_with_notes(results, errors) -> dict:
+    """The JSON payload with the screening note as data.
+
+    Standalone so the payload contract is testable without running xTB.
+    """
+    return {
+        "results": [asdict(item) for item in results],
+        "errors": errors,
+        "screening_note": screening_note(),
+    }
 
 
 def run_cli(argv: list[str]) -> int:
@@ -1101,10 +1134,7 @@ def run_cli(argv: list[str]) -> int:
         for result in results:
             _print_result(result)
 
-    payload = {
-        "results": [asdict(item) for item in results],
-        "errors": errors,
-    }
+    payload = _payload_with_notes(results, errors)
     if args.json_out:
         resolve_path(args.json_out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if errors:

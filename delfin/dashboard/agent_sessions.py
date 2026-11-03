@@ -189,9 +189,9 @@ _SIDEBAR_CSS = """<style>
 .delfin-session-stopall.delfin-armed { background: #b91c1c !important;
     color: #ffffff !important; }
 /* Draggable divide between the sidebar and the chat, mirroring the calc
-   browser's .calc-splitter. The shell aligns items at flex-start, so a
-   height:100% strip would collapse to zero -- the splitter is sticky too,
-   tracking the same 100vh column the sidebar sticks to. */
+   browser's .calc-splitter. The shell aligns items at flex-start (the
+   sidebar keeps its own height); the divider alone stretches over the
+   whole column, from the control row to the Details bar. */
 .delfin-session-shell { align-items: flex-start; }
 /* The gap belongs to the SPLITTER, equally on both sides, and not to the
    sidebar. It was the sidebar's `margin-right: 12px`, which put the whole
@@ -199,15 +199,17 @@ _SIDEBAR_CSS = """<style>
    chat, so the handle sat flush against the chat with a wide empty strip
    behind it. One margin here is symmetric by construction -- there is no
    second number that can drift away from the first. */
-.delfin-splitter-host { align-self: flex-start; display: flex;
-    flex-direction: column; position: sticky; top: 8px;
+.delfin-splitter-host { align-self: stretch; display: flex;
+    flex-direction: column;
     margin: 0 var(--delfin-splitter-gap, 10px); }
-/* Height ends at the Send row, not at the bottom of the page. The JS
-   below measures it; this is what shows until then and if the measure
-   fails -- the chat's own height (tab_agent: 100vh - 460px) plus the
-   composer, so the first paint is already close. */
+/* The length is the column's, in CSS. It was measured by a script from the
+   shell's top to the Send row's bottom and re-measured only when the Send
+   row or the window changed size: its top sat 10 px below the column's,
+   and anything that moved the Send row without resizing it left the
+   length stale. The column fits the window since the agent tab's height
+   script, so the full column is no longer the full transcript. */
 .delfin-session-splitter { width: 8px;
-    height: calc(100vh - 400px); min-height: 160px;
+    flex: 1 1 auto; min-height: 160px;
     cursor: col-resize; touch-action: none;
     background: linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);
     border-radius: 4px; z-index: 10; pointer-events: auto; }
@@ -292,67 +294,6 @@ _SPLITTER_INIT_JS = """\
             });
             bound = true;
 
-            // The bar reaches down to the Send row and stops there. Run to
-            // the bottom of the column it looked like a page divider and
-            // kept growing with the transcript; the composer is where the
-            // conversation ends, so that is where the handle ends.
-            //
-            // Measured rather than computed from a CSS expression: the
-            // composer's height depends on the textarea, which the user can
-            // grow, and on whether the quick-cycle button is shown. The
-            // stylesheet carries an approximation for the first paint.
-            // Three guards, and each one is here because the first version
-            // without it made the window jitter visibly -- reported from a
-            // real session where the chat could not be read.
-            //
-            // The loop it closes: fit() writes the height of a CHILD of
-            // `shell`, and the observer watched `shell` itself. Every write
-            // could change the parent's measurement, which fired the
-            // observer, which wrote again.
-            var lastH = 0;
-            var pending = false;
-            function fit() {
-                var send = shell.querySelector('.delfin-agent-send-row');
-                if (!send) return;          // no composer yet: keep the CSS
-                var top = shell.getBoundingClientRect().top;
-                var bottom = send.getBoundingClientRect().bottom;
-                var h = Math.round(bottom - top);
-                if (h < 160) return;        // laid out but collapsed
-                // 1. A tolerance, not equality. Equality stops a repeat of
-                //    the SAME value but not an alternation between two that
-                //    differ by a pixel, which is what sub-pixel layout
-                //    produces and what oscillates forever.
-                if (Math.abs(h - lastH) <= 2) return;
-                lastH = h;
-                splitter.style.height = h + 'px';
-            }
-            // 2. One measurement per frame. A burst of observer callbacks
-            //    during a drag or a reflow collapses into a single write
-            //    instead of a write per callback.
-            function schedule() {
-                if (pending) return;
-                pending = true;
-                var run = function () { pending = false; fit(); };
-                if (typeof requestAnimationFrame === 'function') {
-                    requestAnimationFrame(run);
-                } else {
-                    setTimeout(run, 16);
-                }
-            }
-            fit();
-            // The composer changes height when the textarea is dragged or a
-            // long line wraps, and the window changes it too. A one-shot
-            // measure was right for one layout and wrong after the first
-            // resize.
-            window.addEventListener('resize', schedule);
-            try {
-                // 3. Watch the ROW that decides the height, not the
-                //    container the splitter lives in. The row's size does
-                //    not depend on the splitter's, so writing the splitter
-                //    cannot feed back into what is being measured.
-                var watched = shell.querySelector('.delfin-agent-send-row');
-                new ResizeObserver(schedule).observe(watched || shell);
-            } catch (err) { /* older browser: resize alone */ }
             return bound;
     }
 

@@ -194,6 +194,27 @@ def test_firejail_argv_keeps_net_when_opted_in(tmp_path):
     assert "--net=none" not in argv
 
 
+def test_firejail_command_env_keeps_tmpdir_at_firejail_tmp():
+    """firejail runs --private-tmp and does NOT bind the session scratch dir,
+    so a TMPDIR pointing at it would not exist inside the cage and mktemp
+    plus every TMPDIR/TMP/TEMP user would fail there. For firejail the
+    command env must stay at /tmp (firejail's private writable tmp); for the
+    layers that bind the scratch (bwrap, Landlock, Seatbelt, no lock) it
+    points at the session scratch dir so one command's files survive to the
+    next."""
+    from delfin.agent import api_client as Ac
+    scratch = Ac._session_scratch_dir()
+    env = sandbox._command_env("firejail")
+    assert env["TMPDIR"] == "/tmp", env
+    assert env["TMP"] == "/tmp"
+    assert env["TEMP"] == "/tmp"
+    for mode in ("bwrap", "landlock", "off"):
+        env = sandbox._command_env(mode)
+        assert env["TMPDIR"] == scratch, (mode, env)
+        assert env["TMP"] == scratch, (mode, env)
+        assert env["TEMP"] == scratch, (mode, env)
+
+
 # ---------------------------------------------------------------------------
 # Layer 3 — audit log
 

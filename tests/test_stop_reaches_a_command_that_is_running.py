@@ -43,7 +43,12 @@ def test_a_command_that_is_asked_to_stop_ends_at_once():
                                should_stop=_stop_after(0.3))
     waited = time.monotonic() - started
     assert result.returncode == contained_run.STOPPED_RETURNCODE
-    assert waited < 5, "the wait must not run to the command's own end"
+    # The claim is that the wait does not run to the command's own end
+    # (30 s), so the bound is half of that. It used to be 5 s, which also
+    # timed the start and the clean-up of the group: on a loaded CI runner
+    # that took 6.1 s twice in a row on the same tree that had passed, and
+    # main went red over the runner, not over the stop.
+    assert waited < 15, "the wait must not run to the command's own end"
 
 
 def test_a_command_nobody_stops_runs_as_before():

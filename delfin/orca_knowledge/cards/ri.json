@@ -1,0 +1,875 @@
+[
+ {
+  "id": "ri.aux-basis-required",
+  "topic": "ri",
+  "kind": "recommendation",
+  "statement": "When RI-J/RIJCOSX/RIJONX is used, state the Coulomb-fitting auxiliary basis (AuxJ) explicitly, as a simple keyword (e.g. def2/J, SARC/J, x2c/J) or in %basis, or use AutoAux. The manual says you must specify one; if none is given, ORCA falls back to def2/J (SARC/J in scalar-relativistic runs), which fits def2 orbital bases with def2 ECPs but not other basis families or all-electron relativistic bases. Correlation aux bases (AuxC) have no default and must always be given (see ri.correlation-aux-basis-separate-slot).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RI",
+   "AutoAux",
+   "def2/J"
+  ],
+  "when": {
+   "RI": "on"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "The RI.html note does say 'must specify', but the same page and basisset.html both state that def2/J (SARC/J if scalar relativistic) is invoked automatically when no AuxJ is given, and troubleshooting.txt says only 'some auxiliary basis sets' (AuxC) have no default. As an error-severity requirement, the card would flag every standard '! B3LYP def2-SVP' input (RIJCOSX on by default, no aux keyword) as broken, and it contradicts ri.default-aux-def2j-and-sarcj. Specifying the Coulomb aux basis explicitly is good practice, especially for non-def2 orbital bases, but it is not a hard error.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.default.non-hybrid-dft",
+  "topic": "ri",
+  "kind": "default",
+  "statement": "For non-hybrid DFT, ORCA uses the Split-RI-J approximation with the def2/J auxiliary basis by default.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "SplitRIJ",
+   "def2/J"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.default.hybrid-dft-rijcosx",
+  "topic": "ri",
+  "kind": "default",
+  "statement": "For hybrid DFT, RIJCOSX with the def2/J auxiliary basis is the default; the COSX part can be turned off with the NOCOSX keyword.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJCOSX",
+   "NOCOSX",
+   "def2/J"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.default.not-for-hf",
+  "topic": "ri",
+  "kind": "default",
+  "statement": "RIJCOSX is the default for hybrid DFT but is by default NOT turned on for Hartree-Fock calculations; it must be requested explicitly with the RIJCOSX keyword.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJCOSX",
+   "HF"
+  ],
+  "when": {
+   "HF": "true"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4. RIJCOSX"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.nori-not-recommended",
+  "topic": "ri",
+  "kind": "recommendation",
+  "statement": "The default use of RI approximations can be disabled with the NORI keyword, but the manual marks this as not recommended.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "NORI"
+  ],
+  "avoid": [
+   "NORI for routine DFT calculations"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.ri-recommended-pure-dft",
+  "topic": "ri",
+  "kind": "recommendation",
+  "statement": "The usage of RI is generally recommended for pure DFT: the introduced error is very small, and the speedup enables larger basis sets for large systems. Errors in relative energies largely cancel.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RI"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.do-not-mix-ri-nonri-absolute-energies",
+  "topic": "ri",
+  "kind": "incompatibility",
+  "statement": "Do not directly mix absolute total energies obtained from RI and non-RI calculations: the error in the total energy accumulates and rises with molecular size, while errors in relative energies tend to cancel.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RI"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.exact-coulomb-procedure",
+  "topic": "ri",
+  "kind": "procedure",
+  "statement": "To avoid depending on the RI approximation, the manual describes a reasonable yet inconvenient approach: converge an RI-J calculation, then use its orbitals as the initial guess for a calculation with the exact Coulomb term (NORI). That run should converge within a few cycles, and the total time should still be lower than converging directly with exact Coulomb. For hybrid DFT, NORI also turns off the default RIJCOSX exchange approximation.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RI",
+   "NORI"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "The manual hedges ('should converge', 'should still be lower') and calls the approach 'reasonable yet inconvenient'; the card states both as facts. Also, for hybrid DFT the default is RIJCOSX, so NORI in the second step removes the COSX exchange approximation as well as RI-J. The card should say this so the agent does not assume only the Coulomb term changes.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.split-rij-default-with-ri",
+  "topic": "ri",
+  "kind": "default",
+  "statement": "The Split-RI-J algorithm is the default if RI is turned on via the RI keyword; to use standard RI-J instead, add the NoSplitRIJ (NoSplit-RI-J) keyword.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RI",
+   "SplitRIJ",
+   "NoSplitRIJ"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.2. Split-RI-J"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "The content is right, but the opt-out keyword is spelled in a way that probably does not work. The manual prose gives '!NoSplit-RI-J'. 'NoSplitRIJK' appears only in the keyword table, whose description of it ('Activates Split-RI-J') is itself a copy error, and it is absent from the OPI catalog, which lists 'NoSplitRIJ'. An agent copying 'NoSplitRIJK' would likely get an unknown-keyword abort.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.split-rij-benefit",
+  "topic": "ri",
+  "kind": "recommendation",
+  "statement": "Split-RI-J yields the same Coulomb energy as standard RI-J but is significantly faster when the basis set contains many high angular momentum functions (d, f, g). For small basis sets there is virtually no difference; the extra memory is small (ca. 13 MB extra at about 2000 basis functions).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "SplitRIJ"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.2. Split-RI-J"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.split-rij-limited-to-scf-gradient",
+  "topic": "ri",
+  "kind": "limit",
+  "statement": "Split-RI-J is presently only available for SCF and gradient calculations.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "SplitRIJ"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.2. Split-RI-J"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.rijonx-usage",
+  "topic": "ri",
+  "kind": "keyword",
+  "statement": "RIJONX (synonym RIJDX) uses the RI approximation for the Coulomb term and the standard (exact, non-approximated) treatment of the exchange term, which should tend towards linear scaling for large molecules. It can be used for Hartree-Fock and hybrid DFT calculations and needs the same Coulomb-fitting (AuxJ) auxiliary basis as normal RI-J.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJONX",
+   "HF"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.3. RIJONX"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "Mostly right. 'standard (linear-scaling) treatment' overstates the source: the manual only says exchange 'should tend towards linear scaling for large molecules'; the exchange integrals are still exact four-index integrals. The card should also say that RIJDX is a synonym and that RIJONX is what NOCOSX falls back to.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.rijcosx-usage-and-accuracy",
+  "topic": "ri",
+  "kind": "keyword",
+  "statement": "RIJCOSX accelerates Hartree-Fock and hybrid DFT by combining the COSX semi-numerical exchange treatment with Split-RI-J for the Coulomb term, so a Coulomb-fitting basis (AuxJ, default def2/J) is needed. The manual quotes default errors of about 0.05 ± 0.1 kcal/mol or less in total energies and energy differences; they can be reduced with larger-than-default COSX grids or by running the final SCF cycle without the approximation.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJCOSX",
+   "def2/J"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4. RIJCOSX"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "The manual gives the default error as '0.05 ± 0.1 kcal/mol or less'; the card turns this into a '0.05-0.1 kcal/mol' range, which is a misreading. The rest is supported. In practice, absolute RIJCOSX errors grow with system size, so the figure should not be read as a guaranteed bound for large molecules.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.rijcosx-needs-coulomb-fitting-basis",
+  "topic": "ri",
+  "kind": "default",
+  "statement": "RIJCOSX treats the Coulomb term with Split-RI-J, so it uses a Coulomb-fitting basis from the AuxJ slot; if none is specified, def2/J is used (SARC/J in scalar-relativistic runs). Choose an AuxJ that matches the orbital basis (def2/J for def2 bases with def2 ECPs, SARC/J for DKH/ZORA all-electron def2/SARC bases, x2c/J for x2c bases).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJCOSX",
+   "def2/J"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "Requirement plus severity 'error' contradicts the card's own second sentence and the manual: def2/J is used by default, so leaving the AuxJ keyword out is not an error. The real requirement is that the fitting basis sits in the AuxJ slot (a /JK basis given only as a simple keyword lands in AuxJK and does not serve RIJCOSX) and that it fits the orbital basis and Hamiltonian.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.correlation-aux-basis-separate-slot",
+  "topic": "ri",
+  "kind": "requirement",
+  "statement": "The SCF (Coulomb, AuxJ) and correlation (AuxC) fitting requirements are quite different, so RI-MP2, double-hybrid DFT and DLPNO methods need a correlation auxiliary basis in addition to the AuxJ basis. Give it in the AuxC slot or as a simple keyword, matched to the orbital basis (e.g. def2-TZVPP with def2-TZVPP/C, def2-SVP with def2-SVP/C), or use AutoAux. There is no AuxC default: ORCA stops with 'RI-MP2 needs an AuxC basis but none was defined!'.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "def2-TZVPP/C",
+   "def2/J",
+   "AutoAux"
+  ],
+  "when": {
+   "method": "RI-MP2, double-hybrid DFT, or DLPNO correlation methods"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "The core claim is right, and so is severity error: troubleshooting.txt shows 'ERROR: RI-MP2 needs an AuxC basis but none was defined!', and AuxC has no default. The risk is the bare example 'def2-TZVPP/C': an agent may pick it regardless of the orbital basis. The /C basis must match the orbital basis (e.g. def2-SVP/C for def2-SVP, def2-TZVP/C for def2-TZVP, def2-QZVPP/C for def2-QZVPP). The manual's DFT page says 'Must be compatible with the Basis'. The card should also cover DLPNO methods, which use the AuxC slot as well.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.nocosx-activates-rijonx",
+  "topic": "ri",
+  "kind": "keyword",
+  "statement": "The NORIJCOSX or NOCOSX keyword deactivates RIJCOSX and will activate RIJONX instead.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "NORIJCOSX",
+   "NOCOSX"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.7. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.rijcosx-grad-accurate-since-orca6",
+  "topic": "ri",
+  "kind": "default",
+  "statement": "Starting from ORCA 6, the RIJCOSX gradient is the full derivative of the exchange energy (including grid weight, SFitting and F/G derivatives) and is more accurate and less noisy; the previous approximated gradient can be reverted with cosxgradtype grad_n plus UseQGradFit false in %method, but this is not recommended.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJCOSX"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.2. RIJCOSX Gradient"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.cosx-grid-convergence-error-pattern",
+  "topic": "ri",
+  "kind": "error-pattern",
+  "statement": "COSX grid problems show up as erratic SCF convergence with 'megahartree' energy jumps, and with overlap fitting on, the message 'Error in Cholesky inversion of numerical overlap'. This is the grid equivalent of linear dependence: increase the exchange integration grid, or turn overlap fitting off with NoSFitting (a pragmatic but not clean solution, since numerical errors are then ignored).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "NoSFitting",
+   "RIJCOSX"
+  ],
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.7. COSX Grid and Convergence Issues"
+   },
+   {
+    "type": "orca-message",
+    "text": "Error in Cholesky inversion of numerical overlap"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.sfit-invert-diag-for-linear-dependence",
+  "topic": "ri",
+  "kind": "recommendation",
+  "statement": "The numerical overlap of the COSX grid can become linearly dependent even if the basis-set overlap is not. If the default Cholesky inversion of the numerical overlap fails, switch to SFitInvertType Diag (or Diag_Q) in %method and screen small eigenvalues with SInvThresh (default 1e-8).",
+  "orca": ">=6.0,<7",
+  "keywords": [],
+  "when": {
+   "error": "Error in Cholesky inversion of numerical overlap"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.7. COSX Grid and Convergence Issues"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.cosx-int-symmetry-for-multireference",
+  "topic": "ri",
+  "kind": "recommendation",
+  "statement": "The default COSX algorithm breaks the permutational symmetry of the two-electron integrals, which often causes convergence problems in iterative algorithms, in particular multi-reference theories. COSX_IntSymmetry Full (available since ORCA 6.0) preserves the full eight-fold permutational symmetry, often improves numerical stability, and is enabled by default for TRAH-CASSCF and CASSCF linear-response calculations; its overhead is roughly 1.2-1.5 times the original algorithm.",
+  "orca": ">=6.0,<7",
+  "keywords": [],
+  "when": {
+   "method": "CASSCF or other multi-reference calculations driven through RIJCOSX SCF steps"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.6. Restoring Full Symmetry"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.cosx-partial-contraction-default",
+  "topic": "ri",
+  "kind": "default",
+  "statement": "Since ORCA 5.0, generally contracted basis sets are handled with an intermediate partially contracted (pc) atomic-orbital basis in the exchange-matrix computation without affecting results (default: COSX_PartialContraction true); setting it false runs the K matrix in the original basis, for testing or benchmark purposes only.",
+  "orca": ">=6.0,<7",
+  "keywords": [],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.5. Partial Contraction Scheme"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.rijcosx-three-exchange-grids",
+  "topic": "ri",
+  "kind": "procedure",
+  "statement": "The COSX exchange treatment uses three grids: the smallest (IntAccX/GridX Acc1, Ang1) in the initial SCF iterations, the medium (Acc2, Ang2) until the end of the SCF, and the largest (Acc3, Ang3) for the final energy and gradient; UseFinalGridX toggles the last grid, which is not generally recommended to change.",
+  "orca": ">=6.0,<7",
+  "keywords": [],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.3. COSX Numerical Grids"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.rijcosx-gradient-accurate-orca6",
+  "topic": "ri",
+  "kind": "default",
+  "statement": "Since ORCA 6 the UseQGradFit parameter (default true) uses the same fitting matrix for the gradients as for the energy calculation; overlap fitting also works for HF and MP2 gradients without any additional keyword.",
+  "orca": ">=6.0,<7",
+  "keywords": [],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4.4. SFitting Parameters"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.rijcosx-geometry-accuracy",
+  "topic": "ri",
+  "kind": "check",
+  "statement": "With the default RIJCOSX settings, the impact on bond distances is a fraction of a pm, angles are better than a few tenths of a degree, soft dihedral angles are good to about 1 degree, and vibrational frequencies are roughly good to 0.1 wavenumbers.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJCOSX"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.4. RIJCOSX"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.ri-jk-usage",
+  "topic": "ri",
+  "kind": "keyword",
+  "statement": "The RIJK (RI-JK) keyword activates the RI approximation for both Coulomb and exchange in HF or hybrid DFT and requires a larger, dedicated /JK auxiliary basis set (e.g. def2/JK); errors are usually below 1 mEh and smoother than for RIJCOSX.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJK",
+   "def2/JK"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.5. RI-JK"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.ri-jk-no-gradients",
+  "topic": "ri",
+  "kind": "limit",
+  "statement": "RI-JK is implemented in ORCA for SCF single-point energies but not for gradients.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJK"
+  ],
+  "when": {
+   "job": "gradient calculation"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.5. RI-JK"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.ri-jk-vs-rijcosx-choice",
+  "topic": "ri",
+  "kind": "recommendation",
+  "statement": "RI-JK is faster than RIJCOSX for small molecules, similar for medium-sized molecules (e.g. (gly)4), and less efficient for larger molecules; for small calculations with large basis sets RI-JK is a good idea, for large calculations on large molecules RIJCOSX is better. For UHF, RI-JK is roughly twice as expensive as for RHF, which is not true for RIJCOSX.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJK",
+   "RIJCOSX"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.6. Speed Comparison of RIJCOSX and RI-JK"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.ri-jk-conventional-mode-for-ano",
+  "topic": "ri",
+  "kind": "recommendation",
+  "statement": "RI-JK is available for conventional and direct runs and also for ANO orbital bases; for ANO bases the conventional mode is recommended.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RIJK"
+  ],
+  "when": {
+   "orbital basis": "ANO"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.5. RI-JK"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.three-aux-slots",
+  "topic": "basis",
+  "kind": "keyword",
+  "statement": "There are three separate slots for auxiliary basis sets for RI: AuxJ is the Coulomb-fitting basis for RI-J, RIJDX/RIJONX and RIJCOSX; AuxJK is the Coulomb- and exchange-fitting basis for RI-JK; AuxC is used for RI-based integral generation in post-SCF correlation methods such as RI-MP2, DLPNO-MP2 and DLPNO-CC. A /JK-type basis given as a simple keyword is assigned to its matching slot; a different assignment must be made explicitly in the %basis block.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "def2/J",
+   "def2/JK"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/basisset.html",
+    "section": "2.7.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "The content is correct. The section label is wrong: 2.7.3.3 in basisset.html is 'SARC Basis Sets'; the slot passage is in 2.7.1 'Basic Usage'. Kind 'requirement' is better as 'keyword' or 'check', since nothing is required.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.default-aux-def2j-and-sarcj",
+  "topic": "basis",
+  "kind": "default",
+  "statement": "Since RI is activated by default for many calculations (e.g. RIJCOSX for hybrid DFT), the def2/J auxiliary basis is invoked automatically if not otherwise specified; in scalar-relativistic calculations the default is SARC/J. def2/J is designed for def2/def orbital bases; for other basis families give a matching AuxJ or use AutoAux.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "def2/J",
+   "SARC/J"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/basisset.html",
+    "section": "2.7.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "review_note": "The content is correct. The section label '2.7.3.3. Auxiliary basis sets' is wrong; the note is in 2.7.1 'Basic Usage' (2.7.3.3 is SARC Basis Sets). From experience: def2/J is the automatic default even for non-def2 orbital bases (e.g. cc-pVTZ), where it fits poorly; the card should say the default is meant for def2/def bases.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.def2j-not-with-relativistic",
+  "topic": "basis",
+  "kind": "incompatibility",
+  "statement": "Weigend's universal def2/J Coulomb-fitting basis assumes the use of ECPs beyond Kr and must not be used with DKH/ZORA/X2C all-electron calculations; for relativistic all-electron def2 or SARC orbital bases use SARC/J, and for x2c-XVPall orbital bases x2c/J.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "def2/J",
+   "SARC/J",
+   "x2c/J"
+  ],
+  "when": {
+   "hamiltonian": "DKH, ZORA or X2C with all-electron basis sets"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/basisset.html",
+    "section": "2.7.4.1. Coulomb-fitting auxiliary basis sets (AuxJ)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.sarcj-general-purpose-all-electron",
+  "topic": "basis",
+  "kind": "recommendation",
+  "statement": "SARC/J is a general-purpose Coulomb-fitting auxiliary basis set for all-electron calculations: decontracted def2/J up to Kr plus auxiliary sets for the rest of the periodic table, appropriate for DKH or ZORA calculations with recontracted all-electron def2 basis sets (up to Kr) and SARC basis sets for heavier elements. With scalar relativistic Hamiltonians and all-electron basis sets it can be chosen as a general-purpose auxiliary basis.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "SARC/J"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   },
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/basisset.html",
+    "section": "2.7.4.1. Coulomb-fitting auxiliary basis sets (AuxJ)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.jk-basis-for-ri-j-must-go-to-auxj",
+  "topic": "basis",
+  "kind": "incompatibility",
+  "statement": "The /JK auxiliary basis sets are optimized for RI-JK but can safely be used for RI-J, RIJDX/RIJONX or RIJCOSX; in that case they must be assigned to AuxJ via the %basis block, not left in the AuxJK slot.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "def2/JK"
+  ],
+  "when": {
+   "keyword": "a /JK auxiliary basis used with RI-J or RIJCOSX"
+  },
+  "severity": "warning",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/basisset.html",
+    "section": "2.7.4.2. Coulomb- and exchange-fitting auxiliary basis sets (AuxJK)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.autoaux-usage",
+  "topic": "basis",
+  "kind": "keyword",
+  "statement": "If no auxiliary basis set is available for the chosen orbital basis set, one can be generated automatically with the AutoAux keyword, given as a simple-input keyword (populating all three Aux slots identically) or as a value of AuxJ/AuxJK/AuxC in %basis. AutoAux bases work for Coulomb, exchange and correlation fitting and are as accurate as the optimized auxiliary basis sets at the cost of being up to twice as large.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "AutoAux"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/basisset.html",
+    "section": "2.7.4.5. Automatic Generation of Auxiliary Basis Sets (AutoAux)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.autoaux-linear-dependence-crash",
+  "topic": "basis",
+  "kind": "error-pattern",
+  "statement": "If the orbital basis contains diffuse functions (e.g. aug-cc-pVXZ sets), the AutoAux fitting basis may contain (near-)linear dependencies: the Cholesky decomposition of the Coulomb metric will fail and the program will likely crash. Fix by printing the auxiliary basis with PrintBasis and manually removing the most diffuse s- and/or p-functions, or by the automatic removal of redundant basis functions.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "AutoAux",
+   "PrintBasis"
+  ],
+  "when": {
+   "orbital basis": "contains diffuse functions, e.g. aug-cc-pVXZ"
+  },
+  "severity": "error",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/basisset.html",
+    "section": "2.7.4.5. Automatic Generation of Auxiliary Basis Sets (AutoAux)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.oldautoaux-incompatible",
+  "topic": "basis",
+  "kind": "incompatibility",
+  "statement": "The AutoAux generation procedure in ORCA 3.1 was significantly different and does not produce the same results as the current one; for compatibility the old version remains accessible via OldAutoAux true in the %basis block, so AutoAux results across those versions are not comparable.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "AutoAux"
+  ],
+  "severity": "info",
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/basisset.html",
+    "section": "2.7.4.5. Automatic Generation of Auxiliary Basis Sets (AutoAux)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "when": {
+   "task": "comparing with or reproducing ORCA 3.1 AutoAux results"
+  },
+  "review_note": "Supported by the manual, but it only matters when comparing with ORCA 3.1 results. A warning-severity card with no 'when' condition would add noise to every AutoAux run on ORCA 6. Lower it to info.",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.ri-error-small-vs-basis-incompleteness",
+  "topic": "ri",
+  "kind": "check",
+  "statement": "Any RI approximation requires a sufficiently large auxiliary basis set; if it is large enough the approximation is highly accurate, and RI errors are usually much smaller than the errors due to basis set incompleteness.",
+  "orca": ">=6.0,<7",
+  "keywords": [],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ },
+ {
+  "id": "ri.metric-cholesky-once",
+  "topic": "ri",
+  "kind": "check",
+  "statement": "The RI procedure requires inversion of the auxiliary basis metric V, an O(N^3) operation that can be expensive; in ORCA it is done via Cholesky decomposition, only once during the startup phase of a single-point calculation, so this step is usually of no practical concern.",
+  "orca": ">=6.0,<7",
+  "keywords": [],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/essentialelements/RI.html",
+    "section": "2.8.1. Resolution-of-the-Identity (RI)"
+   }
+  ],
+  "status": "verified",
+  "author": "p03",
+  "verified_by": "reviewer-ri"
+ }
+]

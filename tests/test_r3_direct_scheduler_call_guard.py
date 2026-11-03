@@ -34,12 +34,20 @@ _COMMANDS = {"squeue", "sacct", "scontrol", "sbatch", "sinfo"}
 # Files that are allowed to run a scheduler command directly. Every detected
 # file MUST be in here; a file without a detected call must NOT be here.
 ALLOWED = {
+    # A standalone workflow script (standard library only, copied next to
+    # its run and executed on the cluster): three sbatch submissions, once
+    # per run, no polling -- nothing for the query throttle to protect.
+    "delfin/analysis_tools/pre_gxtb_sp_workflow/prescreen.py",
     "delfin/agent/job_monitor.py",
+    # The watchers' job and queue looks: every one goes through the throttled
+    # scheduler_client.query (watch_checks._ask_scheduler), like job_monitor.
+    "delfin/agent/watch_checks.py",
     "delfin/agent/pack/benchmark/accept/chem_opt_is_a_minimum.py",
     "delfin/cluster_utils.py",
     "delfin/dashboard/backend_slurm.py",
     "delfin/dashboard/tab_calculations_browser.py",
-    "delfin/mlp_tools/__init__.py",
+    # mlp_tools/__init__.py migrated to scheduler_client.query (its sinfo
+    # probe); removed from the list so the bloat check stays honest.
     "delfin/slurm_submit.py",
 }
 

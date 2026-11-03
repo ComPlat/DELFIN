@@ -57,11 +57,23 @@ def _formula_of_xyz(text):
     return count
 
 
+#: What a build imports besides the tool's own module: Architector and
+#: molSimplify build through xtb's Python module (xtb-python, conda-forge).
+_ALSO_IMPORTED = {"architector": ("xtb",), "molsimplify": ("xtb",)}
+
+
 def _installed(tool):
+    """Whether *tool* can build in its interpreter, judged as the build judges
+    it: ``import mace`` is also mace-torch, the ML potential, and epic-MACE is
+    the one with ComplexFromLigands (external_builders._is_the_tool)."""
     python = eb.tool_python(tool)
     module = eb.TOOLS[tool]["module"]
-    probe = ("import importlib.util, sys; "
-             f"sys.exit(0 if importlib.util.find_spec({module!r}) else 1)")
+    needed = (module, *_ALSO_IMPORTED.get(tool, ()))
+    probe = ("import importlib, importlib.util, sys; "
+             f"ok = all(importlib.util.find_spec(m) for m in {needed!r}); "
+             + ("ok = ok and hasattr(importlib.import_module('mace'), 'ComplexFromLigands'); "
+                if tool == "mace" else "")
+             + "sys.exit(0 if ok else 1)")
     try:
         return subprocess.run([python, "-c", probe], timeout=120).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
@@ -70,8 +82,11 @@ def _installed(tool):
 
 def _needs(tool):
     if not _installed(tool):
-        pytest.skip(f"{tool} is not installed in {eb.tool_python(tool)} "
-                    f"(set {eb.TOOLS[tool]['python_env']})")
+        needed = " and ".join((eb.TOOLS[tool]["module"], *_ALSO_IMPORTED.get(tool, ())))
+        if tool == "mace":
+            needed = "epic-MACE's mace (ComplexFromLigands), not mace-torch's"
+        pytest.skip(f"{tool} cannot build in {eb.tool_python(tool)}: it needs "
+                    f"{needed} importable there (set {eb.TOOLS[tool]['python_env']})")
 
 
 # -- the split, which needs no tool ------------------------------------------

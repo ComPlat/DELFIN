@@ -11,6 +11,14 @@ base branch from the arguments, or the default branch without one. This is
 their request for that push and that pull request.
 
 ## Steps
+0. Branch hygiene before anything is pushed (measured failures of
+   wave 26): the branch carries ONLY the files its commits name --
+   probe/scratch files (`test_zz_*`, notes) are never committed; a
+   review of another branch happens on a scratch branch, never by
+   merging the reviewed branch into this one; `main` (the base) is
+   left where it was. `git log --oneline origin/<base>..HEAD` and
+   `git diff --name-only origin/<base>..HEAD` show both: fix the
+   branch BEFORE the PR, not in review.
 1. GitHub CLI: `gh --version` and `gh auth status`. Missing or not logged
    in: stop. Say what is missing and how to fix it -- `gh` can be installed
    through DELFIN's installer when it offers it, and the login is the

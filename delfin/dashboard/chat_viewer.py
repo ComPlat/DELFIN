@@ -47,6 +47,43 @@ CARD_MARKER = "DELFIN_CARD:"
 #: (tab_agent._mol3d_payload; .pdb is drawn there but not parsed here).
 DRAWN_SUFFIXES = (".xyz", ".trj", ".traj", ".cube")
 
+#: The suffixes drawn as a 2D structural formula (RDKit), the card's
+#: ``view`` then ``"2d"``. A SMILES file is read by its first token.
+FORMULA_SUFFIXES = (".smi", ".mol", ".sdf")
+
+#: The values ``view`` may carry; absent means the 3D card.
+_VIEWS = ("2d", "3d")
+
+
+def read_formula(path: str, workspace_root: "str | None" = None):
+    """``(mol, smiles, sum_formula)`` of a .smi/.mol/.sdf file.
+
+    The same read checks as a 3D file (``chat_media._load_path``: inside
+    ``workspace_root``, under the size cap) before RDKit parses the
+    content. Raises ValueError for anything RDKit cannot read: nothing is
+    drawn from a structure that was not parsed."""
+    content, suffix = chat_media._load_path(str(path), workspace_root)
+    suffix = suffix.lower()
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdMolDescriptors
+    except ImportError:
+        raise ValueError("drawing a structural formula needs RDKit") from None
+    mol = None
+    if suffix == ".smi":
+        line = next((ln for ln in content.splitlines() if ln.strip()), "")
+        token = line.split()[0] if line.split() else ""
+        mol = Chem.MolFromSmiles(token) if token else None
+    elif suffix == ".mol":
+        mol = Chem.MolFromMolBlock(content)
+    elif suffix == ".sdf":
+        block = content.split("$$$$", 1)[0]
+        mol = Chem.MolFromMolBlock(block)
+    if mol is None:
+        raise ValueError(f"no structure RDKit can read in {path}")
+    return (mol, Chem.MolToSmiles(mol),
+            rdMolDescriptors.CalcMolFormula(mol))
+
 
 def _isovalue(value) -> "float | None":
     """A usable isosurface level, or None for the default.
@@ -77,9 +114,22 @@ def render_molecule_tool_result(
     if "\n" in str(path):
         raise ValueError("takes a file path, not file content")
     suffix = Path(str(path)).suffix.lower()
+    if suffix in FORMULA_SUFFIXES:
+        _mol, smiles, formula = read_formula(path, workspace_root)
+        resolved = str(Path(str(path)).expanduser().resolve())
+        payload = {
+            "card": "molecule",
+            "path": resolved,
+            "title": str(title or path),
+            "isovalue": None,
+            "view": "2d",
+            "text": (f"Structural formula of {Path(resolved).name}: "
+                     f"{formula}, SMILES {smiles}"),
+        }
+        return CARD_MARKER + json.dumps(payload)
     if suffix not in DRAWN_SUFFIXES:
         raise ValueError(
-            f"draws {', '.join(DRAWN_SUFFIXES)} files, "
+            f"draws {', '.join(DRAWN_SUFFIXES + FORMULA_SUFFIXES)} files, "
             f"not {suffix or 'a file without a suffix'}")
     media = chat_media.molecule(
         path, kind="cube" if suffix == ".cube" else None,
@@ -116,6 +166,9 @@ def card_payload(result, card: str = "molecule") -> "dict | None":
     if card == "molecule":
         iso = payload.get("isovalue")
         if iso is not None and _isovalue(iso) is None:
+            return None
+        view = payload.get("view")
+        if view is not None and view not in _VIEWS:
             return None
     return payload
 

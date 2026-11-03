@@ -237,6 +237,17 @@ _OUTPUT_TAIL_DEFAULT = 200           # lines kept from tail
 _KILL_GRACE_S = 3.0                  # SIGTERM → SIGKILL gap
 
 
+def _bound_to(argv: list, cpu_set: Optional[list]) -> list:
+    """``argv`` started on ``cpu_set`` (calc_policy.bound_argv), or as is."""
+    if not cpu_set:
+        return argv
+    try:
+        from .calc_policy import bound_argv
+        return bound_argv(argv, cpu_set)
+    except Exception:
+        return argv
+
+
 def _signal_name(num: int) -> str:
     """"SIGKILL" for 9, and the number back when the platform has no name
     for it. Never raises: this decorates an error path."""
@@ -1267,6 +1278,7 @@ class _Registry:
         session_id: str = "",
         argv: Optional[list[str]] = None,
         on_finish: Optional[Callable[[], Optional[list]]] = None,
+        cpu_set: Optional[list[int]] = None,
     ) -> BashJob:
         """Start ``command``. ``argv`` is what actually runs, when the caller
         wraps the command -- the agent's shell tool puts it in the process
@@ -1277,7 +1289,12 @@ class _Registry:
         process has been reaped and before its exit code is recorded (the
         shell tool journals the files the job changed). Lines it returns
         are appended to the job's stderr log. Its failure is noted there
-        and does not keep the exit code from being recorded."""
+        and does not keep the exit code from being recorded.
+
+        ``cpu_set``: CPUs the job is bound to (taskset or the cpu_share
+        launcher, calc_policy.bound_argv); the agent passes it for a
+        command nobody approved on a login node. None runs it unbound.
+        """
         if not command.strip():
             raise ValueError("command must be non-empty")
         if timeout_s <= 0:
@@ -1337,7 +1354,8 @@ class _Registry:
         # --die-with-parent follows the forking THREAD, and a tool call's
         # thread ends as soon as the call returns -- taking the job with it.
         proc = _lifeline.start_bound_to_process(lambda: subprocess.Popen(
-            list(argv) if argv else ["/bin/bash", "-c", command],
+            _bound_to(list(argv) if argv else ["/bin/bash", "-c", command],
+                      cpu_set),
             cwd=cwd,
             env=run_env,
             stdout=sout,

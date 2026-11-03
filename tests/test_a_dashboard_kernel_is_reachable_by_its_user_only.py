@@ -42,15 +42,18 @@ def test_the_server_is_told_to_use_ipc(monkeypatch, short_runtime):
     assert V._kernel_transport_args() == ["--KernelManager.transport=ipc"]
 
 
-def test_a_runtime_too_deep_for_a_socket_keeps_tcp_and_says_so(
-        monkeypatch, tmp_path, capsys):
+def test_a_runtime_too_deep_for_a_socket_moves_instead_of_keeping_tcp(
+        monkeypatch, tmp_path):
+    # It kept TCP and printed a note until 2026-10-22; it now moves to a
+    # short private directory (tests/test_kernel_sockets_find_a_private_
+    # short_directory.py), and TCP is the last resort only.
     monkeypatch.setattr(V.os, "name", "posix")
     monkeypatch.delenv("DELFIN_KERNEL_TRANSPORT", raising=False)
     deep = tmp_path / ("d" * 80)
-    deep.mkdir()
+    deep.mkdir(mode=0o700)
     monkeypatch.setenv("JUPYTER_RUNTIME_DIR", str(deep))
-    assert V._kernel_transport_args() == []
-    assert "JUPYTER_RUNTIME_DIR" in capsys.readouterr().err
+    assert V._kernel_transport_args() == ["--KernelManager.transport=ipc"]
+    assert os.environ["JUPYTER_RUNTIME_DIR"] != str(deep)
 
 
 def test_tcp_can_be_chosen_and_windows_keeps_it(monkeypatch):

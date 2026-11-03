@@ -74,7 +74,14 @@ FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
 ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
-                    "session.setTitle", "attention.answer", "attention.dismiss"})
+                    "session.setTitle", "attention.answer", "attention.dismiss",
+                    # A swarm is created, started and answered by the
+                    # user, never by an agent session: the same rule that
+                    # keeps an agent from answering its own approvals
+                    # (attention.answer) keeps it from launching a swarm
+                    # or answering the swarm's queue for itself.
+                    "swarm.start", "swarm.pause", "swarm.resume",
+                    "swarm.triage.answer"})
 
 UNKNOWN_SESSION = protocol.UNKNOWN_SESSION
 WORKER_GONE = protocol.WORKER_GONE
@@ -301,6 +308,9 @@ class Session:
         #: budget: what an attach replays (see ``replay``).
         self.recent = eventlog.RecentEvents(REPLAY_BUDGET_BYTES)
         self.done = asyncio.get_running_loop().create_future()
+        #: Called with every event, in the service's loop (a schedule's run
+        #: follows its session this way: schedule_runner).
+        self.listeners: list = []
 
     # -- talking to the worker ------------------------------------------------------
     async def request(self, method: str, params: dict | None = None,
@@ -425,6 +435,11 @@ class Session:
     def on_event(self, message: dict, event: dict) -> None:
         self.last_activity = time.time()
         changed = self.apply(event)
+        for listener in list(self.listeners):
+            try:
+                listener(event)
+            except Exception:
+                pass
         seq = event.get("seq")
         if isinstance(seq, int) and seq > self.seen_seq:
             self.seen_seq = seq
@@ -657,6 +672,9 @@ class Supervisor:
         self._attention_at = 0.0
         self._attention_titles = attention_feed.Titles()
         self._attention_lock = asyncio.Lock()
+        #: The user's schedules of this host, run as sessions here.
+        from .schedule_runner import ScheduleRunner
+        self.schedules = ScheduleRunner(self)
 
     def spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -687,12 +705,14 @@ class Supervisor:
         os.chmod(path, 0o600)
         idle = self.spawn(self._watch_idle())
         attention = self.spawn(self._watch_attention())
+        timed = self.spawn(self.schedules.run())
         try:
             await self.stopping.wait()
         finally:
             self.closing = True
             idle.cancel()
             attention.cancel()
+            timed.cancel()
             self.server.close()
             # Said before anything closes: a window leaves (or, for a
             # restart, reconnects) instead of starting a new service.
@@ -863,6 +883,16 @@ class Supervisor:
             problem = protocol.params_problem(SERVICE_REQUESTS[method], params)
             if problem:
                 return fail(protocol.INVALID_PARAMS, problem)
+            # Package SW2b: swarm.* methods live in swarm_rpc.py, not
+            # on this class -- dispatch them by module. Their handlers
+            # take only params (no client, no await) and are sync, so
+            # they run in a thread; every state-changing one confirms
+            # inside swarm_rpc itself (swarm.start double gate).
+            if method.startswith("swarm."):
+                import asyncio as _asyncio
+                from . import swarm_rpc as _swarm_rpc
+                fn = getattr(_swarm_rpc, method.replace(".", "_"))
+                return answer(await _asyncio.to_thread(fn, params))
             handler = getattr(self, "_m_" + method.replace(".", "_"))
             return answer(await handler(client, params))
         except WorkerFailed as exc:
@@ -984,6 +1014,23 @@ class Supervisor:
         if self.closing:
             raise _Refusal(protocol.NOT_ALLOWED, "the agent service is stopping")
         resume = str(params.get("resume") or "")
+        if params.get("continue") and not resume and not params.get("fork"):
+            # The folder's latest session may be one this service runs or
+            # keeps asleep (its window closed). One session, one worker: it
+            # is resumed by id, which attaches below instead of starting a
+            # second worker that would find the session's lock taken.
+            latest = await asyncio.to_thread(past_sessions, str(cwd), "", 1)
+            known = str(latest[0]["sessionId"]) if latest else ""
+            if known and (known in self.sessions or known in self.dormant
+                          or known in self._waking):
+                resume = known
+                if known in self.sessions:
+                    session = await self._awake(client, known)
+                    if params.get("attach", True) and not client.closed:
+                        session.subscribers[client] = session.seen_seq
+                    return {"sessionId": session.id, "session": session.info,
+                            "state": session.state, "pending": list(session.pending.values()),
+                            "events": session.replay(0)[1:]}
         if resume and (resume in self.dormant or resume in self._waking):
             # Woken by the resume picker, as an attach wakes it: with the
             # settings it had. What the answer carries is its replay.
@@ -1016,6 +1063,13 @@ class Supervisor:
                           ("fake", "--fake")):
             if params.get(key):
                 args.append(flag)
+        if params.get("unattended"):
+            # A user schedule's run (schedule_runner): chat's ceilings.
+            args.append("--unattended")
+        for key, flag in (("maxBudgetUsd", "--max-budget-usd"),
+                          ("maxRunSeconds", "--max-run-seconds")):
+            if params.get(key):
+                args += [flag, str(float(params[key]))]
         if params.get("fake") and params.get("fakeDelay") is not None:
             args += ["--fake-delay", str(float(params["fakeDelay"]))]
         if params.get("fake") and params.get("fakeSave"):
@@ -1109,6 +1163,11 @@ class Supervisor:
         return {"session": session.info, "state": session.state,
                 "pending": list(session.pending.values()), "events": events,
                 "summary": session.summary()}
+
+    async def _m_session_pending(self, _client: Client, params: dict) -> dict:
+        # Read the current requests without attaching, replaying or waking a worker.
+        session = self.sessions.get(str(params["sessionId"]))
+        return {"pending": list(session.pending.values()) if session else []}
 
     async def _m_session_detach(self, client: Client, params: dict) -> dict:
         session = self.sessions.get(str(params["sessionId"]))
@@ -1371,7 +1430,7 @@ class Supervisor:
         while True:
             await asyncio.sleep(tick)
             self._sleep_unused()
-            if self.sessions or self.starting or self.clients:
+            if self.sessions or self.starting or self.clients or self.schedules.keeps_up():
                 continue
             # Dormant sessions keep nothing running: they wait in the roster.
             if time.monotonic() - self.quiet_since >= self.idle_exit_s:

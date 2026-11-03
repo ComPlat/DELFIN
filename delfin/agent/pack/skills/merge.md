@@ -33,7 +33,13 @@ remote.
    next to each other). When the intent of a side is unclear, stop and ask
    the user, showing both versions side by side. To give up cleanly:
    `git merge --abort`.
-6. Run the tests that cover the files the merge changed.
+6. A conflict in a COUNTER or a counted list (a dict of counts, a
+   frequency table, a task tally): the two sides are both real and
+   additive. Resolve by SUMMING the two numbers, never by picking one
+   side -- measured failure: after GitHub's "update branch" merged a
+   count file without a textual conflict, picked values were wrong in
+   both directions. Say the sum and the two sources in the report.
+7. Run the tests that cover the files the merge changed.
 
 ## Report
 What came in (`git log --oneline HEAD@{1}..HEAD`, shortened), each conflict

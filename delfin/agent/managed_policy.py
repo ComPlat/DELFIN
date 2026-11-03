@@ -12,6 +12,7 @@ plus, optionally, the file named by ``DELFIN_MANAGED_POLICY``. Schema::
     {
       "permissions": {"deny": [...], "ask": [...], "only_allow": [...]},
       "disallowed_modes": ["bypassPermissions"],
+      "disallowed_backends": ["cli", "codex_cli"],
       "require_isolation": true,
       "container_backend": "bwrap",
       "network": {"allowed_domains_max": ["pypi.org", "*.github.com"]},
@@ -113,7 +114,10 @@ FAIL_CLOSED_MODES = frozenset({"bypassPermissions", "acceptEdits"})
 #: The modes that run a command or a write nobody approved.
 UNATTENDED_MODES = frozenset({"bypassPermissions", "acceptEdits"})
 CONTAINER_BACKENDS = ("", "bwrap")
+#: The agent backends a policy may refuse (backend_parity's names).
+BACKENDS = ("openai", "cli", "anthropic_api", "codex_cli")
 _KEYS = {"version", "permissions", "disallowed_modes", "require_isolation",
+         "disallowed_backends",
          "auto_ssh_hosts_max",
          "container_backend", "network", "disable_classifier_off",
          "audit_log", "knowledge_admins", "comment"}
@@ -144,6 +148,9 @@ class Policy:
     #: One tuple of rules per file that sets it; a command must fit each.
     only_allow: tuple = ()
     disallowed_modes: frozenset = frozenset()
+    #: Backends a session may not start on (backend_parity's names). The
+    #: external CLIs run their own shell, outside DELFIN's command cage.
+    disallowed_backends: frozenset = frozenset()
     require_isolation: bool = False
     container_backend: str = ""
     #: One tuple of domains per file that sets it; a host must fit each.
@@ -305,6 +312,12 @@ def _merge(pol: Policy, data: dict, src: Source) -> None:
     for m in sorted(modes - set(MODES)):
         errors.append(f"{where}: disallowed mode {m!r} is not a mode")
     pol.disallowed_modes = pol.disallowed_modes | frozenset(modes & set(MODES))
+    backends = {b.strip().lower() for b in _strings(data.get("disallowed_backends"))}
+    for b in sorted(backends - set(BACKENDS)):
+        errors.append(f"{where}: disallowed backend {b!r} is not a backend "
+                      f"({', '.join(BACKENDS)})")
+    pol.disallowed_backends = (pol.disallowed_backends
+                               | frozenset(backends & set(BACKENDS)))
     if data.get("require_isolation"):
         pol.require_isolation = True
     backend = str(data.get("container_backend") or "").strip().lower()
@@ -453,6 +466,30 @@ def disallowed_modes(policy: Optional[Policy] = None) -> frozenset:
     return frozenset(out)
 
 
+def backend_refusal(backend: str, provider: str = "") -> Optional[str]:
+    """Why a session may not start on this backend, or None.
+
+    Asked by create_client, where every session gets its client: the
+    canonical backend (backend_parity.canonical_backend) of the pair, so
+    ``--backend cli --provider kit`` -- an OpenAI-compatible client -- is
+    judged as what it builds, not by the string.
+    """
+    pol = load()
+    if not pol.active or not pol.disallowed_backends:
+        return None
+    try:
+        from .backend_parity import canonical_backend
+        canon = canonical_backend(backend, provider)
+    except Exception:
+        canon = str(backend or "").strip().lower()
+    if canon not in pol.disallowed_backends:
+        return None
+    where = ", ".join(str(src.path) for src in pol.sources) or "the managed policy"
+    return (f"the administrator's managed policy ({where}) does not allow the "
+            f"{canon!r} backend here: its tools run outside DELFIN's command "
+            "cage. Start the session on another provider (e.g. --provider kit).")
+
+
 def coerce_mode(mode: str) -> str:
     """``mode``, or the fallback when the policy disallows it."""
     pol = load()
@@ -571,6 +608,7 @@ def summary(policy: Optional[Policy] = None) -> dict:
         "ask": [r.text for r in pol.ask],
         "only_allow": [[r.text for r in rs] for rs in pol.only_allow],
         "disallowed_modes": sorted(disallowed_modes(pol)),
+        "disallowed_backends": sorted(pol.disallowed_backends),
         "require_isolation": pol.require_isolation,
         "isolation_unmet": isolation_unmet(pol),
         "container_backend": pol.container_backend,
@@ -605,6 +643,9 @@ def summary_lines(policy: Optional[Policy] = None, *,
     if s["disallowed_modes"]:
         lines.append("managed modes  disallowed: "
                      + ", ".join(s["disallowed_modes"]))
+    if s["disallowed_backends"]:
+        lines.append("managed backend disallowed: "
+                     + ", ".join(s["disallowed_backends"]))
     if s["require_isolation"]:
         lines.append("managed shell  isolation required"
                      + (f" ({s['container_backend']})"

@@ -189,6 +189,16 @@ _BUILTIN_SERVERS: dict[str, dict] = {
         "command": sys.executable or "python3",
         "args": ["-m", "delfin.ops_server"],
         "enabled": True,
+        # The host's grant for the server's mutating tools (submit,
+        # cancel, pipeline_run, run_orca_input, ...). Consent per call is
+        # this agent's MCP gate, which stands in front of every one of
+        # them: the approval dialog, a refusal when nobody can be asked or
+        # in plan mode, and in bypassPermissions the user's standing grant
+        # with the second opinion (tests/test_the_agent_can_submit_through_
+        # its_own_gate.py). Nothing set it before, so a job the user had
+        # authorised answered mutation_blocked (field report 2026-10-22).
+        # A host that starts the server itself keeps deciding on its own.
+        "env": {"DELFIN_OPS_ALLOW_MUTATE": "1"},
     },
 }
 

@@ -858,6 +858,29 @@ def _check_loader_path(ctx: dict) -> list[dict]:
     return rows
 
 
+def _without_landlock(held_by: str) -> str:
+    """What a cage of bubblewrap alone leaves out, for the row's detail; "".
+
+    The cage confines a command's reads through Landlock inside it, and
+    only with both does a command off the auto-allow list run in it
+    without a question (api_client._caged_command_may_run_unasked). The
+    Raspberry Pi OS kernel, for one, is built without Landlock: the row said
+    only "bwrap active", and nothing told why every such command was asked.
+    """
+    if held_by != "bwrap" or not sys.platform.startswith("linux"):
+        return ""
+    try:
+        from delfin.agent.api_client import _landlock_functional
+        if _landlock_functional():
+            return ""
+    except Exception:
+        return ""
+    return ("; no Landlock in this kernel, so reads are not confined and "
+            "commands off the auto-allow list are asked about instead of run "
+            "in the cage (a kernel with CONFIG_SECURITY_LANDLOCK and "
+            "landlock in its LSM list lets them run)")
+
+
 def _check_bash_isolation(ctx: dict) -> list[dict]:
     """Report whether shell commands run in a filesystem namespace.
 
@@ -906,7 +929,8 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     if mode == "bwrap":
         if held_by:
             return [{"check": "bash isolation", "status": "PASS",
-                     "detail": f"{held_by} active for every command"}]
+                     "detail": f"{held_by} active for every command"
+                               + _without_landlock(held_by)}]
         # Not a silent downgrade: with nothing able to hold the command,
         # the product refuses to run it rather than run it unisolated.
         return [{"check": "bash isolation", "status": "FAIL",
@@ -941,7 +965,7 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     if held_by:
         return [{"check": "bash isolation", "status": "PASS",
                  "detail": (f"auto — {held_by} active in every permission "
-                            "mode")}]
+                            "mode" + _without_landlock(held_by))}]
     # Nothing here can hold a command. Then auto is honest about what is
     # left: the command still runs (refusing every shell command in an
     # attended session would be secure and useless), and what protects

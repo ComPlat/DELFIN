@@ -1,0 +1,32 @@
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+#
+# CI stand-in for the real [Ru(NH3)6]2+ PBE/def2-TZVP CPCM(water) single
+# point, whose ORCA 6.1.1 output lives in the private fixture store
+# (LICENSE_GUARD.md rule family 2: real licensed-program output is not
+# committed).  The quoted lines below are transcribed verbatim from that
+# real run (job "Ru(NH3)6 real run", 51 s, 2 cores): the def2-ECP was
+# auto-loaded for Ru (Z=44 >= Rb) by the global def2-TZVP keyword, which is
+# the behaviour delfin/tools/orca_basis_solv_opi.py relies on for its
+# global-basis path.
+#
+# Shapes here follow ORCA's real format so tests can exercise the reader,
+# but no number is a computed value except where the comment says it is
+# transcribed from the real run.
+
+Program Version 6.1.1  -  RELEASE  -
+  * Host name:     fixture-host
+  * Working dir.:  <worktree>
+
+* core charge reduced due to ECP
+
+ECP PARAMETER INFORMATION
+
+ Group 1, Type Ru ECP Def2-ECP (replacing 28 core electrons, lmax=3)
+
+   Atom   0Ru   ECP group =>   1
+
+               *                     SUCCESS                       *
+
+                             ****ORCA TERMINATED NORMALLY****
+
+ Total Energy       :     -322.432100000 Eh     # SYNTHETIC value, not from the real run

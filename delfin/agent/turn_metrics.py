@@ -520,6 +520,7 @@ def record_request(
     system_hash: str = "",
     prefix_hash: str = "",
     served_model: str = "",
+    model_switches: list | None = None,
 ) -> None:
     """Append one request's timing and token counts. Never raises.
 
@@ -564,9 +565,14 @@ def record_request(
         if prefix_hash:
             entry["prefix_hash"] = str(prefix_hash)
         served = "".join(c for c in str(served_model or "")
-                         if c.isprintable())[:120].strip()
+                           if c.isprintable())[:120].strip()
         if served:
             entry["served_model"] = served
+        if model_switches:
+            entry["model_switches"] = [
+                {k: str(v) for k, v in sw.items() if isinstance(v, (str, bytes))}
+                for sw in model_switches if isinstance(sw, dict)
+            ]
         with open_append(p) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         secure_file(p)

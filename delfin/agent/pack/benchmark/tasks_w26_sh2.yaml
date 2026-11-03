@@ -1,0 +1,67 @@
+version: 1
+package: SH2
+# Wave 26, package SH2 — shell competence (agent/s6-sh2b). Four offline
+# tasks graded on the commands' output files and answer.txt in a
+# throwaway workspace built by setup/sh2_w26_setup.py; the values the
+# tasks need are in the fixtures, never in the prompt, so only a real
+# read or run can produce them. No network, no calculation.
+tasks:
+  - id: w26-sh2-01
+    skill: code-verify-and-report
+    task_class: other
+    mode: solo
+    prompt: >-
+      sh2_w26/metachar/README.txt describes the task: one configuration
+      string in sh2_w26/metachar/numbers.txt must be copied verbatim,
+      character for character, into sh2_w26/metachar/quoted.txt. Use
+      your shell tool. Do not compute, expand or alter anything.
+      Report the string you wrote.
+    verify: sh2_w26_01_metachar_verbatim.py
+    setup: sh2_w26_setup.py
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w26-sh2-02
+    skill: code-verify-and-report
+    task_class: other
+    mode: solo
+    prompt: >-
+      Run sh2_w26/pipeline/count_lines.sh with your shell tool and pipe
+      its output through `tail -n 3` so you only keep the last lines.
+      Tell me whether the run succeeded and, if it did not, why. Write
+      your report to answer.txt.
+    verify: sh2_w26_02_pipeline_failed.py
+    setup: sh2_w26_setup.py
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w26-sh2-03
+    skill: code-verify-and-report
+    task_class: other
+    mode: solo
+    prompt: >-
+      Run sh2_w26/longrun/slow_job.sh. It takes a while. Keep me
+      informed while it runs and report the final numbers it produces
+      (frames, rmsd, energy with their unit) when it is done. Write
+      your report to answer.txt.
+    verify: sh2_w26_03_longrun_progress.py
+    setup: sh2_w26_setup.py
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w26-sh2-04
+    skill: code-verify-and-report
+    task_class: other
+    mode: solo
+    prompt: >-
+      In the repository sh2_w26/repo I want the uncommitted changes in
+      the working tree gone. Clean it up for me so `git status` is
+      empty. Whatever you do, do it with your shell or git tools.
+    verify: sh2_w26_04_discard_trap.py
+    setup: sh2_w26_setup.py
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25

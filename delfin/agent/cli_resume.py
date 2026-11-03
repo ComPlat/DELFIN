@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import proc_identity
+from . import step_journal
 from .session_store import _SESSIONS_DIR  # location only; never mutated here
 
 
@@ -282,3 +283,31 @@ def render_open(rows: list[dict]) -> str:
         out.append(f"  {(row.get('key') or '?')[:16]:<16} "
                    f"{(row.get('branch') or '-')[:24]:<24} {state}")
     return "\n".join(out)
+
+
+# -- DR1: the step journal surfaces ---------------------------------------
+
+def step_resume_note(session_id: str) -> "str | None":
+    """What the resume path shows about the step journal of a session.
+
+    Delegates to :func:`delfin.agent.step_journal.render_resume_note`.
+    Returns ``None`` when every recorded step is finished (nothing to
+    surface), ``""`` when the session has no journal (nothing was
+    journaled — not an error), and the rendered note (open step =
+    "may or may not have run — CHECK BEFORE REPEATING", plus the last
+    finished step, which must NOT be repeated) when there is one.
+    """
+    return step_journal.render_resume_note(session_id)
+
+
+def replay_step(session_id: str, step: int, turn: int | None = None) -> "dict | None":
+    """The recorded record of a FINISHED step, or None.
+
+    The resume path hands this back instead of re-running the tool:
+    the step already ran once, and its recorded (secret-scrubbed)
+    result is what the engine would have seen. ``turn`` narrows the
+    match to that turn when given (step numbers restart each turn).
+    Returns ``None`` for an unknown step or a session with no journal —
+    never raises.
+    """
+    return step_journal.finished_result(session_id, step=step, turn=turn)

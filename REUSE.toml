@@ -51,3 +51,19 @@ SPDX-FileCopyrightText = [
     "2025 Maximilian Hartmann",
 ]
 SPDX-License-Identifier = "MIT AND LGPL-3.0-or-later"
+
+# A review set: one file holding structures built by MANTA (DELFIN's output,
+# LGPL like the rest) and experimental crystal structures from the
+# Crystallography Open Database (https://www.crystallography.net), which COD
+# releases under CC0 1.0. The set's README says which is which only as a
+# whole; the per-structure source stays with the coordinator until the
+# ratings are in.
+[[annotations]]
+path = "review_sets/**/structures.xyz.gz"
+precedence = "override"
+SPDX-FileCopyrightText = [
+    "2025 Maximilian Hartmann",
+    "DELFIN contributors (see the git history)",
+    "Crystallography Open Database contributors (crystal structures, dedicated to the public domain)",
+]
+SPDX-License-Identifier = "LGPL-3.0-or-later AND CC0-1.0"

@@ -10,6 +10,14 @@ Usage::
 
     run_step("turbomole_opt", geometry="mol.xyz", charge=0, method="ri-bp86",
              basis="def2-SVP")
+
+Physical-realism contract (reviewer findings F1-F4, wave 21 TM1):
+- spin is never silently dropped: an open shell (mult > 1) writes
+  ``$unpaired N`` with N = mult - 1 into the control file;
+- command arguments are passed as an argv list, never interpolated into
+  a shell command line (no injection surface through max_cycles);
+- every declared product is produced: turbomole_freq surfaces the
+  aoforce ``hessian`` file or fails honestly.
 """
 
 from __future__ import annotations
@@ -18,7 +26,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
@@ -39,16 +47,43 @@ _TM_DATA = (DataKeySpec("energy_Eh", "float", "Eh", "Final electronic energy"),)
 _TM_BINARIES = ("define", "x2t")
 
 
-def _run_tm_command(cmd: str, work_dir: Path, cores: int,
+def _check_charge_mult_types(charge: Any, mult: Any) -> Optional[str]:
+    """Physical limits: charge and multiplicity must be plain integers.
+
+    multiplicity (2S+1) >= 1; charge may be any integer.  bool is not an
+    int here (True would otherwise masquerade as charge=1/mult=1).
+    """
+    if isinstance(charge, bool) or not isinstance(charge, int):
+        return f"charge must be an integer, got {charge!r}"
+    if isinstance(mult, bool) or not isinstance(mult, int):
+        return f"mult must be an integer, got {mult!r}"
+    if mult < 1:
+        return f"mult must be >= 1 (2S+1), got {mult}"
+    return None
+
+
+def _run_tm_command(argv: List[str], work_dir: Path, cores: int,
                     timeout: Optional[int] = None) -> subprocess.CompletedProcess:
-    """Run a Turbomole command in work_dir."""
+    """Run a Turbomole command in work_dir.
+
+    ``argv`` is a list and is executed WITHOUT a shell: no argument of
+    the caller can ever be re-interpreted as shell syntax (injection
+    surface, reviewer finding F3).  A missing binary is reported as a
+    returncode-127 CompletedProcess instead of raising, so the adapter
+    can return an honest FAILED result.
+    """
     import os
     env = os.environ.copy()
     env["PARNODES"] = str(cores)
     env["OMP_NUM_THREADS"] = str(cores)
 
+    if shutil.which(argv[0]) is None:
+        return subprocess.CompletedProcess(
+            argv, 127, "",
+            f"{argv[0]}: not found in PATH (Turbomole is license-restricted "
+            "and is never auto-installed — see delfin/tools/_environment.py)")
     return subprocess.run(
-        cmd, shell=True, cwd=work_dir, env=env,
+        argv, shell=False, cwd=work_dir, env=env,
         capture_output=True, text=True, timeout=timeout,
     )
 
@@ -79,10 +114,20 @@ def _setup_coord(geometry: Path, work_dir: Path) -> Path:
     return coord_path
 
 
-def _setup_control(work_dir: Path, method: str, basis: str, charge: int,
-                   mult: int, cores: int, **kwargs: Any) -> None:
-    """Generate Turbomole control file via define or manually."""
+def _setup_control(work_dir: Path, **kwargs: Any) -> None:
+    """Generate a Turbomole control file via define or manually.
+
+    Everything is read from ``kwargs`` so a caller can never bind the
+    same value twice (reviewer finding F1: the old positional + **kwargs
+    call raised TypeError on every execute()).
+    """
+    method = kwargs.get("method", "b3-lyp")
+    basis = kwargs.get("basis", "def2-SVP")
+    charge = kwargs.get("charge", 0)
+    mult = kwargs.get("mult", 1)
+    cores = kwargs.get("cores", 1)
     define = shutil.which("define")
+    ri = bool(kwargs.get("ri", True))
     if define:
         # Use define with input script
         define_input = f"""
@@ -95,17 +140,27 @@ eht
 y
 {charge}
 y
+{mult}
 *
 dft
-on
 func {method}
 *
-ri
-on
-*
+"""
+        if ri:
+            # The RI block only when the caller asked for RI (N1):
+            # ri=False must produce a conventional dscf setup, not an
+            # RI one the caller never requested.
+            define_input += f"""ri
+{cores}
 *
 """
-        proc = subprocess.run(
+        if mult > 1:
+            # Only for an open shell (N2): an unpaired 0 for a singlet
+            # is an unnecessary directive and some Turbomole versions
+            # treat it as a (harmless but misleading) RHF/UHF switch.
+            define_input += f"unpaired {mult - 1}\n*\n"
+        define_input += "q\n"
+        result = subprocess.run(
             [define], input=define_input, cwd=work_dir,
             capture_output=True, text=True, timeout=60,
         )
@@ -123,8 +178,12 @@ $dft
 $ricore 500
 $maxcor 500
 $scfconv 7
-$end
 """
+        if mult > 1:
+            # An open shell is declared explicitly: $unpaired N with
+            # N = mult - 1 unpaired electrons.  Never silently closed.
+            control += f"$unpaired {mult - 1}\n"
+        control += "$end\n"
         (work_dir / "control").write_text(control)
 
 
@@ -197,18 +256,20 @@ class TurbomoleSpAdapter(StepAdapter):
             return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
                                      error="geometry is required")
 
-        charge = kwargs["charge"]
+        charge = kwargs.get("charge", 0)
         mult = kwargs.get("mult", 1)
-        method = kwargs.get("method", "b3-lyp")
-        basis = kwargs.get("basis", "def2-SVP")
+        bad = _check_charge_mult_types(charge, mult)
+        if bad:
+            return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
+                                     error=bad)
         timeout = kwargs.get("timeout")
 
         _setup_coord(geometry, work_dir)
-        _setup_control(work_dir, method, basis, charge, mult, cores, **kwargs)
+        _setup_control(work_dir, cores=cores, **kwargs)
 
         # Run ridft (RI-DFT) or dscf (conventional)
-        cmd = "ridft" if kwargs.get("ri", True) else "dscf"
-        proc = _run_tm_command(cmd, work_dir, cores, timeout=timeout)
+        argv = ["ridft"] if kwargs.get("ri", True) else ["dscf"]
+        proc = _run_tm_command(argv, work_dir, cores, timeout=timeout)
 
         success = proc.returncode == 0
         energy = _extract_energy_tm(work_dir)
@@ -221,7 +282,7 @@ class TurbomoleSpAdapter(StepAdapter):
             StepStatus.SUCCESS if success else StepStatus.FAILED,
             work_dir, start,
             data=data,
-            error=None if success else f"Turbomole {cmd} failed: {proc.stderr[:500]}",
+            error=None if success else f"Turbomole {argv[0]} failed: {proc.stderr[:500]}",
         )
 
 
@@ -249,18 +310,27 @@ class TurbomoleOptAdapter(StepAdapter):
             return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
                                      error="geometry is required")
 
-        charge = kwargs["charge"]
+        charge = kwargs.get("charge", 0)
         mult = kwargs.get("mult", 1)
-        method = kwargs.get("method", "b3-lyp")
-        basis = kwargs.get("basis", "def2-SVP")
+        bad = _check_charge_mult_types(charge, mult)
+        if bad:
+            return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
+                                     error=bad)
         max_cycles = kwargs.get("max_cycles", 200)
+        # max_cycles reaches the process as ONE argv element, never as
+        # shell syntax: validate the type, then hand jobex a clean list
+        # (reviewer finding F3 — "200; touch X" must fail validation).
+        if isinstance(max_cycles, bool) or not isinstance(max_cycles, int) or max_cycles < 1:
+            return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
+                                     error=f"max_cycles must be a positive integer, "
+                                           f"got {max_cycles!r}")
         timeout = kwargs.get("timeout")
 
         _setup_coord(geometry, work_dir)
-        _setup_control(work_dir, method, basis, charge, mult, cores, **kwargs)
+        _setup_control(work_dir, cores=cores, **kwargs)
 
-        cmd = f"jobex -ri -c {max_cycles}"
-        proc = _run_tm_command(cmd, work_dir, cores, timeout=timeout)
+        argv = ["jobex", "-ri", "-c", str(max_cycles)]
+        proc = _run_tm_command(argv, work_dir, cores, timeout=timeout)
 
         success = proc.returncode == 0
         energy = _extract_energy_tm(work_dir)
@@ -288,7 +358,8 @@ class TurbomoleFreqAdapter(StepAdapter):
     params = _TM_PARAMS
     consumes = ("geometry",)
     produces = ("qc_output", "hessian")
-    data_keys = _TM_DATA
+    data_keys = _TM_DATA + (DataKeySpec("hessian", "file", "path",
+                                        "aoforce Hessian file"),)
     requires_binaries = _TM_BINARIES
 
     def validate_params(self, **kwargs: Any) -> None:
@@ -302,18 +373,20 @@ class TurbomoleFreqAdapter(StepAdapter):
             return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
                                      error="geometry is required")
 
-        charge = kwargs["charge"]
+        charge = kwargs.get("charge", 0)
         mult = kwargs.get("mult", 1)
-        method = kwargs.get("method", "b3-lyp")
-        basis = kwargs.get("basis", "def2-SVP")
+        bad = _check_charge_mult_types(charge, mult)
+        if bad:
+            return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
+                                     error=bad)
         timeout = kwargs.get("timeout")
 
         _setup_coord(geometry, work_dir)
-        _setup_control(work_dir, method, basis, charge, mult, cores, **kwargs)
+        _setup_control(work_dir, cores=cores, **kwargs)
 
         # First SP, then aoforce
-        _run_tm_command("ridft", work_dir, cores, timeout=timeout)
-        proc = _run_tm_command("aoforce", work_dir, cores, timeout=timeout)
+        _run_tm_command(["ridft"], work_dir, cores, timeout=timeout)
+        proc = _run_tm_command(["aoforce"], work_dir, cores, timeout=timeout)
 
         success = proc.returncode == 0
         energy = _extract_energy_tm(work_dir)
@@ -322,12 +395,24 @@ class TurbomoleFreqAdapter(StepAdapter):
         if energy is not None:
             data["energy_Eh"] = energy
 
+        # The adapter declares "hessian" as a product: surface the file
+        # aoforce wrote, or fail honestly — a declared product that is
+        # silently absent is a defect (reviewer finding F4).
+        hessian = work_dir / "hessian"
+        if hessian.is_file():
+            data["hessian"] = str(hessian)
+        elif success:
+            success = False
+
         return self._make_result(
             self.name,
             StepStatus.SUCCESS if success else StepStatus.FAILED,
             work_dir, start,
             data=data,
-            error=None if success else f"Turbomole aoforce failed: {proc.stderr[:500]}",
+            error=None if success else (
+                "aoforce exited 0 but wrote no hessian file"
+                if proc.returncode == 0 else
+                f"Turbomole aoforce failed: {proc.stderr[:500]}"),
         )
 
 

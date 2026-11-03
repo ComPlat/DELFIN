@@ -56,8 +56,10 @@ def _stop_button(root):
     stack = [root]
     while stack:
         n = stack.pop()
-        if (isinstance(n, widgets.Button) and n.description == "Stop"
-                and n.button_style == "danger"):
+        # Exactly "Stop": the other stop buttons say "Stop auto" and
+        # "Stop Cycle". Not by colour: it is grey while there is nothing
+        # to stop.
+        if isinstance(n, widgets.Button) and n.description == "Stop":
             return n
         stack.extend(getattr(n, "children", ()) or ())
     raise AssertionError("no Stop button")
@@ -100,8 +102,9 @@ def test_stop_stays_pressable_while_the_turn_still_runs(running_turn):
     stop.click()
     assert state["streaming"] is False
     assert engine.stops >= 1 and engine.client.signals >= 1
-    # The thread has not ended: the button is still there to press.
+    # The thread has not ended: the button is still there to press, red.
     assert stop.disabled is False
+    assert stop.button_style == "danger"
     before = engine.stops
     stop.click()
     assert engine.stops > before
@@ -115,8 +118,10 @@ def test_one_press_repeats_the_stop_until_the_turn_ends(running_turn):
     assert _wait(lambda: engine.stops >= 4), engine.stops
     release.set()
     thread.join(5)
-    # The turn is over: the repeating ends and Stop is greyed out again.
+    # The turn is over: the repeating ends and Stop is greyed out again,
+    # without its red.
     assert _wait(lambda: stop.disabled is True)
+    assert _wait(lambda: stop.button_style == "")
     settled = engine.stops
     time.sleep(0.3)
     assert engine.stops == settled

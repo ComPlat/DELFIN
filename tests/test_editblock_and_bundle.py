@@ -207,8 +207,10 @@ def test_bundle_persists_atomically_with_confirm(workspace, tmp_path,
 
     seen_preview = {}
     def confirm(name, args, preview):
+        # The first question shows the rules; the second asks again.
+        seen_preview.setdefault("previews", []).append(preview)
         seen_preview["name"] = name
-        seen_preview["preview"] = preview
+        seen_preview["preview"] = seen_preview["previews"][0]
         seen_preview["patterns"] = args["patterns"]
         return True
 
@@ -241,6 +243,9 @@ def test_bundle_persists_atomically_with_confirm(workspace, tmp_path,
     # confirm callback got the bundle preview
     assert seen_preview["name"] == "remember_permission_bundle"
     assert "extra_workspace_dir" in seen_preview["preview"]
+    # Flagged as what it is, and asked twice (api_client._confirm_widening).
+    assert seen_preview["previews"][0].startswith("⚠ THE AGENT ASKS FOR MORE RIGHTS")
+    assert len(seen_preview["previews"]) == 2
     assert any("pytest" in p for p in seen_preview["patterns"])
 
 

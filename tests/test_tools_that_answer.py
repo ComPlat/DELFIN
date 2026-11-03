@@ -721,6 +721,12 @@ def test_an_install_is_found_although_an_older_xtb_was_found_first(
     (root / "bin").mkdir(parents=True)
     monkeypatch.setenv("DELFIN_QM_TOOLS_ROOT", str(root))
     monkeypatch.setenv("PATH", f"{old.parent}{os.pathsep}/usr/bin{os.pathsep}/bin")
+    # The user's own tool copy (~/.delfin/qm_tools) is searched before PATH:
+    # on a host whose user installed xtb there, it was found instead of the
+    # stand-in. An empty one of the test's own, as CI has none.
+    from delfin import qm_runtime
+    monkeypatch.setattr(qm_runtime, "get_user_qm_tools_root",
+                        lambda: tmp_path / "user_qm_tools")
     monkeypatch.delenv("XTBHOME", raising=False)
     monkeypatch.delenv("DELFIN_AUTO_INSTALL_QM_TOOLS", raising=False)
     monkeypatch.setattr(gfn, "_AUTO_TRIED", set())

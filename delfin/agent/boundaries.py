@@ -562,6 +562,10 @@ MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".delfin/credentials.json",
     ".delfin/approval_codes",
     ".delfin/trust_store",
+    # Which sessions the phone may reach (delfin.messenger.activation).
+    ".delfin/messenger_sessions",
+    # The user's schedules (delfin.agent.schedules).
+    ".delfin/user_schedules",
 )
 
 

@@ -46,7 +46,7 @@
   "tests/test_a_child_process_writes_into_no_real_home.py": 0.3,
   "tests/test_a_choice_offer_is_a_question_with_a_flat_list.py": 0.2,
   "tests/test_a_citation_check_does_not_flag_a_file_still_to_be_made.py": 0.1,
-  "tests/test_a_claude_terminal_runs_only_claude.py": 0.4,
+  "tests/test_the_agent_terminal_runs_only_its_command.py": 0.4,
   "tests/test_a_cli_backend_keeps_secrets_and_limits.py": 0.0,
   "tests/test_a_clicked_file_offers_its_own_actions.py": 2.6,
   "tests/test_a_client_without_a_sandbox_reads_nothing.py": 0.1,

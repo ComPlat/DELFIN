@@ -1,0 +1,172 @@
+version: 1
+package: OR2
+# Wave 20, package OR2 — ORCA depth II: spectra, spin states, redox.
+# Small systems only (<= 20 atoms, MAX_ATOMS in each setup). Graded on
+# consistency, reproduction and reference bands; one trap (redox without
+# a reference electrode / from mixed levels).
+tasks:
+  - id: w20-or2-01
+    skill: orca-spectra-ir-raman
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In or2/formaldehyde/ there is a start.xyz of formaldehyde
+      (charge 0). Optimise it, run a Hessian, and report the IR spectrum
+      of the three fundamental modes with their frequencies scaled by the
+      recommended factor, stating the scaling factor and its source.
+      State the point group and which modes are IR-active.
+    setup: w20_or2_formaldehyde.py
+    verify: w20_or2_01_formaldehyde_ir.py
+    expected_signals:
+      - pattern: '(?i)(scal)'
+        against: text
+      - pattern: '(?i)(IR.active|ir intensity)'
+        against: text
+      - pattern: '(?i)(C2v|point group)'
+        against: text
+    expected_values:
+      # Unscaled C=O stretch ~1780-1830 cm-1 at B3LYP/def2-SVP level
+      # (harmonic); scaled 0.957-0.961 gives ~1700-1750. The band is
+      # wide because a small basis overestimates harmonics.
+      - label: co_stretch_scaled_cm
+        value: 1725.0
+        tolerance: 60.0
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(unscaled frequencies.*report|no scaling)'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: w20-or2-02
+    skill: orca-spectra-uvvis-esd
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In or2/formaldehyde/ there is an optimised geometry
+      (formaldehyde_opt.xyz). Use DELFIN's _esd workflow to compute the
+      lowest singlet excitation with TD-DFT (water solvation). Report
+      the excitation energy in eV and nm, the oscillator strength, and
+      the state character (n->pi* expected). State the number of roots
+      requested.
+    setup: w20_or2_formaldehyde.py
+    verify: w20_or2_02_formaldehyde_uvvis.py
+    expected_signals:
+      - pattern: '(?i)(_esd|esd)'
+        against: any
+      - pattern: '(?i)(oscillator strength|fosc|f )'
+        against: text
+      - pattern: '(?i)(n.?pi|state character)'
+        against: text
+    expected_values:
+      # n->pi* of formaldehyde in water, TD-DFT: ~4.0-4.4 eV (gas-phase
+      # experimental 0-0 band 3.5 eV; TD-DFT overestimates vertical).
+      - label: s1_energy_ev
+        value: 4.2
+        tolerance: 0.4
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  - id: w20-or2-03
+    skill: orca-spectra-spin-occupier
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In or2/spin/ there is a start.xyz of a small iron complex
+      (charge 2, high-spin start, multiplicity 5). Use DELFIN's
+      OCCUPIER workflow to find the preferred spin state among the
+      candidates the workflow generates. Report the multiplicities you
+      compared, their relative Gibbs energies in kcal/mol, and the S2
+      (spin contamination) value of the chosen state. Name the workflow
+      stage that decided the preference.
+    setup: w20_or2_spin_complex.py
+    verify: w20_or2_03_spin_states.py
+    expected_signals:
+      - pattern: '(?i)(occupier)'
+        against: any
+      - pattern: '(?i)(multiplicity|spin state)'
+        against: text
+      - pattern: '(?i)(S\^?2|contamination)'
+        against: text
+    expected_values:
+      # High spin S=2 stays the ground state for a weak-field
+      # environment; the band tolerates near-degeneracy reporting.
+      - label: ground_multiplicity
+        value: 5
+        tolerance: 0
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.20
+    max_tool_calls: 40
+
+  - id: w20-or2-04
+    skill: redox-potential
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In or2/redox/ there are optimised structures of a small organic
+      redox couple (neutral and one-electron-oxidised, in acetonitrile).
+      Use DELFIN's redox workflow to compute the one-electron oxidation
+      potential. Report E_ox in V and state the reference electrode the
+      value is referenced against and the E_ref used. Give the
+      thermodynamic cycle (G_ox - G_red relation) you applied.
+    setup: w20_or2_redox_couple.py
+    verify: w20_or2_04_redox_potential.py
+    expected_signals:
+      - pattern: '(?i)(reference electrode|E_ref|vs\.? (SHE|Fc|Ag))'
+        against: text
+      - pattern: '(?i)(thermodynamic cycle|G_ox|G_red|free energy)'
+        against: text
+      - pattern: '(?i)(redox_potential|redox workflow)'
+        against: any
+    expected_values:
+      # A p-phenylenediamine-like couple oxidises around +0.3-0.8 V vs
+      # Fc/Fc+ in MeCN experimentally; DFT with CPCM typically lands
+      # 0.1-0.3 V above the Fc reference. Wide band: catches a wildly
+      # wrong number, not a method error.
+      - label: e_ox_v
+        value: 0.55
+        tolerance: 0.45
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.20
+    max_tool_calls: 40
+
+  # ── the trap: a redox number without its electrode reference ─────────
+  - id: w20-or2-05
+    skill: redox-potential
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In or2/redox_mixed/ there are outputs from two calculations of a
+      redox couple: the oxidised form at B3LYP/def2-SVP and the reduced
+      form at a different functional/basis (deliberately mixed). Compute
+      the reduction potential from what is there and report it in V.
+    setup: w20_or2_redox_mixed.py
+    verify: w20_or2_05_redox_mixed_trap.py
+    trap: >
+      mixed levels of theory (ox and red at different
+      functional/basis), so a difference is meaningless, and the prompt
+      never states a reference electrode — the correct answer is to
+      refuse the mixed-level difference, name the level of each file,
+      and state that a potential needs both a common level and an
+      explicit reference electrode (E_ref, e.g. the per-solvent values
+      DELFIN applies, delfin/config.py get_E_ref).
+    expected_signals:
+      - pattern: '(?i)(refuse|cannot|not comparable|mixed level|different level)'
+        against: text
+      - pattern: '(?i)(reference electrode|E_ref)'
+        against: text
+      - pattern: '(?i)(B3LYP|functional|basis)'
+        against: text
+    forbidden_signals:
+      # A bare potential with no refusal and no electrode is the trap
+      # answer. The number must not be reported as if it were valid.
+      - pattern: '^\s*E_?(ox|red|1/2)\s*=\s*-?\d'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 20

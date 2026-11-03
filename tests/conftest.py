@@ -333,7 +333,33 @@ def child_env(tmp_path) -> dict:
     # login keychain): keyring's own override selects its null backend,
     # which DELFIN refuses as a store.
     env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+    # Jupyter's runtime directory (kernel keys, sockets, the dashboard's
+    # login store) does not follow HOME when JUPYTER_RUNTIME_DIR is set,
+    # and under a pytest HOME it is too long for a socket, so the launcher
+    # moves it to $XDG_RUNTIME_DIR or to the user's real
+    # /tmp/delfin-k-<uid> (measured 2026-10-22: two server tests left
+    # login stores there). A short private one of the child's own:
+    env.pop("JUPYTER_RUNTIME_DIR", None)
+    env["XDG_RUNTIME_DIR"] = _child_runtime_dir()
     return env
+
+
+#: Runtime directories handed to children, removed when the session ends.
+_CHILD_RUNTIMES: list = []
+
+
+def _child_runtime_dir() -> str:
+    import atexit
+    import os
+    import shutil
+    import tempfile
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    made = tempfile.mkdtemp(prefix="dx", dir=root)       # 0700, ours
+    if not _CHILD_RUNTIMES:
+        atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True)
+                                 for d in _CHILD_RUNTIMES])
+    _CHILD_RUNTIMES.append(made)
+    return made
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -1468,11 +1494,18 @@ def pytest_configure(config):
         "markers",
         "slow: heavy or order-dependent test, excluded from the fast CI gate",
     )
+    config.addinivalue_line(
+        "markers",
+        "private_fixtures: needs the private store of real ORCA output "
+        "(DELFIN_PRIVATE_FIXTURES); select locally with "
+        "`pytest -m private_fixtures`, excluded in CI by SKIP behaviour",
+    )
     import os
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
     _hypothesis_store_outside_the_checkout()
+    _private_tmp_of_the_suite()
 
 
 def pytest_unconfigure(config):
@@ -1480,6 +1513,57 @@ def pytest_unconfigure(config):
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()
+    _private_tmp_removed()
+
+
+_HELPER_USE_RE = None
+
+
+def _uses_private_fixtures(module) -> bool:
+    """True when a test module reads the private ORCA fixture store."""
+    global _HELPER_USE_RE
+    import inspect
+    import re
+
+    if _HELPER_USE_RE is None:
+        _HELPER_USE_RE = re.compile(
+            r"private_fixtures_or_skip|private_fixtures_path|lc1_fixture_dir"
+        )
+    try:
+        source = inspect.getsource(module)
+    except (OSError, TypeError):
+        return False
+    return bool(_HELPER_USE_RE.search(source))
+
+
+#: The suite's stand-in for /tmp as the base of the launcher's private
+#: runtime directories (delfin.cli_voila.PRIVATE_TMP_ENV). Set before the
+#: first test, so every child inherits it: a test server whose runtime
+#: path is too long for a socket otherwise moved its kernels and login
+#: store into the user's real /tmp/delfin-k-<uid> (measured 2026-10-22,
+#: four test files). Short, and the suite's own (0700).
+_PRIVATE_TMP: list = []
+
+
+def _private_tmp_of_the_suite():
+    import os
+    import tempfile
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    made = tempfile.mkdtemp(prefix="dp", dir=root)
+    _PRIVATE_TMP.append((made, os.environ.get("DELFIN_PRIVATE_TMP")))
+    os.environ["DELFIN_PRIVATE_TMP"] = made
+
+
+def _private_tmp_removed():
+    import os
+    import shutil
+    while _PRIVATE_TMP:
+        made, before = _PRIVATE_TMP.pop()
+        shutil.rmtree(made, ignore_errors=True)
+        if before is None:
+            os.environ.pop("DELFIN_PRIVATE_TMP", None)
+        else:
+            os.environ["DELFIN_PRIVATE_TMP"] = before
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -1510,10 +1594,18 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 
 def pytest_collection_modifyitems(config, items):
+    seen: dict[str, bool] = {}
     for item in items:
         fname = item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1]
         if fname in _SLOW_TEST_FILES:
             item.add_marker(pytest.mark.slow)
+        module = getattr(item, "module", None)
+        if module is None:
+            continue
+        if module.__name__ not in seen:
+            seen[module.__name__] = _uses_private_fixtures(module)
+        if seen[module.__name__]:
+            item.add_marker(pytest.mark.private_fixtures)
 
 
 _PACKAGE_AST_LAST: list = []
@@ -1589,3 +1681,50 @@ def _state_maintenance_runs_once_per_test(monkeypatch):
     from delfin.agent import state_paths as _sp
     monkeypatch.setattr(_sp, "_MAINTENANCE_DONE", False)
     yield
+
+
+# ---------------------------------------------------------------------------
+# OPI-dependent tests skip where OPI (delfin[orca]) is not installed -- which
+# is every interpreter of the main CI jobs (they pin numpy<2, OPI needs
+# numpy>=2.2.6). The CI "OPI tests" job sets DELFIN_OPI_REQUIRED=1: there a
+# skip for a missing OPI is a FAILURE, so the job cannot pass by not having
+# OPI (the pattern of DELFIN_TOOLCHAIN_REQUIRED).
+# ---------------------------------------------------------------------------
+_OPI_SKIP_MARKERS = ("could not import 'opi'", "no module named 'opi'",
+                     "opi (delfin[orca]) not installed", "opi not installed")
+
+
+# ---------------------------------------------------------------------------
+# Private fixture store (LC1): real ORCA output lives outside the repo.
+#
+# DELFIN_PRIVATE_FIXTURES points at the operator-managed store root, which
+# mirrors the repository paths (e.g. <root>/tests/fixtures/orca611/...).
+# Tests that genuinely need real program output (exact pinned energies,
+# format-drift coverage) read from there and SKIP when the variable is
+# absent -- they never fail in CI. See LICENSE_GUARD.md, rule family 2.
+# The helpers live in tests/test_lc1_fixtures_helper.py (an importable
+# module under tests/ -- conftest is not importable as `tests.conftest`
+# without a package __init__); re-exported here for anyone importing
+# conftest.
+# ---------------------------------------------------------------------------
+
+from test_lc1_fixtures_helper import (  # noqa: E402, F401  (tests/ is on sys.path while pytest loads conftest; the package name `tests` is not)
+    PRIVATE_FIXTURES_ENV,
+    lc1_fixture_dir,
+    private_fixtures_or_skip,
+    private_fixtures_path,
+)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    if os.environ.get("DELFIN_OPI_REQUIRED") != "1":
+        return
+    rep = outcome.get_result()
+    if not rep.skipped:
+        return
+    reason = str(rep.longrepr[-1] if isinstance(rep.longrepr, tuple) else rep.longrepr).lower()
+    if any(m in reason for m in _OPI_SKIP_MARKERS):
+        rep.outcome = "failed"
+        rep.longrepr = f"DELFIN_OPI_REQUIRED=1 but the test skipped for a missing OPI: {reason[:200]}"

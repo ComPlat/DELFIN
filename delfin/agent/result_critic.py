@@ -209,6 +209,360 @@ def _check_energy(out_path: Path) -> list[Critique]:
                      f"Final electronic energy {e:.6f} Eh.")]
 
 
+def _is_largest_out(out_path: Path) -> bool:
+    """True when the critiqued file IS the largest .out in its folder.
+
+    The DELFIN spectra parsers (delfin.api.extract_vibrational_modes /
+    extract_excited_states) take a FOLDER and read the LARGEST .out in
+    it, while this critic scans ONE file. To never silently parse a
+    different file than the one being flagged, the spectra checks run
+    only under this condition; otherwise the caller reports a visible
+    'spectra-skipped' warning instead.
+    """
+    folder = out_path.parent
+    try:
+        outs = list(folder.glob("*.out"))
+    except Exception:
+        return False
+    if not outs:
+        return False
+    largest = max(outs, key=lambda p: p.stat().st_size)
+    return largest == out_path
+
+
+def _n_atoms(content: str) -> int | None:
+    """Atom count from ORCA's echo line ("Number of atoms ... N")."""
+    import re as _re
+    m = _re.search(r"Number of atoms\s+\.{2,}\s+(\d+)", content)
+    return int(m.group(1)) if m else None
+
+
+def _is_linear(content: str) -> bool:
+    """Linear molecule, from ORCA's thermochemistry block (F1, s4).
+
+    Real ORCA output never prints a literal "linear molecule" phrase.
+    A linear rotor has a ZERO first rotational constant
+    ("Rotational constants in cm-1: 0.000000 A B B"); source: ORCA
+    manual 6.1.1 §4.7 thermochemistry output description.
+    """
+    import re as _re
+    m = _re.search(r"Rotational constants in cm-1\s*:?\s*"
+                   r"(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)", content)
+    if m:
+        return float(m.group(1)) == 0.0
+    return False
+
+
+def _check_mode_count(content: str, modes) -> list[Critique]:
+    """Real-mode count vs 3N-6 (non-linear) / 3N-5 (linear rotor).
+
+    Source: standard vibrational analysis; ORCA manual 6.1.1 section
+    4.6 "Vibrational Frequencies" (3N-6 vibrational normal modes for a
+    non-linear molecule). Translational/rotational zero modes (the 6
+    or 5 near-0 cm^-1 rows the parser returns) are excluded before
+    counting, because the parser returns ALL rows (water fixture:
+    9 rows = 6 zeros + 3 real). Linearity comes from the
+    thermochemistry block's zero first rotational constant
+    (_is_linear, ORCA manual §4.7) — not from a phrase. When the
+    thermochemistry block is absent the output is assumed non-linear
+    (the common case) and the expectation is 3N-6.
+    """
+    n = _n_atoms(content)
+    if n is None:
+        return []
+    real = [m for m in modes if abs(m.frequency_cm) > 1.0]
+    if not real:
+        return []
+    linear = _is_linear(content)
+    expected = 3 * n - 5 if linear else 3 * n - 6
+    if len(real) == expected:
+        return []
+    return [Critique(
+        "error", "freq-count-mismatch",
+        f"{len(real)} real vibrational modes for {n} atoms"
+        f"{' (linear)' if linear else ''} — expected 3N-{'5' if linear else '6'}"
+        f" = {expected}; the Hessian is likely incomplete or the run "
+        f"finished partially. Do not trust this spectrum.")]
+
+
+def _check_ir_intensities(modes) -> list[Critique]:
+    """Negative IR intensity is unphysical for an absorption spectrum.
+
+    Beer-Lambert law: the absorption cross-section (and hence the
+    integrated intensity in km/mol) is non-negative for an absorption
+    spectrum; a negative value means a broken table, a wrong column
+    mapping or a corrupted output — not a real spectrum.
+    A zero intensity is physical (symmetry-forbidden mode) and is
+    reported as an ok-level note, never as a warning or error.
+    """
+    out: list[Critique] = []
+    neg = [m for m in modes if m.ir_intensity is not None and m.ir_intensity < 0]
+    for m in neg:
+        out.append(Critique(
+            "error", "ir-neg-intensity",
+            f"Mode {m.mode_index} at {m.frequency_cm:.2f} cm^-1 reports a "
+            f"negative IR intensity ({m.ir_intensity:g} km/mol) — "
+            f"absorption intensities are physically non-negative "
+            f"(Beer-Lambert); the spectrum table is unreliable."))
+    if any(m.ir_intensity == 0.0 for m in modes):
+        out.append(Critique(
+            "ok", "ir-zero-intensity",
+            "At least one mode has zero IR intensity — physical for a "
+            "symmetry-forbidden mode."))
+    return out
+
+
+def _check_ir_imaginary_peaks(content: str, modes) -> list[Critique]:
+    """An imaginary mode listed as a spectrum peak is not a physical line.
+
+    ORCA lists imaginary modes with a NEGATIVE frequency in the IR
+    table's frequency column (delfin/ir_spectrum.py:95 regex accepts
+    them). extract_vibrational_modes fills ``frequency_cm`` from the
+    VIBRATIONAL FREQUENCIES block only, so the IR table's frequency
+    column is scanned minimally here (QS ruling: first parser for a
+    quantity nothing reads). A peak at a negative frequency is not an
+    absorption line; reporting it in a spectrum is wrong.
+    """
+    import re as _re
+    ir_re = _re.search(
+        r"IR SPECTRUM.*?\n[-=]+\n(.*?)(?:\nThe first frequency|\n\n\n)",
+        content, _re.DOTALL,
+    )
+    if not ir_re:
+        return []
+    row_re = _re.compile(r"^\s*(\d+):\s+(-?\d+\.\d+)", _re.MULTILINE)
+    neg = [(int(m.group(1)), float(m.group(2)))
+           for m in row_re.finditer(ir_re.group(1))
+           if float(m.group(2)) < -1.0]
+    if not neg:
+        return []
+    worst = min(f for _i, f in neg)
+    return [Critique(
+        "error", "ir-imaginary-as-peak",
+        f"{len(neg)} imaginary mode(s) (down to {worst:.0f} cm^-1) appear "
+        f"as IR spectrum peaks — imaginary frequencies are not physical "
+        f"absorption lines; exclude them or fix the structure first.")]
+
+
+def _largest_out_name(out_path: Path) -> str:
+    """Name of the largest .out in the critiqued file's folder."""
+    try:
+        outs = list(out_path.parent.glob("*.out"))
+        return max(outs, key=lambda p: p.stat().st_size).name
+    except Exception:
+        return "(unknown)"
+
+
+def _s2_is_last_header_column(table_text: str) -> bool:
+    """True when the header line that names S^2 ends with it — the
+    assumption the per-state read relies on (s17 F2). A header that
+    names S^2 before further columns would make numbers[-1]
+    misattribute another column, so the caller treats that shape as
+    unparsed rather than guessed.
+    """
+    import re as _re
+    for line in table_text.split("\n"):
+        if _re.search(r"S\^2\b|S\*\*2\b|S²\b", line) and "State" in line:
+            tokens = line.split()
+            return bool(tokens) and tokens[-1] in (
+                "S^2", "S**2", "S²")
+    return True  # no State header line: keep the named-column rule
+
+
+def _check_uvvis(content: str, out_path: Path) -> list[Critique]:
+    """UV-Vis/TDDFT plausibility checks, reusing DELFIN's excited-state
+    parser (delfin.api.extract_excited_states).
+
+    Sources: ORCA manual 6.1.1 §5.1 (%tddft nroots — fewer computed
+    roots than requested truncate the requested spectrum window) and
+    the manual's TDDFT output description for the per-state <S^2>
+    column; the deviation diagnostic |<S^2> - S(S+1)| is the same
+    scale as the ground-state check above (DELFIN methodology, "Spin
+    Contamination and State Selection"). Triplet state labels inside a
+    singlet-reference (mult 1) TDDFT table mark spin-flip mixture, not
+    singlet absorption; a triplet reference lists them legitimately
+    (F2). The per-state <S^2> is read as the LAST numeric column of a
+    state row, so real ORCA tables with D**2 X Y Z columns before S^2
+    are covered (F3). Two guards hold before any value is attributed:
+    (a) the table header must NAME an S^2 column anywhere in the
+    header line — an unnamed column is never read (QS ruling s29);
+    (b) the read assumes S^2 IS the last column of the row. If the
+    header names S^2 but not as the last named column, the rows are
+    not attributed and a uv-s2-unparsed warning is emitted instead of
+    a guess. Rows whose tokens are not plain numbers (bare "0.",
+    negatives, E-notation are fine) make the table unparsable, which
+    is reported visibly (uv-s2-unparsed) rather than silently
+    skipped (s17 F1). ORCA does not print a per-state <S^2> column by
+    default: where the header names none, the check stays silent and
+    the ground-state <S^2> (the check above) remains the guard — an
+    unnamed last column cannot be attributed (fosc, D**2, X, Y, Z
+    look alike) and guessing would flag clean states.
+    A reported spectrum must state its broadening width (FWHM) or it
+    cannot be compared with experiment — missing width is an ok-level
+    note only.
+    """
+    import re as _re
+    findings: list[Critique] = []
+    res_valid = False
+    try:
+        from delfin.api import extract_excited_states
+        res = extract_excited_states(str(out_path.parent))
+        res_valid = res.error is None and bool(res.transitions)
+    except Exception:
+        res = None  # s17 F3: keep the name bound; the triplet block
+        # below reads res.transitions at function level.
+        findings.append(Critique(
+            "warn", "uv-parser-error",
+            "UV-Vis/TDDFT check could not run (parser error); the "
+            "spectrum was NOT verified."))
+    if res_valid:
+        # Fewer roots than the user's echoed request.
+        m = _re.search(r"Number of roots\s+\.{2,}\s+(\d+)", content)
+        if m:
+            requested = int(m.group(1))
+            if res.n_states < requested:
+                findings.append(Critique(
+                    "warn", "uv-few-roots",
+                    f"{res.n_states} excited states computed but {requested} "
+                    f"roots were requested — the requested spectrum range is "
+                    f"truncated; raise nroots or state the covered range when "
+                    f"reporting this spectrum."))
+    # Per-state spin contamination from the table's <S^2> column.
+    # The <S^2> column must be NAMED in the table header ("S^2",
+    # "S**2", "<S**2>" or "<S^2>"); without a header the value is
+    # ambiguous (fosc, D**2, X, Y, Z all look alike) and no check is
+    # made — reading an unnamed last column flagged clean states
+    # (F3 probe). The header check runs over the WHOLE table text
+    # (header rows sit above the dashed separator that bounds the
+    # state rows), the state-row scan over the rows only.
+    table_m = _re.search(
+        r"ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
+        r"(.*?)(?:\n\n|\Z)", content, _re.DOTALL)
+    if not table_m:
+        return findings
+    table_text = table_m.group(1)
+    rows_m = _re.search(r"\n-+\n(.*?)$", table_text, _re.DOTALL)
+    # Reference multiplicity from the echo: ideal <S^2> = S(S+1). A
+    # triplet reference (mult 3) has ideal 2.0, a singlet 0.0.
+    mult_m = _re.search(r"Multiplicity\s+\.{2,}\s+(\d+)", content)
+    mult = int(mult_m.group(1)) if mult_m else 1
+    ideal = 0.0 if mult == 1 else mult * (mult + 1)  # S(S+1)
+    contaminated: list[tuple[str, float]] = []
+    unparsable = False
+    n_parsed = 0
+    if rows_m and _re.search(r"S\^2\b|S\*\*2\b|S²\b", table_text):
+        for line in rows_m.group(1).split("\n"):
+            lm = _re.match(r"\s*(\S+\s+->\s+\S+)\s+(.+)$", line)
+            if not lm:
+                continue
+            # Float-tolerant split: ORCA prints bare "0." tokens
+            # (RX/TY/RZ columns), negatives and E-notation. A token
+            # that is not a number means the row shape is not what we
+            # assume — treat the whole table as unparsed, never guess.
+            try:
+                numbers = [float(x) for x in lm.group(2).split()]
+            except ValueError:
+                unparsable = True
+                continue
+            # The <S^2> value is read ONLY from a column NAMED S^2 in
+            # the header (QS ruling s29), and we assume it IS the last
+            # numeric column of the row (ORCA prints it after fosc and
+            # the D**2 X Y Z columns). If a future table names S^2
+            # before further columns, this read would misattribute —
+            # the header is therefore checked for the S^2 token being
+            # the last named column below.
+            s2 = numbers[-1]
+            state = lm.group(1)
+            n_parsed += 1
+            dev = abs(s2 - ideal)
+            if dev >= _SPIN_ERROR or dev >= _SPIN_WARN:
+                contaminated.append((state, dev))
+        if not contaminated and (unparsable or n_parsed == 0):
+            findings.append(Critique(
+                "warn", "uv-s2-unparsed",
+                "The TDDFT table names an S^2 column but none of its "
+                "state rows could be parsed as numbers — the "
+                "spin-contamination check could not read them. Check "
+                "the table shape manually; the check stays silent "
+                "rather than guess."))
+        elif not contaminated and not _s2_is_last_header_column(table_text):
+            findings.append(Critique(
+                "warn", "uv-s2-unparsed",
+                "The TDDFT table names S^2 but it is not the last "
+                "column of the header — the per-state read assumes "
+                "S^2 last and would misattribute other columns. "
+                "Check the S^2 values manually."))
+    elif rows_m and not contaminated:
+        # A TDDFT table without a named S^2 column: silence by design
+        # (QS ruling — an unnamed last column is never attributed).
+        pass
+    if contaminated:
+        worst_state, worst_dev = max(contaminated, key=lambda t: t[1])
+        level = "error" if worst_dev >= _SPIN_ERROR else "warn"
+        findings.append(Critique(
+            level, "uv-spin-contamination",
+            f"{len(contaminated)} excited state(s) with <S^2> deviation up "
+            f"to {worst_dev:.2f} (worst: {worst_state}) — the states are "
+            f"spin-contaminated; energies and oscillator strengths of "
+            f"these states are unreliable."))
+    # Triplet states inside a SINGLET spectrum (state labels like
+    # 1-3A). F2 (s4): a triplet-REFERENCE calculation (Multiplicity
+    # ... 3 in the echo) legitimately lists triplet excitations — only
+    # a mult-1 reference makes a triplet row a spin-flip mixture.
+    triplets = []
+    if mult == 1 and res_valid:
+        triplets = [t.state_to for t in res.transitions
+                    if _re.search(r"\d+-3[A']|\d+3[A']", t.state_to or "")]
+    if triplets:
+        findings.append(Critique(
+            "error", "uv-triplet-in-singlet",
+            f"Triplet state(s) ({', '.join(sorted(set(triplets)))}) inside "
+            f"a singlet absorption spectrum — a spin-flip/ST mixture is "
+            f"leaking into the singlet table; these are not singlet "
+            f"excitations."))
+    # Broadening width must be stated for an experiment comparison.
+    if not _re.search(r"broadening|FWHM|fwhm", content):
+        findings.append(Critique(
+            "ok", "uv-no-broadening",
+            "No broadening width (FWHM) stated for this spectrum — a "
+            "spectrum compared with experiment must state the Gaussian "
+            "broadening used."))
+    return findings
+
+
+def _check_spectra(out_path: Path, content: str) -> list[Critique]:
+    """Spectrum plausibility checks, reusing DELFIN's own parsers.
+
+    Reuses delfin.api.extract_vibrational_modes (folder-level, reads
+    the LARGEST .out) — never re-parses ORCA output. Runs only when the
+    critiqued file IS that largest .out (see _is_largest_out); otherwise
+    a visible 'spectra-skipped' warning keeps 'file flagged' and 'file
+    parsed' from diverging silently.
+    """
+    if not _is_largest_out(out_path):
+        return [Critique(
+            "warn", "spectra-skipped",
+            f"Spectrum checks skipped: the folder's largest .out is "
+            f"{_largest_out_name(out_path)}, not {out_path.name}, so "
+            f"DELFIN's folder-level parsers would read a different file "
+            f"than the one critiqued.")]
+    findings: list[Critique] = []
+    try:
+        from delfin.api import extract_vibrational_modes
+        res = extract_vibrational_modes(str(out_path.parent))
+        if res.error is None and res.modes:
+            findings += _check_mode_count(content, res.modes)
+            findings += _check_ir_intensities(res.modes)
+            findings += _check_ir_imaginary_peaks(content, res.modes)
+    except Exception:
+        findings.append(Critique(
+            "warn", "spectra-parser-error",
+            "Vibrational-spectrum check could not run (parser error); "
+            "the spectrum was NOT verified."))
+    findings += _check_uvvis(content, out_path)
+    return findings
+
+
 def critique_output(out_path) -> list[Critique]:
     """Scan ONE ORCA ``.out`` for scientific red flags. Never raises."""
     try:
@@ -223,6 +577,7 @@ def critique_output(out_path) -> list[Critique]:
         findings += _check_frequencies(p, kinds)
         findings += _check_spin(p)
         findings += _check_energy(p)
+        findings += _check_spectra(p, content)
         return findings
     except Exception as exc:
         return [Critique("warn", "critic-error",

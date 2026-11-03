@@ -512,6 +512,7 @@ def _normalized_settings_dict(payload):
         ("calculations_dir", "Calculations path"),
         ("archive_dir", "Archive path"),
         ("office_dir", "Office path"),
+        ("fixtures_dir", "Private fixtures store path"),
     ):
         normalized_paths[key] = normalize_local_directory_setting(
             paths.get(key, ""),

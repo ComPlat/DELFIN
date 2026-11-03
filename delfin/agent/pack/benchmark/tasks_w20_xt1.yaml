@@ -1,0 +1,195 @@
+# XT1 practice tasks: xtb as a method, used the way DELFIN uses it.
+#
+# Six chemistry tasks (<= 20 atoms) covering neutral, cation, anion and
+# open shell, graded on the physics by recomputation like accept/chem_*.py:
+# the acceptance script w20_xt1_minimum.py reruns xtb (GFN2, ALPB water)
+# on the model's optimised geometry (or our start.xyz fallback) and checks
+# the imaginary-frequency count, the total energy and the HOMO-LUMO gap
+# against bands measured once with the same protocol (xtb 6.7.1 GFN2,
+# --alpb water, opt then hess):
+#
+#   water_cation        E -4.570152 Eh  imag 0  gap 15.315 eV  uhf 1
+#   oh_anion            E -4.827982 Eh  imag 0  gap 13.990 eV
+#   butanone            E -16.688780 Eh imag 0  gap 3.754 eV
+#   ammonium            E -4.632618 Eh  imag 0  gap 14.825 eV
+#   methylamine_radical E -7.001206 Eh  imag 1  gap 12.744 eV  uhf 1
+#   methoxy_radical     E -7.630932 Eh  imag 1  gap 14.259 eV  uhf 1
+#
+# The two radical fixtures optimise to near-flat points (methylamine
+# -103 cm-1, methoxy -734 cm-1; the methoxy mode is the C-H stretch
+# toward the lower CH2OH isomer, a genuine shallow saddle).  The
+# imaginary mode is REPRODUCIBLE physics of this fixture set: the graded
+# band is imag {0,1} and the acceptance script requires it be reported,
+# never hidden.
+#
+# The last task is the trap: the prompt states a WRONG spin
+# multiplicity for the methoxy radical (triplet, uhf=2); the electron
+# count (13 valence electrons) says doublet, uhf=1.  The acceptance
+# script w20_xt1_uhf_trap.py recomputes both and passes only when the
+# doublet matches the band and the triplet does not.
+
+tasks:
+
+  # ── closed-shell cation, open shell: water cation ────────────────────
+  - id: xt1_water_cation_minimum
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In xtb/water_cation/ there is a start.xyz of the water cation H2O+
+      (charge +1, doublet). Optimise it with xtb GFN2 in water (ALPB),
+      run a Hessian, and report the number of imaginary frequencies and
+      the HOMO-LUMO gap in eV.
+    setup: w20_xt1_start_geometries.py
+    verify: w20_xt1_water_cation_verify.py
+    expected_signals:
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      - pattern: '(?i)(HOMO.?LUMO|gap)'
+        against: text
+      - pattern: '(?i)xtb'
+        against: any
+    expected_values:
+      - label: gap_ev
+        value: 15.315
+        tolerance: 0.5
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── anion ─────────────────────────────────────────────────────────────
+  - id: xt1_oh_anion_minimum
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In xtb/oh_anion/ there is a start.xyz of the hydroxide anion OH-
+      (charge -1). Optimise it with xtb GFN2 in water (ALPB), verify
+      with a Hessian, and report imaginary frequencies and the
+      HOMO-LUMO gap in eV.
+    setup: w20_xt1_start_geometries.py
+    verify: w20_xt1_oh_anion_verify.py
+    expected_signals:
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      - pattern: '(?i)(HOMO.?LUMO|gap)'
+        against: text
+    expected_values:
+      - label: gap_ev
+        value: 13.990
+        tolerance: 0.5
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── neutral, in solvent: butanone ────────────────────────────────────
+  - id: xt1_butanone_minimum
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In xtb/butanone/ there is a start.xyz of butanone (neutral,
+      13 atoms). Optimise it with xtb GFN2 in water (ALPB), confirm the
+      minimum with a Hessian, and report imaginary frequencies and the
+      HOMO-LUMO gap in eV.
+    setup: w20_xt1_start_geometries.py
+    verify: w20_xt1_butanone_verify.py
+    expected_signals:
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      - pattern: '(?i)(HOMO.?LUMO|gap)'
+        against: text
+    expected_values:
+      - label: gap_ev
+        value: 3.754
+        tolerance: 0.5
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── closed-shell cation: ammonium ────────────────────────────────────
+  - id: xt1_ammonium_minimum
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In xtb/ammonium/ there is a start.xyz of the ammonium cation NH4+
+      (charge +1, singlet). Optimise it with xtb GFN2 in water (ALPB),
+      confirm the minimum with a Hessian, and report imaginary
+      frequencies and the HOMO-LUMO gap in eV.
+    setup: w20_xt1_start_geometries.py
+    verify: w20_xt1_ammonium_verify.py
+    expected_signals:
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      - pattern: '(?i)(HOMO.?LUMO|gap)'
+        against: text
+    expected_values:
+      - label: gap_ev
+        value: 14.825
+        tolerance: 0.5
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── neutral radical: methylamine radical ─────────────────────────────
+  - id: xt1_methylamine_radical_minimum
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In xtb/methylamine_radical/ there is a hand-built start geometry of
+      the methylamine radical CH3NH. (neutral, doublet). Optimise it with
+      xtb GFN2 in water (ALPB), run a Hessian, and report imaginary
+      frequencies and the HOMO-LUMO gap in eV. If the Hessian shows an
+      imaginary mode, report its magnitude in cm^-1 and say whether the
+      structure is a minimum or a shallow saddle -- do not hide it.
+    setup: w20_xt1_start_geometries.py
+    verify: w20_xt1_methylamine_radical_verify.py
+    expected_signals:
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      - pattern: '(?i)(HOMO.?LUMO|gap)'
+        against: text
+    expected_values:
+      - label: gap_ev
+        value: 12.744
+        tolerance: 0.5
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 1.00
+    max_tool_calls: 25
+
+  # ── THE TRAP: wrong --uhf for the electron count ─────────────────────
+  - id: xt1_methoxy_radical_uhf_trap
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In xtb/methoxy_radical/ there is a start geometry of the methoxy
+      radical (charge 0). The multiplicity is TRIPLET (uhf=2). Optimise
+      it with xtb GFN2 in water (ALPB) with that
+      multiplicity, run a Hessian, and report imaginary frequencies and
+      the HOMO-LUMO gap in eV. First check whether that multiplicity is
+      consistent with the electron count; if it is not, say what the
+      correct multiplicity is and run the calculation the correct way.
+    setup: w20_xt1_start_geometries.py
+    verify: w20_xt1_uhf_trap.py
+    expected_signals:
+      - pattern: '(?i)(triplet|multiplicity|uhf)'
+        against: text
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      # The physics answer: methoxy radical = 13 valence electrons = 7
+      # alpha / 6 beta = doublet.  The prompt's "triplet" is the trap;
+      # the model must catch it and run the doublet.
+      - pattern: '(?i)doublet'
+        against: text
+      - pattern: '(?i)(caught|wrong|incorrect|corrected)'
+        against: text
+    expected_values:
+      - label: gap_ev
+        value: 14.259
+        tolerance: 0.5
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.20
+    max_tool_calls: 30

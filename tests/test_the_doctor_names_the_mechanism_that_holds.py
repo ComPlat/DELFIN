@@ -154,3 +154,16 @@ def test_the_host_doctor_and_the_agent_doctor_agree(probes, monkeypatch,
     if isolated:
         assert "nothing here can isolate" not in row["detail"], row
         assert "Landlock" in row["detail"] or "bwrap" in row["detail"], row
+
+
+def test_bubblewrap_without_landlock_says_what_that_costs(probes, monkeypatch):
+    """Raspberry Pi OS builds its kernels without Landlock: bwrap holds the
+    command, its reads are not confined, and every command off the
+    auto-allow list is asked about. "bwrap active" alone did not say why."""
+    monkeypatch.setattr(AD.sys, "platform", "linux")
+    probes(bwrap=True, landlock=False)
+    row = _row()
+    assert row["status"] == "PASS"
+    assert "no Landlock" in row["detail"] and "asked about" in row["detail"]
+    probes(bwrap=True, landlock=True)
+    assert "Landlock" not in _row()["detail"]

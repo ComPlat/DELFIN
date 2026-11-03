@@ -1,0 +1,21 @@
+! PBE0 DEF2-SVP
+%tddft
+  nroots 5
+end
+%maxcore 4000
+* xyz 0 1
+H 0.0 0.0 0.0
+O 0.9 0.0 0.0
+*
+$new_job
+! Opt
+* xyz 0 1
+H 5.57510392 1.26479274 1.99310029
+O 6.10000000 1.20000000 2.10000000
+*
+%base "scr/"
+%tddft
+nroots 3
+end
+* xyz 0 1
+N 0.0 0.0 0.0

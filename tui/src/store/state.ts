@@ -23,6 +23,8 @@ export interface Asked {
   multiSelect?: boolean
   suggestion?: string
   readDir?: string
+  /** A shell request's command (masked), for key c to change. */
+  command?: string
 }
 
 export interface TurnLive {

@@ -56,6 +56,14 @@ def _discover_builtin_workflows() -> None:
     _try_import("delfin.workflows.contrib.imag_workflow")
     _try_import("delfin.workflows.contrib.co2_workflow")
     _try_import("delfin.workflows.contrib.campaign_workflow")
+    # Every further module under delfin/workflows/contrib is discovered too,
+    # so a contributed workflow needs no hand edit here (and parallel
+    # packages adding workflows do not collide on this function).
+    import pkgutil
+    from delfin.workflows import contrib as _contrib
+    for _mod in pkgutil.iter_modules(_contrib.__path__):
+        if not _mod.name.startswith("_"):
+            _try_import(f"delfin.workflows.contrib.{_mod.name}")
 
 
 def _try_import(module_path: str) -> None:

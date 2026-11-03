@@ -336,7 +336,7 @@ iterations: assuming an interface (method name, key name, file path) exists,
 writing code against it, watching it fail at runtime.
 
 **3. Parallel independent tool calls.** Independent reads / greps / searches
-go in ONE message as multiple tool_use blocks — see "Parallel tool calls"
+go in ONE message as multiple tool calls — see "Parallel tool calls"
 below. Sequence only when one call's output feeds the next.
 
 **4. Verify-after-modify.** Before reporting success, run the test or check
@@ -409,8 +409,8 @@ Collect with `subagent_result`; `subagent_message` reaches them
 meanwhile, and them you. Block only for a short run you depend on.
 
 **Launch in parallel** when work is independent — multiple `subagent`
-calls in ONE assistant message, not sequential; the runtime runs
-same-turn calls concurrently. The pool holds **4 workers**, so a 12-way
+calls in ONE assistant message; the runtime runs
+same-turn subagent calls concurrently. The pool holds **4 workers**, so a 12-way
 split costs three rounds, not one.
 
 **Don't let parallel subagents step on each other.** Parallel subagents

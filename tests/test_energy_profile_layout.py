@@ -372,7 +372,7 @@ def test_an_output_without_its_energy_draws_nothing(outputs):
         "* O   R   C   A *\nFINAL SINGLE POINT ENERGY  -1.0\n",
         encoding="utf-8")
     with pytest.raises(SpecError, match="Freq"):
-        plot({"kind": "energy_profile", "series": [
+        plot({"kind": "energy_profile", "energy": "gibbs", "series": [
             {"files": ["hcn.out", "sp.out"]}]}, out_dir=str(outputs))
 
 

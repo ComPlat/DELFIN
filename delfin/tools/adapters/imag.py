@@ -79,8 +79,15 @@ class ImagFixAdapter(StepAdapter):
             pal=cores,
         )
         refined = work_dir / f"{hess_src.stem}.xyz"
+        # Status is the contract for pipeline consumers: modes still
+        # remaining after the IMAG budget means the structure is still a
+        # saddle, never a clean minimum. Report FAILED (data carries the
+        # count and reason); zero remaining stays SUCCESS.
+        status = (
+            StepStatus.SUCCESS if not result.remaining else StepStatus.FAILED
+        )
         return self._make_result(
-            self.name, StepStatus.SUCCESS, work_dir, start,
+            self.name, status, work_dir, start,
             geometry=refined if refined.is_file() else geometry,
             output_file=work_dir / out_src.name,
             data={"n_imaginary": len(result.remaining), "imag_rounds": result.rounds,

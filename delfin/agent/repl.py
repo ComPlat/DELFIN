@@ -66,6 +66,7 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 TURN_KEYS: frozenset[str] = frozenset({
     "text", "tool_calls", "input_tokens", "output_tokens", "error",
     "schema_version", "stop_reason", "denials", "files_changed",
+    "model_switches",
 })
 
 
@@ -413,6 +414,7 @@ class TurnResult:
     stop_reason: str = "done"
     denials: list[dict] = field(default_factory=list)
     files_changed: list[str] = field(default_factory=list)
+    model_switches: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -425,6 +427,7 @@ class TurnResult:
             "stop_reason": self.stop_reason,
             "denials": self.denials,
             "files_changed": self.files_changed,
+            "model_switches": self.model_switches,
         }
 
 
@@ -2371,6 +2374,10 @@ class TerminalAgent:
             if key == "y":
                 self._apply(req, self._allow(req))
                 return
+            if key == "c":
+                if self._change_command(req, raw):
+                    return
+                continue
             if key == "d" and req.kind == tc.PLAN:
                 if self._apply(req, {"approved": True, "new_mode": "default"}):
                     self.transcript.chrome(self.transcript.theme.cyan(
@@ -2413,6 +2420,41 @@ class TerminalAgent:
             # cannot silently mean "yes".
             self.transcript.chrome(self.transcript.theme.dim(
                 "  that key does nothing here"))
+
+    def _change_command(self, req, raw) -> bool:
+        """Key c: the command, editable on one line; enter runs that
+        version once instead (``TerminalConfirmBroker.change``), esc on an
+        empty line goes back to the options. True when answered. A
+        command holding a secret starts from an empty line
+        (``terminal_confirm.editable_command``)."""
+        from . import terminal_confirm as tc
+
+        if raw is None or not getattr(raw, "active", False):
+            self.transcript.chrome(self.transcript.theme.dim(
+                "  changing a command needs the terminal's keys"))
+            return False
+        self.transcript.chrome(self.transcript.theme.dim(
+            "  change the command, enter runs your version once "
+            "(esc clears, esc again goes back):"))
+        while True:
+            got = self._read_answer(raw, set(), initial=tc.editable_command(req),
+                                    stop=lambda: getattr(req, "resolved", False))
+            if not isinstance(got, tuple):
+                if getattr(req, "resolved", False):
+                    self._say_ended_elsewhere(req)
+                    return True
+                return False            # esc on an empty line: the options
+            try:
+                landed = self.broker.change(req, got[1])
+            except ValueError as exc:
+                self.transcript.chrome(self.transcript.theme.yellow(f"  {exc}"))
+                continue
+            if landed:
+                self.transcript.chrome(self.transcript.theme.cyan(
+                    "  changed — your command runs once, exactly as typed"))
+            else:
+                self._say_ended_elsewhere(req)
+            return True
 
     def _say_ended_elsewhere(self, req) -> None:
         """Close a dialog whose question something else already ended.
@@ -2516,7 +2558,8 @@ class TerminalAgent:
             self._apply(req, {"answers": [options[int(key) - 1]]})
             return
 
-    def _read_answer(self, raw, allowed: set[str], *, stop=None):
+    def _read_answer(self, raw, allowed: set[str], *, stop=None,
+                     initial: str = ""):
         """One choice key, or a typed line, for a choice question.
 
         Returns a key from ``allowed`` (a digit picks, Esc skips), a
@@ -2530,7 +2573,9 @@ class TerminalAgent:
 
         if raw is None or not getattr(raw, "active", False):
             return self._read_key(raw, allowed, stop=stop)
-        line = ""
+        line = initial
+        if line:
+            self._echo_answer(line)
         while True:
             if stop is not None and stop():
                 return ""

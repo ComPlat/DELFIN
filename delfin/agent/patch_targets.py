@@ -508,7 +508,26 @@ def _targets_git_checkout(rest: list[str], base: Path) -> object:
         if _is_path_shaped(ops[0]) or (base / ops[0]).exists():
             paths = ops
     else:
+        # GT1: a single operand that is path-shaped but names an EXISTING
+        # LOCAL BRANCH of the repository is a branch switch, not a
+        # pathspec. Branch names may contain "/" (``agent/s3-ds1b``), so
+        # ``_is_path_shaped`` alone cannot separate the two readings --
+        # wave-21 measured it: the write gate refused
+        # ``git checkout agent/s3-ds1b`` as a write to
+        # ``<worktree>/agent/s3-ds1b``. The branch reading wins ONLY when
+        # git's own ref store confirms the branch (``git show-ref --verify
+        # refs/heads/<name>``) AND no file of that name exists under
+        # *base* -- the file reading wins the ambiguity (git checks the
+        # index and the tree before the refs), so nothing here is looser
+        # than before: every operand that is not a confirmed local branch
+        # is classified exactly as it was. Fail-closed: a git probe that
+        # errors or times out leaves the operand a path, the direction
+        # that refuses.
         paths = [p for p in ops if _is_path_shaped(p) or (base / p).exists()]
+        if paths and len(ops) == 1 and _is_path_shaped(ops[0]) \
+                and not (base / ops[0]).exists() \
+                and _branch_exists_locally(ops[0], base):
+            paths = []
     return _dedup([_resolve(p, base) for p in paths])
 
 
@@ -576,6 +595,32 @@ def _is_path_shaped(p: str) -> bool:
     """True when *p* looks like a git pathspec rather than a branch name: it
     carries a ``/``, a glob (``*?[]``) or a pathspec magic (``:(top)`` …)."""
     return ("/" in p or ":" in p or any(c in p for c in "*?[]"))
+
+
+def _branch_exists_locally(name: str, base: Path) -> bool:
+    """GT1: does ``name`` resolve to an EXISTING LOCAL branch of the
+    repository *base* belongs to?
+
+    Verified against git's own ref store, never against the tree, and
+    ALWAYS in the repository of *base* (wave-22 operator finding: a
+    probe in the process cwd answered for the wrong repo and made a
+    path read as a branch). The call goes through
+    :func:`delfin.agent.safe_git.run` -- every git command DELFIN runs
+    must; a direct ``subprocess`` git call breaks the safe_git guard
+    test. Fails closed -- any refusal, error, timeout or non-zero
+    return means "no branch confirmed", and the caller keeps the
+    operand classified as a path. Reads nothing outside the
+    repository; the only I/O is the probe itself, which costs a
+    measured ~5 ms and runs only for a single path-shaped checkout
+    operand that is not an existing file."""
+    try:
+        from delfin.agent import safe_git
+        probe = safe_git.run(
+            ["show-ref", "--verify", "--quiet", "refs/heads/" + name],
+            base, timeout=5)
+        return probe.returncode == 0
+    except Exception:
+        return False
 
 
 #: GNU patch options that take a separate value, by short and long name.

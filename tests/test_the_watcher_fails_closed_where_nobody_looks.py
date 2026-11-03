@@ -178,7 +178,10 @@ def test_a_failure_on_a_message_to_another_agent_asks_or_refuses(
 ])
 @pytest.mark.parametrize("attended", [True, False])
 def test_under_bypass_a_command_outside_the_allow_list_fails_closed(
-        tmp_path, attended, cmd):
+        tmp_path, monkeypatch, attended, cmd):
+    # A host without a bash cage; under a cage plain workspace work runs
+    # free (test_bypass_caged_workspace_work_runs_free.py), a fetch never.
+    monkeypatch.setattr(A, "_bash_runs_caged", lambda perms: False)
     dialog = Dialog(False) if attended else None
     runner = Runner()
     perms = _perms(tmp_path, "bypassPermissions", runner, dialog)
@@ -245,7 +248,9 @@ def test_a_watcher_refusal_does_not_lock_the_turn(tmp_path):
 
 # -- the circuit breaker -----------------------------------------------------
 
-def test_the_breaker_opens_holds_and_closes(tmp_path, _env):
+def test_the_breaker_opens_holds_and_closes(tmp_path, monkeypatch, _env):
+    # `make` is the leaving probe here, as on a host without a bash cage.
+    monkeypatch.setattr(A, "_bash_runs_caged", lambda perms: False)
     clock = _env
     runner = Runner()
     perms = _perms(tmp_path, "bypassPermissions", runner)
@@ -490,3 +495,14 @@ def test_the_start_banner_and_status_show_the_watcher(tmp_path):
     assert "watcher" in text
     out = rc.dispatch("/status", rc.ReplContext(engine=_Engine())).output
     assert "watcher" in out
+
+
+@pytest.mark.parametrize("attended", [True, False])
+def test_under_a_caged_bypass_a_fetch_still_fails_closed(
+        tmp_path, monkeypatch, attended):
+    monkeypatch.setattr(A, "_bash_runs_caged", lambda perms: True)
+    dialog = Dialog(False) if attended else None
+    perms = _perms(tmp_path, "bypassPermissions", Runner(), dialog)
+    out = _gate(perms, "bash", {
+        "command": "git clone https://example.org/x/y.git reports/y"})
+    assert out is not None

@@ -45,6 +45,12 @@ def _build_orca_xtb_input(
     coords: str,
 ) -> str:
     """Build an ORCA input file for xTB calculations."""
+    if method not in ("XTB1", "XTB2"):
+        raise ValueError(
+            f"method must be one of ('XTB1', 'XTB2'), got {method!r}. "
+            "ORCA's built-in xTB methods are XTB1 and XTB2; "
+            "GFN0/GFNFF native-xTB workflows live in delfin/tools/adapters/xtb_native.py."
+        )
     return (
         f"!{method} {keyword}\n"
         f"%maxcore {maxcore}\n"
