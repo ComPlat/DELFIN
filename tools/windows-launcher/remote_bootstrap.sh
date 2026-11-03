@@ -157,7 +157,8 @@ if [ -n "$person" ] && [ -f "$HOME/.config/delfin/launcher-people.conf" ]; then
     shared=$HOME
     person_home="$shared/people/$person"
     (umask 077 && mkdir -p "$person_home/.delfin" "$person_home/.run" "$person_home/work")
-    for item in delfin .local .cache .ssh .gitconfig .delfin/credentials.json .delfin/settings.json .delfin/tools .delfin/doc_index.json; do
+    # DELFIN's settings are ~/.delfin_settings.json (user_settings.SETTINGS_FILE_NAME).
+    for item in delfin .local .cache .ssh .gitconfig .tmux.conf .delfin_settings.json .delfin/credentials.json .delfin/tools .delfin/doc_index.json; do
         if [ -e "$shared/$item" ] && [ ! -e "$person_home/$item" ] && [ ! -L "$person_home/$item" ]; then
             ln -s "$shared/$item" "$person_home/$item"
         fi
