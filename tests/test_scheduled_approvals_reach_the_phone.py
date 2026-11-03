@@ -22,14 +22,15 @@ refresh skipped it and the bridge refused answers.
   reply;
 - a request the screen marks always-explicit (protected paths) is
   shown but approving it from the phone is refused: it stays explicit;
+- a request auto_guard.classify_call marks outward (git push, gh pr
+  merge, a forge API write) is shown but not phone-approvable either;
+- an answer from a chat that is not the paired owner's is ignored;
 - the decision goes through the real broker (``permission.reply``),
   bound to the same live, unchanged request as every phone decision.
 """
 from __future__ import annotations
 
 import asyncio
-import os
-import tempfile
 
 import pytest
 
@@ -233,7 +234,7 @@ def test_ok_and_nein_and_zeige_route_to_the_bridge(scheduled_bridge, tmp_path, m
     assert "Fehler" in str(stale), stale
 
 
-def test_pending_approvals_arrive_in_one_batched_message():
+def test_pending_approvals_arrive_in_one_batched_message(tmp_path, monkeypatch):
     from delfin.messenger import gateway as gw
     from delfin.messenger import store
 
@@ -259,23 +260,22 @@ def test_pending_approvals_arrive_in_one_batched_message():
                     "check": "abc123"}
             return {"ok": True}
 
-    with tempfile.TemporaryDirectory() as tmp:
-        os.environ["DELFIN_MESSENGER_DIR"] = tmp
-        store.save("7")
-        daemon, bridge = Daemon(), Bridge()
-        rooms = gw.Rooms(daemon, bridge)
-        rooms.owner = "7"
-        asyncio.run(rooms.approvals_news())
-        texts = [text for _, text in daemon.sent]
-        assert len(texts) == 1, texts
-        assert "rm -r results" in texts[0]
-        assert "sandbox.py" in texts[0]
-        assert "ok 1" in texts[0] and "am Dashboard" in texts[0]
-        # a protected request is shown, never phone-approvable
-        assert "abc123" not in texts[0]  # the check is never quoted back
-        # a second cycle sends nothing new
-        asyncio.run(rooms.approvals_news())
-        assert len(daemon.sent) == 1
+    monkeypatch.setenv("DELFIN_MESSENGER_DIR", str(tmp_path))
+    store.save("7")
+    daemon, bridge = Daemon(), Bridge()
+    rooms = gw.Rooms(daemon, bridge)
+    rooms.owner = "7"
+    asyncio.run(rooms.approvals_news())
+    texts = [text for _, text in daemon.sent]
+    assert len(texts) == 1, texts
+    assert "rm -r results" in texts[0]
+    assert "sandbox.py" in texts[0]
+    assert "ok 1" in texts[0] and "am Dashboard" in texts[0]
+    # a protected request is shown, never phone-approvable
+    assert "abc123" not in texts[0]  # the check is never quoted back
+    # a second cycle sends nothing new
+    asyncio.run(rooms.approvals_news())
+    assert len(daemon.sent) == 1
 
 
 def test_an_answer_with_wrong_check_gets_a_clear_refusal(scheduled_bridge, tmp_path, monkeypatch):
@@ -304,4 +304,80 @@ def test_an_answer_with_wrong_check_gets_a_clear_refusal(scheduled_bridge, tmp_p
     rooms._approval_check = "wrong"
     reply = asyncio.run(rooms.approval_command("ok 1"))
     assert "Fehler" in str(reply), reply
+    assert not any(m == "permission.reply" for m, _ in calls)
+
+
+# -- outward-facing requests stay explicit (review gap) ----------------------
+
+PUSH = {
+    "requestId": "p123-4", "kind": "confirm", "tool": "bash",
+    "preview": "$ git push origin main", "purpose": "Push to the forge",
+    "flags": {"shell": True, "write": False, "protected": False,
+              "outsideRead": False},
+    "options": [{"key": "y", "label": "Once", "detail": ""},
+                {"key": "n", "label": "No", "detail": ""}],
+}
+PR_MERGE = {
+    "requestId": "p123-5", "kind": "confirm", "tool": "bash",
+    "preview": "$ gh pr merge 5 --squash", "purpose": "Merge a PR",
+    "flags": {"shell": True, "write": False, "protected": False,
+              "outsideRead": False},
+    "options": [{"key": "y", "label": "Once", "detail": ""},
+                {"key": "n", "label": "No", "detail": ""}],
+}
+
+
+def test_outward_requests_are_shown_but_not_approvable(scheduled_bridge):
+    """git push and gh pr merge are outward: classified by the existing
+    auto_guard rules, shown with the dashboard hint, refused from the phone."""
+    bridge, requests, _ = scheduled_bridge
+    requests.extend([PUSH, PR_MERGE])
+    reply = asyncio.run(bridge._run_command({"cmd": "approvals"}))
+    items = {i["requestId"]: i for i in reply["items"]}
+    assert items["p123-4"]["approvable"] is False
+    assert items["p123-5"]["approvable"] is False
+
+
+def test_ok_n_on_an_outward_request_is_refused(scheduled_bridge):
+    bridge, requests, calls = scheduled_bridge
+    requests.extend([PUSH])
+    check = {}
+
+    async def run():
+        listing = await bridge._run_command({"cmd": "approvals"})
+        item = next(i for i in listing["items"]
+                    if i["requestId"] == "p123-4")
+        check["n"] = item["n"]
+        check["check"] = listing["check"]
+        return await bridge._run_command(
+            {"cmd": "answer", "n": check["n"], "ok": True,
+             "check": check["check"]})
+
+    reply = asyncio.run(run())
+    assert "error" in reply, reply
+    assert not any(m == "permission.reply" for m, _ in calls)
+
+
+def test_an_answer_from_a_non_owner_is_ignored(scheduled_bridge, tmp_path, monkeypatch):
+    """handle() drops everything that is not the paired owner's message --
+    even an ok <n> with a valid check."""
+    bridge, _, calls = scheduled_bridge
+    from delfin.messenger import gateway as gw
+    from delfin.messenger import store
+
+    class Daemon:
+        async def send_chat(self, chat, text):
+            return {"chatItems": [{"chatItem": {"meta": {"itemId": 1}}}]}
+    class SyncBridge:
+        def ask(self, command):
+            return asyncio.run(bridge._run_command(command))
+
+    monkeypatch.setenv("DELFIN_MESSENGER_DIR", str(tmp_path))
+    store.save("1")
+    rooms = gw.Rooms(Daemon(), SyncBridge())
+    rooms.owner = "1"
+    listing = asyncio.run(bridge._run_command({"cmd": "approvals"}))
+    n = listing["items"][0]["n"]
+    rooms._approval_check = listing["check"]
+    asyncio.run(rooms.handle({"sender": "9", "chat": "@1", "text": f"ok {n}"}))
     assert not any(m == "permission.reply" for m, _ in calls)
