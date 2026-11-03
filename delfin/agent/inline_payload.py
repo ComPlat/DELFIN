@@ -62,7 +62,7 @@ import re
 # definition for both.
 DELFIN_ENTRY_MODULE_RE = (
     r"delfin(?:\.(?:__main__|main|cli|cli_\w+|build_up_complex|"
-    r"cluster_bench\.cli|guppy_sampling|guppy_batch|"
+    r"cluster_bench\.cli|guppy_sampling|guppy_batch|dev_cli|fixtures_store|"
     r"doc_server(?:\.indexer|\.__main__)?|tools\.mcp_server|agent\.cli|"
     r"ops_server(?:\.__main__)?))?(?![\w.])")
 

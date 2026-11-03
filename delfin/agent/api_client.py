@@ -3595,7 +3595,7 @@ _DELFIN_ENTRY_MODULE_RE = _inline_payload.DELFIN_ENTRY_MODULE_RE
 # installed copy under site-packages): the program by its path.
 _DELFIN_ENTRY_SCRIPT_BODY = (
     r"delfin/(?:__main__|main|cli|cli_\w+|build_up_complex|"
-    r"cluster_bench/cli|guppy_sampling|guppy_batch|"
+    r"cluster_bench/cli|guppy_sampling|guppy_batch|dev_cli|fixtures_store|"
     r"doc_server/(?:indexer|__main__)|tools/mcp_server|agent/cli|"
     r"ops_server/__main__)\.py")
 _DELFIN_ENTRY_SCRIPT_RE = re.compile(
