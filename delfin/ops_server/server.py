@@ -234,9 +234,15 @@ def tool_mlp_extopt_plan(
     device: str = "cpu", solvent: str = "", charge: int = 0, mult: int = 1,
     gpu_partitions: str = "", gres: str = "gpu:1", env_activation: str = "",
     job_name: str = "extopt_job", allow_local: bool = False,
-    work_dir: str = "",
+    work_dir: str = "", goat_options: str = "", goat_variant: str = "GOAT",
+    goat_max_workers: int = 0,
 ) -> str:
-    """Plan an ORCA+ExtOpt MLP job (dry run: input + script, nothing submitted)."""
+    """Plan an ORCA+ExtOpt MLP job (dry run: input + script, nothing submitted).
+
+    run_type goat: orca_mlips on a GPU partition; goat_options is a JSON
+    object of %goat options, goat_max_workers caps the workers (multiple
+    of 4, 0 = no cap); the result names the ensemble files it will write.
+    """
     return _dumps(delfin_api.mlp_extopt_plan(
         xyz, run_type=run_type, provider=provider, backend=backend,
         mlips_backend=mlips_backend, model=model or None, device=device,
@@ -244,6 +250,8 @@ def tool_mlp_extopt_plan(
         gpu_partitions=gpu_partitions, gres=gres,
         env_activation=env_activation, job_name=job_name,
         allow_local=allow_local, work_dir=work_dir,
+        goat_options=goat_options or None, goat_variant=goat_variant,
+        goat_max_workers=goat_max_workers or None,
     ))
 
 
