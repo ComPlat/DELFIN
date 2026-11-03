@@ -190,6 +190,10 @@ describe("completion in the composer", () => {
     expect(w.frame()).toContain("/status")
     expect(w.frame()).toContain("Model, mode, tokens, cost")
     expect(w.frame()).toContain("/session")
+    // SW2b added /swarm, a window command that starts with "s": window
+    // commands list before the session's (composer.tsx loadCommands),
+    // so the first /s match is /swarm and the second down is /session.
+    w.keys.pressArrow("down")
     w.keys.pressArrow("down")
     w.keys.pressTab()
     await w.settle()

@@ -265,6 +265,20 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "attention.list": {},
     "attention.answer": {"id": "string", "text": "string"},
     "attention.dismiss": {"id": "string"},
+    # Swarm management (package SW2b; the logic is SW1's
+    # delfin/agent/swarm/, the wrappers delfin/agent/service/swarm_rpc.py).
+    # spec: the spec object, or specYaml: swarm.yaml text. swarm.start is
+    # a dry run unless confirm=true -- the TUI sends confirm only after
+    # the user approved the plan it showed.
+    "swarm.status": {"spec": "object?", "specYaml": "string?"},
+    "swarm.plan": {"spec": "object?", "specYaml": "string?"},
+    "swarm.validate": {"spec": "object?", "specYaml": "string?"},
+    "swarm.start": {"spec": "object?", "specYaml": "string?",
+                    "dryRun": "boolean?", "confirm": "boolean?"},
+    "swarm.pause": {},
+    "swarm.resume": {},
+    "swarm.triage.list": {"queue": "[object]"},
+    "swarm.triage.answer": {"item": "object", "answer": "string"},
 }
 
 SERVICE_RESULTS: dict[str, dict[str, str]] = {
@@ -295,6 +309,25 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "attention.list": {"items": "[object]", "version": "integer?"},
     "attention.answer": {"ok": "boolean", "error": "string?"},
     "attention.dismiss": {"ok": "boolean", "error": "string?"},
+    # The status schema SW1 documents (status.py STATUS_SCHEMA); plan
+    # carries the launch plan plus dry_run_text; start is a dry run
+    # unless confirm=true. pause/resume answer available=false until SW1
+    # ships the verbs. triage.answer: answered, item_id, logged.
+    "swarm.status": {"schema_version": "integer", "goal": "string",
+                     "packages": "[object]",
+                     "waiting_for_user": "[object]"},
+    "swarm.plan": {"goal": "string", "members": "[object]",
+                   "start_spacing_s": "integer?", "memory_gate": "boolean?",
+                   "dry_run_text": "string"},
+    "swarm.validate": {"valid": "boolean", "errors": "[string]"},
+    "swarm.start": {"dry_run": "boolean", "goal": "string",
+                    "members": "[object]?", "dry_run_text": "string?",
+                    "started": "[object]", "refused": "string?"},
+    "swarm.pause": {"available": "boolean", "reason": "string"},
+    "swarm.resume": {"available": "boolean", "reason": "string"},
+    "swarm.triage.list": {"items": "[object]"},
+    "swarm.triage.answer": {"answered": "boolean", "item_id": "string?",
+                            "logged": "string?"},
 }
 
 #: Events from the service itself, to every window.

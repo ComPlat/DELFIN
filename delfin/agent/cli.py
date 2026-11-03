@@ -399,6 +399,43 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         perms = getattr(engine, "kit_permissions", None)
         return str(getattr(perms, "mode", "") or "")
 
+    # The progress watchdog (hg1): a stall's class and age, reported as
+    # one stream-json event + one status line per entered stall and per
+    # reporting cadence. Ticked by the wait/notice callbacks; never
+    # acts (the per-class safe action is in the event's `action` field,
+    # for the caller to honour). Settings are read here, per turn, the
+    # same way run_limits reads its knobs.
+    from . import progress_watchdog as _pw
+    try:
+        from delfin.user_settings import load_settings as _lw
+        _agent_cfg = (_lw() or {}).get("agent") or {}
+    except Exception:
+        _agent_cfg = {}
+    _watchdog = _pw.ProgressWatchdog(
+        limits=_pw.resolve_limits(_agent_cfg),
+        tick_s=_pw.resolve_tick_s(_agent_cfg))
+    _gate_state = {"seen": False}   # a slot-wait notice has gone by
+
+    def _watchdog_tick():
+        """One classification tick on the engine's activity snapshot.
+
+        The snapshot is the state the engine's own stream loop writes
+        (activity.py); a stub engine without one keeps working. The
+        gate-queue latches from the slot-wait notice: the tick right
+        after it classifies as gate-queue, then the latch clears so a
+        later plain model-wait is named as such."""
+        snap = getattr(getattr(engine, "activity", None),
+                       "snapshot", lambda: None)()
+        if snap is None:
+            return
+        gate = "waiting for a slot" if _gate_state["seen"] else ""
+        _gate_state["seen"] = False
+        ev, line = _watchdog.tick(snap, gate_notice=gate)
+        if ev is not None and emit is not None:
+            emit(ev)
+            if line:
+                emit({"type": "notice", "text": line})
+
     observer = turn_outcome.TurnObserver(
         emit=emit, mode=_mode,
         workspace=(getattr(getattr(engine, "kit_permissions", None),
@@ -429,6 +466,12 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         # model's answer, and _run_once's return contract says "text"
         # is the answer. Emitted with its own type so stream-json
         # readers and the CLI renderer can tell the two apart.
+        if "waiting for a slot on" in str(text or ""):
+            # The endpoint gate is queueing this request (endpoint_gate
+            # wait_notice): the next watchdog tick classifies as
+            # gate-queue, not model-wait. Cleared by any later tick
+            # that follows a slot being taken.
+            _gate_state["seen"] = True
         if text and emit is not None:
             emit({"type": "notice", "text": text})
 
@@ -439,6 +482,7 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         # record. A stream-json consumer can now overwrite its status
         # field instead of appending sixty entries that differ only in
         # the number of seconds.
+        _watchdog_tick()
         if text and emit is not None:
             emit({"type": "wait", "text": text})
 
@@ -4701,6 +4745,40 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ops_stalls(args):
+    """`delfin-agent ops stalls` -- read-only, one line per stalled session.
+
+    Input: the rows session_health.collect() produces (falling back to
+    ops_interface.sessions()). Output: one line ``<name>  <class>
+    <age>  <action>`` per stalled session, or one clear line when
+    nothing is stalled. Nothing is mutated.
+    """
+    import time as _t
+
+    from . import activity as _activity
+    from . import ops_interface as _oi
+    from . import progress_watchdog as _pw
+    from . import session_health as _sh
+    try:
+        records = _sh.collect()
+    except Exception:
+        records = _oi.sessions()
+    now = _t.time()
+    rows = []
+    for rec in records:
+        out = _pw.stall_class(rec, now)
+        if out["stall"]:
+            rows.append((rec.get("name") or rec.get("session_id")
+                         or "?", out))
+    if not rows:
+        print("no stalled sessions", flush=True)
+        return 0
+    for name, out in rows:
+        print(f"{name}  {out['class']}  {_activity.fmt_s(out['age_s'])}"
+              f"  {out['action']}", flush=True)
+    return 0
+
+
 def _subcommand_names(parser: argparse.ArgumentParser) -> frozenset[str]:
     """The subcommands the parser really registers.
 
@@ -5524,6 +5602,15 @@ def build_parser() -> argparse.ArgumentParser:
     resume_p.add_argument("session", help="The session's -n name")
     resume_p.set_defaults(func=cmd_resume)
 
+    # swarm -- build and run agent swarms (package SW1). The body lives
+    # in cli_swarm.py, owned and tested there; this is the only hunk in
+    # cli.py (same pattern as the prcheck subcommand).
+    from .cli_swarm import main as _swarm_main
+    _swarm_p = sub.add_parser(
+        "swarm",
+        help="Build and run agent swarms (init/plan/start/status)")
+    _swarm_p.set_defaults(func=_swarm_main)
+
     pins_p = sub.add_parser(
         "mcp-pins",
         help="MCP tool descriptions pinned on first use, and changes that "
@@ -5876,6 +5963,9 @@ def build_parser() -> argparse.ArgumentParser:
             _sh.pause_watch(interval)
             stop = _sa.last_stop()
 
+    # _cmd_ops_stalls is a module-level function (read-only, tested
+    # directly); only its registration lives here.
+
     ops_health_p = ops_sub.add_parser(
         "health",
         help="One line per open session: verdict (working / waiting on "
@@ -5891,6 +5981,14 @@ def build_parser() -> argparse.ArgumentParser:
     ops_health_p.add_argument("--interval", type=int, default=60,
                               help="Seconds between --wait ticks (min 60)")
     ops_health_p.set_defaults(func=_cmd_ops_health)
+
+    ops_stalls_p = ops_sub.add_parser(
+        "stalls",
+        help="Read-only: one line per open session with its stall class "
+             "(approval-wait / model-wait / gate-queue / tool-running / "
+             "idle / unclassified) and its age",
+    )
+    ops_stalls_p.set_defaults(func=_cmd_ops_stalls)
 
     # The supervisor's side of running sessions, as data
     # (delfin/agent/ops_interface.py): events and state to read; a message,
@@ -6028,7 +6126,15 @@ def build_parser() -> argparse.ArgumentParser:
     # on use so an import error there cannot break every other command.
     def _cmd_test_on_slurm(args):
         from delfin.agent.slurm_tests import cmd_test_on_slurm
-        return cmd_test_on_slurm(args)
+        try:
+            return cmd_test_on_slurm(args)
+        except ValueError as exc:
+            # A refused run dir is a usage error, not a crash: the promised
+            # exit 2 with the refusal message, nothing submitted. The
+            # refusal itself stays fail-closed in cmd_test_on_slurm, so a
+            # non-CLI caller can never ignore it.
+            print(exc)
+            return 2
 
     t6 = sub.add_parser(
         "test-on-slurm",
