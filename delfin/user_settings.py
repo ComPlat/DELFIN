@@ -471,6 +471,134 @@ def get_settings_path(base_path=None):
     return Path(base_path).expanduser() if base_path else (Path.home() / SETTINGS_FILE_NAME)
 
 
+#: Names a settings file read UNDER the personal one. Set by the Windows
+#: launcher's people mode (remote_bootstrap.sh) to the account's file, so
+#: that several people on one account share its defaults (pi_install.sh
+#: writes them) while each keeps their own choices.
+SETTINGS_DEFAULTS_ENV = "DELFIN_SETTINGS_DEFAULTS"
+
+
+def get_settings_defaults_path(settings_path=None):
+    """The defaults file layered under ``settings_path``, or None.
+
+    Input: the environment variable ``DELFIN_SETTINGS_DEFAULTS`` and the
+    personal settings path (``get_settings_path(settings_path)``).
+    Output: the defaults file's path, or None when the variable is unset or
+    empty, or when it names the personal file itself (resolved through
+    links: an account's own session, or a person whose file is still a link
+    to the account's). None means no layer: the single-file behaviour.
+    """
+    raw = str(os.environ.get(SETTINGS_DEFAULTS_ENV, "") or "").strip()
+    if not raw:
+        return None
+    defaults = Path(raw).expanduser()
+    personal = get_settings_path(settings_path)
+    try:
+        if os.path.realpath(defaults) == os.path.realpath(personal):
+            return None
+    except (OSError, ValueError):
+        return None
+    return defaults
+
+
+def settings_layers(settings_path=None):
+    """The settings files in precedence order: personal first, then defaults.
+
+    For readers that take one key from the raw files (a value nobody chose
+    is not filled in) and report the file it came from.
+    """
+    layers = [get_settings_path(settings_path)]
+    defaults = get_settings_defaults_path(settings_path)
+    if defaults is not None:
+        layers.append(defaults)
+    return layers
+
+
+def settings_stamp(settings_path=None):
+    """A cache key that changes when any settings layer changes."""
+    stamp = []
+    for path in settings_layers(settings_path):
+        try:
+            st = path.stat()
+            stamp.append((str(path), st.st_mtime_ns, st.st_size))
+        except OSError:
+            stamp.append((str(path), None, None))
+    return tuple(stamp)
+
+
+def _deep_merge(base, over):
+    """``over`` on top of ``base``: dicts merge key by key, every other value
+    (lists included) is replaced whole. Neither argument is modified."""
+    merged = _copy.deepcopy(base) if isinstance(base, dict) else {}
+    for key, value in (over or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = _copy.deepcopy(value)
+    return merged
+
+
+def _settings_diff(value, base):
+    """What ``value`` holds that ``base`` does not: the personal file's content.
+
+    Dicts are compared key by key; any other value that differs (a list
+    included) is kept whole. A key ``base`` has and ``value`` lacks cannot be
+    expressed and is not: the merged view always carries the base's keys.
+    """
+    out = {}
+    for key, item in value.items():
+        if key not in base:
+            out[key] = _copy.deepcopy(item)
+        elif isinstance(item, dict) and isinstance(base[key], dict):
+            sub = _settings_diff(item, base[key])
+            if sub:
+                out[key] = sub
+        elif item != base[key]:
+            out[key] = _copy.deepcopy(item)
+    return out
+
+
+def _read_defaults_layer(defaults_path):
+    """``(raw, base)`` of a defaults file: its JSON object, and what a person
+    without overrides gets (DEFAULT_SETTINGS < this file, normalised, with
+    the one-time updates applied). A missing, unreadable or invalid file is
+    an empty layer: the person's own settings must still load, and the
+    account's session reports the broken file when it loads it."""
+    raw = {}
+    try:
+        data = _read_json(defaults_path)
+        if isinstance(data, dict):
+            _normalized_settings_dict(data)        # validates the shape
+            raw = data
+    except Exception:
+        raw = {}
+    base = _merge_missing_defaults(
+        _apply_default_updates(_apply_security_updates(
+            _normalized_settings_dict(raw))),
+        DEFAULT_SETTINGS)
+    return raw, base
+
+
+def load_declared_settings(settings_path=None):
+    """The settings as the files declare them, without filling in defaults.
+
+    Input: the personal file and, when layered, the defaults file. Output:
+    the defaults file's JSON with the personal file's merged on top
+    (``_deep_merge``); {} for a file that is missing. Never writes. A
+    personal file that is not valid JSON raises, as ``_read_json`` does.
+    """
+    path = get_settings_path(settings_path)
+    declared = {}
+    defaults = get_settings_defaults_path(settings_path)
+    if defaults is not None:
+        declared, _base = _read_defaults_layer(defaults)
+    if path.exists():
+        own = _read_json(path)
+        if isinstance(own, dict):
+            declared = _deep_merge(declared, own)
+    return declared
+
+
 def _read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -922,6 +1050,22 @@ def _apply_default_updates(settings):
 def take_security_notices(settings_path=None):
     """The security notices not shown yet, removed from the settings file."""
     path = get_settings_path(settings_path)
+    if get_settings_defaults_path(path) is not None:
+        # Layered: the notices may come from the defaults file. Clearing
+        # them is the person's own change, written through save_settings
+        # (only the difference reaches the personal file).
+        try:
+            data = load_settings(path)
+        except Exception:
+            return []
+        notices = [str(n) for n in (data.get("security_notices") or []) if n]
+        if notices:
+            data["security_notices"] = []
+            try:
+                save_settings(data, path)
+            except Exception:
+                pass
+        return notices
     try:
         if not path.exists():
             return []
@@ -938,8 +1082,42 @@ def take_security_notices(settings_path=None):
     return notices
 
 
+def _load_layered(path, defaults_path):
+    """``load_settings`` with a defaults file under the personal one.
+
+    effective = DEFAULT_SETTINGS < defaults file < personal file, the
+    personal file deep-merged on the base (``_read_defaults_layer``) and
+    the result normalised. The personal file is rewritten only when its content is not
+    already the difference to the defaults (an old full copy, or one a
+    one-time update changed); a missing personal file is not created.
+    """
+    _defaults_raw, base = _read_defaults_layer(defaults_path)
+    if not path.exists() and _legacy_transfer_path(path).exists():
+        return None                       # the single-file migration below
+    own_raw = _read_json(path) if path.exists() else None
+    if own_raw is not None and not isinstance(own_raw, dict):
+        raise ValueError("Settings file must contain a JSON object.")
+    # Merged on the base, not on the defaults file's raw JSON: the base
+    # carries the one-time update records, so an update the defaults have
+    # had is not applied again over a person's later choice.
+    normalized = _normalized_settings_dict(_deep_merge(base, own_raw or {}))
+    merged = _merge_missing_defaults(
+        _apply_default_updates(_apply_security_updates(normalized)),
+        DEFAULT_SETTINGS)
+    if own_raw is not None:
+        own = _settings_diff(merged, base)
+        if own != own_raw:
+            _write_json_atomic(path, own)
+    return merged
+
+
 def load_settings(settings_path=None):
     path = get_settings_path(settings_path)
+    defaults_path = get_settings_defaults_path(path)
+    if defaults_path is not None:
+        layered = _load_layered(path, defaults_path)
+        if layered is not None:
+            return layered
     if path.exists():
         normalized = _normalized_settings_dict(_read_json(path))
         merged = _merge_missing_defaults(
@@ -967,14 +1145,38 @@ def load_settings(settings_path=None):
                 "updated_at": utc_now_iso(),
             }
         }
-        save_settings(migrated, path)
+        saved = save_settings(migrated, path)
+        if defaults_path is not None:
+            return saved
         return _merge_missing_defaults(migrated, DEFAULT_SETTINGS)
 
     return _merge_missing_defaults({}, DEFAULT_SETTINGS)
 
 
 def save_settings(settings, settings_path=None):
+    """Write ``settings``; return the effective settings.
+
+    Without a defaults layer (``get_settings_defaults_path`` is None): the
+    normalised settings with every default filled in, written whole -- the
+    single-file format. With one: ``settings`` is merged on the base,
+    DEFAULT_SETTINGS < defaults file (a key the caller left out keeps the
+    default, it does not fall back to DEFAULT_SETTINGS), normalised, and only the difference to
+    DEFAULT_SETTINGS < defaults file is written, so a default changed later
+    reaches everyone who did not set that key. Rejected: writing the whole
+    effective dict to the personal file, which freezes every default at the
+    moment of the person's first change.
+    """
     path = get_settings_path(settings_path)
+    defaults_path = get_settings_defaults_path(path)
+    if defaults_path is not None:
+        _defaults_raw, base = _read_defaults_layer(defaults_path)
+        if settings is not None and not isinstance(settings, dict):
+            raise ValueError("Settings file must contain a JSON object.")
+        normalized = _merge_missing_defaults(
+            _normalized_settings_dict(_deep_merge(base, settings or {})),
+            base)
+        _write_json_atomic(path, _settings_diff(normalized, base))
+        return normalized
     normalized = _merge_missing_defaults(_normalized_settings_dict(settings), DEFAULT_SETTINGS)
     _write_json_atomic(path, normalized)
     return normalized

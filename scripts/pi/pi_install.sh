@@ -152,9 +152,12 @@ set_up_extras() {
         echo "==> agent.env: DELFIN_MCP_ISOLATION=builtin"
     fi
     # The agent tab's defaults on this box (~/.config/delfin/pi-agent.conf),
-    # written into the DELFIN settings on every deploy, like pi-tabs.conf.
-    # Through the launcher's people mode every person shares the settings
-    # file, so these are everyone's defaults. Sessions start on the KIT
+    # written into the account's DELFIN settings on every deploy, like
+    # pi-tabs.conf. In the launcher's people mode that file is read under
+    # each person's own (DELFIN_SETTINGS_DEFAULTS), so these are everyone's
+    # defaults and a person's own choice survives the deploy. The variable
+    # is cleared for the apply: it writes the account's file, whole, and
+    # never a person's. Sessions start on the KIT
     # toolbox (DELFIN's own, caged tool loop): the CLI default would be
     # refused by the policy. An empty value (effort) means the model
     # profile's default. permission_profile all_free is the tab's "Bypass".
@@ -167,7 +170,7 @@ set_up_extras() {
             "mode=solo" "provider=kit" "model=kit.glm-5.3-flash" \
             "permission_profile=all_free" "effort=" > "$agent_conf"
     fi
-    "$VENV_PY" - "$agent_conf" <<'EOF' || echo "warning: could not apply $agent_conf" >&2
+    env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$agent_conf" <<'EOF' || echo "warning: could not apply $agent_conf" >&2
 import sys
 from delfin.user_settings import load_settings, save_settings
 KEYS = ("mode", "provider", "model", "permission_profile", "effort")
@@ -215,7 +218,8 @@ EOF
     # The dashboard tabs this box shows (tab ids, ~/.config/delfin/pi-tabs.conf),
     # applied on every deploy against the tabs the code has now, so a tab a
     # later DELFIN adds stays hidden too. Settings cannot be hidden (fixed).
-    # Through the launcher's people mode every person shares this setting.
+    # The account's file again: everyone's default in the launcher's people
+    # mode, a person's own tab choice stays theirs.
     local tabs_conf="$HOME/.config/delfin/pi-tabs.conf"
     if [[ ! -f "$tabs_conf" ]]; then
         mkdir -p "$HOME/.config/delfin"
@@ -223,7 +227,7 @@ EOF
             "# Applied by pi_install.sh on every deploy. All ids: grep \"'id':\" delfin/dashboard/__init__.py" \
             "agent home archive office" > "$tabs_conf"
     fi
-    "$VENV_PY" - "$tabs_conf" "$ROOT/src/delfin/dashboard/__init__.py" <<'EOF' || echo "warning: could not apply $tabs_conf" >&2
+    env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$tabs_conf" "$ROOT/src/delfin/dashboard/__init__.py" <<'EOF' || echo "warning: could not apply $tabs_conf" >&2
 import re, sys
 from delfin.user_settings import load_settings, save_settings
 shown = [w for line in open(sys.argv[1], encoding="utf-8")

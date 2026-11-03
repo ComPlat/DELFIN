@@ -401,8 +401,18 @@ def build_extopt_input(
 
 
 def _build_with_opi(keywords, elements, coordinates, charge, mult,
-                    wrapper_path, ext_params, scan, base_name, work_dir) -> Path:
-    """Build the input through OPI (py3.12 venv with the ``opi`` package)."""
+                    wrapper_path, ext_params, scan, base_name, work_dir,
+                    *, ncores: int = 1, extra_blocks: Sequence = (),
+                    xyz_name: Optional[str] = None) -> Path:
+    """Build the input through OPI (py3.12 venv with the ``opi`` package).
+
+    ``ncores`` is written as ``%pal nprocs`` (1 unless a run type needs
+    more, e.g. GOAT's parallel workers); ``extra_blocks`` are OPI block
+    objects (``BlockGoat``, ``BlockNeb``, ``BlockIrc``) added after
+    ``%method``.  The defaults reproduce the input written before both
+    arguments existed.  ``xyz_name`` names the geometry file
+    (default ``<base_name>.xyz``).
+    """
     from opi.core import Calculator
     from opi.input import Input
     from opi.input.blocks.block_method import BlockMethod
@@ -416,14 +426,17 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
     for kw in keywords:
         inp.add_simple_keywords(_kw(kw))
     inp.add_simple_keywords("extopt")  # ExternalTools.EXTOPT (OPI 6.1.1)
-    inp.ncores = 1
+    inp.ncores = int(ncores)
     inp.memory = 1000
 
     method = BlockMethod()
     # Manual 4.1.10 (structurereactivity/optimizations.txt lines 1571-1577):
     # ProgExt takes the wrapper path quoted.
     method.ProgExt = f'"{wrapper_path}"'  # type: ignore[assignment]
-    method.Ext_Params = ext_params
+    # Ext_Params is a quoted string as well (manual 4.1.10 writes
+    # ``Ext_Params "optional command line arguments"``); ORCA 6.1.1 refuses
+    # the unquoted form ("Invalid assignment in METHOD block").
+    method.Ext_Params = f'"{ext_params}"'  # type: ignore[assignment]
     inp.add_blocks(method)
 
     if scan is not None:
@@ -444,6 +457,8 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
             valuelist=scan.get("valuelist"),
         )
         inp.add_blocks(geom)
+    for block in extra_blocks:
+        inp.add_blocks(block)
 
     calc = Calculator(base_name, working_dir=work_dir, version_check=False)
     calc.input = inp
@@ -482,7 +497,7 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
             "OPI did not write the expected inline '* xyz' geometry section; "
             f"cannot convert {base_name}.inp to *xyzfile form"
         )
-    xyz_name = f"{base_name}.xyz"
+    xyz_name = xyz_name or f"{base_name}.xyz"
     xyz_lines = [str(len(elements)), ""]
     for el, (x, y, z) in zip(elements, coordinates):
         xyz_lines.append(f"{el} {float(x):.10f} {float(y):.10f} {float(z):.10f}")

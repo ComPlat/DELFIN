@@ -1,8 +1,11 @@
+import glob
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from .global_manager import get_global_manager
 from .orca import run_orca
@@ -152,8 +155,187 @@ def XTB(multiplicity, charge, config):
     tmp_xyz.unlink(missing_ok=True)
     print(f"xTB geometry updated and copied back to {work_input.name}.")
 
+def _gpu_visible() -> bool:
+    """Whether this process can see an NVIDIA GPU.
+
+    ``CUDA_VISIBLE_DEVICES`` set to "", "-1" or "NoDevFiles" hides every
+    GPU (CUDA semantics; Slurm sets the variable for a --gres job);
+    otherwise a ``/dev/nvidia<N>`` device node must exist.  Rejected: an
+    import of torch (seconds, and not installed where DELFIN itself runs)
+    and ``nvidia-smi`` (absent in many containers that do see the GPU).
+    """
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cvd is not None and cvd.strip() in ("", "-1", "NoDevFiles"):
+        return False
+    return bool(glob.glob("/dev/nvidia[0-9]*"))
+
+
+def _global_opt_mlip_choice(config) -> dict | None:
+    """The MLIP GOAT settings from CONTROL, or None for the classic xTB GOAT.
+
+    Reads global_opt_method / global_opt_mlip_model / global_opt_mlip_device
+    / refuse_noncommercial_weights through the validator's own field
+    functions, so an unvalidated config means the same as a validated one.
+    """
+    from delfin.common.control_validator import (
+        _as_global_opt_method,
+        _as_global_opt_mlip_device,
+        _as_global_opt_mlip_model,
+        _as_yes_no,
+    )
+
+    if not isinstance(config, dict):
+        return None
+    method = _as_global_opt_method(config.get("global_opt_method"))
+    if not method:
+        return None
+    return {
+        "global_opt_method": method,
+        "backend": method.split(":", 1)[1],
+        "model": _as_global_opt_mlip_model(config.get("global_opt_mlip_model")),
+        "device": _as_global_opt_mlip_device(config.get("global_opt_mlip_device")),
+        "refuse_noncommercial_weights":
+            _as_yes_no(config.get("refuse_noncommercial_weights", "no")) == "yes",
+    }
+
+
+def _read_start_geometry(path: Path) -> tuple[list[str], list[list[float]]]:
+    """Element symbols and Cartesian coordinates (Angstrom) of a start file."""
+    elements: list[str] = []
+    coords: list[list[float]] = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not _XYZ_COORD_LINE_RE.match(line):
+                continue
+            parts = line.split()
+            elements.append(parts[0])
+            coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
+    return elements, coords
+
+
+def _write_if_changed(path: Path, text: str) -> None:
+    """Write ``text`` unless ``path`` already holds exactly it (mtime kept)."""
+    try:
+        if path.read_text(encoding="utf-8") == text:
+            return
+    except OSError:
+        pass
+    path.write_text(text, encoding="utf-8")
+
+
+def _replace_if_changed(src: Path, dst: Path) -> None:
+    """Move ``src`` over ``dst`` unless both hold the same bytes (mtime kept)."""
+    try:
+        if dst.read_bytes() == src.read_bytes():
+            return
+    except OSError:
+        pass
+    shutil.copyfile(src, dst)
+
+
+def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
+    """GOAT with an orca-mlips MLIP through ORCA's ExtOpt (global_opt_method=mlip:*).
+
+    Same folder and file names as the xTB GOAT (``<xTB_method>_GOAT/
+    XTB_GOAT.inp``, ``output_XTB_GOAT.out``, ``XTB_GOAT.globalminimum.xyz``),
+    so every later step reads what it always read.  The start geometry is
+    written to ``XTB_GOAT_start.xyz`` (named in ``*xyzfile``), not to
+    ``XTB_GOAT.xyz``, a name ORCA itself writes.  The method is recorded in
+    ``XTB_GOAT.method.json``.  Stops (RuntimeError) before ORCA starts when
+    device=cuda and no GPU is visible, or when the weights are
+    non-commercial and refuse_noncommercial_weights=yes.
+    """
+    from delfin.mlp_tools.orca_mlips import (
+        build_orca_mlips_input,
+        mlips_weight_licence,
+    )
+
+    backend = choice["backend"]
+    licence = mlips_weight_licence(backend)
+    if choice["refuse_noncommercial_weights"] and licence.get("non_commercial"):
+        raise RuntimeError(
+            f"GOAT: global_opt_method={choice['global_opt_method']} uses "
+            f"non-commercial model weights ({licence['name']}); "
+            "refuse_noncommercial_weights=yes refuses them"
+        )
+    if choice["device"] == "cuda" and not _gpu_visible():
+        raise RuntimeError(
+            f"GOAT: global_opt_method={choice['global_opt_method']} with "
+            "global_opt_mlip_device=cuda, but this process sees no GPU "
+            "(CUDA_VISIBLE_DEVICES / /dev/nvidia*). Run the workflow on a GPU "
+            "node, or set global_opt_mlip_device=cpu explicitly; there is no "
+            "silent CPU fallback."
+        )
+    cores_limit, _ = _resolve_global_job_limits(
+        int(config.get('PAL', 1) or 1),
+        int(config.get('maxcore', 1000) or 1000),
+    )
+    folder_name = f"{config['xTB_method']}_GOAT"
+    work_input = _resolve_work_input(config)
+    cwd = work_input.parent
+    work = cwd / folder_name
+    work.mkdir(parents=True, exist_ok=True)
+    if not work_input.exists():
+        print(f"{work_input.name} not found!")
+        return
+
+    inp = work / "XTB_GOAT.inp"
+    out = work / "output_XTB_GOAT.out"
+    xyz = work / "XTB_GOAT.globalminimum.xyz"
+
+    elements, coordinates = _read_start_geometry(work_input)
+    # Built in a scratch folder and moved in only where the bytes differ:
+    # the smart-recalc fingerprint holds the mtime of the *xyzfile
+    # geometry, and a rewrite of an unchanged file would rerun a finished
+    # GOAT on every recalc.
+    build_dir = Path(tempfile.mkdtemp(prefix=".mlip_goat_", dir=work))
+    try:
+        build_orca_mlips_input(
+            "goat", elements=elements, coordinates=coordinates,
+            charge=int(charge), mult=int(multiplicity), backend=backend,
+            model=choice["model"] or None, device=choice["device"],
+            ncores=int(cores_limit), base_name="XTB_GOAT", work_dir=build_dir,
+            xyz_name="XTB_GOAT_start.xyz",
+        )
+        for name in ("XTB_GOAT_start.xyz", "XTB_GOAT.inp"):
+            _replace_if_changed(build_dir / name, work / name)
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
+    progext = f"orca-mlips-{backend}"
+    _write_if_changed(work / "XTB_GOAT.method.json", json.dumps({
+        "global_opt_method": choice["global_opt_method"],
+        "provider": "orca-mlips",
+        "progext": progext,
+        "model": choice["model"],
+        "device": choice["device"],
+        "weight_licence": licence.get("name", ""),
+        "energies": "mlip-screen",
+    }, indent=2) + "\n")
+    print(f"GOAT input written for {choice['global_opt_method']} ({progext}).")
+
+    # No legacy-output bootstrap here: an MLIP GOAT never ran without a
+    # fingerprint, and a finished xTB GOAT in the same folder must not be
+    # taken for it.
+    if smart_recalc.should_skip(inp, out) and xyz.exists():
+        logging.info("[smart_recalc] skipping MLIP GOAT; inp+deps unchanged and output complete.")
+    else:
+        run_orca(str(inp), str(out), working_dir=work)
+    if not xyz.exists():
+        print("XTB_GOAT.globalminimum.xyz not found!")
+        return
+
+    tmp_xyz = cwd / "_tmp_goat.xyz"
+    shutil.copyfile(xyz, tmp_xyz)
+    _strip_xyz_header(tmp_xyz, work_input)
+    tmp_xyz.unlink(missing_ok=True)
+    print(f"GOAT geometry updated and copied back to {work_input.name}.")
+
+
 def XTB_GOAT(multiplicity, charge, config):
     print("\nstarting GOAT\n")
+    mlip = _global_opt_mlip_choice(config)
+    if mlip is not None:
+        return _xtb_goat_mlip(multiplicity, charge, config, mlip)
     cores_limit, _ = _resolve_global_job_limits(
         int(config.get('PAL', 1) or 1),
         int(config.get('maxcore', 1000) or 1000),
