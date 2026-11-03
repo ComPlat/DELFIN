@@ -417,8 +417,11 @@ def test_the_counts_still_match_what_was_measured():
     # science 51 -> 54 on 2026-11-02 (SRC1, wave 26, agent/s3-src1b): the
     # three tasks_w26_src1.yaml source-verification tasks (real DOI, invented
     # DOI refused, PubChem value with CID), graded on recorded API responses.
+    # science 54 -> 55 on 2026-11-03 (BT1, wave 28, swarm/wave20/bt1): the
+    # tasks_w28_bt1.yaml butane rotation-profile task (scan + TS + movie,
+    # graded on the artifact tree).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 54, "chemistry": 32, "generalist": 26,
+                      "science": 55, "chemistry": 32, "generalist": 26,
                       "other": 90}, counts
 
 
