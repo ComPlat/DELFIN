@@ -3670,9 +3670,14 @@ _ARCHIVE_PLACEHOLDER = "🗃 Subagent archive…"
 #: How far back the archive row reaches. The store keeps more; this is how
 #: many a single dropdown stays usable with.
 _ARCHIVE_LIMIT = 40
+#: Value of the fold header above the records no session owns. A label row,
+#: never a view: the pick handler ignores it, and no sa_id can collide with
+#: it (sa_ids are hex).
+_ARCHIVE_UNASSIGNED_HEADER = "__unassigned__"
+_ARCHIVE_UNASSIGNED_LABEL = "── older, unassigned ──"
 
 
-def archive_rows(running, finished) -> list[tuple[str, str]]:
+def archive_rows(running, finished, unassigned=()) -> list[tuple[str, str]]:
     """``(label, sa_id)`` rows for the finished-delegate archive, newest first.
 
     Input: ``running`` as ``subagents.read_running()`` returns it (sa_id ->
@@ -3687,22 +3692,38 @@ def archive_rows(running, finished) -> list[tuple[str, str]]:
     already carries it, and a row that appears in both places invites the
     reader to open the stale copy.
 
-    Deliberately NOT filtered by the current session's start time. That
-    filter is what made a finished delegate look deleted: the saved session
-    stayed on disk and no control could reach it. Age bounds the list
-    (``_ARCHIVE_LIMIT`` at the call site), not session identity.
+    Scope is session OWNERSHIP, not the session's start time. The caller
+    passes ``finished`` as ``list_finished(session=<this session>)``, so a
+    kept or resumed session still reaches its own earlier delegates (the
+    owner id is stable across a resume), while another session's never
+    appear. The old start-time cutoff is what made a finished delegate
+    look deleted; ownership has no such edge.
+
+    ``unassigned`` -- ``list_finished(unassigned=True)``: records written
+    before ownership was recorded. They belong to no session, so they
+    appear in none of the session lists; they are still on disk and still
+    readable, so they are listed below a separate header row
+    (``_ARCHIVE_UNASSIGNED_HEADER``) instead of being unreachable.
     """
-    rows: list[tuple[str, str]] = []
-    for rec in finished or ():
-        sa_id = str((rec or {}).get("sa_id") or "")
-        if not sa_id or sa_id in (running or {}):
-            continue
-        label = ("✅" if not rec.get("error") else "❌") + " " + str(
-            rec.get("subagent_type", "?"))[:16]
-        desc = str(rec.get("description", ""))[:48].strip()
-        if desc:
-            label += " · " + desc
-        rows.append((label, sa_id))
+    def _rows(records) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for rec in records or ():
+            sa_id = str((rec or {}).get("sa_id") or "")
+            if not sa_id or sa_id in (running or {}):
+                continue
+            label = ("✅" if not rec.get("error") else "❌") + " " + str(
+                rec.get("subagent_type", "?"))[:16]
+            desc = str(rec.get("description", ""))[:48].strip()
+            if desc:
+                label += " · " + desc
+            out.append((label, sa_id))
+        return out
+
+    rows = _rows(finished)
+    legacy = _rows(unassigned)
+    if legacy:
+        rows.append((_ARCHIVE_UNASSIGNED_LABEL, _ARCHIVE_UNASSIGNED_HEADER))
+        rows.extend(legacy)
     return rows
 
 _ACTION_ROUND_CEILING_DEFAULT = 40
@@ -8077,9 +8098,10 @@ def create_tab(ctx):
                                   flex_flow="row wrap", gap="4px"))
     # Finished delegates move HERE. Still readable — the same drill-in view
     # renders them from the saved session store — but collapsed into one row
-    # that does not grow. It reaches past this session on purpose: a run is
-    # worth studying after the session that started it has gone, and the store
-    # already keeps it (subagents._SESSIONS_DIR).
+    # that does not grow. Scoped by ownership, not by time: it lists the
+    # delegates this session's turns started, however long ago (a kept or
+    # resumed session keeps its id, so it keeps its archive), plus -- under a
+    # separate header -- records from before ownership was recorded.
     agent_archive_dropdown = widgets.Dropdown(
         options=[(_ARCHIVE_PLACEHOLDER, "")], value="",
         layout=widgets.Layout(display="none", width="auto",
@@ -8097,12 +8119,21 @@ def create_tab(ctx):
         upper bound in practice, while the number of things worth one click
         does. Selecting a row enters that delegate's transcript exactly as a
         chip does — ``_render_agent_transcript`` loads a finished run from the
-        saved session store, so the entry does not have to be from this
-        session to be readable.
+        saved session store by id.
+
+        Both lists are this session's (``_background_owner()`` as the
+        ``session`` filter); unassigned legacy records follow the
+        archive's own rows under a header row.
         """
         try:
             from delfin.agent.subagents import read_running, list_finished
-            running = read_running()
+            # This session's delegates only: the stores are account-wide and
+            # every open session used to list every session's runs. The
+            # owner is the id the engine's permissions carry as
+            # task_session_id, which every delegate (nested ones through
+            # the derived permissions) records as owner_session.
+            _owner = _background_owner()
+            running = read_running(session=_owner)
             entries = [("💬 Main", "main", "")]
             for sid, sa in running.items():
                 entries.append(("🟡 " + str(sa.get("type", "?"))[:16], sid,
@@ -8110,10 +8141,15 @@ def create_tab(ctx):
             # No session-start cutoff. Hiding earlier runs was what made a
             # finished delegate "disappear": the saved session was still on
             # disk and nothing in the UI could reach it.
-            archive = archive_rows(running, list_finished(_ARCHIVE_LIMIT))
+            archive = archive_rows(
+                read_running(),
+                list_finished(_ARCHIVE_LIMIT, session=_owner),
+                list_finished(_ARCHIVE_LIMIT, unassigned=True))
             cur = state.get("_view_agent", "main")
             # The archive ids count as valid views: a selected archive entry
             # must not be reset to Main by the next tick.
+            # (The fold header's value is never a current view: the pick
+            # handler sends it back to the placeholder.)
             vals = [v for _, v, _ in entries] + [v for _, v in archive]
             if cur not in vals:
                 cur = "main"
@@ -8123,7 +8159,7 @@ def create_tab(ctx):
 
             # --- the archive dropdown ---
             opts = [(_ARCHIVE_PLACEHOLDER, "")] + archive
-            arch_vals = {v for _, v in archive}
+            arch_vals = {v for _, v in archive} - {_ARCHIVE_UNASSIGNED_HEADER}
             sig_a = (tuple(opts), cur in arch_vals and cur or "")
             if state.get("_view_archive_sig") != sig_a:
                 state["_view_archive_sig"] = sig_a
@@ -8175,6 +8211,11 @@ def create_tab(ctx):
         if state.get("_view_archive_programmatic"):
             return
         sid = str((change or {}).get("new") or "")
+        if sid == _ARCHIVE_UNASSIGNED_HEADER:
+            # The fold header: a label, not an entry. Back to the
+            # placeholder, which this handler ignores as well.
+            agent_archive_dropdown.value = ""
+            return
         if not sid:
             return
         state["_view_agent"] = sid
@@ -10002,7 +10043,9 @@ def create_tab(ctx):
             was_active = False
             while not state.get("_subagent_live_stop"):
                 try:
-                    active = bool(_rr())
+                    # Another session's delegate is not a reason to redraw
+                    # this one's panel and chat every tick.
+                    active = bool(_rr(session=_background_owner()))
                     # Refresh while any run, plus once after the last finishes
                     # (flip running → recent without a main-loop tool result).
                     if active or was_active:
@@ -15882,7 +15925,7 @@ def create_tab(ctx):
             # tool's resume_id parameter (context intact).
             try:
                 from delfin.agent.subagents import list_finished
-                finished = list_finished(last_n=5)
+                finished = list_finished(last_n=5, session=_background_owner())
             except Exception:
                 finished = []
             if finished:
