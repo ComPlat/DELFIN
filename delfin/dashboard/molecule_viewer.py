@@ -6985,10 +6985,13 @@ def static_viewer_html(xyz_text, width=640, height=450,
         'frame_count': len(parse_xyz_frames(frames)) if frames else 0,
     }
     html = (
-        f'<div style="width:{width}px;height:{height}px;position:relative;'
-        f'border:0;margin:0;padding:0;">'
+        # The right column is fluid. A 640px-wide canvas inside a much
+        # wider stage visually parks the molecule on the left, even when
+        # 3Dmol centres it inside its own fixed-size canvas.
+        f'<div style="width:100%;height:{height}px;position:relative;'
+        f'border:0;margin:0;padding:0;min-width:0;">'
         f'<div id="{vid}" style="position:relative;'
-        f'width:{width}px;height:{height}px;"></div>'
+        f'width:100%;height:100%;min-width:0;"></div>'
         f'<script type="application/json" id="{vid}_data">'
         + json.dumps(payload).replace('<', '\\u003c')
         + '</script></div>'
@@ -7050,9 +7053,9 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         # sync lands it (max ~10 s); this is the race behind the
         # "white viewer" report of 2026-11-02.
         "  var el = document.getElementById(vid);\n"
-        "  if (!el) {\n"
+        "  if (!el || el.getBoundingClientRect().width < 100) {\n"
         "    if (attempt < 40) { window.setTimeout(boot, 250); return; }\n"
-        "    console.error('DELFIN TS-GOAT: viewer div ' + vid + ' missing after 10 s -- Voila did not sync the Output'); return;\n"
+        "    console.error('DELFIN TS-GOAT: viewer stage not visible/sized for ' + vid); return;\n"
         "  }\n"
         "  if (typeof window.$3Dmol === 'undefined') {\n"
         "    el.innerHTML = '<div style=\"padding:10px;color:#c62828;\">'\n"
@@ -7080,6 +7083,9 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "if (window.__tsGoatAnimStop[vid]) {\n"
         "  clearTimeout(window.__tsGoatAnimStop[vid]);\n"
         "  delete window.__tsGoatAnimStop[vid];\n"
+        "}\n"
+        "if (previous && previous.__tsGoatResizeObserver) {\n"
+        "  try { previous.__tsGoatResizeObserver.disconnect(); } catch (e) {}\n"
         "}\n"
         "if (previous && typeof window.__delfinDisposeViewer === 'function') {\n"
         "  try { window.__delfinDisposeViewer(previous); } catch (e) {}\n"
@@ -7122,7 +7128,10 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "try {\n"
         "  viewer.setClickable({}, true, function(atom) {\n"
         "    if (!atom || atom.serial === undefined || atom.serial === null) return;\n"
-        "    var sync = document.querySelector(" + _json.dumps(click_sync_css) + ");\n"
+        # The css class belongs to the ipywidgets Text container;
+        # HTMLInputElement.value must be set on its nested <input>.
+        "    var syncHost = document.querySelector(" + _json.dumps(click_sync_css) + ");\n"
+        "    var sync = syncHost ? syncHost.querySelector('input') : null;\n"
         "    if (!sync) { console.error('DELFIN TS-GOAT: click sync input missing'); return; }\n"
         # Add a monotonically changing suffix: a second click on the
         # SAME atom must emit a new Text value, otherwise traitlets
@@ -7136,10 +7145,23 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "    sync.dispatchEvent(new Event('input', {bubbles: true}));\n"
         "  });\n"
         "} catch (e) { console.error('DELFIN TS-GOAT: setClickable failed', e); }\n"
+        # Fit the actual rendered canvas, not the stale hard-coded 640px.
+        # zoomTo()/center() run only for the initial view. A later atom
+        # click/re-render restores the prior camera via getView/setView.
+        "viewer.resize();\n"
         "if (savedView && typeof viewer.setView === 'function') {\n"
-        "  try { viewer.setView(savedView); } catch (e) { viewer.zoomTo(); }\n"
-        "} else { viewer.zoomTo(); }\n"
+        "  try { viewer.setView(savedView); }\n"
+        "  catch (e) { viewer.zoomTo(); viewer.center(); }\n"
+        "} else { viewer.zoomTo(); viewer.center(); }\n"
         "viewer.render();\n"
+        "if (typeof ResizeObserver !== 'undefined') {\n"
+        "  var ro = new ResizeObserver(function() {\n"
+        "    if (!document.getElementById(vid)) { ro.disconnect(); return; }\n"
+        "    try { viewer.resize(); viewer.render(); } catch (e) {}\n"
+        "  });\n"
+        "  ro.observe(el);\n"
+        "  viewer.__tsGoatResizeObserver = ro;\n"
+        "}\n"
         "}\n"
         "boot();\n"
         "})();\n"
