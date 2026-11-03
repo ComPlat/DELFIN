@@ -164,7 +164,7 @@ set_up_extras() {
         printf '%s\n' "# Agent tab defaults on this box (key=value). Applied by pi_install.sh on every deploy." \
             "# mode: solo = Code; permission_profile: ask_all | repo_free | all_free (= Bypass)." \
             "# effort empty = the model profile's default." \
-            "mode=solo" "provider=kit" "model=kit.deepseek-v4-flash" \
+            "mode=solo" "provider=kit" "model=kit.glm-5.3-flash" \
             "permission_profile=all_free" "effort=" > "$agent_conf"
     fi
     "$VENV_PY" - "$agent_conf" <<'EOF' || echo "warning: could not apply $agent_conf" >&2
