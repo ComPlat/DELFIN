@@ -116,7 +116,43 @@ Python:
   print("ANI-2x OK")
 
 
-6. CHOOSING A BACKEND
+6. ORCA Extopt (Mlp-Driven Geometry Optimisations)
+---------------------------------------------------------------------------
+
+The ExtOpt infrastructure (ORCA manual 4.1.10) lets ORCA run a geometry
+optimisation (Opt, OptTS, NEB-TS, GOAT, IRC, relaxed scan) with energies
+and gradients supplied by an MLP instead of the DFT method.  DELFIN's
+wrapper module lives at delfin/mlp_tools/orca_extopt.py; the executable
+entry point is created by the installer at <mlp_tools root>/bin/delfin-mlp-extopt.
+
+Setup:
+
+  bash delfin/mlp_tools/install_mlp_tools.sh   # creates bin/delfin-mlp-extopt
+  source delfin/mlp_tools/env.sh               # puts bin/ on PATH
+
+ORCA input (%method block):
+
+  ! Opt ExtOpt
+  %method
+    ProgExt "delfin-mlp-extopt"
+    Ext_Params "--backend aimnet2 --device cpu"
+  end
+
+Ext_Params is forwarded verbatim to the wrapper.  Backends: any name
+accepted by delfin.mlp_tools.calculators.create_calculator; use
+"aimnet2" for charged systems or elements beyond H,C,N,O,S,F,Cl.
+The Python selection (mlp_preopt / mlp_optimize) does not need the
+wrapper -- only ORCA ExtOpt runs do.
+
+AIMNet2 notes for ExtOpt:
+  - 14 elements (H,B,C,N,O,F,Si,P,S,Cl,As,Se,Br,I) and charge/mult
+    support; the wrapper passes charge/multiplicity from the extinp.
+  - The AIMNet2 model file ("aimnet2") is fetched on first use by
+    aimnet2calc; run one single-point once before a long ExtOpt job to
+    populate the cache.
+
+
+7. CHOOSING A BACKEND
 ---------------------------------------------------------------------------
 
   Use case                              Recommended backend
@@ -133,7 +169,7 @@ Python:
   MACE-OFF is most accurate but also heaviest.
 
 
-7. COMMON ISSUES
+8. COMMON ISSUES
 ---------------------------------------------------------------------------
 
 Problem: ModuleNotFoundError: No module named 'torchani'
@@ -155,7 +191,7 @@ Fix:     pip install torch
          For GPU: pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 
-8. ENVIRONMENT VARIABLES
+9. ENVIRONMENT VARIABLES
 ---------------------------------------------------------------------------
 
   DELFIN_MLP_TOOLS_ROOT   Override mlp_tools root directory

@@ -331,6 +331,32 @@ install_alignn() {
 }
 
 # ---------------------------------------------------------------------------
+install_extopt_wrapper() {
+  # ORCA's ExtOpt needs an executable script as the ProgExt target.
+  # The Python wrapper module ships with the package; the bin/ launcher
+  # is created here (not shipped: mlp_tools/bin/* is wheel-excluded).
+  mkdir -p "${ROOT}/bin"
+  cat > "${ROOT}/bin/delfin-mlp-extopt" <<'EOF'
+#!/usr/bin/env bash
+# ORCA ExtOpt wrapper entry point (ProgExt target). Execs the Python
+# wrapper module so the interpreter has delfin + the MLP backends.
+set -euo pipefail
+if [ -n "${DELFIN_MLP_PYTHON:-}" ]; then
+    _python="${DELFIN_MLP_PYTHON}"
+elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
+    _python="${VIRTUAL_ENV}/bin/python"
+else
+    _python="python3"
+fi
+exec "${_python}" -m delfin.mlp_tools.orca_extopt "$@"
+EOF
+  chmod +x "${ROOT}/bin/delfin-mlp-extopt"
+  log "ExtOpt wrapper: ${ROOT}/bin/delfin-mlp-extopt"
+  log "  (source delfin/mlp_tools/env.sh to put it on PATH, then use"
+  log "   ProgExt \"<that path>\" in ORCA %method blocks; Ext_Params:"
+  log "   --backend aimnet2)"
+}
+
 verify_backends() {
   local python_bin="$1"
 
@@ -398,6 +424,7 @@ main() {
   install_schnetpack "${python_bin}"
   install_nequip "${python_bin}"
   install_alignn "${python_bin}"
+  install_extopt_wrapper
   verify_backends "${python_bin}"
   summary
 }

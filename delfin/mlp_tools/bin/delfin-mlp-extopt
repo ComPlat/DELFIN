@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# ORCA ExtOpt wrapper entry point (ProgExt target).
+#
+# ORCA's ExtOpt runs the program given as ProgExt (ORCA manual 4.1.10) as
+#   <ProgExt> <basename_EXT.extinp.tmp> [Ext_Params]
+# and reads the energy/gradient back from basename_EXT.engrad.
+#
+# This launcher execs the Python wrapper so the working interpreter is the
+# one that has delfin (and the MLP backends) importable. The wrapper
+# honours Ext_Params pass-through (--backend/--device accepted; the
+# main() parser tolerates unknown args by design).
+set -euo pipefail
+
+# Prefer an explicitly configured Python, then the DELFIN venv next to
+# this checkout, then whatever is on PATH.
+if [ -n "${DELFIN_MLP_PYTHON:-}" ]; then
+    _python="${DELFIN_MLP_PYTHON}"
+elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
+    _python="${VIRTUAL_ENV}/bin/python"
+elif [ -x "$(dirname "$(dirname "$(readlink -f "$0")")")/../.venv/bin/python" ]; then
+    _python="$(dirname "$(dirname "$(readlink -f "$0")")")/../.venv/bin/python"
+else
+    _python="python3"
+fi
+
+exec "${_python}" -m delfin.mlp_tools.orca_extopt "$@"
