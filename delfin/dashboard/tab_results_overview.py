@@ -51,29 +51,42 @@ def rows_to_markdownish(columns: List[dict], rows: List[dict],
         if col["id"] == sort_col:
             arrow = " &#9660;" if sort_desc else " &#9650;"
         head.append(
-            f"<th style='padding:4px 10px;text-align:left;border-bottom:2px "
-            f"solid #ccc'><a href='#' class='ro-sort' data-col="
+            f"<th style='padding:10px 12px;text-align:left;"
+            f"position:sticky;top:0;background:#1e293b;color:#f8fafc;"
+            f"font-weight:600;white-space:nowrap;z-index:1;"
+            f"border-bottom:2px solid #334155'>"
+            f"<a href='#' class='ro-sort' data-col="
             f"'{_html.escape(col['id'])}' style='color:inherit;text-"
             f"decoration:none'>{_html.escape(col['label'])}{arrow}</a></th>")
     head_html = "".join(head)
     body_rows = []
-    for row in rows:
+    for i, row in enumerate(rows):
+        stripe = "#f8fafc" if i % 2 else "transparent"
         cells = "".join(
-            f"<td style='padding:4px 10px;border-bottom:1px solid #eee'>"
+            f"<td style='padding:8px 12px;border-bottom:1px solid "
+            f"#e2e8f0;color:#334155;white-space:nowrap'>"
             f"{_html.escape(format_value(row['values'].get(col['id'])))}</td>"
             for col in columns
         )
         name = _html.escape(row["label"])
         body_rows.append(
-            f"<tr><td style='padding:4px 10px;border-bottom:1px solid #eee'>"
+            f"<tr style='background:{stripe}' "
+            f"onmouseover=\"this.style.background='#e0f2fe'\" "
+            f"onmouseout=\"this.style.background='{stripe}'\">"
+            f"<td style='padding:8px 12px;border-bottom:1px solid #e2e8f0;"
+            f"font-weight:600;color:#0f172a;white-space:nowrap'>"
             f"{name}</td>{cells}</tr>"
         )
     return (
+        "<div style='max-height:70vh;overflow:auto;border:1px solid "
+        "#e2e8f0;border-radius:10px;background:#fff'>"
         "<table style='border-collapse:collapse'>"
-        f"<thead><tr><th style='padding:4px 10px;text-align:left;"
-        f"border-bottom:2px solid #ccc'>Rechnung</th>{head_html}"
+        f"<thead><tr><th style='padding:10px 12px;text-align:left;"
+        f"position:sticky;left:0;top:0;background:#1e293b;color:#f8fafc;"
+        f"font-weight:600;white-space:nowrap;z-index:2'>Rechnung</th>"
+        f"{head_html}"
         f"</tr></thead>"
-        f"<tbody>{''.join(body_rows)}</tbody></table>"
+        f"<tbody>{''.join(body_rows)}</tbody></table></div>"
     )
 
 
