@@ -538,7 +538,9 @@ def test_ts_goat_playback_uses_validated_frames_and_distinct_pause_reset():
     # Separate GL shapes preserve normal atomic CPK colours.
     assert 'viewer.__tsGoatUpdateHighlights' in boot
     assert 'viewer.removeAllShapes()' in boot
-    assert 'opacity:0.12' in boot
+    assert 'opacity:0.18' in boot
+    assert 'wireframe:true' not in boot
+    assert 'color:0x8fbcd3' in boot
     assert 'viewer.addStyle({serial: serial}' not in boot
     play = ts_goat_viewer_frames_js('viewer', True)
     pause = ts_goat_viewer_frames_js('viewer', 'pause')
@@ -744,3 +746,39 @@ def test_ts_goat_selected_halos_update_with_frames():
     js = ts_goat_viewer_frames_js('viewer', True)
     assert 'viewer.__tsGoatUpdateHighlights()' in js
     assert 'viewer.setFrame(frame)' in js
+
+
+
+def test_ts_goat_mode_and_sliders_have_usable_width(tmp_path):
+    """Dropdown arrow must not obscure frequency; sliders must be draggable."""
+    from ipywidgets import Dropdown, FloatSlider, HTML
+
+    result, _ = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    panel = result['registry']['panel']
+    right = panel.children[0].children[1].children[1]
+
+    modes = [w for w in _iter_widgets(right)
+             if isinstance(w, Dropdown) and w.description == 'Mode:']
+    assert len(modes) == 1
+    assert modes[0].layout.width == '340px'
+    assert modes[0].layout.min_width == '320px'
+    assert modes[0].style.description_width == '48px'
+    assert all('cm⁻¹' in label for label, _idx in modes[0].options)
+
+    sliders = [w for w in _iter_widgets(right)
+               if isinstance(w, FloatSlider)]
+    assert len(sliders) == 2
+    assert {w.value for w in sliders} == {0.25, 1.0}
+    assert all(w.description == '' for w in sliders)
+    assert all(w.layout.width == '100%' for w in sliders)
+    assert all(w.layout.min_width == '250px' for w in sliders)
+    assert all(w.style.description_width == '0px' for w in sliders)
+    assert all(w.readout for w in sliders)
+    assert all(w.readout_format == '.2f' for w in sliders)
+    labels = [
+        w.value for w in _iter_widgets(right)
+        if isinstance(w, HTML)
+    ]
+    assert any('Amplitude' in label for label in labels)
+    assert any('Speed' in label for label in labels)
