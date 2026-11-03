@@ -9,6 +9,11 @@ tunnel_path=${6:-}
 keep=${7:-0}
 working=${8:-0}
 person=${9:-}
+# The account owner may make Keep session this server's default
+# (~/.config/delfin/launcher-keep.conf, e.g. a shared agent box): every
+# connection then keeps its dashboard after a disconnect, whatever the app's
+# checkbox says. Ctrl+C in the SSH window still stops it.
+if [ -f "$HOME/.config/delfin/launcher-keep.conf" ]; then keep=1; fi
 # `python -c` puts the current directory first on sys.path: a plain folder
 # named "delfin" there (an install root, a repository root) then shadows the
 # real package as an empty namespace package. Every probe and start drops it.
@@ -156,7 +161,7 @@ if [ -n "$person" ] && [ -f "$HOME/.config/delfin/launcher-people.conf" ]; then
     esac
     shared=$HOME
     person_home="$shared/people/$person"
-    (umask 077 && mkdir -p "$person_home/.delfin" "$person_home/.run" "$person_home/work")
+    (umask 077 && mkdir -p "$person_home/.delfin" "$person_home/.run" "$person_home/agent_workspace")
     # DELFIN's settings are ~/.delfin_settings.json (user_settings.SETTINGS_FILE_NAME).
     for item in delfin .local .cache .ssh .gitconfig .tmux.conf .delfin_settings.json .delfin/credentials.json .delfin/tools .delfin/doc_index.json; do
         if [ -e "$shared/$item" ] && [ ! -e "$person_home/$item" ] && [ ! -L "$person_home/$item" ]; then
@@ -164,7 +169,8 @@ if [ -n "$person" ] && [ -f "$HOME/.config/delfin/launcher-people.conf" ]; then
         fi
     done
     export HOME="$person_home" DELFIN_PERSON="$person" DELFIN_RUNTIME_DIR="$person_home/.run"
-    if [ -z "$directory" ]; then cd -- "$person_home/work"; fi
+    # The dashboard's agent works in its launch folder (DELFIN_LAUNCH_CWD).
+    if [ -z "$directory" ]; then cd -- "$person_home/agent_workspace"; fi
     printf 'DELFIN: Person %s (%s)\n' "$person" "$person_home"
 fi
 if [ "$role" = terminal ]; then
