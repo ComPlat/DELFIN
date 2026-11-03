@@ -68,6 +68,11 @@ _NOT_EXERCISED_HERE = {
     # the not-found refusal run against recorded Crossref/PubChem/OpenAlex
     # responses -- this file has no recorded API fixture.
     "verify_source": "tests/test_src1_adversarial_registration.py — needs recorded API responses",
+    # ORCA knowledge on demand (w04): dictionary/card lookups and the
+    # workflow ranking, each driven against the shipped stores in its own file.
+    "orca_explain": "tests/test_w04_orca_knowledge_tools.py",
+    "orca_check_input": "tests/test_w04_orca_knowledge_tools.py",
+    "workflow_candidates": "tests/test_w04_workflow_candidates.py",
     # Cluster resources this machine does not have.
     "watch_job": "needs SLURM",
     "session_message": "tests/test_sessions_can_write_to_each_other.py — "

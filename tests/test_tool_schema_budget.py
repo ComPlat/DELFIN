@@ -249,7 +249,14 @@ _BASELINE_TOKENS = 11_422
 # runs cite invented DOIs without it -- to +135 (description 37, parameter
 # descriptions 15, structure 83). Main had 3 tokens of slack (10_228), so
 # the budget moves +132, 10_231 -> 10_363.
-_TOKEN_BUDGET = 10_363
+# Wave 14/w04 (2026-11-01): three ORCA-on-demand / workflow-routing tools
+# (orca_explain, orca_check_input, workflow_candidates). Trimmed first --
+# one-sentence description each, bare types, no parameter prose. Measured:
+# 70 + 76 + 89 = 235 tokens; the budget moves by exactly that, 10_231 ->
+# 10_466 on the then-main. Their payload (dictionary records, knowledge cards, the ranking
+# with CONTROL keys) lives in the tool RESULTS, not the schema.
+# Both on main together: 10_363 + 235 = 10_598.
+_TOKEN_BUDGET = 10_598
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -262,6 +269,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "session_message", "session_search", "skill_propose_patch",
     "subagent_message", "show_molecule", "make_plot", "skill_share",
     "verify_source",
+    "orca_explain", "orca_check_input", "workflow_candidates",
 })
 
 
