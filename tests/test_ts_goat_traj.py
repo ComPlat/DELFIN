@@ -9,11 +9,20 @@ are exercised only when the binary is on PATH (skipped otherwise).
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
-from delfin import ts_goat_traj
+# Anchor the import to THIS checkout so a pytest run started from a
+# different working directory cannot silently pick up an installed
+# `delfin` that lacks the new module (observed: the auto-verifier ran
+# from outside the worktree and imported /pfs/.../software/delfin).
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from delfin import ts_goat_traj  # noqa: E402  (path anchored above)
 
 FIXTURE_HESS = Path(
     'tests/fixtures/orca611/sh1_cu_nh3_imagmode/sh1_cu_nh3_imagmode.hess')
