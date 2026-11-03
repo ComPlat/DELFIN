@@ -2991,16 +2991,95 @@ def mlp_rank(xyz_ensemble: str, backend: str = "ani2x", *, charge: int = 0,
     return _mlp_run(_run, backend, xyz=xyz_ensemble)
 
 
+def mlp_extopt_plan(
+    xyz: str,
+    *,
+    run_type: str = "opt",
+    provider: str = "delfin",
+    backend: str = "ani2x",
+    mlips_backend: str = "uma",
+    model: str = None,
+    device: str = "cpu",
+    solvent: str = None,
+    charge: int = 0,
+    mult: int = 1,
+    gpu_partitions: str = "",
+    gres: str = "gpu:1",
+    env_activation: str = "",
+    job_name: str = "extopt_job",
+    allow_local: bool = False,
+    work_dir: str = "",
+) -> dict:
+    """Plan an ORCA+ExtOpt MLP job (DRY RUN — writes input + script, submits nothing).
+
+    Chooses provider ("delfin" = delfin-mlp-extopt wrapper, default, or
+    "orca_mlips") and model/device; with gpu_partitions configured the
+    rendered sbatch script puts ORCA and the MLIP (and the orca-mlips
+    resident server) on the SAME node (--nodes=1, --gres, env activation
+    inside the script); without one the plan is a refusal or, with
+    allow_local=True and a small system, a local CPU script within the
+    host limits (<= 2 cores, < 30 min).  Submission (submit=True through
+    delfin.mlp_tools.extopt_submit.submit_extopt_job) is a separate,
+    explicit act.
+    """
+    from delfin.mlp_tools.cluster_dispatch import MLPClusterConfig
+    from delfin.mlp_tools.extopt_submit import (
+        ExtOptJobRequest, plan_extopt_job,
+    )
+
+    atoms = _mlp_read_atoms(xyz)
+    req = ExtOptJobRequest(
+        run_type=run_type,
+        elements=list(atoms.get_chemical_symbols()),
+        coordinates=[[float(c) for c in row] for row in atoms.get_positions()],
+        charge=charge, mult=mult, provider=provider, backend=backend,
+        mlips_backend=mlips_backend, model=model, device=device,
+        solvent=solvent, job_name=job_name, allow_local=allow_local,
+        work_dir=Path(work_dir) if work_dir else Path.cwd(),
+    )
+    cfg = MLPClusterConfig(
+        gpu_partitions=gpu_partitions, gres=gres,
+        env_activation=env_activation,
+    )
+    plan = plan_extopt_job(req, cfg=cfg)
+    return {
+        "ok": True,
+        "mode": plan.mode,
+        "input": plan.input,
+        "script": plan.script,
+        "pal": plan.pal,
+        "reason": plan.reason,
+        "dry_run": True,
+        "note": "Dry run: nothing submitted. Submit explicitly with "
+                "submit_extopt_job(submit=True) (goes through "
+                "delfin.scheduler_client).",
+    }
+
+
 def mlp_preoptimize(xyz: str, backend: str = "ani2x", *, fmax: float = 0.05,
                     steps: int = 200, charge: int = 0, mult: int = 1,
-                    device: str = "cpu") -> dict:
+                    device: str = "cpu",
+                    refuse_noncommercial_weights: bool = False) -> dict:
     """MLP pre-optimisation: relax a starting geometry before ORCA.
 
     Returns an optimised geometry (``xyz``) to hand to the DFT step plus
     the MLP screening energy; the DFT energy of that geometry is the only
-    final number.
+    final number.  ``refuse_noncommercial_weights=True`` refuses backends
+    whose model weights are non-commercially licensed (LICENSE_GUARD.md
+    family 4).
     """
     defaults = {"fmax": 0.05, "steps": 200}
+    if refuse_noncommercial_weights:
+        from delfin.mlp_tools import registry
+
+        allowed, refused = registry.filter_backends_by_licence(
+            [backend], refuse_noncommercial=True)
+        if refused:
+            lic = registry.get_backend(refused[0]).weight_licence
+            return _mlp_error(
+                f"backend {backend!r} uses non-commercial model weights "
+                f"({lic['name']}, {lic['url']}); refuse_noncommercial_"
+                "weights is set -- refusing.")
     out = mlp_optimize(xyz, backend=backend, fmax=fmax, steps=steps,
                        optimizer="LBFGS", charge=charge, mult=mult,
                        device=device)
@@ -3179,6 +3258,9 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Rank a conformer ensemble by MLP energy (lowest first)."},
     {"name": "mlp_preoptimize", "category": "ml",
      "summary": "MLP pre-optimisation before ORCA; confirm with DFT."},
+    {"name": "mlp_extopt_plan", "category": "ml",
+     "summary": "Plan an ORCA+ExtOpt MLP job (dry run: input + sbatch/local "
+                "script, nothing submitted; provider delfin|orca_mlips)."},
     {"name": "analysis_check", "category": "checks",
      "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
     {"name": "result_checks", "category": "checks",
