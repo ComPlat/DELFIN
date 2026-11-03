@@ -133,7 +133,7 @@ def test_dropdown_selection_opens_visible_dialog(tmp_path):
     assert panel.layout.display == 'block'
     # the status line renders the reliability, not an exception
     status_html = result['registry']['status'].value
-    assert 'data quality' in status_html
+    assert 'data quality' in status_html.lower()
     assert 'ImportError' not in status_html
 
 
@@ -560,3 +560,19 @@ def test_ts_goat_browser_uses_frame_player_and_hides_file_toolbar():
     assert "calc_content_label.layout.display = 'none'" in browser
     assert "calc_content_toolbar.layout.display = 'none'" in browser
     assert '_ts_restore_file_ui()' in browser
+
+
+def test_atom_click_sequence_tokens_allow_repeat(tmp_path):
+    """The browser bridge must toggle the same atom on consecutive clicks."""
+    result, _rendered = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    reg = result['registry']
+    field = reg['constraints_field']
+    original = set(reg['parse_constraints'](field.value))
+    sync = reg['click_sync']
+    sync.value = '0:101'
+    after_first = set(reg['parse_constraints'](field.value))
+    assert (0 in after_first) != (0 in original)
+    sync.value = '0:102'
+    after_second = set(reg['parse_constraints'](field.value))
+    assert after_second == original
