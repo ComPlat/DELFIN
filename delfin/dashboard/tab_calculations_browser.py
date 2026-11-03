@@ -10228,12 +10228,25 @@ def create_tab(ctx):
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
             _calc_show_spin_density_panel(False)
+            # TS→GOAT owns the entire content pane while open; hiding
+            # only the text body left "File Content" and its toolbar
+            # competing with the panel at the bottom of the window.
+            _ts_file_ui_before = (
+                calc_content_area.layout.display,
+                calc_content_label.layout.display,
+                calc_content_toolbar.layout.display,
+            )
             calc_content_area.layout.display = 'none'
+            calc_content_label.layout.display = 'none'
+            calc_content_toolbar.layout.display = 'none'
             calc_ts_goat_panel.children = []
             calc_ts_goat_panel.layout.display = 'block'
             _ts_labels = _calc_selected_labels()
             _ts_path = _calc_path_for_label(_ts_labels[0]) if _ts_labels else None
             if _ts_path is None:
+                calc_content_area.layout.display = _ts_file_ui_before[0]
+                calc_content_label.layout.display = _ts_file_ui_before[1]
+                calc_content_toolbar.layout.display = _ts_file_ui_before[2]
                 calc_ts_goat_panel.children = [widgets.HTML(
                     '<b>TS → GOAT:</b> select a .out file first.')]
             else:
@@ -10319,20 +10332,19 @@ def create_tab(ctx):
                     _run_js(_mv.ts_goat_viewer_center_js(vid))
 
                 def _ts_animate_in_panel(vid, running):
-                    """Start/stop the sinusoidal mode animation loop.
+                    """Play/pause validated ORCA XYZ frames without camera reset.
 
-                    ``running='speed'`` only updates the period from the
-                    speed slider (window.__tsGoatPeriodMs); a running
-                    loop picks it up on its next tick.
+                    The speed slider changes the timeout used by each
+                    subsequent frame; no old sinusoidal JS is involved.
                     """
                     from delfin.dashboard import molecule_viewer as _mv
                     if running == 'speed':
-                        period_ms = max(300, int(
-                            1600 / (_ts_anim_speed_value() or 1.0)))
+                        period_ms = max(60, int(
+                            200 / (_ts_anim_speed_value() or 1.0)))
                         _run_js(
                             "window.__tsGoatPeriodMs=" + str(period_ms) + ";")
                         return
-                    _run_js(_mv.ts_goat_viewer_anim_js(vid, running))
+                    _run_js(_mv.ts_goat_viewer_frames_js(vid, running))
 
                 _ts_panel_widgets = {'items': []}
 
@@ -10355,10 +10367,15 @@ def create_tab(ctx):
                             return getattr(w, 'value', 1.0)
                     return 1.0
 
+                def _ts_restore_file_ui():
+                    calc_content_area.layout.display = _ts_file_ui_before[0]
+                    calc_content_label.layout.display = _ts_file_ui_before[1]
+                    calc_content_toolbar.layout.display = _ts_file_ui_before[2]
+
                 def _ts_on_close():
                     calc_ts_goat_panel.children = []
                     calc_ts_goat_panel.layout.display = 'none'
-                    calc_content_area.layout.display = 'block'
+                    _ts_restore_file_ui()
 
                 from .ts_goat_panel import open_ts_goat_dialog
                 open_result = open_ts_goat_dialog(
@@ -10376,7 +10393,7 @@ def create_tab(ctx):
                     },
                 )
                 if open_result['error']:
-                    calc_content_area.layout.display = 'block'
+                    _ts_restore_file_ui()
                     calc_ts_goat_panel.children = [widgets.HTML(
                         '<b>TS → GOAT:</b> '
                         + open_result['error'])]
