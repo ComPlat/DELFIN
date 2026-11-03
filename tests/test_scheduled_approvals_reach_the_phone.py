@@ -28,6 +28,8 @@ refresh skipped it and the bridge refused answers.
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 
 import pytest
 
@@ -180,3 +182,71 @@ def test_numbers_do_not_leak_credentials(scheduled_bridge):
                      "preview": "command SECRET-CREDENTIAL"})
     reply = asyncio.run(bridge._run_command({"cmd": "approvals"}))
     assert "SECRET-CREDENTIAL" not in str(reply)
+
+
+# -- the phone's words: ok <n> / nein <n> / zeige <n>, and the push --------
+
+def test_ok_and_nein_and_zeige_route_to_the_bridge(scheduled_bridge):
+    bridge, _, _ = scheduled_bridge
+    listing = asyncio.run(bridge._run_command({"cmd": "approvals"}))
+    n = listing["items"][0]["n"]
+
+    async def run():
+        await bridge._run_command({"cmd": "approvals"})
+        return (await bridge.approval_command(f"ok {n}"),
+                await bridge.approval_command(f"nein {n}"),
+                await bridge.approval_command(f"zeige {n}"))
+
+    ok, nein, zeige = asyncio.run(run())
+    assert "ok" in str(ok).lower() or ok.get("ok"), ok
+    assert nein.get("ok") is True, nein
+    assert "rm -r results" in str(zeige), zeige
+
+
+def test_pending_approvals_arrive_in_one_batched_message():
+    from delfin.messenger import gateway as gw
+    from delfin.messenger import store
+
+    class Daemon:
+        sent = []
+        async def send_chat(self, chat, text):
+            self.sent.append((chat, text))
+            return {"chatItems": [{"chatItem": {"meta": {"itemId": 1}}}]}
+        async def events(self):
+            return
+            yield
+
+    class Bridge:
+        def ask(self, command):
+            if command.get("cmd") == "approvals":
+                return {"items": [
+                    {"n": 1, "tool": "bash", "text": "rm -r results",
+                     "session": "morning run", "approvable": True},
+                    {"n": 2, "tool": "write_file", "text": "delfin/agent/sandbox.py: +2",
+                     "session": "morning run", "approvable": False}],
+                    "check": "abc123"}
+            return {"ok": True}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["DELFIN_MESSENGER_DIR"] = tmp
+        store.save("7")
+        daemon, bridge = Daemon(), Bridge()
+        rooms = gw.Rooms(daemon, bridge)
+        rooms.owner = "7"
+        asyncio.run(rooms.approvals_news())
+        texts = [text for _, text in daemon.sent]
+        assert len(texts) == 1, texts
+        assert "rm -r results" in texts[0]
+        assert "sandbox.py" in texts[0]
+        assert "ok 1" in texts[0] and "nein 2" in texts[0]
+        assert "abc123" not in texts[0]  # the check is never quoted back
+        # a second cycle sends nothing new
+        asyncio.run(rooms.approvals_news())
+        assert len(daemon.sent) == 1
+
+
+def test_an_answer_with_wrong_check_gets_a_clear_refusal(scheduled_bridge):
+    bridge, _, calls = scheduled_bridge
+    asyncio.run(bridge._run_command({"cmd": "approvals"}))
+    reply = asyncio.run(bridge.approval_command("ok 1"))
+    assert "Fehler" in str(reply) or "error" in reply.lower() or "Prüfung" in str(reply)
