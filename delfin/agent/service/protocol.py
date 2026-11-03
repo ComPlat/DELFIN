@@ -244,8 +244,20 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        "fakeDelay": "number?", "fakeSave": "boolean?", "attach": "boolean?",
                        # What to look into (the context event); its title
                        # names the row.
-                       "brief": "string?", "briefTitle": "string?"},
+                       "brief": "string?", "briefTitle": "string?",
+                       # worktree: the session runs in its own worktree and
+                       # branch of cwd's repository (session_worktree.py);
+                       # initProject: the user agreed that a cwd without
+                       # git becomes a local project first. Without it such
+                       # a cwd is refused with NEEDS_LOCAL_PROJECT, the
+                       # question to put in the error's text.
+                       "worktree": "boolean?", "initProject": "boolean?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
+    # The session worktrees of cwd's repository, and one merged back into
+    # the main checkout (uncommitted, for review; a conflict changes
+    # nothing). Refused while a session of this service works in it.
+    "session.worktrees": {"cwd": "string"},
+    "session.merge": {"path": "string"},
     "session.pending": {"sessionId": "string"},
     "session.detach": {"sessionId": "string"},
     # A message for a session elsewhere (dashboard, another terminal).
@@ -292,7 +304,10 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     # point the window is subscribed at (later events arrive live).
     "session.create": {"sessionId": "string", "session": "object",
                        "state": "string", "pending": "[object]",
-                       "events": "[object]"},
+                       "events": "[object]", "worktree": "object?"},
+    "session.worktrees": {"worktrees": "[object]"},
+    "session.merge": {"status": "string", "files": "[string]",
+                      "target": "string", "message": "string"},
     "session.attach": {"session": "object", "state": "string",
                        "pending": "[object]", "events": "[object]",
                        "summary": "object"},
@@ -381,6 +396,9 @@ SESSION_SUMMARY: dict[str, str] = {
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005
+#: session.create with worktree in a folder without git and no initProject:
+#: the error text is the question to put to the user.
+NEEDS_LOCAL_PROJECT = -32006
 
 #: Events kept in the session's durable log (eventlog.py) and replayed to
 #: a window that attaches later. Only these carry a sequence number. Deltas,

@@ -71,7 +71,8 @@ FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
                        "session.toggleTasks", "session.setTitle"})
 
 #: What a watch-only connection may not do.
-ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
+ACTING = frozenset({"session.create", "session.merge", "session.prompt",
+                    "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
                     "session.setTitle", "attention.answer", "attention.dismiss",
@@ -1044,11 +1045,78 @@ class Supervisor:
             # One session, one worker: two would append to the same log.
             raise _Refusal(protocol.NOT_ALLOWED,
                            f"session {resume} runs here already; attach to it")
+        worktree: dict = {}
+        if params.get("worktree") and not resume and not params.get("continue"):
+            # Its own worktree and branch of cwd's repository, so sessions
+            # of one person in one workspace do not edit each other's files
+            # (session_worktree.py). A resumed session keeps its folder.
+            from .. import session_worktree as _sw
+            from .. import worktree as _wt
+            try:
+                worktree = await asyncio.to_thread(
+                    _sw.start, cwd, init_project=bool(params.get("initProject")))
+            except _sw.NeedsLocalProject as exc:
+                raise _Refusal(protocol.NEEDS_LOCAL_PROJECT, exc.question) from None
+            except (_wt.WorktreeError, OSError) as exc:
+                raise _Refusal(protocol.NOT_ALLOWED, str(exc)) from None
+            params = {**params, "cwd": worktree["path"],
+                      "worktreeOf": str(cwd)}
+            cwd = Path(worktree["path"])
         self._creating += 1
         try:
-            return await self._create(client, params, cwd)
+            out = await self._create(client, params, cwd)
+        except BaseException:
+            if worktree:
+                # Nothing ran in it: no session, no tree left behind.
+                from .. import worktree as _wt
+                try:
+                    await asyncio.to_thread(_wt.exit_worktree, _wt.WorktreeInfo(
+                        repo_dir=Path(worktree["repo"]),
+                        path=Path(worktree["worktree"]),
+                        branch=worktree["branch"], base_ref=worktree["base_ref"],
+                        created_at=0.0), keep_if_changed=True)
+                except Exception:
+                    pass
+            raise
         finally:
             self._creating -= 1
+        if worktree:
+            out["worktree"] = worktree
+        return out
+
+    def _sessions_in(self, path: Path) -> list[str]:
+        """Ids of the running, starting and sleeping sessions whose folder
+        is *path* or inside it."""
+        def inside(cwd) -> bool:
+            try:
+                return Path(str(cwd)).resolve().is_relative_to(path)
+            except (OSError, ValueError):
+                return False
+        ids = [sid for sid, s in self.sessions.items()
+               if inside(s.settings.get("cwd"))]
+        ids += ["(starting)" for s in self.starting if inside(s.settings.get("cwd"))]
+        ids += [sid for sid, rec in self.dormant.items()
+                if inside((rec.get("settings") or {}).get("cwd"))]
+        return ids
+
+    async def _m_session_worktrees(self, _client: Client, params: dict) -> dict:
+        from .. import session_worktree as _sw
+        rows = await asyncio.to_thread(_sw.listing, str(params["cwd"]))
+        for row in rows:
+            row["sessions"] = self._sessions_in(Path(row.get("path", "")).resolve())
+        return {"worktrees": rows}
+
+    async def _m_session_merge(self, _client: Client, params: dict) -> dict:
+        from .. import session_worktree as _sw
+        path = Path(str(params["path"])).expanduser()
+        if not path.is_absolute() or not path.is_dir():
+            raise _Refusal(protocol.INVALID_PARAMS, f"no such worktree: {path}")
+        busy = self._sessions_in(path.resolve())
+        if busy:
+            raise _Refusal(protocol.NOT_ALLOWED, (
+                f"session(s) {', '.join(busy)} work in {path}; end them "
+                "first -- a clean merge removes the worktree"))
+        return await asyncio.to_thread(_sw.merge, str(path))
 
     async def _create(self, client: Client, params: dict, cwd: Path) -> dict:
         args = [*self.worker_cmd, "--cwd", str(cwd)]
