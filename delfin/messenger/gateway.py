@@ -28,6 +28,7 @@ HELP = (
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
     'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
     'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
+    'profil frei|standard – im Sitzungs-Chat für dessen Ordner; sonst: profil <sitzung> frei.\n'
     'sync aktualisiert die aktivierten Sitzungen.'
 )
 
@@ -331,6 +332,20 @@ class Rooms:
         if command in {'zeitpläne', 'zeitplaene', 'pläne', 'plaene', 'schedules', 'plans'}:
             await self.ensure_schedules_room()
             return t('Einladung zum Chat „Zeitpläne“ liegt in SimpleX. Dort: pläne, neu, ok, pause, jetzt, löschen.')
+        if command in {'profil', 'profile'}:
+            # profil frei|standard: in a session's own chat its workspace,
+            # otherwise the word followed by the session or folder name.
+            word = rest.strip()
+            sid = room['session_id'] if room else ''
+            parts = word.split(None, 1)
+            if not sid and len(parts) == 2:
+                sid, word = parts
+            reply = await self.ask({'cmd': 'profile', 'session': sid,
+                                    'text': word.strip()})
+            return reply.get('error') or t('Profil {ws}: {p}').format(
+                ws=reply.get('workspace') or '?',
+                p=t('frei (Bypass im Käfig)') if reply.get('profile') == 'free'
+                else t('standard'))
         if command in {'plan', 'zeitplan', 'schedule'} and room and room['session_id'] and rest.strip():
             # "plan the next step" is a message for the agent: only a line
             # that starts with a time is a schedule.

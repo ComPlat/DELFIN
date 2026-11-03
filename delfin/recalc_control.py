@@ -50,6 +50,7 @@ STRUCTURE_KEYS: FrozenSet[str] = frozenset({
     "XTB_preOPT", "XTB_GOAT", "XTB_SOLVATOR", "number_explicit_solv_molecules",
     "n_explicit_solvent", "global_optimizer", "multiplicity_global_opt", "CREST",
     "charge", "solvent", "implicit_solvation_model",
+    "global_opt_method", "global_opt_mlip_model", "global_opt_mlip_device",
 })
 _STRUCTURE_PREFIXES = ("MANTA_", "GUPPY_")
 

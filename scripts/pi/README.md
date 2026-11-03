@@ -216,7 +216,12 @@ What only a person can do, in this order:
   Windows launcher's people mode (`~/.config/delfin/launcher-people.conf`;
   `DELFIN_PI_PEOPLE=0` leaves it off). Each Windows user gets
   `~/people/<name>` as home: own sessions, dashboard and token, tmux and agent
-  service, sharing the installation, the account's credentials and settings.
+  service, sharing the installation and the account's credentials. Settings
+  are layered: the account's `~/.delfin_settings.json` is everyone's defaults
+  (`DELFIN_SETTINGS_DEFAULTS`, exported by the launcher), each person's
+  `~/people/<name>/.delfin_settings.json` keeps only that person's changes.
+  A copy kept from an earlier layout (`.delfin_settings.json.before-shared-*`)
+  is not applied again; merge it by hand if it is still wanted.
   `delfin-people` lists who is there; `delfin-people --attach NAME` shows that
   person's dashboard session. They are one Unix user: everyone can read
   everything in the account, credentials included. Put only neutral, project
@@ -232,15 +237,18 @@ What only a person can do, in this order:
   ids shown (default `agent home archive office`; Settings is always shown).
   `pi_install.sh` applies it on every deploy against the tabs the code has,
   so a tab a later DELFIN adds stays hidden; a change in the dashboard's
-  Settings tab is reset by the next deploy, edit the file instead. Shared by
-  everyone through the launcher's people mode.
+  Settings tab is reset by the next deploy, edit the file instead. It is the
+  default for everyone in the launcher's people mode; a person who changes
+  the tabs in their own dashboard keeps that change across deploys.
 - Agent tab defaults on this box: `~/.config/delfin/pi-agent.conf` (key=value):
   `mode=solo` (Code), `provider=kit`, `model=kit.glm-5.3-flash`,
   `permission_profile=all_free` (Bypass), `effort=` (empty: the model
   profile's default, shown as "Medium (profile default)"). `pi_install.sh`
-  writes it into `~/.delfin_settings.json` on every deploy, so a choice made in
-  the tab lasts until the next deploy; edit the file to change the default.
-  Shared by everyone through the launcher's people mode; each person's agent
+  writes it into the account's `~/.delfin_settings.json` on every deploy, so a
+  choice made in the account's own tab lasts until the next deploy; edit the
+  file to change the default. In the launcher's people mode these are
+  everyone's defaults: a person's own choice is kept in their file across
+  deploys, a value they never set follows the default. Each person's agent
   works in `~/people/<name>/agent_workspace`.
   Bypass asks nothing for work inside the folders the agent may use; the cage
   (bwrap + Landlock) stays, and network, `git push`, installs outside the
