@@ -808,7 +808,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             _hint_state['hint'] = {'text': 'git status unavailable', 'icon': '⚠',
                                    'title': str(exc), 'state': 'warn'}
         lock_present = bool(_git_index_lock_message(rd))
-        pull_delfin_btn.disabled = lock_present
+        try:
+            from delfin.dashboard.branch_list import pull_unavailable
+            no_pull = pull_unavailable(rd)
+        except Exception:
+            no_pull = ''
+        pull_delfin_btn.disabled = lock_present or bool(no_pull)
+        pull_delfin_btn.tooltip = (no_pull or
+                                   'Update main from origin (fast-forward only)')
         rollback_delfin_btn.disabled = lock_present
         _draw_hint()
 
@@ -824,6 +831,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         if not rd or not Path(rd).exists():
             header_toasts.show('No DELFIN checkout found for this dashboard.',
                                level='error', details=f'path: {rd}')
+            return
+        try:
+            from delfin.dashboard.branch_list import pull_unavailable
+            no_pull = pull_unavailable(rd)
+        except Exception:
+            no_pull = ''
+        if no_pull:
+            header_toasts.show("Pull is not available.", level='error',
+                               details=no_pull, key='pull')
             return
         header_toasts.show('Updating main …', level='busy', key='pull')
         ctx.set_busy(True)
