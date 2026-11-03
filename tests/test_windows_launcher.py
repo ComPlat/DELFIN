@@ -303,8 +303,18 @@ def _installed_like_an_editable_finder(tmp_path):
         'def main(argv):\n    print("--strict-port")\n')
     hook = tmp_path / 'finder hook'
     hook.mkdir()
+    # The child must see ONLY this fake: on a machine with DELFIN installed
+    # (CI, a developer's env) the real package -- a site-packages path or the
+    # editable install's own finder -- would win and the test would neither
+    # reproduce the shadowing nor prove the fix. sitecustomize runs after the
+    # .pth files, so it can take those out; a folder WITHOUT __init__.py
+    # (the ~/delfin install root under test) stays on sys.path.
     (hook / 'sitecustomize.py').write_text(
-        'import sys\n'
+        'import os, sys\n'
+        'sys.path[:] = [p for p in sys.path if not os.path.isfile('
+        'os.path.join(p or ".", "delfin", "__init__.py"))]\n'
+        'sys.meta_path[:] = [f for f in sys.meta_path '
+        'if "editable" not in repr(f).lower()]\n'
         'from importlib.machinery import PathFinder\n'
         'class _Finder:\n'
         '    @classmethod\n'
