@@ -21,10 +21,13 @@ UV="$HOME/.local/bin/uv"
 SKIP_DEPS_RE='^pymol-open-source'
 # Every extra pyproject.toml defines, minus these (so new extras arrive on
 # the Pi by themselves): ai-retro (aizynthfinder pins rdkit<2023, conflicts
-# with DELFIN's rdkit>=2023.3), pymol (built below). The orca extra (OPI,
-# pure Python) is installed: the Pi builds and checks ORCA inputs and reads
-# results with the same OPI as every other host, even where ORCA does not run.
-SKIP_EXTRAS="${DELFIN_PI_SKIP_EXTRAS:-ai-retro pymol}"
+# with DELFIN's rdkit>=2023.3), pymol (built below), orca. orca-pi 2.0.0
+# needs numpy>=2.2.6 and rdkit<2026; on the Pi's Python 3.11 mendeleev keeps
+# numpy<2 and rdkit is 2026.x, so the whole set had no solution and every
+# deploy that changed pyproject.toml stopped there. OPI also wants an ORCA
+# binary as soon as a Calculator is made (checked 2026-11-03), and the Pi
+# is for the agent, not for ORCA runs.
+SKIP_EXTRAS="${DELFIN_PI_SKIP_EXTRAS:-ai-retro orca pymol}"
 # Not in any extra, but a doctor check wants an OCR engine (tesseract via apt).
 EXTRA_PIP="pytesseract"
 DELFIN_GIT_URL="${DELFIN_GIT_URL:-https://github.com/ComPlat/DELFIN.git}"
