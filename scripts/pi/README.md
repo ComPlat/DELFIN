@@ -40,7 +40,13 @@ Free inside the frame, and nothing widens the frame but a person:
   only through the egress proxy. Inside it, commands run without a question;
   writes in default mode are asked.
 - The agent user `delfin` has no root (`AGENT_SUDO=service`: it may restart
-  and query `delfin-dashboard`, nothing else). What runs outside the cage --
+  and query DELFIN's own services -- `delfin-dashboard`, `delfin-agent-service`,
+  `delfin-messenger-bridge`, `delfin-messenger-gateway` -- nothing else). A
+  deploy restarts every one of them that is running, so they all run the new
+  code (running agent sessions are interrupted; a kept session resumes). A box
+  bootstrapped before this rule named all four: re-run `pi_bootstrap.sh` once
+  as the admin; until then the deploy prints the `sudo systemctl restart ...`
+  an admin has to run. What runs outside the cage --
   the shell of a CLI backend, the MCP servers, the agent process -- runs with
   that user's rights only. Administration is the login user's (`pi`).
   `AGENT_SUDO=none` drops even the service rule; `AGENT_SUDO=full` restores

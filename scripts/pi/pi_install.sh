@@ -255,14 +255,28 @@ EOF
 }
 
 restart_dashboard() {
-    # Only a running dashboard picks up the new code: `restart` STARTS a
-    # stopped unit, and an admin who stopped it (e.g. until access is
-    # secured) must not have it switched back on by a deploy.
-    if systemctl is-active --quiet delfin-dashboard 2>/dev/null; then
-        sudo -n systemctl restart delfin-dashboard 2>/dev/null \
-            && echo "==> dashboard restarted" || true
-    else
-        echo "==> dashboard not running: left stopped"
+    # Only a running service picks up the new code: `restart` STARTS a
+    # stopped unit, and an admin who stopped one (e.g. until access is
+    # secured) must not have it switched back on by a deploy. The agent
+    # service goes before the messenger bridge that talks to it; running
+    # agent sessions are interrupted (a kept session resumes). A unit the
+    # sudo rule does not cover yet (a box bootstrapped before the rule named
+    # it) is reported with the command an admin runs, never left silent.
+    local unit stale=""
+    for unit in delfin-agent-service delfin-messenger-bridge delfin-messenger-gateway delfin-dashboard; do
+        if ! systemctl cat "$unit" >/dev/null 2>&1; then
+            continue
+        elif ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+            echo "==> $unit not running: left stopped"
+        elif sudo -n systemctl restart "$unit" 2>/dev/null; then
+            echo "==> $unit restarted"
+        else
+            stale+=" $unit"
+        fi
+    done
+    if [[ -n "$stale" ]]; then
+        echo "warning: still on the previous code until an admin runs: sudo systemctl restart$stale" >&2
+        echo "         (once, as the admin, so deploys restart them: re-run pi_bootstrap.sh, AGENT_SUDO=service)" >&2
     fi
 }
 
