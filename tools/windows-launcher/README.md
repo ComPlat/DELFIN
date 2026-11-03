@@ -214,6 +214,34 @@ The app cannot guess arbitrary dormant installations, custom shell functions,
 module names or Conda environment names. Multiple matching repository environments
 produce an explicit error instead of a random choice. No dependencies are installed.
 
+Every probe and start runs Python without the current directory on its path:
+a plain folder named `delfin` in your home or working directory (an install
+root, a repository root) would otherwise shadow the installed package as an
+empty namespace package, and discovery reported "Not found".
+
+### Several people on one server account
+
+On a server account that several people share (for example a lab's agent
+box), the account owner can give each person a home of their own:
+
+```bash
+mkdir -p ~/.config/delfin && touch ~/.config/delfin/launcher-people.conf
+```
+
+From then on the app sends the Windows user name (lower case, `a-z0-9_-`),
+and the server uses `~/people/<name>` as that connection's home: own DELFIN
+sessions and chats, own dashboard with its own port and token, own agent
+service (`DELFIN_RUNTIME_DIR`), own working directory `~/people/<name>/work`
+and tmux sessions named `delfin-win-<name>-<port>-...`. Reconnecting from the
+same Windows user returns to that person's dashboard. Shared by link with the
+account: the installation, credentials and settings, tools, caches, git and
+SSH setup. Without the file the name is ignored and nothing changes.
+
+This keeps people from getting in each other's way; it does **not** keep
+them apart. They are one Unix user: everyone can read every file of the
+account, including the credentials stored there. Keep personal secrets in
+personal accounts.
+
 ### Automatic port selection
 
 With `0`, the OS assigns a free port. With a starting port such as `8866`, the app

@@ -330,4 +330,20 @@ EN = {
     'Keine Branches in dieser Ansicht.': 'No branches in this view.',
     'Aufräumen nicht erreichbar: {e}': 'Cleanup unreachable: {e}',
     '{t}': '{t}',
+    # Approvals of every session on the phone (ok <n> / nein <n> / zeige <n>).
+    '⏳ Freigaben nötig ({machine}):': '⏳ Approvals needed ({machine}):',
+    '{n}. {tool}: {text}\n{risk}{sep}{hint}': '{n}. {tool}: {text}\n{risk}{sep}{hint}',
+    'ok {n} · zeige {n} · am Dashboard': 'ok {n} · zeige {n} · on the dashboard',
+    'nur am Dashboard': 'on the dashboard only',
+    'Antworten: ok <n> / nein <n> · zeige <n> für die ganze Anfrage. Erledigte oder geänderte Anfragen können nichts mehr freigeben.':
+    'Answer: ok <n> / nein <n> · zeige <n> for the whole request. Settled or changed requests can no longer approve anything.',
+    'Form: ok <n> / nein <n> / zeige <n>. Mit approvals die offenen Anfragen ansehen.':
+    'Form: ok <n> / nein <n> / zeige <n>. See the open requests with approvals.',
+    'Keine offene Anfrage mit der Nummer {n}.': 'No open request with number {n}.',
+    '{n}. {tool}: {text}\nSitzung: {session}\nAntwort: ok {n} / nein {n}':
+    '{n}. {tool}: {text}\nSession: {session}\nAnswer: ok {n} / nein {n}',
+    'Anfrage {n}: {result}.': 'Request {n}: {result}.',
+    'freigegeben': 'approved',
+    'abgelehnt': 'denied',
+    'Fehler: {error}': 'Error: {error}',
 }
