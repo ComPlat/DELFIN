@@ -118,6 +118,23 @@ def base_ref(repo) -> str:
     return "main"
 
 
+def pull_unavailable(repo, remote: str = "origin") -> str:
+    """Why Pull cannot run in *repo*, or "" when it can.
+
+    A local project (``delfin.agent.local_project``: ``git init`` on the
+    user's yes, no remote) has no ``origin`` to pull from; the branch views
+    still list its local branches, and Pull is shown disabled with this
+    text instead of failing on click. Adding a remote is the user's step.
+    """
+    if _git(repo, "rev-parse", "--git-dir").returncode != 0:
+        return "not a git checkout: there is nothing to pull"
+    if _git(repo, "remote", "get-url", remote).returncode != 0:
+        return (f"no remote '{remote}': this is a local repository, there "
+                f"is nothing to pull from. Add one with git remote add "
+                f"{remote} <url> to pull.")
+    return ""
+
+
 def repo_key(repo) -> str:
     """The git common directory, resolved: one key for all worktrees."""
     common = _out(repo, "rev-parse", "--path-format=absolute",
