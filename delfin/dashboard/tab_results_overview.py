@@ -123,6 +123,12 @@ class ResultsOverviewPanel:
         self._xlsx_btn = widgets.Button(description="Export XLSX")
         self._zip_btn = widgets.Button(description="Export PNG-ZIP")
         self._export_status = widgets.HTML()
+        # Custom columns section (semantics shared with the calculations
+        # browser table panel: text/regex/jsonpath per arbitrary file).
+        self._custom_acc = widgets.Accordion(children=[widgets.VBox()])
+        self._custom_acc.set_title(0, "Eigene Spalten (regex/text/jsonpath)")
+        self._custom_acc.selected_index = None  # folded by default
+        self._build_custom_section()
         self._status = widgets.HTML()
         self._pngs = widgets.HTML()
         self._sortbar = widgets.HBox()
@@ -152,6 +158,7 @@ class ResultsOverviewPanel:
         ])
         self.widget = widgets.VBox([
             widgets.HBox([left, right]),
+            self._custom_acc,
             self._show_pngs,
             self._png_opts,
             self._status,
@@ -194,7 +201,8 @@ class ResultsOverviewPanel:
                 "auswählen.</p>")
             return
         try:
-            table = build_table(paths, mids)
+            table = build_table(paths, mids,
+                                custom_columns=self._custom_columns())
         except Exception as exc:  # noqa: BLE001
             self._status.value = (
                 f"<p style='color:#dc3545'>Extraktion fehlgeschlagen: "
@@ -227,6 +235,169 @@ class ResultsOverviewPanel:
     def _on_png_opts_change(self, _change) -> None:
         if self._table is not None and self._png_mode == "inline":
             self._render()
+
+    # -- custom columns ------------------------------------------------------
+
+    # Presets shared with the calculations-browser table panel (same
+    # tuples: preset name, label, type, pattern, occurrence).
+    _CUSTOM_PRESETS = [
+        ("ORCA Total Energy (Eh)", "Energy", "regex",
+         r"FINAL SINGLE POINT ENERGY\s+(-?[\d.]+)", "last"),
+        ("ORCA SCF Energy (Eh)", "SCF E", "regex",
+         r"E\(SCF\)\s*=\s*(-?[\d.]+)", "last"),
+        ("ORCA HOMO (eV)", "HOMO", "regex",
+         r"(?i)homo.*?(-?[\d.]+)\s*eV", "last"),
+        ("ORCA LUMO (eV)", "LUMO", "regex",
+         r"(?i)lumo.*?(-?[\d.]+)\s*eV", "last"),
+        ("ORCA Dipole total (D)", "Dipole", "regex",
+         r"(?i)total dipole moment.*?([\d.]+)", "last"),
+        ("ORCA S² (before)", "S2", "regex",
+         r"<S\*\*2> Expectation value\s+([\d.]+)", "last"),
+        ("ORCA Net Charge", "Charge", "regex",
+         r"Total Charge\s*\.*\s*(-?\d+)", "first"),
+        ("ORCA Nr. Atoms", "Atoms", "regex",
+         r"Number of atoms\s*\.\.\.\s*(\d+)", "first"),
+        ("ORCA Nr. Basis Fns", "Basis", "regex",
+         r"Number of basis functions\s*\.\.\.\s*(\d+)", "first"),
+        ("JSON key path", "JSON", "jsonpath",
+         "results.energy.final", "last"),
+    ]
+
+    def _build_custom_section(self) -> None:
+        body = self._custom_acc.children[0]
+        self._preset_select = widgets.Dropdown(
+            options=[("— Preset —", None)]
+            + [(p[0], p) for p in self._CUSTOM_PRESETS],
+            layout=widgets.Layout(width="280px"))
+        self._preset_file = widgets.Text(
+            placeholder="Datei z.B. CO2_coordination/relaxed_surface_scan/output.out",
+            layout=widgets.Layout(width="420px"))
+        self._custom_label = widgets.Text(
+            placeholder="Spaltenname", layout=widgets.Layout(width="160px"))
+        self._custom_type = widgets.Dropdown(
+            options=["regex", "text", "jsonpath"], value="regex",
+            layout=widgets.Layout(width="120px"))
+        self._custom_pattern = widgets.Text(
+            placeholder="regex / text / jsonpath", layout=widgets.Layout(width="380px"))
+        self._custom_occ = widgets.Dropdown(
+            options=["first", "last", "all"], value="last",
+            layout=widgets.Layout(width="90px"))
+        self._custom_add = widgets.Button(description="+ Spalte")
+        self._custom_list = widgets.HTML()
+        self._custom_rows: List[Dict[str, Any]] = []
+        self._custom_preset_file = widgets.Text(
+            placeholder="Preset-Datei (.json)", layout=widgets.Layout(width="300px"))
+        self._custom_load_btn = widgets.Button(description="Preset laden")
+        self._custom_save_btn = widgets.Button(description="Preset speichern")
+        self._preset_select.observe(self._on_preset, names="value")
+        self._custom_add.on_click(self._on_custom_add)
+        self._custom_load_btn.on_click(self._on_custom_load)
+        self._custom_save_btn.on_click(self._on_custom_save)
+        body.children = [
+            widgets.HBox([self._preset_select, self._custom_label]),
+            widgets.HBox([self._custom_type, self._custom_pattern,
+                          self._custom_occ]),
+            widgets.HBox([self._preset_file]),
+            widgets.HBox([self._custom_add,
+                          widgets.HTML("<i>Spalte hinzufügen</i>")]),
+            widgets.HTML("<hr style='margin:6px 0'>"),
+            self._custom_list,
+            widgets.HBox([self._custom_preset_file, self._custom_load_btn,
+                          self._custom_save_btn]),
+        ]
+        self._refresh_custom_list()
+
+    def _on_preset(self, change) -> None:
+        preset = change["new"]
+        if not preset:
+            return
+        _, label, ftype, pattern, occ = preset
+        self._custom_label.value = label
+        self._custom_type.value = ftype
+        self._custom_pattern.value = pattern
+        self._custom_occ.value = occ
+
+    def _on_custom_add(self, _btn) -> None:
+        cid = (self._custom_label.value or "").strip() or "col"
+        col = {
+            "id": f"custom_{len(self._custom_rows)}_{cid}",
+            "label": (self._custom_label.value or "").strip() or cid,
+            "file": (self._preset_file.value or "").strip(),
+            "type": self._custom_type.value,
+            "pattern": self._custom_pattern.value,
+            "occurrence": self._custom_occ.value,
+        }
+        self._custom_rows.append(col)
+        self._refresh_custom_list()
+
+    def _on_custom_remove(self, _btn) -> None:
+        idx = getattr(_btn, "ro_custom_idx", None)
+        if idx is not None and 0 <= idx < len(self._custom_rows):
+            del self._custom_rows[idx]
+            self._refresh_custom_list()
+
+    def _custom_columns(self) -> List[Dict[str, Any]]:
+        return list(self._custom_rows)
+
+    def _refresh_custom_list(self) -> None:
+        if not self._custom_rows:
+            self._custom_list.value = (
+                "<i>Noch keine eigenen Spalten definiert.</i>")
+            return
+        rows = []
+        for i, col in enumerate(self._custom_rows):
+            btn = widgets.Button(
+                description="✕", layout=widgets.Layout(width="40px"))
+            btn.ro_custom_idx = i
+            btn.on_click(self._on_custom_remove)
+            box = widgets.HBox([
+                widgets.HTML(
+                    f"<code>{_html.escape(col['label'])}</code> "
+                    f"<small>({col['type']} · "
+                    f"{_html.escape(str(col.get('file') or 'DELFIN_Data.json'))} · "
+                    f"{col['occurrence']})</small>"),
+                btn])
+            rows.append(box)
+        self._custom_list.children = rows
+        self._custom_list.value = ""
+
+    def _on_custom_load(self, _btn) -> None:
+        path = os.path.expanduser((self._custom_preset_file.value or "").strip())
+        if not path:
+            self._export_status.value = (
+                "<span style='color:#dc3545'>Kein Preset-Pfad angegeben.</span>")
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                cols = _json.load(fh)
+            if not isinstance(cols, list):
+                raise ValueError("Preset file must be a JSON list.")
+            self._custom_rows = list(cols)
+            self._refresh_custom_list()
+            self._export_status.value = (
+                f"<span style='color:#28a745'>"
+                f"{len(self._custom_rows)} Spalten geladen.</span>")
+        except (OSError, ValueError) as exc:
+            self._export_status.value = (
+                f"<span style='color:#dc3545'>Preset laden fehlgeschlagen: "
+                f"{_html.escape(str(exc))}</span>")
+
+    def _on_custom_save(self, _btn) -> None:
+        path = os.path.expanduser((self._custom_preset_file.value or "").strip())
+        if not path:
+            self._export_status.value = (
+                "<span style='color:#dc3545'>Kein Preset-Pfad angegeben.</span>")
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                _json.dump(self._custom_rows, fh, indent=2)
+            self._export_status.value = (
+                f"<span style='color:#28a745'>"
+                f"{len(self._custom_rows)} Spalten gespeichert.</span>")
+        except OSError as exc:
+            self._export_status.value = (
+                f"<span style='color:#dc3545'>Preset speichern fehlgeschlagen: "
+                f"{_html.escape(str(exc))}</span>")
 
     # -- export -------------------------------------------------------------
 

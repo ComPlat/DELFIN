@@ -445,20 +445,154 @@ def sort_table(table: Dict[str, Any], column_id: str,
     return {**table, "rows": rows + rest}
 
 
-def build_table(calc_dirs: List[str], metric_ids: List[str]) -> Dict[str, Any]:
+def _json_path_get(data: Any, path: str):
+    """Follow a dotted JSON path like ``computed.final.energy``; list
+    indices as digits, ``[*]`` applies the following hop to every list
+    element (collecting a list of values), and ``?(@.key=="value")``
+    filters list elements by string equality. Returns None when any
+    hop is missing."""
+    def walk(cur: Any, hops: List[str]) -> Any:
+        if not hops:
+            return cur
+        hop = hops[0]
+        # Re-join hops that were split inside a ?(...) filter: the '.'
+        # after '?(@' belongs to the filter (@.key), not to the path.
+        # Keep consuming hops until the filter's ')]' ends.
+        if '?(@' in hop and not hop.rstrip().endswith(')]'):
+            while hops[1:] and not hop.endswith(')]'):
+                hop += '.' + hops.pop(1)
+        filt = None
+        if "?(@" in hop and '=="' in hop:
+            base, _, tail = hop.partition('?(@.')
+            base = base.rstrip('[')
+            tail = tail.rstrip(']').rstrip(')')
+            conds = [c.strip() for c in tail.split('&&')]
+            parsed = []
+            for cond in conds:
+                key, _, val = cond.partition('=="')
+                val = val.split('"')[0] if val.startswith('"') else val
+                parsed.append((key.strip('@. '), val.rstrip('"')))
+            filt = parsed
+            hop = base
+        star = hop.endswith("[*]")
+        if star:
+            hop = hop[:-3]
+        if isinstance(cur, dict):
+            cur = cur.get(hop)
+        elif isinstance(cur, list) and hop.isdigit():
+            try:
+                cur = cur[int(hop)]
+            except IndexError:
+                return None
+        else:
+            return None
+        if cur is None:
+            return None
+        if filt is not None and isinstance(cur, list):
+            cur = [el for el in cur if isinstance(el, dict) and all(
+                str(el.get(key)) == val for key, val in filt)]
+            if not cur:
+                return None
+            # The filter selected elements; a following field hop applies
+            # to each selected element (or the single one, directly).
+            if len(cur) == 1:
+                cur = cur[0]
+        if star and isinstance(cur, list):
+            rest = hops[1:]
+            if not rest:
+                return cur
+            results = []
+            for el in cur:
+                got = walk(el, rest)
+                if got is not None:
+                    results.append(got)
+            return results
+        return walk(cur, hops[1:])
+    return walk(data, path.split("."))
+
+
+def extract_custom(calc_dir: str, columns: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """User-defined columns, semantics from the calculations-browser
+    table panel: {id, label, file, type: text|regex|jsonpath,
+    pattern, occurrence: first|last|all}.
+
+    text: the raw matched line (file must exist); regex: first capture
+    group or the whole match; jsonpath: a dotted path into
+    DELFIN_Data.json. occurrence selects which match is returned
+    (all joins matches with ``; ``). Missing values are omitted.
+    """
+    out: Dict[str, Any] = {}
+    for col in columns:
+        cid = str(col.get("id") or "").strip()
+        if not cid:
+            continue
+        ftype = (col.get("type") or "text").lower()
+        pattern = col.get("pattern")
+        occurrence = (col.get("occurrence") or "first").lower()
+        value = None
+        try:
+            if ftype == "jsonpath":
+                data = _load_delfin_data(calc_dir)
+                if data is not None:
+                    value = _json_path_get(data, str(pattern or ""))
+            else:
+                target = os.path.join(calc_dir, str(col.get("file") or ""))
+                if os.path.isfile(target):
+                    with open(target, "r", encoding="utf-8",
+                              errors="replace") as fh:
+                        content = fh.read()
+                    if ftype == "regex":
+                        matches = re.findall(str(pattern or ""), content)
+                        if matches:
+                            if occurrence == "all":
+                                value = "; ".join(
+                                    m if isinstance(m, str)
+                                    else (m[0] if m and m[0] else "")
+                                    for m in matches)
+                            elif occurrence == "last":
+                                m = matches[-1]
+                                value = (m if isinstance(m, str)
+                                         else (m[0] if m and m[0] else ""))
+                            else:
+                                m = matches[0]
+                                value = (m if isinstance(m, str)
+                                         else (m[0] if m and m[0] else ""))
+                    else:  # text: every line containing the pattern
+                        hits = [ln.strip() for ln in content.splitlines()
+                                if str(pattern or "") in ln]
+                        if hits:
+                            if occurrence == "all":
+                                value = "; ".join(hits)
+                            elif occurrence == "last":
+                                value = hits[-1]
+                            else:
+                                value = hits[0]
+        except (OSError, re.error):
+            value = None
+        if value not in (None, ""):
+            out[cid] = value
+    return out
+
+
+def build_table(calc_dirs: List[str], metric_ids: List[str],
+                custom_columns: Optional[List[Dict[str, Any]]] = None
+                ) -> Dict[str, Any]:
     """Rows for the dashboard table: one per calculation, columns per metric.
 
     Metric ids are de-duplicated, unknown ids are dropped, and the label of
-    each column comes from :data:`METRICS`.
+    each column comes from :data:`METRICS`. ``custom_columns`` appends
+    user-defined text/regex/jsonpath columns (see :func:`extract_custom`).
     """
     seen: List[str] = []
     known_ids = {m["id"] for m in METRICS}
     for mid in metric_ids:
         if mid in known_ids and mid not in seen:
             seen.append(mid)
+    custom = list(custom_columns or [])
     rows: List[Dict[str, Any]] = []
     for calc_dir in calc_dirs:
         values = extract(calc_dir, seen)
+        values.update(extract_custom(calc_dir, custom))
         rows.append({
             "path": calc_dir,
             "label": os.path.basename(os.path.normpath(calc_dir)),
@@ -466,4 +600,6 @@ def build_table(calc_dirs: List[str], metric_ids: List[str]) -> Dict[str, Any]:
         })
     columns = [{"id": m["id"], "label": m["label"]} for m in METRICS
                if m["id"] in seen]
+    columns.extend({"id": c["id"], "label": str(c.get("label") or c["id"])}
+                   for c in custom if str(c.get("id") or "").strip())
     return {"columns": columns, "rows": rows}

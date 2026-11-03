@@ -264,3 +264,82 @@ def test_tab_widget_build_without_display(tmp_path, monkeypatch):
     panel._on_rescan()
     assert panel._calc_select.options == ()
     ipywidgets  # noqa: B018  (import proves the widget stack is available)
+
+
+def test_extract_custom_regex_occurrences(tmp_path):
+    calc = make_calc(tmp_path, "403")
+    (calc / "output.out").write_text(
+        "FINAL SINGLE POINT ENERGY   -2671.4078\n"
+        "FINAL SINGLE POINT ENERGY   -2671.5000\n", encoding="utf-8")
+    cols = [{"id": "e_final", "label": "Final E", "file": "output.out",
+             "type": "regex",
+             "pattern": r"FINAL SINGLE POINT ENERGY\s+(-?[\d.]+)",
+             "occurrence": "last"}]
+    out = ro.extract_custom(str(calc), cols)
+    assert out["e_final"] == "-2671.5000"
+    cols[0]["occurrence"] = "first"
+    assert ro.extract_custom(str(calc), cols)["e_final"] == "-2671.4078"
+    cols[0]["occurrence"] = "all"
+    assert ro.extract_custom(str(calc), cols)["e_final"] == (
+        "-2671.4078; -2671.5000")
+
+
+def test_extract_custom_text_lines(tmp_path):
+    calc = make_calc(tmp_path, "403")
+    (calc / "output.out").write_text(
+        "****ORCA TERMINATED NORMALLY****\nnoise\n", encoding="utf-8")
+    cols = [{"id": "term", "label": "Term", "file": "output.out",
+             "type": "text", "pattern": "TERMINATED", "occurrence": "first"}]
+    assert ro.extract_custom(str(calc), cols)["term"] == (
+        "****ORCA TERMINATED NORMALLY****")
+
+
+def test_extract_custom_jsonpath(tmp_path):
+    calc = make_calc(tmp_path, "403", data=sample_data())
+    cols = [{"id": "func", "label": "Functional", "type": "jsonpath",
+             "pattern": "metadata.functional"}]
+    assert ro.extract_custom(str(calc), cols)["func"] == "PBE0"
+
+
+def test_json_path_wildcard_and_filter():
+    data = {"tddft_absorption": {"transitions": [
+        {"from_state": "S0", "to_state": "S1", "wavelength_nm": 510.2},
+        {"from_state": "S0", "to_state": "S2", "wavelength_nm": 420.0},
+        {"from_state": "S1", "to_state": "S3", "wavelength_nm": 300.1}]}}
+    get = ro._json_path_get
+    assert get(data, "tddft_absorption.transitions[*].to_state") == [
+        "S1", "S2", "S3"]
+    assert get(data, 'tddft_absorption.transitions['
+               '?(@.from_state=="S0" && @.to_state=="S1")].wavelength_nm'
+               ) == 510.2
+    # No match -> None, never a guess.
+    assert get(data, 'tddft_absorption.transitions['
+               '?(@.from_state=="S9")].wavelength_nm') is None
+    # Dotted path still works.
+    assert get({"a": {"b": {"c": 7}}}, "a.b.c") == 7
+
+
+def test_extract_custom_missing_value_omitted(tmp_path):
+    calc = make_calc(tmp_path, "403")
+    cols = [{"id": "gone", "label": "Gone", "file": "missing.out",
+             "type": "text", "pattern": "x"}]
+    assert ro.extract_custom(str(calc), cols) == {}
+
+
+def test_build_table_appends_custom_columns(tmp_path):
+    calc = make_calc(tmp_path, "403", data=sample_data())
+    cols = [{"id": "func", "label": "Functional", "type": "jsonpath",
+             "pattern": "metadata.functional"}]
+    table = ro.build_table([str(calc)], ["mult_ground"],
+                           custom_columns=cols)
+    assert [c["id"] for c in table["columns"]] == ["mult_ground", "func"]
+    assert table["rows"][0]["values"]["func"] == "PBE0"
+
+
+def test_custom_presets_shape():
+    # Every preset needs the five fields the tab applies on selection.
+    from delfin.dashboard import tab_results_overview as tab
+    for preset in tab.ResultsOverviewPanel._CUSTOM_PRESETS:  # noqa: SLF001
+        assert len(preset) == 5
+        assert preset[2] in ("regex", "text", "jsonpath")
+        assert preset[4] in ("first", "last", "all")
