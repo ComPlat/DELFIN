@@ -36,6 +36,14 @@ def test_engineering_tasks_are_not_chemistry(text):
     "optimize the DFT basis set for iron",
     "compute the redox potential with ORCA",
     "which spin state is lowest for my Fe complex",
+    # Weak cues (energy, scan, charge, method, md) count only together
+    # with a molecular cue or a strong keyword -- these plain tasks use
+    # only a weak cue plus a molecular context:
+    "calculate the energy of benzene",
+    "relaxed scan of the C-C-C-C dihedral of butane",
+    "what is the partial charge on the nitrogen",
+    "run an md of water in a box",
+    "which method for a Cu(II) complex",
 ])
 def test_real_chemistry_tasks_still_classify_as_chemistry(text):
     assert classify_task(text) == "chemistry"
