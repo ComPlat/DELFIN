@@ -23,6 +23,11 @@ when that is set, so a test can assert what reached the model (a pasted
 block arriving whole, a cancelled turn never arriving) rather than
 reading it back off the screen.
 
+A test that replaces :func:`plan` may also answer
+``{"tools": [{"tool": name, "args": dict}, ...]}`` -- one response carrying
+several calls, the parallel calls a backend sends in one round -- and add
+``"say": text`` to a tool step, streamed as content before the call(s).
+
 Rejected: a monkeypatched client inside the child. It skips the HTTP
 layer, the streaming parser and the wait indicator, which are the parts
 of a turn a terminal user actually experiences.
@@ -182,14 +187,27 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- answers -----------------------------------------------------------
 
+    @staticmethod
+    def _calls(step: dict) -> list[dict]:
+        """The step's tool calls in the wire shape, in order: one for
+        ``tool``, several for ``tools``, none for a text step."""
+        if "tools" in step:
+            pairs = [(c["tool"], c["args"]) for c in step["tools"]]
+        elif "tool" in step:
+            pairs = [(step["tool"], step["args"])]
+        else:
+            pairs = []
+        return [{"id": f"call_{i + 1}", "type": "function",
+                 "function": {"name": name, "arguments": json.dumps(args)}}
+                for i, (name, args) in enumerate(pairs)]
+
     def _whole(self, step: dict) -> None:
         msg: dict = {"role": "assistant", "content": step.get("text", "")}
         finish = "stop"
-        if "tool" in step:
-            msg = {"role": "assistant", "content": None, "tool_calls": [{
-                "id": "call_1", "type": "function",
-                "function": {"name": step["tool"],
-                             "arguments": json.dumps(step["args"])}}]}
+        calls = self._calls(step)
+        if calls:
+            msg = {"role": "assistant", "content": step.get("say"),
+                   "tool_calls": calls}
             finish = "tool_calls"
         if step.get("slow"):
             time.sleep(30)
@@ -222,11 +240,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._chunk({"role": "assistant"})
             if step.get("delay"):
                 time.sleep(step["delay"])
-            if "tool" in step:
-                self._chunk({"tool_calls": [{
-                    "index": 0, "id": "call_1", "type": "function",
-                    "function": {"name": step["tool"],
-                                 "arguments": json.dumps(step["args"])}}]})
+            calls = self._calls(step)
+            if calls:
+                if step.get("say"):
+                    self._chunk({"content": step["say"]})
+                self._chunk({"tool_calls": [dict(c, index=i)
+                                            for i, c in enumerate(calls)]})
                 self._chunk({}, finish="tool_calls", usage=usage)
             elif step.get("slow"):
                 for i in range(60):
