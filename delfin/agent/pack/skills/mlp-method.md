@@ -167,6 +167,36 @@ fallback (<= 2 cores, < 30 min, small systems only) or refusal.
 - any number is going into a publication: MLP energies are screening
   values on the model's own scale, never comparable with DFT.
 
+### GOAT with an MLIP: the ensemble is a screen
+
+`mlp_extopt_plan(run_type="goat", provider="orca_mlips", ...)` plans ORCA's
+GOAT (manual 4.10, "GOAT: global geometry optimization and ensemble
+generator") with the MLIP as the ExtOpt method (manual 4.1.10). GPU
+partition only; `goat_max_workers` caps the workers (multiple of 4). The
+job writes `<job>.finalensemble.xyz` and `<job>.globalminimum.xyz`
+(4.10.2/4.10.3); `read_mlips_goat` reads them (energies in Eh and
+relative kcal/mol, `final: False`). Not yet verified in a real job:
+whether one orca-mlips server serves GOAT's parallel workers cleanly.
+
+The MLIP ensemble is SOUND as a screen when the molecule is neutral,
+closed-shell, organic and inside the model's element set: GOAT's
+filters (RMSD 0.125 A, ENDIFF 0.1 kcal/mol, MAXEN window; Table 4.9)
+then sort structures on a PES the model describes.
+
+A DFT RE-RANKING of the lowest conformers is REQUIRED (re-optimise or
+single-point the conformers inside a few kcal/mol of the minimum, then
+use the DFT order) when:
+
+- the molecule is charged, open-shell, or holds a metal or element
+  outside the model's training set -- the MLIP ensemble order is then
+  untested physics, not an approximation;
+- energy differences inside the window are close to the model's error
+  (sub-kcal/mol gaps decide nothing on an MLIP scale);
+- conformer energies, Boltzmann weights, Gconf/Sconf or a "global
+  minimum" are reported as results: MLIP energies are a screen, never
+  final numbers. GOAT "will work with any method in ORCA, all you need
+  is the gradient" (4.10.10.3) -- the method still decides the order.
+
 ### Licence discipline (LICENSE_GUARD.md family 4)
 
 No weights or HF tokens ever enter DELFIN, the repo or the logs; gated
