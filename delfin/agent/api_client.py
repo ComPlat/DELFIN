@@ -11174,6 +11174,59 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "orca_explain",
+            "description": (
+                "Purpose, requirements and manual section of one ORCA "
+                "keyword; from the shipped dictionary, nothing runs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "word": {"type": "string"},
+                },
+                "required": ["word"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "orca_check_input",
+            "description": (
+                "Check a described ORCA calculation (JSON) against the "
+                "knowledge cards; returns findings with sources."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "calc_description": {"type": "string"},
+                },
+                "required": ["calc_description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "workflow_candidates",
+            "description": (
+                "Rank DELFIN workflows for a calculation request; each "
+                "candidate with reason and the CONTROL keys to set."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_text": {"type": "string"},
+                    "available": {"type": "array",
+                                  "items": {"type": "string"}},
+                },
+                "required": ["task_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "show_molecule",
             "description": (
                 "Show .xyz (multi-frame too) or .cube in 3D, .smi/.mol/.sdf "
@@ -18673,6 +18726,12 @@ class _DocToolExecutor:
         # same web_tools deny-list + a per-host rate limit + cache.
         if name == "verify_source":
             return self._execute_verify_source(arguments)
+
+        # w04: ORCA knowledge on demand -- lookups in the shipped stores
+        # (keyword dictionary, knowledge cards, workflow descriptors);
+        # nothing runs, nothing is written, no network.
+        if name in ("orca_explain", "orca_check_input", "workflow_candidates"):
+            return self._execute_orca_knowledge(name, arguments)
 
         if name == "remember_permission":
             if permissions is None:
@@ -28747,6 +28806,42 @@ class _DocToolExecutor:
             return json.dumps({"error": f"verify_source failed: {exc}"})
         return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
 
+    def _execute_orca_knowledge(self, name: str, arguments: dict) -> str:
+        """orca_explain / orca_check_input / workflow_candidates.
+
+        Each delegates to its function in ``delfin.api``; the result is
+        JSON from shipped, reviewed stores, so it is not wrapped as
+        untrusted. A missing required argument is refused here.
+        """
+        from delfin import api as _api
+        try:
+            if name == "orca_explain":
+                word = (arguments.get("word", "") or "").strip()
+                if not word:
+                    return json.dumps({"error": "orca_explain needs a word"})
+                payload = _api.orca_explain(word)
+            elif name == "orca_check_input":
+                desc = arguments.get("calc_description", "")
+                if not isinstance(desc, str):
+                    desc = json.dumps(desc)
+                if not desc.strip():
+                    return json.dumps({"error": (
+                        "orca_check_input needs a calc_description (JSON)")})
+                payload = _api.orca_check_input(desc)
+            else:
+                text = (arguments.get("task_text", "") or "").strip()
+                if not text:
+                    return json.dumps({"error": (
+                        "workflow_candidates needs a task_text")})
+                available = arguments.get("available")
+                if available is not None and not isinstance(available, list):
+                    available = None
+                payload = {"candidates":
+                           _api.workflow_candidates(text, available)}
+        except Exception as exc:
+            return json.dumps({"error": f"{name} failed: {exc}"})
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
     def _execute_session_search(self, arguments: dict) -> str:
         """Read-only search over past sessions' archives (Paket 5).
 
@@ -31279,6 +31374,13 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
     "response payload is not completed",
     "transferencodingerror",
     "no deployments available for selected model",
+    # Measured 2026-11-03: the same proxy fault reported with the
+    # completion marker spelled differently ("payload not completed",
+    # no "is") inside a 400 whose body is a bare
+    # litellm.APIConnectionError. The exception name in the body says
+    # the CONNECTION failed; a chat request cannot cause it.
+    "apiconnectionerror",
+    "response payload not completed",
 )
 
 
@@ -31645,12 +31747,22 @@ def _infer_provider_from_base_url(base_url: str) -> str:
     ``provider`` (create_client always passes one). ``localhost:11434`` and
     no-auth local servers → ollama; the KIT host → kit; else openai.
     """
-    u = (base_url or "").lower()
+    u = (base_url or "").strip().lower()
     if not u:
         return "openai"
-    if "11434" in u or "ki-toolbox" not in u and ("localhost" in u or "127.0.0.1" in u):
+    # Decide on the parsed host, never on a substring of the whole URL: a
+    # substring match sent ``https://other.example/?kit.edu`` the KIT key.
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(u if "://" in u else "http://" + u)
+        host = (parts.hostname or "").rstrip(".")
+        port = parts.port
+    except ValueError:
+        return "openai"
+    is_kit = host == "kit.edu" or host.endswith(".kit.edu")
+    if port == 11434 or (not is_kit and host in ("localhost", "127.0.0.1")):
         return "ollama"
-    if "ki-toolbox" in u or "kit.edu" in u:
+    if is_kit:
         return "kit"
     return "openai"
 
