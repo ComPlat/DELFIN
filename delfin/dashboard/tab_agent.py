@@ -9046,6 +9046,11 @@ def create_tab(ctx):
             if (!chat) return;
             var st = stateFor(chat);
             if (!st.follow) return;
+            // Poll only for a changed content height. A browser scroll can
+            // consume a pending auto-scroll flag; correcting it on this
+            // later tick causes a visible snap while no output arrives.
+            // The observers handle content and viewport resizing directly.
+            if (st.mark !== undefined && chat.scrollHeight === st.mark) return;
             setTop(chat, chat.scrollHeight, st);
             st.top = chat.scrollTop;
             st.mark = chat.scrollHeight;

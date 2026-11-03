@@ -122,6 +122,57 @@ warning says so. FieldSpec `:2306` in
 `delfin/common/control_validator.py`; notes in
 `delfin/common/control_key_notes.json` (key `mlp_preopt`).
 
+## ExtOpt providers: delfin-mlp-extopt (default) and orca-mlips
+
+ORCA `! ExtOpt` runs can be driven by two providers:
+
+- **`delfin-mlp-extopt`** (default, `delfin/mlp_tools/orca_extopt.py`): our
+  own wrapper around the registry backends; one fresh process per ORCA
+  step (torch import + model load each step — fine for preopt, slow for
+  long optimizations).
+- **`orca-mlips`** (`delfin/mlp_tools/orca_mlips.py`, optional package
+  `pip install orca-mlips[...]`, MIT): resident model server, so repeated
+  calls during an optimization are fast; supports xTB implicit solvent
+  (`--solvent`, `--solvent-model alpb|cpcmx`) and the two-step analytical
+  Hessian (`--dump-hessian` + `%geom inhess Read / InHessName`) for
+  OptTS/Freq. UMA weights are gated (user's own HF login); MACE-OMOL-0
+  weights are non-commercial (Academic Software License). Use the
+  prefixed ProgExt names (`orca-mlips-uma`), not the short ones.
+
+Plan jobs with `mlp_extopt_plan` (dry run — writes input + job script,
+submits nothing); GPU partition configured -> one sbatch job with
+`--nodes=1` so ORCA and the MLIP server share a node; no GPU -> local CPU
+fallback (<= 2 cores, < 30 min, small systems only) or refusal.
+
+## When an MLIP is enough, and when DFT must follow
+
+### MLIP preopt / TS guess: sound when
+
+- neutral, closed-shell organic molecules inside the model's element set
+  (see the tables above);
+- the goal is a STARTING GEOMETRY or a conformer ranking, and a DFT
+  optimization/verification follows;
+- for TS guesses: the MLIP Hessian is a *guess* for the `%geom inhess`
+  first guess — the TS must be re-optimized and characterized with DFT.
+
+### DFT check REQUIRED when
+
+- the species is charged or open-shell outside `aimnet2`'s scope (adapter
+  refuses), or contains metals outside the model's training set — an MLP
+  number here is not just imprecise, it is silently wrong physics;
+- reaction barriers or spin-state splittings are the question;
+- an MLIP optimization reports convergence: still verify with a DFT
+  Hessian — MLIP local minima can keep extra imaginary frequencies
+  (orca-mlips README explicitly warns about FP32 precision there);
+- any number is going into a publication: MLP energies are screening
+  values on the model's own scale, never comparable with DFT.
+
+### Licence discipline (LICENSE_GUARD.md family 4)
+
+No weights or HF tokens ever enter DELFIN, the repo or the logs; gated
+checkpoints are the user's own login. `refuse_noncommercial_weights=True`
+(or the CONTROL/tool option) refuses non-commercially licensed weights.
+
 ## References
 
 See the DOI table above; each adapter table also carries its source string
