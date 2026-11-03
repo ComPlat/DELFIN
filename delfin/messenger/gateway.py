@@ -153,6 +153,11 @@ class Rooms:
         self._announced = deque()
         #: Schedule number -> the check the phone was last shown for it.
         self._checks = {}
+        #: The approval listing's check + the (n, sessionId, requestId) of
+        #: the items the phone was shown, so ok <n> can answer with the
+        #: check without the phone ever copying it.
+        self._approval_check = ''
+        self._approval_shown: set[tuple] = set()
 
     def paired(self):
         return bool(self.owner) and store.paired_contact() == self.owner
@@ -277,6 +282,8 @@ class Rooms:
             return t('Bitte bei der konkreten SimpleX-Anfrage auf Antworten tippen und dort yes/no schreiben. So bleibt die Entscheidung eindeutig.')
         word, _, rest = text.partition(' ')
         command = word.lower().lstrip('/')
+        if command in {'ok', 'nein', 'zeige'} and rest.strip().strip('.').isdigit():
+            return await self.approval_command(text)
         if command in {'help', 'hilfe'}:
             return t(HELP)
         if command in {'sessions', 'sitzungen'}:
@@ -520,6 +527,62 @@ class Rooms:
             if run in wanted and self.paired():
                 await self.send(chat, self.run_text(run))
             store.set_schedule_seq(int(run['seq']), owner=self.owner)
+
+    async def approvals_news(self):
+        """Pending approvals of EVERY session of the service -- interactive,
+        scheduled, unattended -- one batched message to the paired chat.
+        Sessions with their own room get theirs there (refresh); this step
+        reports the rest: the ones that today wait for their timeout."""
+        if not self.paired():
+            return
+        reply = await self.ask({'cmd': 'approvals'})
+        if reply.get('error'):
+            return
+        items = [i for i in reply.get('items', [])
+                 if (i['sessionId'], i['requestId']) not in self._approval_shown
+                 and not store.rooms().get(store.room_of_session(i['sessionId']), {}).get('ready')]
+        if not items:
+            return
+        self._approval_check = reply.get('check') or ''
+        for i in items:
+            self._approval_shown.add((i['sessionId'], i['requestId']))
+        lines = [t('⏳ Freigaben nötig ({machine}):').format(machine=bot_name())]
+        for i in items:
+            risk = {'shell': '⚠️ Shell-Befehl', 'write': '✏️ Schreiben',
+                    'read': '👁 Lesen'}.get(i.get('risk') or '', '')
+            hint = t('ok {n} · zeige {n} · am Dashboard').format(n=i['n']) \
+                if i.get('approvable') else t('nur am Dashboard')
+            lines.append(t('{n}. {tool}: {text}\n{risk}{sep}{hint}')
+                         .format(n=i['n'], tool=i.get('tool') or '?',
+                                 text=i.get('text') or '',
+                                 risk=risk, sep='\n' if risk else '', hint=hint))
+        lines.append(t('Antworten: ok <n> / nein <n> · zeige <n> für die ganze Anfrage. '
+                       'Erledigte oder geänderte Anfragen können nichts mehr freigeben.'))
+        await self.send('@' + self.owner, '\n\n'.join(lines))
+
+    async def approval_command(self, text):
+        """ok <n> / nein <n> / zeige <n>: the phone answers an approval the
+        batched message showed, with the check the service itself holds."""
+        word, _, rest = text.strip().lower().partition(' ')
+        if word not in {'ok', 'nein', 'zeige'} or not rest.strip().strip('.').isdigit():
+            return t('Form: ok <n> / nein <n> / zeige <n>. Mit approvals die offenen Anfragen ansehen.')
+        n = int(rest.strip().strip('.'))
+        if word == 'zeige':
+            reply = await self.ask({'cmd': 'approvals'})
+            item = next((i for i in reply.get('items', []) if i.get('n') == n), None)
+            if item is None:
+                return t('Keine offene Anfrage mit der Nummer {n}.').format(n=n)
+            self._approval_check = reply.get('check') or self._approval_check
+            self._approval_shown.add((item['sessionId'], item['requestId']))
+            return t('{n}. {tool}: {text}\nSitzung: {session}\nAntwort: ok {n} / nein {n}')\
+                .format(n=n, tool=item.get('tool') or '?', text=item.get('text') or '',
+                        session=item.get('session') or '?')
+        reply = await self.ask({'cmd': 'answer', 'n': n, 'ok': word == 'ok',
+                                'check': self._approval_check})
+        if reply.get('error'):
+            return t('Fehler: {error}').format(error=reply['error'])
+        return t('Anfrage {n}: {result}.').format(
+            n=n, result=t('freigegeben') if word == 'ok' else t('abgelehnt'))
 
     async def start_session(self, rest):
         """`neu NAME[: task]`: a session in a folder of its own, its chat, and
@@ -904,7 +967,7 @@ class Rooms:
         async def notifications():
             last = ''
             while self.paired():
-                for step in (self.refresh, self.schedule_news):
+                for step in (self.refresh, self.schedule_news, self.approvals_news):
                     try:
                         await step()
                         last = '' if step == self.refresh else last

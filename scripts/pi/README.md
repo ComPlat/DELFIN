@@ -138,6 +138,7 @@ unchanged; then it takes seconds.
 | `pi_firstboot.sh` | Pi (cloud-init) | First boot: `pi_bootstrap.sh` + `pi_install.sh` from the card |
 | `pi_github_deploy_key.sh` | Pi (agent user) | Push access to one repository via a deploy key, GitHub host key pinned |
 | `pi_harden_host.sh` | Pi (root) | Host lockdown: sshd key only, nftables, fail2ban, security updates, sudo password |
+| `delfin_people.sh` | Pi (agent user) | `delfin-people`: who works in the account through the Windows launcher, `--attach NAME` to watch |
 
 ## New card (Windows)
 
@@ -205,6 +206,51 @@ What only a person can do, in this order:
   add the printed key with "Allow write access", then
   `... pi_github_deploy_key.sh --check`. Do not log `gh` in on the Pi.
 - VS Code: Remote-SSH to `delfin@delfin-pi.local`.
+- Several people in the `delfin` account: `pi_install.sh` turns on the
+  Windows launcher's people mode (`~/.config/delfin/launcher-people.conf`;
+  `DELFIN_PI_PEOPLE=0` leaves it off). Each Windows user gets
+  `~/people/<name>` as home: own sessions, dashboard and token, tmux and agent
+  service, sharing the installation, the account's credentials and settings.
+  `delfin-people` lists who is there; `delfin-people --attach NAME` shows that
+  person's dashboard session. They are one Unix user: everyone can read
+  everything in the account, credentials included. Put only neutral, project
+  credentials (a project KIT key, the repository deploy key, a neutral git
+  identity) into it; personal ones belong in personal accounts.
+- Keep session is this box's default for the Windows launcher
+  (`~/.config/delfin/launcher-keep.conf`, written by `pi_install.sh`;
+  `DELFIN_PI_KEEP=0` leaves the choice to the app): a disconnect leaves the
+  dashboard and its agent running, the next connection returns to it.
+  Ctrl+C in the SSH window still stops it; delete the file to give the app's
+  checkbox the say again.
+- Dashboard tabs on this box: `~/.config/delfin/pi-tabs.conf` lists the tab
+  ids shown (default `agent home archive office`; Settings is always shown).
+  `pi_install.sh` applies it on every deploy against the tabs the code has,
+  so a tab a later DELFIN adds stays hidden; a change in the dashboard's
+  Settings tab is reset by the next deploy, edit the file instead. Shared by
+  everyone through the launcher's people mode.
+- Agent tab defaults on this box: `~/.config/delfin/pi-agent.conf` (key=value):
+  `mode=solo` (Code), `provider=kit`, `model=kit.glm-5.3-flash`,
+  `permission_profile=all_free` (Bypass), `effort=` (empty: the model
+  profile's default, shown as "Medium (profile default)"). `pi_install.sh`
+  writes it into `~/.delfin_settings.json` on every deploy, so a choice made in
+  the tab lasts until the next deploy; edit the file to change the default.
+  Shared by everyone through the launcher's people mode; each person's agent
+  works in `~/people/<name>/agent_workspace`.
+  Bypass asks nothing for work inside the folders the agent may use; the cage
+  (bwrap + Landlock) stays, and network, `git push`, installs outside the
+  project environment and anything uncaged still ask. A managed policy
+  (`/etc/delfin/managed_policy.json`) that lists `bypassPermissions` in
+  `disallowed_modes`, or one that cannot be read (fail-closed:
+  `FAIL_CLOSED_MODES` in `delfin/agent/managed_policy.py`), refuses Bypass.
+  The policy `pi_bootstrap.sh` writes requires the cage and refuses the CLI
+  backends but no mode; check `cat /etc/delfin/managed_policy.json` if it was
+  edited.
+- tmux on the box waits 50 ms for escape sequences (`~/.tmux.conf`): with
+  tmux 3.5's 10 ms the terminal's answer to tmux's capability query arrived
+  too late over SSH/VPN and showed up as `^[[?61;1;6;...c` in the pane.
+- The agent install is an editable install in compat (path) mode: with
+  setuptools' finder mode the folder `~/delfin` shadowed the package for a
+  `python -c` started in `~`. `pi_install.sh` converts an older install.
 - Dashboard: service `delfin-dashboard` on `127.0.0.1:8866` only. On the Pi use
   the "DELFIN Dashboard" menu entry; from your PC use a tunnel
   `ssh -L 8866:127.0.0.1:8866 delfin@delfin-pi.local` and open the URL printed

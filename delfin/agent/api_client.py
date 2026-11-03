@@ -3595,7 +3595,7 @@ _DELFIN_ENTRY_MODULE_RE = _inline_payload.DELFIN_ENTRY_MODULE_RE
 # installed copy under site-packages): the program by its path.
 _DELFIN_ENTRY_SCRIPT_BODY = (
     r"delfin/(?:__main__|main|cli|cli_\w+|build_up_complex|"
-    r"cluster_bench/cli|guppy_sampling|guppy_batch|"
+    r"cluster_bench/cli|guppy_sampling|guppy_batch|dev_cli|fixtures_store|"
     r"doc_server/(?:indexer|__main__)|tools/mcp_server|agent/cli|"
     r"ops_server/__main__)\.py")
 _DELFIN_ENTRY_SCRIPT_RE = re.compile(
@@ -7205,6 +7205,9 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
     "geometry_merge", "geometry_freeze", "geometry_constraints_block",
     "geometry_build_smiles", "geometry_write_orca_block",
+    # trajectory_xyz (2026-11-03): ORCA output -> multi-frame xyz text;
+    # pure parse, no write.
+    "trajectory_xyz",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",
@@ -11170,6 +11173,59 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "orca_explain",
+            "description": (
+                "Purpose, requirements and manual section of one ORCA "
+                "keyword; from the shipped dictionary, nothing runs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "word": {"type": "string"},
+                },
+                "required": ["word"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "orca_check_input",
+            "description": (
+                "Check a described ORCA calculation (JSON) against the "
+                "knowledge cards; returns findings with sources."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "calc_description": {"type": "string"},
+                },
+                "required": ["calc_description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "workflow_candidates",
+            "description": (
+                "Rank DELFIN workflows for a calculation request; each "
+                "candidate with reason and the CONTROL keys to set."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_text": {"type": "string"},
+                    "available": {"type": "array",
+                                  "items": {"type": "string"}},
+                },
+                "required": ["task_text"],
             },
         },
     },
@@ -18675,6 +18731,12 @@ class _DocToolExecutor:
         # same web_tools deny-list + a per-host rate limit + cache.
         if name == "verify_source":
             return self._execute_verify_source(arguments)
+
+        # w04: ORCA knowledge on demand -- lookups in the shipped stores
+        # (keyword dictionary, knowledge cards, workflow descriptors);
+        # nothing runs, nothing is written, no network.
+        if name in ("orca_explain", "orca_check_input", "workflow_candidates"):
+            return self._execute_orca_knowledge(name, arguments)
 
         if name == "remember_permission":
             if permissions is None:
@@ -28749,6 +28811,42 @@ class _DocToolExecutor:
             return json.dumps({"error": f"verify_source failed: {exc}"})
         return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
 
+    def _execute_orca_knowledge(self, name: str, arguments: dict) -> str:
+        """orca_explain / orca_check_input / workflow_candidates.
+
+        Each delegates to its function in ``delfin.api``; the result is
+        JSON from shipped, reviewed stores, so it is not wrapped as
+        untrusted. A missing required argument is refused here.
+        """
+        from delfin import api as _api
+        try:
+            if name == "orca_explain":
+                word = (arguments.get("word", "") or "").strip()
+                if not word:
+                    return json.dumps({"error": "orca_explain needs a word"})
+                payload = _api.orca_explain(word)
+            elif name == "orca_check_input":
+                desc = arguments.get("calc_description", "")
+                if not isinstance(desc, str):
+                    desc = json.dumps(desc)
+                if not desc.strip():
+                    return json.dumps({"error": (
+                        "orca_check_input needs a calc_description (JSON)")})
+                payload = _api.orca_check_input(desc)
+            else:
+                text = (arguments.get("task_text", "") or "").strip()
+                if not text:
+                    return json.dumps({"error": (
+                        "workflow_candidates needs a task_text")})
+                available = arguments.get("available")
+                if available is not None and not isinstance(available, list):
+                    available = None
+                payload = {"candidates":
+                           _api.workflow_candidates(text, available)}
+        except Exception as exc:
+            return json.dumps({"error": f"{name} failed: {exc}"})
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
     def _execute_session_search(self, arguments: dict) -> str:
         """Read-only search over past sessions' archives (Paket 5).
 
@@ -31281,6 +31379,13 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
     "response payload is not completed",
     "transferencodingerror",
     "no deployments available for selected model",
+    # Measured 2026-11-03: the same proxy fault reported with the
+    # completion marker spelled differently ("payload not completed",
+    # no "is") inside a 400 whose body is a bare
+    # litellm.APIConnectionError. The exception name in the body says
+    # the CONNECTION failed; a chat request cannot cause it.
+    "apiconnectionerror",
+    "response payload not completed",
 )
 
 

@@ -945,7 +945,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # The session control. It sits in the header beside the other
     # controls that change what the dashboard IS rather than what it
     # shows, so a kept session is never invisible.
-    _session_strip = _session.build_status_strip()
+    # In a branch preview the strip makes no sense: a preview is its own
+    # worktree and server, judged and then thrown away -- keeping a
+    # session there would save the preview, not the real dashboard.
+    _session_strip = None
+    if not _in_preview:
+        _session_strip = _session.build_status_strip()
 
     # Landing while another session is still running.
     #
@@ -970,8 +975,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     # The right-hand group: what the dashboard is doing and holding.
     _status_group = widgets.HBox(
-        [busy_indicator, ctx.agent_status_html, home_usage_label, _session_strip,
-         _logout])
+        [busy_indicator, ctx.agent_status_html, home_usage_label]
+        + ([_session_strip] if _session_strip is not None else [])
+        + [_logout])
     _status_group.add_class('delfin-group')
     _spacer = widgets.HBox([], layout=widgets.Layout(flex='1 1 auto'))
     _bar = widgets.HBox(

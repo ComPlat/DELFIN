@@ -776,3 +776,48 @@ def constraints_block(g: Geom) -> str:
     lines.append("  end")
     lines.append("end")
     return "\n".join(lines) + "\n"
+
+
+# ------------------------------------------------------- trajectory export
+
+_CARTESIAN_HEADER = "CARTESIAN COORDINATES (ANGSTROEM)"
+
+def trajectory_xyz(orca_out: str) -> str:
+    """Every ``CARTESIAN COORDINATES (ANGSTROEM)`` block of an ORCA
+    output as one multi-frame xyz (count line, comment line, atoms),
+    for the agent's native ``show_molecule`` (rotation movie).
+
+    A relaxed dihedral scan, an optimisation or an IRC each print one
+    block per geometry, so the same reader serves all three. Raises
+    GeometryError when the output holds no geometry block (a single
+    point, or not an ORCA output at all).
+    """
+    with open(orca_out, "r", errors="ignore") as fh:
+        text = fh.read()
+    frames: List[str] = []
+    at = text.find(_CARTESIAN_HEADER)
+    while at >= 0:
+        lines = text[at:].splitlines()[1:]  # skip the header row itself
+        atoms: List[str] = []
+        for line in lines:
+            cells = line.split()
+            if len(cells) != 4:
+                if atoms:  # preamble lines (dashes, "0 1") are skipped;
+                    break  # once atoms started, a short line ends the block
+                continue
+            try:
+                x, y, z = (float(c) for c in cells[1:4])
+            except ValueError:
+                break
+            sym = _elem_from_label(cells[0])
+            atoms.append(f"{sym} {x:.8f} {y:.8f} {z:.8f}")
+        if not atoms:
+            break
+        frames.append(f"{len(atoms)}\nframe {len(frames) + 1}\n"
+                      + "\n".join(atoms))
+        at = text.find(_CARTESIAN_HEADER, at + len(_CARTESIAN_HEADER))
+    if not frames:
+        raise GeometryError(
+            f"no CARTESIAN COORDINATES (ANGSTROEM) blocks in {orca_out}"
+        )
+    return "\n".join(frames) + "\n"

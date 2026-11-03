@@ -33,7 +33,11 @@ independent main window and stays in the taskbar with the DELFIN icon while open
 A separate dashboard terminal appears for native OpenSSH password/OTP and
 host-key prompts and stays visible after the browser opens. This is the only
 SSH terminal; it uses the PowerShell icon and an SSH title. The DELFIN logo
-belongs to the settings app, not a second terminal. Use Ctrl+C there to
+belongs to the settings app, not a second terminal. It is a classic Windows
+console: to paste a password or OTP there, **right-click** in the window.
+Ctrl+V does not paste at OpenSSH's password prompt in this console; it sends a
+control character, and the server answers "Permission denied" for a correct
+password. The app never reads or stores the password itself. Use Ctrl+C there to
 stop the dashboard explicitly, including with Keep ON. The optional working
 terminal is still OFF by default. Keep the DELFIN app open while using the browser.
 **Show terminal** restores the current SSH window if minimized or hidden and
@@ -74,7 +78,21 @@ Two options are visible without opening Advanced settings:
 
 - **Working shell (Ctrl+B, then N)**: disabled by default for new saved
   connections. Enable it to open/reuse a tmux window named `DELFIN-work`.
+- **Remember login on this PC (SSH key)** (advanced settings, on by default):
+  the app makes one ed25519 key per Windows user
+  (`%USERPROFILE%\.ssh\delfin_launcher_ed25519`, no passphrase, protected by
+  the Windows account) and sends its public half with every connection. The
+  first connection still asks for the password; `remote_bootstrap.sh` then adds
+  the key to the server's `~/.ssh/authorized_keys` as
+  `restrict,port-forwarding,pty ...` (only the dashboard tunnel and a terminal:
+  no agent, no X11, no `~/.ssh/rc`). Later connections log in with the key.
+  A server that requires a password or OTP as well keeps asking for it. Revoke
+  a PC by deleting its `delfin-launcher-<name>` line on the server; a server
+  account with `~/.config/delfin/launcher-no-keys.conf` never adds keys.
 - **Keep session after disconnect**: disabled by default for new saved connections.
+  A server whose account has `~/.config/delfin/launcher-keep.conf` (the
+  Raspberry Pi agent box sets it) keeps every connection's dashboard, whatever
+  this checkbox says; Ctrl+C still stops it.
   When off, disconnecting stops the **new dashboard started by this connection**
   and its tmux shell windows. When on, it uses DELFIN `--keep` and keeps the server
   and opted-in dashboard kernels available for reconnecting.
@@ -213,6 +231,34 @@ is not visible through login/PATH or the selected repository, provide its locati
 The app cannot guess arbitrary dormant installations, custom shell functions,
 module names or Conda environment names. Multiple matching repository environments
 produce an explicit error instead of a random choice. No dependencies are installed.
+
+Every probe and start runs Python without the current directory on its path:
+a plain folder named `delfin` in your home or working directory (an install
+root, a repository root) would otherwise shadow the installed package as an
+empty namespace package, and discovery reported "Not found".
+
+### Several people on one server account
+
+On a server account that several people share (for example a lab's agent
+box), the account owner can give each person a home of their own:
+
+```bash
+mkdir -p ~/.config/delfin && touch ~/.config/delfin/launcher-people.conf
+```
+
+From then on the app sends the Windows user name (lower case, `a-z0-9_-`),
+and the server uses `~/people/<name>` as that connection's home: own DELFIN
+sessions and chats, own dashboard with its own port and token, own agent
+service (`DELFIN_RUNTIME_DIR`), own agent workspace `~/people/<name>/agent_workspace` (the dashboard agent's working folder)
+and tmux sessions named `delfin-win-<name>-<port>-...`. Reconnecting from the
+same Windows user returns to that person's dashboard. Shared by link with the
+account: the installation, credentials and settings, tools, caches, git and
+SSH setup. Without the file the name is ignored and nothing changes.
+
+This keeps people from getting in each other's way; it does **not** keep
+them apart. They are one Unix user: everyone can read every file of the
+account, including the credentials stored there. Keep personal secrets in
+personal accounts.
 
 ### Automatic port selection
 
