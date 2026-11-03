@@ -192,7 +192,7 @@ def build_ts_goat_panel(
         tooltip='Clear every constraint (fully manual selection)',
         layout=widgets.Layout(width='105px'),
     )
-    method_label = widgets.HTML('<b>Method for the GOAT search:</b>')
+    method_label = widgets.HTML('<b>GOAT settings</b>')
     method_field = widgets.Text(
         value='XTB', description='Method:', layout=widgets.Layout(width='190px'),
     )
@@ -550,7 +550,7 @@ def build_ts_goat_panel(
     anim_generate.on_click(_generate_traj)
 
     def _on_speed_change(_change=None):
-        """Write the frame delay for the browser loop (base 400 ms)."""
+        """Write the frame delay for the browser loop (base 200 ms)."""
         vid = get_viewer_id() if get_viewer_id else None
         if vid and animate_in_panel:
             animate_in_panel(vid, 'speed')
@@ -572,12 +572,18 @@ def build_ts_goat_panel(
     def _on_pause(_b=None):
         vid = get_viewer_id() if get_viewer_id else None
         if vid and animate_in_panel:
-            animate_in_panel(vid, False)
+            animate_in_panel(vid, 'pause')
 
     def _on_reset(_b=None):
         vid = get_viewer_id() if get_viewer_id else None
         if vid and animate_in_panel:
             animate_in_panel(vid, False)
+        # ORCA's first vibration frame is not necessarily the optimized
+        # saddle point. A genuine reset therefore renders the original
+        # XYZ, not frame 0 of the displaced trajectory.
+        state['traj'] = None
+        _set_anim_buttons()
+        anim_status.value = ''
         _render_integrated_viewer()
 
     anim_play.on_click(_on_play)
@@ -720,6 +726,7 @@ def build_ts_goat_panel(
         analysis_box.value = (
             '<ul style="font-size:11px;margin:4px 0 4px 16px;">'
             + open_result.get('analysis_html', '') + '</ul>')
+        _sync_basis_field()
         _refresh_constraints_display()
         _render_integrated_viewer()
         panel.layout.display = 'block'
@@ -843,6 +850,10 @@ def build_ts_goat_panel(
     method_field.observe(
         lambda _c: (_sync_basis_field(), _refresh_preview()),
         names='value')
+    # The preview is the exact input the user is about to submit: resource
+    # and basis edits must update it, not only method/constraint edits.
+    for editor in (basis_field, pal_field, maxcore_field):
+        editor.observe(lambda _c: _refresh_preview(), names='value')
     constraints_field.observe(lambda _c: (_refresh_preview(),
                                           _render_integrated_viewer()),
                               names='value')
