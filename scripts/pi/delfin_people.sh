@@ -50,8 +50,10 @@ for dir in "$base"/*/; do
     procs=0
     for p in /proc/[0-9]*; do
         [[ -O "$p" ]] || continue
-        if tr '\0' '\n' < "$p/environ" 2>/dev/null | grep -qx "HOME=$home" \
-            && tr '\0' ' ' < "$p/cmdline" 2>/dev/null | grep -q delfin; then
+        # Caged processes (bubblewrap, no-new-privileges) keep their
+        # environment unreadable even to their own user: skipped quietly.
+        if { tr '\0' '\n' < "$p/environ"; } 2>/dev/null | grep -qx "HOME=$home" \
+            && { tr '\0' ' ' < "$p/cmdline"; } 2>/dev/null | grep -q delfin; then
             procs=$((procs + 1))
         fi
     done
