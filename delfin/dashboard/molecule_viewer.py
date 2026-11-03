@@ -6980,6 +6980,9 @@ def static_viewer_html(xyz_text, width=640, height=450,
         'arrows': list(arrows or []),
         'show_arrows': False,  # 2026-11-02 user report: arrows dominated
         'frames': frames or None,
+        # Browser playback uses this validated count rather than assuming
+        # GLViewer exposes a getLength() method.
+        'frame_count': len(parse_xyz_frames(frames)) if frames else 0,
     }
     html = (
         f'<div style="width:{width}px;height:{height}px;position:relative;'
@@ -7067,8 +7070,20 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "    return;\n"
         "  }\n"
         "var payload = JSON.parse(dataEl.textContent);\n"
-        "var viewer = new $3Dmol.createViewer(el, {backgroundColor: 'white', antialias: true});\n"
         "window.__tsGoatViewers = window.__tsGoatViewers || {};\n"
+        "window.__tsGoatAnimStop = window.__tsGoatAnimStop || {};\n"
+        "var previous = window.__tsGoatViewers[vid];\n"
+        "var savedView = null;\n"
+        "if (previous && typeof previous.getView === 'function') {\n"
+        "  try { savedView = previous.getView(); } catch (e) {}\n"
+        "}\n"
+        "if (window.__tsGoatAnimStop[vid]) {\n"
+        "  clearTimeout(window.__tsGoatAnimStop[vid]);\n"
+        "  delete window.__tsGoatAnimStop[vid];\n"
+        "}\n"
+        "var viewer = new $3Dmol.createViewer(el, {backgroundColor: 'white', antialias: true});\n"
+        "viewer.__tsGoatDataEl = dataEl;\n"
+        "viewer.__tsGoatFrameCount = payload.frame_count || 0;\n"
         "window.__tsGoatViewers[vid] = viewer;\n"
         "if (payload.frames) {\n"
         "  viewer.addModelsAsFrames(payload.frames, 'xyz');\n"
@@ -7082,13 +7097,11 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "  var serial = payload.highlight[h] + 1;\n"  # 3Dmol serials are 1-based
         "  for (var ai = 0; ai < allAtoms.length; ai++) {\n"
         "    if (allAtoms[ai].serial !== serial) continue;\n"
-        "    var at = allAtoms[ai];\n"
-        # Per-atom style instead of an overlay sphere: with frames
-        # loaded (addModelsAsFrames) only atom-attached styling travels
-        # with setFrame -- an overlay sphere would stay behind while
-        # the atom moves.  Atom-only: bonds keep their normal colors.
+        # A thin translucent blue halo beyond the normal CPK sphere:
+        # keep atom and bond colours intact. Opaque orange spheres hid
+        # almost the entire molecule for large constraint selections.
         "    viewer.addStyle({serial: serial},\n"
-        "      {sphere: {scale: 0.42, color: 0xff6d00, opacity: 0.95}});\n"
+        "      {sphere: {scale: 0.35, color: 0x1976a3, opacity: 0.20}});\n"
         "  }\n"
         "}\n"
         "var arrows = " + arrow_payload + ";\n"
@@ -7115,7 +7128,10 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "    sync.dispatchEvent(new Event('input', {bubbles: true}));\n"
         "  });\n"
         "} catch (e) { console.error('DELFIN TS-GOAT: setClickable failed', e); }\n"
-        "viewer.zoomTo(); viewer.render();\n"
+        "if (savedView && typeof viewer.setView === 'function') {\n"
+        "  try { viewer.setView(savedView); } catch (e) { viewer.zoomTo(); }\n"
+        "} else { viewer.zoomTo(); }\n"
+        "viewer.render();\n"
         "}\n"
         "boot();\n"
         "})();\n"
@@ -7174,8 +7190,8 @@ def ts_goat_viewer_step_js(viewer_id, direction):
         "  for (var bi = 0; bi < stepAtoms.length; bi++) {\n"
         "    if (stepAtoms[bi].serial !== hSerial) continue;\n"
         "    var bt = stepAtoms[bi];\n"
-        "    viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
-        "      radius: 0.62, color: 0xff6d00, opacity: 0.45});\n"
+        "    viewer.addStyle({serial: hSerial},\n"
+        "      {sphere: {scale: 0.35, color: 0x1976a3, opacity: 0.20}});\n"
                         "  }\n"
         "}\n"
         "viewer.render();\n"
@@ -7184,40 +7200,56 @@ def ts_goat_viewer_step_js(viewer_id, direction):
 
 
 def ts_goat_viewer_frames_js(viewer_id, running):
-    """Start/stop playback of preloaded vibration frames.
+    """Play/pause/reset preloaded ORCA frames without moving the camera.
 
-    The orca_pltvib trajectory is already in the viewer as frames
-    (bootstrap: ``addModelsAsFrames``).  A browser ``setInterval``
-    advances ``viewer.setFrame`` and re-renders -- the camera is never
-    touched, so it stays fixed while the atoms move.  Halos for the
-    constraint atoms travel with the atoms because the highlight is
-    re-applied per frame.  ``running=False`` stops the loop and shows
-    the optimized geometry (frame 0).
+    True starts playback; 'pause' freezes the displayed frame; False stops
+    and resets to frame zero. A Play issued before Voila synchronises the
+    new viewer waits for the exact payload rendered by its bootstrap.
     """
+    command = 'pause' if running == 'pause' else ('play' if running else 'reset')
     return (
         "(function(){\n"
         "var vid = " + json.dumps(viewer_id) + ";\n"
-        "var viewer = (window.__tsGoatViewers||{})[vid];\n"
-        "if (!viewer) { console.error('DELFIN TS-GOAT: no viewer ' + vid); return; }\n"
-        "var dataEl = document.getElementById(vid + '_data');\n"
-        "if (!dataEl) return;\n"
-        "var payload = JSON.parse(dataEl.textContent);\n"
+        "var command = " + json.dumps(command) + ";\n"
         "window.__tsGoatAnimStop = window.__tsGoatAnimStop || {};\n"
-        "var existing = window.__tsGoatAnimStop[vid];\n"
-        "if (existing) { clearInterval(existing); delete window.__tsGoatAnimStop[vid]; }\n"
-        + ("" if running else "viewer.setFrame(0); viewer.render(); return;\n") +
-        "var delayMs = window.__tsGoatPeriodMs || 400;\n"
-        "var nFrames = 0;\n"
-        "try { nFrames = viewer.getLength ? viewer.getLength() : 0; }\n"
-        "catch (e) { nFrames = 0; }\n"
-        "if (nFrames <= 1) { console.warn('DELFIN TS-GOAT: no frames loaded for ' + vid); return; }\n"
-        "var frame = 0;\n"
-        "var timer = setInterval(function(){\n"
-        "  frame = (frame + 1) % nFrames;\n"
-        "  try { viewer.setFrame(frame); } catch (e) { clearInterval(timer); return; }\n"
-        "  viewer.render();\n"
-        "}, delayMs);\n"
-        "window.__tsGoatAnimStop[vid] = timer;\n"
+        "window.__tsGoatPlaybackTokens = window.__tsGoatPlaybackTokens || {};\n"
+        "var epoch = (window.__tsGoatPlaybackTokens[vid] || 0) + 1;\n"
+        "window.__tsGoatPlaybackTokens[vid] = epoch;\n"
+        "if (window.__tsGoatAnimStop[vid]) {\n"
+        "  clearTimeout(window.__tsGoatAnimStop[vid]);\n"
+        "  delete window.__tsGoatAnimStop[vid];\n"
+        "}\n"
+        "if (command !== 'play') {\n"
+        "  var stoppedViewer = (window.__tsGoatViewers || {})[vid];\n"
+        "  if (command === 'reset' && stoppedViewer) {\n"
+        "    try { stoppedViewer.setFrame(0); stoppedViewer.render(); } catch (e) {}\n"
+        "  }\n"
+        "  return;\n"
+        "}\n"
+        "var tries = 0;\n"
+        "function startWhenReady(){\n"
+        "  if (window.__tsGoatPlaybackTokens[vid] !== epoch) return;\n"
+        "  var dataEl = document.getElementById(vid + '_data');\n"
+        "  var viewer = (window.__tsGoatViewers || {})[vid];\n"
+        "  var n = viewer ? viewer.__tsGoatFrameCount : 0;\n"
+        "  if (!dataEl || !viewer || viewer.__tsGoatDataEl !== dataEl || n <= 1) {\n"
+        "    if (++tries < 50) { setTimeout(startWhenReady, 150); return; }\n"
+        "    console.error('DELFIN TS-GOAT: vibration frames not ready for ' + vid);\n"
+        "    return;\n"
+        "  }\n"
+        "  var frame = 0;\n"
+        "  function tick(){\n"
+        "    if (window.__tsGoatPlaybackTokens[vid] !== epoch) return;\n"
+        "    frame = (frame + 1) % n;\n"
+        "    try { viewer.setFrame(frame); viewer.render(); }\n"
+        "    catch (e) { console.error('DELFIN TS-GOAT: frame playback failed', e); return; }\n"
+        "    window.__tsGoatAnimStop[vid] = setTimeout(tick,\n"
+        "      Math.max(30, window.__tsGoatPeriodMs || 200));\n"
+        "  }\n"
+        "  window.__tsGoatAnimStop[vid] = setTimeout(tick,\n"
+        "    Math.max(30, window.__tsGoatPeriodMs || 200));\n"
+        "}\n"
+        "startWhenReady();\n"
         "})();\n"
     )
 
