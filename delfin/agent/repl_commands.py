@@ -471,6 +471,73 @@ def _rewind(ctx, _args: str) -> CommandResult:
         return CommandResult(output=f"no change report available ({exc})")
 
 
+# Branches on this checkout: the dashboard's rules, the same words the
+# messenger answers (delfin/agent/branch_commands.py formats, branch_ops
+# does). Nothing here switches the shared checkout; a deletion is only
+# /cleanup ok, through branch_cleanup.delete with its rules re-read.
+
+def _branches(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    view, _, text = args.strip().partition(" ")
+    try:
+        out = branch_commands.rows_text(ctx.workspace, view.strip() or "mine",
+                                        text.strip())
+    except Exception as exc:
+        return CommandResult(output=f"/branches failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _test(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    token = args.strip()
+    if not token:
+        return CommandResult(output=(
+            "which branch? /test <number|name> -- /branches lists them"))
+    try:
+        out = branch_commands.test_text(ctx.workspace, token)
+    except Exception as exc:
+        return CommandResult(output=f"/test failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _pull(ctx, _args: str) -> CommandResult:
+    from . import branch_commands
+    try:
+        out = branch_commands.pull_text(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"/pull failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _cleanup(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    word, _, rest = args.strip().partition(" ")
+    word = word.strip().lower()
+    try:
+        if word in ("ok", "yes", "confirm", "y"):
+            out, _deleted = branch_commands.cleanup_confirm_text(
+                ctx.workspace, rest.strip())
+            return CommandResult(output=out)
+        if word:
+            # a number or name without the ok: show what it is, delete
+            # nothing (a bare name is not a confirmation)
+            ref = branch_commands.resolve(ctx.workspace, word)
+            if not ref:
+                return CommandResult(output=(
+                    f"no branch {word!r}; /cleanup lists what may be "
+                    "deleted, /cleanup ok <number> deletes it"))
+            note = branch_commands.unmerged_note(ctx.workspace, ref)
+            return CommandResult(output=(
+                f"{ref} is in the cleanup listing only when it is merged. "
+                + (note or "/cleanup ok " + word + " deletes it (merged "
+                            "branches only); it is re-checked at "
+                            "deletion.")))
+        out = branch_commands.cleanup_text(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"/cleanup failed: {exc}")
+    return CommandResult(output=out)
+
+
 def _tasks(ctx, _args: str) -> CommandResult:
     """This session's open work, on demand.
 
@@ -2078,6 +2145,14 @@ BUILTINS: dict[str, ReplCommand] = {
                     _session, True),
         ReplCommand("/rewind", "history", "What the agent changed here",
                     _rewind),
+        ReplCommand("/branches", "git", "Branches of this checkout by "
+                    "view: mine, all, hidden, merged, remote", _branches,
+                    True),
+        ReplCommand("/test", "git", "Test a branch in a worktree (its "
+                    "changed test files, capped)", _test, True),
+        ReplCommand("/pull", "git", "Update main, fast-forward only", _pull),
+        ReplCommand("/cleanup", "git", "Merged branches and stale "
+                    "worktrees; ok <n> deletes", _cleanup, True),
         ReplCommand("/tasks", "history", "This session's open work", _tasks),
         ReplCommand("/memories", "history", "Stored memories", _memories, True),
         ReplCommand("/forget", "history", "Delete one memory by name",

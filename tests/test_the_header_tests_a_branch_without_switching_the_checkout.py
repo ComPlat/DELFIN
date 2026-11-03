@@ -223,7 +223,7 @@ def test_the_dashboard_no_longer_switches_or_stashes_the_shared_checkout():
     # fast-forward-only literal is pinned where the command now runs.
     import delfin.agent.branch_ops as _BO
     assert "branch_ops.pull_main(rd)" in src
-    assert "'pull', '--ff-only', 'origin', 'main'" in \
+    assert '"pull", "--ff-only", "origin", "main"' in \
         Path(_BO.__file__).read_text()
     assert "BranchPanel(" in src and "preview_bar(" in src
 

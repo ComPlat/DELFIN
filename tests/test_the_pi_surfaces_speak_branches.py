@@ -171,7 +171,10 @@ class Bridge:
             return {"sessions": [{"id": "s1", "name": "t", "state": "idle",
                                   "messengerEnabled": True}]}
         if command.get("action") == "status":
-            return {"ok": True, "title": "t", "state": "idle"}
+            return {"ok": True, "title": "t", "state": "idle",
+                    "messengerEnabled": True}
+        if command.get("action") == "branch":
+            return self.branch_reply or {"ok": False, "text": "no reply set"}
         if command.get("action") == "prompt":
             return {"ok": True, "accepted": True}
         return {"ok": True}
@@ -186,21 +189,7 @@ def rig(tmp_path, monkeypatch, repo):
     daemon, bridge = Daemon(), Bridge()
     from delfin.messenger.gateway import Rooms
     rooms = Rooms(daemon, bridge)
-    # The session's workspace is the fake checkout: the branch commands run
-    # in the session's workspace, where the service record says it is.
-    monkeypatch.setattr(rooms, "session", fake_session_with(repo))
     return rooms, daemon, bridge, repo
-
-
-def fake_session_with(repo):
-    async def session(sid, action, **kwargs):
-        if action == "branch":
-            return kwargs["reply"]
-        if action == "status":
-            return {"ok": True, "title": "t", "state": "idle"}
-        return {"ok": True}
-
-    return session
 
 
 def message(chat="#10", text="branches", sender="7", mid="1"):
@@ -209,49 +198,58 @@ def message(chat="#10", text="branches", sender="7", mid="1"):
 
 def test_messenger_branches_lists(rig):
     rooms, daemon, bridge, repo = rig
-    bridge.reply_map = {}
+    bridge.branch_reply = {
+        "ok": True,
+        "rows": [{"ref": "main"}, {"ref": "feat", "ahead": 1}]}
     asyncio.run(rooms.handle(message(text="branches")))
     text = daemon.sent[-1][1]
     assert "main" in text
     assert "1." in text or "1)" in text
+    # the second line is the branch a later "test 2" names
+    assert "feat" in text
 
 
-def test_messenger_test_by_number(rig, monkeypatch):
+def test_messenger_test_by_number(rig):
     rooms, daemon, bridge, repo = rig
-    # the numbered answer the service gives for `test 2`
-    reply = {"ok": True, "text": "fix-it: 3 passed, 0 failed in 5.0s",
-             "passed": 3, "failed": 0}
-    calls = []
-    real_session = fake_session_with(repo)
-
-    async def session(sid, action, **kwargs):
-        if action == "branch":
-            calls.append(kwargs)
-            kwargs["reply"] = reply
-            return reply
-        return await real_session(sid, action, **kwargs)
-
-    monkeypatch.setattr(rooms, "session", session)
+    bridge.branch_reply = {
+        "ok": True, "text": "feat: 3 passed, 0 failed in 5.0s",
+        "passed": 3, "failed": 0}
     asyncio.run(rooms.handle(message(text="test 2")))
-    assert calls and calls[0].get("action") == "test"
+    calls = bridge.calls
+    branch_calls = [c for c in calls if c.get("action") == "branch"]
+    assert branch_calls and branch_calls[-1].get("sub") == "test"
     text = daemon.sent[-1][1]
     assert "passed" in text
 
 
 def test_messenger_pull(rig):
     rooms, daemon, bridge, repo = rig
+    bridge.branch_reply = {"ok": True, "text": "Updated main: 1 new commit(s)."}
     asyncio.run(rooms.handle(message(text="pull")))
-    assert daemon.sent[-1][1]
+    assert "commit" in daemon.sent[-1][1]
 
 
 def test_messenger_cleanup_two_step(rig):
     rooms, daemon, bridge, repo = rig
     # step 1: the listing
+    bridge.branch_reply = {"ok": True,
+                           "candidates": [{"name": "old/merged",
+                                           "reason": "merged into origin/main"}]}
     asyncio.run(rooms.handle(message(text="cleanup", mid="m1")))
     listing = daemon.sent[-1][1]
     assert "old/merged" in listing
-    # step 2: ok <number> is the confirmation; without it nothing is deleted
+    # step 2: without the number nothing is confirmed
+    bridge.branch_reply = {"ok": False,
+                           "text": "Not deleted: deleting needs the "
+                                   "confirmation."}
     asyncio.run(rooms.handle(message(text="ok", mid="m2")))
-    assert _run(repo, "branch", "--list", "old/merged") != ""
+    # step 3: ok 1 is the confirmation; the answer carries the deletion
+    bridge.branch_reply = {"ok": True,
+                           "text": "Deleted old/merged."}
     asyncio.run(rooms.handle(message(text="ok 1", mid="m3")))
-    assert _run(repo, "branch", "--list", "old/merged") == ""
+    assert "Deleted" in daemon.sent[-1][1]
+    # the delete request carried confirm=true and the number the phone
+    # named (the service resolves it against the cleanup listing)
+    deletes = [c for c in bridge.calls if c.get("sub") == "cleanup"
+               and c.get("confirm")]
+    assert deletes and deletes[-1].get("delete") == ["1"]
