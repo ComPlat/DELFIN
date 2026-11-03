@@ -5,13 +5,15 @@ dashboard_does.py's fixture), the REPL command table and a Rooms gateway
 rig (tests/test_the_messenger_gateway_only_serves_the_paired_phone.py's
 fake bridge). Output:
 
-* ``/branches [view]``, ``/test <n|name>``, ``/pull``, ``/cleanup`` answer
+* ``/branches [view]``, ``/branches test <n|name>``, ``/branches pull``,
+  ``/branches cleanup`` answer
   with lines; numbering matches the order ``/branches`` printed them, so
-  ``/test 2`` tests the second branch shown;
+  ``/branches test 2`` tests the second branch shown;
 * the messenger answers the short words ``branches``, ``test <n>``,
   ``pull``, ``cleanup`` the same way, numbered answers included;
 * nothing here switches the shared checkout; a deletion is only made by
-  /cleanup with its confirmation (the phone: ``cleanup`` then ``ok``).
+  /branches cleanup with its confirmation (the phone: ``cleanup``
+  then ``ok``).
 """
 
 from __future__ import annotations
@@ -85,19 +87,19 @@ def test_slash_test_by_number_and_name(repo, monkeypatch):
                         lambda *a, **k: calls.append(a) or
                         {"passed": 1, "failed": 0, "first_failure": ""})
     listing = repl_commands.dispatch("/branches", _ctx(repo)).output
-    # the second row shown is a real branch of this repo: /test 2 resolves it
-    result = repl_commands.dispatch("/test 2", _ctx(repo))
+    # the second row shown is a real branch: /branches test 2 resolves it
+    result = repl_commands.dispatch("/branches test 2", _ctx(repo))
     assert result.handled
     assert "feat" in result.output or "old/merged" in result.output, listing
     assert calls, "the test must actually run"
     calls.clear()
-    result = repl_commands.dispatch("/test feat", _ctx(repo))
+    result = repl_commands.dispatch("/branches test feat", _ctx(repo))
     assert result.handled and calls
 
 
 def test_slash_test_refuses_out_of_range(repo):
     from delfin.agent import repl_commands
-    result = repl_commands.dispatch("/test 99", _ctx(repo))
+    result = repl_commands.dispatch("/branches test 99", _ctx(repo))
     assert result.handled
     assert "no branch" in result.output.lower() or "unknown" in \
         result.output.lower() or "not" in result.output.lower()
@@ -114,7 +116,7 @@ def test_slash_pull(repo, monkeypatch):
         return real(repo_path)
 
     monkeypatch.setattr(branch_ops, "pull_main", spy)
-    result = repl_commands.dispatch("/pull", _ctx(repo))
+    result = repl_commands.dispatch("/branches pull", _ctx(repo))
     assert result.handled and result.output
     assert seen == [Path(repo)]
     # the checkout stayed on main: a pull never switches
@@ -123,11 +125,11 @@ def test_slash_pull(repo, monkeypatch):
 
 def test_slash_cleanup_lists_then_needs_confirm(repo):
     from delfin.agent import repl_commands
-    listing = repl_commands.dispatch("/cleanup", _ctx(repo))
+    listing = repl_commands.dispatch("/branches cleanup", _ctx(repo))
     assert listing.handled and listing.output
     assert "old/merged" in listing.output
-    # a bare yes is not a confirmation of anything: /cleanup ok does it
-    result = repl_commands.dispatch("/cleanup ok", _ctx(repo))
+    # a bare yes is not a confirmation: /branches cleanup ok does it
+    result = repl_commands.dispatch("/branches cleanup ok", _ctx(repo))
     assert result.handled
     assert _run(repo, "branch", "--list", "old/merged") == ""
 
@@ -137,11 +139,11 @@ def test_slash_cleanup_unmerged_needs_second_confirm(repo):
     _run(repo, "checkout", "-q", "-b", "wip")
     _commit(repo, "w.txt")
     _run(repo, "checkout", "-q", "main")
-    listing = repl_commands.dispatch("/cleanup", _ctx(repo)).output
+    listing = repl_commands.dispatch("/branches cleanup", _ctx(repo)).output
     # unmerged branches are offered only with include_unmerged; the plain
-    # listing does not offer wip, and /cleanup wip is not a deletion route
+    # listing does not offer wip; /branches cleanup wip is no deletion route
     assert "wip" not in listing
-    result = repl_commands.dispatch("/cleanup wip", _ctx(repo))
+    result = repl_commands.dispatch("/branches cleanup wip", _ctx(repo))
     assert result.handled
     assert _run(repo, "branch", "--list", "wip") != ""
 

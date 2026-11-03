@@ -320,4 +320,14 @@ EN = {
     'Der Ordner für Zeitpläne ist kein normaler Ordner.': 'The folder for schedules is not a plain folder.',
     'Höchstens fünf neue Zeitpläne in zehn Minuten. Bitte später erneut.':
     'At most five new schedules in ten minutes. Please try again later.',
+    # The branch commands (gateway._branch_word / _branch_ok). The inner
+    # texts come from delfin/agent/branch_commands.py, which is English
+    # already; these are the gateway's own words around them.
+    'Branchen nicht erreichbar: {e}': 'Branches unreachable: {e}',
+    'Nichts aufzuräumen: keine gemergten Branches, keine verwaisten Worktrees.':
+    'Nothing to clean up: no merged branches, no orphaned worktrees.',
+    'Bestätigen mit: ok <Nummer>': 'Confirm with: ok <number>',
+    'Keine Branches in dieser Ansicht.': 'No branches in this view.',
+    'Aufräumen nicht erreichbar: {e}': 'Cleanup unreachable: {e}',
+    '{t}': '{t}',
 }

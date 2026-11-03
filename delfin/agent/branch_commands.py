@@ -1,6 +1,7 @@
 """Branch commands for the Pi's surfaces: the words, one spelling.
 
-The REPL (``/branches``, ``/test``, ``/pull``, ``/cleanup``) and the
+The REPL (``/branches [view]``, ``/branches test <n|name>``,
+``/branches pull``, ``/branches cleanup``) and the
 messenger gateway (``branches``, ``test <n>``, ``pull``, ``cleanup``,
 ``ok <n>``) answer the same questions with the same words. This module is
 that shared layer: it formats ``branch_ops`` answers into a few lines and
@@ -77,7 +78,8 @@ def resolve(workspace, token: str) -> str:
 
 
 def test_text(workspace, ref_or_number: str, *, keep: bool = False) -> str:
-    """The answer to ``/test <n|name>``: the run's counts and the first
+    """The answer to ``/branches test <n|name>``: the run's counts and
+    the first
     failure, in a few lines."""
     ref = resolve(workspace, ref_or_number)
     if not ref:
@@ -90,7 +92,7 @@ def test_text(workspace, ref_or_number: str, *, keep: bool = False) -> str:
 
 
 def pull_text(workspace) -> str:
-    """The answer to ``/pull``: main updated fast-forward-only, or why
+    """The answer to ``/branches pull``: main updated fast-forward-only, or why
     not."""
     result = branch_ops.pull_main(_workspace(workspace))
     return result.get("text") or ("updated" if result.get("ok")
@@ -98,7 +100,8 @@ def pull_text(workspace) -> str:
 
 
 def cleanup_text(workspace) -> str:
-    """The answer to ``/cleanup``: what may be deleted, numbered, and the
+    """The answer to ``/branches cleanup``: what may be deleted,
+    numbered, and the
     word that confirms."""
     candidates, _kept = branch_ops.cleanup_candidates(_workspace(workspace))
     if candidates is None:
@@ -109,7 +112,7 @@ def cleanup_text(workspace) -> str:
     for i, c in enumerate(candidates, 1):
         lines.append(f"{i}. {c['name']}" +
                      (f" ({c['reason']})" if c.get("reason") else ""))
-    lines.append("confirm with: cleanup ok <number>  (or /cleanup ok)")
+    lines.append("confirm with: /branches cleanup ok <number>")
     return "\n".join(lines)
 
 
