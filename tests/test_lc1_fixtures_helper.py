@@ -4,32 +4,27 @@ Imported by tests/conftest.py (re-exported there) and directly by the
 consumer test files, so `from tests.conftest import ...` (a second,
 plain-module import of conftest) is not needed. See LICENSE_GUARD.md,
 rule family 2: real licensed-program output lives outside the repo,
-addressed through the DELFIN_PRIVATE_FIXTURES environment variable;
-tests skip when it is absent and never fail in CI.
+addressed through the DELFIN_PRIVATE_FIXTURES environment variable (or
+the paths.fixtures_dir settings entry); tests skip when no store is
+configured and never fail in CI. Files are hash-checked against the
+store manifest (delfin/fixtures_store.py); a modified file is refused,
+never silently used.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
+
+from delfin.fixtures_store import private_fixtures_path as _store_path
+from delfin.fixtures_store import store_root as _store_root
 
 PRIVATE_FIXTURES_ENV = "DELFIN_PRIVATE_FIXTURES"
 
 
 def private_fixtures_path(rel: str = "") -> Path:
-    """Path inside the private fixture store, or raise LookupError."""
-    root = os.environ.get(PRIVATE_FIXTURES_ENV, "").strip()
-    if not root:
-        raise LookupError(
-            f"{PRIVATE_FIXTURES_ENV} not set: real ORCA fixtures live in the "
-            "private store outside the repository (LICENSE_GUARD.md, rule "
-            "family 2); set the variable to the store root to run this test."
-        )
-    p = Path(root) / rel
-    if not p.exists():
-        raise LookupError(f"{PRIVATE_FIXTURES_ENV} set but {p} is missing")
-    return p
+    """Hash-checked path inside the private fixture store, or raise LookupError."""
+    return _store_path(rel)
 
 
 def private_fixtures_or_skip(rel: str) -> Path:
@@ -53,3 +48,8 @@ def lc1_fixture_dir(rel: str) -> Path:
     if legacy.is_dir() and any(legacy.iterdir()):
         return legacy
     return private_fixtures_or_skip(rel)
+
+
+def private_fixtures_store_root() -> Path:
+    """The store root, or raise LookupError (env var, then settings)."""
+    return _store_root()

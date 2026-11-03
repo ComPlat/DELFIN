@@ -42,11 +42,19 @@ function Quote-NativeArgument([string]$value) {
     $escaped = [regex]::Replace($escaped,'(\\+)$','$1$1')
     return '"' + $escaped + '"'
 }
+function Get-PersonName {
+    # Who sits at this Windows account. A server that runs several people on one
+    # account (remote_bootstrap.sh, ~/.config/delfin/launcher-people.conf) gives
+    # each a home of their own; every other server ignores it.
+    $name = [regex]::Replace(([string]$env:USERNAME).ToLowerInvariant(), '[^a-z0-9_-]', '-').Trim('-')
+    if ($name.Length -gt 32) { $name = $name.Substring(0, 32).TrimEnd('-') }
+    return $name
+}
 function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '') {
     $bootstrap = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'remote_bootstrap.sh')))
     $payload = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'remote_launcher.py')))
     $script = 'eval "$(printf %s ' + $bootstrap + ' | base64 -d)"'
-    return 'bash -ilc ' + (Shell-Quote $script) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $payload) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' })
+    return 'bash -ilc ' + (Shell-Quote $script) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $payload) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' }) + ' ' + (Shell-Quote (Get-PersonName))
 }
 function Get-FreeLocalPort([int]$preferred) {
     $candidates = if ($preferred -eq 0) { @(0) } else { @($preferred..([Math]::Min(65535,$preferred+100))) + @(0) }
