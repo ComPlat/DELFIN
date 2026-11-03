@@ -52,9 +52,9 @@ def test_collect_esd_results_falls_back_when_orca_read_none(tmp_path):
                                note="no value")) as mock_read:
         summary = esd_results.collect_esd_results(tmp_path, ["S0"], [], [])
     assert mock_read.called
-    assert summary.fspe["S0"] == -76.123456789012
-    assert summary.zpe["S0"] == 0.012345678901
-    assert summary.gibbs["S0"] == -76.098765432109
+    assert summary.states["S0"].fspe == -76.123456789012
+    assert summary.states["S0"].zpe == 0.012345678901
+    assert summary.states["S0"].gibbs == -76.098765432109
 
 
 def test_calculate_dele_cm1_via_orca_read(tmp_path):
@@ -73,4 +73,27 @@ def test_calculate_dele_cm1_via_orca_read(tmp_path):
     read_quantities = [c.args[2] for c in mock_read.call_args_list
                        if c.args and len(c.args) >= 3]
     assert orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY in read_quantities
-    assert abs(dele - 29848.6) < 1.0
+    # DELE = E(S0) - E(S1) = -0.3 Eh = -65842.3889 cm^-1
+    assert abs(dele - (-0.3 * 219474.63)) < 0.1
+
+
+def test_reader_text_esd_sites_equal_old_parsers(tmp_path, monkeypatch):
+    """With orca.reader=text the switched ESD sites read the old way."""
+    monkeypatch.setattr(orca_read, "_reader_mode", lambda: "text")
+    from delfin.energies import find_electronic_energy, find_ZPE, \
+        find_gibbs_energy
+
+    out_src = tmp_path / "S0.out"
+    out_src.write_text(
+        "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+        "FINAL SINGLE POINT ENERGY      -76.123456789012 Eh\n"
+        "Zero point energy             0.012345678901 Eh\n"
+        "Final Gibbs free energy       -76.098765432109 Eh\n")
+    summary = esd_results.collect_esd_results(tmp_path, ["S0"], [], [])
+    st = summary.states["S0"]
+    assert st.fspe == find_electronic_energy(str(out_src))
+    assert st.zpe == find_ZPE(str(out_src))
+    assert st.gibbs == find_gibbs_energy(str(out_src))
+    dele = esd_input_generator.calculate_dele_cm1(
+        str(out_src), str(out_src))
+    assert dele == 0.0
