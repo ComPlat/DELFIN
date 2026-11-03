@@ -6978,7 +6978,7 @@ def static_viewer_html(xyz_text, width=640, height=450,
         'xyz': xyz_text,
         'highlight': list(highlight_indices or []),
         'arrows': list(arrows or []),
-        'show_arrows': False,  # 2026-11-02 user report: arrows dominated
+        'show_arrows': bool(arrows),  # optional; off when no arrows passed
         'frames': frames or None,
         # Browser playback uses this validated count rather than assuming
         # GLViewer exposes a getLength() method.
