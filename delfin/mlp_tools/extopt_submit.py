@@ -22,6 +22,16 @@ Submission discipline (same as cluster_dispatch):
   per parent ORCA process and stops them when it exits; for the
   delfin-mlp-extopt wrapper (no built-in server) the script traps job end
   and calls ``<provider> --stop-server`` as a no-op-safe cleanup.
+
+GOAT (``run_type="goat"``) runs only with ``provider="orca_mlips"`` on a
+GPU partition: GOAT needs on the order of 100 x N_atoms optimisations
+(manual 4.10), the delfin-mlp-extopt wrapper reloads the model on every
+ProgExt call, and the local CPU fallback (<= 2 cores, < 30 min) cannot
+hold such a run.  The job holds ORCA with its GOAT workers (sharing
+``%pal nprocs``) and one orca-mlips server.  Whether one server serves
+several parallel workers cleanly is not verified (the upstream README
+shows only ``%pal nprocs 8``); ``goat_max_workers`` caps the workers
+until the first real job has shown it.
 """
 
 from __future__ import annotations
@@ -33,7 +43,12 @@ from typing import Optional, Sequence
 from delfin.common.logging import get_logger
 from delfin.mlp_tools.cluster_dispatch import MLPClusterConfig
 from delfin.mlp_tools.orca_extopt import build_extopt_input
-from delfin.mlp_tools.orca_mlips import build_orca_mlips_input
+from delfin.mlp_tools.orca_mlips import (
+    GOAT_DEFAULT_WORKERS,
+    build_orca_mlips_input,
+    goat_output_files,
+    normalize_goat_options,
+)
 
 logger = get_logger(__name__)
 
@@ -70,6 +85,13 @@ class ExtOptJobRequest:
     allow_local: bool = False           # explicit opt-in to the CPU fallback
     max_local_atoms: int = 30
     work_dir: Path = field(default_factory=Path)
+    # GOAT (orca_mlips only): %goat options, Table 4.8 variant, worker cap
+    goat_options: Optional[dict] = None
+    goat_variant: str = "GOAT"
+    goat_max_workers: Optional[int] = None
+    # NEB / NEB-TS end geometry and relaxed-scan dict (orca_mlips builder)
+    neb_end_coordinates: Optional[Sequence[Sequence[float]]] = None
+    scan: Optional[dict] = None
 
 
 @dataclass
@@ -79,16 +101,56 @@ class ExtOptPlan:
     script: Path
     pal: int = 1
     reason: str = ""
+    #: Files the job will write in its work_dir (GOAT: output, final
+    #: ensemble, global minimum); empty for the other run types.
+    produces: tuple[Path, ...] = ()
 
 
-def _build_input(req: ExtOptJobRequest) -> Path:
+def _is_goat(req: ExtOptJobRequest) -> bool:
+    return str(req.run_type).lower().strip() == "goat"
+
+
+def goat_workers(req: ExtOptJobRequest) -> tuple[int, dict]:
+    """(number of GOAT workers, validated %goat options) for ``req``.
+
+    Workers: ``goat_max_workers`` caps ``%goat nworkers``; without either,
+    GOAT's default of 8 (manual 4.10.1).  The cap is written as nworkers
+    so ORCA starts no more workers than the job has cores for.  The cap
+    must be a positive multiple of 4 (Table 4.9).
+    """
+    opts = normalize_goat_options(req.goat_options)
+    given = opts.get("nworkers")
+    cap = req.goat_max_workers
+    if cap is not None:
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0 or cap % 4:
+            raise ValueError(
+                f"goat_max_workers {cap!r} must be a positive multiple of 4 "
+                "(manual Table 4.9: number of temperatures)"
+            )
+        workers = min(cap, given) if isinstance(given, int) else cap
+        opts["nworkers"] = workers
+    else:
+        workers = given if isinstance(given, int) else GOAT_DEFAULT_WORKERS
+    return int(workers), opts
+
+
+def _build_input(req: ExtOptJobRequest, *, ncores: int = 1,
+                 goat_options: Optional[dict] = None) -> Path:
     if req.provider == "orca_mlips":
+        extra: dict = {}
+        if _is_goat(req):
+            extra = dict(goat_options=goat_options, goat_variant=req.goat_variant,
+                         ncores=ncores)
+        if req.neb_end_coordinates is not None:
+            extra["neb_end_coordinates"] = req.neb_end_coordinates
+        if req.scan is not None:
+            extra["scan"] = req.scan
         return build_orca_mlips_input(
             req.run_type, elements=req.elements, coordinates=req.coordinates,
             charge=req.charge, mult=req.mult, backend=req.mlips_backend,
             model=req.model, device=req.device, solvent=req.solvent,
             solvent_model=req.solvent_model, hessian=req.hessian,
-            base_name=req.job_name, work_dir=req.work_dir,
+            base_name=req.job_name, work_dir=req.work_dir, **extra,
         )
     if req.provider != "delfin":
         raise ValueError(
@@ -104,6 +166,8 @@ def _build_input(req: ExtOptJobRequest) -> Path:
 
 def plan_extopt_job(req: ExtOptJobRequest, *, cfg: MLPClusterConfig) -> ExtOptPlan:
     """Build the input and decide gpu vs local vs refuse. Submits nothing."""
+    if _is_goat(req):
+        return _plan_goat_job(req, cfg=cfg)
     inp = _build_input(req)
     job_dir = Path(req.work_dir)
     if cfg.has_gpu_partition():
@@ -134,6 +198,44 @@ def plan_extopt_job(req: ExtOptJobRequest, *, cfg: MLPClusterConfig) -> ExtOptPl
                       reason=f"local CPU run, <= {pal} cores")
 
 
+def _plan_goat_job(req: ExtOptJobRequest, *, cfg: MLPClusterConfig) -> ExtOptPlan:
+    """GOAT: orca-mlips on a GPU node, or a refusal; never a local run."""
+    job_dir = Path(req.work_dir)
+    inp_path = job_dir / f"{req.job_name}.inp"
+    script = job_dir / f"{req.job_name}.sbatch"
+    if req.provider != "orca_mlips":
+        return ExtOptPlan(
+            mode="refuse", input=inp_path, script=script, pal=1,
+            reason=(
+                "GOAT runs only with provider='orca_mlips': GOAT makes on the "
+                "order of 100 x N_atoms optimisations (manual 4.10) and the "
+                "delfin-mlp-extopt wrapper reloads the model on every ProgExt "
+                "call; orca-mlips keeps one resident model server per job"
+            ),
+        )
+    workers, opts = goat_workers(req)
+    if not cfg.has_gpu_partition():
+        return ExtOptPlan(
+            mode="refuse", input=inp_path, script=script, pal=1,
+            reason=(
+                "GOAT with an MLIP needs a GPU partition "
+                "(runtime.slurm.gpu_partitions); no local CPU fallback: "
+                "the local limits (<= 2 cores, < 30 min) cannot hold a "
+                "GOAT run"
+            ),
+        )
+    pal = max(int(cfg.cpus_per_task), workers)
+    inp = _build_input(req, ncores=pal, goat_options=opts)
+    script.write_text(render_extopt_job_script(
+        req, cfg=cfg, pal=pal, provider_cmd=_provider_cmd(req), goat_workers=workers,
+    ))
+    files = goat_output_files(req.job_name)
+    produces = tuple(job_dir / files[k] for k in ("output", "finalensemble", "global_minimum"))
+    return ExtOptPlan(mode="gpu", input=inp, script=script, pal=pal,
+                      reason=f"GOAT: {workers} workers on {pal} cores, one GPU node",
+                      produces=produces)
+
+
 def _provider_cmd(req: ExtOptJobRequest) -> str:
     if req.provider == "orca_mlips":
         return f"orca-mlips-{req.mlips_backend}"
@@ -141,17 +243,22 @@ def _provider_cmd(req: ExtOptJobRequest) -> str:
 
 
 def render_extopt_job_script(req: ExtOptJobRequest, *, cfg: MLPClusterConfig,
-                             pal: int, provider_cmd: str) -> str:
+                             pal: int, provider_cmd: str,
+                             goat_workers: Optional[int] = None) -> str:
     """The sbatch script text for one ORCA+ExtOpt GPU job.
 
     Same-node guarantee: ``--nodes=1`` puts ORCA and the ProgExt command
     (and the orca-mlips resident server) on one node.  Server lifetime is
     bound to the job: orca-mlips stops its auto-server with the parent
     ORCA process; the cleanup line covers a job killed mid-run.
+    ``%pal`` is part of the ORCA input, never of this script.
+
+    ``goat_workers`` (GOAT jobs): ORCA is started by its full path (ORCA
+    needs it for parallel runs) and the script records the worker count
+    and the unverified one-server-for-all-workers assumption.
     """
     job_dir = Path(req.work_dir)
     is_mlips = req.provider == "orca_mlips"
-    pal_line = f"%pal\n  nprocs {pal}\nend" if req.provider == "delfin" else ""
     lines = [
         "#!/bin/bash",
         f"# delfin ORCA+ExtOpt ({req.provider}/{req.mlips_backend or req.backend}) "
@@ -185,11 +292,24 @@ def render_extopt_job_script(req: ExtOptJobRequest, *, cfg: MLPClusterConfig,
         f'trap \'{provider_cmd} --stop-server 2>/dev/null || true\' EXIT',
         "",
     ])
-    if pal_line:
-        lines.extend([pal_line, ""])
-    lines.append(
-        "orca " + req.job_name + ".inp > " + req.job_name + ".out"
-    )
+    if goat_workers is not None:
+        lines.extend([
+            f"# GOAT: {goat_workers} workers share %pal nprocs {pal} in the "
+            "input. The MLIP side is",
+            "# orca-mlips' auto-server (started by the first ProgExt call, "
+            "stopped by the trap);",
+            "# no second server is started here. Unverified: whether the "
+            "parallel workers share",
+            "# one server cleanly -- check it in the first real job (worker "
+            "outputs, GPU memory,",
+            "# server processes); goat_max_workers caps the workers.",
+            'ORCA_BIN="$(command -v orca)"',
+            '"$ORCA_BIN" ' + req.job_name + ".inp > " + req.job_name + ".out",
+        ])
+    else:
+        lines.append(
+            "orca " + req.job_name + ".inp > " + req.job_name + ".out"
+        )
     if is_mlips:
         lines.append(
             f"# orca-mlips stops its auto-server with the parent ORCA "
@@ -233,6 +353,7 @@ def submit_extopt_job(req: ExtOptJobRequest, *, cfg: MLPClusterConfig,
         "script": str(plan.script),
         "pal": plan.pal,
         "reason": plan.reason,
+        "produces": [str(p) for p in plan.produces],
         "submitted": False,
         "sbatch_output": "",
     }
