@@ -234,6 +234,14 @@ def user_settings_path() -> Path:
     return Path(user_settings.get_settings_path())
 
 
+def defaults_settings_path() -> Optional[Path]:
+    """The defaults file under the user's (the launcher's people mode:
+    the account's file), or None. Its rules are read before the user's."""
+    from delfin import user_settings
+    found = user_settings.get_settings_defaults_path(user_settings_path())
+    return Path(found) if found is not None else None
+
+
 def project_settings_path(workspace: Any) -> Optional[Path]:
     try:
         return Path(workspace).expanduser().resolve() / PROJECT_RELPATH
@@ -494,8 +502,12 @@ def _load_local(workspace: Any = None) -> RuleSet:
     except Exception:
         upath = None
     ppath = project_settings_path(workspace) if workspace is not None else None
+    try:
+        dpath = defaults_settings_path() if upath is not None else None
+    except Exception:
+        dpath = None
     identity = repo_identity(workspace)
-    key = (_stamp(upath), _stamp(ppath), identity)
+    key = (_stamp(upath), _stamp(ppath), identity, _stamp(dpath))
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
     if hit is not None:
@@ -503,7 +515,12 @@ def _load_local(workspace: Any = None) -> RuleSet:
     errors: list = []
     lists = {k: [] for k in LISTS}
     gallow, allow_off, other = None, [], []
-    for path, project in ((upath, False), (ppath, True)):
+    # The defaults file (people mode) is a user-level layer read first: its
+    # rules are added to the user's, and its global_allow holds unless the
+    # user's file sets one. Rejected: the user's permissions block
+    # replacing the defaults' whole, which drops the account's deny rules
+    # for everyone with a block of their own.
+    for path, project in ((dpath, False), (upath, False), (ppath, True)):
         block = _read_block(path, errors)
         if not block:
             continue
@@ -512,13 +529,15 @@ def _load_local(workspace: Any = None) -> RuleSet:
             for k in LISTS:
                 lists[k].extend(got[k])
             continue
-        gallow = block.get("global_allow")
+        if "global_allow" in block or gallow is None:
+            gallow = block.get("global_allow")
         if gallow is not None and not isinstance(gallow, bool):
             errors.append((str(path), "global_allow", repr(gallow),
                            "is neither true nor false; the global allow "
                            "list is off until it is"))
             gallow = False
-        here, other = _repo_lists(block, str(path), identity, errors)
+        here, more = _repo_lists(block, str(path), identity, errors)
+        other = list(other) + list(more)
         # The repository's own rules after the global deny/ask (every
         # deny before any ask either way) and before the global allows,
         # so the scoped rule is the one reported.
@@ -526,7 +545,7 @@ def _load_local(workspace: Any = None) -> RuleSet:
         lists["ask"].extend(got["ask"] + here["ask"])
         lists["allow"].extend(here["allow"])
         if gallow is False:
-            allow_off = got["allow"]
+            allow_off = list(allow_off) + list(got["allow"])
         else:
             lists["allow"].extend(got["allow"])
     rs = RuleSet(tuple(lists["deny"]), tuple(lists["ask"]),
