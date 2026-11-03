@@ -31279,6 +31279,13 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
     "response payload is not completed",
     "transferencodingerror",
     "no deployments available for selected model",
+    # Measured 2026-11-03: the same proxy fault reported with the
+    # completion marker spelled differently ("payload not completed",
+    # no "is") inside a 400 whose body is a bare
+    # litellm.APIConnectionError. The exception name in the body says
+    # the CONNECTION failed; a chat request cannot cause it.
+    "apiconnectionerror",
+    "response payload not completed",
 )
 
 
