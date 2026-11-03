@@ -52,8 +52,8 @@ HESS = """\n$vibrational_frequencies
 
 
 def _run(tmp_path, out_text=IR_BLOCK, hess_text=HESS, base="run"):
-    d = tmp_path / "run"
-    d.mkdir()
+    d = tmp_path / base
+    d.mkdir(exist_ok=True)
     (d / f"{base}.out").write_text(out_text)
     (d / f"{base}.hess").write_text(hess_text)
     return d
@@ -148,7 +148,8 @@ def test_end_to_end_matches_the_old_bodies(tmp_path):
     ir_modes = ir_spectrum.parse_ir_spectrum(d / "run.out")
     assert [(m.frequency_cm1, m.intensity_km_mol) for m in ir_modes] == \
         [(89.55, 0.30), (113.29, 0.96), (1641.13, 55.00)]
-    imag_modes = imag.collect_imaginary_modes(str(d / "run.out"))
+    imag_modes = imag.collect_imaginary_modes(
+        str(_run(tmp_path, out_text=IMAG_LINES, base="imag") / "imag.out"))
     assert imag_modes == [(4, -831.0), (5, -12.5)]
     freqs = imag.hessian_frequencies(d / "run.hess")
     assert freqs[6] == -831.0
@@ -160,7 +161,8 @@ def test_reader_text_restores_the_old_path_exactly(tmp_path):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(orca_read, "_reader_mode", lambda: "text")
         ir = ir_spectrum.parse_ir_spectrum(d / "run.out")
-        imag_modes = imag.collect_imaginary_modes(str(d / "run.out"))
+        imag_modes = imag.collect_imaginary_modes(
+            str(_run(tmp_path, out_text=IMAG_LINES, base="imag") / "imag.out"))
         freqs = imag.hessian_frequencies(d / "run.hess")
     assert [(m.frequency_cm1, m.intensity_km_mol) for m in ir] == \
         [(89.55, 0.30), (113.29, 0.96), (1641.13, 55.00)]
