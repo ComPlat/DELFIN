@@ -126,7 +126,7 @@ def test_dry_run_prints_input_and_script_without_submitting(tmp_path, monkeypatc
     text = Path(result["script"]).read_text()
     assert "#SBATCH" in text
     inp = Path(result["input"]).read_text()
-    assert "ExtOpt" in inp
+    assert "extopt" in inp.lower()  # OPI writes '!extopt', the fallback 'ExtOpt'
 
 
 def test_real_submission_goes_through_scheduler_client(tmp_path, monkeypatch):
