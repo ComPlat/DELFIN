@@ -7121,10 +7121,15 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "    if (!atom || atom.serial === undefined || atom.serial === null) return;\n"
         "    var sync = document.querySelector(" + _json.dumps(click_sync_css) + ");\n"
         "    if (!sync) { console.error('DELFIN TS-GOAT: click sync input missing'); return; }\n"
+        # Add a monotonically changing suffix: a second click on the
+        # SAME atom must emit a new Text value, otherwise traitlets
+        # suppresses the second on_change and the atom cannot toggle off.
+        "    window.__tsGoatClickSeq = (window.__tsGoatClickSeq || 0) + 1;\n"
+        "    var clickValue = String(atom.serial - 1) + ':' + window.__tsGoatClickSeq;\n"
         "    var setter = Object.getOwnPropertyDescriptor(\n"
         "      window.HTMLInputElement.prototype, 'value');\n"
-        "    if (setter && setter.set) setter.set.call(sync, String(atom.serial - 1));\n"
-        "    else sync.value = String(atom.serial - 1);\n"
+        "    if (setter && setter.set) setter.set.call(sync, clickValue);\n"
+        "    else sync.value = clickValue;\n"
         "    sync.dispatchEvent(new Event('input', {bubbles: true}));\n"
         "  });\n"
         "} catch (e) { console.error('DELFIN TS-GOAT: setClickable failed', e); }\n"
