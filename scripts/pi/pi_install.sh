@@ -21,10 +21,13 @@ UV="$HOME/.local/bin/uv"
 SKIP_DEPS_RE='^pymol-open-source'
 # Every extra pyproject.toml defines, minus these (so new extras arrive on
 # the Pi by themselves): ai-retro (aizynthfinder pins rdkit<2023, conflicts
-# with DELFIN's rdkit>=2023.3), pymol (built below). The orca extra (OPI,
-# pure Python) is installed: the Pi builds and checks ORCA inputs and reads
-# results with the same OPI as every other host, even where ORCA does not run.
-SKIP_EXTRAS="${DELFIN_PI_SKIP_EXTRAS:-ai-retro pymol}"
+# with DELFIN's rdkit>=2023.3), pymol (built below), orca. orca-pi 2.0.0
+# needs numpy>=2.2.6 and rdkit<2026; on the Pi's Python 3.11 mendeleev keeps
+# numpy<2 and rdkit is 2026.x, so the whole set had no solution and every
+# deploy that changed pyproject.toml stopped there. OPI also wants an ORCA
+# binary as soon as a Calculator is made (checked 2026-11-03), and the Pi
+# is for the agent, not for ORCA runs.
+SKIP_EXTRAS="${DELFIN_PI_SKIP_EXTRAS:-ai-retro orca pymol}"
 # Not in any extra, but a doctor check wants an OCR engine (tesseract via apt).
 EXTRA_PIP="pytesseract"
 DELFIN_GIT_URL="${DELFIN_GIT_URL:-https://github.com/ComPlat/DELFIN.git}"
@@ -33,6 +36,25 @@ PYMOL_GIT="git+https://github.com/schrodinger/pymol-open-source.git@edcda80f3a73
 
 cd "$ROOT"
 [[ -x "$VENV_PY" ]] || { echo "error: $VENV_PY missing - run pi_bootstrap.sh first" >&2; exit 1; }
+
+# Editable as a plain path on sys.path (compat), not setuptools' finder: the
+# finder sits after the path search, so from ~ the folder ~/delfin (this
+# install's root, no __init__.py) won as an empty namespace package and
+# `python -c "import delfin..."` found nothing. A path entry keeps the real
+# package ahead of any same-named plain folder.
+install_delfin_editable() {
+    "$UV" pip install --python "$VENV_PY" --no-deps --config-setting editable_mode=compat -e "$ROOT/src"
+}
+
+# A venv installed before with the finder gets the path form once.
+ensure_compat_editable() {
+    local site
+    site="$("$VENV_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+    if compgen -G "$site/__editable___delfin*finder.py" >/dev/null; then
+        echo "==> DELFIN editable install: finder -> path (compat)"
+        install_delfin_editable
+    fi
+}
 
 install_deps() {
     "$VENV_PY" - "$SKIP_EXTRAS" "$SKIP_DEPS_RE" > "$ROOT/requirements.pi.txt" <<'EOF'
@@ -50,7 +72,7 @@ EOF
     # CPU torch: PyPI's aarch64 torch drags in multi-GB CUDA (sbsa) wheels.
     # shellcheck disable=SC2086
     "$UV" pip install --python "$VENV_PY" --torch-backend cpu -r "$ROOT/requirements.pi.txt" $EXTRA_PIP
-    "$UV" pip install --python "$VENV_PY" --no-deps -e "$ROOT/src"
+    install_delfin_editable
     if ! "$VENV_PY" -c "import pymol" 2>/dev/null; then
         echo "==> building pymol from source (optional, only for report images)"
         # --no-deps: pymol's master declares numpy>=2 and would upgrade past
@@ -145,6 +167,53 @@ if not str((raw.get("agent") or {}).get("provider") or "").strip():
 EOF
     [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
         || echo "warning: clone of $DELFIN_GIT_URL failed" >&2
+    # Several people work in this account through the Windows launcher: each
+    # gets ~/people/<windows user> as home (own sessions, dashboard, tmux,
+    # agent service). DELFIN_PI_PEOPLE=0 leaves it off. An overview, not a
+    # boundary: they are one Unix user.
+    if [[ "${DELFIN_PI_PEOPLE:-1}" == "1" && ! -f "$HOME/.config/delfin/launcher-people.conf" ]]; then
+        mkdir -p "$HOME/.config/delfin"
+        printf '%s\n' "# Windows launcher: one home per person under ~/people (remote_bootstrap.sh)." \
+            > "$HOME/.config/delfin/launcher-people.conf"
+        echo "==> launcher people mode on (~/people/<name>; overview: delfin-people)"
+    fi
+    install -D -m 755 "$ROOT/src/scripts/pi/delfin_people.sh" "$HOME/.local/bin/delfin-people"
+    # The dashboard tabs this box shows (tab ids, ~/.config/delfin/pi-tabs.conf),
+    # applied on every deploy against the tabs the code has now, so a tab a
+    # later DELFIN adds stays hidden too. Settings cannot be hidden (fixed).
+    # Through the launcher's people mode every person shares this setting.
+    local tabs_conf="$HOME/.config/delfin/pi-tabs.conf"
+    if [[ ! -f "$tabs_conf" ]]; then
+        mkdir -p "$HOME/.config/delfin"
+        printf '%s\n' "# Dashboard tabs shown on this box (ids; Settings is always shown)." \
+            "# Applied by pi_install.sh on every deploy. All ids: grep \"'id':\" delfin/dashboard/__init__.py" \
+            "agent home archive office" > "$tabs_conf"
+    fi
+    "$VENV_PY" - "$tabs_conf" "$ROOT/src/delfin/dashboard/__init__.py" <<'EOF' || echo "warning: could not apply $tabs_conf" >&2
+import re, sys
+from delfin.user_settings import load_settings, save_settings
+shown = [w for line in open(sys.argv[1], encoding="utf-8")
+         if not line.lstrip().startswith("#") for w in line.split()]
+ids = list(dict.fromkeys(re.findall(r"'id':\s*'([a-z_]+)'", open(sys.argv[2], encoding="utf-8").read())))
+unknown = [t for t in shown if t not in ids]
+if unknown:
+    print(f"warning: pi-tabs.conf names unknown tabs: {' '.join(unknown)}", file=sys.stderr)
+settings = load_settings()
+tabs = settings.setdefault("ui", {}).setdefault("tabs", {})
+order = [t for t in shown if t in ids] + [t for t in ids if t not in shown and t != "settings"]
+hidden = [t for t in ids if t not in shown and t != "settings"]
+if tabs.get("order") != order or tabs.get("hidden") != hidden:
+    tabs["order"], tabs["hidden"] = order, hidden
+    save_settings(settings)
+    print("==> dashboard tabs: " + " ".join(t for t in shown if t in ids) + " (+ settings)")
+EOF
+    # tmux waits 10 ms (3.5 default) for the rest of an escape sequence; over
+    # SSH and a VPN the terminal's answer to tmux's capability query arrives
+    # later, and its text ("^[[?61;1;6;...c") landed in the pane as typing.
+    if ! grep -qs '^set -sg escape-time' "$HOME/.tmux.conf"; then
+        printf '%s\n' "# Over SSH/VPN: wait long enough for the terminal's answers (pi_install.sh)." \
+            "set -sg escape-time 50" >> "$HOME/.tmux.conf"
+    fi
 }
 
 restart_dashboard() {
@@ -187,6 +256,7 @@ install)
     else
         echo "==> pyproject unchanged: code swapped, no reinstall needed"
     fi
+    ensure_compat_editable
     drop_foreign_tests_pkg
     smoke
     set_up_extras
@@ -204,6 +274,7 @@ rollback)
     mv src src.bad && mv src.prev src && mv src.bad src.prev
     carry_tui_modules src.prev src
     if ! cmp -s src/pyproject.toml src.prev/pyproject.toml; then install_deps; fi
+    ensure_compat_editable
     drop_foreign_tests_pkg
     smoke
     set_up_extras

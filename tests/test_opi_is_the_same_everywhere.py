@@ -38,10 +38,16 @@ def test_the_extra_pins_one_exact_version():
     assert _pin() == doctor.OPI_VERSION
 
 
-def test_the_pi_installs_the_orca_extra():
+def test_the_pi_leaves_the_orca_extra_out_with_its_reason():
+    """The Pi skips the orca extra: orca-pi 2.0.0 needs numpy>=2.2.6 and
+    rdkit<2026, which the Pi's Python 3.11 set (mendeleev: numpy<2, rdkit
+    2026.x) cannot satisfy -- with it, every deploy stopped at "No solution
+    found" and OPI was never installed. The skip must name that reason in
+    the script, so it is lifted when the pins allow it, not forgotten."""
     text = (ROOT / "scripts" / "pi" / "pi_install.sh").read_text()
     m = re.search(r'SKIP_EXTRAS="\$\{DELFIN_PI_SKIP_EXTRAS:-([^}]*)\}"', text)
-    assert m and "orca" not in m.group(1).split()
+    assert m and "orca" in m.group(1).split()
+    assert "orca-pi" in text and "numpy>=2.2.6" in text
 
 
 def _fake_opi(monkeypatch, version):

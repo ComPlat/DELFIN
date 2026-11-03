@@ -231,7 +231,19 @@ def _check_value(value: Any, schema: dict, path: str,
                     f"{json.dumps(schema['enum'])}, got "
                     f"{json.dumps(value, default=str)}")
     want = schema.get("type")
-    if isinstance(want, list):
+    want_list = isinstance(want, list)
+    # A string that begins the object/array the schema demands but dies
+    # mid-way is a call cut off by the output limit, not a type mistake:
+    # the cut lands wherever the limit bites, so this is checked below the
+    # root too (the root has its own, earlier check in check()). Reporting
+    # a bare type error here invited an identical resend (field reports
+    # 2026-11-02: 'options: expected array (array of object), got string').
+    if isinstance(value, str) and not want_list \
+            and want in ("object", "array") and _looks_truncated(value):
+        return (f"{path}: the JSON for this field was cut off -- likely the "
+                "output limit; send a smaller call or a shorter value for "
+                "this field")
+    if want_list:
         if not any(_matches_type(value, w) for w in want):
             return (f"{path}: expected {'|'.join(want)} "
                     f"({_describe(schema)}), got {_type_name(value)}")
