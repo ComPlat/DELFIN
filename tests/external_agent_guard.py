@@ -50,6 +50,7 @@ Measured cost: one ``realpath`` per spawned argument that contains a
 
 from __future__ import annotations
 
+import io
 import ipaddress
 import os
 import shutil
@@ -85,6 +86,7 @@ _STATE: dict = {
     "originals": {},
 }
 _TRIPS: list[str] = []
+_io_open = io.open
 _LOCK = threading.Lock()
 
 
@@ -112,11 +114,14 @@ def take_trips() -> list[str]:
         out = list(_TRIPS)
         _TRIPS.clear()
     log = _STATE.get("shim_log")
-    if log and os.path.exists(log):
+    # Read only when the shim wrote, and through the open saved at import:
+    # a test that patches builtins.open (tests/test_a_paste_is_one_message)
+    # must not see the guard's file.
+    if log and os.path.exists(log) and os.path.getsize(log) > 0:
         try:
-            with open(log, encoding="utf-8", errors="replace") as fh:
+            with _io_open(log, encoding="utf-8", errors="replace") as fh:
                 lines = [ln.rstrip("\n") for ln in fh if ln.strip()]
-            open(log, "w").close()
+            _io_open(log, "w").close()
         except OSError:
             lines = []
         out.extend(f"spawned through the shell: {ln}" for ln in lines)
