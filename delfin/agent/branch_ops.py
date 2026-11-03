@@ -67,21 +67,24 @@ def _not_git(text: str = "not a git checkout") -> dict:
 # -- rows (the dashboard's branch_list, imported, not copied) -----------------
 
 def rows(repo, view: str = "mine", text: str = "", *, gh="auto",
-         refresh: bool = False) -> list[dict]:
+         refresh: bool = False):
     """The rows of *view* (one of :data:`VIEWS`), narrowed by *text*, as
-    plain dicts. Raises nothing: a non-git checkout answers an empty
-    list."""
+    plain dicts. A non-git checkout is not an empty list -- that would
+    read as "no branches" -- it is the refusal dict
+    ``{"ok": False, "text": ..., "rows": []}``."""
     from delfin.dashboard import branch_list as BL
     if not _is_git(repo):
-        return []
+        return {"ok": False, "text": "not a git checkout", "rows": []}
     all_rows = BL.all_rows(_repo_of(repo), gh, refresh=refresh)
     picked = BL.view_rows(all_rows, view if view in VIEWS else "mine", text)
-    return [{
+    return {
+        "ok": True,
+        "rows": [{
         "ref": r.ref, "kind": r.kind, "sha": r.sha, "date": r.date,
         "author": r.author, "merged": r.merged, "pinned": r.pinned,
         "hidden": r.hidden, "mine": r.mine, "ahead": r.ahead,
         "pr": r.pr, "ci": r.ci, "current": r.current,
-    } for r in picked]
+    } for r in picked]}
 
 
 # -- pull (extracted from the dashboard's header handler) ---------------------
@@ -93,7 +96,6 @@ def pull_main(repo, *, read=None, write=None) -> dict:
 
     ``read``/``write`` stand in for the dashboard's capture/write runners
     in tests; the default is :mod:`delfin.dashboard.git_write`."""
-    from delfin.dashboard import branch_list as BL
     from delfin.dashboard import git_write as GW
     read = read or (lambda r, *a: GW.run_git_capture(r, *a))
     write = write or GW.run_git_write
@@ -237,11 +239,18 @@ def test_branch(repo, ref: str, *, keep: bool = False,
 def remove_test_worktree(repo, worktree) -> bool:
     """Remove a test worktree created by :func:`test_branch`. Uncommitted
     changes keep it (the worktree may hold work); the branch is never
-    touched."""
+    touched. The caches a test run leaves (``__pycache__``,
+    ``.pytest_cache``) are not work: they are removed first, so a run
+    that changed nothing does not keep the worktree alive."""
     from delfin.dashboard import branch_preview as BP
     path = Path(worktree)
     if not path.is_dir():
         return True
+    import shutil
+    for cache in path.rglob("__pycache__"):
+        shutil.rmtree(cache, ignore_errors=True)
+    for cache in (".pytest_cache", ".ruff_cache", ".mypy_cache"):
+        shutil.rmtree(path / cache, ignore_errors=True)
     if BP.changes(path):
         return False
     from delfin.dashboard import branch_list as BL
@@ -258,13 +267,15 @@ def remove_test_worktree(repo, worktree) -> bool:
 # -- cleanup (branch_cleanup.delete itself; the rules live there) -------------
 
 def cleanup_candidates(repo, *, include_unmerged: bool = False,
-                       refresh: bool = False) -> tuple[list[dict], list[dict]]:
+                       refresh: bool = False):
     """What may be deleted (``candidates``) and what is kept (``kept``),
     as dicts. ``branch_cleanup.candidates`` answers the same question for
-    the dashboard; this is the same call."""
+    the dashboard; this is the same call. A non-git workspace answers
+    ``None, None`` -- the caller carries the refusal (an empty list would
+    read as "nothing to clean up")."""
     from delfin.dashboard import branch_cleanup as BC
     if not _is_git(repo):
-        return [], []
+        return None, None
     cands, kept = BC.candidates(_repo_of(repo), refresh=refresh,
                                 include_unmerged=include_unmerged)
     return ([_candidate_dict(c) for c in cands],

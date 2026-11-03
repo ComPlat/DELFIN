@@ -66,16 +66,25 @@ def repo(tmp_path, monkeypatch):
 
 # -- views -------------------------------------------------------------------
 
+def test_rows_refuse_a_non_git_checkout(tmp_path):
+    from delfin.agent import branch_ops
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    answer = branch_ops.rows(plain)
+    assert answer["ok"] is False and answer["rows"] == []
+
+
 def test_rows_views(tmp_path, repo):
     from delfin.agent import branch_ops
     mine = branch_ops.rows(repo, "mine")
-    assert [r["ref"] for r in mine][:1] == ["main"]
-    assert any(r["ref"] == "feat" for r in mine)
+    assert mine["ok"] is True
+    assert [r["ref"] for r in mine["rows"]][:1] == ["main"]
+    assert any(r["ref"] == "feat" for r in mine["rows"])
     all_rows = branch_ops.rows(repo, "all")
-    refs = {r["ref"] for r in all_rows}
+    refs = {r["ref"] for r in all_rows["rows"]}
     assert "old/merged" in refs and "feat" in refs
     merged = branch_ops.rows(repo, "merged")
-    assert {r["ref"] for r in merged} >= {"old/merged"}
+    assert {r["ref"] for r in merged["rows"]} >= {"old/merged"}
 
 
 def test_rows_remote_view_and_filter(tmp_path, repo):
@@ -83,9 +92,9 @@ def test_rows_remote_view_and_filter(tmp_path, repo):
     _run(repo, "push", "-q", "origin", "feat")
     _run(repo, "branch", "-D", "feat")
     remote = branch_ops.rows(repo, "remote")
-    assert any(r["ref"] == "origin/feat" for r in remote)
+    assert any(r["ref"] == "origin/feat" for r in remote["rows"])
     mine = branch_ops.rows(repo, "mine", text="main")
-    assert [r["ref"] for r in mine] == ["main"]
+    assert [r["ref"] for r in mine["rows"]] == ["main"]
 
 
 def test_views_names(tmp_path, repo):
