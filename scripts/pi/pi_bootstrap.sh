@@ -58,7 +58,8 @@ SUDOERS="/etc/sudoers.d/90-delfin-agent"
 # outside DELFIN's command cage (a CLI backend's shell, MCP servers, the
 # agent process) runs as this user, and NOPASSWD:ALL made any approved
 # `sudo ...` root. Administration is the login user's (pi).
-#   service (default)  restart / query the dashboard service, nothing else
+#   service (default)  restart / query DELFIN's own services (dashboard, agent
+#                      service, messenger bridge and gateway), nothing else
 #   none               no sudo at all
 #   full               NOPASSWD:ALL -- only when asked for, and said so
 case "$AGENT_SUDO" in
@@ -69,8 +70,14 @@ case "$AGENT_SUDO" in
         printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$AGENT_USER" > "$SUDOERS.tmp" ;;
     service)
         systemctl_bin="$(command -v systemctl)"
-        printf '%s ALL=(root) NOPASSWD: %s restart delfin-dashboard, %s is-active delfin-dashboard\n' \
-            "$AGENT_USER" "$systemctl_bin" "$systemctl_bin" > "$SUDOERS.tmp" ;;
+        # A deploy swaps the code; only a restart makes a running service use
+        # it. With the dashboard alone allowed, the agent service and the
+        # messenger kept yesterday's code after every deploy.
+        rules=""
+        for unit in delfin-dashboard delfin-agent-service delfin-messenger-bridge delfin-messenger-gateway; do
+            rules+="${rules:+, }$systemctl_bin restart $unit, $systemctl_bin is-active $unit"
+        done
+        printf '%s ALL=(root) NOPASSWD: %s\n' "$AGENT_USER" "$rules" > "$SUDOERS.tmp" ;;
     *)
         echo "error: AGENT_SUDO must be service, none or full (got '$AGENT_SUDO')" >&2
         exit 1 ;;
