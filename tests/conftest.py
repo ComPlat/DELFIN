@@ -1362,6 +1362,50 @@ def requires_a_working_sandbox(fn):
     )(fn)
 
 
+# ---------------------------------------------------------------------------
+# No external agent CLI, no remote model endpoint
+# ---------------------------------------------------------------------------
+# On 2026-11-03 a dashboard agent-tab test found an external agent CLI on
+# PATH, listed that provider first, and sent 13 prompts to it; the CLI
+# then ran commands in the pytest temp folders. The mechanism (discovery,
+# spawn and connect tripwires, the session environment strip) lives in
+# tests/external_agent_guard.py and is installed in pytest_configure; this
+# fixture turns what it recorded during a test into that test's failure.
+import external_agent_guard as _external_agent_guard  # noqa: E402
+
+
+@pytest.fixture()
+def fake_agent_cli(tmp_path_factory, monkeypatch):
+    """Stub ``claude``/``codex`` first on PATH; returns the stub directory.
+
+    Each stub appends ``"$0 $*"`` to ``<dir>/calls.log`` and exits 0. The
+    real binaries and non-loopback connections remain refused."""
+    stub = _external_agent_guard.make_stub_dir(
+        str(tmp_path_factory.mktemp("fake-agent-cli")))
+    monkeypatch.setenv("PATH", stub + os.pathsep + os.environ.get("PATH", ""))
+    return Path(stub)
+
+
+@pytest.fixture(autouse=True)
+def _no_external_agent_is_reached(request):
+    """Fail the test that resolved or spawned a host agent CLI, or opened a
+    non-loopback connection; the refusal itself raised in place already."""
+    # Recorded between tests: a thread an earlier test left running. Named
+    # here rather than dropped, labelled as such.
+    stale = [f"(before this test started) {t}"
+             for t in _external_agent_guard.take_trips()]
+    if request.node.get_closest_marker(_external_agent_guard.MARKER):
+        request.getfixturevalue("fake_agent_cli")
+    yield
+    trips = stale + _external_agent_guard.take_trips()
+    if trips:
+        pytest.fail(
+            "external agent tripwire: this test tried to reach an external "
+            "agent CLI or a remote endpoint (use a fake, or "
+            "@pytest.mark.fake_agent_cli for a stub CLI):\n  "
+            + "\n  ".join(trips[:20]), pytrace=False)
+
+
 # Secret API keys delfin resolves, each from the env OR ~/.delfin/credentials.json.
 _SECRET_KEY_VARS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
@@ -1500,16 +1544,24 @@ def pytest_configure(config):
         "(DELFIN_PRIVATE_FIXTURES); select locally with "
         "`pytest -m private_fixtures`, excluded in CI by SKIP behaviour",
     )
+    config.addinivalue_line(
+        "markers",
+        "fake_agent_cli: discovery of an external agent CLI by name finds a "
+        "stub (argv logged to <stub dir>/calls.log, exit 0); the real binaries "
+        "and non-loopback connections stay refused (tests/external_agent_guard.py)",
+    )
     import os
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
+    _external_agent_guard.install(is_credential)
     _hypothesis_store_outside_the_checkout()
     _private_tmp_of_the_suite()
 
 
 def pytest_unconfigure(config):
     import os
+    _external_agent_guard.uninstall()
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()
