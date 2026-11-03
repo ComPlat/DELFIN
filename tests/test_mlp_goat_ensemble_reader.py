@@ -85,6 +85,23 @@ def test_comment_without_a_number_is_refused(tmp_path):
         read_goat_ensemble(tmp_path, "b")
 
 
+def test_keyword_form_keeps_its_relative_kcal_reading(tmp_path):
+    """'Energy <x>' (no measured ORCA writes it) stays relative kcal/mol."""
+    text = ("# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+            "1\nEnergy 0.0\nH 0.0 0.0 0.0\n1\nEnergy 1.5\nH 0.0 0.0 0.1\n")
+    (tmp_path / "k.finalensemble.xyz").write_text(text)
+    out = read_goat_ensemble(tmp_path, "k")
+    assert out["energies_kcal_mol"] == (0.0, 1.5)
+    assert out["energies_eh"] == ()
+
+
+def test_mixed_forms_are_refused(tmp_path):
+    bad = SYNTHETIC_ENSEMBLE.replace("-76.3980000000\n", "Energy 1.2\n")
+    (tmp_path / "m.finalensemble.xyz").write_text(bad)
+    with pytest.raises(ValueError, match="mixes"):
+        read_goat_ensemble(tmp_path, "m")
+
+
 def test_missing_ensemble_reports_nothing(tmp_path):
     out = read_goat_ensemble(tmp_path, "none")
     assert out["n_conformers"] == 0 and out["ensemble_file"] is None

@@ -265,8 +265,11 @@ def read_goat_ensemble(
     (manual, READENSEMBLE description); ORCA 6.0.1/6.1.1 write the
     absolute energy in Eh as the first token, then ``converged=true`` --
     and the ``<base>.globalminimum.xyz`` file.  Only files that exist are
-    reported.  A frame whose comment line starts with no number raises
-    ``ValueError`` (an energy is never guessed).
+    reported.  ``energies_eh`` is filled for the absolute form only; the
+    keyword form ``Energy <x>`` (no measured ORCA writes it) is read as
+    relative kcal/mol, as before.  A comment line with no energy, or a
+    file mixing both forms, raises ``ValueError`` (an energy is never
+    guessed).
     """
     out: dict = {
         "energies_eh": (),
@@ -281,6 +284,7 @@ def read_goat_ensemble(
         return out
     out["ensemble_file"] = ens
     energies: list[float] = []
+    forms: set[str] = set()
     structures: list[tuple[tuple[str, float, float, float], ...]] = []
     lines = ens.read_text(errors="replace").splitlines()
     i = 0
@@ -290,18 +294,34 @@ def read_goat_ensemble(
         except (ValueError, IndexError):
             i += 1
             continue
-        # The comment line starts with the absolute energy in Eh
-        # ("<E> converged=true" in ORCA 6.0.1/6.1.1; "Energy (float)" in
-        # the manual's READENSEMBLE entry).
+        # Two comment forms.  "<E> converged=true": the absolute energy in
+        # Eh, what ORCA 6.0.1/6.1.1 write.  "Energy <x>": the keyword form
+        # this reader took from the manual's READENSEMBLE entry ("Energy
+        # (float)") and documented as relative kcal/mol; no measured ORCA
+        # writes it, files in that form (DELFIN's own synthetic fixtures)
+        # keep their earlier reading.  One file holds one form.
         comment = lines[i + 1] if i + 1 < len(lines) else ""
         tokens = comment.split()
+        form, energy = None, None
         try:
-            energy = float(tokens[0])
+            energy, form = float(tokens[0]), "eh"
         except (ValueError, IndexError):
+            if len(tokens) >= 2 and tokens[0].lower() == "energy":
+                try:
+                    energy, form = float(tokens[1]), "kcal"
+                except ValueError:
+                    pass
+        if form is None:
             raise ValueError(
                 f"{ens.name}: frame {len(energies) + 1} comment line "
                 f"{comment.strip()!r} carries no energy"
-            ) from None
+            )
+        if forms and form not in forms:
+            raise ValueError(
+                f"{ens.name}: frame {len(energies) + 1} mixes the 'Energy <x>' "
+                "and '<E> converged=true' comment forms"
+            )
+        forms.add(form)
         frame: list[tuple[str, float, float, float]] = []
         for j in range(natoms):
             parts = lines[i + 2 + j].split()
@@ -309,8 +329,10 @@ def read_goat_ensemble(
         energies.append(energy)
         structures.append(tuple(frame))
         i += 2 + natoms
-    out["energies_eh"] = tuple(energies)
-    if energies:
+    if energies and forms == {"kcal"}:
+        out["energies_kcal_mol"] = tuple(energies)
+    elif energies:
+        out["energies_eh"] = tuple(energies)
         e_min = min(energies)
         out["energies_kcal_mol"] = tuple(
             (e - e_min) * EH_TO_KCAL_MOL for e in energies
