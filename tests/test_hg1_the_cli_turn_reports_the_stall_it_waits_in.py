@@ -66,7 +66,7 @@ def test_a_model_wait_tick_emits_one_stall_event(monkeypatch):
     assert stalls, f"no stall event in {events}"
     first = stalls[0]
     assert first["class"] == "model-wait"
-    assert first["action"] == "report_model_retry"
+    assert first["action"] == "report-model-retry"
     assert json.dumps(first)  # stream-json serialisable
 
 
