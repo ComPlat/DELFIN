@@ -47,6 +47,109 @@ class Capabilities:
     charge_spin: bool = False
 
 
+def _licence(name: str, url: str, *, verified: bool = False,
+             non_commercial: bool = False, gated: bool = False,
+             note: str = "") -> dict:
+    """One licence for an ML potential: the CODE or the WEIGHTS.
+
+    ``verified`` is True only when the text at ``url`` was actually read
+    (URL cited); an unverified record says so and must be verified against
+    the upstream licence/model card before being trusted.
+    ``non_commercial``: academic/non-commercial use only.
+    ``gated``: the checkpoint requires the user's own acceptance of the
+    upstream terms and their own Hugging Face login; DELFIN never handles
+    the token.  Plain dicts so agent tooling can serialize them directly.
+    """
+    return {
+        "name": name, "url": url, "verified": verified,
+        "non_commercial": non_commercial, "gated": gated, "note": note,
+    }
+
+
+# Per-backend licence records.  ``verified=True`` entries cite a URL whose
+# licence text was fetched and read; the PR body lists each with its URL.
+# Anything not yet read directly is marked verified=False, never guessed.
+_ORCA_MLIPS_CODE = _licence(
+    name="MIT", url="https://github.com/t-0hmura/orca-mlips/blob/main/LICENSE",
+    verified=True)
+_FAIRCHEM_CODE = _licence(
+    name="MIT", url="https://github.com/facebookresearch/fairchem/blob/main/LICENSE.md",
+    verified=True)
+_MACE_CODE = _licence(
+    name="MIT", url="https://github.com/ACEsuit/mace/blob/main/LICENSE.md",
+    verified=True)
+_AIMNETCENTRAL_CODE = _licence(
+    name="MIT", url="https://github.com/isayevlab/aimnetcentral/blob/main/LICENSE",
+    verified=True)
+_ORB_CODE = _licence(
+    name="Apache-2.0",
+    url="https://github.com/orbital-materials/orb-models/blob/main/LICENSE",
+    verified=True)
+_GPUMA_CODE = _licence(
+    name="MIT", url="https://github.com/niklashoelter/gpuma (README: 'MIT License (see LICENSE)')",
+    verified=True)
+_TORCHANICODE = _licence(
+    name="MIT", url="https://github.com/aiqm/torchani/blob/master/LICENSE",
+    verified=False)
+_CHGNET_CODE = _licence(
+    name="BSD-3-Clause", url="https://github.com/CederGroupHub/chgnet/blob/main/LICENSE",
+    verified=False)
+_MATGL_CODE = _licence(
+    name="BSD-3-Clause", url="https://github.com/materialsvirtuallab/matgl/blob/main/LICENSE",
+    verified=False)
+_SCHNETPACK_CODE = _licence(
+    name="MIT", url="https://github.com/all-machine-learning/schnetpack/blob/main/LICENSE",
+    verified=False)
+_NEQUIP_CODE = _licence(
+    name="MIT", url="https://github.com/mir-group/nequip/blob/main/LICENSE",
+    verified=False)
+_ALIGNN_CODE = _licence(
+    name="Apache-2.0", url="https://github.com/knc6/jarvis-tools/blob/master/LICENSE",
+    verified=False)
+_SEVENNET_CODE = _licence(
+    name="MIT", url="https://github.com/iprm/SevenNet/blob/main/LICENSE",
+    verified=False)
+_XTB_CODE = _licence(
+    name="LGPL-3.0", url="https://github.com/grimme-lab/xtb/blob/main/LICENSE",
+    verified=False)
+_HF_GATED_WEIGHTS = _licence(
+    name="FAIR Chemistry model terms (gated on HuggingFace)",
+    url="https://huggingface.co/facebook/fairchem_uma_s-1",
+    verified=False, gated=True,
+    note="Checkpoint download requires the user's own HF login + acceptance "
+         "of the FAIR Chemistry terms; fairchem README: 'Models/checkpoint "
+         "licenses vary by application area'. Verify the exact checkpoint "
+         "terms before relying on them.")
+_ASL_WEIGHTS = _licence(
+    name="Academic Software License (non-commercial)",
+    url="https://mace-docs.readthedocs.io/en/latest/guide/foundation_models.html",
+    verified=False, non_commercial=True,
+    note="MACE foundation-model page: 'The model is published under the "
+         "Academic Software License (ASL)'. Verify the licence file shipped "
+         "with the checkpoint before relying on them.")
+_ORB_WEIGHTS = _licence(
+    name="Apache-2.0",
+    url="https://github.com/orbital-materials/orb-models/blob/main/LICENSE",
+    verified=True,
+    note="orb-models README: 'Orb models are licensed under the Apache "
+         "License, Version 2.0' (code and pretrained checkpoints).")
+_AIMNET_WEIGHTS = _licence(
+    name="MIT",
+    url="https://github.com/isayevlab/aimnetcentral/blob/main/LICENSE",
+    verified=True,
+    note="aimnetcentral README section License: 'MIT; see LICENSE'.")
+_UNVERIFIED_OPEN_WEIGHTS = _licence(
+    name="per-model (see model card)",
+    url="https://huggingface.co/models", verified=False,
+    note="Weights not individually verified yet; check the upstream model "
+         "card before depending on a specific checkpoint.")
+_UNVERIFIED_GATED_WEIGHTS = _licence(
+    name="per-model (gated / see model card)",
+    url="https://huggingface.co/models?other=gated", verified=False, gated=True,
+    note="Weights not individually verified and possibly gated; check the "
+         "upstream model card before depending on a specific checkpoint.")
+
+
 @dataclass(frozen=True)
 class BackendSpec:
     name: str
@@ -61,6 +164,10 @@ class BackendSpec:
     elements: Optional[tuple[str, ...]] = None
     kind: str = "ml_potential"     # or "gpu_batch_optimiser"
     aliases: tuple[str, ...] = ()
+    code_licence: dict = field(
+        default_factory=lambda: _licence("unknown", ""))
+    weight_licence: dict = field(
+        default_factory=lambda: _licence("unknown", ""))
 
     @property
     def charge_aware(self) -> bool:
@@ -259,6 +366,36 @@ _SPECS: dict[str, BackendSpec] = {
         kind="gpu_batch_optimiser",
     ),
 }
+
+# Licence records per backend (LICENSE_GUARD.md family 4).  Applied here so
+# each BackendSpec carries its own code_licence / weight_licence without
+# every spec literal having to repeat the records.  gpuma loads UMA-family
+# weights, hence the gated record.
+_LICENCES: dict[str, tuple[dict, dict]] = {
+    "ani2x":        (_TORCHANICODE, _UNVERIFIED_OPEN_WEIGHTS),
+    "aimnet2":      (_AIMNETCENTRAL_CODE, _AIMNET_WEIGHTS),
+    "mace_off":     (_MACE_CODE, _ASL_WEIGHTS),
+    "chgnet":       (_CHGNET_CODE, _UNVERIFIED_OPEN_WEIGHTS),
+    "m3gnet":       (_MATGL_CODE, _UNVERIFIED_OPEN_WEIGHTS),
+    "schnetpack":   (_SCHNETPACK_CODE, _UNVERIFIED_OPEN_WEIGHTS),
+    "nequip":       (_NEQUIP_CODE, _UNVERIFIED_OPEN_WEIGHTS),
+    "alignn":       (_ALIGNN_CODE, _UNVERIFIED_OPEN_WEIGHTS),
+    "mace_mp":      (_MACE_CODE, _ASL_WEIGHTS),
+    "mace_omol":    (_MACE_CODE, _ASL_WEIGHTS),
+    "fairchem_uma": (_FAIRCHEM_CODE, _HF_GATED_WEIGHTS),
+    "esen":         (_FAIRCHEM_CODE, _HF_GATED_WEIGHTS),
+    "orb":          (_ORB_CODE, _ORB_WEIGHTS),
+    "sevennet":     (_SEVENNET_CODE, _UNVERIFIED_OPEN_WEIGHTS),
+    "xtb":          (_XTB_CODE, _UNVERIFIED_OPEN_WEIGHTS),
+    "gpuma":        (_GPUMA_CODE, _HF_GATED_WEIGHTS),
+}
+
+import dataclasses as _dc  # noqa: E402  (used once, below)
+
+for _name, (_code, _weight) in _LICENCES.items():
+    _spec = _SPECS[_name]
+    _SPECS[_name] = _dc.replace(_spec, code_licence=_code, weight_licence=_weight)
+del _dc, _name, _code, _weight, _spec
 
 # aliases: legacy table from calculators.py must resolve here too
 _REGISTRY_ALIASES: dict[str, str] = {
