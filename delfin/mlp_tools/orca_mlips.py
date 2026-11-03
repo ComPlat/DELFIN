@@ -47,6 +47,32 @@ _BASE_NAME = "extopt"
 _HESSIAN_FILE = f"{_BASE_NAME}.hess"
 
 
+#: orca-mlips plugin -> the registry backend whose weight licence it loads
+#: (delfin.mlp_tools.registry, LICENSE_GUARD.md family 4): UMA weights are
+#: gated (FAIR Chemistry terms), orca-mlips' MACE plugin loads MACE
+#: foundation weights (Academic Software License, non-commercial), ORB
+#: Apache-2.0, AIMNet2 MIT.
+MLIPS_REGISTRY_BACKEND = {
+    "uma": "fairchem_uma",
+    "mace": "mace_omol",
+    "orb": "orb",
+    "aimnet2": "aimnet2",
+}
+
+
+def mlips_weight_licence(backend: str) -> dict:
+    """The weight-licence record of an orca-mlips plugin (registry record)."""
+    from delfin.mlp_tools import registry
+
+    name = backend.strip().lower()
+    if name not in MLIPS_REGISTRY_BACKEND:
+        raise ValueError(
+            f"backend {backend!r} is not an orca-mlips plugin: use one of "
+            f"{', '.join(_MLIPS_BACKENDS)}"
+        )
+    return dict(registry.get_backend(MLIPS_REGISTRY_BACKEND[name]).weight_licence)
+
+
 def mlips_progext_names(backends: Sequence[str]) -> tuple[str, ...]:
     """Prefixed ProgExt names for the given orca-mlips backends.
 
@@ -290,6 +316,7 @@ def build_orca_mlips_input(
     ncores: int = 1,
     neb_end_coordinates: Optional[Sequence[Sequence[float]]] = None,
     scan: Optional[dict] = None,
+    xyz_name: Optional[str] = None,
 ) -> Path:
     """Write a ``! ExtOpt`` ORCA input driven by the orca-mlips command.
 
@@ -306,6 +333,9 @@ def build_orca_mlips_input(
     NEB_End_XYZFile`` (neb.txt).  ``irc`` without a dumped Hessian:
     ``%irc InitHess calc_numfreq`` (gradients only).  ``scan``: the
     ``%geom Scan`` dict of :func:`delfin.mlp_tools.orca_extopt.build_extopt_input`.
+    ``xyz_name``: the start-geometry file named in ``*xyzfile`` (default
+    ``<base_name>.xyz``; a run that must not share the name with ORCA's
+    own ``<base_name>.xyz`` passes another).
 
     Returns the written ``<base_name>.inp`` path.  opt/optts/freq with the
     new arguments at their defaults write the same bytes as before
@@ -395,7 +425,7 @@ def build_orca_mlips_input(
     return _write_mlips_input(
         keywords, elements, coordinates, charge, mult, progext,
         ext_params, geom_block, base_name, work_dir,
-        ncores=int(ncores), blocks=blocks, scan=scan,
+        ncores=int(ncores), blocks=blocks, scan=scan, xyz_name=xyz_name,
     )
 
 
@@ -435,7 +465,8 @@ def _write_mlips_input(keywords, elements, coordinates, charge, mult,
                        progext, ext_params, geom_block, base_name,
                        work_dir, *, ncores: int = 1,
                        blocks: Sequence[tuple[str, dict[str, Any]]] = (),
-                       scan: Optional[dict] = None) -> Path:
+                       scan: Optional[dict] = None,
+                       xyz_name: Optional[str] = None) -> Path:
     """OPI path (py3.12 venv) or plain-text fallback with identical content.
 
     The OPI path reuses orca_extopt's writer for the %method block, the
@@ -447,7 +478,7 @@ def _write_mlips_input(keywords, elements, coordinates, charge, mult,
         out_path = _build_with_opi(
             keywords, elements, coordinates, charge, mult, progext,
             ext_params, scan, base_name, work_dir,
-            ncores=ncores, extra_blocks=_opi_blocks(blocks),
+            ncores=ncores, extra_blocks=_opi_blocks(blocks), xyz_name=xyz_name,
         )
         if geom_block:
             text = out_path.read_text()
@@ -459,6 +490,7 @@ def _write_mlips_input(keywords, elements, coordinates, charge, mult,
             out_path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(geom_block) + "\n")
         return out_path
     except ImportError:
+        xyz_name = xyz_name or f"{base_name}.xyz"
         if scan is not None:
             from delfin.mlp_tools.orca_extopt import _write_plain_input
 
@@ -466,9 +498,9 @@ def _write_mlips_input(keywords, elements, coordinates, charge, mult,
             out_path.parent.mkdir(parents=True, exist_ok=True)
             _write_plain_input(
                 keywords, elements, coordinates, charge, mult, progext,
-                ext_params, scan, f"{base_name}.xyz", out_path,
+                ext_params, scan, xyz_name, out_path,
             )
-            _write_xyz(Path(work_dir) / f"{base_name}.xyz", elements, coordinates)
+            _write_xyz(Path(work_dir) / xyz_name, elements, coordinates)
             if ncores > 1:
                 head, rest = out_path.read_text().split("\n", 1)
                 out_path.write_text(
@@ -488,7 +520,6 @@ def _write_mlips_input(keywords, elements, coordinates, charge, mult,
         if geom_block:
             lines.extend(geom_block)
             lines.append("")
-        xyz_name = f"{base_name}.xyz"
         lines.append(f"*xyzfile {charge} {mult} {xyz_name}")
         out_path = Path(work_dir) / f"{base_name}.inp"
         out_path.parent.mkdir(parents=True, exist_ok=True)

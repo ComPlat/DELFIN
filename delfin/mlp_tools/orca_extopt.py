@@ -402,14 +402,16 @@ def build_extopt_input(
 
 def _build_with_opi(keywords, elements, coordinates, charge, mult,
                     wrapper_path, ext_params, scan, base_name, work_dir,
-                    *, ncores: int = 1, extra_blocks: Sequence = ()) -> Path:
+                    *, ncores: int = 1, extra_blocks: Sequence = (),
+                    xyz_name: Optional[str] = None) -> Path:
     """Build the input through OPI (py3.12 venv with the ``opi`` package).
 
     ``ncores`` is written as ``%pal nprocs`` (1 unless a run type needs
     more, e.g. GOAT's parallel workers); ``extra_blocks`` are OPI block
     objects (``BlockGoat``, ``BlockNeb``, ``BlockIrc``) added after
     ``%method``.  The defaults reproduce the input written before both
-    arguments existed.
+    arguments existed.  ``xyz_name`` names the geometry file
+    (default ``<base_name>.xyz``).
     """
     from opi.core import Calculator
     from opi.input import Input
@@ -495,7 +497,7 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
             "OPI did not write the expected inline '* xyz' geometry section; "
             f"cannot convert {base_name}.inp to *xyzfile form"
         )
-    xyz_name = f"{base_name}.xyz"
+    xyz_name = xyz_name or f"{base_name}.xyz"
     xyz_lines = [str(len(elements)), ""]
     for el, (x, y, z) in zip(elements, coordinates):
         xyz_lines.append(f"{el} {float(x):.10f} {float(y):.10f} {float(z):.10f}")
