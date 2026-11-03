@@ -2769,52 +2769,6 @@ _ENV_TOOL_VALUE_OPTS = frozenset({
     "--project",
 })
 
-_CONDA_PROGRAMS = frozenset({"conda", "mamba", "micromamba"})
-# conda / mamba / micromamba subcommands that write the environment named
-# by -p / --prefix (`env create|update|remove` included).
-_CONDA_WRITING_SUBCOMMANDS = frozenset({
-    "create", "install", "update", "upgrade", "remove", "uninstall"})
-# Short options of those subcommands that take a value; in a cluster the
-# value is the rest of the word (`-yp /x`, `-p/x`).
-_CONDA_SHORT_VALUE_OPTS = frozenset("npcfr")
-
-
-def _python_module_args(rest: list) -> "tuple[str, list] | None":
-    """(module, its arguments) of ``python [options] -m module ...``.
-
-    Interpreter options before ``-m`` are passed over (``-I``, ``-Im``,
-    ``-X opt``, ``-W arg``); ``-mvenv`` is read as ``-m venv``. None for a
-    script, ``-c`` or no ``-m``.
-    """
-    i = 0
-    while i < len(rest):
-        a = rest[i]
-        if a in ("-X", "-W"):
-            i += 2
-            continue
-        if a[:2] in ("-X", "-W"):
-            i += 1
-            continue
-        if a.startswith("-") and not a.startswith("--") and len(a) > 1:
-            flags = a[1:]
-            if "c" in flags.split("m", 1)[0]:
-                return None
-            if "m" in flags:
-                tail = flags.split("m", 1)[1]
-                if tail:
-                    return tail, rest[i + 1:]
-                if i + 1 < len(rest):
-                    return rest[i + 1], rest[i + 2:]
-                return None
-            i += 1
-            continue
-        if a.startswith("--"):
-            i += 1
-            continue
-        return None
-    return None
-
-
 def _env_creation_dirs(name: str, rest: list) -> "list[str] | None":
     """The directories an environment-creating command writes, or None
     when *name* / *rest* is not such a command.
@@ -2840,38 +2794,18 @@ def _env_creation_dirs(name: str, rest: list) -> "list[str] | None":
     ``python``/``python3`` only -- ``python3.11`` and ``/usr/bin/python3.11``
     were not read at all.
     """
+    from . import sandbox as _sandbox
     if _PYTHON_NAME_RE.fullmatch(name):
-        mod = _python_module_args(rest)
-        if mod is None or mod[0] not in ("venv", "virtualenv"):
+        module, args = _sandbox._python_module(rest)
+        if module not in ("venv", "virtualenv"):
             return None
-        args = mod[1]
     elif name == "virtualenv":
         args = rest
     elif name == "uv" and rest[:1] == ["venv"]:
         args = rest[1:]
-    elif name in _CONDA_PROGRAMS:
-        words = [a for a in rest if not a.startswith("-")]
-        sub = words[1] if words[:1] == ["env"] and len(words) > 1 else (
-            words[0] if words else "")
-        if sub not in _CONDA_WRITING_SUBCOMMANDS:
-            return None
-        out: list = []
-        for i, a in enumerate(rest):
-            nxt = rest[i + 1] if i + 1 < len(rest) else ""
-            if a in ("-p", "--prefix"):
-                if nxt:
-                    out.append(nxt)
-            elif a.startswith("--prefix="):
-                out.append(a.split("=", 1)[1])
-            elif a.startswith("-") and not a.startswith("--"):
-                for k, ch in enumerate(a[1:], start=1):
-                    if ch in _CONDA_SHORT_VALUE_OPTS:
-                        if ch == "p":
-                            val = a[k + 1:].lstrip("=") or nxt
-                            if val:
-                                out.append(val)
-                        break
-        return out
+    elif name in _sandbox._CONDA_PROGRAMS:
+        got = _sandbox.conda_env_writes(rest)
+        return None if got is None else list(got[1])
     else:
         return None
     if any(a in ("-h", "--help", "--version") for a in args):
@@ -23130,6 +23064,52 @@ class _DocToolExecutor:
                         f"that could not be checked ('{cmd[:120]}'). Do NOT "
                         "retry it or work around it." + self._said_why(perms))
                 _approved_here = True
+            # An environment under a conda / mamba / micromamba root prefix
+            # (`create -n NAME`, `install -n NAME`, `env create -f FILE`,
+            # `-r ROOT`): the directory is the program's configuration, not
+            # the command text, so the write-target gate cannot judge it.
+            # Asked in every mode, Bypass included, for each call; refused
+            # with nobody to ask. The yes is the decision: neither the
+            # classifier nor the cage admission is consulted after it.
+            # Measured before: Bypass ran it unasked whenever the watcher
+            # was off or allowing.
+            from .sandbox import root_prefix_env_command as _env_root_rule
+            _env_root = _env_root_rule(_prose_blanked(cmd))
+            _env_root_approved = False
+            if _env_root:
+                _record_security_event("env_root_prefix", "bash", cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: `{_env_root}` creates or changes an "
+                        "environment under the program's root prefix, "
+                        "outside the workspace, and nobody can be asked "
+                        "here. Tell the user the command and why the "
+                        "environment is needed, or create it in the "
+                        "workspace with -p ./<dir>.")
+                try:
+                    ok = bool(_ask_confirm(perms,
+                        "bash", {"command": cmd},
+                        "[ENVIRONMENT UNDER THE ROOT PREFIX]\n"
+                        f"`{_env_root}` writes an environment under the "
+                        "program's root prefix, outside the workspace.\n\n$ "
+                        + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for this environment TIMED OUT — the "
+                            "user is away, this is not a refusal. Do not run "
+                            "it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied `{_env_root}` ('{cmd[:120]}'). Do NOT "
+                        "retry it or work around it." + self._said_why(perms))
+                _approved_here = True
+                _env_root_approved = True
             # A command this session promises to confine (locked scope,
             # forced isolation) on a host where no layer can confine it.
             # _bash_isolation_argv would refuse it at run time; asked here
@@ -23397,6 +23377,10 @@ class _DocToolExecutor:
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
                 # The classifier is the one second look this profile has.
+                # A root-prefix environment the user just approved in its
+                # own dialog runs on that yes.
+                if _env_root_approved:
+                    return None
                 return self._classifier_second_opinion(perms, name, args, mode)
             if perms.matches_bash_auto_allow(cmd):
                 # The list matches the command's spelling, not its purpose.
