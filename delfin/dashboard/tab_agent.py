@@ -1061,6 +1061,65 @@ _CHAT_MORPH_TAG = ('<img src="" alt="" style="display:none" onerror="'
                    + _html.escape(_CHAT_MORPH_JS, quote=True) + '">')
 
 
+# Where the agent tab starts on the page (--delfin-agent-top), measured in
+# the browser; see the call site in create_tab for why it is measured.
+#
+# The measurement sets the untrimmed top, reads the page's overflow and
+# sets the trimmed top, all in one task. The untrimmed value makes the tab
+# taller by the trim (12 px at 1920x1080), and reading scrollHeight forces
+# a layout at that height: the chat host is 12 px taller in it, so a host
+# scrolled to its end is clamped 12 px up, and the second write does not
+# give that back. Measured 2026-11-03 on a real page, per animation frame:
+# every 1.5 s (the interval below) the host's scrollTop went 1511 -> 1499,
+# idle or streaming, only with the reader at the end (scrolled up, the
+# clamp has nothing to cut). The chat's scroll listener undid it in the
+# next frame unless the reader had touched wheel or pointer within 300 ms;
+# then the 12 px stayed on screen until the next output pulled the view
+# down again.
+#
+# Now:
+# - The interval re-measures only when the input changed: the tab's top,
+#   the window height, or the overflow at the CURRENT value. In steady
+#   state that is nothing, so nothing is written and no intermediate
+#   layout happens.
+# - A re-measurement (a resize, the page settling) puts every chat host
+#   that was at its end back at its end, in the same task, before paint.
+# Rejected: computing the trimmed top without the intermediate write. The
+# overflow at the untrimmed value is not observable from the trimmed
+# layout (a page that does not overflow reports 0, not how much room is
+# left), so it needs the layout it measures.
+_MEASURE_AGENT_TOP_JS = (
+    "(function(){if(window.__delfinAgentTop)return;"
+    "window.__delfinAgentTop=1;var de=document.documentElement;"
+    "var done='';"
+    "function scrollers(el){var out=[];"
+    "for(var p=el.parentElement;p;p=p.parentElement){"
+    "var oy=getComputedStyle(p).overflowY;"
+    "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
+    "return out;}"
+    "function overflow(ss){var o=0;for(var k=0;k<ss.length;k++)"
+    "o=Math.max(o,ss[k].scrollHeight-ss[k].clientHeight);return o;}"
+    "function m(){"
+    "var rs=document.querySelectorAll('.delfin-agent-root');"
+    "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
+    "var ss=scrollers(r),k,y=0;"
+    "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
+    "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
+    "var key=t+'|'+window.innerHeight+'|'+overflow(ss);"
+    "if(key===done)return;"
+    "var hs=r.querySelectorAll('.delfin-agent-chat-host'),ends=[];"
+    "for(k=0;k<hs.length;k++){var h=hs[k];"
+    "if(h.clientHeight&&h.scrollHeight-h.scrollTop-h.clientHeight<=1)ends.push(h);}"
+    "de.style.setProperty('--delfin-agent-top',t+'px');"
+    "var over=overflow(ss);"
+    "if(over>0&&over<200&&r.offsetHeight-over>=320){"
+    "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
+    "for(k=0;k<ends.length;k++)ends[k].scrollTop=ends[k].scrollHeight;"
+    "done=t+'|'+window.innerHeight+'|'+overflow(ss);"
+    "return;}}"
+    "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
+
+
 def _chat_value(transcript_html: str) -> str:
     """The value of the chat widget for ``transcript_html``.
 
@@ -10720,28 +10779,7 @@ def create_tab(ctx):
     # during startup replaced it before the browser executed it (measured
     # 2026-10-20: window.__delfinAgentTop undefined, the 140px fallback in
     # use on every page since 2026-10-09).
-    _measure_top_js = (
-        "(function(){if(window.__delfinAgentTop)return;"
-        "window.__delfinAgentTop=1;var de=document.documentElement;"
-        "function scrollers(el){var out=[];"
-        "for(var p=el.parentElement;p;p=p.parentElement){"
-        "var oy=getComputedStyle(p).overflowY;"
-        "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
-        "return out;}"
-        "function m(){"
-        "var rs=document.querySelectorAll('.delfin-agent-root');"
-        "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
-        "var ss=scrollers(r),k,y=0;"
-        "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
-        "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
-        "de.style.setProperty('--delfin-agent-top',t+'px');"
-        "var over=0;for(k=0;k<ss.length;k++)"
-        "over=Math.max(over,ss[k].scrollHeight-ss[k].clientHeight);"
-        "if(over>0&&over<200&&r.offsetHeight-over>=320){"
-        "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
-        "return;}}"
-        "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
-    ctx.add_init_js(_measure_top_js)
+    ctx.add_init_js(_MEASURE_AGENT_TOP_JS)
 
     if not _yaml_ok:
         missing_html = widgets.HTML(
