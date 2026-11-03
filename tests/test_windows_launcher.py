@@ -360,6 +360,7 @@ def test_people_mode_gives_each_person_a_home_of_their_own(tmp_path):
     (home / '.config/delfin/launcher-people.conf').write_text('')
     (home / '.delfin').mkdir()
     (home / '.delfin/credentials.json').write_text('{}')
+    (home / '.delfin_settings.json').write_text('{"ui": {"tabs": {"hidden": ["submit"]}}}')
     (home / '.delfin/agent_sessions').mkdir()
     env, _ = _bootstrap_env(tmp_path, home)
     probe = ('import os; print("HOME=" + os.environ["HOME"]); print("RUN=" + os.environ["DELFIN_RUNTIME_DIR"]);'
@@ -373,8 +374,11 @@ def test_people_mode_gives_each_person_a_home_of_their_own(tmp_path):
         assert f'WHO={name}' in result.stdout
         assert f'CWD={person_home}/work' in result.stdout
         assert stat.S_IMODE(person_home.stat().st_mode) == 0o700
-        # Shared by link: the account's credentials; private: sessions.
+        # Shared by link: the account's credentials and its DELFIN settings
+        # (user_settings.SETTINGS_FILE_NAME, e.g. the tab choice); private: sessions.
+        from delfin.user_settings import SETTINGS_FILE_NAME
         assert (person_home / '.delfin/credentials.json').resolve() == (home / '.delfin/credentials.json').resolve()
+        assert (person_home / SETTINGS_FILE_NAME).resolve() == (home / SETTINGS_FILE_NAME).resolve()
         assert not (person_home / '.delfin/agent_sessions').exists()
 
 

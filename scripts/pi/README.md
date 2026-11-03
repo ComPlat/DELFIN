@@ -216,6 +216,15 @@ What only a person can do, in this order:
   everything in the account, credentials included. Put only neutral, project
   credentials (a project KIT key, the repository deploy key, a neutral git
   identity) into it; personal ones belong in personal accounts.
+- Dashboard tabs on this box: `~/.config/delfin/pi-tabs.conf` lists the tab
+  ids shown (default `agent home archive office`; Settings is always shown).
+  `pi_install.sh` applies it on every deploy against the tabs the code has,
+  so a tab a later DELFIN adds stays hidden; a change in the dashboard's
+  Settings tab is reset by the next deploy, edit the file instead. Shared by
+  everyone through the launcher's people mode.
+- tmux on the box waits 50 ms for escape sequences (`~/.tmux.conf`): with
+  tmux 3.5's 10 ms the terminal's answer to tmux's capability query arrived
+  too late over SSH/VPN and showed up as `^[[?61;1;6;...c` in the pane.
 - The agent install is an editable install in compat (path) mode: with
   setuptools' finder mode the folder `~/delfin` shadowed the package for a
   `python -c` started in `~`. `pi_install.sh` converts an older install.

@@ -178,6 +178,42 @@ EOF
         echo "==> launcher people mode on (~/people/<name>; overview: delfin-people)"
     fi
     install -D -m 755 "$ROOT/src/scripts/pi/delfin_people.sh" "$HOME/.local/bin/delfin-people"
+    # The dashboard tabs this box shows (tab ids, ~/.config/delfin/pi-tabs.conf),
+    # applied on every deploy against the tabs the code has now, so a tab a
+    # later DELFIN adds stays hidden too. Settings cannot be hidden (fixed).
+    # Through the launcher's people mode every person shares this setting.
+    local tabs_conf="$HOME/.config/delfin/pi-tabs.conf"
+    if [[ ! -f "$tabs_conf" ]]; then
+        mkdir -p "$HOME/.config/delfin"
+        printf '%s\n' "# Dashboard tabs shown on this box (ids; Settings is always shown)." \
+            "# Applied by pi_install.sh on every deploy. All ids: grep \"'id':\" delfin/dashboard/__init__.py" \
+            "agent home archive office" > "$tabs_conf"
+    fi
+    "$VENV_PY" - "$tabs_conf" "$ROOT/src/delfin/dashboard/__init__.py" <<'EOF' || echo "warning: could not apply $tabs_conf" >&2
+import re, sys
+from delfin.user_settings import load_settings, save_settings
+shown = [w for line in open(sys.argv[1], encoding="utf-8")
+         if not line.lstrip().startswith("#") for w in line.split()]
+ids = list(dict.fromkeys(re.findall(r"'id':\s*'([a-z_]+)'", open(sys.argv[2], encoding="utf-8").read())))
+unknown = [t for t in shown if t not in ids]
+if unknown:
+    print(f"warning: pi-tabs.conf names unknown tabs: {' '.join(unknown)}", file=sys.stderr)
+settings = load_settings()
+tabs = settings.setdefault("ui", {}).setdefault("tabs", {})
+order = [t for t in shown if t in ids] + [t for t in ids if t not in shown and t != "settings"]
+hidden = [t for t in ids if t not in shown and t != "settings"]
+if tabs.get("order") != order or tabs.get("hidden") != hidden:
+    tabs["order"], tabs["hidden"] = order, hidden
+    save_settings(settings)
+    print("==> dashboard tabs: " + " ".join(t for t in shown if t in ids) + " (+ settings)")
+EOF
+    # tmux waits 10 ms (3.5 default) for the rest of an escape sequence; over
+    # SSH and a VPN the terminal's answer to tmux's capability query arrives
+    # later, and its text ("^[[?61;1;6;...c") landed in the pane as typing.
+    if ! grep -qs '^set -sg escape-time' "$HOME/.tmux.conf"; then
+        printf '%s\n' "# Over SSH/VPN: wait long enough for the terminal's answers (pi_install.sh)." \
+            "set -sg escape-time 50" >> "$HOME/.tmux.conf"
+    fi
 }
 
 restart_dashboard() {
