@@ -2820,7 +2820,7 @@ def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
 #: Where a missing backend's package is documented.
 _MLP_INSTALL_HINTS = {
     "ani2x": "pip install torchani (see delfin/mlp_tools/SETUP_GUIDE.txt)",
-    "aimnet2": "pip install aimnet2calc (see delfin/mlp_tools/SETUP_GUIDE.txt)",
+    "aimnet2": 'pip install "aimnet[ase]" (see delfin/mlp_tools/SETUP_GUIDE.txt)',
     "mace_off": "pip install mace-torch (see delfin/mlp_tools/SETUP_GUIDE.txt)",
     "chgnet": "pip install chgnet (see delfin/mlp_tools/SETUP_GUIDE.txt)",
     "m3gnet": "pip install matgl (see delfin/mlp_tools/SETUP_GUIDE.txt)",

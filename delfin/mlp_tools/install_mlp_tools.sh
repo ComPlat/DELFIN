@@ -7,7 +7,7 @@ set -euo pipefail
 #
 # Installs one or more ML potential backends:
 #   - ANI-2x      (torchani)     — H,C,N,O,S,F,Cl
-#   - AIMNet2     (aimnet2calc)  — 14 elements + charge support
+#   - AIMNet2     (aimnetcentral) — 14 elements + charge support
 #   - MACE-OFF    (mace-torch)   — broad element coverage
 #   - CHGNet      (chgnet)       — universal potential (Materials Project)
 #   - M3GNet      (matgl)        — materials graph neural network
@@ -178,28 +178,20 @@ install_aimnet2() {
     return 0
   fi
 
-  if python_has_module "${python_bin}" "aimnet2calc" && [ "${FORCE_REINSTALL}" != "1" ]; then
-    log "AIMNet2 (aimnet2calc): already installed"
+  if python_has_module "${python_bin}" "aimnet" && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "AIMNet2 (aimnetcentral): already installed"
     return 0
   fi
 
-  # AIMNet2 requires torch-cluster which needs pre-built wheels
-  log "installing torch-cluster (AIMNet2 dependency)..."
-  local torch_version
-  torch_version="$("${python_bin}" -c "import torch; v=torch.__version__.split('+')[0]; print(v)" 2>/dev/null || echo "")"
-  if [ -n "${torch_version}" ]; then
-    "${python_bin}" -m pip install torch-cluster \
-      -f "https://data.pyg.org/whl/torch-${torch_version}+cpu.html" \
-      2>&1 | tee -a "${LOG_DIR}/aimnet2_install.log" || true
-  fi
-
-  log "installing AIMNet2 (aimnet2calc from GitHub)..."
-  "${python_bin}" -m pip install \
-    git+https://github.com/zubatyuk/aimnet2calc.git \
-    --no-build-isolation \
+  # AIMNetCentral `aimnet` package (PyPI, MIT) replaced legacy aimnet2calc:
+  # aimnet2calc's hard torch-cluster dependency has no wheel for torch>=2.13.
+  # NOTE: `pip install aimnet` must be run by the user via the /fix flow or a
+  # separate venv -- this script does not install packages itself.
+  log "installing AIMNet2 (aimnet[ase] from PyPI)..."
+  "${python_bin}" -m pip install "aimnet[ase]" \
     2>&1 | tee -a "${LOG_DIR}/aimnet2_install.log"
 
-  if python_has_module "${python_bin}" "aimnet2calc"; then
+  if python_has_module "${python_bin}" "aimnet"; then
     log "AIMNet2 installed successfully"
   else
     warn "AIMNet2 installation failed — check ${LOG_DIR}/aimnet2_install.log"
@@ -385,7 +377,7 @@ summary() {
   log "============================================"
 
   if python_bin="$(detect_python)"; then
-    for mod_name in torchani:ANI-2x aimnet2calc:AIMNet2 mace:MACE-OFF chgnet:CHGNet matgl:M3GNet schnetpack:SchNetPack nequip:NequIP alignn:ALIGNN; do
+    for mod_name in torchani:ANI-2x aimnet:AIMNet2 mace:MACE-OFF chgnet:CHGNet matgl:M3GNet schnetpack:SchNetPack nequip:NequIP alignn:ALIGNN; do
       local mod="${mod_name%%:*}"
       local label="${mod_name##*:}"
       if python_has_module "${python_bin}" "${mod}"; then

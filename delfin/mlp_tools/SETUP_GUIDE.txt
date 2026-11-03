@@ -28,7 +28,7 @@ Option B — Via pip extras:
 Option C — Individual packages:
 
   pip install torchani          # ANI-2x
-  pip install aimnet2calc       # AIMNet2
+  pip install "aimnet[ase]"     # AIMNet2 (aimnetcentral)
   pip install mace-torch        # MACE-OFF
 
 Option D — Via DELFIN Dashboard:
@@ -147,9 +147,9 @@ wrapper -- only ORCA ExtOpt runs do.
 AIMNet2 notes for ExtOpt:
   - 14 elements (H,B,C,N,O,F,Si,P,S,Cl,As,Se,Br,I) and charge/mult
     support; the wrapper passes charge/multiplicity from the extinp.
-  - The AIMNet2 model file ("aimnet2") is fetched on first use by
-    aimnet2calc; run one single-point once before a long ExtOpt job to
-    populate the cache.
+  - The AIMNet2 model file ("aimnet2", alias of aimnet2-wb97m-d3_0) is
+    fetched on first use by the aimnet package (aimnetcentral); run one
+    single-point once before a long ExtOpt job to populate the cache.
 
 
 7. CHOOSING A BACKEND
@@ -183,8 +183,7 @@ Cause:   Molecule contains elements outside H,C,N,O,S,F,Cl
 Fix:     Switch to AIMNet2 or MACE-OFF
 
 Problem: AIMNet2 import error
-Fix:     pip install aimnet2calc
-         If that fails: pip install aimnet
+Fix:     pip install "aimnet[ase]"
 
 Problem: torch not found
 Fix:     pip install torch

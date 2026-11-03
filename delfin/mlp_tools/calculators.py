@@ -65,10 +65,17 @@ def _create_aimnet2(
     mult: int = 1,
     **kwargs,
 ) -> Calculator:
-    """Create an AIMNet2 ASE calculator."""
-    from aimnet2calc import AIMNet2ASE
+    """Create an AIMNet2 ASE calculator (AIMNetCentral `aimnet` package).
 
-    calc = AIMNet2ASE("aimnet2", charge=charge, mult=mult, device=device)
+    The `aimnet` package (isayevlab/aimnetcentral, MIT) replaced the
+    legacy `aimnet2calc` (whose torch-cluster dependency has no wheel for
+    torch 2.13).  Device selection moved from the ASE wrapper into the
+    underlying AIMNet2Calculator; charge/multiplicity stay on the wrapper.
+    """
+    from aimnet.calculators.aimnet2ase import AIMNet2ASE
+    from aimnet.calculators.calculator import AIMNet2Calculator
+
+    calc = AIMNet2ASE(AIMNet2Calculator("aimnet2", device=device), charge=charge, mult=mult)
     logger.info("Created AIMNet2 calculator (device=%s, charge=%d, mult=%d)", device, charge, mult)
     return calc
 

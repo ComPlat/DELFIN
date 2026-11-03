@@ -2,7 +2,7 @@
 
 Provides unified access to pre-trained ML potentials as ASE calculators:
   - ANI-2x     (torchani)     — H,C,N,O,S,F,Cl
-  - AIMNet2    (aimnet2calc)  — 14 elements + charge/spin support
+  - AIMNet2    (aimnet, aimnetcentral) — 14 elements + charge/spin support
   - MACE-OFF   (mace-torch)   — 23 elements, state-of-the-art accuracy
   - CHGNet     (chgnet)       — universal potential for materials (Materials Project)
   - M3GNet     (matgl)        — materials graph neural network potential
@@ -50,9 +50,9 @@ def torchani_available() -> bool:
 
 
 def aimnet2_available() -> bool:
-    """Check whether AIMNet2 calculator is importable."""
+    """Check whether AIMNet2 calculator is importable (aimnetcentral `aimnet`)."""
     try:
-        return importlib.util.find_spec("aimnet2calc") is not None
+        return importlib.util.find_spec("aimnet") is not None
     except (ModuleNotFoundError, ValueError):
         return False
 
@@ -143,14 +143,9 @@ def get_aimnet2_version() -> Optional[str]:
     if not aimnet2_available():
         return None
     try:
-        import aimnet2calc
-        ver = getattr(aimnet2calc, "__version__", None)
-        if ver:
-            return ver
-        # aimnet2calc may not have __version__; check package metadata
+        from importlib.metadata import version
         try:
-            from importlib.metadata import version
-            return version("aimnet2calc")
+            return version("aimnet")
         except Exception:
             return "installed"
     except Exception:
@@ -263,7 +258,7 @@ def require_any_mlp(feature: str = "ML potential evaluation") -> None:
             f"{feature} requires at least one ML potential backend.\n"
             "Install one or more:\n"
             "  pip install torchani          # ANI-2x (H,C,N,O,S,F,Cl)\n"
-            "  pip install aimnet2calc       # AIMNet2 (14 elements + charges)\n"
+            "  pip install \"aimnet[ase]\"        # AIMNet2 (aimnetcentral, charges)\n"
             "  pip install mace-torch        # MACE-OFF\n"
             "Or install all:  pip install delfin-complat[mlp]"
         )

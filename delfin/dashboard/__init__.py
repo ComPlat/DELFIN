@@ -25,7 +25,7 @@ from pathlib import Path
 
 # Suppress noisy but harmless third-party warnings before they are imported
 os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
-warnings.filterwarnings("ignore", message="PySisiphus is not installed", module="aimnet2calc")
+warnings.filterwarnings("ignore", message="PySisiphus is not installed", module="aimnet")
 
 # These imports are safe without ipywidgets and needed by module-level helpers
 from delfin.runtime_setup import (

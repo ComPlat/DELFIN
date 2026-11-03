@@ -81,7 +81,7 @@ source — that is the adapter telling you the physics, not a bug.
 - Charge ≠ 0 or mult ≠ 1 on a backend that cannot model them (all except
   `aimnet2`; in ASE only `xtb`/`orca`): refused — the calculator would
   silently ignore it and produce a wrong number.
-- Install errors (`torch`, `aimnet2calc`, `mace`, ... missing): surface as
+- Install errors (`torch`, `aimnet`, `mace`, ... missing): surface as
   a FAILED step with the import error, not a traceback.
 
 ## When an MLP is enough, and when DFT must follow

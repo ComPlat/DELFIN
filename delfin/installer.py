@@ -95,7 +95,7 @@ TOOLS: Tuple[Tool, ...] = (
     # Machine-learning potentials: install_mlp_tools.sh.
     Tool("ani2x", "mlp", "TorchANI", switch="INSTALL_ANI2X", modules=("torchani",),
          aliases=("torchani",), size=_TORCH),
-    Tool("aimnet2", "mlp", "AIMNet2", switch="INSTALL_AIMNET2", modules=("aimnet2calc",),
+    Tool("aimnet2", "mlp", "AIMNet2", switch="INSTALL_AIMNET2", modules=("aimnet",),
          aliases=("aimnet2calc",), size=_TORCH),
     Tool("mace", "mlp", "MACE", switch="INSTALL_MACE", modules=("mace",), size=_TORCH),
     Tool("chgnet", "mlp", "CHGNet", switch="INSTALL_CHGNET", modules=("chgnet",), size=_TORCH),

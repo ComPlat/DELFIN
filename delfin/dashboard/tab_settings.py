@@ -3182,7 +3182,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             # install_cmd -> pip_pkg_name mapping
             _MLP_PKGS = {
                 'ANI-2x':     ('torchani',    'torchani'),
-                'AIMNet2':    ('aimnet2calc',  'aimnet2calc'),
+                'AIMNet2':    ('aimnet',  'aimnet'),
                 'MACE-OFF':   ('mace-torch',  'mace-torch'),
                 'CHGNet':     ('chgnet',       'chgnet'),
                 'M3GNet':     ('matgl',        'matgl'),
