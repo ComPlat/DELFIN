@@ -48,9 +48,9 @@ def RO_CARD_H(title: str, hint: str = "") -> str:
 def RO_TAB_HEADER() -> str:
     """Top banner of the tab: title chip + subtitle."""
     return (
-        "<div style='background:linear-gradient(90deg,#0f172a,#1e3a5f);"
-        "border-radius:10px;padding:14px 18px;margin-bottom:10px'>"
-        "<div style='color:#f8fafc;font-size:18px;font-weight:700'>"
+        "<div style='background:#f1f5f9;border-left:4px solid #2563eb;"
+        "border-radius:10px;padding:12px 18px;margin-bottom:10px'>"
+        "<div style='color:#0f172a;font-size:18px;font-weight:700'>"
         "Results Overview</div>"
         "<div style='color:#94a3b8;font-size:12px;margin-top:2px'>"
         "Rechnungen auswählen, Größen wählen, Werte vergleichen - "
@@ -652,7 +652,7 @@ class ResultsOverviewPanel:
                 "<table style='border-collapse:collapse'>"
                 + "".join(rows_png) + "</table>")
         self._pngs.value = (
-            "<h4>Relaxed-Surface-Scan PNGs</h4>" + "".join(png_html)
+            RO_CARD_H("Relaxed-Surface-Scan PNGs") + "".join(png_html)
             if png_html else "")
         # Click-to-sort wiring: the column headers carry an onclick
         # attribute that calls window.__roSort(idx); that function (sent
@@ -685,31 +685,23 @@ class ResultsOverviewPanel:
   window.__roStyle = true;
   var css = document.createElement('style');
   css.textContent = [
-    ".ro-tab .widget-button{border-radius:8px;border:1px solid #cbd5e1;",
+    ".ro-tab-root .widget-button{border-radius:8px;border:1px solid #cbd5e1;",
     "background:#fff;padding:5px 14px;font-size:13px}",
-    ".ro-tab .widget-button:hover{border-color:#2563eb;background:#eff6ff}",
-    ".ro-tab .widget-button-primary{background:#2563eb;color:#fff;",
+    ".ro-tab-root .widget-button:hover{border-color:#2563eb;background:#eff6ff}",
+    ".ro-tab-root .widget-button-primary{background:#2563eb;color:#fff;",
     "border-color:#1d4ed8;font-weight:600}",
-    ".ro-tab .widget-select select,.ro-tab .widget-selectmultiple select",
+    ".ro-tab-root .widget-select select,.ro-tab-root .widget-selectmultiple select",
     "{border:1px solid #cbd5e1;border-radius:8px;padding:4px;",
     "font-size:13px;background:#fff}",
-    ".ro-tab .widget-selectmultiple select:focus",
+    ".ro-tab-root .widget-selectmultiple select:focus",
     "{outline:2px solid #93c5fd}",
-    ".ro-tab .widget-slider .ui-slider-handle{border-radius:50%;",
+    ".ro-tab-root .widget-slider .ui-slider-handle{border-radius:50%;",
     "border-color:#2563eb;background:#2563eb}",
-    ".ro-tab .widget-accordion .widget-accordion-title",
+    ".ro-tab-root .widget-accordion .widget-accordion-title",
     "{background:#f1f5f9;border-radius:8px;font-weight:600}",
-    ".ro-tab .widget-checkbox label{font-size:13px}"
+    ".ro-tab-root .widget-checkbox label{font-size:13px}"
   ].join("");
   document.head.appendChild(css);
-  // Tag the tab root so the CSS only applies here.
-  window.__roTagTab = setInterval(function () {
-    document.querySelectorAll(".jupyter-widgets").forEach(function (w) {
-      if (!w.closest(".ro-tab") && w.querySelector(".ro-tab-root")) {
-        w.classList.add("ro-tab");
-      }
-    });
-  }, 1500);
   if (window.__roSortBind) { return; }
   window.__roSortBind = function (root) {
     (root || document).querySelectorAll('a.ro-sort').forEach(function (a) {
