@@ -43,8 +43,8 @@ from __future__ import annotations
 import time
 
 # The classes, with the safe action each may take past its limit.
-KEEP_WAITING = "keep_waiting"     # approval-wait, gate-queue, tool-running
-REPORT_MODEL_RETRY = "report_model_retry"   # model-wait: the deadline retries
+KEEP_WAITING = "keep-waiting"     # approval-wait, gate-queue, tool-running
+REPORT_MODEL_RETRY = "report-model-retry"   # model-wait: the deadline retries
 NONE = "none"                     # idle: not a stall
 
 CLASSES = ("approval-wait", "model-wait", "gate-queue",
@@ -194,3 +194,69 @@ class ProgressWatchdog:
         self.limit_crossed = limit > 0 and row["duration_s"] >= limit
         self._current = dict(row)
         return event(row), status_line(row)
+
+
+# --- cross-session view -------------------------------------------------
+# The in-process watchdog classifies the live phase (activity.py State).
+# Across sessions only the persisted traces exist (ops_interface.sessions
+# enriched by session_health), so classify_record maps those rows onto
+# the same stall classes. Same classes, weaker evidence: tool-running
+# cannot be seen from outside, so it is never reported here.
+
+IDLE_STALL_MIN_S = 3600.0    # idle counts as a stall after an hour
+
+
+def stall_class(record, now: float) -> dict:
+    """One session row (``session_health.collect()``-shaped) -> stall row.
+
+    Returns ``{"stall": bool, "class": str, "age_s": float, "action":
+    str}``. Read-only: nothing here mutates. Precedence: open approval
+    (approval-wait, age from ``approval_opened_at``) > gate queue
+    (``gate_wait_s``) > no tokens back (model-wait, ``no_token_s``) >
+    a running phase (tool-running, ``phase``/``phase_s``). States where
+    nothing safe can be decided from outside — paused, dead pid,
+    repeated api errors — are reported as ``unclassified`` rather than
+    guessed; a quiet session (nothing waiting, turn over) is ``idle``
+    and NOT a stall.
+    """
+    if not isinstance(record, dict):
+        return {"stall": False, "class": "unclassified", "age_s": 0.0,
+                "action": ""}
+    paused = bool(record.get("paused"))
+    pid_alive = record.get("pid_alive")
+    errors = record.get("api_errors_in_a_row") or 0
+    if paused or pid_alive is False or errors:
+        return {"stall": False, "class": "unclassified", "age_s": 0.0,
+                "action": ""}
+    approvals = record.get("open_approvals") or []
+    if approvals:
+        opened = _num(record.get("approval_opened_at"))
+        return {"stall": True, "class": "approval-wait",
+                "age_s": max(0.0, now - opened) if opened else 0.0,
+                "action": SAFE_ACTION["approval-wait"]}
+    gate = _num(record.get("gate_wait_s"))
+    if gate is not None and gate > 0:
+        return {"stall": True, "class": "gate-queue", "age_s": gate,
+                "action": SAFE_ACTION["gate-queue"]}
+    no_token = _num(record.get("no_token_s"))
+    if no_token is not None and no_token > 0:
+        return {"stall": True, "class": "model-wait", "age_s": no_token,
+                "action": SAFE_ACTION["model-wait"]}
+    phase = str(record.get("phase") or "")
+    if phase and phase not in ("idle", "done"):
+        phase_s = _num(record.get("phase_s")) or 0.0
+        return {"stall": True, "class": "tool-running", "age_s": phase_s,
+                "action": SAFE_ACTION["tool-running"]}
+    return {"stall": False, "class": "idle", "age_s": 0.0, "action": NONE}
+
+
+#: The cross-session view is the same classes on weaker evidence;
+#: :func:`classify_record` is kept as the first name it shipped under.
+classify_record = stall_class
+
+
+def _num(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

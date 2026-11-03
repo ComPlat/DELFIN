@@ -4745,6 +4745,40 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ops_stalls(args):
+    """`delfin-agent ops stalls` -- read-only, one line per stalled session.
+
+    Input: the rows session_health.collect() produces (falling back to
+    ops_interface.sessions()). Output: one line ``<name>  <class>
+    <age>  <action>`` per stalled session, or one clear line when
+    nothing is stalled. Nothing is mutated.
+    """
+    import time as _t
+
+    from . import activity as _activity
+    from . import ops_interface as _oi
+    from . import progress_watchdog as _pw
+    from . import session_health as _sh
+    try:
+        records = _sh.collect()
+    except Exception:
+        records = _oi.sessions()
+    now = _t.time()
+    rows = []
+    for rec in records:
+        out = _pw.stall_class(rec, now)
+        if out["stall"]:
+            rows.append((rec.get("name") or rec.get("session_id")
+                         or "?", out))
+    if not rows:
+        print("no stalled sessions", flush=True)
+        return 0
+    for name, out in rows:
+        print(f"{name}  {out['class']}  {_activity.fmt_s(out['age_s'])}"
+              f"  {out['action']}", flush=True)
+    return 0
+
+
 def _subcommand_names(parser: argparse.ArgumentParser) -> frozenset[str]:
     """The subcommands the parser really registers.
 
@@ -5929,6 +5963,9 @@ def build_parser() -> argparse.ArgumentParser:
             _sh.pause_watch(interval)
             stop = _sa.last_stop()
 
+    # _cmd_ops_stalls is a module-level function (read-only, tested
+    # directly); only its registration lives here.
+
     ops_health_p = ops_sub.add_parser(
         "health",
         help="One line per open session: verdict (working / waiting on "
@@ -5944,6 +5981,14 @@ def build_parser() -> argparse.ArgumentParser:
     ops_health_p.add_argument("--interval", type=int, default=60,
                               help="Seconds between --wait ticks (min 60)")
     ops_health_p.set_defaults(func=_cmd_ops_health)
+
+    ops_stalls_p = ops_sub.add_parser(
+        "stalls",
+        help="Read-only: one line per open session with its stall class "
+             "(approval-wait / model-wait / gate-queue / tool-running / "
+             "idle / unclassified) and its age",
+    )
+    ops_stalls_p.set_defaults(func=_cmd_ops_stalls)
 
     # The supervisor's side of running sessions, as data
     # (delfin/agent/ops_interface.py): events and state to read; a message,
