@@ -284,3 +284,165 @@ def test_working_shell_uses_selected_environment_instead_of_tmux_server_environm
     assert result.returncode == 0, result.stderr
     assert 'ENV=' + str(environment) in result.stdout
     assert 'SOURCE=selected-source' in result.stdout
+
+
+def _installed_like_an_editable_finder(tmp_path):
+    """A fake DELFIN reachable only through a meta-path finder appended to
+    sys.meta_path (as setuptools' editable finder does), and a venv python.
+    Returns (environment root, python, PYTHONPATH carrying the finder)."""
+    import sys
+    source = tmp_path / 'installed source'
+    for package in ['delfin', 'delfin/agent', 'delfin/dashboard']:
+        (source / package).mkdir(parents=True, exist_ok=True)
+        (source / package / '__init__.py').write_text('')
+    (source / 'delfin/__init__.py').write_text('__version__ = "test"\n')
+    for module in ['delfin/agent/where.py', 'delfin/dashboard/session.py']:
+        (source / module).write_text('')
+    (source / 'delfin/cli_voila.py').write_text(
+        'from delfin import __version__\n'
+        'def main(argv):\n    print("--strict-port")\n')
+    hook = tmp_path / 'finder hook'
+    hook.mkdir()
+    # The child must see ONLY this fake: on a machine with DELFIN installed
+    # (CI, a developer's env) the real package -- a site-packages path or the
+    # editable install's own finder -- would win and the test would neither
+    # reproduce the shadowing nor prove the fix. sitecustomize runs after the
+    # .pth files, so it can take those out; a folder WITHOUT __init__.py
+    # (the ~/delfin install root under test) stays on sys.path.
+    (hook / 'sitecustomize.py').write_text(
+        'import os, sys\n'
+        'sys.path[:] = [p for p in sys.path if not os.path.isfile('
+        'os.path.join(p or ".", "delfin", "__init__.py"))]\n'
+        'sys.meta_path[:] = [f for f in sys.meta_path '
+        'if "editable" not in repr(f).lower()]\n'
+        'from importlib.machinery import PathFinder\n'
+        'class _Finder:\n'
+        '    @classmethod\n'
+        '    def find_spec(cls, name, path=None, target=None):\n'
+        '        if name == "delfin":\n'
+        f'            return PathFinder.find_spec(name, [{str(source)!r}])\n'
+        '        return None\n'
+        'sys.meta_path.append(_Finder)\n')
+    root = tmp_path / 'venv'
+    (root / 'bin').mkdir(parents=True)
+    python = root / 'bin' / 'python'
+    python.symlink_to(sys.executable)
+    (root / 'bin' / 'activate').write_text(f'export VIRTUAL_ENV={__import__("shlex").quote(str(root))}\n')
+    return root, python, str(hook)
+
+
+def _run_bootstrap(env, home, payload_code, *, person=''):
+    import base64
+    import subprocess
+    payload = base64.b64encode(payload_code.encode()).decode()
+    script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
+    return subprocess.run(['bash', str(script), '0', '', '', payload, 'dashboard', '', '0', '0', person],
+                          env=env, text=True, capture_output=True, timeout=30, cwd=str(home))
+
+
+def _bootstrap_env(tmp_path, home):
+    import os
+    root, python, hook = _installed_like_an_editable_finder(tmp_path)
+    env = dict(os.environ)
+    for key in ('CONDA_PREFIX', 'DELFIN_PERSON', 'DELFIN_RUNTIME_DIR'):
+        env.pop(key, None)
+    env.update(PATH='/usr/bin:/bin', HOME=str(home), VIRTUAL_ENV=str(root), PYTHONPATH=hook)
+    return env, python
+
+
+def test_bootstrap_finds_delfin_although_home_holds_a_plain_delfin_folder(tmp_path):
+    # The Raspberry Pi layout: ~/delfin is the install root (no __init__.py),
+    # the package comes through the editable finder. From ~ a bare `python -c`
+    # imported ~/delfin as an empty namespace package and found nothing.
+    home = tmp_path / 'home'
+    (home / 'delfin' / 'src').mkdir(parents=True)
+    env, python = _bootstrap_env(tmp_path, home)
+    result = _run_bootstrap(env, home, 'import delfin, sys; print("PKG=" + str(delfin.__version__)); print("CHOSEN=" + sys.executable)')
+    assert result.returncode == 0, result.stderr
+    assert 'PKG=test' in result.stdout
+    assert 'CHOSEN=' + str(python) in result.stdout
+
+
+def test_people_mode_gives_each_person_a_home_of_their_own(tmp_path):
+    import stat
+    home = tmp_path / 'home'
+    (home / '.config/delfin').mkdir(parents=True)
+    (home / '.config/delfin/launcher-people.conf').write_text('')
+    (home / '.delfin').mkdir()
+    (home / '.delfin/credentials.json').write_text('{}')
+    (home / '.delfin_settings.json').write_text('{"ui": {"tabs": {"hidden": ["submit"]}}}')
+    (home / '.delfin/agent_sessions').mkdir()
+    env, _ = _bootstrap_env(tmp_path, home)
+    probe = ('import os; print("HOME=" + os.environ["HOME"]); print("RUN=" + os.environ["DELFIN_RUNTIME_DIR"]);'
+             ' print("WHO=" + os.environ["DELFIN_PERSON"]); print("CWD=" + os.getcwd())')
+    results = {name: _run_bootstrap(env, home, probe, person=name) for name in ('anna', 'bert')}
+    for name, result in results.items():
+        assert result.returncode == 0, result.stderr
+        person_home = home / 'people' / name
+        assert f'HOME={person_home}' in result.stdout
+        assert f'RUN={person_home}/.run' in result.stdout
+        assert f'WHO={name}' in result.stdout
+        assert f'CWD={person_home}/work' in result.stdout
+        assert stat.S_IMODE(person_home.stat().st_mode) == 0o700
+        # Shared by link: the account's credentials and its DELFIN settings
+        # (user_settings.SETTINGS_FILE_NAME, e.g. the tab choice); private: sessions.
+        from delfin.user_settings import SETTINGS_FILE_NAME
+        assert (person_home / '.delfin/credentials.json').resolve() == (home / '.delfin/credentials.json').resolve()
+        assert (person_home / SETTINGS_FILE_NAME).resolve() == (home / SETTINGS_FILE_NAME).resolve()
+        assert not (person_home / '.delfin/agent_sessions').exists()
+
+
+def test_people_mode_is_off_unless_the_account_owner_enables_it(tmp_path):
+    home = tmp_path / 'home'
+    home.mkdir()
+    env, _ = _bootstrap_env(tmp_path, home)
+    result = _run_bootstrap(env, home, 'import os; print("HOME=" + os.environ["HOME"])', person='anna')
+    assert result.returncode == 0, result.stderr
+    assert f'HOME={home}' in result.stdout
+    assert not (home / 'people').exists()
+
+
+@pytest.mark.parametrize('person', ['../evil', 'a b', '-x', 'Anna'])
+def test_people_mode_refuses_a_name_that_is_not_a_plain_name(tmp_path, person):
+    home = tmp_path / 'home'
+    (home / '.config/delfin').mkdir(parents=True)
+    (home / '.config/delfin/launcher-people.conf').write_text('')
+    env, _ = _bootstrap_env(tmp_path, home)
+    result = _run_bootstrap(env, home, 'print("STARTED")', person=person)
+    assert result.returncode == 1
+    assert 'Invalid person name' in result.stderr
+    assert 'STARTED' not in result.stdout
+    assert not (home / 'people').exists()
+
+
+def test_tmux_gets_home_and_delfin_settings_of_this_person(monkeypatch):
+    monkeypatch.setenv('HOME', '/srv/account/people/anna')
+    monkeypatch.setenv('DELFIN_PERSON', 'anna')
+    monkeypatch.setenv('DELFIN_RUNTIME_DIR', '/srv/account/people/anna/.run')
+    words = launcher.shell_environment().split()
+    assert 'HOME=/srv/account/people/anna' in words
+    assert 'DELFIN_PERSON=anna' in words
+    assert 'DELFIN_RUNTIME_DIR=/srv/account/people/anna/.run' in words
+
+
+def test_new_dashboard_tmux_session_is_named_for_the_person(monkeypatch):
+    from types import SimpleNamespace
+    from delfin.agent import where
+    monkeypatch.setenv('DELFIN_PERSON', 'anna')
+    monkeypatch.setattr(where, 'dashboard', lambda: {})
+    monkeypatch.setattr(launcher.shutil, 'which', lambda name: '/usr/bin/tmux')
+    monkeypatch.setattr(launcher, 'select_port', lambda preferred: 8866)
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(launcher.subprocess, 'run', run)
+    def stop(*args):
+        raise RuntimeError('stop here')
+    monkeypatch.setattr(launcher, 'run_dashboard_connection', stop)
+    monkeypatch.setattr(launcher.sys, 'argv', ['helper', '8866', '/work', '/env/bin/python', '', '1', '0'])
+    with pytest.raises(RuntimeError, match='stop here'):
+        launcher.main()
+    created = next(cmd for cmd in commands if cmd[1] == 'new-session')
+    assert created[created.index('-s') + 1].startswith('delfin-win-anna-8866-')
+    assert 'sys.path[:]' in created[-1]
