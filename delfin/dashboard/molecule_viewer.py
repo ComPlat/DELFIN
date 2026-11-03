@@ -7133,10 +7133,13 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "  for (var k = 0; k < atoms.length; k++) {\n"
         "    var a = atoms[k];\n"
         "    if (!chosen[a.serial]) continue;\n"
-        "    var radius = a.elem === 'H' ? 0.39 : 0.59;\n"
+        # A wireframe sphere at 12% opacity was effectively invisible.
+        # A solid, softly translucent *separate* shell is distinguishable
+        # without replacing the atom's CPK sphere or changing bond colours.
+        "    var radius = a.elem === 'H' ? 0.43 : 0.62;\n"
         "    viewer.addSphere({center:{x:a.x,y:a.y,z:a.z},\n"
-        "      radius:radius,color:0x77b9d0,opacity:0.12,\n"
-        "      wireframe:true,clickable:false});\n"
+        "      radius:radius,color:0x8fbcd3,opacity:0.18,\n"
+        "      clickable:false});\n"
         "  }\n"
         "};\n"
         "viewer.__tsGoatUpdateHighlights();\n"
