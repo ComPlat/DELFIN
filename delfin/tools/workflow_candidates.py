@@ -29,7 +29,8 @@ _RULES: list[tuple[str, tuple[str, ...], str]] = [
      "returns the Gibbs energies the potential is derived from."),
     ("OCCUPIER",
      ("spin state", "spin states", "multiplicit", "ground state",
-      "which spin", "high spin", "low spin"),
+      "which spin", "high spin", "low spin",
+      "singlet", "triplet", "doublet", "quartet", "quintet"),
      "OCCUPIER: optimises every plausible spin state and selects the "
      "preferred one."),
     ("ESD",

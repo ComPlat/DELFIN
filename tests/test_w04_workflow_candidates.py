@@ -22,6 +22,7 @@ EXPECTED = [
     ("compute the oxidation potential for the Cu pair", "redox"),
     ("which spin state is lowest for my iron complex", "OCCUPIER"),
     ("compare multiplicities and pick the ground state", "OCCUPIER"),
+    ("is the singlet or the triplet lower in energy", "OCCUPIER"),
     ("excited states and emission of this dye", "ESD"),
     ("phosphorescence rates and ISC for the Pt complex", "ESD"),
     ("CO2 binding to my catalyst", "co2"),
