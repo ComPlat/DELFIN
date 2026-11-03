@@ -160,7 +160,9 @@ def build_ts_goat_panel(
          anim_status],
     )
     constraints_label = widgets.HTML(
-        '<b>Constraint atoms (0-based ORCA indices):</b>')
+        '<b>Constraints</b> '
+        '<span style="font-size:11px;color:#607d8b;">'
+        '(0-based atom indices)</span>')
     constraints_count = widgets.HTML('')
     constraints_field = widgets.Textarea(
         placeholder='e.g. 0, 2, 5 (comma- or newline-separated)',
@@ -172,14 +174,14 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='140px'),
     )
     reset_prop_btn = widgets.Button(
-        description='Reset',
+        description='Restore proposal',
         tooltip='Restore the automatic reactive-centre proposal',
-        layout=widgets.Layout(width='105px'),
+        layout=widgets.Layout(width='150px'),
     )
     clear_sel_btn = widgets.Button(
-        description='Clear',
+        description='Clear all',
         tooltip='Clear every constraint (fully manual selection)',
-        layout=widgets.Layout(width='105px'),
+        layout=widgets.Layout(width='100px'),
     )
     method_label = widgets.HTML('<b>GOAT settings</b>')
     # Offer known GOAT-compatible ORCA keywords, not an unvalidated
@@ -188,8 +190,7 @@ def build_ts_goat_panel(
         options=[
             ('GFN2-xTB (XTB)', 'XTB'),
             ('GFN1-xTB (XTB1)', 'XTB1'),
-            ('GFN2-xTB (XTB2)', 'XTB2'),
-            ('GFN-FF (XTBFF)', 'XTBFF'),
+            ('GFN-FF force field (XTBFF)', 'XTBFF'),
             ('r2SCAN-3c (DFT)', 'r2SCAN-3c'),
             ('B3LYP (DFT)', 'B3LYP'),
         ],
