@@ -16,6 +16,9 @@ DEFAULT_PATTERNS: Sequence[str] = [
     "*.bas*",
     "*_D0*",
     "XTB_GOAT.goat.*.out",
+    # ExtOpt exchange files of an MLIP GOAT (global_opt_method=mlip:*),
+    # written by ORCA 6.1.1 as <base>_EXT.extinp.tmp / <base>_EXT.xyz.
+    "XTB_GOAT_EXT.*",
 ]
 
 logger = get_logger(__name__)
