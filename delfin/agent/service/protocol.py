@@ -259,6 +259,22 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     # restart: a new service follows at once (an update); windows reconnect
     # to it instead of leaving.
     "service.shutdown": {"restart": "boolean?"},
+    # Branch operations (delfin/agent/branch_ops.py): the dashboard's
+    # branch logic, run in *workspace* (a session's or a window's). list:
+    # the rows of one view (mine|all|hidden|merged|remote), narrowed by
+    # text. pull: fast-forward-only main, never a switch. test: a worktree
+    # at ref, the branch's changed test files run there (capped, nice),
+    # worktree removed unless keep. cleanup: what may be deleted; delete
+    # only with confirm=true (branch_cleanup.delete itself, rules re-read
+    # at deletion). Nothing here switches the shared checkout.
+    "branch.list": {"workspace": "string", "view": "string?",
+                    "text": "string?", "refresh": "boolean?"},
+    "branch.pull": {"workspace": "string"},
+    "branch.test": {"workspace": "string", "ref": "string",
+                    "keep": "boolean?"},
+    "branch.cleanup": {"workspace": "string", "includeUnmerged": "boolean?",
+                       "refresh": "boolean?", "delete": "[string]?",
+                       "confirm": "boolean?"},
     # What needs the user, from every DELFIN process (attention_feed.py):
     # the items of ATTENTION_ITEM. answer: a parked question's answer, for
     # the next session in its workspace; dismiss: cleared, never answered.
