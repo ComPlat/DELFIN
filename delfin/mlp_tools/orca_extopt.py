@@ -423,7 +423,10 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
     # Manual 4.1.10 (structurereactivity/optimizations.txt lines 1571-1577):
     # ProgExt takes the wrapper path quoted.
     method.ProgExt = f'"{wrapper_path}"'  # type: ignore[assignment]
-    method.Ext_Params = ext_params
+    # Ext_Params is a quoted string as well (manual 4.1.10 writes
+    # ``Ext_Params "optional command line arguments"``); ORCA 6.1.1 refuses
+    # the unquoted form ("Invalid assignment in METHOD block").
+    method.Ext_Params = f'"{ext_params}"'  # type: ignore[assignment]
     inp.add_blocks(method)
 
     if scan is not None:

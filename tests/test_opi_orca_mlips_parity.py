@@ -3,8 +3,10 @@
 Input: water, every opt/optts/freq variant the builder had before the
 GOAT/NEB/IRC/scan run types were added.  Output: the exact ``.inp`` text
 OPI writes.  The expected texts were produced by the builder at
-origin/main 3315360cf; a change to them is a change of the ORCA input
-every existing orca-mlips job receives and must be made here on purpose.
+origin/main 3315360cf, with one later change: OPI writes Ext_Params
+quoted (tests/test_opi_ext_params_is_quoted.py).  A change to them is a
+change of the ORCA input every orca-mlips job receives and must be made
+here on purpose.
 
 Runs in the py3.12 OPI venv only (skipped without ``opi``).
 """
@@ -40,7 +42,7 @@ EXPECTED_OPI = {
         '\n'
         '%Method\n'
         '    ProgExt "orca-mlips-uma"\n'
-        '    Ext_Params --backend uma --device cpu\n'
+        '    Ext_Params "--backend uma --device cpu"\n'
         'end\n'
         '\n'
         '%output\n'
@@ -60,7 +62,7 @@ EXPECTED_OPI = {
         '\n'
         '%Method\n'
         '    ProgExt "orca-mlips-uma"\n'
-        '    Ext_Params --backend uma --device cpu\n'
+        '    Ext_Params "--backend uma --device cpu"\n'
         'end\n'
         '\n'
         '%output\n'
@@ -80,7 +82,7 @@ EXPECTED_OPI = {
         '\n'
         '%Method\n'
         '    ProgExt "orca-mlips-uma"\n'
-        '    Ext_Params --backend uma --device cpu --dump-hessian extopt.hess\n'
+        '    Ext_Params "--backend uma --device cpu --dump-hessian extopt.hess"\n'
         'end\n'
         '\n'
         '%output\n'
@@ -101,7 +103,7 @@ EXPECTED_OPI = {
         '\n'
         '%Method\n'
         '    ProgExt "orca-mlips-uma"\n'
-        '    Ext_Params --backend uma --device cpu --dump-hessian extopt.hess\n'
+        '    Ext_Params "--backend uma --device cpu --dump-hessian extopt.hess"\n'
         'end\n'
         '\n'
         '%output\n'
@@ -126,7 +128,7 @@ EXPECTED_OPI = {
         '\n'
         '%Method\n'
         '    ProgExt "orca-mlips-uma"\n'
-        '    Ext_Params --backend uma --device cpu --dump-hessian extopt.hess\n'
+        '    Ext_Params "--backend uma --device cpu --dump-hessian extopt.hess"\n'
         'end\n'
         '\n'
         '%output\n'
@@ -151,7 +153,7 @@ EXPECTED_OPI = {
         '\n'
         '%Method\n'
         '    ProgExt "orca-mlips-mace"\n'
-        '    Ext_Params --backend mace --model m1 --device cuda --solvent water --solvent-model alpb\n'
+        '    Ext_Params "--backend mace --model m1 --device cuda --solvent water --solvent-model alpb"\n'
         'end\n'
         '\n'
         '%output\n'
