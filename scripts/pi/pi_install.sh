@@ -201,6 +201,16 @@ EOF
             > "$HOME/.config/delfin/launcher-people.conf"
         echo "==> launcher people mode on (~/people/<name>; overview: delfin-people)"
     fi
+    # Keep session is this box's default for the Windows launcher: a
+    # dashboard (and the agent working in it) survives a disconnect, whatever
+    # the app's checkbox says; Ctrl+C in the SSH window still stops it.
+    # DELFIN_PI_KEEP=0 leaves the choice to the app.
+    if [[ "${DELFIN_PI_KEEP:-1}" == "1" && ! -f "$HOME/.config/delfin/launcher-keep.conf" ]]; then
+        mkdir -p "$HOME/.config/delfin"
+        printf '%s\n' "# Windows launcher: every connection keeps its dashboard (remote_bootstrap.sh)." \
+            > "$HOME/.config/delfin/launcher-keep.conf"
+        echo "==> launcher keep session on by default"
+    fi
     install -D -m 755 "$ROOT/src/scripts/pi/delfin_people.sh" "$HOME/.local/bin/delfin-people"
     # The dashboard tabs this box shows (tab ids, ~/.config/delfin/pi-tabs.conf),
     # applied on every deploy against the tabs the code has now, so a tab a

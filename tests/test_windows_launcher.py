@@ -446,3 +446,19 @@ def test_new_dashboard_tmux_session_is_named_for_the_person(monkeypatch):
     created = next(cmd for cmd in commands if cmd[1] == 'new-session')
     assert created[created.index('-s') + 1].startswith('delfin-win-anna-8866-')
     assert 'sys.path[:]' in created[-1]
+
+
+def test_a_server_can_make_keep_session_its_default(tmp_path):
+    # The payload receives keep as argv[5] (remote_launcher.main). The app
+    # sends 0 here; the account's launcher-keep.conf turns it on, and only
+    # where that file exists.
+    home = tmp_path / 'home'
+    home.mkdir()
+    env, _ = _bootstrap_env(tmp_path, home)
+    probe = 'import sys; print("KEEP=" + sys.argv[5])'
+    assert 'KEEP=0' in _run_bootstrap(env, home, probe).stdout
+    (home / '.config/delfin').mkdir(parents=True)
+    (home / '.config/delfin/launcher-keep.conf').write_text('')
+    result = _run_bootstrap(env, home, probe)
+    assert result.returncode == 0, result.stderr
+    assert 'KEEP=1' in result.stdout

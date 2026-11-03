@@ -9,6 +9,11 @@ tunnel_path=${6:-}
 keep=${7:-0}
 working=${8:-0}
 person=${9:-}
+# The account owner may make Keep session this server's default
+# (~/.config/delfin/launcher-keep.conf, e.g. a shared agent box): every
+# connection then keeps its dashboard after a disconnect, whatever the app's
+# checkbox says. Ctrl+C in the SSH window still stops it.
+if [ -f "$HOME/.config/delfin/launcher-keep.conf" ]; then keep=1; fi
 # `python -c` puts the current directory first on sys.path: a plain folder
 # named "delfin" there (an install root, a repository root) then shadows the
 # real package as an empty namespace package. Every probe and start drops it.

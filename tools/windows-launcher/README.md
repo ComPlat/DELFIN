@@ -79,6 +79,9 @@ Two options are visible without opening Advanced settings:
 - **Working shell (Ctrl+B, then N)**: disabled by default for new saved
   connections. Enable it to open/reuse a tmux window named `DELFIN-work`.
 - **Keep session after disconnect**: disabled by default for new saved connections.
+  A server whose account has `~/.config/delfin/launcher-keep.conf` (the
+  Raspberry Pi agent box sets it) keeps every connection's dashboard, whatever
+  this checkbox says; Ctrl+C still stops it.
   When off, disconnecting stops the **new dashboard started by this connection**
   and its tmux shell windows. When on, it uses DELFIN `--keep` and keeps the server
   and opted-in dashboard kernels available for reconnecting.
