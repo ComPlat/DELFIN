@@ -686,7 +686,10 @@ class ResultsOverviewPanel:
   var css = document.createElement('style');
   css.textContent = [
     ".ro-tab-root .widget-button{border-radius:8px;border:1px solid #94a3b8;",
-    "background:#fff;padding:6px 16px;font-size:13px;color:#0f172a}",
+    "background:#f1f5f9;padding:0 16px;font-size:13px;color:#0f172a}",
+    ".ro-tab-root .widget-button button,.ro-tab-root .widget-button",
+    "{display:flex;align-items:center;justify-content:center;"
+    "min-height:30px;text-align:center;line-height:1.2}",
     ".ro-tab-root .widget-button:hover{border-color:#2563eb;background:#eff6ff}",
     ".ro-tab-root .widget-button-primary{background:#2563eb;color:#fff;",
     "border-color:#1d4ed8;font-weight:600}",
