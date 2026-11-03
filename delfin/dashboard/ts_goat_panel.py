@@ -117,17 +117,6 @@ def build_ts_goat_panel(
     # setFrame (fixed camera).  Play auto-generates the trajectory on
     # first click; a missing binary keeps the static TS visible with
     # an explanatory status line.
-    anim_toggle = widgets.ToggleButton(
-        value=False, description='Imaginary Mode',
-        button_style='warning',
-        tooltip='Animate the selected imaginary mode (ORCA trajectory)',
-        layout=widgets.Layout(width='170px'),
-    )
-    anim_generate = widgets.Button(
-        description='Generate / Load Mode', disabled=False,
-        tooltip='Generate or load the vibration trajectory for the selected mode',
-        layout=widgets.Layout(width='200px'),
-    )
     anim_status = widgets.HTML('')
     anim_play = widgets.Button(
         description='▶ Play', disabled=False,
@@ -156,11 +145,6 @@ def build_ts_goat_panel(
         tooltip='Playback speed (1 = 5 frames per second)',
         layout=widgets.Layout(width='210px'),
     )
-    anim_arrows_toggle = widgets.Checkbox(
-        value=False, description='Show Displacement Arrows',
-        tooltip='Draw mode displacement arrows on the static geometry',
-        layout=widgets.Layout(width='240px'),
-    )
     # One visible Play action: it loads the trajectory on demand.  The
     # previous "Imaginary Mode" toggle + "Generate / Load" button duplicated
     # that action and left Play disabled in the default state.
@@ -173,7 +157,7 @@ def build_ts_goat_panel(
             [anim_amp, anim_speed],
             layout=widgets.Layout(flex_flow='row wrap', width='100%',
                                   gap='8px', margin='2px 0')),
-         anim_arrows_toggle, anim_status],
+         anim_status],
     )
     constraints_label = widgets.HTML(
         '<b>Constraint atoms (0-based ORCA indices):</b>')
@@ -198,22 +182,34 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='105px'),
     )
     method_label = widgets.HTML('<b>GOAT settings</b>')
-    method_field = widgets.Text(
-        value='XTB', description='Method:', layout=widgets.Layout(width='190px'),
+    # Offer known GOAT-compatible ORCA keywords, not an unvalidated
+    # free-text method name.  XTB is GFN2-xTB in ORCA.
+    method_field = widgets.Dropdown(
+        options=[
+            ('GFN2-xTB (XTB)', 'XTB'),
+            ('GFN1-xTB (XTB1)', 'XTB1'),
+            ('GFN2-xTB (XTB2)', 'XTB2'),
+            ('GFN-FF (XTBFF)', 'XTBFF'),
+            ('r2SCAN-3c (DFT)', 'r2SCAN-3c'),
+            ('B3LYP (DFT)', 'B3LYP'),
+        ],
+        value='XTB', description='Method:',
+        layout=widgets.Layout(width='250px'),
     )
     basis_field = widgets.Text(
         value='', placeholder='def2-SVP (DFT only)',
         description='Basis:', layout=widgets.Layout(width='240px'),
     )
     pal_field = widgets.IntText(
-        value=12, description='Cores:', layout=widgets.Layout(width='155px'),
+        value=12, description='Cores:', layout=widgets.Layout(width='145px'),
     )
     maxcore_field = widgets.IntText(
-        value=1000, description='MB/core:', layout=widgets.Layout(width='200px'),
+        value=1000, description='MB/core:',
+        layout=widgets.Layout(width='190px'),
     )
     slurm_time_field = widgets.Text(
         value='48:00:00', description='SLURM time:',
-        layout=widgets.Layout(width='200px'),
+        layout=widgets.Layout(width='210px'),
     )
     preview_label = widgets.HTML('<b>ORCA input preview:</b>')
     preview_box = widgets.HTML('', layout=widgets.Layout(
@@ -237,26 +233,43 @@ def build_ts_goat_panel(
         tooltip='Close TS→GOAT and restore the normal file view',
         layout=widgets.Layout(width='110px'),
     )
-    # Keep the essential decisions visible.  Source filenames, raw atom
-    # indices, advanced scheduling options and full ORCA input start folded.
+    # Keep the raw indices and long reports folded. The resource
+    # settings that determine the actual SLURM job are always visible.
+    accordion_layout = widgets.Layout(
+        width='94%', align_self='flex-start', margin='1px 0')
     constraint_editor = widgets.Accordion(
-        children=[constraints_field], selected_index=None)
+        children=[constraints_field], selected_index=None,
+        layout=accordion_layout)
     constraint_editor.set_title(0, 'Edit atom indices')
-    advanced_settings = widgets.Accordion(
-        children=[widgets.VBox([basis_field, maxcore_field, slurm_time_field])],
-        selected_index=None)
-    advanced_settings.set_title(0, 'Advanced settings')
     input_details = widgets.Accordion(
-        children=[preview_box], selected_index=None)
+        children=[preview_box], selected_index=None,
+        layout=widgets.Layout(width='94%', align_self='flex-start',
+                              margin='1px 0'))
     input_details.set_title(0, 'Generated ORCA input')
+    # The verbose diagnostic report must remain accessible even when the
+    # browser window is short. A bounded, independently scrollable
+    # expansion avoids the truncated analysis in the last screenshot.
+    analysis_scroller = widgets.VBox(
+        [files_box, analysis_box],
+        layout=widgets.Layout(
+            max_height='235px', overflow_y='auto', overflow_x='hidden',
+            width='100%', padding='4px 8px 8px 4px'))
     source_details = widgets.Accordion(
-        children=[widgets.VBox([files_box, analysis_box])],
-        selected_index=None)
+        children=[analysis_scroller], selected_index=None,
+        layout=widgets.Layout(width='94%', align_self='flex-start',
+                              margin='1px 0'))
     source_details.set_title(0, 'Analysis & source files')
     settings_row = widgets.HBox(
         [method_field, pal_field],
         layout=widgets.Layout(display='flex', flex_flow='row wrap',
-                              gap='8px', width='100%'))
+                              gap='6px', width='100%'))
+    resources_row = widgets.HBox(
+        [maxcore_field, slurm_time_field],
+        layout=widgets.Layout(display='flex', flex_flow='row wrap',
+                              gap='6px', width='100%'))
+    settings_group = widgets.VBox(
+        [settings_row, resources_row, basis_field],
+        layout=widgets.Layout(width='94%', gap='4px'))
     constraint_actions = widgets.HBox(
         [reset_prop_btn, clear_sel_btn],
         layout=widgets.Layout(display='flex', flex_flow='row wrap',
@@ -279,8 +292,7 @@ def build_ts_goat_panel(
                                    align_items='center')),
         left=(status, constraints_label, constraints_count,
               constraint_actions, constraint_editor, method_label,
-              settings_row, advanced_settings, input_details,
-              source_details, btn_row),
+              settings_group, input_details, source_details, btn_row),
         right=(viewer_head, mode_dropdown, mode_warning,
                viewer_out, click_sync, anim_row),
     )
@@ -344,11 +356,16 @@ def build_ts_goat_panel(
         a stale value can neither mislead the user nor enter the input.
         """
         method = (method_field.value or '').strip()
-        semi = method.lower().startswith(('xtb', 'gfn', 'mm'))
-        basis_field.disabled = semi
-        basis_field.layout.display = 'none' if semi else 'block'
-        if semi:
+        # Self-contained composite DFT (e.g. r2SCAN-3c) has its own
+        # basis; only ordinary orbital DFT requires a separate choice.
+        no_external_basis = (method.lower().startswith(
+            ('xtb', 'gfn', 'mm')) or method.lower().endswith('-3c'))
+        basis_field.disabled = no_external_basis
+        basis_field.layout.display = 'none' if no_external_basis else 'block'
+        if no_external_basis:
             basis_field.value = ''
+        elif not basis_field.value.strip():
+            basis_field.value = 'def2-SVP'
 
     def _refresh_preview():
         indices = _parse_constraints(constraints_field.value)
@@ -393,7 +410,11 @@ def build_ts_goat_panel(
             problems = '<ul style="color:#c62828; font-size:12px;">' + ''.join(
                 f'<li>{_esc(p)}</li>' for p in files.problems
             ) + '</ul>'
-        files_box.value = '<ul style="font-size:12px; margin:4px 0;">' + ''.join(rows) + '</ul>' + problems
+        files_box.value = (
+            '<ul style="font-size:11px;line-height:1.6;'
+            'padding-left:18px;margin:4px 0;overflow-wrap:anywhere;">'
+            + ''.join(rows) + '</ul>' + problems
+        )
 
     def _refresh_constraints_display():
         constraints_field.value = ', '.join(
@@ -441,16 +462,12 @@ def build_ts_goat_panel(
                 'constraints still work below.')
             return
         indices = _parse_constraints(constraints_field.value)
-        arrows = state.get('mode_arrows')
         try:
-            # the animation needs the displacement vectors in EVERY
-            # render (also without visible arrows); the arrows toggle
-            # only controls whether they are DRAWN.  Before this split
-            # a default-off arrows checkbox starved the animation of
-            # its payload -- nothing moved (live report 2026-11-02).
+            # The ORCA-generated XYZ frames drive animation. Displacement
+            # arrows are no longer a visible control; selection halos
+            # remain independent of the animation payload.
             render_in_panel(
-                atoms, indices,
-                arrows if anim_arrows_toggle.value else None,
+                atoms, indices, None,
                 output_widget=viewer_out,
                 mode_vector=state.get('mode_arrows'),
                 frames_payload=_load_frames_payload(),
@@ -523,36 +540,12 @@ def build_ts_goat_panel(
             + ('loaded' if result.reused else 'generated') + '.')
         _render_integrated_viewer()
 
-    def _on_anim_toggle(_change=None):
-        anim_active = anim_toggle.value
-        if not anim_active:
-            # stop playback, back to the optimized geometry; constraint
-            # marks stay visible
-            vid = get_viewer_id() if get_viewer_id else None
-            if vid and animate_in_panel:
-                animate_in_panel(vid, False)
-            state['mode_displaced'] = None
-        else:
-            # enabling the mode view is the one-click workflow: if the
-            # trajectory is missing it is generated on the spot
-            if not state.get('traj'):
-                _generate_traj()
-                if not state.get('traj'):
-                    anim_toggle.value = False
-                    return
-        _set_anim_buttons()
-        _render_integrated_viewer()
-
     def _on_anim_amp(_change=None):
         # Amplitude rescales the frames (linear in the mode vector);
         # the trajectory itself is reused.
         _render_integrated_viewer()
 
-    anim_toggle.observe(_on_anim_toggle, names='value')
     anim_amp.observe(_on_anim_amp, names='value')
-    anim_arrows_toggle.observe(
-        lambda _c: _render_integrated_viewer(), names='value')
-    anim_generate.on_click(_generate_traj)
 
     def _on_speed_change(_change=None):
         """Write the frame delay for the browser loop (base 200 ms)."""
@@ -655,10 +648,11 @@ def build_ts_goat_panel(
             f'<li>{html.escape(r)}</li>' for r in proposed.reasons
         )
         analysis_box.value = (
-            f'<div style="font-size:12px;">{head}</div>'
-            '<details style="font-size:11px; margin-top:2px;">'
-            '<summary>Diagnosis details (contact statistics)</summary>'
-            f'<ul style="margin:2px 0 0 14px;">{detail}</ul></details>'
+            f'<div style="font-size:11px;overflow-wrap:anywhere;">{head}</div>'
+            '<details style="font-size:11px;margin-top:6px;">'
+            '<summary>Contact statistics</summary>'
+            f'<ul style="padding-left:18px;margin:5px 0;">{detail}</ul>'
+            '</details>'
         )
         # reliability = quality/consistency of the data; ambiguity =
         # uniqueness of the PROPOSAL.  These are different things and
@@ -693,7 +687,6 @@ def build_ts_goat_panel(
         state['hess_path'] = open_result.get('hess_path')
         state['mode_displaced'] = None
         state['traj'] = None
-        anim_toggle.value = False
         anim_play.disabled = False
         anim_pause.disabled = True
         anim_reset.disabled = True
@@ -727,9 +720,18 @@ def build_ts_goat_panel(
             + '</span>'
         )
         _refresh_analysis_display()
+        # The detailed contact list stays folded even for the first
+        # display; the expanded accordion itself can scroll.
         analysis_box.value = (
-            '<ul style="font-size:11px;margin:4px 0 4px 16px;">'
-            + open_result.get('analysis_html', '') + '</ul>')
+            f'<div style="font-size:11px;">'
+            f'Proposal: {len(proposed.indices)} atoms'
+            f' &middot; {_esc(proposed.reliability)} data</div>'
+            '<details style="font-size:11px;margin-top:6px;">'
+            '<summary>Contact statistics</summary>'
+            '<ul style="padding-left:18px;margin:5px 0;">'
+            + open_result.get('analysis_html', '') +
+            '</ul></details>'
+        )
         _sync_basis_field()
         _refresh_constraints_display()
         _render_integrated_viewer()
