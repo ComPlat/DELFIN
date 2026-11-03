@@ -1597,6 +1597,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_csp_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "mlp_check":
         return _run_mlp_check_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "mlp_setup":
+        from delfin.mlp_tools.setup_cli import main as _mlp_setup_main
+
+        return _mlp_setup_main(arg_list[1:])
     if arg_list and arg_list[0] == "analysis_check":
         return _run_analysis_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "tadf_xtb":
