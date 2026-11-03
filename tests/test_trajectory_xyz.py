@@ -43,7 +43,7 @@ def test_collects_every_cartesian_block_as_frames(tmp_path):
     xyz = trajectory_xyz(str(out))
     # multi-frame: the file holds n_blocks count+comment headers
     assert xyz.count("frame") == 2
-    g = parse_xyz(xyz.split("\n\n")[0])
+    g = parse_xyz("\n".join(xyz.splitlines()[:6]))
     assert g.symbols == ["C", "C", "C", "C"]
 
 
@@ -55,9 +55,9 @@ def test_returns_xyz_string_that_show_molecule_can_open(tmp_path):
     lines = xyz.splitlines()
     assert lines[0] == "4"
     assert lines[1].startswith("frame")
-    assert lines[5] == "4"
+    assert lines[6] == "4"
     # second frame holds the gauche coords
-    assert lines[9].split()[2].startswith("1.400")
+    assert lines[10].split()[2].startswith("0.700")
 
 
 def test_refuses_output_without_geometry_blocks(tmp_path):
@@ -65,3 +65,31 @@ def test_refuses_output_without_geometry_blocks(tmp_path):
     out.write_text(SYN + "FINAL SINGLE POINT ENERGY  -157.41\n")
     with pytest.raises(GeometryError):
         trajectory_xyz(str(out))
+
+
+# --- agent-facing glue (api + ops tool + catalog) ---------------------------
+
+
+def test_api_trajectory_xyz_returns_dict(tmp_path):
+    from delfin import api as delfin_api
+    d = tmp_path / "scan.out"
+    d.write_text(_out())
+    res = delfin_api.trajectory_xyz(str(d))
+    assert res["n_frames"] == 2
+    assert res["xyz"].count("frame") == 2
+
+
+def test_ops_wrapper_and_catalog_list_trajectory_xyz(tmp_path):
+    from delfin.ops_server import server as srv
+    import json
+    d = tmp_path / "scan.out"
+    d.write_text(_out())
+    out = json.loads(srv.tool_trajectory_xyz(str(d)))
+    assert out["n_frames"] == 2
+    catalog = delfin_catalog_names()
+    assert "trajectory_xyz" in catalog
+
+
+def delfin_catalog_names():
+    from delfin import api as delfin_api
+    return {e["name"] for e in delfin_api._TOOL_CATALOG}

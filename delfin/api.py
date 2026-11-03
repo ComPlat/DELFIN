@@ -3079,6 +3079,20 @@ def geometry_rotate(xyz: str, indices: list, axis, degrees: float) -> dict:
     return out
 
 
+def trajectory_xyz(orca_out: str) -> dict:
+    """Every CARTESIAN COORDINATES (ANGSTROEM) block of an ORCA output
+    (relaxed scan, opt, IRC) as one multi-frame xyz: {xyz, n_frames}.
+
+    The agent's native show_molecule opens the xyz string written to a
+    file as the rotation movie; this is glue, not a new renderer.
+    """
+    xyz = _ge().trajectory_xyz(orca_out)
+    # count the "frame N" comment lines directly
+    n_frames = sum(1 for line in xyz.splitlines()
+                   if line.startswith("frame "))
+    return {"xyz": xyz, "n_frames": n_frames}
+
+
 def geometry_add_atom(xyz: str, element: str, bonded_to: int,
                       bond_length: float) -> dict:
     """Add an atom bonded to bonded_to at bond_length A: {xyz, change}."""
@@ -3353,6 +3367,8 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Translate selected atoms by a vector."},
     {"name": "geometry_rotate", "category": "geometry",
      "summary": "Rotate selected atoms about an axis by degrees."},
+    {"name": "trajectory_xyz", "category": "geometry",
+     "summary": "ORCA output (scan/opt/IRC) to multi-frame xyz for the rotation movie."},
     {"name": "geometry_add_atom", "category": "geometry",
      "summary": "Add an atom at a bond length from an existing atom."},
     {"name": "geometry_remove_atoms", "category": "geometry",
