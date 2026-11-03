@@ -185,6 +185,7 @@ public static class DelfinConsole {
         }
         if ($Mode -eq 'Terminal') {
             Write-Host 'Working terminal. Password and OTP prompts are handled exclusively by OpenSSH.'
+            Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
             $terminalCommand = Get-RemoteCommand $p 'terminal'
             $terminalInfo = New-Object Diagnostics.ProcessStartInfo
             $terminalInfo.FileName = $ssh
@@ -199,6 +200,7 @@ public static class DelfinConsole {
             $port = [int]$p.Port
             $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath
             Write-Host 'Dashboard terminal: enter your password and OTP directly in OpenSSH.'
+            Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
             Write-Host 'On first login, compare the host fingerprint with the official server fingerprint.'
             Write-Host 'The browser signs in automatically.'
             if ($p.KeepSession) {

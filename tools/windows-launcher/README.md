@@ -33,7 +33,11 @@ independent main window and stays in the taskbar with the DELFIN icon while open
 A separate dashboard terminal appears for native OpenSSH password/OTP and
 host-key prompts and stays visible after the browser opens. This is the only
 SSH terminal; it uses the PowerShell icon and an SSH title. The DELFIN logo
-belongs to the settings app, not a second terminal. Use Ctrl+C there to
+belongs to the settings app, not a second terminal. It is a classic Windows
+console: to paste a password or OTP there, **right-click** in the window.
+Ctrl+V does not paste at OpenSSH's password prompt in this console; it sends a
+control character, and the server answers "Permission denied" for a correct
+password. The app never reads or stores the password itself. Use Ctrl+C there to
 stop the dashboard explicitly, including with Keep ON. The optional working
 terminal is still OFF by default. Keep the DELFIN app open while using the browser.
 **Show terminal** restores the current SSH window if minimized or hidden and
