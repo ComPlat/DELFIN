@@ -119,3 +119,16 @@ def test_no_orca_started(monkeypatch):
                         lambda *a, **k: pytest.fail("ORCA must not start"))
     api.orca_explain("3conv")
     api.orca_check_input(json.dumps({"keywords": [], "blocks": {}}))
+
+
+def test_a_card_with_an_applies_condition_is_matched_by_it():
+    """_card_matches honours a v2 card's ``applies``: it reached an
+    unimported name before (F821), so any such card raised NameError."""
+    from delfin.api import _card_matches
+
+    card = {"topic": "scf", "keywords": ["TIGHTSCF"],
+            "applies": {"method_family": ["dft"]}}
+    dft = {"method_family": "dft", "keywords": ["TIGHTSCF"]}
+    hf = {"method_family": "hf", "keywords": ["TIGHTSCF"]}
+    assert _card_matches(card, dft) is True
+    assert _card_matches(card, hf) is False

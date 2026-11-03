@@ -5036,6 +5036,8 @@ def _card_matches(card: dict, calc: dict) -> bool:
     or one of its keywords appears in the calculation description's
     method family, keywords or blocks.
     """
+    from delfin.orca_knowledge.checks import applies as _applies
+
     if card.get("applies") and not _applies(card, calc):
         return False
     ks = {str(k).lower() for k in calc.get("keywords") or []}
