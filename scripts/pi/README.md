@@ -229,7 +229,7 @@ What only a person can do, in this order:
   Settings tab is reset by the next deploy, edit the file instead. Shared by
   everyone through the launcher's people mode.
 - Agent tab defaults on this box: `~/.config/delfin/pi-agent.conf` (key=value):
-  `mode=solo` (Code), `provider=kit`, `model=kit.deepseek-v4-flash`,
+  `mode=solo` (Code), `provider=kit`, `model=kit.glm-5.3-flash`,
   `permission_profile=all_free` (Bypass), `effort=` (empty: the model
   profile's default, shown as "Medium (profile default)"). `pi_install.sh`
   writes it into `~/.delfin_settings.json` on every deploy, so a choice made in

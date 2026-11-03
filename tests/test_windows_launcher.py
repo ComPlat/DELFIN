@@ -462,3 +462,88 @@ def test_a_server_can_make_keep_session_its_default(tmp_path):
     result = _run_bootstrap(env, home, probe)
     assert result.returncode == 0, result.stderr
     assert 'KEEP=1' in result.stdout
+
+
+def test_people_mode_replaces_an_own_settings_copy_by_the_link(tmp_path):
+    # A person home made before the settings link existed holds its own
+    # copy; the account's defaults never reach it. It is kept aside and
+    # linked, and a second connection changes nothing more.
+    home = tmp_path / 'home'
+    (home / '.config/delfin').mkdir(parents=True)
+    (home / '.config/delfin/launcher-people.conf').write_text('')
+    (home / '.delfin_settings.json').write_text('{"agent": {"permission_profile": "all_free"}}')
+    person_home = home / 'people' / 'anna'
+    person_home.mkdir(parents=True)
+    (person_home / '.delfin_settings.json').write_text('{"agent": {"permission_profile": "plan"}}')
+    env, _ = _bootstrap_env(tmp_path, home)
+    probe = 'print("OK")'
+    for _ in range(2):
+        result = _run_bootstrap(env, home, probe, person='anna')
+        assert result.returncode == 0, result.stderr
+    link = person_home / '.delfin_settings.json'
+    assert link.is_symlink() and link.resolve() == (home / '.delfin_settings.json').resolve()
+    kept = list(person_home.glob('.delfin_settings.json.before-shared-*'))
+    assert len(kept) == 1 and '"plan"' in kept[0].read_text()
+
+
+def _run_bootstrap_with_key(env, home, payload_code, key):
+    import base64
+    import subprocess
+    payload = base64.b64encode(payload_code.encode()).decode()
+    script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
+    return subprocess.run(['bash', str(script), '0', '', '', payload, 'dashboard', '', '0', '0', '', key],
+                          env=env, text=True, capture_output=True, timeout=30, cwd=str(home))
+
+
+_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxVZr1q3F0c0o1u2y3m4n5p6q7r8s9t0u1v2w3x4y5z delfin-launcher-anna'
+
+
+def test_remember_login_registers_the_pcs_key_once_and_restricted(tmp_path):
+    import stat
+    home = tmp_path / 'home'
+    home.mkdir()
+    env, _ = _bootstrap_env(tmp_path, home)
+    for _ in range(2):
+        result = _run_bootstrap_with_key(env, home, 'print("OK")', _KEY)
+        assert result.returncode == 0, result.stderr
+    lines = (home / '.ssh/authorized_keys').read_text().splitlines()
+    assert lines == ['restrict,port-forwarding,pty ' + _KEY]
+    assert stat.S_IMODE((home / '.ssh').stat().st_mode) == 0o700
+    assert stat.S_IMODE((home / '.ssh/authorized_keys').stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize('bad', [
+    'ssh-rsa AAAAB3NzaC1yc2E delfin',                       # only ed25519
+    _KEY + '\nssh-ed25519 AAAAother attacker',              # a second line
+    'command="sh" ' + _KEY,                                 # options smuggled in
+    _KEY.replace('anna', 'anna; rm -rf ~'),                 # shell text in the comment
+])
+def test_remember_login_refuses_anything_but_one_plain_ed25519_key(tmp_path, bad):
+    home = tmp_path / 'home'
+    home.mkdir()
+    env, _ = _bootstrap_env(tmp_path, home)
+    result = _run_bootstrap_with_key(env, home, 'print("OK")', bad)
+    assert result.returncode == 0, result.stderr
+    assert not (home / '.ssh/authorized_keys').exists()
+
+
+def test_a_server_can_refuse_remembered_logins(tmp_path):
+    home = tmp_path / 'home'
+    (home / '.config/delfin').mkdir(parents=True)
+    (home / '.config/delfin/launcher-no-keys.conf').write_text('')
+    env, _ = _bootstrap_env(tmp_path, home)
+    assert _run_bootstrap_with_key(env, home, 'print("OK")', _KEY).returncode == 0
+    assert not (home / '.ssh/authorized_keys').exists()
+
+
+def test_the_app_and_the_server_agree_on_the_login_key_argument():
+    # DELFIN.ps1 cannot run here; pin what the server side depends on: the
+    # public key is the argument after the person name (bootstrap $10), it is
+    # offered to ssh with -i, and the checkbox is saved with the connection.
+    root = Path(__file__).resolve().parents[1] / 'tools/windows-launcher'
+    app = (root / 'DELFIN.ps1').read_text(encoding='utf-8')
+    server = (root / 'remote_bootstrap.sh').read_text(encoding='utf-8')
+    assert "(Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)" in app
+    assert 'person=${9:-}' in server and 'login_key=${10:-}' in server
+    assert "$options += @('-i',$loginKey.Key)" in app
+    assert 'RememberLogin=$rememberToggle.Checked' in app and 'RememberLogin=$true' in app
