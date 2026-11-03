@@ -449,6 +449,27 @@ export interface ServiceStatusParams {}
 export interface ServiceShutdownParams {
   "restart"?: boolean | null
 }
+export interface BranchListParams {
+  "workspace": string
+  "view"?: string | null
+  "text"?: string | null
+  "refresh"?: boolean | null
+}
+export interface BranchPullParams {
+  "workspace": string
+}
+export interface BranchTestParams {
+  "workspace": string
+  "ref": string
+  "keep"?: boolean | null
+}
+export interface BranchCleanupParams {
+  "workspace": string
+  "includeUnmerged"?: boolean | null
+  "refresh"?: boolean | null
+  "delete"?: string[] | null
+  "confirm"?: boolean | null
+}
 export interface AttentionListParams {}
 export interface AttentionAnswerParams {
   "id": string
@@ -495,6 +516,10 @@ export interface ServiceRequests {
   "sessions.past": SessionsPastParams
   "service.status": ServiceStatusParams
   "service.shutdown": ServiceShutdownParams
+  "branch.list": BranchListParams
+  "branch.pull": BranchPullParams
+  "branch.test": BranchTestParams
+  "branch.cleanup": BranchCleanupParams
   "attention.list": AttentionListParams
   "attention.answer": AttentionAnswerParams
   "attention.dismiss": AttentionDismissParams
