@@ -11,6 +11,7 @@ export const ERRORS = {
   NOT_ALLOWED: -32003,
   UNKNOWN_SESSION: -32004,
   WORKER_GONE: -32005,
+  NEEDS_LOCAL_PROJECT: -32006,
   INVALID_REQUEST: -32600,
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
@@ -425,10 +426,18 @@ export interface SessionCreateParams {
   "attach"?: boolean | null
   "brief"?: string | null
   "briefTitle"?: string | null
+  "worktree"?: boolean | null
+  "initProject"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
   "turns"?: number | null
+}
+export interface SessionWorktreesParams {
+  "cwd": string
+}
+export interface SessionMergeParams {
+  "path": string
 }
 export interface SessionPendingParams {
   "sessionId": string
@@ -510,6 +519,8 @@ export interface ServiceRequests {
   "sessions.list": SessionsListParams
   "session.create": SessionCreateParams
   "session.attach": SessionAttachParams
+  "session.worktrees": SessionWorktreesParams
+  "session.merge": SessionMergeParams
   "session.pending": SessionPendingParams
   "session.detach": SessionDetachParams
   "session.message": SessionMessageParams
@@ -551,6 +562,16 @@ export interface SessionCreateResult {
   "state": string
   "pending": Record<string, unknown>[]
   "events": Record<string, unknown>[]
+  "worktree"?: Record<string, unknown> | null
+}
+export interface SessionWorktreesResult {
+  "worktrees": Record<string, unknown>[]
+}
+export interface SessionMergeResult {
+  "status": string
+  "files": string[]
+  "target": string
+  "message": string
 }
 export interface SessionAttachResult {
   "session": Record<string, unknown>
@@ -641,6 +662,8 @@ export interface ServiceResults {
   "hello": HelloResult
   "sessions.list": SessionsListResult
   "session.create": SessionCreateResult
+  "session.worktrees": SessionWorktreesResult
+  "session.merge": SessionMergeResult
   "session.attach": SessionAttachResult
   "session.pending": SessionPendingResult
   "session.detach": SessionDetachResult

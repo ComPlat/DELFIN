@@ -3652,6 +3652,22 @@ def run_subagent(
             if parent_ws is not None:
                 worktree_info = _enter_wt(parent_ws)
         except Exception as exc:
+            if is_writer_preset(subagent_type):
+                # A writer that asked for its own tree does not get the
+                # workspace's main checkout instead: that is the tree the
+                # isolation was asked to keep it out of, and parallel
+                # writers would share it. A read-only preset has nothing
+                # to write and still runs, with the warning below.
+                return SubagentResult(
+                    subagent_type=subagent_type, description=description,
+                    final_text="",
+                    error=(f"refused: worktree isolation was requested and "
+                           f"could not be set up ({exc}). The sub-agent did "
+                           "not run, so it wrote nothing into the "
+                           "workspace's main checkout. A plain folder "
+                           "becomes a local git project on the user's yes "
+                           "(enter_worktree asks); or run it without "
+                           "isolation."))
             isolation_warning = (
                 f"worktree isolation requested but failed ({exc}); "
                 "subagent ran in the parent workspace."
@@ -4495,7 +4511,42 @@ def _orchestration_stage_timeout() -> float:
     return wall + 120.0
 
 
-def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
+def _call_gets_worktree(call: dict, n_calls: int,
+                        auto_worktrees: bool = True) -> bool:
+    """Whether one orchestration call runs in its own worktree: pinned by
+    the call, or a writer in a stage of two or more calls."""
+    pinned = str((call or {}).get("isolation") or "").strip().lower()
+    if pinned:
+        return pinned == "worktree"
+    try:
+        return bool(auto_worktrees and n_calls >= 2
+                    and is_writer_preset(str(call.get("subagent_type") or "")))
+    except Exception:
+        return False
+
+
+def orchestration_worktrees(spec) -> tuple[bool, bool]:
+    """(any call gets a worktree, any call PINS one) for *spec*; (False,
+    False) for a spec that is not a valid shape. Read before the run, so
+    a plain workspace folder can be offered as a local project first."""
+    any_wt = pinned = False
+    stages = (spec or {}).get("stages") if isinstance(spec, dict) else None
+    for stage in stages if isinstance(stages, list) else ():
+        calls = (stage or {}).get("parallel") if isinstance(stage, dict) else None
+        calls = calls if isinstance(calls, list) else []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            if _call_gets_worktree(call, len(calls)):
+                any_wt = True
+                if str(call.get("isolation") or "").strip().lower() == \
+                        "worktree":
+                    pinned = True
+    return any_wt, pinned
+
+
+def run_orchestration(spec: dict, parent_client, parent_perms, *,
+                      auto_worktrees: bool = True) -> dict:
     """Execute a declarative multi-stage subagent plan. Never raises.
 
     ``spec`` shape::
@@ -4527,6 +4578,11 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
         substituted), each returning ``{refuted, note}`` via the
         output-schema mechanism; a strict majority of the valid ballots
         marking ``refuted=true`` moves the result to ``rejected``.
+
+    ``auto_worktrees=False`` turns the writer auto-isolation off (a plain
+    folder whose owner declined a local project); a pinned isolation still
+    holds. ``spec["merge"]`` is read by the tool executor, not here: it
+    merges the kept worktrees after the run (``_execute_orchestrate``).
 
     Hard limits: max 3 stages, max 6 calls per stage, max 3 votes;
     children run at subagent depth 1 (so they cannot fan out further) and
@@ -4566,12 +4622,12 @@ def run_orchestration(spec: dict, parent_client, parent_perms) -> dict:
             # Same auto-isolation rule as the api_client fan-out: parallel
             # WRITERS each get their own worktree so concurrent edits can't
             # clobber one another; read-only presets need none.
-            try:
-                if (len(calls) >= 2 and not job["isolation"]
-                        and is_writer_preset(job["subagent_type"])):
-                    job["isolation"] = "worktree"
-            except Exception:
-                pass
+            # auto_worktrees=False: the workspace is a plain folder and the
+            # user declined making it a local project -- the writers run
+            # unisolated, as they did before that question existed.
+            if not job["isolation"] and _call_gets_worktree(
+                    call, len(calls), auto_worktrees):
+                job["isolation"] = "worktree"
             jobs.append(job)
         stage_results[name] = _run_stage_calls(jobs, parent_client,
                                                parent_perms)

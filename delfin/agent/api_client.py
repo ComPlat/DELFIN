@@ -9420,6 +9420,39 @@ def _long_run_probe(perms):
 #: by _confirm_timed_out on the same thread right after.
 _APPROVAL_LATCHED = threading.local()
 
+#: One local-project question at a time (_offer_local_project): parallel
+#: sub-agents of one turn must not each ask about the same folder.
+_LOCAL_PROJECT_LOCK = threading.RLock()
+
+
+class _LocalProjectConsent:
+    """The local-project question put through a gate's confirm slot.
+
+    ``ask`` has the confirm-callback signature and answers with the user's
+    answer to the consent question (the gate's own preview appended);
+    ``last_timed_out`` forwards the broker's flag, so a gate reading
+    ``confirm_callback.__self__.last_timed_out`` tells an expired dialog
+    from a no."""
+
+    def __init__(self, callback, question: str, args: dict):
+        self.callback = callback
+        self.question = question
+        self.args = args
+        self.asked = False
+        self.answer = None
+
+    def ask(self, _name, _args, preview) -> bool:
+        self.asked = True
+        self.answer = bool(self.callback(
+            "local_project_init", self.args,
+            f"{self.question}\n\n--- .gitignore ---\n{preview}"))
+        return self.answer
+
+    @property
+    def last_timed_out(self) -> bool:
+        return bool(getattr(getattr(self.callback, "__self__", None),
+                            "last_timed_out", False))
+
 _READ_TOOL_KIND = frozenset({"read_file", "grep_file", "list_files",
                              "glob_files", "notebook_read"})
 
@@ -13361,12 +13394,12 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "orchestrate",
             "description": (
-                "Run a declarative multi-stage subagent plan: stages run in "
-                "order with a barrier, calls in a stage fan out in parallel "
-                "(cap 4), later prompts embed earlier results via "
-                "{{stage:NAME}}, and an optional verify step runs skeptic "
-                "votes over the final stage. Limits: 3 stages, 6 calls per "
-                "stage, 3 votes, no nesting inside a sub-agent."
+                "Multi-stage subagent plan: stages run in order with a "
+                "barrier, a stage's calls in parallel (cap 4), later "
+                "prompts embed earlier results via "
+                "{{stage:NAME}}; optional skeptic votes over the final "
+                "stage. Limits: 3 stages, 6 calls per stage, 3 votes, no "
+                "nesting inside a sub-agent."
             ),
             "parameters": {
                 "type": "object",
@@ -13379,7 +13412,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "'prompt': str, 'output_schema'?: object, "
                             "'isolation'?: 'worktree'}]}], 'verify'?: "
                             "{'prompt_template': str containing {{result}}, "
-                            "'votes': int 1-3, 'subagent_type'?: str}}"
+                            "'votes': int 1-3, 'subagent_type'?: str}, "
+                            "'merge'?: true (merge worktrees back)}"
                         ),
                     },
                 },
@@ -27416,6 +27450,133 @@ class _DocToolExecutor:
             f"remember_permission(kind='extra_dir', ...) first."
         )
 
+    def _offer_local_project(
+        self, folder: Path, perms: Optional["KitToolPermissions"], why: str,
+    ) -> Optional[str]:
+        """Make a plain workspace folder a local git repository, if the
+        user says yes. Called where a worktree is about to be made of a
+        folder git does not know (enter_worktree, a sub-agent or an
+        orchestration with worktrees).
+
+        Input: the folder, the session's permissions, what needs git (for
+        the question). Output: None when *folder* is a repository now (it
+        was one, or the init ran), else the JSON refusal for the tool.
+
+        Asked once per session and folder through ``_ask_confirm`` (the
+        approval path of every surface), in every mode: the question is
+        whether the folder becomes a repository, which no permission mode
+        answers. A no is remembered for the session and answered without
+        a dialog. Refused without a question: no one to ask, plan mode, an
+        armed auto iteration, a sub-agent, a session confined to one folder,
+        a folder outside the workspace roots, and every folder
+        ``local_project.refusal`` names (home, system paths, inside another
+        repository, a mount point). The .gitignore goes through the write
+        gate first (``_gate_write_path``: write scope, deny rules,
+        read-only roots), as every other write into the workspace does.
+        Concurrent callers (the parallel sub-agent fan-out) share one
+        question through a lock."""
+        from . import local_project as _lp
+        from . import worktree as _wt
+        if _wt._is_git_repo(folder):
+            return None
+
+        def _no(text: str) -> str:
+            return json.dumps({"error": (
+                f"{folder} is not a git repository, and {why} needs one. "
+                f"{text}"), "skill_hint": (
+                    "skill('local-project'): how worktrees, branches and "
+                    "parallel writers work in a folder without git")})
+
+        if perms is None:
+            return _no("No workspace is configured to make it one.")
+        if self._worktree_path_refusal("repo_dir", folder, perms):
+            return _no("It is outside the workspace roots.")
+        if str(getattr(perms, "mode", "") or "") == "plan":
+            return _no("Plan mode changes nothing; making it a local "
+                       "repository has to wait until the plan is approved.")
+        if callable(getattr(perms, "auto_veto", None)):
+            return _no("Making a folder a repository is the user's "
+                       "decision; an auto iteration does not make it.")
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return _no("A sub-agent does not make the workspace a "
+                       "repository; the session that started it does.")
+        if getattr(perms, "scope_locked", False):
+            return _no("This session is confined to one folder.")
+        why_not = _lp.refusal(folder)
+        if why_not:
+            return _no(f"It cannot become a local repository: {why_not}.")
+        key = str(folder.resolve())
+        with _LOCAL_PROJECT_LOCK:
+            if _wt._is_git_repo(folder):
+                return None
+            answers = getattr(perms, "local_project_answers", None)
+            if not isinstance(answers, dict):
+                answers = {}
+                try:
+                    perms.local_project_answers = answers
+                except Exception:
+                    pass
+            if answers.get(key) is False:
+                return _no("The user declined making it a local repository "
+                           "earlier in this session; it is not asked again. "
+                           "Work in the folder directly, without a worktree.")
+            if perms.confirm_callback is None:
+                return _no("Making it a local repository needs the user's "
+                           "yes, and nobody can be asked here. The user can "
+                           "run `git init` in the folder themselves.")
+            try:
+                plan = _lp.plan(folder)
+                gitignore_text = _lp._gitignore_text(folder)[0]
+            except _lp.LocalProjectError as exc:
+                return _no(f"It cannot become a local repository: {exc}")
+            question = _lp.consent_question(plan)
+            consent = _LocalProjectConsent(perms.confirm_callback, question,
+                                           {"path": key,
+                                            "files": len(plan.files),
+                                            "kept_out": len(plan.kept_out)})
+            # The write gate for the .gitignore, with its question replaced
+            # by the consent question: in default mode the gate asks before
+            # every write, and two dialogs for one decision is one too many.
+            # Where the gate asks nothing (acceptEdits), the consent is asked
+            # below. Its hard refusals (scope, deny rules, read-only roots)
+            # stand either way.
+            import copy as _copy
+            gate_perms = _copy.copy(perms)
+            gate_perms.confirm_callback = consent.ask
+            refusal = self._gate_write_path(
+                str(folder / ".gitignore"), gate_perms, "write_file",
+                {"path": ".gitignore", "content": gitignore_text})
+            if refusal is not None and not consent.asked:
+                return _no(f"The .gitignore it needs may not be written: "
+                           f"{refusal}")
+            ok = refusal is None and consent.answer is not False
+            if ok and not consent.asked:
+                try:
+                    ok = bool(_ask_confirm(perms, "local_project_init",
+                                           consent.args, question))
+                except Exception as exc:
+                    return _no(f"The question could not be asked: {exc}")
+            if not ok:
+                if not self._confirm_timed_out(perms):
+                    answers[key] = False
+                    _record_security_event(
+                        "denied_by_user", "local_project_init", key[:120])
+                    return _no("The user declined making it a local "
+                               "repository. Work in the folder directly, "
+                               "without a worktree.")
+                return _no("The question went unanswered (the user is "
+                           "away); nothing was changed.")
+            try:
+                done = _lp.init_local_project(folder)
+            except _lp.LocalProjectError as exc:
+                return _no(f"Making it a local repository failed and was "
+                           f"rolled back: {exc}")
+            answers[key] = True
+            _record_security_event(
+                "local_project_init", "local_project_init",
+                f"{key[:100]} {done.commit[:10]}", blocked=False)
+        return None
+
     def _execute_enter_worktree(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -27434,6 +27595,11 @@ class _DocToolExecutor:
         refusal = self._worktree_path_refusal("repo_dir", repo_dir, perms)
         if refusal is not None:
             return json.dumps({"error": refusal})
+        if repo_dir.is_dir() and not _wt._is_git_repo(repo_dir):
+            refusal = self._offer_local_project(
+                repo_dir, perms, "a worktree")
+            if refusal is not None:
+                return refusal
         try:
             info = _wt.enter_worktree(
                 repo_dir, branch_prefix=prefix, base_ref=base_ref)
@@ -27527,8 +27693,14 @@ class _DocToolExecutor:
         return json.dumps(payload)
 
     def _execute_worktree_merge(
-        self, arguments: dict, perms: Optional["KitToolPermissions"]
+        self, arguments: dict, perms: Optional["KitToolPermissions"],
+        *, framework_worktree: bool = False,
     ) -> str:
+        """``framework_worktree=True`` (only from _execute_orchestrate, for
+        a worktree run_subagent created and reported) skips the check that
+        the SOURCE path lies in the workspace roots: the path was not
+        chosen by a model. The target check and the per-file write gate
+        apply unchanged."""
         from . import worktree as _wt
         path_arg = (arguments.get("path") or "").strip()
         base_arg = (arguments.get("base_ref") or "").strip()
@@ -27538,7 +27710,8 @@ class _DocToolExecutor:
         wt_path = Path(path_arg).expanduser()
         if not wt_path.is_dir():
             return json.dumps({"error": f"worktree path missing: {wt_path}"})
-        refusal = self._worktree_path_refusal("path", wt_path, perms)
+        refusal = (None if framework_worktree else
+                   self._worktree_path_refusal("path", wt_path, perms))
         if refusal is not None:
             return json.dumps({"error": refusal})
         try:
@@ -27639,11 +27812,71 @@ class _DocToolExecutor:
                 "orchestration nesting limit reached: a sub-agent may not "
                 "drive an orchestration."
             )})
+        # Worktrees in a plain folder: the user is asked once whether it
+        # becomes a local project. A pinned worktree or a requested merge
+        # cannot run without one (refused on a no); writers that would only
+        # have been auto-isolated run unisolated, as before the question.
+        from . import subagents as _sa_orch
+        merge = spec.get("merge") is True
+        wants_wt, pinned = _sa_orch.orchestration_worktrees(spec)
+        runner_kw: dict = {}
+        ws = getattr(perms, "workspace", None)
+        if (wants_wt or merge) and ws is not None:
+            no_repo = self._offer_local_project(
+                Path(ws), perms, "an orchestration with worktrees")
+            if no_repo is not None:
+                if pinned or merge:
+                    return no_repo
+                runner_kw["auto_worktrees"] = False
         try:
-            out = perms.orchestration_runner(spec)
+            out = (perms.orchestration_runner(spec, **runner_kw)
+                   if runner_kw else perms.orchestration_runner(spec))
         except Exception as exc:
             return json.dumps({"error": f"orchestration runner raised: {exc}"})
+        if merge and isinstance(out, dict) and not out.get("error"):
+            out["merges"] = self._merge_orchestration_worktrees(out, perms)
         return json.dumps(out, ensure_ascii=False)
+
+    def _merge_orchestration_worktrees(
+        self, out: dict, perms: Optional["KitToolPermissions"],
+    ) -> list:
+        """Merge every worktree an orchestration's delegates kept, in stage
+        and call order, into the workspace (``worktree_merge``'s executor:
+        target check, per-file write gate, clean-apply-or-nothing).
+
+        Output: one entry per kept worktree -- ``status`` ``ok`` (applied,
+        or nothing to merge), ``conflict`` (the target untouched, the
+        worktree kept at ``path`` for a manual merge) or ``error``. A
+        conflict never overwrites: the later delegate's change is left in
+        its worktree, the earlier ones stay merged. The merged changes are
+        uncommitted in the workspace, for review."""
+        merges: list = []
+        stages = out.get("stages") if isinstance(out, dict) else None
+        for stage_name, payloads in (stages or {}).items():
+            for payload in payloads or ():
+                wt = (payload or {}).get("worktree") or {}
+                path = str(wt.get("final_path") or "") if isinstance(
+                    wt, dict) else ""
+                if not path:
+                    continue
+                try:
+                    res = json.loads(self._execute_worktree_merge(
+                        {"path": path}, perms, framework_worktree=True))
+                except Exception as exc:
+                    res = {"error": f"merge raised: {exc}"}
+                entry = {
+                    "stage": stage_name,
+                    "description": str(payload.get("description") or ""),
+                    "branch": str(wt.get("branch") or ""),
+                    "path": path,
+                    "status": ("error" if res.get("error")
+                               else str(res.get("status") or "")),
+                    "files": res.get("files") or [],
+                    "message": str(res.get("error") or res.get("message")
+                                   or ""),
+                }
+                merges.append(entry)
+        return merges
 
     def _execute_subagent(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
@@ -27724,6 +27957,18 @@ class _DocToolExecutor:
         _out_schema = arguments.get("output_schema")
         if isinstance(_out_schema, dict) and _out_schema:
             _resume_kw["output_schema"] = _out_schema
+        # A worktree the call asked for, in a plain folder: the user is
+        # asked whether the folder becomes a local project; a no refuses
+        # the call (run_subagent would otherwise refuse a writer later,
+        # after the slot and the id were taken). A read-only preset writes
+        # nothing and keeps running unisolated with a warning, as before.
+        if isolation == "worktree" and _sa.is_writer_preset(sa_type):
+            _ws_iso = getattr(perms, "workspace", None)
+            if _ws_iso is not None:
+                _no_repo = self._offer_local_project(
+                    Path(_ws_iso), perms, "a sub-agent in its own worktree")
+                if _no_repo is not None:
+                    return _no_repo
         # Background mode: spawn the subagent on a
         # thread and return immediately — the main agent keeps working.
         # Progress/result are visible in the dashboard subagent panel
@@ -27735,12 +27980,23 @@ class _DocToolExecutor:
             # it — the case auto-isolation exists for, and the one it did not
             # cover: the rule lived in the parallel fan-out, which needs two
             # subagent calls in one turn to fire.
+            _pinned = bool(isolation)
             try:
                 from . import subagents as _sa_bg
                 isolation = _sa_bg.auto_isolation_for(
                     sa_type, isolation, background=True)
             except Exception:
                 pass
+            if isolation == "worktree" and not _pinned:
+                # Chosen here, not by the call: in a plain folder the user
+                # is asked whether it becomes a local project, and a no
+                # keeps the earlier behaviour (no isolation) instead of
+                # refusing work the call never asked to isolate.
+                _ws_bg = getattr(perms, "workspace", None)
+                if _ws_bg is not None and self._offer_local_project(
+                        Path(_ws_bg), perms, "an isolated background "
+                        "sub-agent") is not None:
+                    isolation = ""
             # Bound the number of concurrent background sub-agents so a session
             # can't leak unbounded daemon threads + worktrees. Saturated → tell
             # the model to wait or run in the foreground instead of spawning.
@@ -31887,6 +32143,7 @@ def _fan_out_subagents(tc_list, permissions):
         thread_name_prefix="subagent-fan",
     )
     futures: dict[str, Any] = {}
+    _auto_iso_ok: Optional[bool] = None
     for tc in tc_list:
         if tc["id"] not in sub_ids:
             continue
@@ -31898,13 +32155,23 @@ def _fan_out_subagents(tc_list, permissions):
         # WRITER (a non-read-only preset, e.g. general-purpose) its OWN git
         # worktree so concurrent edits can't clobber one another on the shared
         # tree. Read-only presets (explore/plan/code-reviewer) need none. An
-        # explicit isolation in the call is respected. Falls back gracefully
-        # when the workspace isn't a git repo.
+        # explicit isolation in the call is respected. In a workspace that
+        # is not a git repository the user is asked once whether it becomes
+        # a local project (_offer_local_project); a no keeps the earlier
+        # behaviour, the writers run without isolation.
         try:
             from . import subagents as _sa_fan
             if (not args.get("isolation")
                     and _sa_fan.is_writer_preset(args.get("subagent_type", ""))):
-                args["isolation"] = "worktree"
+                if _auto_iso_ok is None:
+                    _ws_fan = getattr(permissions, "workspace", None)
+                    _auto_iso_ok = _ws_fan is None or (
+                        _doc_executor._offer_local_project(
+                            Path(_ws_fan), permissions,
+                            "parallel writers in their own worktrees")
+                        is None)
+                if _auto_iso_ok:
+                    args["isolation"] = "worktree"
         except Exception:
             pass
         futures[tc["id"]] = executor.submit(
@@ -32596,8 +32863,9 @@ class OpenAIClient(_BaseClient):
         try:
             permissions.subagent_runner = _runner
 
-            def _orchestrate(spec: dict) -> dict:
-                return _sa.run_orchestration(spec, self, self._permissions)
+            def _orchestrate(spec: dict, **kw) -> dict:
+                return _sa.run_orchestration(spec, self, self._permissions,
+                                             **kw)
 
             permissions.orchestration_runner = _orchestrate
         except Exception:
