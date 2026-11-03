@@ -969,9 +969,20 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     _logout = widgets.HTML(_login_session.logout_control_html())
 
     # The right-hand group: what the dashboard is doing and holding.
-    _status_group = widgets.HBox(
-        [busy_indicator, ctx.agent_status_html, home_usage_label, _session_strip,
-         _logout])
+    # The key search box sits left of the home chip (helpful first, status
+    # second); a failure to build it must never break the header.
+    _key_search = None
+    try:
+        from delfin.dashboard.header_keysearch import build_and_register
+        _key_search = build_and_register()
+    except Exception:  # pragma: no cover - widget must not break startup
+        _key_search = None
+    _status_items = [
+        busy_indicator, ctx.agent_status_html, home_usage_label, _session_strip,
+        _logout]
+    if _key_search is not None:
+        _status_items.insert(2, _key_search)
+    _status_group = widgets.HBox(_status_items)
     _status_group.add_class('delfin-group')
     _spacer = widgets.HBox([], layout=widgets.Layout(flex='1 1 auto'))
     _bar = widgets.HBox(
