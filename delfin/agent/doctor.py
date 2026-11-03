@@ -1195,7 +1195,26 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
     ("terminal window", "_check_tui"),
+    ("MLIP", "_check_mlip"),
 )
+
+
+def _check_mlip(ctx: dict) -> list[dict]:
+    """The orca-mlips set-up: env, GPU partition and backend configured,
+    and the env's ProgExt command present. From
+    ``guided_setup.mlip_readiness`` (settings + file checks; no scheduler
+    query, no process). Not configured is a PASS: MLIPs are optional."""
+    from delfin.mlp_tools.guided_setup import mlip_readiness
+
+    # ctx["settings"] is the agent's settings; runtime.* lives in DELFIN's
+    # user settings, which mlip_readiness loads when given none.
+    given = ctx.get("settings") or {}
+    state = mlip_readiness(given if "runtime" in given else None)
+    if not state["configured"] or state["ready"]:
+        return [_row("MLIP", PASS, state["detail"])]
+    return [_row("MLIP", WARN, state["detail"],
+                 "delfin mlp_setup plan, then delfin mlp_setup configure --write",
+                 command="delfin mlp_setup plan")]
 
 
 def _check_child_network(ctx: dict) -> list[dict]:

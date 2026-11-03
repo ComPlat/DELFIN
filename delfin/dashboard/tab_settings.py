@@ -43,6 +43,7 @@ from delfin.runtime_setup import (
 )
 from delfin.qm_runtime import canonical_tool_name, discover_tool_installations, settings_selectable_tools
 from delfin.user_settings import (
+    carry_runtime_sections,
     get_settings_defaults_path,
     get_settings_path,
     load_settings,
@@ -1244,7 +1245,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
 
     def _persist_runtime_payload(runtime_payload):
         settings_payload = load_settings()
-        settings_payload['runtime'] = runtime_payload
+        settings_payload['runtime'] = carry_runtime_sections(
+            settings_payload.get('runtime'), runtime_payload)
         settings_payload = save_settings(settings_payload, settings_path)
         _set_runtime_widgets(settings_payload)
         backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
