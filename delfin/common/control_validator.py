@@ -1020,6 +1020,15 @@ def _as_float(value: Any) -> float:
     return float(value)
 
 
+def _as_float_or_empty(value: Any) -> str:
+    """A float, or '' when empty (kept as '' so 'unset' survives the round
+    trip and code can apply its own per-job-type default)."""
+    if value is None or str(value).strip() == "":
+        return ""
+    float(value)
+    return str(value).strip()
+
+
 def _as_non_negative_float(value: Any) -> float:
     if value is None or value == "":
         return 0.0
@@ -2058,9 +2067,11 @@ def _as_manta_keep(value: Any) -> str:
     return str(number)
 
 
-def _as_optional_positive_int(value: Any) -> str:
-    """A positive integer, or empty meaning "let the builder decide"."""
-    text = str(value or "").strip()
+def _as_optional_positive_int(value: Any) -> Any:
+    """A positive int (returned as int), or '' meaning "let the builder
+    decide".  Callers do arithmetic on these (PAL * maxcore), so the value
+    must survive as a number, not a str."""
+    text = str(value if value is not None else "").strip()
     if not text:
         return ""
     try:
@@ -2069,7 +2080,7 @@ def _as_optional_positive_int(value: Any) -> str:
         raise ValueError("must be a positive integer or empty") from None
     if number < 1:
         raise ValueError("must be a positive integer or empty")
-    return str(number)
+    return number
 
 
 def _as_smiles_converter(value: Any) -> str:
@@ -2281,11 +2292,99 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("allow_imaginary_freq", _as_imag_noise_floor, default=_IMAG_NOISE_FLOOR,
              help="Imaginary frequencies smaller in magnitude than this (cm-1, written negative, e.g. -50) are numerical noise: IMAG leaves them and ESD rates are computed. Larger ones make a saddle: IMAG takes the structure off it, and an ESD rate that needs it is not computed. The old template value 0 is read as -50; to treat every imaginary mode, write e.g. -0.1."),
     FieldSpec("calc_potential_method", _as_calc_potential_method, default=2,
-             help="How the redox potentials are derived from the Gibbs energies: 1 (averages over multi-electron steps), 2 (step-wise, 1e steps; the default), or 3 (mean of 1 and 2). Several may be listed, separated by spaces or commas."),
+             help="How the redox potentials are derived from the Gibbs energies: 1 (averages over multi-electron steps), 2 (step-wise, 1e steps; the default), or 3 (mean of 1 and 2). Several may be listed, separated by spaces or commas.",
+             allowed="1, 2 or 3, several separated by spaces/commas"),
+    FieldSpec("calc_initial", _as_yes_no, default="yes",
+             help="Whether the workflow also runs the neutral state (the charge as given) before the redox steps. Set no only when that calculation exists already -- the potentials need its Gibbs energy. Stability-constant runs force this back on.",
+             allowed="yes or no"),
+    FieldSpec("oxidation_steps", _as_str, default="",
+             help="Redox steps to compute, as charge deltas from the neutral state: e.g. 1,2 oxidises by +1 then +2 electrons; a leading minus sign reduces. Empty means every step the workflow derives from method and the multiplicity keys.",
+             allowed="comma- or semicolon-separated integers, e.g. 1,2 or -1 (empty = all steps)"),
+    FieldSpec("reduction_steps", _as_str, default="",
+             help="Reduction steps to compute, same format as oxidation_steps: e.g. -1,-2 removes one and then two electrons. Empty means every reduction step the workflow derives.",
+             allowed="comma- or semicolon-separated integers, e.g. -1,-2 (empty = all steps)"),
+    FieldSpec("E_ref", _as_str, default="",
+             help="Reference-electrode potential in volts, subtracted from the computed redox potentials (e.g. a measured value against the electrode used). Empty leaves the potentials against vacuum.",
+             allowed="number in volts, or empty (vacuum reference)"),
     FieldSpec("deltaSCF_SOSCFHESSUP", _as_soscfhessup, default="LSR1",
              help="Hessian update for the SOSCF optimiser in deltaSCF excited-state jobs: LSR1 (default), LBFGS, LPOWELL, or LBOFILL."),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto",
              help="How OCCUPIER builds its candidate configurations: auto (generate from the previous winner per redox step) or manually (you provide the structures)."),
+    FieldSpec("multiplicity_0", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the neutral state. Empty lets the spin from the input structure stand. Also the ox/red families below follow the same naming (multiplicity_ox1 .. ox3, multiplicity_red1 .. red3).",
+             allowed="integer 1, 2, 3, ... (1 = singlet, 2 = doublet, ...)"),
+    FieldSpec("BrokenSym_0", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry orbital pairing for the neutral state, e.g. 1,1 means occupy alpha orbital 1 and beta orbital 1 in exchange. Empty = plain multiplicity calculation without BS.",
+             allowed="comma-separated orbital indices like 1,1 or 2,1 (empty = no BS)"),
+    FieldSpec("multiplicity_ox1", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the +1 redox state; further oxidation steps follow as multiplicity_ox2, multiplicity_ox3.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_ox1", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the +1 state, same format as BrokenSym_0; further steps ox2, ox3.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_ox2", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the +2 redox state.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_ox2", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the +2 state.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_ox3", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the +3 redox state.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_ox3", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the +3 state.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_red1", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the -1 redox state; further reduction steps as multiplicity_red2, multiplicity_red3.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_red1", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the -1 state, same format as BrokenSym_0; further steps red2, red3.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_red2", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the -2 redox state.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_red2", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the -2 state.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("multiplicity_red3", _as_int, default=None, allow_none=True,
+             help="MANUALLY mode: multiplicity of the -3 redox state.",
+             allowed="integer (empty = derive)"),
+    FieldSpec("BrokenSym_red3", _as_str, default="",
+             help="MANUALLY mode: broken-symmetry pairing of the -3 state.",
+             allowed="comma-separated orbital indices (empty = no BS)"),
+    FieldSpec("fob_equal_weights", _as_yes_no, default="no",
+             help="OCCUPIER FoB extraction: weight the frontier-orbital contributions equally across all configurations instead of by multiplicity-derived weights.",
+             allowed="yes or no"),
+    FieldSpec("occupier_selection", _as_str, default="tolerance",
+             help="How OCCUPIER decides whether two configurations count as different: rounding (occupations are rounded to occupier_precision digits), tolerance (occupations within occupier_epsilon are equal), or truncation (occupations are cut to occupier_precision digits). A pipe-separated suffix overrides occupier_precision, e.g. tolerance|4.",
+             allowed="rounding | tolerance | truncation, optional |precision suffix"),
+    FieldSpec("occupier_precision", _as_int, default=3,
+             help="Number of digits used by the rounding/truncation selection methods; clamped to 0-10. Also the fallback for occupier_epsilon when that is not positive.",
+             allowed="integer 0-10"),
+    FieldSpec("occupier_epsilon", _as_float_or_empty, default=5e-4,
+             help="Tolerance band of the tolerance selection method: two occupations closer than this count as equal. Non-positive values fall back to 10^-occupier_precision.",
+             allowed="positive number, or empty (uses occupier_precision)"),
+    FieldSpec("clean_override_window_h", _as_float_or_empty, default=0.002,
+             help="OCCUPIER clean pass: a user-specified configuration is preferred over the winner when the energy gap is within this window (in Hartree).",
+             allowed="number in Hartree"),
+    FieldSpec("clean_quality_improvement", _as_float_or_empty, default=0.05,
+             help="OCCUPIER clean pass: how much lower the candidate's occupation deviation must be (fraction) for the candidate to replace the winner.",
+             allowed="fraction 0-1"),
+    FieldSpec("clean_quality_good", _as_float_or_empty, default=0.05,
+             help="OCCUPIER clean pass: a configuration whose occupation deviation is below this fraction counts as good and is kept as-is.",
+             allowed="fraction 0-1"),
+    FieldSpec("maxiter_occupier", _as_int, default=125,
+             help="SCF iteration limit inside the OCCUPIER stage jobs (%scf maxiter). An empty value previously wrote a broken ORCA input; it now falls back to the default.",
+             allowed="positive integer"),
+    FieldSpec("pass_wavefunction", _as_yes_no, default="no",
+             help="OCCUPIER: hand the converged wavefunction of each stage on to the next (moinp/moinp-like restart) instead of starting every job from scratch.",
+             allowed="yes or no"),
+    FieldSpec("even_seq", _as_str, default="",
+             help="OCCUPIER sequence profile for even-electron systems: a JSON list of mappings, each {\"index\": n, \"m\": multiplicity, \"BS\": \"a,b\" or \"\", \"from\": index} -- the configuration ladder OCCUPIER walks for even electron counts. Shipped template shows the standard 7-step ladder.",
+             allowed="JSON list of mappings {index, m, BS, from}"),
+    FieldSpec("odd_seq", _as_str, default="",
+             help="OCCUPIER sequence profile for odd-electron systems: same format as even_seq.",
+             allowed="JSON list of mappings {index, m, BS, from}"),
     FieldSpec("OWN_progressive_from", _as_yes_no, default="no",
              help="OCCUPIER auto mode: build the candidate tree progressively from the previous winner (yes) instead of the full enumeration per redox step (no)."),
     FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True,
