@@ -49,11 +49,17 @@ def test_detect_lists_progext_names_from_entry_points(monkeypatch):
     from delfin.mlp_tools import orca_mlips as om
 
     monkeypatch.setattr(om, "_find_spec", lambda name: object())
+
+    class _Dist:
+        version = "1.3.0"
+
+    monkeypatch.setattr(im, "distribution", lambda name: _Dist())
     eps = [SimpleNamespace(name="orca-mlips-uma", value="orca_mlips.uma:main")]
     monkeypatch.setattr(im, "entry_points", lambda **kw: eps)
     info = detect_orca_mlips()
     assert info["available"] is True
     assert "orca-mlips-uma" in info["progext_names"]
+    assert info["version"] == "1.3.0"
 
 
 # ---------------------------------------------------------------- Ext_Params
