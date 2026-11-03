@@ -9182,6 +9182,15 @@ def create_tab(ctx):
         var MAXH = 280;
         function grow(ta) {
             if (!ta) return;
+            // Measuring writes height:auto, so for one forced layout the
+            // box is at its 80 px floor and the chat frame above it is
+            // taller by the rest. The browser clamps a transcript at (or
+            // near) its end to that taller box, and the final height does
+            // not give the offset back. Offsets are kept and the ones
+            // that went down are put back before anything is painted.
+            var kept = [];
+            document.querySelectorAll('.delfin-agent-chat-host').forEach(
+                function(h) { if (h.clientHeight) kept.push([h, h.scrollTop]); });
             ta.style.height = 'auto';
             // The height includes the borders (box-sizing: border-box),
             // scrollHeight does not: set to scrollHeight alone, a box
@@ -9189,6 +9198,9 @@ def create_tab(ctx):
             // and drew a scrollbar (measured: 98 px box, 96 px inside).
             var edge = ta.offsetHeight - ta.clientHeight;
             ta.style.height = Math.min(ta.scrollHeight + edge, MAXH) + 'px';
+            kept.forEach(function(p) {
+                if (p[0].scrollTop < p[1]) p[0].scrollTop = p[1];
+            });
             // Writing at the end of a box past its cap: keep the line being
             // written inside the frame with its padding, not on the edge.
             if (ta.selectionStart === ta.value.length) {
