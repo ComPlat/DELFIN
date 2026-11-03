@@ -219,11 +219,32 @@ def tool_mlp_rank(xyz_ensemble: str, backend: str = "ani2x", charge: int = 0,
 
 def tool_mlp_preoptimize(xyz: str, backend: str = "ani2x", fmax: float = 0.05,
                          steps: int = 200, charge: int = 0, mult: int = 1,
-                         device: str = "cpu") -> str:
+                         device: str = "cpu",
+                         refuse_noncommercial_weights: bool = False) -> str:
     """MLP pre-optimisation before ORCA; confirm everything with DFT."""
     return _dumps(delfin_api.mlp_preoptimize(xyz, backend, fmax=fmax,
                                              steps=steps, charge=charge,
-                                             mult=mult, device=device))
+                                             mult=mult, device=device,
+                                             refuse_noncommercial_weights=refuse_noncommercial_weights))
+
+
+def tool_mlp_extopt_plan(
+    xyz: str, run_type: str = "opt", provider: str = "delfin",
+    backend: str = "ani2x", mlips_backend: str = "uma", model: str = "",
+    device: str = "cpu", solvent: str = "", charge: int = 0, mult: int = 1,
+    gpu_partitions: str = "", gres: str = "gpu:1", env_activation: str = "",
+    job_name: str = "extopt_job", allow_local: bool = False,
+    work_dir: str = "",
+) -> str:
+    """Plan an ORCA+ExtOpt MLP job (dry run: input + script, nothing submitted)."""
+    return _dumps(delfin_api.mlp_extopt_plan(
+        xyz, run_type=run_type, provider=provider, backend=backend,
+        mlips_backend=mlips_backend, model=model or None, device=device,
+        solvent=solvent or None, charge=charge, mult=mult,
+        gpu_partitions=gpu_partitions, gres=gres,
+        env_activation=env_activation, job_name=job_name,
+        allow_local=allow_local, work_dir=work_dir,
+    ))
 
 
 def tool_result_checks(work_dir: str, base_name: str, job_type: str,
@@ -2073,6 +2094,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="mlp_optimize")(_safe("mlp_optimize", tool_mlp_optimize))
     mcp.tool(name="mlp_rank")(_safe("mlp_rank", tool_mlp_rank))
     mcp.tool(name="mlp_preoptimize")(_safe("mlp_preoptimize", tool_mlp_preoptimize))
+    mcp.tool(name="mlp_extopt_plan")(_safe("mlp_extopt_plan", tool_mlp_extopt_plan))
     # Job lifecycle (read-only list + mutating submit/cancel)
     mcp.tool(name="list_active_calculations")(_safe("list_active_calculations", tool_list_active_calculations))
     mcp.tool(name="submit_calculation")(_host_gated(tool_submit_calculation))
