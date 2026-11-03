@@ -1280,8 +1280,12 @@ def _agents(ctx, _args: str) -> CommandResult:
         f"{str(p.get('description') or '')[:60]}"
         for p in presets
     ]
+    # This session's runs: the store is account-wide, and a terminal
+    # listing every session's delegates offered ids this conversation never
+    # started. A session without an id yet owns none.
     try:
-        finished = subagents.list_finished(last_n=5)
+        finished = subagents.list_finished(last_n=5,
+                                           session=_live_session(ctx))
     except Exception:
         finished = []
     if finished:

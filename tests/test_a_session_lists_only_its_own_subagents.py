@@ -26,7 +26,6 @@ from __future__ import annotations
 import inspect
 import json
 import os
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -43,7 +42,9 @@ def stores(monkeypatch, tmp_path):
     monkeypatch.setattr(SA, "_PENDING_DIR", tmp_path / "pending")
     monkeypatch.setattr(SA, "_TELEMETRY_PATH", tmp_path / "telemetry.jsonl")
     SA._FINISHED_SUMMARY_CACHE.clear()
-    return tmp_path
+    SA._NOTES.clear()
+    yield tmp_path
+    SA._NOTES.clear()
 
 
 def _event(**kw):
@@ -252,3 +253,12 @@ def test_subagent_message_reaches_only_this_sessions_delegates(stores, monkeypat
     sent = json.loads(AC._doc_executor._execute_subagent_message(
         {"to": "all", "message": "hi"}, perms))
     assert sent["to"] == ["dA"]
+
+
+def test_subagent_message_cannot_direct_another_sessions_delegate(stores):
+    from delfin.agent import api_client as AC
+    SA.reserve_running("dB", subagent_type="explore", description="b",
+                       owner_session="sess-B")
+    out = json.loads(AC._doc_executor._execute_subagent_message(
+        {"to": "dB", "message": "push it"}, _perms(stores, "sess-A")))
+    assert "error" in out and SA.notes_waiting("dB") == 0
