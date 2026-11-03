@@ -53,8 +53,8 @@ def RO_TAB_HEADER() -> str:
         "<div style='color:#0f172a;font-size:18px;font-weight:700'>"
         "Results Overview</div>"
         "<div style='color:#94a3b8;font-size:12px;margin-top:2px'>"
-        "Rechnungen auswählen, Größen wählen, Werte vergleichen - "
-        "Redoxpotentiale, Multiplicitäten, RSS-Energetik; Export als "
+        "Select calculations and quantities, compare values - redox "
+        "potentials, multiplicities, RSS energetics; export as "
         "CSV / XLSX / PNG-ZIP</div></div>")
 
 
@@ -105,7 +105,7 @@ def rows_to_markdownish(columns: List[dict], rows: List[dict],
         "<table style='border-collapse:collapse'>"
         f"<thead><tr><th style='padding:10px 12px;text-align:left;"
         f"position:sticky;left:0;top:0;background:#1e293b;color:#f8fafc;"
-        f"font-weight:600;white-space:nowrap;z-index:2'>Rechnung</th>"
+        f"font-weight:600;white-space:nowrap;z-index:2'>Calculation</th>"
         f"{head_html}"
         f"</tr></thead>"
         f"<tbody>{''.join(body_rows)}</tbody></table></div>"
@@ -130,27 +130,27 @@ class ResultsOverviewPanel:
         self._metric_select = widgets.SelectMultiple(
             options=[(m["label"], m["id"]) for m in METRICS],
             rows=len(METRICS),
-            layout=widgets.Layout(width="420px"),
+            layout=widgets.Layout(width="420px", height="300px"),
         )
         self._refresh_btn = widgets.Button(
-            description="Tabelle erstellen",
+            description="Build table",
             button_style="primary",
         )
-        self._rescan_btn = widgets.Button(description="Rechnungen neu einlesen")
+        self._rescan_btn = widgets.Button(description="Rescan calculations")
         self._show_pngs = widgets.Checkbox(
             value=False,
-            description="PNGs inline anzeigen",
+            description="Show PNGs inline",
             indent=False,
         )
         # Gallery controls: relative scan only, size in percent of the
         # 640px default, images per row before wrapping.
         self._png_size = widgets.IntSlider(
             value=70, min=20, max=150, step=10,
-            description="Bildgroesse %", continuous_update=False,
+            description="Image size %", continuous_update=False,
             layout=widgets.Layout(width="260px"))
         self._png_cols = widgets.IntSlider(
             value=2, min=1, max=10, step=1,
-            description="Bilder/Zeile", continuous_update=False,
+            description="Images/row", continuous_update=False,
             layout=widgets.Layout(width="260px"))
         self._png_opts = widgets.HBox([
             self._png_size, self._png_cols])
@@ -161,7 +161,7 @@ class ResultsOverviewPanel:
         # Custom columns section (semantics shared with the calculations
         # browser table panel: text/regex/jsonpath per arbitrary file).
         self._custom_acc = widgets.Accordion(children=[widgets.VBox()])
-        self._custom_acc.set_title(0, "Eigene Spalten (regex/text/jsonpath)")
+        self._custom_acc.set_title(0, "Custom columns (regex/text/jsonpath)")
         self._custom_acc.selected_index = None  # folded by default
         self._build_custom_section()
         self._status = widgets.HTML()
@@ -182,12 +182,12 @@ class ResultsOverviewPanel:
         self._zip_btn.on_click(self._on_export_zip)
 
         left = widgets.VBox([
-            widgets.HTML(RO_CARD_H("Rechnungen", "Mehrfachauswahl")),
+            widgets.HTML(RO_CARD_H("Calculations", "multi-select")),
             self._calc_select,
             self._rescan_btn,
         ])
         right = widgets.VBox([
-            widgets.HTML(RO_CARD_H("Größen", "Mehrfachauswahl")),
+            widgets.HTML(RO_CARD_H("Quantities", "multi-select")),
             self._metric_select,
             self._refresh_btn,
         ])
@@ -229,7 +229,7 @@ class ResultsOverviewPanel:
         paths = [c["path"] for c in self._calcs]
         self._calc_select.options = list(zip(labels, paths))
         self._status.value = (
-            f"<p>{len(self._calcs)} Rechnungen gefunden unter "
+            f"<p>{len(self._calcs)} calculations found under "
             f"{_html.escape(', '.join(self._roots))}.</p>")
 
     def _on_build(self, _btn=None) -> None:
@@ -237,15 +237,15 @@ class ResultsOverviewPanel:
         mids = list(self._metric_select.value)
         if not paths or not mids:
             self._status.value = (
-                "<p style='color:#dc3545'>Bitte Rechnungen und Größen "
-                "auswählen.</p>")
+                "<p style='color:#dc3545'>Select calculations and "
+                "quantities.</p>")
             return
         try:
             table = build_table(paths, mids,
                                 custom_columns=self._custom_columns())
         except Exception as exc:  # noqa: BLE001
             self._status.value = (
-                f"<p style='color:#dc3545'>Extraktion fehlgeschlagen: "
+                f"<p style='color:#dc3545'>Extraction failed: "
                 f"{_html.escape(str(exc))}</p>")
             return
         self._table = table
@@ -310,10 +310,10 @@ class ResultsOverviewPanel:
             + [(p[0], p) for p in self._CUSTOM_PRESETS],
             layout=widgets.Layout(width="280px"))
         self._preset_file = widgets.Text(
-            placeholder="Datei z.B. CO2_coordination/relaxed_surface_scan/output.out",
+            placeholder="File e.g. CO2_coordination/relaxed_surface_scan/output.out",
             layout=widgets.Layout(width="420px"))
         self._custom_label = widgets.Text(
-            placeholder="Spaltenname", layout=widgets.Layout(width="160px"))
+            placeholder="Column name", layout=widgets.Layout(width="160px"))
         self._custom_type = widgets.Dropdown(
             options=["regex", "text", "jsonpath"], value="regex",
             layout=widgets.Layout(width="120px"))
@@ -322,13 +322,13 @@ class ResultsOverviewPanel:
         self._custom_occ = widgets.Dropdown(
             options=["first", "last", "all"], value="last",
             layout=widgets.Layout(width="90px"))
-        self._custom_add = widgets.Button(description="+ Spalte")
+        self._custom_add = widgets.Button(description="+ Column")
         self._custom_list = widgets.HTML()
         self._custom_rows: List[Dict[str, Any]] = []
         self._custom_preset_file = widgets.Text(
-            placeholder="Preset-Datei (.json)", layout=widgets.Layout(width="300px"))
-        self._custom_load_btn = widgets.Button(description="Preset laden")
-        self._custom_save_btn = widgets.Button(description="Preset speichern")
+            placeholder="Preset file (.json)", layout=widgets.Layout(width="300px"))
+        self._custom_load_btn = widgets.Button(description="Load preset")
+        self._custom_save_btn = widgets.Button(description="Save preset")
         self._preset_select.observe(self._on_preset, names="value")
         self._custom_add.on_click(self._on_custom_add)
         self._custom_load_btn.on_click(self._on_custom_load)
@@ -339,7 +339,7 @@ class ResultsOverviewPanel:
                           self._custom_occ]),
             widgets.HBox([self._preset_file]),
             widgets.HBox([self._custom_add,
-                          widgets.HTML("<i>Spalte hinzufügen</i>")]),
+                          widgets.HTML("<i>Add column</i>")]),
             widgets.HTML("<hr style='margin:6px 0'>"),
             self._custom_list,
             widgets.HBox([self._custom_preset_file, self._custom_load_btn,
@@ -382,7 +382,7 @@ class ResultsOverviewPanel:
     def _refresh_custom_list(self) -> None:
         if not self._custom_rows:
             self._custom_list.value = (
-                "<i>Noch keine eigenen Spalten definiert.</i>")
+                "<i>No custom columns defined yet.</i>")
             return
         rows = []
         for i, col in enumerate(self._custom_rows):
@@ -405,7 +405,7 @@ class ResultsOverviewPanel:
         path = os.path.expanduser((self._custom_preset_file.value or "").strip())
         if not path:
             self._export_status.value = (
-                "<span style='color:#dc3545'>Kein Preset-Pfad angegeben.</span>")
+                "<span style='color:#dc3545'>No preset path given.</span>")
             return
         try:
             with open(path, "r", encoding="utf-8") as fh:
@@ -416,27 +416,27 @@ class ResultsOverviewPanel:
             self._refresh_custom_list()
             self._export_status.value = (
                 f"<span style='color:#28a745'>"
-                f"{len(self._custom_rows)} Spalten geladen.</span>")
+                f"{len(self._custom_rows)} columns loaded.</span>")
         except (OSError, ValueError) as exc:
             self._export_status.value = (
-                f"<span style='color:#dc3545'>Preset laden fehlgeschlagen: "
+                f"<span style='color:#dc3545'>Load preset failed: "
                 f"{_html.escape(str(exc))}</span>")
 
     def _on_custom_save(self, _btn) -> None:
         path = os.path.expanduser((self._custom_preset_file.value or "").strip())
         if not path:
             self._export_status.value = (
-                "<span style='color:#dc3545'>Kein Preset-Pfad angegeben.</span>")
+                "<span style='color:#dc3545'>No preset path given.</span>")
             return
         try:
             with open(path, "w", encoding="utf-8") as fh:
                 _json.dump(self._custom_rows, fh, indent=2)
             self._export_status.value = (
                 f"<span style='color:#28a745'>"
-                f"{len(self._custom_rows)} Spalten gespeichert.</span>")
+                f"{len(self._custom_rows)} columns saved.</span>")
         except OSError as exc:
             self._export_status.value = (
-                f"<span style='color:#dc3545'>Preset speichern fehlgeschlagen: "
+                f"<span style='color:#dc3545'>Save preset failed: "
                 f"{_html.escape(str(exc))}</span>")
 
     # -- export -------------------------------------------------------------
@@ -446,7 +446,7 @@ class ResultsOverviewPanel:
         assert self._table is not None
         buf = _io.StringIO()
         w = _csv.writer(buf, delimiter=";")
-        w.writerow(["Rechnung"]
+        w.writerow(["Calculation"]
                    + [c["label"] for c in self._table["columns"]])
         for row in self._table["rows"]:
             w.writerow([row["label"]]
@@ -466,10 +466,10 @@ class ResultsOverviewPanel:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Results Overview"
-        ws.append(["Rechnung", "SMILES 2D", "SMILES"]
+        ws.append(["Calculation", "SMILES 2D", "SMILES"]
                   + [c["label"] for c in self._table["columns"]]
                   + ["RSS PNG (relativ)"])
-        # Metrics start in column 4 (1=Rechnung, 2=SMILES 2D, 3=SMILES);
+        # Metrics start in column 4 (1=calc, 2=SMILES 2D, 3=SMILES);
         # otherwise they land under the SMILES headers.
         metric_col0 = 4
         for r, row in enumerate(self._table["rows"], start=2):
@@ -559,7 +559,7 @@ class ResultsOverviewPanel:
         run_js(js)
         self._export_status.value = (
             f"<span style='color:#28a745'>{_html.escape(filename)} "
-            f"heruntergeladen ({len(payload) // 1024} KB).</span>")
+            f"downloaded ({len(payload) // 1024} KB).</span>")
 
     def _on_export_csv(self, _btn=None) -> None:
         if self._table is None:
@@ -583,8 +583,8 @@ class ResultsOverviewPanel:
     def _on_export_zip(self, _btn=None) -> None:
         if not self._paths:
             self._export_status.value = (
-                "<span style='color:#dc3545'>Erst Rechnungen "
-                "auswaehlen.</span>")
+                "<span style='color:#dc3545'>Build a table first "
+                "(select calculations).</span>")
             return
         payload = self._pngs_bytes_zip()
         if not payload:
@@ -652,7 +652,7 @@ class ResultsOverviewPanel:
                 "<table style='border-collapse:collapse'>"
                 + "".join(rows_png) + "</table>")
         self._pngs.value = (
-            RO_CARD_H("Relaxed-Surface-Scan PNGs") + "".join(png_html)
+            RO_CARD_H("Relaxed surface scan PNGs") + "".join(png_html)
             if png_html else "")
         # Click-to-sort wiring: the column headers carry an onclick
         # attribute that calls window.__roSort(idx); that function (sent
@@ -685,21 +685,35 @@ class ResultsOverviewPanel:
   window.__roStyle = true;
   var css = document.createElement('style');
   css.textContent = [
-    ".ro-tab-root .widget-button{border-radius:8px;border:1px solid #cbd5e1;",
-    "background:#fff;padding:5px 14px;font-size:13px}",
+    ".ro-tab-root .widget-button{border-radius:8px;border:1px solid #94a3b8;",
+    "background:#fff;padding:6px 16px;font-size:13px;color:#0f172a}",
     ".ro-tab-root .widget-button:hover{border-color:#2563eb;background:#eff6ff}",
     ".ro-tab-root .widget-button-primary{background:#2563eb;color:#fff;",
     "border-color:#1d4ed8;font-weight:600}",
-    ".ro-tab-root .widget-select select,.ro-tab-root .widget-selectmultiple select",
-    "{border:1px solid #cbd5e1;border-radius:8px;padding:4px;",
-    "font-size:13px;background:#fff}",
+    ".ro-tab-root .widget-select select,",
+    ".ro-tab-root .widget-selectmultiple select",
+    "{border:1px solid #94a3b8;border-radius:8px;padding:5px 6px;",
+    "font-size:13px;background:#fff;color:#0f172a;",
+    "box-shadow:inset 0 1px 2px rgba(15,23,42,.06)}",
+    ".ro-tab-root .widget-selectmultiple select{min-height:220px}",
     ".ro-tab-root .widget-selectmultiple select:focus",
-    "{outline:2px solid #93c5fd}",
+    "{outline:2px solid #93c5fd;border-color:#2563eb}",
     ".ro-tab-root .widget-slider .ui-slider-handle{border-radius:50%;",
     "border-color:#2563eb;background:#2563eb}",
+    ".ro-tab-root .widget-accordion{border:1px solid #e2e8f0;",
+    "border-radius:10px;background:#fff;padding:2px}",
     ".ro-tab-root .widget-accordion .widget-accordion-title",
-    "{background:#f1f5f9;border-radius:8px;font-weight:600}",
-    ".ro-tab-root .widget-checkbox label{font-size:13px}"
+    "{background:#f8fafc;border-radius:8px;font-weight:600;",
+    "color:#0f172a}",
+    ".ro-tab-root .widget-checkbox label{font-size:13px;color:#0f172a}",
+    ".ro-tab-root .widget-text input,",
+    ".ro-tab-root .widget-combobox input",
+    "{border:1px solid #94a3b8;border-radius:8px;padding:5px 8px;",
+    "font-size:13px;background:#fff;color:#0f172a}",
+    ".ro-tab-root .widget-text input::placeholder,",
+    ".ro-tab-root .widget-combobox input::placeholder",
+    "{color:#94a3b8;font-style:italic}",
+    ".ro-tab-root .widget-label{font-size:12px;color:#334155}"
   ].join("");
   document.head.appendChild(css);
   if (window.__roSortBind) { return; }
