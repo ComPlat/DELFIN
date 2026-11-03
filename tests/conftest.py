@@ -962,6 +962,17 @@ def _reset_workspace_trust_caches():
 
 
 @pytest.fixture(autouse=True)
+def _no_host_settings_defaults(monkeypatch):
+    """DELFIN_SETTINGS_DEFAULTS unset for every test.
+
+    The Windows launcher's people mode exports it (the account's settings
+    file read under the person's own); a suite started from such a shell
+    would otherwise load and write every settings test against that file.
+    Tests of the layer set their own."""
+    monkeypatch.delenv("DELFIN_SETTINGS_DEFAULTS", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_managed_policy(monkeypatch):
     """The host's managed policy (/etc/delfin/managed_policy.json, the
     package-side copy, DELFIN_MANAGED_POLICY) is shadowed, not read: a

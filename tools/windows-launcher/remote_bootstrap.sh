@@ -9,6 +9,31 @@ tunnel_path=${6:-}
 keep=${7:-0}
 working=${8:-0}
 person=${9:-}
+login_key=${10:-}
+# One line, nothing else: grep below checks line by line, so a second line
+# would pass unchecked and land in authorized_keys without the restriction.
+case "$login_key" in *$'\n'*|*$'\r'*) login_key='' ;; esac
+# Remember login: the app sends this PC's public key (one ed25519 key per
+# Windows user) on every connection; the first one, still with the password,
+# adds it to the account's authorized_keys, the next ones log in with it.
+# The key line is restricted to what the launcher uses (port forwarding for
+# the dashboard tunnel, a pty), so it opens no agent, X11 or ~/.ssh/rc.
+# ~/.config/delfin/launcher-no-keys.conf makes a server refuse it.
+if [ -n "$login_key" ] && [ ! -f "$HOME/.config/delfin/launcher-no-keys.conf" ]; then
+    if printf '%s\n' "$login_key" | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9@._-]{1,64})?$'; then
+        key_body=$(printf '%s' "$login_key" | cut -d' ' -f2)
+        if ! grep -qsF " $key_body" "$HOME/.ssh/authorized_keys"; then
+            (umask 077 && mkdir -p "$HOME/.ssh" \
+                && printf 'restrict,port-forwarding,pty %s\n' "$login_key" >> "$HOME/.ssh/authorized_keys") \
+                && printf '%s\n' 'DELFIN: Login key of this PC registered; the next connection needs no password.'
+        fi
+    fi
+fi
+# The account owner may make Keep session this server's default
+# (~/.config/delfin/launcher-keep.conf, e.g. a shared agent box): every
+# connection then keeps its dashboard after a disconnect, whatever the app's
+# checkbox says. Ctrl+C in the SSH window still stops it.
+if [ -f "$HOME/.config/delfin/launcher-keep.conf" ]; then keep=1; fi
 # `python -c` puts the current directory first on sys.path: a plain folder
 # named "delfin" there (an install root, a repository root) then shadows the
 # real package as an empty namespace package. Every probe and start drops it.
@@ -147,24 +172,40 @@ printf 'DELFIN: Environment found: %s\n' "$python"
 # Several people on one server account (opt-in by the account owner): each
 # Windows user gets a home of their own under ~/people, so sessions,
 # dashboard, token, agent service and workspace do not collide. Shared by
-# link: the account's credentials and settings, tools, caches, git and SSH
-# setup, and the installation itself. Not a security boundary between them:
-# they are one Unix user.
+# link: the account's credentials, tools, caches, git and SSH setup, and the
+# installation itself. Not a security boundary between them: they are one
+# Unix user.
 if [ -n "$person" ] && [ -f "$HOME/.config/delfin/launcher-people.conf" ]; then
     case "$person" in
         *[!a-z0-9_-]*|-*) printf '%s\n' 'DELFIN: Invalid person name.' >&2; exit 1 ;;
     esac
     shared=$HOME
     person_home="$shared/people/$person"
-    (umask 077 && mkdir -p "$person_home/.delfin" "$person_home/.run" "$person_home/work")
-    # DELFIN's settings are ~/.delfin_settings.json (user_settings.SETTINGS_FILE_NAME).
-    for item in delfin .local .cache .ssh .gitconfig .tmux.conf .delfin_settings.json .delfin/credentials.json .delfin/tools .delfin/doc_index.json; do
+    (umask 077 && mkdir -p "$person_home/.delfin" "$person_home/.run" "$person_home/agent_workspace")
+    # DELFIN's settings are ~/.delfin_settings.json (user_settings.SETTINGS_FILE_NAME),
+    # in two layers: the account's file holds the defaults (pi_install.sh:
+    # pi-agent.conf, pi-tabs.conf) and is read under the person's own file
+    # (DELFIN_SETTINGS_DEFAULTS), which keeps only what that person changed.
+    # A person file that is still a link to the account's becomes an empty
+    # file of its own: its content was the account's, so nothing is lost. A
+    # copy kept from before (*.before-shared-*) is not applied again.
+    settings_own="$person_home/.delfin_settings.json"
+    if [ -L "$settings_own" ] && { [ "$settings_own" -ef "$shared/.delfin_settings.json" ] \
+            || [ "$(readlink -- "$settings_own")" = "$shared/.delfin_settings.json" ]; }; then
+        rm -f -- "$settings_own"
+    fi
+    if [ ! -e "$settings_own" ] && [ ! -L "$settings_own" ]; then
+        (umask 077 && printf '{}\n' > "$settings_own")
+    fi
+    for item in delfin .local .cache .ssh .gitconfig .tmux.conf .delfin/credentials.json .delfin/tools .delfin/doc_index.json; do
         if [ -e "$shared/$item" ] && [ ! -e "$person_home/$item" ] && [ ! -L "$person_home/$item" ]; then
             ln -s "$shared/$item" "$person_home/$item"
         fi
     done
+    export DELFIN_SETTINGS_DEFAULTS="$shared/.delfin_settings.json"
     export HOME="$person_home" DELFIN_PERSON="$person" DELFIN_RUNTIME_DIR="$person_home/.run"
-    if [ -z "$directory" ]; then cd -- "$person_home/work"; fi
+    # The dashboard's agent works in its launch folder (DELFIN_LAUNCH_CWD).
+    if [ -z "$directory" ]; then cd -- "$person_home/agent_workspace"; fi
     printf 'DELFIN: Person %s (%s)\n' "$person" "$person_home"
 fi
 if [ "$role" = terminal ]; then

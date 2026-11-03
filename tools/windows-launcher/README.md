@@ -33,7 +33,11 @@ independent main window and stays in the taskbar with the DELFIN icon while open
 A separate dashboard terminal appears for native OpenSSH password/OTP and
 host-key prompts and stays visible after the browser opens. This is the only
 SSH terminal; it uses the PowerShell icon and an SSH title. The DELFIN logo
-belongs to the settings app, not a second terminal. Use Ctrl+C there to
+belongs to the settings app, not a second terminal. It is a classic Windows
+console: to paste a password or OTP there, **right-click** in the window.
+Ctrl+V does not paste at OpenSSH's password prompt in this console; it sends a
+control character, and the server answers "Permission denied" for a correct
+password. The app never reads or stores the password itself. Use Ctrl+C there to
 stop the dashboard explicitly, including with Keep ON. The optional working
 terminal is still OFF by default. Keep the DELFIN app open while using the browser.
 **Show terminal** restores the current SSH window if minimized or hidden and
@@ -74,7 +78,21 @@ Two options are visible without opening Advanced settings:
 
 - **Working shell (Ctrl+B, then N)**: disabled by default for new saved
   connections. Enable it to open/reuse a tmux window named `DELFIN-work`.
+- **Remember login on this PC (SSH key)** (advanced settings, on by default):
+  the app makes one ed25519 key per Windows user
+  (`%USERPROFILE%\.ssh\delfin_launcher_ed25519`, no passphrase, protected by
+  the Windows account) and sends its public half with every connection. The
+  first connection still asks for the password; `remote_bootstrap.sh` then adds
+  the key to the server's `~/.ssh/authorized_keys` as
+  `restrict,port-forwarding,pty ...` (only the dashboard tunnel and a terminal:
+  no agent, no X11, no `~/.ssh/rc`). Later connections log in with the key.
+  A server that requires a password or OTP as well keeps asking for it. Revoke
+  a PC by deleting its `delfin-launcher-<name>` line on the server; a server
+  account with `~/.config/delfin/launcher-no-keys.conf` never adds keys.
 - **Keep session after disconnect**: disabled by default for new saved connections.
+  A server whose account has `~/.config/delfin/launcher-keep.conf` (the
+  Raspberry Pi agent box sets it) keeps every connection's dashboard, whatever
+  this checkbox says; Ctrl+C still stops it.
   When off, disconnecting stops the **new dashboard started by this connection**
   and its tmux shell windows. When on, it uses DELFIN `--keep` and keeps the server
   and opted-in dashboard kernels available for reconnecting.
@@ -231,11 +249,24 @@ mkdir -p ~/.config/delfin && touch ~/.config/delfin/launcher-people.conf
 From then on the app sends the Windows user name (lower case, `a-z0-9_-`),
 and the server uses `~/people/<name>` as that connection's home: own DELFIN
 sessions and chats, own dashboard with its own port and token, own agent
-service (`DELFIN_RUNTIME_DIR`), own working directory `~/people/<name>/work`
+service (`DELFIN_RUNTIME_DIR`), own agent workspace `~/people/<name>/agent_workspace` (the dashboard agent's working folder)
 and tmux sessions named `delfin-win-<name>-<port>-...`. Reconnecting from the
 same Windows user returns to that person's dashboard. Shared by link with the
-account: the installation, credentials and settings, tools, caches, git and
-SSH setup. Without the file the name is ignored and nothing changes.
+account: the installation, credentials, tools, caches, git and SSH setup.
+Without the file the name is ignored and nothing changes.
+
+DELFIN's settings come in two layers. The account's `~/.delfin_settings.json`
+holds the defaults; the launcher exports `DELFIN_SETTINGS_DEFAULTS` naming it,
+and DELFIN reads it under the person's own `~/people/<name>/.delfin_settings.json`.
+A change a person makes in the dashboard is written to their own file only,
+and only what differs from the defaults is kept there, so a later change of a
+default (for example by `pi_install.sh`) reaches everyone who did not set that
+value themselves. A person file that was a link to the account's file (the
+earlier layout) is replaced by an empty file of its own on the next connection;
+its content was the account's, so nothing is lost. A copy kept from before that
+layout (`.delfin_settings.json.before-shared-<date>`) is **not** applied again;
+take what you want from it in the dashboard's Settings tab, or merge it into
+the person's file by hand.
 
 This keeps people from getting in each other's way; it does **not** keep
 them apart. They are one Unix user: everyone can read every file of the

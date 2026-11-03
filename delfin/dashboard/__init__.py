@@ -829,41 +829,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         ctx.set_busy(True)
         out = []
         level, text = 'error', "Couldn't update main."
+        # The pull itself lives in delfin/agent/branch_ops.pull_main
+        # (UI-free, shared with the Pi's /pull); it takes the same write
+        # lock and answers {'ok', 'text'}. The dashboard keeps its own
+        # busy state and toast.
         try:
-            with _dashboard_git_write_lock(rd, 'git pull'):
-                if _ensure_git_index_lock_clear(rd, 'Pull'):
-                    out.append('Removed stale Git index lock before pull.')
-                # Detached at a branch (one another worktree holds):
-                # git pull has no branch to merge into, so move to the
-                # branch's current commit, fast-forward only.
-                from delfin.agent import held_branch as _hb
-                moved = _hb.update_detached(rd)
-                if moved is not None:
-                    out.append(moved.message)
-                    level, text = 'ok', moved.message.splitlines()[0][:160]
-                    return
-                # Fast-forward main only: the shared checkout is the
-                # main checkout, and a merge commit made here would be
-                # a commit nobody wrote on a branch everybody runs.
-                current = _get_current_git_branch(rd)
-                if current != 'main':
-                    level = 'error'
-                    text = (f'Pull only updates main; the shared checkout is on '
-                            f'{current or "a detached commit"}.')
-                    out.append('Commit or move its changes, then run "git switch '
-                               'main" in a terminal. To try a branch, use Test.')
-                    return
-                before = _run_git_capture(rd, 'rev-parse', 'HEAD').stdout.strip()
-                result = _run_git_write(rd, 'pull', '--ff-only', 'origin', 'main')
-                out.append(result.stdout.strip() or '(no output)')
-                if result.returncode == 0:
-                    n = _run_git_capture(rd, 'rev-list', '--count',
-                                         f'{before}..HEAD').stdout.strip()
-                    level = 'ok'
-                    text = ('main is up to date.' if n in ('', '0')
-                            else f'Updated main: {n} new commit(s).')
-                else:
-                    text = "Couldn't update main (fast-forward only)."
+            from delfin.agent import branch_ops
+            result = branch_ops.pull_main(rd)
+            level = 'ok' if result.get('ok') else 'error'
+            text = result.get('text') or ("Couldn't update main." if level == 'error'
+                                          else 'main is up to date.')
+            out.append(text)
         except RuntimeError as e:
             out.append(str(e))
         except Exception as e:
@@ -1127,146 +1103,24 @@ def _force_reload_delfin():
         pass
 
 
-def _run_git_capture(repo_dir, *args):
-    """Run read-only git in the given repo without taking optional index
-    locks, through safe_git (no program the repository names runs);
-    stderr is folded into stdout."""
-    from delfin.agent import safe_git
-    return safe_git.run(args, repo_dir, timeout=60, merge_stderr=True)
+# The git write/capture helpers and their lock live in
+# delfin/dashboard/git_write.py (UI-free): the agent's branch operations
+# (delfin/agent/branch_ops.py) take the same lock and clear the same
+# stale index.lock, so a dashboard Pull and a service pull cannot
+# interleave. The names stay: the dashboard's callers and the tests
+# pinning them use the underscore spellings.
+from delfin.dashboard.git_write import (
+    run_git_capture as _run_git_capture,
+    git_dir as _git_dir,
+    dashboard_git_write_lock as _dashboard_git_write_lock,
+    git_index_lock_path as _git_index_lock_path,
+    git_index_lock_message as _git_index_lock_message,
+    git_index_lock_in_use as _git_index_lock_in_use,
+    ensure_git_index_lock_clear as _ensure_git_index_lock_clear,
+    git_output_mentions_index_lock as _git_output_mentions_index_lock,
+    run_git_write as _run_git_write,
+)
 
-
-def _git_dir(repo_dir):
-    """This checkout's own git directory.
-
-    ``<repo>/.git`` in a main checkout; in a ``git worktree`` checkout
-    ``.git`` is a file and the directory (index, index.lock) is
-    ``<common>/.git/worktrees/<name>``, which only git can name."""
-    plain = Path(repo_dir) / '.git'
-    if plain.is_dir():
-        return plain
-    result = _run_git_capture(repo_dir, 'rev-parse', '--absolute-git-dir')
-    out = (result.stdout or '').strip()
-    if result.returncode == 0 and out and Path(out).is_dir():
-        return Path(out)
-    return plain
-
-
-@contextlib.contextmanager
-def _dashboard_git_write_lock(repo_dir, action_name, timeout=15.0):
-    """Serialize repo-changing dashboard Git actions across kernels/processes."""
-    lock_path = _git_dir(repo_dir) / 'delfin-dashboard.lock'
-    with open(lock_path, 'a+', encoding='utf-8') as handle:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                handle.seek(0)
-                handle.truncate()
-                handle.write(f'{os.getpid()} {action_name}\n')
-                handle.flush()
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError(
-                        'Another DELFIN dashboard session is already changing the Git repo. '
-                        'Please wait a moment and retry.'
-                    )
-                time.sleep(0.2)
-        try:
-            yield
-        finally:
-            try:
-                handle.seek(0)
-                handle.truncate()
-                handle.flush()
-            except Exception:
-                pass
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
-
-
-def _git_index_lock_path(repo_dir):
-    """Return the Git index lock path for the repository."""
-    return _git_dir(repo_dir) / 'index.lock'
-
-
-def _git_index_lock_message(repo_dir):
-    """Describe a present Git index lock, or return an empty string."""
-    lock_path = _git_index_lock_path(repo_dir)
-    if not lock_path.exists():
-        return ''
-    try:
-        stamp = datetime.fromtimestamp(lock_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-        return f'Git index lock present: {lock_path} (mtime {stamp})'
-    except Exception:
-        return f'Git index lock present: {lock_path}'
-
-
-def _git_index_lock_in_use(repo_dir):
-    """Return whether another process currently holds the Git index lock."""
-    lock_path = _git_index_lock_path(repo_dir)
-    if not lock_path.exists():
-        return False
-    try:
-        result = subprocess.run(
-            ['lsof', str(lock_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0
-
-
-def _ensure_git_index_lock_clear(repo_dir, action_name, wait_seconds=10.0):
-    """Wait for an active Git index lock or remove it when it is stale."""
-    lock_path = _git_index_lock_path(repo_dir)
-    removed_stale_lock = False
-    deadline = time.monotonic() + wait_seconds
-    while lock_path.exists():
-        if _git_index_lock_in_use(repo_dir):
-            if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    f'{action_name} blocked: another git process is still using {lock_path}. '
-                    'Please finish that operation or close the other DELFIN session.'
-                )
-            time.sleep(0.2)
-            continue
-        try:
-            lock_path.unlink()
-            removed_stale_lock = True
-        except FileNotFoundError:
-            break
-        except Exception as exc:
-            raise RuntimeError(
-                f'{action_name} blocked: stale Git lock could not be removed ({exc}).'
-            ) from exc
-    return removed_stale_lock
-
-
-def _git_output_mentions_index_lock(output):
-    """Return whether Git output points to an index lock conflict."""
-    message = (output or '').lower()
-    return 'index.lock' in message or 'could not write index' in message
-
-
-def _run_git_write(repo_dir, *args, retry_on_index_lock=True):
-    """Run a repo-changing Git command with stale-index-lock recovery."""
-    from delfin.agent import safe_git
-    _ensure_git_index_lock_clear(repo_dir, 'Git write')
-    # safe_git: no hook, filter or other program the checkout's own config
-    # names runs; the user's global credential helper still answers a pull.
-    result = safe_git.run(args, repo_dir, timeout=600, merge_stderr=True)
-    if result.returncode == 0 or not retry_on_index_lock:
-        return result
-    if not _git_output_mentions_index_lock(result.stdout):
-        return result
-    _ensure_git_index_lock_clear(repo_dir, 'Git write retry', wait_seconds=1.0)
-    return _run_git_write(repo_dir, *args, retry_on_index_lock=False)
 
 
 def _format_git_status_html(repo_dir):

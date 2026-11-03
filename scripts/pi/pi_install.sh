@@ -151,19 +151,46 @@ set_up_extras() {
             "export DELFIN_MCP_ISOLATION=builtin" >> "$ROOT/agent.env"
         echo "==> agent.env: DELFIN_MCP_ISOLATION=builtin"
     fi
-    # Sessions start on the KIT toolbox (DELFIN's own, caged tool loop) unless
-    # a provider was chosen: the CLI default would be refused by the policy.
-    "$VENV_PY" - <<'EOF' || echo "warning: could not set the default provider" >&2
-import json
-from delfin.user_settings import get_settings_path, load_settings, save_settings
-path = get_settings_path()
-raw = json.loads(path.read_text()) if path.exists() else {}
-if not str((raw.get("agent") or {}).get("provider") or "").strip():
-    settings = load_settings()
-    settings.setdefault("agent", {}).update(
-        {"provider": "kit", "model": "kit.deepseek-v4-flash"})
+    # The agent tab's defaults on this box (~/.config/delfin/pi-agent.conf),
+    # written into the account's DELFIN settings on every deploy, like
+    # pi-tabs.conf. In the launcher's people mode that file is read under
+    # each person's own (DELFIN_SETTINGS_DEFAULTS), so these are everyone's
+    # defaults and a person's own choice survives the deploy. The variable
+    # is cleared for the apply: it writes the account's file, whole, and
+    # never a person's. Sessions start on the KIT
+    # toolbox (DELFIN's own, caged tool loop): the CLI default would be
+    # refused by the policy. An empty value (effort) means the model
+    # profile's default. permission_profile all_free is the tab's "Bypass".
+    local agent_conf="$HOME/.config/delfin/pi-agent.conf"
+    if [[ ! -f "$agent_conf" ]]; then
+        mkdir -p "$HOME/.config/delfin"
+        printf '%s\n' "# Agent tab defaults on this box (key=value). Applied by pi_install.sh on every deploy." \
+            "# mode: solo = Code; permission_profile: ask_all | repo_free | all_free (= Bypass)." \
+            "# effort empty = the model profile's default." \
+            "mode=solo" "provider=kit" "model=kit.glm-5.3-flash" \
+            "permission_profile=all_free" "effort=" > "$agent_conf"
+    fi
+    env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$agent_conf" <<'EOF' || echo "warning: could not apply $agent_conf" >&2
+import sys
+from delfin.user_settings import load_settings, save_settings
+KEYS = ("mode", "provider", "model", "permission_profile", "effort")
+wanted = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, _, value = (part.strip() for part in line.partition("="))
+    if key not in KEYS:
+        print(f"warning: pi-agent.conf: unknown key {key!r}", file=sys.stderr)
+        continue
+    wanted[key] = value or None
+settings = load_settings()
+agent = settings.setdefault("agent", {})
+changed = {k: v for k, v in wanted.items() if agent.get(k) != v}
+if changed:
+    agent.update(changed)
     save_settings(settings)
-    print("==> default provider: kit (kit.deepseek-v4-flash)")
+print("==> agent defaults: " + " ".join(f"{k}={wanted[k] or '(profile default)'}" for k in KEYS if k in wanted))
 EOF
     [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
         || echo "warning: clone of $DELFIN_GIT_URL failed" >&2
@@ -177,11 +204,22 @@ EOF
             > "$HOME/.config/delfin/launcher-people.conf"
         echo "==> launcher people mode on (~/people/<name>; overview: delfin-people)"
     fi
+    # Keep session is this box's default for the Windows launcher: a
+    # dashboard (and the agent working in it) survives a disconnect, whatever
+    # the app's checkbox says; Ctrl+C in the SSH window still stops it.
+    # DELFIN_PI_KEEP=0 leaves the choice to the app.
+    if [[ "${DELFIN_PI_KEEP:-1}" == "1" && ! -f "$HOME/.config/delfin/launcher-keep.conf" ]]; then
+        mkdir -p "$HOME/.config/delfin"
+        printf '%s\n' "# Windows launcher: every connection keeps its dashboard (remote_bootstrap.sh)." \
+            > "$HOME/.config/delfin/launcher-keep.conf"
+        echo "==> launcher keep session on by default"
+    fi
     install -D -m 755 "$ROOT/src/scripts/pi/delfin_people.sh" "$HOME/.local/bin/delfin-people"
     # The dashboard tabs this box shows (tab ids, ~/.config/delfin/pi-tabs.conf),
     # applied on every deploy against the tabs the code has now, so a tab a
     # later DELFIN adds stays hidden too. Settings cannot be hidden (fixed).
-    # Through the launcher's people mode every person shares this setting.
+    # The account's file again: everyone's default in the launcher's people
+    # mode, a person's own tab choice stays theirs.
     local tabs_conf="$HOME/.config/delfin/pi-tabs.conf"
     if [[ ! -f "$tabs_conf" ]]; then
         mkdir -p "$HOME/.config/delfin"
@@ -189,7 +227,7 @@ EOF
             "# Applied by pi_install.sh on every deploy. All ids: grep \"'id':\" delfin/dashboard/__init__.py" \
             "agent home archive office" > "$tabs_conf"
     fi
-    "$VENV_PY" - "$tabs_conf" "$ROOT/src/delfin/dashboard/__init__.py" <<'EOF' || echo "warning: could not apply $tabs_conf" >&2
+    env -u DELFIN_SETTINGS_DEFAULTS "$VENV_PY" - "$tabs_conf" "$ROOT/src/delfin/dashboard/__init__.py" <<'EOF' || echo "warning: could not apply $tabs_conf" >&2
 import re, sys
 from delfin.user_settings import load_settings, save_settings
 shown = [w for line in open(sys.argv[1], encoding="utf-8")
@@ -217,14 +255,28 @@ EOF
 }
 
 restart_dashboard() {
-    # Only a running dashboard picks up the new code: `restart` STARTS a
-    # stopped unit, and an admin who stopped it (e.g. until access is
-    # secured) must not have it switched back on by a deploy.
-    if systemctl is-active --quiet delfin-dashboard 2>/dev/null; then
-        sudo -n systemctl restart delfin-dashboard 2>/dev/null \
-            && echo "==> dashboard restarted" || true
-    else
-        echo "==> dashboard not running: left stopped"
+    # Only a running service picks up the new code: `restart` STARTS a
+    # stopped unit, and an admin who stopped one (e.g. until access is
+    # secured) must not have it switched back on by a deploy. The agent
+    # service goes before the messenger bridge that talks to it; running
+    # agent sessions are interrupted (a kept session resumes). A unit the
+    # sudo rule does not cover yet (a box bootstrapped before the rule named
+    # it) is reported with the command an admin runs, never left silent.
+    local unit stale=""
+    for unit in delfin-agent-service delfin-messenger-bridge delfin-messenger-gateway delfin-dashboard; do
+        if ! systemctl cat "$unit" >/dev/null 2>&1; then
+            continue
+        elif ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+            echo "==> $unit not running: left stopped"
+        elif sudo -n systemctl restart "$unit" 2>/dev/null; then
+            echo "==> $unit restarted"
+        else
+            stale+=" $unit"
+        fi
+    done
+    if [[ -n "$stale" ]]; then
+        echo "warning: still on the previous code until an admin runs: sudo systemctl restart$stale" >&2
+        echo "         (once, as the admin, so deploys restart them: re-run pi_bootstrap.sh, AGENT_SUDO=service)" >&2
     fi
 }
 
