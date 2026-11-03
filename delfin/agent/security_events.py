@@ -74,6 +74,7 @@ _KINDS = {
     # why the rung records instead of asking, rather than doing neither.
     "outside_read_bypass": ("👁", "Read outside the roots (Bypass)"),
     "worktree_merge_refused": ("⛔", "Worktree merge refused (a file it writes is not allowed)"),
+    "local_project_init": ("🗂", "Workspace made a local git repository (user's yes)"),
     "approval_timeout": ("⌛", "Approval window expired"),
     # The posture switched to bypass by a person (shift+tab and its
     # confirmation, in the terminal or the window).
