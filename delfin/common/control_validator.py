@@ -965,6 +965,12 @@ class FieldSpec:
     #: CONTROL.txt prints this and then runs on the default, so a question can
     #: be asked without leaving the file and without stopping the run.
     help: str = ""
+    #: What values the key accepts, in one line.  Enum keys say the exact
+    #: tokens their coercer validates ("one of: ..."); free-text keys say what
+    #: shape is expected.  Shown in the Help tab's "Allowed values" column and
+    #: in ``KEY=?`` output.  Empty means "no simpler statement than the help
+    #: text" -- do not leave it empty for a key that has a fixed value set.
+    allowed: str = ""
 
 
 def _as_int(value: Any) -> int:
@@ -2095,13 +2101,18 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
              help="Override the multiplicity used for the pre-optimisation / global-optimisation stage."),
     FieldSpec("PAL", _as_int, default=6,
              help="Total CPU cores for ORCA across the whole run. One pool hands them out: a job that can use more gets more when nothing else is waiting. pal_jobs caps how many jobs run at once."),
+    FieldSpec("maxcore", _as_optional_positive_int, default=4500,
+             help="Memory per core in MB that each ORCA process gets.  Total memory is roughly PAL x maxcore, and the SLURM --mem line is derived from it.  Defaults follow the job type when empty: the manual table says 4500; Fukui-style CLI runs fall back to 3000, ESD input generation to 6000.  Keep below the node's per-core share so PAL x maxcore fits in the allocation.",
+             allowed="positive integer, MB per core (e.g. 1000-6000; must satisfy PAL x maxcore <= node memory)"),
     FieldSpec("smiles_converter", _as_smiles_converter, default="",
-             help="How a SMILES input becomes 3D coordinates: QUICK (one embedding, fast), NORMAL (multi-seed embedding with force-field refinement), MANTA (isomer-conformer ensemble of a metal complex), or the external builders ARCHITECTOR, MOLSIMPLIFY, MACE. Required for a SMILES run."),
+             help="How a SMILES input becomes 3D coordinates: QUICK (one embedding, fast), NORMAL (multi-seed embedding with force-field refinement), MANTA (isomer-conformer ensemble of a metal complex), or the external builders ARCHITECTOR, MOLSIMPLIFY, MACE. Required for a SMILES run.",
+             allowed="one of: QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE (empty = no SMILES input)"),
     # Legacy GUPPY keys.  Kept so an archived CONTROL file still validates --
     # 62 of the 126 archived GUPPY runs were configured through GUPPY=yes -- and
     # each is read as a fallback by its MANTA successor below.
     FieldSpec("GUPPY", _as_yes_no, default="no",
-             help="Legacy spelling: GUPPY=yes means smiles_converter=MANTA. Every MANTA_* key falls back to its GUPPY_* predecessor when the successor is unset."),
+             help="Legacy spelling: GUPPY=yes means smiles_converter=MANTA. Every MANTA_* key falls back to its GUPPY_* predecessor when the successor is unset.",
+             allowed="yes or no"),
     FieldSpec("GUPPY_RUNS", _as_positive_int, default=20,
              help="Legacy GUPPY key, read as a fallback by MANTA_SEEDS."),
     FieldSpec("GUPPY_GOAT", _as_guppy_goat_topk, default=0,
@@ -2120,7 +2131,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
              help="Legacy GUPPY key, read as a fallback by MANTA_ENERGY_WINDOW."),
     # MANTA: the builder.
     FieldSpec("MANTA_QUALITY", _as_manta_quality, default="extreme",
-             help="How hard the builder searches: fast (12 seeds), normal (20), max (40), extreme (60). Seeds are independent placement attempts per coordination geometry; more of them find isomers the smaller counts miss, at close to linear cost. extreme is what the delfin-manta command line uses by default."),
+             help="How hard the builder searches: fast (12 seeds), normal (20), max (40), extreme (60). Seeds are independent placement attempts per coordination geometry; more of them find isomers the smaller counts miss, at close to linear cost. extreme is what the delfin-manta command line uses by default.",
+             allowed="one of: fast, normal, max, extreme (seed counts 12/20/40/60; default extreme)"),
     FieldSpec("MANTA_SEEDS", _as_optional_positive_int, default="",
              help="Override the seed count from MANTA_QUALITY with an explicit number. Empty means the profile decides."),
     FieldSpec("MANTA_NUM_CONFS", _as_optional_positive_int, default="",
@@ -2130,7 +2142,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("MANTA_MAX_ISOMERS", _as_int, default=0,
              help="Cap on the isomers built. This shrinks the search, not just the answer: the pre-UFF candidate budget is MANTA_MAX_ISOMERS x cap_mult, so a small number means fewer candidates were ever considered. 0 means no cap: every isomer the builder realises is kept."),
     FieldSpec("MANTA_BINDING_MODES", _as_yes_no, default="yes",
-             help="Enumerate the ways a ligand can bind (which donor atoms face the metal), not only where the ligands sit."),
+             help="Enumerate the ways a ligand can bind (which donor atoms face the metal), not only where the ligands sit.",
+             allowed="yes or no"),
     FieldSpec("MANTA_HAPTO", _as_manta_hapto, default="auto",
              help="Hapticity handling for pi-bound ligands: auto, on, or off."),
     FieldSpec("MANTA_UFF", _as_yes_no, default="yes",
@@ -2216,7 +2229,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     # value of True or 1 read as "off" at every call site that compares to the
     # string "yes"; _as_yes_no normalises those instead of rejecting them.
     FieldSpec("global_optimizer", _as_global_optimizer, default="",
-             help="Global conformer search on the input structure: GOAT or CREST. Replaces the older yes/no pair XTB_GOAT / CREST; none (or empty) means no global search."),
+             help="Global conformer search on the input structure: GOAT or CREST. Replaces the older yes/no pair XTB_GOAT / CREST; none (or empty) means no global search.",
+             allowed="one of: GOAT, CREST, none (empty / no / off / 0 = no global search)"),
     FieldSpec("XTB_OPT", _as_yes_no, default="no",
              help="Run an xTB geometry optimisation before DFT. Written XTB_preOPT in the CONTROL file; the older spelling is still accepted."),
     FieldSpec("XTB_GOAT", _as_yes_no, default="no",
@@ -2260,7 +2274,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("IMAG_sp_energy_window", _as_imag_sp_energy_window, default=1e-5,
              help="How far (Hartree) a displaced single point must lie below a single point at the saddle to be taken: a noise floor. Which imaginary modes are worth removing at all is allow_imaginary_freq's question. The old template value 1e-3 is read as 1e-5."),
     FieldSpec("IMAG_option", _as_imag_option, default=2,
-             help="How OCCUPIER schedules its IMAG jobs: 1 (loose) or 2 (default, the OCCUPIER stage waits for the IMAG refinement it relies on)."),
+             help="How OCCUPIER schedules its IMAG jobs: 1 (loose) or 2 (default, the OCCUPIER stage waits for the IMAG refinement it relies on).",
+             allowed="1 or 2 (1 = displacement only, 2 = full round schedule; default 2)"),
     FieldSpec("IMAG_max_rounds", _as_positive_int, default=2,
              help="Most IMAG rounds per structure. One round: single points on both sides of the imaginary mode, then one re-optimisation with frequencies from the lower side -- a frequency calculation each. A structure still at a saddle afterwards is reported, and an ESD rate that would need it is not computed."),
     FieldSpec("allow_imaginary_freq", _as_imag_noise_floor, default=_IMAG_NOISE_FLOOR,
@@ -2282,9 +2297,11 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("co2_species_delta", _as_int, default=0,
              help="Which redox state the CO2 workflow works from, as a delta to the input charge: 0 (initial), +1 (ox_step_1), -2 (red_step_2), ..."),
     FieldSpec("ESD_modus", _as_esd_modus, default="tddft",
-             help="Method of the excited-state dynamics module (ESD_modul=yes): TDDFT, deltaSCF, or hybrid1."),
+             help="Method of the excited-state dynamics module (ESD_modul=yes): TDDFT, deltaSCF, or hybrid1.",
+             allowed="one of: TDDFT, deltaSCF, hybrid1"),
     FieldSpec("ESD_T1_opt", _as_esd_t1_opt, default="uks",
-             help="How the T1 state is optimised in the ESD module: uks (broken-symmetry DFT) or tddft."),
+             help="How the T1 state is optimised in the ESD module: uks (broken-symmetry DFT) or tddft.",
+             allowed="one of: uks, tddft"),
     # TD-DFT: every %tddft block DELFIN writes reads these through
     # delfin.common.tddft_settings.  ESD_nroots, ESD_maxdim, ESD_SOC and
     # TDDFT_TDDFT_maxiter are aliases of the names below (delfin.config).
@@ -2311,7 +2328,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("ISCs", _as_iscs, default="",
              help="Intersystem-crossing rates to compute, as spin-changing transitions: e.g. S1>T1, T1>S1."),
     FieldSpec("emission_rates", _as_emission_rates, default="",
-             help="Which emission rates to compute: f (fluorescence), p (phosphorescence), or f,p."),
+             help="Which emission rates to compute: f (fluorescence), p (phosphorescence), or f,p.",
+             allowed="one or both of: f (fluorescence), p (phosphorescence), space or comma separated"),
     FieldSpec("states", _as_states, default="",
              help="Electronic states the ESD module computes, e.g. S1,T1,S2,T2 (S1-S6, T1-T6). A listed S0 is dropped: S0 is always computed."),
     # xTB Hyperpolarizability
@@ -2322,7 +2340,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("hyperpol_xTB_preopt", _as_preopt_mode, default="none",
              help="Pre-optimisation before the response calculation: none (default), xtb, crest, or goat."),
     FieldSpec("hyperpol_xTB_engine", _as_response_engine, default="std2",
-             help="xTB response engine: std2 (sTD2, default) or stda (sTDA)."),
+             help="xTB response engine: std2 (sTD2, default) or stda (sTDA).",
+             allowed="one of: std2, stda (default std2)"),
     FieldSpec("hyperpol_xTB_bfw", _as_yes_no, default="no",
              help="Bandwidth-filtered weights (-BFW) for the xTB response calculation."),
     FieldSpec("hyperpol_xTB_wavelengths", _as_str, default="1064",

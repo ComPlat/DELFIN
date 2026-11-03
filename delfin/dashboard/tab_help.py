@@ -299,18 +299,20 @@ def _key_to_group() -> dict[str, str]:
     return used
 
 
-def _key_rows() -> list[tuple[str, str, str, str]]:
-    """One row per CONTROL key: (name, default, required, help)."""
+def _key_rows() -> list[tuple[str, str, str, str, str]]:
+    """One row per CONTROL key: (name, default, required, help, allowed)."""
     from delfin.common.control_validator import CONTROL_FIELD_SPECS
 
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str]] = []
     for spec in CONTROL_FIELD_SPECS:
         help_text = (spec.help or "").strip()
         if not help_text:
             help_text = "<i style='color:#b00'>no explanation yet — ask the agent or write KEY=?</i>"
         default = "" if spec.default is None else str(spec.default)
+        allowed = (getattr(spec, "allowed", "") or "").strip()
         rows.append(
-            (spec.name, default, "yes" if spec.required else "", help_text)
+            (spec.name, default, "yes" if spec.required else "", help_text,
+             allowed)
         )
     return sorted(rows, key=lambda r: r[0].lower())
 
@@ -348,6 +350,7 @@ def _key_reference_block(
 
     state: dict[str, Any] = {"rows": _key_rows(), "query": ""}
     used_in = _key_to_group()
+    allowed_of = {row[0]: row[4] for row in state["rows"]}
 
     head = W.HTML(
         "<div style='display:flex; gap:12px; padding:4px 0; "
@@ -355,6 +358,7 @@ def _key_reference_block(
         "<div style='flex:0 0 220px'>Key</div>"
         "<div style='flex:0 0 90px'>Default</div>"
         "<div style='flex:0 0 70px'>Required</div>"
+        "<div style='flex:0 0 260px'>Allowed values</div>"
         "<div style='flex:1'>What it does</div>"
         "<div style='flex:0 0 170px'>Used in</div>"
         "</div>"
@@ -362,7 +366,7 @@ def _key_reference_block(
 
     out = W.VBox()
 
-    groups: dict[str, list[tuple[str, str, str, str]]] = {}
+    groups: dict[str, list[tuple[str, str, str, str, str]]] = {}
     for row in state["rows"]:
         groups.setdefault(_group_of(row[0]), []).append(row)
     group_names = sorted(groups)
@@ -406,8 +410,10 @@ def _key_reference_block(
                 f"<b>{esc(group)}</b></div>"
             )
             children.append(group_header)
-            for name, default, required, help_text in groups[group]:
-                if query and query not in name.lower() and query not in help_text.lower():
+            for name, default, required, help_text, allowed in groups[group]:
+                if query and query not in name.lower() \
+                        and query not in help_text.lower() \
+                        and query not in allowed.lower():
                     continue
                 shown += 1
                 used_group = used_in.get(name, "")
@@ -434,7 +440,7 @@ def _key_reference_block(
                     [
                         W.HTML(
                             f"<div style='flex:0 0 220px'><code "
-                            f"title='{esc(help_text, quote=True)}'>"
+                            f"title='{esc((help_text + ' Allowed: ' + allowed).strip(), quote=True)}'>"
                             f"{esc(name)}</code></div>"
                         ),
                         W.HTML(
@@ -442,6 +448,10 @@ def _key_reference_block(
                         ),
                         W.HTML(
                             f"<div style='flex:0 0 70px'>{esc(required)}</div>"
+                        ),
+                        W.HTML(
+                            f"<div style='flex:0 0 260px; color:#555; "
+                            f"font-size:12px'>{esc(allowed)}</div>"
                         ),
                         W.HTML(f"<div style='flex:1'>{help_text}</div>"),
                         used_slot,
