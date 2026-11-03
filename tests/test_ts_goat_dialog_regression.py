@@ -498,7 +498,6 @@ def test_compact_ts_goat_panel_hides_details_by_default(tmp_path):
     titles = [a.get_title(0) for a in accordions]
     assert titles == [
         'Edit atom indices',
-        'Advanced settings',
         'Generated ORCA input',
         'Analysis & source files',
     ]
@@ -536,7 +535,11 @@ def test_ts_goat_playback_uses_validated_frames_and_distinct_pause_reset():
     boot = ts_goat_viewer_bootstrap_js('viewer')
     assert 'viewer.__tsGoatFrameCount = payload.frame_count' in boot
     assert '0xff6d00' not in boot
-    assert 'opacity: 0.20' in boot
+    # Separate GL shapes preserve normal atomic CPK colours.
+    assert 'viewer.__tsGoatUpdateHighlights' in boot
+    assert 'viewer.removeAllShapes()' in boot
+    assert 'opacity:0.12' in boot
+    assert 'viewer.addStyle({serial: serial}' not in boot
     play = ts_goat_viewer_frames_js('viewer', True)
     pause = ts_goat_viewer_frames_js('viewer', 'pause')
     reset = ts_goat_viewer_frames_js('viewer', False)
@@ -649,3 +652,91 @@ def test_ts_goat_column_ratio_favors_viewer():
     left, right = box.children[1].children
     assert left.layout.flex == '0 1 35%'
     assert right.layout.flex == '1 1 63%'
+
+
+def test_ts_goat_methods_and_resources_are_visible(tmp_path):
+    """Method selection is validated and resource settings do not hide."""
+    from ipywidgets import Dropdown, IntText, Text
+
+    result, _ = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    panel = result['registry']['panel']
+    left = panel.children[0].children[1].children[0]
+    visible = list(_iter_widgets(left))
+    methods = [w for w in visible if isinstance(w, Dropdown)
+               and w.description == 'Method:']
+    assert len(methods) == 1
+    method = methods[0]
+    values = [value for _label, value in method.options]
+    assert 'XTB' in values
+    assert 'XTB2' in values
+    assert 'r2SCAN-3c' in values
+    assert 'B3LYP' in values
+    assert method.value == 'XTB'
+
+    cores = [w for w in visible
+             if isinstance(w, IntText) and w.description == 'Cores:']
+    memory = [w for w in visible
+              if isinstance(w, IntText) and w.description == 'MB/core:']
+    times = [w for w in visible
+             if isinstance(w, Text) and w.description == 'SLURM time:']
+    basis = [w for w in visible
+             if isinstance(w, Text) and w.description == 'Basis:']
+    assert len(cores) == len(memory) == len(times) == len(basis) == 1
+    assert basis[0].layout.display == 'none'
+    assert not cores[0].disabled and not memory[0].disabled
+    assert not times[0].disabled
+
+    method.value = 'B3LYP'
+    assert basis[0].layout.display == 'block'
+    assert basis[0].value == 'def2-SVP'
+    method.value = 'r2SCAN-3c'
+    assert basis[0].layout.display == 'none'
+    assert basis[0].value == ''
+    method.value = 'XTB'
+    assert basis[0].layout.display == 'none'
+
+
+def test_ts_goat_analysis_is_scrollable_and_accordion_narrow(tmp_path):
+    """Long contact reports remain accessible without growing off-screen."""
+    from ipywidgets import Accordion, VBox
+
+    result, _ = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    left = result['registry']['panel'].children[0].children[1].children[0]
+    sections = [w for w in left.children if isinstance(w, Accordion)]
+    assert len(sections) == 3
+    assert all(a.layout.width == '94%' for a in sections)
+    assert all(a.selected_index is None for a in sections)
+    detail = next(a for a in sections
+                  if a.get_title(0) == 'Analysis & source files')
+    scroller = detail.children[0]
+    assert isinstance(scroller, VBox)
+    assert scroller.layout.max_height == '235px'
+    assert scroller.layout.overflow_y == 'auto'
+
+
+def test_ts_goat_displacement_arrows_control_removed(tmp_path):
+    """Removed unused arrows and duplicate mode buttons, retaining Play."""
+    from ipywidgets import Button, Checkbox, ToggleButton
+
+    result, _ = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    panel = result['registry']['panel']
+    buttons = [w for w in _iter_widgets(panel)
+               if isinstance(w, Button)]
+    assert any(w.description == '▶ Play' for w in buttons)
+    assert not any('Generate / Load Mode' in w.description for w in buttons)
+    assert not any(
+        isinstance(w, (Checkbox, ToggleButton)) and
+        'Displacement' in w.description
+        for w in _iter_widgets(panel)
+    )
+
+
+def test_ts_goat_selected_halos_update_with_frames():
+    """Selection markers follow every vibration frame, not the old XYZ."""
+    from delfin.dashboard.molecule_viewer import ts_goat_viewer_frames_js
+    js = ts_goat_viewer_frames_js('viewer', True)
+    assert 'viewer.__tsGoatUpdateHighlights()' in js
+    assert 'viewer.setFrame(frame)' in js
