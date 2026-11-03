@@ -29,7 +29,11 @@ import pytest
 from delfin.api import parse_orca_output
 from delfin.tools.orca_out_index import orca_out_index, orca_out_section
 
-FIXTURE = Path("tests/fixtures/orca611/rc1_butane_scan_r2scan3c")
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from test_lc1_fixtures_helper import lc1_fixture_dir
+
+FIXTURE = lc1_fixture_dir("tests/fixtures/orca611/rc1_butane_scan_r2scan3c")
 
 KCAL = 627.5094740631  # Eh -> kcal/mol (CODATA, the factor ORCA tables use)
 
@@ -59,7 +63,7 @@ def test_fixture_folder_is_committed():
     committed); this one makes the missing state a visible failure so the
     red-before/green-after control is real.
     """
-    assert FIXTURE.is_dir(), "RC1 fixture folder not committed yet"
+    assert FIXTURE.is_dir(), "RC1 fixture available (repo or private store)"
     assert (FIXTURE / "rc1_butane_scan_r2scan3c.inp").is_file()
     assert (FIXTURE / "PROVENANCE.md").is_file()
 

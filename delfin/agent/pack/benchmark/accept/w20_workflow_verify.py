@@ -16,7 +16,10 @@ Checks per task id:
     trap text's first keyword must appear).
   * geometry claims come with a frequency count (minimum tasks).
 
-usage: w20_workflow_verify.py <workspace> <task_id>
+usage: w20_workflow_verify.py <workspace> [<task_id>]
+Without a task id (the runner's form, benchmark_runner.py:1349) the
+task folder is the one under the workspace that holds a result.json;
+ambiguous when several do.
 Exit 0 = accepted, 1 = failed, 2 = usage error.
 """
 
@@ -43,18 +46,43 @@ def _fail(msg: str) -> None:
     sys.exit(1)
 
 
+def _resolve_task(ws: Path, task_id: str | None) -> tuple[Path, str]:
+    """The task folder and id, given the runner's one-argument form.
+
+    benchmark_runner.run_acceptance (benchmark_runner.py:1349) launches
+    this script with the workspace as the ONLY argument. The setup
+    (setup/w20_rest.py, setup/w20_classic_opt_freq.py) pre-creates one
+    folder per task with only start.xyz/brief.txt; the attempt writes
+    deliverables (result.json, answer.txt, ...) only where the agent
+    worked. So with no task id, the folder that holds a deliverable IS
+    the task. Kept for the two-argument form (extend, never lose).
+    """
+    if task_id is not None:
+        if task_id not in TASKS:
+            _fail(f"unknown task id {task_id}")
+        return ws / task_id, task_id
+    candidates = sorted(
+        p.parent for p in ws.rglob("result.json")
+        if p.parent.name in TASKS)
+    if not candidates:
+        _fail("no task folder in the workspace holds a result.json -- "
+              "nothing to grade")
+    if len(candidates) > 1:
+        names = ", ".join(c.name for c in candidates)
+        _fail(f"several task folders hold deliverables ({names}) -- "
+              "ambiguous without a task id")
+    return candidates[0], candidates[0].name
+
+
 def main(argv: list[str]) -> None:
-    if len(argv) != 3:
-        print("usage: w20_workflow_verify.py <workspace> <task_id>",
+    if len(argv) < 2 or len(argv) > 3:
+        print("usage: w20_workflow_verify.py <workspace> [<task_id>]",
               file=sys.stderr)
         sys.exit(2)
     ws = Path(argv[1])
-    task_id = argv[2]
-    if task_id not in TASKS:
-        _fail(f"unknown task id {task_id}")
+    task_id = argv[2] if len(argv) == 3 else None
+    d, task_id = _resolve_task(ws, task_id)
     required, trap_key = TASKS[task_id]
-
-    d = ws / task_id
     if not d.is_dir():
         _fail(f"{d} missing")
     rj = d / "result.json"

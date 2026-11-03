@@ -15,6 +15,20 @@ Spin-state comparisons run through DELFIN's OCCUPIER workflow (CONTROL
 `OCCUPIER=auto` or the typed concept `occupier`; template
 `delfin/tools/templates/_occupier.py`, entry point `occupier_stages`,
 engine `delfin/occupier.py`).
+
+The existing-workflow-first order applies here too: (a) OCCUPIER *is*
+the existing workflow for spin-state questions — the ranking tool
+`workflow_candidates(task_text)` names it with its CONTROL keys, use it;
+(b) a missing step (e.g. a following single point at a larger basis) is
+added as an extension, not a replacement; (c) composing an ad-hoc ORCA
+input sequence instead of OCCUPIER is reserved for requests nothing fits.
+
+**Before starting a run: propose the CONTROL, then confirm.** The agent
+researches the system (charge states, candidate multiplicities, metal
+basis need — see `metal_basis` / `NewGTO` handling in occupier.py:174-296),
+writes the proposed CONTROL keys with one-line reasons, shows them to the
+user, and starts OCCUPIER only after the user confirms. Never launch a
+spin-state scan from an unconfirmed CONTROL.
 What the workflow does:
 
 - **Staged relaxation (FoB)**: the structure relaxes through fraction-
@@ -32,6 +46,24 @@ What the workflow does:
   in delfin/bs_evolution.py. OCCUPIER scratch folders
   (`ox_step_*_OCCUPIER`, `red_step_*_OCCUPIER`, `initial_OCCUPIER`)
   are cleaned by delfin/cleanup.py:44-47.
+
+### Broken-symmetry inputs: site order is not free
+
+When OCCUPIER writes `%scf BrokenSym NA,NB` (delfin/occupier.py:1315-1319,
+`broken_sym` comes from the `BS` key of the sequence entry), the ORCA
+manual (6.1.1, §5.27) requires: **"site A" — the FIRST number — must be
+the site with the LARGER number of unpaired electrons.** A `BrokenSym 1,2`
+where site A holds 1 unpaired electron and site B holds 2 does not do what
+the input says; it reconverges from a high-spin start built on the wrong
+site. Check the atom order of the coordinates in the .inp: site A is
+whatever the first listed metal center is. If the two centers carry equal
+numbers, order does not matter.
+For the `FlipSpin`/`FinalMs` mechanism (manual §5.27) the atom list counts
+from **0**, and `FinalMs` MUST be given — ORCA cannot determine it itself.
+Exchange couplings J from HS/BS pairs: use the Yamaguchi form
+(Eq. 5.167, `J = -(E_HS - E_BS)/(<S²>HS - <S²>BS)`), which ORCA's manual
+prefers as approximately valid over the whole coupling regime; report
+<S²> of both solutions with it.
 
 ## What to report
 

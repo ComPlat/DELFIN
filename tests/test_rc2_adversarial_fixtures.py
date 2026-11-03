@@ -13,7 +13,17 @@ when tests/fixtures/orca611/rc2_*/ carry files that satisfy the contract.
 import re
 from pathlib import Path
 
-FIXTURES = Path(__file__).parent / "fixtures" / "orca611"
+import pytest
+
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from test_lc1_fixtures_helper import lc1_fixture_dir
+
+
+def _fixtures(name: str):
+    """The specific orca611 subfolder: legacy path while its files are
+    committed, else the private store (skip without the env var)."""
+    return lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
 
 #: name -> (charge, multiplicity, n_atoms, element counts that decide the
 #: electron count) -- the physics contract of the package task.
@@ -31,7 +41,7 @@ Z = {"H": 1, "C": 6, "N": 7, "O": 8, "Fe": 26, "Cu": 29, "Ru": 44}
 
 
 def _inp_text(name: str) -> str:
-    p = FIXTURES / name / f"{name}.inp"
+    p = _fixtures(name) / f"{name}.inp"
     if not p.is_file():
         pytest_fail = f"fixture not yet committed: {p}"
         raise AssertionError(pytest_fail)
@@ -90,7 +100,7 @@ def test_rc2_out_carries_the_blocks_a_real_run_needs():
     guards the identity hygiene: the banner host must be the placeholder.
     """
     for name in SYSTEMS:
-        p = FIXTURES / name / f"{name}.out"
+        p = _fixtures(name) / f"{name}.out"
         if not p.is_file():
             raise AssertionError(f"fixture not yet committed: {p}")
         text = p.read_text(encoding="utf-8", errors="replace")
@@ -119,11 +129,11 @@ def test_rc2_provenance_documents_the_run():
     RuO4 must name the reason (r2SCAN-3c/def2-ECP covers scalar relativity
     for 4d; no ZORA stacked)."""
     for name in SYSTEMS:
-        p = FIXTURES / name / "PROVENANCE.md"
+        p = _fixtures(name) / "PROVENANCE.md"
         if not p.is_file():
             raise AssertionError(f"fixture not yet committed: {p}")
         text = p.read_text(encoding="utf-8", errors="replace")
-        out_text = (FIXTURES / name / f"{name}.out").read_text(
+        out_text = (_fixtures(name) / f"{name}.out").read_text(
             encoding="utf-8", errors="replace")
         # Field casing varies between the files ("Core-hours:"/"CPU
         # Efficiency" vs "core-hours"/"CPU efficiency"); the substance is

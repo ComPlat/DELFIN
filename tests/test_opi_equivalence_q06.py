@@ -32,7 +32,13 @@ from delfin import fukui as delfin_fukui
 opi = pytest.importorskip("opi")
 from opi.output.core import Output  # noqa: E402
 
-FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from test_lc1_fixtures_helper import lc1_fixture_dir as _lc1_fixture_dir  # noqa: E402, F401
+
+
+def _fixture(name: str) -> Path:
+    return _lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
 
 RUNS = ("h2o_optfreq", "o2_triplet", "h2o_tddft", "scf_not_converged")
 
@@ -47,7 +53,7 @@ def _opi(out_dir: Path, name: str) -> "Output":
     work = Path(out_dir) / name
     if work.exists():
         shutil.rmtree(work)
-    shutil.copytree(FIXTURES / name, work)
+    shutil.copytree(_fixture(name), work)
     out = Output(basename=name, working_dir=work)
     # The fixtures carry the committed <name>.json and <name>.property.json,
     # so parse() reads them and never invokes orca_2json (CI has no ORCA).
@@ -103,7 +109,7 @@ def test_closed_shell_gap_matches_delfin(tmp_path, name):
     out = _opi(tmp_path, name)
     assert out.scf_converged() is True
     assert out.terminated_normally() is True
-    d = delfin_api.extract_orbital_energies(str(FIXTURES / name))
+    d = delfin_api.extract_orbital_energies(str(_fixture(name)))
     assert d.error is None
     opi_eh = _opi_gap_eh(out)
     assert opi_eh is not None
@@ -126,7 +132,7 @@ def test_open_shell_gap_delfin_overestimates_o2(tmp_path):
     """
     out = _opi(tmp_path, "o2_triplet")
     assert out.scf_converged() is True
-    d = delfin_api.extract_orbital_energies(str(FIXTURES / "o2_triplet"))
+    d = delfin_api.extract_orbital_energies(str(_fixture("o2_triplet")))
     assert d.error is None
     opi_ev = _opi_hl_gap_ev(out)
     # DELFIN alpha-only gap is the wrong value ...
@@ -169,14 +175,14 @@ def test_charges_delfin_api_broken_fukui_and_opi_agree(tmp_path, name, label):
         if label == "MULLIKEN"
         else delfin_api.extract_loewdin_charges
     )
-    ap = api_fn(str(FIXTURES / name))
+    ap = api_fn(str(_fixture(name)))
     # DELFIN api reader returns no atomic rows (the bug).
     assert ap.atoms == []
     assert ap.error and "no atomic rows" in ap.error
 
     # fukui's anchored reader gives the value OPI gives.
     symbols, charges = delfin_fukui.read_atoms_and_charges(
-        FIXTURES / name / f"{name}.out", label.lower()
+        _fixture(name) / f"{name}.out", label.lower()
     )
     assert len(charges) == len(opi_charges)
     for cdel, copi in zip(charges, opi_charges):
@@ -194,7 +200,7 @@ def test_dipole_matches_delfin(tmp_path, name):
     out = _opi(tmp_path, name)
     opi_mag = _opi_dipole_mag_au(out)
     assert opi_mag is not None
-    d = delfin_api.extract_dipole(str(FIXTURES / name))
+    d = delfin_api.extract_dipole(str(_fixture(name)))
     assert d.error is None
     assert abs(d.magnitude_au - opi_mag) < DIPOLE_ATOL
     # DELFIN's Debye magnitude is read from ORCA's own 'Magnitude (Debye)'
@@ -215,9 +221,9 @@ def test_not_converged_behaves_sensibly(tmp_path):
     assert out.scf_converged() is False
 
     # DELFIN text reader: no orbital/charge/dipole blocks at all.
-    d = delfin_api.extract_orbital_energies(str(FIXTURES / "scf_not_converged"))
+    d = delfin_api.extract_orbital_energies(str(_fixture("scf_not_converged")))
     assert d.gap_ev is None and d.error is not None
-    dm = delfin_api.extract_dipole(str(FIXTURES / "scf_not_converged"))
+    dm = delfin_api.extract_dipole(str(_fixture("scf_not_converged")))
     assert dm.magnitude_au is None and dm.error is not None
 
     # OPI still returns a gap from the unconverged orbitals, but the run

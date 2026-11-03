@@ -299,7 +299,11 @@ def check(spec: dict, workspace: str, previous: str | None) -> tuple[str, bool, 
         from delfin import scheduler_client
         answer = _ask_scheduler(argv, workspace)
         if answer is scheduler_client.THROTTLED:
-            return previous or "", False, ""
+            # Not asked this look. Return the previous state unchanged
+            # (None stays None): storing "" here would make the next real
+            # look fire "output changed" on output that did not change,
+            # because "" is never equal to an output hash.
+            return previous, False, ""
         out = str(answer or "")[:OUTPUT_LIMIT]
     else:
         out = _run(argv, workspace)

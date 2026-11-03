@@ -1,0 +1,1233 @@
+{
+  "version": "1.0.0",
+  "generated": "2026-10-30",
+  "scope": "DELFIN workflow writers (classic, ESD jobs, occupier, imag, builder)",
+  "probe_note": "verdict=accepted/rejected from delfin.orca_knowledge.probe on ORCA 6.1.1; block options exercised via the containing block; unavailable=no binary",
+  "records": {
+    "RKS": {
+      "key": "RKS",
+      "kind": "simple_keyword",
+      "purpose": "Restricted Kohn-Sham reference: all electrons paired, closed-shell many-body wavefunction.",
+      "manual": "modelchemistries/DensityFunctionalTheory.txt",
+      "control": "reference via method",
+      "opi": "opi.input.simple_keywords.task / dft",
+      "workflows": [
+        "classic",
+        "esd",
+        "esd isc/ic",
+        "occupier"
+      ],
+      "source": "delfin/xyz_io.py:520",
+      "probe": "accepted"
+    },
+    "UKS": {
+      "key": "UKS",
+      "kind": "simple_keyword",
+      "purpose": "Unrestricted Kohn-Sham reference: alpha and beta spin orbitals differ, enables open-shell / spin polarization.",
+      "manual": "modelchemistries/DensityFunctionalTheory.txt",
+      "control": "reference via method",
+      "opi": "opi.input.simple_keywords.task / dft",
+      "workflows": [
+        "esd",
+        "esd isc/ic"
+      ],
+      "source": "delfin/xyz_io.py:520",
+      "probe": "accepted"
+    },
+    "ZORA": {
+      "key": "ZORA",
+      "kind": "simple_keyword",
+      "purpose": "Zero-Order Regular Approximation scalar-relativistic Hamiltonian (needs a ZORA/def2 basis pair).",
+      "manual": "essentialelements/relativistic.txt",
+      "control": "relativity",
+      "opi": "opi.input.simple_keywords.relativistic_correction",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "X2C": {
+      "key": "X2C",
+      "kind": "simple_keyword",
+      "purpose": "Exact two-component relativistic Hamiltonian (scalar via X2C), used with all-electron SARC/x2c bases.",
+      "manual": "essentialelements/relativistic.txt",
+      "control": "relativity",
+      "opi": "opi.input.simple_keywords.relativistic_correction",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "DKH": {
+      "key": "DKH",
+      "kind": "simple_keyword",
+      "purpose": "Douglas-Kroll-Hess 2nd-order scalar-relativistic Hamiltonian.",
+      "manual": "essentialelements/relativistic.txt",
+      "control": "relativity",
+      "opi": "opi.input.simple_keywords.relativistic_correction",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "D2": {
+      "key": "D2",
+      "kind": "simple_keyword",
+      "purpose": "Grimme D2 empirical dispersion correction.",
+      "manual": "modelchemistries/dispersioncorrections.txt",
+      "control": "disp_corr",
+      "opi": "opi.input.simple_keywords.dispersion_correction",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "D3": {
+      "key": "D3",
+      "kind": "simple_keyword",
+      "purpose": "Grimme D3 dispersion correction with zero damping (original).",
+      "manual": "modelchemistries/dispersioncorrections.txt",
+      "control": "disp_corr",
+      "opi": "opi.input.simple_keywords.dispersion_correction",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "D3BJ": {
+      "key": "D3BJ",
+      "kind": "simple_keyword",
+      "purpose": "Grimme D3 dispersion with Becke-Johnson damping.",
+      "manual": "modelchemistries/dispersioncorrections.txt",
+      "control": "disp_corr",
+      "opi": "opi.input.simple_keywords.dispersion_correction",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "D4": {
+      "key": "D4",
+      "kind": "simple_keyword",
+      "purpose": "Grimme D4 dispersion correction (default dispersion model in ORCA 6).",
+      "manual": "modelchemistries/dispersioncorrections.txt",
+      "control": "disp_corr",
+      "opi": "opi.input.simple_keywords.dispersion_correction",
+      "workflows": [
+        "classic",
+        "esd",
+        "esd isc/ic"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "RI": {
+      "key": "RI",
+      "kind": "simple_keyword",
+      "purpose": "Resolution-of-the-identity approximation for Coulomb integrals with an automatic auxiliary basis.",
+      "manual": "essentialelements/integralhandling.txt",
+      "control": "ri_jkx",
+      "opi": "opi.input.simple_keywords.approximation",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "RIJCOSX": {
+      "key": "RIJCOSX",
+      "kind": "simple_keyword",
+      "purpose": "RI-J for Coulomb + chain-of-spheres exchange (COSX); default efficient hybrid method.",
+      "manual": "essentialelements/integralhandling.txt",
+      "control": "ri_jkx",
+      "opi": "opi.input.simple_keywords.approximation",
+      "workflows": [
+        "classic",
+        "esd",
+        "esd isc/ic"
+      ],
+      "source": "delfin/xyz_io.py:527",
+      "probe": "accepted"
+    },
+    "RIJK": {
+      "key": "RIJK",
+      "kind": "simple_keyword",
+      "purpose": "RI-J for Coulomb and exchange with auxiliary basis set.",
+      "manual": "essentialelements/integralhandling.txt",
+      "control": "ri_jkx",
+      "opi": "opi.input.simple_keywords.approximation",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py:378 _FAMILIES",
+      "probe": "accepted"
+    },
+    "OPT": {
+      "key": "OPT",
+      "kind": "simple_keyword",
+      "purpose": "Geometry optimization (default: BP; any of OPT..ZOPT levels).",
+      "manual": "structurereactivity/optimizations.txt",
+      "control": "geom_opt / geom_opt_OCCUPIER",
+      "opi": "opi.input.simple_keywords.opt",
+      "workflows": [
+        "classic",
+        "esd",
+        "occupier"
+      ],
+      "source": "delfin/xyz_io.py:533 _build_bang_line",
+      "probe": "accepted"
+    },
+    "ZOPT": {
+      "key": "ZOPT",
+      "kind": "simple_keyword",
+      "purpose": "Zen geometry optimization combining a cheap and an accurate gradient level. Recognized as an opt-level token in DELFIN's keyword-family validator only; ORCA 6.1.1 rejects a bare ZOPT bang-line token (no such keyword documented).",
+      "manual": "structurereactivity/optimizations.txt",
+      "control": "geom_opt / geom_opt_OCCUPIER",
+      "opi": "opi.input.simple_keywords.opt",
+      "workflows": [
+        "(keyword-family validator only; not emitted by a writer)"
+      ],
+      "source": "delfin/common/orca_input.py _FAMILIES:388",
+      "probe": "rejected"
+    },
+    "FREQ": {
+      "key": "FREQ",
+      "kind": "simple_keyword",
+      "purpose": "Analytic (or default) harmonic vibrational frequency calculation.",
+      "manual": "structurereactivity/frequencies.txt",
+      "control": "freq_type",
+      "opi": "opi.input.simple_keywords.task",
+      "workflows": [
+        "classic",
+        "esd",
+        "esd isc"
+      ],
+      "source": "delfin/xyz_io.py:534 _build_bang_line",
+      "probe": "accepted"
+    },
+    "NUMFREQ": {
+      "key": "NUMFREQ",
+      "kind": "simple_keyword",
+      "purpose": "Numerical harmonic vibrational frequency calculation (needed when no analytic gradient exists).",
+      "manual": "structurereactivity/frequencies.txt",
+      "control": "freq_type",
+      "opi": "opi.input.simple_keywords.task",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/xyz_io.py:534 _build_bang_line",
+      "probe": "accepted"
+    },
+    "PMODEL": {
+      "key": "PMODEL",
+      "kind": "simple_keyword",
+      "purpose": "P Model guess: superposition of atomic densities (recommended default guess).",
+      "manual": "essentialelements/initialguess.txt",
+      "control": "initial_guess",
+      "opi": "opi.input.simple_keywords.task",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py _FAMILIES",
+      "probe": "accepted"
+    },
+    "PATOM": {
+      "key": "PATOM",
+      "kind": "simple_keyword",
+      "purpose": "Atomic density superposition guess (legacy default).",
+      "manual": "essentialelements/initialguess.txt",
+      "control": "initial_guess",
+      "opi": "opi.input.simple_keywords.task",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py _FAMILIES",
+      "probe": "accepted"
+    },
+    "HUECKEL": {
+      "key": "HUECKEL",
+      "kind": "simple_keyword",
+      "purpose": "Extended Hueckel guess (occasionally better for transition-metal open-shell systems).",
+      "manual": "essentialelements/initialguess.txt",
+      "control": "initial_guess",
+      "opi": "opi.input.simple_keywords.task",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py _FAMILIES",
+      "probe": "accepted"
+    },
+    "HCORE": {
+      "key": "HCORE",
+      "kind": "simple_keyword",
+      "purpose": "One-electron core Hamiltonian guess.",
+      "manual": "essentialelements/initialguess.txt",
+      "control": "initial_guess",
+      "opi": "opi.input.simple_keywords.task",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_input.py _FAMILIES",
+      "probe": "accepted"
+    },
+    "MOREAD": {
+      "key": "MOREAD",
+      "kind": "simple_keyword",
+      "purpose": "Start from orbitals read from the .gbw file given by %moinp; used by ESD deltaSCF / restart steps.",
+      "manual": "essentialelements/initialguess.txt",
+      "control": "initial_guess",
+      "opi": "opi.input.simple_keywords.task",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1276",
+      "probe": "accepted"
+    },
+    "deltaSCF": {
+      "key": "deltaSCF",
+      "kind": "simple_keyword",
+      "purpose": "Delta-SCF excited states: converge a separate SCF for each occupation/root configuration.",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "ESD_modus / deltaSCF_*",
+      "opi": "opi.input.simple_keywords.task",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1274",
+      "probe": "accepted"
+    },
+    "CPCM": {
+      "key": "CPCM",
+      "kind": "simple_keyword",
+      "purpose": "Conductor-like Polarizable Continuum Model implicit solvation.",
+      "manual": "essentialelements/solvationmodels.txt",
+      "control": "implicit_solvation_model",
+      "opi": "opi.input.simple_keywords.solvation",
+      "workflows": [
+        "classic",
+        "esd",
+        "esd isc/ic"
+      ],
+      "source": "delfin/common/solvation.py:12",
+      "probe": "accepted"
+    },
+    "SMD(solvent)": {
+      "key": "SMD(solvent)",
+      "kind": "simple_keyword",
+      "purpose": "Solvation Model based on Density: implicit solvation with cavitation/dispersion/structure terms. DELFIN writes it as SMD(solvent) on the bang line; a bare SMD token is rejected by ORCA.",
+      "manual": "essentialelements/solvationmodels.txt:68",
+      "control": "implicit_solvation_model",
+      "opi": "opi.input.simple_keywords.solvation",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/solvation.py:12",
+      "probe": "accepted"
+    },
+    "ALPB(solvent)": {
+      "key": "ALPB(solvent)",
+      "kind": "simple_keyword",
+      "purpose": "Analytical Linearized Poisson-Boltzmann solvation (XTB/job only; DELFIN restricts it to XTB* methods). Written as ALPB(solvent); a bare ALPB token is rejected by ORCA.",
+      "manual": "essentialelements/solvationmodels.txt:300",
+      "control": "implicit_solvation_model",
+      "opi": "opi.input.simple_keywords.solvation",
+      "workflows": [
+        "xtb"
+      ],
+      "source": "delfin/common/solvation.py:61",
+      "probe": "accepted"
+    },
+    "ESD(ISC)": {
+      "key": "ESD(ISC)",
+      "kind": "simple_keyword",
+      "purpose": "Excited-state dynamics (ESD): intersystem-crossing rate job between two spin states.",
+      "manual": "spectroscopyproperties/esd.txt:1284",
+      "control": "ESD_*  / ISC pairs",
+      "opi": "opi.input.simple_keywords.esd.Esd",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1918",
+      "probe": "accepted"
+    },
+    "ESD(IC)": {
+      "key": "ESD(IC)",
+      "kind": "simple_keyword",
+      "purpose": "Excited-state dynamics: internal-conversion rate job within one spin manifold.",
+      "manual": "spectroscopyproperties/esd.txt",
+      "control": "ESD_*  / IC pairs",
+      "opi": "opi.input.simple_keywords.esd.Esd",
+      "workflows": [
+        "esd ic"
+      ],
+      "source": "delfin/esd_input_generator.py:2124",
+      "probe": "accepted"
+    },
+    "%pal nprocs": {
+      "key": "%pal nprocs",
+      "kind": "block_option",
+      "block": "pal",
+      "purpose": "Parallelization: number of processes/cores (nprocs) ORCA spreads the job over.",
+      "manual": "essentialelements/parallel.txt",
+      "control": "PAL",
+      "opi": "not in OPI (PAL written as %pal)",
+      "workflows": [
+        "all"
+      ],
+      "source": "delfin/common/orca_blocks.py:20 add_resources",
+      "probe": "finished"
+    },
+    "%maxcore": {
+      "key": "%maxcore",
+      "kind": "block_option",
+      "block": "pal",
+      "purpose": "Memory limit per core in MB that ORCA uses for the calculation.",
+      "manual": "essentialelements/parallel.txt",
+      "control": "maxcore",
+      "opi": "not in OPI (written as %maxcore)",
+      "workflows": [
+        "all"
+      ],
+      "source": "delfin/common/orca_blocks.py:20 add_resources",
+      "probe": "finished"
+    },
+    "%scf maxiter": {
+      "key": "%scf maxiter",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Maximum number of SCF iterations before ORCA gives up.",
+      "manual": "essentialelements/scf.txt:1643",
+      "control": "maxiter / deltaSCF_maxiter",
+      "opi": "opi.input.blocks.block_scf.BlockScf.maxiter",
+      "workflows": [
+        "all"
+      ],
+      "source": "delfin/common/orca_blocks.py:20 add_resources",
+      "probe": "finished"
+    },
+    "%scf BrokenSym": {
+      "key": "%scf BrokenSym",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Broken-symmetry (spin-unrestricted) SCF: specify NA,NB unpaired electrons for a low-spin state.",
+      "manual": "essentialelements/initialguess.txt",
+      "control": "BrokenSym",
+      "opi": "opi.input.blocks.block_scf.BlockScf.brokensym (NumList)",
+      "workflows": [
+        "occupier",
+        "imag"
+      ],
+      "source": "delfin/workflows/engine/occupier.py:624",
+      "probe": "finished"
+    },
+    "%scf DOMOM": {
+      "key": "%scf DOMOM",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Delta-SCF: destroy any original MOs, rebuild occupation from alphaconf/betaconf.",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "deltaSCF_DOMOM",
+      "opi": "opi.input.blocks.block_scf.BlockScf.domom",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1334",
+      "probe": "finished"
+    },
+    "%scf pmom": {
+      "key": "%scf pmom",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Delta-SCF: partial MO occupation update that keeps a fraction of the previous orbitals.",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "deltaSCF_PMOM",
+      "opi": "opi.input.blocks.block_scf.BlockScf.pmom",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1335",
+      "probe": "finished"
+    },
+    "%scf keepinitialref": {
+      "key": "%scf keepinitialref",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Delta-SCF: retain the initial reference determinant for the excited-state energy.",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "deltaSCF_keepinitialref",
+      "opi": "opi.input.blocks.block_scf.BlockScf.keepinitialref",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1336",
+      "probe": "finished"
+    },
+    "%scf alphaconf": {
+      "key": "%scf alphaconf",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Delta-SCF: occupation of alpha spin-orbitals for the target excited state (or in,out pairs).",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "derived from S0.out / fallback",
+      "opi": "opi.input.blocks.block_scf.BlockScf.alphaconf (NumList)",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1337",
+      "probe": "finished"
+    },
+    "%scf betaconf": {
+      "key": "%scf betaconf",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Delta-SCF: occupation of beta spin-orbitals for the target excited state.",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "derived from S0.out / fallback",
+      "opi": "opi.input.blocks.block_scf.BlockScf.betaconf (NumList)",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1338",
+      "probe": "finished"
+    },
+    "%scf SOSCFHESSUP": {
+      "key": "%scf SOSCFHESSUP",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Delta-SCF: Hessian update scheme for the SOSCF optimizer (LSR1 default).",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "deltaSCF_SOSCFHESSUP",
+      "opi": "opi.input.blocks.block_scf.BlockScf.soscf.hessup (lbfgs/lsr1/lpowell/lbofill)",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1339",
+      "probe": "finished"
+    },
+    "%scf SOSCFConvFactor": {
+      "key": "%scf SOSCFConvFactor",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Delta-SCF: convergence factor for the SOSCF optimizer (looser value than ground state).",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "deltaSCF_SOSCFConvFactor",
+      "opi": "opi.input.blocks.block_scf.BlockScf.soscf.convfactor",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1341",
+      "probe": "finished"
+    },
+    "%scf SOSCFMaxStep": {
+      "key": "%scf SOSCFMaxStep",
+      "kind": "block_option",
+      "block": "scf",
+      "purpose": "Delta-SCF: maximum step size (Bohr) per SOSCF optimisation cycle.",
+      "manual": "spectroscopyproperties/deltascf.txt",
+      "control": "deltaSCF_SOSCFMaxStep",
+      "opi": "opi.input.blocks.block_scf.BlockScf.soscf.maxstep",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1342",
+      "probe": "finished"
+    },
+    "%geom MaxIter": {
+      "key": "%geom MaxIter",
+      "kind": "block_option",
+      "block": "geom",
+      "purpose": "Maximum geometry-optimisation cycles for the first TDDFT step of an ESD hybrid calculation.",
+      "manual": "structurereactivity/optimizations.txt",
+      "control": "hybrid1_geom_MaxIter",
+      "opi": "opi.input.blocks.block_geom.BlockGeom.maxiter",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1223",
+      "probe": "finished"
+    },
+    "%basis NewGTO": {
+      "key": "%basis NewGTO",
+      "kind": "block_option",
+      "block": "basis",
+      "purpose": "Per-element basis set override: assign a dedicated basis set to a metal/all atoms listed.",
+      "manual": "essentialelements/basisset.txt",
+      "control": "metal_basisset / first_coordination_sphere_*",
+      "opi": "opi.input.blocks.block_basis.BlockBasis.newgto (NewBasis)",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/xyz_io.py:625 _apply_per_atom_newgto",
+      "probe": "finished"
+    },
+    "%tddft nroots": {
+      "key": "%tddft nroots",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Number of excited states (roots) to solve in the (TD)DFT linear-response.",
+      "manual": "spectroscopyproperties/tddft.txt:56",
+      "control": "TDDFT_nroots",
+      "opi": "opi.input.blocks.block_cis.BlockCis.nroots (opic: BlockTddft)",
+      "workflows": [
+        "esd",
+        "esd isc/ic"
+      ],
+      "source": "delfin/common/tddft_settings.py:260",
+      "probe": "finished"
+    },
+    "%tddft maxdim": {
+      "key": "%tddft maxdim",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Davidson space dimension in units of NRoots (5-10 recommended; auto default).",
+      "manual": "spectroscopyproperties/tddft.txt",
+      "control": "TDDFT_maxdim",
+      "opi": "opi.input.blocks.block_cis.BlockCis.maxdim",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/common/tddft_settings.py:261",
+      "probe": "finished"
+    },
+    "%tddft tda": {
+      "key": "%tddft tda",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Tamm-Dancoff approximation: neglect deexcitation block (default; off for full RPA).",
+      "manual": "spectroscopyproperties/tddft.txt:436",
+      "control": "TDDFT_TDA",
+      "opi": "opi.input.blocks.block_cis.BlockCis.tda",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/common/tddft_settings.py:262",
+      "probe": "finished"
+    },
+    "%tddft iroot": {
+      "key": "%tddft iroot",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Excited state to follow / whose properties (gradient, SOC) are computed.",
+      "manual": "spectroscopyproperties/tddft.txt",
+      "control": "via state spec / IROOT",
+      "opi": "opi.input.blocks.block_cis.BlockCis.iroot",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/common/tddft_settings.py:269",
+      "probe": "finished"
+    },
+    "%tddft irootmult": {
+      "key": "%tddft irootmult",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Spin manifold (singlet/triplet) the requested IROOT belongs to.",
+      "manual": "spectroscopyproperties/tddft.txt",
+      "control": "state type (S/T)",
+      "opi": "opi.input.blocks.block_cis.BlockCis.irootmult (singlet|triplet)",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/common/tddft_settings.py:271",
+      "probe": "finished"
+    },
+    "%tddft triplets": {
+      "key": "%tddft triplets",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Also compute triplet excited states.",
+      "manual": "spectroscopyproperties/tddft.txt",
+      "control": "state type (T)",
+      "opi": "opi.input.blocks.block_cis.BlockCis.triplets",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/common/tddft_settings.py:267",
+      "probe": "finished"
+    },
+    "%tddft dosoc": {
+      "key": "%tddft dosoc",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Include spin-orbit coupling in the TDDFT response (needed for ISC rate / SOC-geometry).",
+      "manual": "spectroscopyproperties/tddft.txt",
+      "control": "TDDFT_SOC",
+      "opi": "opi.input.blocks.block_cis.BlockCis.soc",
+      "workflows": [
+        "esd isc/ic"
+      ],
+      "source": "delfin/common/tddft_settings.py:276",
+      "probe": "finished"
+    },
+    "%tddft followiroot": {
+      "key": "%tddft followiroot",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Track the requested iroot during a geometry optimisation of the excited state.",
+      "manual": "spectroscopyproperties/tddft.txt",
+      "control": "TDDFT_followiroot",
+      "opi": "NOT in OPI BlockCis/BlockTddft (no followiroot field); needs raw block",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/common/tddft_settings.py:273",
+      "probe": "finished"
+    },
+    "%tddft sroot": {
+      "key": "%tddft sroot",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Singlet root index used by the ESD ISC rate within the %tddft block.",
+      "manual": "spectroscopyproperties/esd.txt:1284",
+      "control": "ISC pair roots",
+      "opi": "NOT in OPI (no sroot/troot/trootssl fields on BlockTddft)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1938",
+      "probe": "finished"
+    },
+    "%tddft troot": {
+      "key": "%tddft troot",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Triplet root index used by the ESD ISC rate within the %tddft block.",
+      "manual": "spectroscopyproperties/esd.txt:1284",
+      "control": "ISC pair roots",
+      "opi": "NOT in OPI (no sroot/troot/trootssl fields on BlockTddft)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1938",
+      "probe": "finished"
+    },
+    "%tddft trootssl": {
+      "key": "%tddft trootssl",
+      "kind": "block_option",
+      "block": "tddft",
+      "purpose": "Sublevel (projection of triplet spin = -1,0,1) selected for an ISC rate.",
+      "manual": "spectroscopyproperties/esd.txt",
+      "control": "TROOTSSL",
+      "opi": "NOT in OPI (no trootssl field on BlockTddft)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1938",
+      "probe": "finished"
+    },
+    "%esd ISCISHESS": {
+      "key": "%esd ISCISHESS",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Hessian of the initial spin state, read by the ESD ISC rate job.",
+      "manual": "spectroscopyproperties/esd.txt:1284",
+      "control": "h2 (state hessians)",
+      "opi": "NOT in OPI (no %esd block class; only Esd jobtype keyword)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1954",
+      "probe": "parsed"
+    },
+    "%esd ISCFSHESS": {
+      "key": "%esd ISCFSHESS",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Hessian of the final spin state, read by the ESD ISC rate job.",
+      "manual": "spectroscopyproperties/esd.txt:1284",
+      "control": "h2 (state hessians)",
+      "opi": "NOT in OPI (no %esd block class; only Esd jobtype keyword)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1955",
+      "probe": "parsed"
+    },
+    "%esd USEJ": {
+      "key": "%esd USEJ",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Use Jahn-Teller coupling decomposition in the ESD correlation function.",
+      "manual": "spectroscopyproperties/esd.txt:383",
+      "control": "ESD_*",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1956",
+      "probe": "parsed"
+    },
+    "%esd DOHT": {
+      "key": "%esd DOHT",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Perform a harmonic-through-temperature (Huang-Rhys) treatment; requires Hessians.",
+      "manual": "spectroscopyproperties/esd.txt:105",
+      "control": "DOHT",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1957",
+      "probe": "parsed"
+    },
+    "%esd LINES": {
+      "key": "%esd LINES",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Lineshape function (LORENTZ/GAUSS/VOIGT) used to broaden the correlation function.",
+      "manual": "spectroscopyproperties/esd.txt:505",
+      "control": "ESD_LINES",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1958",
+      "probe": "parsed"
+    },
+    "%esd LINEW": {
+      "key": "%esd LINEW",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Lorentzian linewidth (cm-1) for the lineshape function.",
+      "manual": "spectroscopyproperties/esd.txt:519",
+      "control": "ESD_LINEW",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1959",
+      "probe": "parsed"
+    },
+    "%esd INLINEW": {
+      "key": "%esd INLINEW",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Gaussian linewidth (cm-1) for the lineshape function.",
+      "manual": "spectroscopyproperties/esd.txt:519",
+      "control": "ESD_INLINEW",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1960",
+      "probe": "parsed"
+    },
+    "%esd DELE": {
+      "key": "%esd DELE",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Adiabatic energy difference (cm-1) between the two spin states, used to shift the rate.",
+      "manual": "spectroscopyproperties/esd.txt:690",
+      "control": "states energies",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1965",
+      "probe": "parsed"
+    },
+    "%esd TEMP": {
+      "key": "%esd TEMP",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Temperature (K) for a thermal average of the ESD rate.",
+      "manual": "spectroscopyproperties/esd.txt:405",
+      "control": "temperature / ESD temp",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1962",
+      "probe": "parsed"
+    },
+    "%esd NPOINTS": {
+      "key": "%esd NPOINTS",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Number of points in the ESD time-grid for the correlation function.",
+      "manual": "spectroscopyproperties/esd.txt",
+      "control": "ESD_NPOINTS",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1809",
+      "probe": "parsed"
+    },
+    "%esd MAXTIME": {
+      "key": "%esd MAXTIME",
+      "kind": "block_option",
+      "block": "esd",
+      "purpose": "Time window (fs) of the ESD correlation function.",
+      "manual": "spectroscopyproperties/esd.txt",
+      "control": "ESD_MAXTIME",
+      "opi": "NOT in OPI (no %esd block class)",
+      "workflows": [
+        "esd isc"
+      ],
+      "source": "delfin/esd_input_generator.py:1810",
+      "probe": "parsed"
+    },
+    "%elprop Dipole": {
+      "key": "%elprop Dipole",
+      "kind": "block_option",
+      "block": "elprop",
+      "purpose": "Compute the electric dipole moment.",
+      "manual": "spectroscopyproperties/electric.txt",
+      "control": "elprop_Dipole",
+      "opi": "opi.input.blocks.block_elprop.BlockElprop.dipole",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:323",
+      "probe": "finished"
+    },
+    "%elprop Quadrupole": {
+      "key": "%elprop Quadrupole",
+      "kind": "block_option",
+      "block": "elprop",
+      "purpose": "Compute the electric quadrupole moment.",
+      "manual": "spectroscopyproperties/electric.txt",
+      "control": "elprop_Quadrupole",
+      "opi": "opi.input.blocks.block_elprop.BlockElprop.quadrupole",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:323",
+      "probe": "finished"
+    },
+    "%elprop Polar": {
+      "key": "%elprop Polar",
+      "kind": "block_option",
+      "block": "elprop",
+      "purpose": "Compute the electric polarizability (alpha).",
+      "manual": "spectroscopyproperties/electric.txt",
+      "control": "elprop_Polar",
+      "opi": "opi.input.blocks.block_elprop.BlockElprop.polar (analytic|semianalytic|numeric)",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:323",
+      "probe": "finished"
+    },
+    "%elprop Hyperpol": {
+      "key": "%elprop Hyperpol",
+      "kind": "block_option",
+      "block": "elprop",
+      "purpose": "Compute the first hyperpolarizability (beta).",
+      "manual": "spectroscopyproperties/electric.txt",
+      "control": "elprop_Hyperpol",
+      "opi": "NOT in OPI (BlockElprop has no hyperpol field)",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:323",
+      "probe": "finished"
+    },
+    "%elprop PolarVelocity": {
+      "key": "%elprop PolarVelocity",
+      "kind": "block_option",
+      "block": "elprop",
+      "purpose": "Include the velocity gauge contribution to the polarizability.",
+      "manual": "spectroscopyproperties/electric.txt",
+      "control": "elprop_PolarVelocity",
+      "opi": "opi.input.blocks.block_elprop.BlockElprop.polarvelocity",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:323",
+      "probe": "finished"
+    },
+    "%elprop PolarDipQuad": {
+      "key": "%elprop PolarDipQuad",
+      "kind": "block_option",
+      "block": "elprop",
+      "purpose": "Compute the dipole-quadrupole polarizability.",
+      "manual": "spectroscopyproperties/electric.txt",
+      "control": "elprop_PolarDipQuad",
+      "opi": "opi.input.blocks.block_elprop.BlockElprop.polardipquad",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:323",
+      "probe": "finished"
+    },
+    "%output print[p_mos]": {
+      "key": "%output print[p_mos]",
+      "kind": "block_option",
+      "block": "output",
+      "purpose": "Print molecular orbital information (energies/occupations) to the output.",
+      "manual": "essentialelements/output.txt",
+      "control": "print_MOs",
+      "opi": "NOT in OPI (BlockOutput has only jsonpropfile/jsongbwfile; print[...] needs raw block)",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_blocks.py:40 collect_output_blocks",
+      "probe": "finished"
+    },
+    "%output print[p_basis]": {
+      "key": "%output print[p_basis]",
+      "kind": "block_option",
+      "block": "output",
+      "purpose": "Print basis-set information (coefficients/contraction) to the output.",
+      "manual": "essentialelements/output.txt",
+      "control": "print_MOs",
+      "opi": "NOT in OPI (print[...] needs raw block)",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_blocks.py:40 collect_output_blocks",
+      "probe": "finished"
+    },
+    "%output print[P_ReducedOrbPopMO_L]": {
+      "key": "%output print[P_ReducedOrbPopMO_L]",
+      "kind": "block_option",
+      "block": "output",
+      "purpose": "Print Loewdin reduced orbital populations, used for spin-population analysis.",
+      "manual": "essentialelements/output.txt",
+      "control": "print_Loewdin_population_analysis",
+      "opi": "NOT in OPI (print[...] needs raw block)",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/common/orca_blocks.py:48 collect_output_blocks",
+      "probe": "finished"
+    },
+    "%freq Temp": {
+      "key": "%freq Temp",
+      "kind": "block_option",
+      "block": "freq",
+      "purpose": "Temperature (K) at which thermochemistry (entropy/Gibbs) is evaluated.",
+      "manual": "structurereactivity/frequencies.txt:421",
+      "control": "temperature",
+      "opi": "opi.input.blocks.block_freq.BlockFreq.temp",
+      "workflows": [
+        "classic",
+        "esd"
+      ],
+      "source": "delfin/xyz_io.py:503 _build_freq_block",
+      "probe": "finished"
+    },
+    "%base": {
+      "key": "%base",
+      "kind": "block_option",
+      "block": "base",
+      "purpose": "Base name for all ORCA output files of a job; set per ESD sub-job to keep files distinct.",
+      "manual": "essentialelements/basics.txt",
+      "control": "(set internally per ESD job)",
+      "opi": "not in OPI (Input base name is a property of opi Input object, not a block)",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1927",
+      "probe": "finished"
+    },
+    "%moinp": {
+      "key": "%moinp",
+      "kind": "block_option",
+      "block": "base",
+      "purpose": "Name of the .gbw file whose converged orbitals are read as the start guess (with MOREAD).",
+      "manual": "essentialelements/initialguess.txt",
+      "control": "(restart chaining)",
+      "opi": "opi.input.simple_keywords ... (Moread/guess; file ref placed on Input)",
+      "workflows": [
+        "esd"
+      ],
+      "source": "delfin/esd_input_generator.py:1324",
+      "probe": "finished"
+    },
+    "%goat SKIPINITIALOPT": {
+      "key": "%goat SKIPINITIALOPT",
+      "kind": "block_option",
+      "block": "goat",
+      "purpose": "Skip the initial geometry-optimization stage of a GOAT conformer search.",
+      "manual": "structurereactivity/goat.txt:997",
+      "control": "(GOAT setup)",
+      "opi": "NOT in OPI (BlockGoat lacks skipinitialopt; needs raw block)",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:511",
+      "probe": "finished"
+    },
+    "%goat UPHILLATOMS": {
+      "key": "%goat UPHILLATOMS",
+      "kind": "block_option",
+      "block": "goat",
+      "purpose": "Atoms allowed to move 'uphill' (increase energy) during the GOAT search topology.",
+      "manual": "structurereactivity/goat.txt:907",
+      "control": "(GOAT setup)",
+      "opi": "NOT in OPI (no uphillatoms field)",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:516",
+      "probe": "finished"
+    },
+    "%goat FREEFRAGMENTS": {
+      "key": "%goat FREEFRAGMENTS",
+      "kind": "block_option",
+      "block": "goat",
+      "purpose": "Allow fragments to separate/break during the GOAT conformer search.",
+      "manual": "structurereactivity/goat.txt:1207",
+      "control": "(GOAT setup)",
+      "opi": "NOT in OPI (no freefragments field)",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:517",
+      "probe": "finished"
+    },
+    "%goat FREEZEBONDS": {
+      "key": "%goat FREEZEBONDS",
+      "kind": "block_option",
+      "block": "goat",
+      "purpose": "Freeze all bonds so the GOAT search never breaks them.",
+      "manual": "structurereactivity/goat.txt",
+      "control": "(GOAT setup)",
+      "opi": "opi.input.blocks.block_goat.BlockGoat.freezebonds",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:518",
+      "probe": "finished"
+    },
+    "%goat FREEZEANGLES": {
+      "key": "%goat FREEZEANGLES",
+      "kind": "block_option",
+      "block": "goat",
+      "purpose": "Freeze all angles during the GOAT search.",
+      "manual": "structurereactivity/goat.txt",
+      "control": "(GOAT setup)",
+      "opi": "opi.input.blocks.block_goat.BlockGoat.freezeangles",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:519",
+      "probe": "finished"
+    },
+    "%goat FREEHETEROATOMS": {
+      "key": "%goat FREEHETEROATOMS",
+      "kind": "block_option",
+      "block": "goat",
+      "purpose": "Freeze heteroatom positions relative to their substituents in the GOAT search.",
+      "manual": "structurereactivity/goat.txt:1195",
+      "control": "(GOAT setup)",
+      "opi": "NOT in OPI (no freeheteroatoms field)",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:520",
+      "probe": "finished"
+    },
+    "%goat MAXTOPODIFF": {
+      "key": "%goat MAXTOPODIFF",
+      "kind": "block_option",
+      "block": "goat",
+      "purpose": "Maximum tolerated topological difference between conformers before a new search branch.",
+      "manual": "structurereactivity/goat.txt:672",
+      "control": "(GOAT setup)",
+      "opi": "opi.input.blocks.block_goat.BlockGoat.maxtopodiff",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:521",
+      "probe": "finished"
+    },
+    "%goat TOPOBREAK": {
+      "key": "%goat TOPOBREAK",
+      "kind": "block_option",
+      "block": "goat",
+      "purpose": "Atoms/bonds explicitly allowed to break during the GOAT search.",
+      "manual": "structurereactivity/goat.txt:1213",
+      "control": "(GOAT setup)",
+      "opi": "NOT in OPI (no topobreak field)",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:524",
+      "probe": "finished"
+    },
+    "%QMMM": {
+      "key": "%QMMM",
+      "kind": "block_option",
+      "block": "qmmm",
+      "purpose": "QM/MM (ONIOM or electronic embedding) layer setup: QM region, MM atoms, point charges.",
+      "manual": "multiscalesimulations/*.txt",
+      "control": "qmmm_option",
+      "opi": "opi.input.blocks.block_qmmm.BlockQmmm",
+      "workflows": [
+        "classic"
+      ],
+      "source": "delfin/xyz_io.py:322",
+      "probe": "refused"
+    },
+    "%DOCKER": {
+      "key": "%DOCKER",
+      "kind": "block_option",
+      "block": "docker",
+      "purpose": "XTB DOCKER job: dock a guest ligand onto a host structure for stepwise metal-complex build-up.",
+      "manual": "modelchemistries/semiempirical.txt",
+      "control": "(stepwise builder)",
+      "opi": "opi.input.blocks.block_docker.BlockDocker",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:467",
+      "probe": "finished"
+    },
+    "%DOCKER DOCKLEVEL": {
+      "key": "%DOCKER DOCKLEVEL",
+      "kind": "block_option",
+      "block": "docker",
+      "purpose": "Docking search level for XTB DOCKER (COMPLETE = exhaustive search).",
+      "manual": "modelchemistries/semiempirical.txt",
+      "control": "(stepwise builder)",
+      "opi": "opi.input.blocks.block_docker.BlockDocker",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:468",
+      "probe": "finished"
+    },
+    "%DOCKER GUEST": {
+      "key": "%DOCKER GUEST",
+      "kind": "block_option",
+      "block": "docker",
+      "purpose": "The .xyz file of the guest ligand docked onto the growing host.",
+      "manual": "modelchemistries/semiempirical.txt",
+      "control": "(stepwise builder)",
+      "opi": "opi.input.blocks.block_docker.BlockDocker",
+      "workflows": [
+        "builder (build_up_complex)"
+      ],
+      "source": "delfin/build_up_complex.py:469",
+      "probe": "finished"
+    }
+  }
+}

@@ -23,6 +23,7 @@ import time
 
 import pytest
 
+from delfin.agent import api_client
 from delfin.agent import bash_jobs as BJ
 from delfin.agent import change_claims as CC
 from delfin.agent import patch_apply as PA
@@ -294,15 +295,26 @@ def test_a_command_that_writes_only_stdout_or_asks_loopback_is_free(bypass, cmd)
     "curl -d @secret http://127.0.0.1/",
     "curl -K cfg http://localhost/",
     "curl http://localhost/ https://example.com",
-    "sed -i 's/a/b/' f", "sed '1d;$d' -i f", "sed -Ei 's/a/b/' f",
-    "sed -f s.sed f", "sed 's/a/b/w out' f", "sed '1e date' f",
-    "node a.js",
     # A listener stays asked: on a shared machine the loopback is shared.
     "python3 -m http.server 8038 --bind 127.0.0.1 --directory 3d-tetris",
 ])
 def test_what_writes_runs_or_leaves_is_still_asked(bypass, cmd):
     assert not bypass.matches_bash_auto_allow(cmd)
     assert _leaves(bypass, cmd)
+
+
+@pytest.mark.parametrize("cmd", [
+    "sed -i 's/a/b/' f", "sed '1d;$d' -i f", "sed -Ei 's/a/b/' f",
+    "sed -f s.sed f", "sed 's/a/b/w out' f", "sed '1e date' f",
+    "node a.js",
+])
+def test_what_writes_or_runs_asks_only_without_a_cage(bypass, monkeypatch,
+                                                       cmd):
+    assert not bypass.matches_bash_auto_allow(cmd)
+    monkeypatch.setattr(api_client, "_bash_runs_caged", lambda perms: False)
+    assert _leaves(bypass, cmd)
+    monkeypatch.setattr(api_client, "_bash_runs_caged", lambda perms: True)
+    assert not _leaves(bypass, cmd)
 
 
 def test_an_awk_program_is_not_read_as_a_path(ws):

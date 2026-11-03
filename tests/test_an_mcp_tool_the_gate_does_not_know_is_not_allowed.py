@@ -286,12 +286,26 @@ _EXPECTED_READ_ONLY = {
     "search_calcs", "get_calc_info", "calc_summary",
     # delfin-ops
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
+    # mlp_list_backends (2026-11-02): reads the backend availability
+    # table from delfin.mlp_tools; computes and writes nothing. The MLP
+    # run tools (mlp_single_point, mlp_optimize, mlp_rank,
+    # mlp_preoptimize) deliberately stay off this list: they compute.
+    "mlp_list_backends",
     # calc_status (2026-09-11): one folder's state with the evidence; reads
     # markers, logs, the state file and the output's tail, writes nothing.
     # extract_spectra_table (2026-09-11): the spectroscopy overview over
     # many folders; reads outputs, writes nothing.
     "parse_orca_output", "calc_status", "extract_spectra_table",
     "find_orca_errors", "extract_thermochem",
+    # result_checks (2026-11-01): reads a finished run; writes nothing.
+    "result_checks",
+    # geometry_edit (2026-11-01): xyz text in, xyz text out; no write.
+    "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
+    "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
+    "geometry_add_atom", "geometry_remove_atoms",
+    "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
+    "geometry_merge", "geometry_freeze", "geometry_constraints_block",
+    "geometry_build_smiles", "geometry_write_orca_block",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",

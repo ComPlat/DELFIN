@@ -7,8 +7,27 @@ description: Build the user a new DELFIN workflow — draft from DELFIN's catalo
 > Start from DELFIN's own pieces; check before anything runs; the original stays untouched.
 
 ## 1. Use DELFIN's workflows first
+Start the decision in this order — never the reverse:
+
+(a) **An existing workflow that fits.** Call the deterministic ranking
+tool `workflow_candidates(task_text)` (no model call): it returns the
+registered workflows that fit the request, each with the reason and the
+CONTROL keys to set. Choose the top candidate when it matches the
+science; set its CONTROL keys (validated by `control_validator`) and run
+it.
+
+(b) **Extend it when it lacks a step.** If the chosen workflow is right
+but missing one step, extend it (`add_step` / `user_workflows.
+extend_template`) rather than replacing it.
+
+(c) **Compose from the ORCA building blocks only when nothing fits.**
+`workflow_candidates` returning an empty list is the explicit signal for
+this.
+
 A new workflow starts from a named template (`delfin/tools/templates/`,
-e.g. `classic_opt_freq`) or a saved user workflow — never a step list
+e.g. `classic_opt_freq`, or the OPI chain `opi_opt_freq_dlpno`:
+OPI-built `orca_opt_opi` → `orca_freq_opi` → DLPNO-CCSD(T) single point
+with knowledge-store-validated inputs) or a saved user workflow — never a step list
 invented in chat. Extending means `user_workflows.extend_template`:
 add, remove, replace or override, and the result is a NEW spec; the
 original template or saved workflow is never modified.

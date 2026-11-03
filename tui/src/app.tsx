@@ -17,6 +17,7 @@ import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
 import { WINDOW_COMMANDS, nameFromPrompt, renameOf, resumeOf, shellLead } from "./commands"
+import { createSwarmView } from "./swarm/view"
 import type { ArgumentChoices } from "./composer/complete"
 import { CLICK_PAUSE_MS } from "./mouse"
 import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
@@ -280,6 +281,15 @@ export function App(props: AppProps): JSX.Element {
       }
       return agents.submit(text)
     }
+    if (swarmOpen()) {
+      typingAt = 0
+      // A typed line in the swarm view: the answer for a held question,
+      // else a new swarm's goal (validate -> dry run -> held -> y).
+      const body = text.trim()
+      if (swarm.state.pendingAnswer) return Boolean(await swarm.confirmAnswer(body))
+      if (body) return Boolean(await swarm.newSwarm(body))
+      return true
+    }
     return deliver(text, how, shown)
   }
 
@@ -315,6 +325,13 @@ export function App(props: AppProps): JSX.Element {
     }
     if (/^\/keys$/.test(text.trim()) && !how) {
       props.onLines?.("keys in this window", keyTable(props.keymap))
+      return true
+    }
+    // The swarm view (SW2b): a bare /swarm is the window's, never the
+    // session's -- the view manages swarms over the service's swarm.*
+    // requests. With an argument the line goes to the session as typed.
+    if (/^\/swarm$/.test(text.trim()) && !how) {
+      void swarm.open()
       return true
     }
     // Also with the key that steers: a rename is the window's, never the turn's.
@@ -451,6 +468,22 @@ export function App(props: AppProps): JSX.Element {
     say,
   })
   viewOpen = () => agents.state.open
+  // The swarm view (SW2b): the window's own, over the service's swarm.*
+  // requests. It has the footer while it is open (the agents view's
+  // pattern), and its keys there too.
+  const swarm = createSwarmView({
+    keymap: props.keymap,
+    now: () => Date.now() / 1000,
+    askStatus: () => props.client.request("swarm.status", {}) as never,
+    askValidate: (specYaml) => props.client.request("swarm.validate", { specYaml }) as never,
+    askStart: (specYaml, confirm) => props.client.request("swarm.start",
+      { specYaml, dryRun: !confirm, confirm }) as never,
+    askTriage: () => props.client.request("swarm.triage.list", {}).then((r) => (r as any)?.items ?? []) as never,
+    askAnswer: (item, answer) => props.client.request("swarm.triage.answer", { item, answer }) as never,
+    note: say,
+    draft: () => composer.value(),
+  })
+  const swarmOpen = () => swarm.state.open
   // The alternate screen, while the view is open.
   createEffect(() => {
     if (!props.agentScreen) return
@@ -878,6 +911,23 @@ export function App(props: AppProps): JSX.Element {
       if (agents.handleKey(key) || composer.handleKey(key)) key.preventDefault()
       return
     }
+    if (swarmOpen()) {
+      // The swarm view has the footer: its keys, then the composer
+      // (letters type the answer for a held question, or a new goal).
+      if (key.ctrl && key.name === "c" && !composer.search()) {
+        key.preventDefault()
+        if (draft()) composer.clear()
+        else swarm.close()
+        return
+      }
+      if (km.matches("quit", key) && !draft()) {
+        key.preventDefault()
+        props.onQuit()
+        return
+      }
+      if (swarm.handleKey(key) || composer.handleKey(key)) key.preventDefault()
+      return
+    }
     if (offer() && !asked && takeOffer(key)) {
       key.preventDefault()
       return
@@ -1010,6 +1060,7 @@ export function App(props: AppProps): JSX.Element {
       offerYes={BYPASS_YES}
       onOfferClick={() => void clickOffer()}
       agents={agents}
+      swarm={swarm}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}
       others={others}

@@ -29,6 +29,7 @@ import { TextAttributes, infoStringToFiletype, type CliRenderer, type Renderable
          type SyntaxStyle } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor, type JSX } from "solid-js"
 import { AgentViewPanel, agentHelp, takesAnswer, type AgentView } from "../agents/view"
+import { SwarmPanel, type SwarmView } from "../swarm/panel"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
@@ -68,6 +69,8 @@ export interface FooterProps {
   tasksFolded?: () => boolean
   /** The agent view; while open it has the footer. */
   agents?: AgentView
+  /** The swarm view (SW2b); while open it has the footer. */
+  swarm?: SwarmView
   /** The view is drawn on the alternate screen: all of it is the view's,
    *  and the footer keeps its height for the way back. */
   agentsOnOwnScreen?: boolean
@@ -219,7 +222,7 @@ export function Footer(props: FooterProps): JSX.Element {
   // The agent view's ages: once a second is enough (its rows are drawn
   // again on each change of it).
   const [clock, setClock] = createSignal(Date.now())
-  const viewOpen = () => Boolean(props.agents?.state.open)
+  const viewOpen = () => Boolean(props.agents?.state.open || props.swarm?.state.open)
   let timer: ReturnType<typeof setInterval> | undefined
   createEffect(() => {
     const running = Boolean(props.session()?.turn) || viewOpen()
@@ -334,6 +337,11 @@ export function Footer(props: FooterProps): JSX.Element {
   // (the composer and the keys are at the bottom), never drawn over.
   const placeholder = () => {
     const v = props.agents
+    if (props.swarm?.state.open) {
+      if (props.swarm.state.pendingAnswer) return "the answer…"
+      if (props.swarm.state.pendingStart) return "y to start · n lets it go"
+      return "a new swarm's goal… (or /swarm again to close)"
+    }
     if (v?.state.open) {
       if (v.state.renaming) return "the new name…"
       const peeked = v.state.peek ? v.rows().find((r) => r.id === v.state.peek!.id) : undefined
@@ -364,8 +372,12 @@ export function Footer(props: FooterProps): JSX.Element {
     <box flexDirection="column" width="100%" height="100%" justifyContent="flex-end" overflow="hidden"
          paddingLeft={GUTTER}>
       <Show when={viewOpen()}>
-        <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
-                        keymap={props.keymap} />
+        <Show when={props.swarm?.state.open} fallback={
+          <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
+                          keymap={props.keymap} />
+        }>
+          <SwarmPanel view={props.swarm!} theme={t} width={cols} height={panelRows} />
+        </Show>
       </Show>
       {/* Mounted for as long as the window is full screen -- hidden while
           the agent view has the screen, so closing the view keeps its
