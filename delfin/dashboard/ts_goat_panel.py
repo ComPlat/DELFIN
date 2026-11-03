@@ -34,9 +34,9 @@ def _two_column_layout(title_row, left, right):
     # The outer panel owns scrolling. Nested scrolling on the left made
     # the controls and Submit button inaccessible at laptop heights.
     left_box.layout = widgets.Layout(
-        flex='1 1 38%', min_width='300px', gap='7px')
+        flex='0 1 35%', min_width='300px', gap='7px')
     right_box.layout = widgets.Layout(
-        flex='2 1 56%', min_width='380px', gap='5px')
+        flex='1 1 63%', min_width='380px', gap='5px')
     return widgets.VBox((title_row, body))
 
 
@@ -95,6 +95,11 @@ def build_ts_goat_panel(
         width='100%', height='450px', border='1px solid #d5dfe5',
         overflow='hidden', margin='2px 0',
     ))
+    # Stable sizing reference for the 3Dmol stage. The Output widget can
+    # become wider when DevTools is closed or the columns are resized;
+    # measuring only the inner rendered HTML left the canvas at an older
+    # width, giving a left-aligned molecule inside a larger white frame.
+    viewer_out.add_class('ts-goat-viewer-output')
     # JS -> Python click channel (same pattern as the structure editor's
     # submit-pick-sync): the viewer bootstrap writes the clicked atom's
     # 0-based index into this hidden Text via the property setter +
