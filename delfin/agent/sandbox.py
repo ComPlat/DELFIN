@@ -1025,6 +1025,9 @@ _HOME_SECRET_DIRS = (
     # The user's schedules (delfin.agent.schedules): what runs unattended
     # is the user's to write and confirm, never an agent's.
     ".delfin/user_schedules",
+    # The workspace freedom profiles (delfin.agent.workspace_profiles)
+    # share the schedules directory.
+    ".delfin/user_schedules/workspace_profiles.json",
 )
 
 

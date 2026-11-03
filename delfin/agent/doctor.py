@@ -980,6 +980,40 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     )]
 
 
+def _check_bash_cage(ctx: dict) -> list[dict]:
+    """Whether this host can hold a shell command in the bash cage.
+
+    The freedom profiles (``workspace_profiles``) grant a workspace's
+    unattended runs bypass only where a cage exists, so the doctor says
+    which it is -- and on a host without one, what the profile ``free``
+    would be refused for. The answer is
+    ``workspace_profiles.host_cage_decision``, the same
+    ``api_client._bash_isolation_decision`` the bash executor builds its
+    argv from, not a separate probe that could drift from it.
+    """
+    from delfin.agent import workspace_profiles
+    try:
+        kind = workspace_profiles.host_cage_decision()
+    except Exception as exc:                        # noqa: BLE001
+        return [_row("bash cage", WARN, f"not verified: {exc}")]
+    if kind in ("bwrap", "landlock", "seatbelt"):
+        return [_row("bash cage", PASS,
+                     f"{kind} holds shell commands; workspaces with the "
+                     "profile \"free\" may run their scheduled runs in "
+                     "bypass inside the cage")]
+    if kind == "refuse":
+        return [_row("bash cage", WARN,
+                     f"isolation demanded and unavailable ({kind}); the "
+                     "profile \"free\" is refused here",
+                     "install bubblewrap, or run on a kernel with Landlock "
+                     "(Linux 5.13+)")]
+    return [_row("bash cage", WARN,
+                 f"no cage on this host ({kind}); the profile \"free\" is "
+                 "refused here -- scheduled runs stay in acceptEdits",
+                 "install bubblewrap, or run on a kernel with Landlock "
+                 "(Linux 5.13+)")]
+
+
 def _check_document_backends(ctx: dict) -> list[dict]:
     """Spreadsheet / PDF / Word support — one row per backend.
 
@@ -1134,6 +1168,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),
     ("bash isolation", "_check_bash_isolation"),
+    ("bash cage", "_check_bash_cage"),
     ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
     ("terminal window", "_check_tui"),
