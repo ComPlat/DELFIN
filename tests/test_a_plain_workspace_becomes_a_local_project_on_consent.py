@@ -196,8 +196,19 @@ def test_the_signatures_are_the_license_guards_own():
 def _fake_run_subagent(edits: dict):
     """run_subagent standing in for a model: in its worktree (when given
     one) it writes the files ``edits[description]`` names and commits."""
-    def _run(*, subagent_type, description, prompt, parent_client,
-             parent_perms, isolation="", output_schema=None, **_kw):
+    def _run(**kw):
+        # A failure is the delegate's error, so an assertion on the merges
+        # names it instead of showing one entry fewer.
+        try:
+            return _run_one(**kw)
+        except Exception as exc:
+            return SA.SubagentResult(
+                subagent_type=kw["subagent_type"],
+                description=kw["description"], final_text="",
+                error=f"fake delegate raised: {exc}")
+
+    def _run_one(*, subagent_type, description, prompt, parent_client,
+                 parent_perms, isolation="", output_schema=None, **_kw):
         ws = Path(parent_perms.workspace)
         target, info = ws, None
         if isolation == "worktree":
@@ -220,6 +231,42 @@ def _fake_run_subagent(edits: dict):
     return _run
 
 
+def _merges(out) -> dict:
+    """{description: status}, failing with every delegate's error shown."""
+    errors = [p.get("error") for ps in out.get("stages", {}).values()
+              for p in ps if p.get("error")]
+    assert not errors, errors
+    return {m["description"]: m["status"] for m in out["merges"]}
+
+
+def test_parallel_worktrees_of_one_repository_do_not_race(tmp_path, monkeypatch):
+    """git's own worktree add races with a concurrent one (one reads the
+    other's half-written .git/worktrees/<name>/commondir); enter_worktree
+    serialises them per repository. Measured before the lock: one failed
+    add in about every 300 four-way rounds here, one of two on a CI runner."""
+    import threading
+    ws = _plain(tmp_path, monkeypatch)
+    LP.init_local_project(ws)
+    errors, made = [], []
+
+    def add():
+        try:
+            made.append(WT.enter_worktree(ws))
+        except Exception as exc:
+            errors.append(str(exc))
+
+    for _ in range(10):
+        threads = [threading.Thread(target=add) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert not errors, errors[:3]
+    assert len(made) == 60
+    for info in made:
+        WT.exit_worktree(info, keep_if_changed=False)
+
+
 def _orchestrate(ws, perms, monkeypatch, edits, merge=True):
     monkeypatch.setattr(SA, "run_subagent", _fake_run_subagent(edits))
     perms.orchestration_runner = (
@@ -239,9 +286,8 @@ def test_two_sub_agents_work_in_their_worktrees_and_are_merged(tmp_path, monkeyp
              "beta": {"shared.py": "A = 1\nB = 3\n"}}
     out = _orchestrate(ws, perms, monkeypatch, edits)
     assert [a[0] for a in asked] == ["local_project_init"]
-    merges = out["merges"]
-    assert [(m["description"], m["status"]) for m in merges] == [
-        ("alpha", "ok"), ("beta", "ok")], merges
+    assert _merges(out) == {"alpha": "ok", "beta": "ok"}, out["merges"]
+    assert [m["description"] for m in out["merges"]] == ["alpha", "beta"]
     # The main checkout got both, uncommitted, for review; no sub-agent
     # wrote it directly (its first commit is still the only one).
     assert (ws / "alpha.py").read_text() == "ALPHA = 1\n"
@@ -256,8 +302,7 @@ def test_a_conflict_is_reported_and_nothing_is_overwritten(tmp_path, monkeypatch
     edits = {"first": {"shared.py": "A = 10\nB = 2\n"},
              "second": {"shared.py": "A = 20\nB = 2\n"}}
     out = _orchestrate(ws, perms, monkeypatch, edits)
-    status = {m["description"]: m["status"] for m in out["merges"]}
-    assert status == {"first": "ok", "second": "conflict"}, out["merges"]
+    assert _merges(out) == {"first": "ok", "second": "conflict"}, out["merges"]
     assert (ws / "shared.py").read_text() == "A = 10\nB = 2\n"
     kept = next(m for m in out["merges"] if m["description"] == "second")
     assert (Path(kept["path"]) / "shared.py").read_text() == "A = 20\nB = 2\n"
