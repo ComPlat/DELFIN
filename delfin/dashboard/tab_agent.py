@@ -4608,6 +4608,49 @@ def _make_plot_card_html(tool_output) -> str | None:
     )
 
 
+def _view_image_card_html(tool_output) -> str | None:
+    """The chat card for a successful ``view_image`` result, or None.
+
+    Input: the tool's JSON result (``status``, ``path``, ``mime``). Output:
+    the chat's artifact preview of that image (``_render_artifact_inline``:
+    base64 ``<img>`` with its header's width/height, so the box is
+    reserved before the image decodes; over the inline cap, a one-line
+    "too large" card). Without it the model sees the image and the user
+    does not, and an answer saying "the image is in the chat" is false.
+
+    No access beyond the tool's: the path must be absolute and already
+    resolved (the executor reports the resolved path it read), so a link
+    placed there after the read is not followed; the suffix's type must be
+    the reported ``mime`` and one ``view_image`` accepts. None for an
+    error, any other shape, or a file that is gone; the caller then
+    escapes the result like any tool output.
+    """
+    import json as _json
+    from delfin.agent.image_input import _ALLOWED_MIMES
+
+    try:
+        payload = _json.loads(tool_output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return None
+    raw, mime = payload.get("path"), payload.get("mime")
+    if not isinstance(raw, str) or mime not in _ALLOWED_MIMES:
+        return None
+    path = Path(raw)
+    try:
+        if not path.is_absolute() or path.resolve() != path:
+            return None
+    except (OSError, RuntimeError):
+        return None
+    if _ARTIFACT_MIME.get(path.suffix.lower()) != mime:
+        return None
+    try:
+        return _render_artifact_inline(path)
+    except Exception:
+        return None
+
+
 def _render_xyz_summary(path) -> tuple[int, str] | None:
     """Parse an XYZ file and return ``(atom_count, summary_string)``.
 
@@ -4678,6 +4721,7 @@ _ARTIFACT_MIME = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".gif": "image/gif",
+    ".webp": "image/webp",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".xyz": "chemical/x-xyz",
@@ -4987,7 +5031,7 @@ def _render_artifact_inline(path) -> str | None:
 def _img_box(data: bytes) -> str:
     """`` width="W" height="H"`` read from an image's header, or "".
 
-    Input: the image's bytes (PNG, GIF, JPEG or SVG text). Output: the two
+    Input: the image's bytes (PNG, GIF, JPEG, WebP or SVG text). Output: the two
     attributes for its ``<img>``. With them the browser reserves the box
     before the data URI is decoded; without them an image is 0 px tall
     until then, and Python replaces the whole transcript on every update,
@@ -5001,6 +5045,21 @@ def _img_box(data: bytes) -> str:
             w, h = struct.unpack(">II", data[16:24])
         elif data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
             w, h = struct.unpack("<HH", data[6:10])
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 30:
+            # The first chunk: lossy (VP8), lossless (VP8L) or extended
+            # (VP8X) -- three header layouts, per the WebP container spec.
+            chunk = data[12:16]
+            if chunk == b"VP8 ":
+                w, h = struct.unpack("<HH", data[26:30])
+                w, h = w & 0x3FFF, h & 0x3FFF
+            elif chunk == b"VP8L":
+                bits = int.from_bytes(data[21:25], "little")
+                w, h = (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+            elif chunk == b"VP8X":
+                w = int.from_bytes(data[24:27], "little") + 1
+                h = int.from_bytes(data[27:30], "little") + 1
+            else:
+                return ""
         elif data[:2] == b"\xff\xd8":
             i, w, h = 2, 0, 0
             while i + 9 < len(data):
@@ -5079,7 +5138,7 @@ def _render_artifact_body(path) -> str | None:
     name_html = _html.escape(p.name)
 
     # ---- Images via base64 ---------------------------------------------
-    if suffix in (".png", ".jpg", ".jpeg", ".gif"):
+    if suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
         try:
             data = p.read_bytes()
         except OSError:
@@ -21134,6 +21193,19 @@ def create_tab(ctx):
                             _pl = _cv.card_payload(tool_output, "plot")
                             _shown = set(state.get("_emitted_artifacts") or ())
                             _shown.add(str(Path(_pl["path"]).resolve()))
+                            state["_emitted_artifacts"] = _shown
+                            return
+                    # view_image: the model is sent the image; the user
+                    # sees it here, drawn from the resolved path the tool
+                    # read. An error result falls through and is escaped.
+                    if tool_name == "view_image" and _raw_name in (
+                            "view_image", "mcp__delfin-docs__view_image"):
+                        _card = _view_image_card_html(tool_output)
+                        if _card is not None:
+                            _append_tool_message(_card)
+                            import json as _json_vi
+                            _shown = set(state.get("_emitted_artifacts") or ())
+                            _shown.add(_json_vi.loads(tool_output)["path"])
                             state["_emitted_artifacts"] = _shown
                             return
                     if tool_name == "skill_propose_patch":
