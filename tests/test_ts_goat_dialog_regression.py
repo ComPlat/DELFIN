@@ -483,3 +483,80 @@ def test_title_bar_carries_visible_close_button(tmp_path):
     assert any(getattr(w, 'description', '') == '✕ Close'
                for w in title_row.children), (
         'the close button must live in the title bar row')
+
+
+def test_compact_ts_goat_panel_hides_details_by_default(tmp_path):
+    """Core actions stay visible; diagnostic text and raw input start folded."""
+    from ipywidgets import Accordion, Button, Dropdown
+
+    result, _rendered = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    panel = result['registry']['panel']
+    body = panel.children[0].children[1]
+    left, right = body.children
+    accordions = [w for w in left.children if isinstance(w, Accordion)]
+    titles = [a.get_title(0) for a in accordions]
+    assert titles == [
+        'Edit atom indices',
+        'Advanced settings',
+        'Generated ORCA input',
+        'Analysis & source files',
+    ]
+    assert all(a.selected_index is None for a in accordions)
+    assert any(
+        isinstance(w, Dropdown) and w.description == 'Mode:'
+        for w in _iter_widgets(right)
+    )
+    play = [
+        w for w in _iter_widgets(right)
+        if isinstance(w, Button) and w.description == '▶ Play'
+    ]
+    assert len(play) == 1 and not play[0].disabled
+    assert any(
+        isinstance(w, Button) and 'Submit GOAT' in w.description
+        for w in _iter_widgets(left)
+    )
+
+
+def test_ts_goat_playback_uses_validated_frames_and_distinct_pause_reset():
+    """One-click playback must not depend on a nonexistent GLViewer method."""
+    from delfin.dashboard.molecule_viewer import (
+        static_viewer_html, ts_goat_viewer_bootstrap_js,
+        ts_goat_viewer_frames_js,
+    )
+    xyz = '2\nTS\nH 0 0 0\nO 0 0 1\n'
+    frames = (
+        '2\nphase 0\nH 0 0 0\nO 0 0 1\n'
+        '2\nphase 1\nH 0 0 0.1\nO 0 0 1.1\n'
+    )
+    _vid, markup = static_viewer_html(
+        xyz, highlight_indices=[0], frames=frames)
+    assert '"frame_count": 2' in markup
+    assert '"show_arrows": false' in markup
+    boot = ts_goat_viewer_bootstrap_js('viewer')
+    assert 'viewer.__tsGoatFrameCount = payload.frame_count' in boot
+    assert '0xff6d00' not in boot
+    assert 'opacity: 0.20' in boot
+    play = ts_goat_viewer_frames_js('viewer', True)
+    pause = ts_goat_viewer_frames_js('viewer', 'pause')
+    reset = ts_goat_viewer_frames_js('viewer', False)
+    assert 'var command = "play";' in play
+    assert 'var command = "pause";' in pause
+    assert 'var command = "reset";' in reset
+    assert 'viewer.__tsGoatFrameCount' in play
+    assert 'setTimeout(startWhenReady, 150)' in play
+    assert 'viewer.setFrame(frame)' in play
+    assert 'viewer.getLength' not in play
+
+
+def test_ts_goat_browser_uses_frame_player_and_hides_file_toolbar():
+    """The action callback must call the actual exported player function."""
+    from pathlib import Path
+    browser = (Path(__file__).resolve().parents[1] /
+               'delfin/dashboard/tab_calculations_browser.py').read_text(
+                   encoding='utf-8')
+    assert '_mv.ts_goat_viewer_frames_js(vid, running)' in browser
+    assert '_mv.ts_goat_viewer_anim_js(vid, running)' not in browser
+    assert "calc_content_label.layout.display = 'none'" in browser
+    assert "calc_content_toolbar.layout.display = 'none'" in browser
+    assert '_ts_restore_file_ui()' in browser
