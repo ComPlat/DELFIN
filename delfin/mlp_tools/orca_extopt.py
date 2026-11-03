@@ -401,8 +401,16 @@ def build_extopt_input(
 
 
 def _build_with_opi(keywords, elements, coordinates, charge, mult,
-                    wrapper_path, ext_params, scan, base_name, work_dir) -> Path:
-    """Build the input through OPI (py3.12 venv with the ``opi`` package)."""
+                    wrapper_path, ext_params, scan, base_name, work_dir,
+                    *, ncores: int = 1, extra_blocks: Sequence = ()) -> Path:
+    """Build the input through OPI (py3.12 venv with the ``opi`` package).
+
+    ``ncores`` is written as ``%pal nprocs`` (1 unless a run type needs
+    more, e.g. GOAT's parallel workers); ``extra_blocks`` are OPI block
+    objects (``BlockGoat``, ``BlockNeb``, ``BlockIrc``) added after
+    ``%method``.  The defaults reproduce the input written before both
+    arguments existed.
+    """
     from opi.core import Calculator
     from opi.input import Input
     from opi.input.blocks.block_method import BlockMethod
@@ -416,7 +424,7 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
     for kw in keywords:
         inp.add_simple_keywords(_kw(kw))
     inp.add_simple_keywords("extopt")  # ExternalTools.EXTOPT (OPI 6.1.1)
-    inp.ncores = 1
+    inp.ncores = int(ncores)
     inp.memory = 1000
 
     method = BlockMethod()
@@ -447,6 +455,8 @@ def _build_with_opi(keywords, elements, coordinates, charge, mult,
             valuelist=scan.get("valuelist"),
         )
         inp.add_blocks(geom)
+    for block in extra_blocks:
+        inp.add_blocks(block)
 
     calc = Calculator(base_name, working_dir=work_dir, version_check=False)
     calc.input = inp
