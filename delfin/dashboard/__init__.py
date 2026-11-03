@@ -973,23 +973,21 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from delfin.dashboard import login_session as _login_session
     _logout = widgets.HTML(_login_session.logout_control_html())
 
-    # The right-hand group: what the dashboard is doing and holding.
+    # The right-hand group: what the dashboard is holding. What it is doing
+    # (the busy spinner, the agent's working line) sits just left of it, in
+    # the spacer, where its changing text cannot wrap the bar (top_bar).
     _status_group = widgets.HBox(
-        [busy_indicator, ctx.agent_status_html, home_usage_label]
+        [home_usage_label]
         + ([_session_strip] if _session_strip is not None else [])
         + [_logout])
-    _status_group.add_class('delfin-group')
-    _spacer = widgets.HBox([], layout=widgets.Layout(flex='1 1 auto'))
-    _bar = widgets.HBox(
+    # Wrap rather than shrink: the session strip carries an address, and a
+    # row that squeezes its items renders it unreadable before it overflows.
+    _bar = _hu.top_bar(
         [widgets.HTML(title_html)]
         + ([_preview_banner] if _preview_banner is not None else [])
-        + ([branch_panel.row] if branch_panel is not None else [])
-        + [_spacer, _status_group],
-        # Wrap rather than shrink: the session strip carries an address,
-        # and a row that squeezes its items renders it unreadable before
-        # it overflows.
-        layout=widgets.Layout(width='100%'))
-    _bar.add_class('delfin-topbar')
+        + ([branch_panel.row] if branch_panel is not None else []),
+        [busy_indicator, ctx.agent_status_html],
+        _status_group)
     _header_root = widgets.VBox(([_returning] if _returning else [])
                                 + ([_closing_beacon] if _closing_beacon else [])
                                 + [
