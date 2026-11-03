@@ -4455,6 +4455,16 @@ def _mol3d_card_html(path, name_html: str,
     )
 
 
+def _mol3d_iso(isovalue) -> float:
+    """The level a cube card draws both isosurface signs at: the magnitude
+    of *isovalue* when it is a positive finite number (a bool is not one),
+    else 0.02."""
+    if (isinstance(isovalue, (int, float)) and not isinstance(isovalue, bool)
+            and 0 < abs(isovalue) < float("inf")):
+        return abs(float(isovalue))
+    return 0.02
+
+
 def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
     """What a 3D card would show for this file, or None for no card.
 
@@ -4501,10 +4511,7 @@ def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
             n_atoms, formula = summary
             label = (f"{n_atoms} atoms · {formula}" if frames == 1
                      else f"{n_atoms} atoms · {frames} frames · {formula}")
-    iso = 0.02
-    if (isinstance(isovalue, (int, float)) and not isinstance(isovalue, bool)
-            and 0 < abs(isovalue) < float("inf")):
-        iso = abs(float(isovalue))
+    iso = _mol3d_iso(isovalue)
     if fmt == "cube":
         label = f"volumetric data · two isosurfaces at ±{iso:g}"
     return {"fmt": fmt, "text": text, "frames": frames, "label": label,
@@ -4896,6 +4903,56 @@ def _artifact_stamp(p) -> tuple:
         return (st.st_mtime_ns, st.st_size)
     except OSError:
         return (0, -1)
+
+
+# One view per file content per turn.
+#
+# Four paths draw a file into the chat in one turn: the workspace diff
+# after a file-writing tool, the cards of show_molecule, make_plot and
+# view_image, and the scan for files the answer names. Each drew without
+# asking the others: one write_file of an .xyz and one show_molecule of it
+# put the molecule on screen twice (field report, Raspberry Pi), and a
+# shown file the answer named, a plot followed by any later write, and an
+# image the turn wrote and then viewed were doubled the same way.
+#
+# The turn's ledger, ``state["_emitted_artifacts"]``, maps each resolved
+# path to the (stamp, view key) pairs drawn: the diff and the image cards
+# skip a content already on screen in any view, show_molecule one already
+# shown in the view it asks for, and the answer scan any path drawn at all.
+# The stamp is _artifact_stamp's (mtime, size): a file written again is
+# new content and is drawn again, as the diff always did. Rejected: a
+# content hash, which reads every candidate file a second time to catch a
+# rewrite with identical bytes.
+
+def _artifact_view_key(path, isovalue=None) -> str:
+    """Which drawing of a file a card is, beyond the file's content.
+
+    Input: a path and, for a show_molecule card, the isovalue it was
+    given. Output: ``"iso=<level>"`` for a cube, at the level its card
+    draws (``_mol3d_iso``, formatted as the card's ``data-mol3d-iso``),
+    and "" for every other file. A cube's isovalue is the one argument
+    that changes a card's drawing; show_molecule's label is the file's
+    path, not something the call chooses.
+    """
+    if Path(path).suffix.lower() == ".cube":
+        return f"iso={_mol3d_iso(isovalue):g}"
+    return ""
+
+
+# The workspace diff holds the preview of these until the turn's next
+# event, because a show_molecule card of the same file draws what the
+# preview does not: a cube at the isovalue the call chose, a .smi, .mol or
+# .sdf as the structural formula card (chat_viewer.FORMULA_SUFFIXES)
+# instead of the plain depiction. A show_molecule as that next event
+# draws the file once, with its own card; any other event (text, another
+# call, a notice, a first-byte wait tick, a refusal, the end of the turn)
+# draws the held preview first. Thinking does not end the hold: it is the
+# model choosing that next event, and it is not drawn before it either.
+# The wait tick bounds the hold when the endpoint is slow to answer. An
+# .xyz/.trj/.traj preview is the 3D card show_molecule draws, and is drawn
+# at once: holding it would delay it by the model's next round and change
+# nothing on screen.
+_HELD_PREVIEW_SUFFIXES = (".cube", ".smi", ".mol", ".sdf")
 
 
 def _format_bytes(n: int) -> str:
@@ -6543,8 +6600,11 @@ def create_tab(ctx):
         # name -> (mtime_ns, size) at turn start (D4). A rewritten file
         # is a new artifact; a name-only snapshot said it was not.
         "_ws_known_files": {},
-        # Absolute paths whose card is already on screen this turn.
-        "_emitted_artifacts": set(),
+        # This turn's views: resolved path -> {(stamp, view key)}; see
+        # _artifact_view_key. Diff previews held for a show_molecule card:
+        # resolved paths, in order (_HELD_PREVIEW_SUFFIXES).
+        "_emitted_artifacts": {},
+        "_held_previews": [],
         "_job_states_seen": {},   # last-seen {job_id: status} for proactive notifications (D5)
         "_job_event_thread": None,  # background watcher (D5)
         "_job_event_thread_stop": False,
@@ -20703,6 +20763,7 @@ def create_tab(ctx):
                     never fired (a turn waited 1806 s, 2026-09-11); and it
                     was rendered inside the answer, three times over."""
                     state["_last_stream_activity"] = time.monotonic()
+                    _flush_held_previews()   # see _HELD_PREVIEW_SUFFIXES
                     # The open-tasks notice repeats what the task line at
                     # the foot of the chat already shows; the terminal,
                     # which has no such line, still prints it.
@@ -20754,6 +20815,9 @@ def create_tab(ctx):
                     """
                     _now = time.monotonic()
                     state["_last_stream_activity"] = _now
+                    # The endpoint is slow to start the next round: a held
+                    # preview waits no longer than the first tick.
+                    _flush_held_previews()
                     if text and text.strip():
                         state.setdefault("_wait_started", _now)
                         # In the transcript, as one line that rewrites
@@ -20771,6 +20835,7 @@ def create_tab(ctx):
                 def _on_token(text):
                     nonlocal last_update
                     _mark_output()
+                    _flush_held_previews()   # see _HELD_PREVIEW_SUFFIXES
                     state["_tool_inflight"] = {}   # see _on_thinking
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
@@ -20806,6 +20871,12 @@ def create_tab(ctx):
 
                 def _on_tool_use(tool_name, tool_input):
                     _mark_output()
+                    # A held preview waits through a show_molecule call,
+                    # whose card may be the one view of it; any other call
+                    # draws it first (see _HELD_PREVIEW_SUFFIXES).
+                    if tool_name not in ("show_molecule",
+                                         "mcp__delfin-docs__show_molecule"):
+                        _flush_held_previews()
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
                     # Text first, then thinking, then the tool: the order
@@ -21125,6 +21196,76 @@ def create_tab(ctx):
                             + _tool_param_html(parsed, tool_input)
                         )
 
+                # One view per file content per turn: the ledger and the
+                # held previews (see _artifact_view_key and
+                # _HELD_PREVIEW_SUFFIXES at module level).
+                def _shown_already(path, view=None) -> bool:
+                    """Whether this content of *path* is on screen this
+                    turn: in any view (view None), or in that view."""
+                    try:
+                        real = Path(path).resolve()
+                    except (OSError, RuntimeError, ValueError):
+                        return False
+                    stamp = _artifact_stamp(real)
+                    views = (state.get("_emitted_artifacts") or {}).get(
+                        str(real), ())
+                    return any(st == stamp and (view is None or v == view)
+                               for st, v in views)
+
+                def _note_shown(path, view: str = "") -> None:
+                    """Record a view of *path*, as its content is now."""
+                    try:
+                        real = Path(path).resolve()
+                    except (OSError, RuntimeError, ValueError):
+                        return
+                    shown = state.get("_emitted_artifacts")
+                    if not isinstance(shown, dict):
+                        shown = state["_emitted_artifacts"] = {}
+                    shown.setdefault(str(real), set()).add(
+                        (_artifact_stamp(real), view))
+
+                def _show_artifact(path) -> None:
+                    """Append the chat's preview of *path* and record it."""
+                    try:
+                        html_block = _render_artifact_inline(path)
+                    except Exception:
+                        html_block = None
+                    if html_block:
+                        _append_tool_message(html_block)
+                        _note_shown(path, _artifact_view_key(path))
+
+                def _flush_held_previews() -> None:
+                    """Draw the previews the diff held: the event that
+                    arrived is not a show_molecule of them."""
+                    held = state.get("_held_previews") or []
+                    if not held:
+                        return
+                    state["_held_previews"] = []
+                    for real in held:
+                        if not _shown_already(real):
+                            _show_artifact(Path(real))
+
+                def _drop_held_preview(path) -> None:
+                    """A show_molecule card shows *path*: its held preview
+                    is not drawn as well."""
+                    try:
+                        real = str(Path(path).resolve())
+                    except (OSError, RuntimeError, ValueError):
+                        return
+                    state["_held_previews"] = [
+                        p for p in (state.get("_held_previews") or [])
+                        if p != real]
+
+                def _say_shown_above() -> None:
+                    """A card call whose view is on screen already: its
+                    call line says so, in place of a second copy."""
+                    msgs = state["chat_messages"]
+                    if msgs and msgs[-1].get("role") == "tool":
+                        msgs[-1]["content"] += (
+                            ' <span class="tool-param">'
+                            '→ shown above</span>')
+                        _refresh_chat_html()
+
                 def _emit_new_workspace_artifacts() -> None:
                     """D4: scan agent_workspace for files the turn created or
                     rewrote, and append their previews to the chat.
@@ -21133,7 +21274,10 @@ def create_tab(ctx):
                     diff shows a report the first time it is written and
                     never again — and "make the same report with the
                     corrected numbers" is the second time, which is the
-                    one the user is waiting for.
+                    one the user is waiting for. A content already on
+                    screen this turn (a card call drew it) is not drawn
+                    again; a molecule file a show_molecule card would draw
+                    differently is held (_HELD_PREVIEW_SUFFIXES).
                     """
                     try:
                         before = dict(state.get("_ws_known_files") or {})
@@ -21151,17 +21295,15 @@ def create_tab(ctx):
                         return
                     for name in sorted(changed):
                         path = current.get(name)
-                        if path is None:
+                        if path is None or _shown_already(path):
                             continue
-                        try:
-                            html_block = _render_artifact_inline(path)
-                        except Exception:
-                            html_block = None
-                        if html_block:
-                            _append_tool_message(html_block)
-                            _shown = set(state.get("_emitted_artifacts") or ())
-                            _shown.add(str(path.resolve()))
-                            state["_emitted_artifacts"] = _shown
+                        if path.suffix.lower() in _HELD_PREVIEW_SUFFIXES:
+                            _drop_held_preview(path)
+                            state["_held_previews"] = (
+                                list(state.get("_held_previews") or [])
+                                + [str(path.resolve())])
+                            continue
+                        _show_artifact(path)
                     # Update the snapshot so we don't re-emit the same artifact.
                     state["_ws_known_files"] = stamps
 
@@ -21234,23 +21376,38 @@ def create_tab(ctx):
                     # output falls through and is escaped below. The OpenAI
                     # loop reports its own tools as mcp__delfin-docs__<name>;
                     # a tool of a configured MCP server is not this one.
+                    #
+                    # Each card is one view of its file in this turn's
+                    # ledger: one already on screen is not drawn again
+                    # (_artifact_view_key), and the call line says so.
                     if tool_name == "show_molecule" and _raw_name in (
                             "show_molecule", "mcp__delfin-docs__show_molecule"):
-                        _card = _show_molecule_card_html(tool_output)
+                        from delfin.dashboard import chat_viewer as _cv_sm
+                        _pl = _cv_sm.card_payload(tool_output)
+                        _card = None
+                        if _pl is not None:
+                            # Another isovalue on a cube is another view.
+                            _view = _artifact_view_key(
+                                _pl["path"], _pl.get("isovalue"))
+                            _drop_held_preview(_pl["path"])
+                            if _shown_already(_pl["path"], _view):
+                                _say_shown_above()
+                                return
+                            _card = _show_molecule_card_html(tool_output)
                         if _card is not None:
                             _append_tool_message(_card)
+                            _note_shown(_pl["path"], _view)
                             return
                     if tool_name == "make_plot" and _raw_name in (
                             "make_plot", "mcp__delfin-docs__make_plot"):
                         _card = _make_plot_card_html(tool_output)
                         if _card is not None:
                             _append_tool_message(_card)
-                            # Not offered again when the answer names it.
+                            # Not drawn again by a later diff, nor when the
+                            # answer names it.
                             from delfin.dashboard import chat_viewer as _cv
                             _pl = _cv.card_payload(tool_output, "plot")
-                            _shown = set(state.get("_emitted_artifacts") or ())
-                            _shown.add(str(Path(_pl["path"]).resolve()))
-                            state["_emitted_artifacts"] = _shown
+                            _note_shown(_pl["path"])
                             return
                     # view_image: the model is sent the image; the user
                     # sees it here, drawn from the resolved path the tool
@@ -21259,11 +21416,13 @@ def create_tab(ctx):
                             "view_image", "mcp__delfin-docs__view_image"):
                         _card = _view_image_card_html(tool_output)
                         if _card is not None:
-                            _append_tool_message(_card)
                             import json as _json_vi
-                            _shown = set(state.get("_emitted_artifacts") or ())
-                            _shown.add(_json_vi.loads(tool_output)["path"])
-                            state["_emitted_artifacts"] = _shown
+                            _vi_path = _json_vi.loads(tool_output)["path"]
+                            if _shown_already(_vi_path):
+                                _say_shown_above()
+                            else:
+                                _append_tool_message(_card)
+                                _note_shown(_vi_path)
                             return
                     if tool_name == "skill_propose_patch":
                         # Diff only for a stored proposal; the raw result
@@ -21321,6 +21480,7 @@ def create_tab(ctx):
                         _emit_new_workspace_artifacts()
 
                 def _on_permission_denied(description):
+                    _flush_held_previews()   # see _HELD_PREVIEW_SUFFIXES
                     if chunks:
                         if not answer_shown[0]:
                             _update_last_assistant("".join(chunks), role_label)
@@ -21534,9 +21694,10 @@ def create_tab(ctx):
                     }
                 except Exception:
                     state["_ws_known_files"] = {}
-                # Cards already drawn THIS turn, so the answer scan below
-                # does not repeat what the tool output already showed.
-                state["_emitted_artifacts"] = set()
+                # Cards already drawn THIS turn, so no path draws a view
+                # another one already drew (_artifact_view_key).
+                state["_emitted_artifacts"] = {}
+                state["_held_previews"] = []
 
                 _turn_start_time = time.monotonic()
                 max_auto_steps = len(engine.route) + 1  # safety limit
@@ -21741,6 +21902,9 @@ def create_tab(ctx):
                         memory_context=_memory,
                         images=_vision_images,
                     )
+                    # A preview still held: nothing came after the call
+                    # that wrote the file.
+                    _flush_held_previews()
                     # Only the first turn was sent on its own; a later
                     # role of the cycle starts from the handoff.
                     _harness_send[0] = False
@@ -21810,18 +21974,13 @@ def create_tab(ctx):
 
                     # Files the answer NAMED, which the artifact diff above
                     # cannot see: it only knows what this turn wrote. See
-                    # _files_named_in_answer for what bounds it.
+                    # _files_named_in_answer for what bounds it. A path
+                    # drawn this turn in any view is not drawn again.
                     try:
                         for _f in _files_named_in_answer(
                                 "".join(chunks), ctx.agent_dir,
                                 already=state.get("_emitted_artifacts") or ()):
-                            _card = _render_artifact_inline(_f)
-                            if _card:
-                                _append_tool_message(_card)
-                                _shown = set(
-                                    state.get("_emitted_artifacts") or ())
-                                _shown.add(str(_f))
-                                state["_emitted_artifacts"] = _shown
+                            _show_artifact(_f)
                     except Exception:
                         pass
 
@@ -22012,6 +22171,7 @@ def create_tab(ctx):
                             thinking_budget=_budget,
                             memory_context=_memory,
                         )
+                        _flush_held_previews()   # as after the first call
                         if chunks:
                             _update_last_assistant("".join(chunks), role_label, finalize=True)
                     # Budget-stop notification. Only fires when the loop was
@@ -22136,6 +22296,7 @@ def create_tab(ctx):
                                 thinking_budget=_budget,
                                 memory_context=_memory,
                             )
+                            _flush_held_previews()   # as after the first call
                             if chunks:
                                 _update_last_assistant(
                                     "".join(chunks), role_label,
@@ -22184,6 +22345,7 @@ def create_tab(ctx):
                                     thinking_budget=_budget,
                                     memory_context=_memory,
                                 )
+                                _flush_held_previews()   # as after the first call
                                 if chunks:
                                     _update_last_assistant(
                                         "".join(chunks), role_label,
@@ -22240,6 +22402,7 @@ def create_tab(ctx):
                                     thinking_budget=_budget,
                                     memory_context=_memory,
                                 )
+                                _flush_held_previews()   # as after the first call
                                 if chunks:
                                     _update_last_assistant(
                                         "".join(chunks), role_label,
@@ -22793,6 +22956,12 @@ def create_tab(ctx):
 
             except Exception as exc:
                 error_text = str(exc)
+                # The file was written before the turn failed: its held
+                # preview is drawn, above the error.
+                try:
+                    _flush_held_previews()
+                except Exception:
+                    pass
                 # Stash the full traceback so a Bug Report captures it.
                 try:
                     import traceback as _tb
