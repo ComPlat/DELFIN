@@ -18727,6 +18727,12 @@ class _DocToolExecutor:
         if name == "verify_source":
             return self._execute_verify_source(arguments)
 
+        # w04: ORCA knowledge on demand -- lookups in the shipped stores
+        # (keyword dictionary, knowledge cards, workflow descriptors);
+        # nothing runs, nothing is written, no network.
+        if name in ("orca_explain", "orca_check_input", "workflow_candidates"):
+            return self._execute_orca_knowledge(name, arguments)
+
         if name == "remember_permission":
             if permissions is None:
                 return json.dumps({"error": (
@@ -28799,6 +28805,42 @@ class _DocToolExecutor:
         except Exception as exc:
             return json.dumps({"error": f"verify_source failed: {exc}"})
         return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
+
+    def _execute_orca_knowledge(self, name: str, arguments: dict) -> str:
+        """orca_explain / orca_check_input / workflow_candidates.
+
+        Each delegates to its function in ``delfin.api``; the result is
+        JSON from shipped, reviewed stores, so it is not wrapped as
+        untrusted. A missing required argument is refused here.
+        """
+        from delfin import api as _api
+        try:
+            if name == "orca_explain":
+                word = (arguments.get("word", "") or "").strip()
+                if not word:
+                    return json.dumps({"error": "orca_explain needs a word"})
+                payload = _api.orca_explain(word)
+            elif name == "orca_check_input":
+                desc = arguments.get("calc_description", "")
+                if not isinstance(desc, str):
+                    desc = json.dumps(desc)
+                if not desc.strip():
+                    return json.dumps({"error": (
+                        "orca_check_input needs a calc_description (JSON)")})
+                payload = _api.orca_check_input(desc)
+            else:
+                text = (arguments.get("task_text", "") or "").strip()
+                if not text:
+                    return json.dumps({"error": (
+                        "workflow_candidates needs a task_text")})
+                available = arguments.get("available")
+                if available is not None and not isinstance(available, list):
+                    available = None
+                payload = {"candidates":
+                           _api.workflow_candidates(text, available)}
+        except Exception as exc:
+            return json.dumps({"error": f"{name} failed: {exc}"})
+        return json.dumps(payload, ensure_ascii=False, default=str)
 
     def _execute_session_search(self, arguments: dict) -> str:
         """Read-only search over past sessions' archives (Paket 5).

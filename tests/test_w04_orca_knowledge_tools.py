@@ -132,3 +132,24 @@ def test_a_card_with_an_applies_condition_is_matched_by_it():
     hf = {"method_family": "hf", "keywords": ["TIGHTSCF"]}
     assert _card_matches(card, dft) is True
     assert _card_matches(card, hf) is False
+
+
+def test_the_three_tools_are_dispatched_by_the_executor(tmp_path):
+    """The model's call reaches the function: through _DocToolExecutor,
+    not only through delfin.api."""
+    import json as _json
+    from delfin.agent import api_client as A
+
+    ex = A._DocToolExecutor.__new__(A._DocToolExecutor)
+    out = _json.loads(ex._execute_orca_knowledge("orca_explain", {"word": "TightSCF"}))
+    assert "error" not in out
+    out = _json.loads(ex._execute_orca_knowledge(
+        "workflow_candidates", {"task_text": "redox potential of a Fe complex"}))
+    assert isinstance(out["candidates"], list) and out["candidates"]
+    out = _json.loads(ex._execute_orca_knowledge(
+        "orca_check_input",
+        {"calc_description": _json.dumps({"method_family": "dft",
+                                          "keywords": ["TIGHTSCF"]})}))
+    assert out.get("ok") is True
+    out = _json.loads(ex._execute_orca_knowledge("orca_explain", {"word": " "}))
+    assert "error" in out
