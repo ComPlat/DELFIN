@@ -70,9 +70,11 @@ RUFF_SELECT = ["F821", "F811", "F601", "F402", "F823"]
 def changed_files(rev_range: str = "origin/main...HEAD",
                   repo: Path = REPO) -> list[str]:
     """Files the branch changed, as ``git diff --name-only`` lists them."""
-    out = subprocess.run(
-        ["git", "diff", "--name-only", rev_range],
-        cwd=repo, capture_output=True, text=True,
+    from delfin.agent.safe_git import run as safe_git_run
+
+    out = safe_git_run(
+        ["diff", "--name-only", rev_range],
+        repo, timeout=30.0,
     )
     if out.returncode != 0:
         raise SystemExit(
