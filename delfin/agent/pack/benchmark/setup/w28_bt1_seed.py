@@ -73,11 +73,15 @@ pre-optimise (xtb or MLP) before the DFT scan.
 
 
 def main(argv) -> int:
-    ws = Path(argv[1]).resolve() if len(argv) > 1 else Path.cwd()
+    if len(argv) < 2:
+        print("usage: w28_bt1_seed.py <workspace>", file=sys.stderr)
+        return 2
+    ws = Path(argv[1]).resolve()
     folder = ws / "chem" / "butane"
     if folder.exists():
-        print(f"SKIP: {folder} already exists")
-        return 0
+        print(f"ERROR: {folder} already exists; refusing to overwrite",
+              file=sys.stderr)
+        return 1
     folder.mkdir(parents=True)
     (folder / "start.xyz").write_text(_anti_butane(), encoding="utf-8")
     (folder / "README.md").write_text(README, encoding="utf-8")
