@@ -669,7 +669,11 @@ def test_ts_goat_methods_and_resources_are_visible(tmp_path):
     method = methods[0]
     values = [value for _label, value in method.options]
     assert 'XTB' in values
-    assert 'XTB2' in values
+    # XTB is already the ORCA alias for GFN2-xTB: don't offer a
+    # duplicate synonym as a distinct method.
+    assert 'XTB2' not in values
+    assert 'XTB1' in values
+    assert 'XTBFF' in values
     assert 'r2SCAN-3c' in values
     assert 'B3LYP' in values
     assert method.value == 'XTB'
