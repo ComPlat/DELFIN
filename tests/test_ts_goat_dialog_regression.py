@@ -601,3 +601,51 @@ def test_ts_goat_responsive_centered_stage_and_click_input():
     assert 'viewer.zoomTo(); viewer.center()' in boot
     assert 'viewer.setView(savedView)' in boot
     assert 'ResizeObserver' in boot
+
+
+def test_ts_goat_canvas_tracks_output_host_and_center_fits_model(tmp_path):
+    """Output host, not a stale inner HTML wrapper, sets the WebGL size."""
+    from delfin.dashboard.molecule_viewer import (
+        ts_goat_viewer_bootstrap_js, ts_goat_viewer_center_js,
+    )
+
+    result, _ = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    from ipywidgets import Output
+    outputs = [
+        w for w in _iter_widgets(result['registry']['panel'])
+        if isinstance(w, Output)
+    ]
+    assert len(outputs) == 1
+    assert 'ts-goat-viewer-output' in outputs[0]._dom_classes
+
+    js = ts_goat_viewer_bootstrap_js('tsgoatviewer_test')
+    assert "el.closest('.ts-goat-viewer-output')" in js
+    assert 'stage.style.width = w' in js
+    assert 'stage.style.height = h' in js
+    assert 'viewer.resize(); viewer.render();' in js
+    assert 'ro.observe(outputHost || el);' in js
+    assert "window.addEventListener('resize', scheduleResize)" in js
+    assert 'window.removeEventListener(' in js
+    # Real zoomTo/center operates on the molecule model and leaves a
+    # little surrounding margin. Replacing getView()[0:3] by a raw
+    # coordinate midpoint can produce an excessively zoomed image.
+    assert 'viewer.zoomTo({model: 0})' in js
+    assert 'viewer.center({model: 0})' in js
+    assert 'viewer.zoom(0.85)' in js
+
+    center = ts_goat_viewer_center_js('tsgoatviewer_test')
+    assert 'viewer.resize()' in center
+    assert 'viewer.zoomTo({model: 0})' in center
+    assert 'viewer.center({model: 0})' in center
+
+
+def test_ts_goat_column_ratio_favors_viewer():
+    """The accordion column must be slightly narrower than before."""
+    from delfin.dashboard.ts_goat_panel import _two_column_layout
+    from ipywidgets import HTML
+
+    box = _two_column_layout(HTML('title'), (HTML('left'),), (HTML('right'),))
+    left, right = box.children[1].children
+    assert left.layout.flex == '0 1 35%'
+    assert right.layout.flex == '1 1 63%'
