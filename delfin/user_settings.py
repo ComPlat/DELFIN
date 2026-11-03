@@ -467,6 +467,54 @@ def normalize_string_list_setting(value, label):
     return normalized
 
 
+#: runtime.mlp keys (read by delfin.mlp_tools.cluster_dispatch.MLPClusterConfig
+#: and the guided set-up): str keys and int keys. 0 / "" mean "built-in default".
+_MLP_RUNTIME_STR_KEYS = ("gres", "env_activation", "time_limit", "backend", "env_prefix")
+_MLP_RUNTIME_INT_KEYS = ("cpus_per_task", "mem_mb")
+
+
+def normalize_mlp_runtime(value):
+    """``runtime.mlp`` as a dict of the known keys; unknown keys dropped.
+
+    Strings are stripped and must be one line (an env_activation line is
+    rendered into a job script, one step per ';'); integers are >= 0.
+    """
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValueError("Settings key 'runtime.mlp' must be a JSON object.")
+    out = {}
+    for key in _MLP_RUNTIME_STR_KEYS:
+        if key in value:
+            text = str(value.get(key) or "").strip()
+            if "\n" in text or "\r" in text:
+                raise ValueError(f"Settings key 'runtime.mlp.{key}' must be one line.")
+            out[key] = text
+    for key in _MLP_RUNTIME_INT_KEYS:
+        if key in value:
+            try:
+                number = int(value.get(key) or 0)
+            except (TypeError, ValueError):
+                raise ValueError(f"Settings key 'runtime.mlp.{key}' must be an integer.")
+            if number < 0:
+                raise ValueError(f"Settings key 'runtime.mlp.{key}' must be >= 0.")
+            out[key] = number
+    return out
+
+
+def carry_runtime_sections(previous_runtime, new_runtime):
+    """``new_runtime`` plus the sections a widget payload does not hold.
+
+    The dashboard rebuilds ``runtime`` from its widgets; ``runtime.mlp`` has
+    no widget there, so without this a dashboard save dropped it.
+    """
+    merged = dict(new_runtime or {})
+    previous = previous_runtime if isinstance(previous_runtime, dict) else {}
+    if "mlp" in previous and "mlp" not in merged:
+        merged["mlp"] = previous["mlp"]
+    return merged
+
+
 def get_settings_path(base_path=None):
     return Path(base_path).expanduser() if base_path else (Path.home() / SETTINGS_FILE_NAME)
 
@@ -651,6 +699,9 @@ def _normalized_settings_dict(payload):
             ),
         },
     }
+    if "mlp" in runtime:
+        # Only when present: a settings file without it stays byte-identical.
+        normalized["runtime"]["mlp"] = normalize_mlp_runtime(runtime.get("mlp"))
     features = normalized.get("features", {})
     if features is None:
         features = {}
