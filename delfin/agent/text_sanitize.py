@@ -359,8 +359,11 @@ def parse_leaked_tool_calls(text: str) -> list[dict]:
             else:
                 for p in _DSML_PARAM.finditer(m.group(2)):
                     args[p.group(1)] = p.group(2)
-            if name not in [c["name"] for c in out]:
-                out.append({"name": name, "arguments": args})
+            # Drop only an exact repeat (same tool, same arguments): two
+            # different calls to one tool are two calls.
+            call = {"name": name, "arguments": args}
+            if call not in out:
+                out.append(call)
     for m in _LEAKED_TOOL.finditer(text):
         name = m.group(1)
         try:

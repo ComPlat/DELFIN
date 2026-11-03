@@ -217,3 +217,19 @@ def test_harmony_and_qwen_grammars_unaffected():
     q = parse_leaked_tool_calls(qwen)
     assert h and h[0]["name"] == "search_docs"
     assert q and q[0]["name"] == "read_file"
+
+
+def test_two_different_calls_to_one_tool_are_both_recovered():
+    """Two bash calls with different commands are two calls; only an exact
+    repeat collapses."""
+    from delfin.agent.text_sanitize import parse_leaked_tool_calls
+
+    def block(cmd):
+        return ('<｜DSML｜tool_calls><｜DSML｜invoke name="bash">'
+                f'<｜DSML｜parameter name="command" string="true">{cmd}'
+                '</｜DSML｜parameter><｜DSML｜/invoke></｜DSML｜tool_calls>')
+
+    calls = parse_leaked_tool_calls(block("git status") + block("git log -1"))
+    assert [c["arguments"]["command"] for c in calls] == ["git status", "git log -1"]
+    repeat = parse_leaked_tool_calls(block("git status") + block("git status"))
+    assert len(repeat) == 1
