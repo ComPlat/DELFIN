@@ -243,3 +243,42 @@ def test_api_handlers_exist_and_are_documented():
                  "mlp_rank", "mlp_preoptimize"):
         fn = getattr(api, name)
         assert fn.__doc__, name
+
+
+# ------------------------------------------------------ m1 registry surface ---
+def test_list_backends_answers_from_the_m1_registry():
+    """mlp_list_backends reports every registry backend with m1 fields."""
+    from delfin.api import mlp_list_backends
+    from delfin.mlp_tools.registry import backend_names
+
+    out = mlp_list_backends()
+    reg_names = {b["name"] for b in out["backends"]}
+    assert reg_names == set(backend_names()), (reg_names, set(backend_names()))
+    for entry in out["backends"]:
+        for key in ("capabilities", "scope", "literature", "device_policy"):
+            assert key in entry, (entry["name"], key)
+        assert isinstance(entry["available"], bool)
+        if not entry["available"]:
+            assert entry.get("reason") or entry.get("install_hint"), entry
+
+
+def test_legacy_backend_names_still_listed_by_the_registry_tool():
+    from delfin.api import mlp_list_backends
+
+    out = mlp_list_backends()
+    names = {b["name"].lower().replace("-", "").replace("_", "")
+             for b in out["backends"]}
+    for expected in ("ani2x", "aimnet2", "maceoff", "chgnet", "m3gnet",
+                     "schnetpack", "nequip", "alignn", "macemp",
+                     "fairchemuma", "xtb"):
+        assert expected in names, (expected, names)
+
+
+def test_no_duplicate_mlp_backend_list_tool_in_api():
+    """m1's temporary mlp_backends alias is gone; one tool, one name."""
+    import delfin.api as api_mod
+
+    assert not hasattr(api_mod, "mlp_backends")
+    catalog = {t["name"] for t in api_mod._TOOL_CATALOG}
+    assert "mlp_backends" not in catalog
+    assert "mlp_list_backends" in catalog

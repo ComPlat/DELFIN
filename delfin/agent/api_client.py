@@ -31652,12 +31652,22 @@ def _infer_provider_from_base_url(base_url: str) -> str:
     ``provider`` (create_client always passes one). ``localhost:11434`` and
     no-auth local servers → ollama; the KIT host → kit; else openai.
     """
-    u = (base_url or "").lower()
+    u = (base_url or "").strip().lower()
     if not u:
         return "openai"
-    if "11434" in u or "ki-toolbox" not in u and ("localhost" in u or "127.0.0.1" in u):
+    # Decide on the parsed host, never on a substring of the whole URL: a
+    # substring match sent ``https://other.example/?kit.edu`` the KIT key.
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(u if "://" in u else "http://" + u)
+        host = (parts.hostname or "").rstrip(".")
+        port = parts.port
+    except ValueError:
+        return "openai"
+    is_kit = host == "kit.edu" or host.endswith(".kit.edu")
+    if port == 11434 or (not is_kit and host in ("localhost", "127.0.0.1")):
         return "ollama"
-    if "ki-toolbox" in u or "kit.edu" in u:
+    if is_kit:
         return "kit"
     return "openai"
 
