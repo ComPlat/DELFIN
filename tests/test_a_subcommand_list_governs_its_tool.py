@@ -102,13 +102,19 @@ ALLOWED = [
 ]
 
 
-@pytest.mark.parametrize("cmd", REFUSED)
+def _stable_id(cmd):
+    """The test id without this machine's interpreter path: CI's shards must
+    collect the same ids even when a runner image moves the patch version."""
+    return cmd.replace(PY, "PY")
+
+
+@pytest.mark.parametrize("cmd", REFUSED, ids=_stable_id)
 def test_a_listed_tool_runs_only_its_listed_subcommands(cmd):
     res = SB.is_allowed(cmd)
     assert not res.allowed, (cmd, res.reason)
 
 
-@pytest.mark.parametrize("cmd", ALLOWED)
+@pytest.mark.parametrize("cmd", ALLOWED, ids=_stable_id)
 def test_the_read_forms_stay_allowed(cmd):
     res = SB.is_allowed(cmd)
     assert res.allowed, (cmd, res.reason)
