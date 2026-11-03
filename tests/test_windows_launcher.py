@@ -462,3 +462,25 @@ def test_a_server_can_make_keep_session_its_default(tmp_path):
     result = _run_bootstrap(env, home, probe)
     assert result.returncode == 0, result.stderr
     assert 'KEEP=1' in result.stdout
+
+
+def test_people_mode_replaces_an_own_settings_copy_by_the_link(tmp_path):
+    # A person home made before the settings link existed holds its own
+    # copy; the account's defaults never reach it. It is kept aside and
+    # linked, and a second connection changes nothing more.
+    home = tmp_path / 'home'
+    (home / '.config/delfin').mkdir(parents=True)
+    (home / '.config/delfin/launcher-people.conf').write_text('')
+    (home / '.delfin_settings.json').write_text('{"agent": {"permission_profile": "all_free"}}')
+    person_home = home / 'people' / 'anna'
+    person_home.mkdir(parents=True)
+    (person_home / '.delfin_settings.json').write_text('{"agent": {"permission_profile": "plan"}}')
+    env, _ = _bootstrap_env(tmp_path, home)
+    probe = 'print("OK")'
+    for _ in range(2):
+        result = _run_bootstrap(env, home, probe, person='anna')
+        assert result.returncode == 0, result.stderr
+    link = person_home / '.delfin_settings.json'
+    assert link.is_symlink() and link.resolve() == (home / '.delfin_settings.json').resolve()
+    kept = list(person_home.glob('.delfin_settings.json.before-shared-*'))
+    assert len(kept) == 1 and '"plan"' in kept[0].read_text()
