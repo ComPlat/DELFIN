@@ -1494,6 +1494,12 @@ def pytest_configure(config):
         "markers",
         "slow: heavy or order-dependent test, excluded from the fast CI gate",
     )
+    config.addinivalue_line(
+        "markers",
+        "private_fixtures: needs the private store of real ORCA output "
+        "(DELFIN_PRIVATE_FIXTURES); select locally with "
+        "`pytest -m private_fixtures`, excluded in CI by SKIP behaviour",
+    )
     import os
     for name in _LIFELINE_NAMES:
         if name in os.environ:
@@ -1508,6 +1514,26 @@ def pytest_unconfigure(config):
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()
     _private_tmp_removed()
+
+
+_HELPER_USE_RE = None
+
+
+def _uses_private_fixtures(module) -> bool:
+    """True when a test module reads the private ORCA fixture store."""
+    global _HELPER_USE_RE
+    import inspect
+    import re
+
+    if _HELPER_USE_RE is None:
+        _HELPER_USE_RE = re.compile(
+            r"private_fixtures_or_skip|private_fixtures_path|lc1_fixture_dir"
+        )
+    try:
+        source = inspect.getsource(module)
+    except (OSError, TypeError):
+        return False
+    return bool(_HELPER_USE_RE.search(source))
 
 
 #: The suite's stand-in for /tmp as the base of the launcher's private
@@ -1568,10 +1594,18 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 
 def pytest_collection_modifyitems(config, items):
+    seen: dict[str, bool] = {}
     for item in items:
         fname = item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1]
         if fname in _SLOW_TEST_FILES:
             item.add_marker(pytest.mark.slow)
+        module = getattr(item, "module", None)
+        if module is None:
+            continue
+        if module.__name__ not in seen:
+            seen[module.__name__] = _uses_private_fixtures(module)
+        if seen[module.__name__]:
+            item.add_marker(pytest.mark.private_fixtures)
 
 
 _PACKAGE_AST_LAST: list = []

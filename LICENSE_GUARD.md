@@ -75,6 +75,20 @@ versions) read it via an environment variable and SKIP when the
 variable is absent — they never fail in CI. The variable is set by the
 developer/operator locally, never in CI.
 
+The store is managed with `delfin-dev fixtures` (`delfin/
+fixtures_store.py`): `init <dir>` creates the layout, `add <src> --as
+<rel>` copies a file into a repository-mirroring relative path and
+records sha256, ORCA version and provenance in `manifest.json`,
+`verify` re-checks the hashes and the no-personal-data rule, `where`
+prints the resolved store root. The root comes from the
+`DELFIN_PRIVATE_FIXTURES` environment variable, then from
+`paths.fixtures_dir` in the DELFIN settings file — never a hard-coded
+path. The test helper (`tests/test_lc1_fixtures_helper.py`) refuses a
+file whose sha256 does not match the manifest. Tests that use the
+store carry the `private_fixtures` marker (auto-applied to every
+module importing the helper), so a local run can select them with
+`pytest -m private_fixtures`. See docs/PRIVATE_FIXTURE_STORE.md.
+
 ## Escape hatch
 
 `# license-guard: allow` on the offending line — for a deliberate,
