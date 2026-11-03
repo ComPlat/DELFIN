@@ -535,7 +535,31 @@ def describe_backend(name: str) -> dict:
         "device_policy": spec.device_policy,
         "literature": list(spec.literature),
         "requires_packages": list(spec.requires_packages),
+        "code_licence": dict(spec.code_licence),
+        "weight_licence": dict(spec.weight_licence),
     }
+
+
+def filter_backends_by_licence(
+    names: list[str], *, refuse_noncommercial: bool
+) -> tuple[list[str], list[str]]:
+    """Split ``names`` into (allowed, refused) by weight-licence policy.
+
+    With ``refuse_noncommercial`` the backends whose weights carry a
+    non-commercial licence (e.g. MACE foundation models under the Academic
+    Software License) are refused; gated weights are NOT refused here (the
+    gate is the user's own HF login, not a licence class).
+    """
+    if not refuse_noncommercial:
+        return list(names), []
+    allowed, refused = [], []
+    for n in names:
+        spec = _SPECS[resolve(n)]
+        if spec.weight_licence.get("non_commercial"):
+            refused.append(spec.name)
+        else:
+            allowed.append(spec.name)
+    return allowed, refused
 
 
 def describe_backends() -> list[dict]:
@@ -579,6 +603,7 @@ def create_calculator(
     device: str = "cpu",
     charge: int = 0,
     mult: int = 1,
+    refuse_noncommercial_weights: bool = False,
     **kwargs,
 ):
     """Create an ASE calculator via the registry (opt-in new layer).
@@ -589,9 +614,21 @@ def create_calculator(
     - nonzero ``charge``/``mult`` are REFUSED with a clear error for
       backends that do not support charge/spin (only aimnet2 does) —
       never silently ignored.
+    - ``refuse_noncommercial_weights=True`` refuses backends whose model
+      weights carry a non-commercial licence (LICENSE_GUARD.md family 4).
     """
     key = resolve(backend)
     spec = _SPECS[key]
+
+    if refuse_noncommercial_weights and spec.weight_licence.get(
+        "non_commercial"
+    ):
+        raise ValueError(
+            f"MLP backend '{spec.name}' uses non-commercial model weights "
+            f"({spec.weight_licence['name']}, {spec.weight_licence['url']}); "
+            f"refuse_noncommercial_weights is set — refusing. See "
+            f"LICENSE_GUARD.md family 4."
+        )
 
     if not spec.capabilities.charge_spin and (charge != 0 or mult != 1):
         raise ValueError(
