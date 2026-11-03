@@ -8,6 +8,11 @@ role=$5
 tunnel_path=${6:-}
 keep=${7:-0}
 working=${8:-0}
+person=${9:-}
+# `python -c` puts the current directory first on sys.path: a plain folder
+# named "delfin" there (an install root, a repository root) then shadows the
+# real package as an empty namespace package. Every probe and start drops it.
+no_cwd='import sys; sys.path[:] = [p for p in sys.path if p not in ("", ".")]'
 expand_path() {
     case "$1" in
         '~') printf '%s' "$HOME" ;;
@@ -36,7 +41,7 @@ usable() {
     local repo
     [ -x "$1" ] || return 1
     repo=$(repository_for_python "$1")
-    PYTHONPATH="${repo:+$repo:}${PYTHONPATH:-}" "$1" -c 'import delfin.cli_voila, delfin.agent.where, delfin.dashboard.session' >/dev/null 2>&1
+    PYTHONPATH="${repo:+$repo:}${PYTHONPATH:-}" "$1" -c "$no_cwd"'; import delfin.cli_voila, delfin.agent.where, delfin.dashboard.session' >/dev/null 2>&1
 }
 choose() {
     if [ -z "$python" ] && usable "$1"; then
@@ -139,6 +144,28 @@ if [ -f "$python_dir/activate" ] && [ "$active_root" != "$environment_root" ]; t
 fi
 export PS1
 printf 'DELFIN: Environment found: %s\n' "$python"
+# Several people on one server account (opt-in by the account owner): each
+# Windows user gets a home of their own under ~/people, so sessions,
+# dashboard, token, agent service and workspace do not collide. Shared by
+# link: the account's credentials and settings, tools, caches, git and SSH
+# setup, and the installation itself. Not a security boundary between them:
+# they are one Unix user.
+if [ -n "$person" ] && [ -f "$HOME/.config/delfin/launcher-people.conf" ]; then
+    case "$person" in
+        *[!a-z0-9_-]*|-*) printf '%s\n' 'DELFIN: Invalid person name.' >&2; exit 1 ;;
+    esac
+    shared=$HOME
+    person_home="$shared/people/$person"
+    (umask 077 && mkdir -p "$person_home/.delfin" "$person_home/.run" "$person_home/work")
+    for item in delfin .local .cache .ssh .gitconfig .delfin/credentials.json .delfin/settings.json .delfin/tools .delfin/doc_index.json; do
+        if [ -e "$shared/$item" ] && [ ! -e "$person_home/$item" ] && [ ! -L "$person_home/$item" ]; then
+            ln -s "$shared/$item" "$person_home/$item"
+        fi
+    done
+    export HOME="$person_home" DELFIN_PERSON="$person" DELFIN_RUNTIME_DIR="$person_home/.run"
+    if [ -z "$directory" ]; then cd -- "$person_home/work"; fi
+    printf 'DELFIN: Person %s (%s)\n' "$person" "$person_home"
+fi
 if [ "$role" = terminal ]; then
     # The interactive login shell already loaded startup files and activated the environment.
     # Do not load .bashrc a second time after inheriting its decorated prompt.
@@ -146,7 +173,7 @@ if [ "$role" = terminal ]; then
     exec bash --norc -i
 fi
 # Capability check runs argparse help only, before any dashboard/tmux startup.
-if ! dashboard_help=$("$python" -c 'from delfin.cli_voila import main; main(["--help"])' 2>&1); then
+if ! dashboard_help=$("$python" -c "$no_cwd"'; from delfin.cli_voila import main; main(["--help"])' 2>&1); then
     printf '%s\n' 'DELFIN: Cannot read dashboard CLI capabilities. Check the server DELFIN installation.' >&2
     exit 1
 fi
@@ -154,4 +181,4 @@ case "$dashboard_help" in
     *--strict-port*) ;;
     *) printf '%s\n' 'DELFIN: Server DELFIN is too old for this launcher (--strict-port is missing). Update the server installation to the Windows-launcher release; updating the Windows app alone is not enough.' >&2; exit 1 ;;
 esac
-exec "$python" -c 'import base64,sys;exec(base64.b64decode(sys.argv.pop(1)))' "$payload" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working"
+exec "$python" -c "$no_cwd"';import base64;exec(base64.b64decode(sys.argv.pop(1)))' "$payload" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working"
