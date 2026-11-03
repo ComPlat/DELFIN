@@ -10,6 +10,13 @@ CONTROL.txt decides what DELFIN's classic workflows (OCCUPIER, ESD, TADF,
 IMAG, redox, thermodynamics) compute. Every key must be understood, every
 choice must have a source, and the user confirms before anything is applied.
 
+Before tuning keys, check you are in the right workflow at all — in this
+order: (a) an existing DELFIN workflow that fits the request (the
+deterministic `workflow_candidates(task_text)` tool ranks them with the
+CONTROL keys to set); (b) if it lacks one step, extend it rather than
+replace it; (c) compose from the ORCA building blocks only when nothing
+fits. Tuning keys of an ill-fitting workflow is the wrong fix.
+
 1. Run `/control show` to read the current CONTROL content.
 2. Understand the system. Identify the system class (organic,
    3d-metal complex, 4d/5d or 4f/5f complex, ESD/UV-Vis, NMR, redox,

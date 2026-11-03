@@ -62,3 +62,35 @@ def test_a_model_the_gateway_does_not_know_is_not_retried():
         "Error code: 400 - {'detail': 'litellm.NotFoundError: NotFoundError: "
         "Hosted_vllmException - {\"error\":\"Model \\'glm-5.3\\' not found."
         "\"}'}"))
+
+
+# Measured 2026-11-03: the same transport fault, wrapped differently --
+# the proxy reports it as a bare litellm.APIConnectionError inside a 400
+# body, with "payload not completed" (no "is") or only the exception
+# name and no message text at all. A chat request still cannot cause
+# any of these; the class name says the CONNECTION failed.
+_MEASURED_2026_11_03 = (
+    "Error code: 400 - {'detail': 'litellm.APIConnectionError: "
+    "Response payload not completed'}",
+    "Error code: 400 - {'detail': 'litellm.APIConnectionError: "
+    "Connection closed by the upstream model server.'}",
+)
+
+
+def test_a_wrapped_apiconnectionerror_400_is_transient():
+    for msg in _MEASURED_2026_11_03:
+        assert _is_transient_api_error(_BadRequest(msg)), msg
+
+
+def test_an_apiconnectionerror_class_with_400_status_is_transient():
+    class APIConnectionError(_BadRequest):
+        status_code = 400
+
+    assert _is_transient_api_error(
+        APIConnectionError("Error code: 400 - {'detail': 'upstream gone'}"))
+
+
+def test_a_genuine_400_without_a_transport_marker_stays_final():
+    assert not _is_transient_api_error(_BadRequest(
+        "Error code: 400 - {'error': {'message': 'invalid value for "
+        "temperature'}}"))
