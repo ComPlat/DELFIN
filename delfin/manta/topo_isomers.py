@@ -14,6 +14,7 @@ from delfin.common.logging import get_logger
 from delfin.manta.chelate_templates import (
     _best_chelate_conformer_coords,
     _build_topology_xyz_from_scratch,
+    _chelate_conformer_candidates,
     _embed_fragment_procrustes,
 )
 from delfin.manta.conformer_io import (
@@ -1469,6 +1470,58 @@ def _build_topology_xyz_from_template(
                             mol, frag, frag_donors, target_for_search,
                             rank=chelate_rank,
                         )
+                        # PROCRUSTES-METAL-SPIN (re-embedded chelate): the champion metal-spin above
+                        # only fires when frag_xyz IS the template fragment (np.array_equal guard), so a
+                        # re-embedded chelate's donor-H side is decided purely by the ETKDG conformer
+                        # rank-0 picks.  ETKDG puts an amine N-H into the metal shell for this
+                        # ethylenediamine under RDKit 2026.9.1 (measured fitted H..Zn = 1.695 A).  The
+                        # fitted H..metal distance is invariant to spin about the donor axis, so no spin
+                        # fixes it -- the conformer choice must.  When the flag is on and the caller
+                        # wants the best-fit conformer (chelate_rank == 0; higher ranks are deliberate
+                        # isomer variety and are left alone), prefer the best-bite candidate whose rigid
+                        # fit keeps every donor-bonded H > 2.00 A from the metal, falling back to the
+                        # pre-existing rank-0 pick if none is clean.  Off flag -> byte-identical.
+                        if (os.environ.get("DELFIN_FFFREE_PROCRUSTES_METAL_SPIN", "0") == "1"
+                                and len(frag_donors) == 2
+                                and chelate_rank == 0):
+                            try:
+                                _cands = _chelate_conformer_candidates(
+                                    mol, frag, frag_donors, target_for_search,
+                                )
+                                _safe_map = None
+                                if _cands:
+                                    _target_arr = np.asarray(tgt, dtype=float)
+                                    for _c in _cands:
+                                        _cxyz = np.array(
+                                            [list(_c[o]) for o in frag_list], dtype=float)
+                                        _sd = _cxyz[donor_local, :]
+                                        _sc = _sd.mean(axis=0)
+                                        _tc = _target_arr.mean(axis=0)
+                                        _Xm = _sd - _sc
+                                        _Ym = _target_arr - _tc
+                                        _Hm = _Xm.T @ _Ym
+                                        _Um, _Sm, _Vtm = np.linalg.svd(_Hm)
+                                        _Rm = _Vtm.T @ _Um.T
+                                        if np.linalg.det(_Rm) < 0:
+                                            _Vtm[-1, :] *= -1
+                                            _Rm = _Vtm.T @ _Um.T
+                                        _T = (_cxyz - _sc) @ _Rm.T + _tc
+                                        _off = 9.0
+                                        for _d in frag_donors:
+                                            _da = mol.GetAtomWithIdx(_d)
+                                            for _nb in _da.GetNeighbors():
+                                                if _nb.GetAtomicNum() == 1:
+                                                    _li = frag_list.index(_nb.GetIdx())
+                                                    _off = min(
+                                                        _off,
+                                                        float(np.linalg.norm(_T[_li])))
+                                        if _off > 2.00:
+                                            _safe_map = _c
+                                            break
+                                if _safe_map is not None:
+                                    coords_map = _safe_map
+                            except Exception:
+                                pass
                         if coords_map is not None:
                             new_frag_xyz = np.array(
                                 [list(coords_map[old]) for old in frag_list],
