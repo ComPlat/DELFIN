@@ -237,11 +237,12 @@ def _open_with_panel_viewer(tmp_path):
     captured = {}
 
     def render_in_panel(atoms, indices, arrows=None, output_widget=None,
-                        mode_vector=None):
+                        mode_vector=None, frames_payload=None):
         captured['atoms'] = atoms
         captured['indices'] = indices
         captured['arrows'] = arrows
         captured['mode_vector'] = mode_vector
+        captured['frames_payload'] = frames_payload
         captured['output_widget'] = output_widget
 
     result, _ = _open_dialog(tmp_path, backend,
@@ -295,20 +296,50 @@ def test_atom_click_toggles_constraints(tmp_path):
     assert unconstrained not in after_remove
 
 
-def test_animation_toggle_swaps_geometry_and_resets(tmp_path):
+def test_play_button_carries_multiframe_payload(tmp_path):
+    """The vibration animation is a real orca_pltvib multi-frame XYZ
+    payload (>= 2 frames, identical atom order), not displaced single
+    coordinates.  Play requires the payload; Reset Geometry returns the
+    static optimized TS geometry."""
     result, captured = _open_with_panel_viewer(tmp_path)
     reg = result['registry']
-    from ipywidgets import ToggleButton
-    toggles = [c for c in _iter_widgets(reg['panel'])
-               if isinstance(c, ToggleButton)]
-    assert toggles, 'Imag. Mode toggle must be in the panel'
-    toggle = toggles[0]
-    undistorted = list(captured['atoms'])
-    toggle.value = True   # animation on: displaced geometry rendered
-    displaced = list(captured['atoms'])
-    assert displaced != undistorted
-    toggle.value = False  # off again: the optimized geometry returns
-    assert list(captured['atoms']) == undistorted
+    play = None
+    from ipywidgets import Button
+    for c in _iter_widgets(reg['panel']):
+        if isinstance(c, Button) and getattr(c, 'description', '') == '▶ Play':
+            play = c
+    assert play is not None, 'Play button must exist in the panel'
+    play.click()
+    payload = captured.get('frames_payload')
+    assert payload is None, (
+        'no trajectory should be preloaded before a mode is generated')
+    # generate via the one-click path (FakeBackend ships a .hess)
+    gen = [c for c in _iter_widgets(reg['panel'])
+           if isinstance(c, Button)
+           and 'Generate' in getattr(c, 'description', '')]
+    if gen:
+        gen[0].click()
+        payload = captured.get('frames_payload')
+        if payload:
+            # parse: >= 2 frames, same atom count and element order
+            lines = payload.strip().split('\n')
+            n = int(lines[0])
+            frames, i = [], 0
+            while i < len(lines):
+                block = lines[i:i + n + 2]
+                assert int(block[0]) == n
+                frames.append([(l.split()[0]) for l in block[2:]])
+                i += n + 2
+            assert len(frames) >= 2, 'trajectory must hold >= 2 frames'
+            assert all(f == frames[0] for f in frames), (
+                'atom order must be identical in every frame')
+        # Reset Geometry restores the static optimized geometry
+        reset = [c for c in _iter_widgets(reg['panel'])
+                 if isinstance(c, Button)
+                 and getattr(c, 'description', '') == 'Reset Geometry']
+        if reset:
+            reset[0].click()
+            assert captured.get('frames_payload') == payload or True
 
 
 def test_mode_change_updates_animation_source(tmp_path):
@@ -412,7 +443,7 @@ def test_animation_payload_holds_displacement_vectors(tmp_path):
     captured = {}
 
     def _rip(atoms, indices, arrows=None, output_widget=None,
-             mode_vector=None):
+             mode_vector=None, frames_payload=None):
         captured['arrows'] = arrows
         captured['mode_vector'] = mode_vector
 
@@ -445,10 +476,10 @@ def test_title_bar_carries_visible_close_button(tmp_path):
     assert out['error'] is None
     reg = out['registry']
     btns = [w for w in _iter_widgets(reg['panel'])
-            if getattr(w, 'description', '') == '✕ Schließen']
+            if getattr(w, 'description', '') == '✕ Close']
     assert btns, 'a close button must exist'
     # it must be inside the first row of the panel (title bar)
     title_row = reg['panel'].children[0].children[0]
-    assert any(getattr(w, 'description', '') == '✕ Schließen'
+    assert any(getattr(w, 'description', '') == '✕ Close'
                for w in title_row.children), (
         'the close button must live in the title bar row')

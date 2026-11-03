@@ -14,6 +14,8 @@ from pathlib import Path
 import ipywidgets as widgets
 from IPython.display import HTML, display
 
+from delfin import ts_goat_traj
+
 
 def _two_column_layout(title_row, left, right):
     """Title bar + left (info/settings) | right (3D viewer) columns.
@@ -28,7 +30,9 @@ def _two_column_layout(title_row, left, right):
         ),
     )
     left_box, right_box = body.children
-    left_box.layout = widgets.Layout(flex='1 1 46%', min_width='340px')
+    left_box.layout = widgets.Layout(
+        flex='1 1 46%', min_width='340px',
+        max_height='720px', overflow_y='auto')
     right_box.layout = widgets.Layout(flex='1 1 54%', min_width='380px')
     return widgets.VBox((title_row, body))
 
@@ -72,7 +76,7 @@ def build_ts_goat_panel(
     # row and scrolled out of sight.  The title bar now carries its own
     # close button at the right edge, always visible without scrolling.
     title_close_btn = widgets.Button(
-        description='✕ Schließen', button_style='warning',
+        description='✕ Close', button_style='warning',
         tooltip='Close TS→GOAT and restore the normal file view',
         layout=widgets.Layout(width='120px', margin='0 0 0 auto'),
     )
@@ -99,43 +103,65 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='320px'),
     )
     mode_warning = widgets.HTML('')
-    # Imaginary-mode animation controls (user request 2026-11-02): the
-    # selected mode displaces the structure along +/- eigenvector with
-    # adjustable amplitude; arrows show the displacement directions.
+    # Imaginary-mode animation: validated orca_pltvib frames are
+    # loaded into the viewer (addModelsAsFrames) and played back with
+    # setFrame (fixed camera).  Play auto-generates the trajectory on
+    # first click; a missing binary keeps the static TS visible with
+    # an explanatory status line.
     anim_toggle = widgets.ToggleButton(
-        value=False, description='Imag. Mode anzeigen',
+        value=False, description='Imaginary Mode',
         button_style='warning',
-        tooltip='Displace the TS along the selected imaginary mode',
-        layout=widgets.Layout(width='190px'),
+        tooltip='Animate the selected imaginary mode (ORCA trajectory)',
+        layout=widgets.Layout(width='170px'),
     )
+    anim_generate = widgets.Button(
+        description='Generate / Load Mode', disabled=False,
+        tooltip='Generate or load the vibration trajectory for the selected mode',
+        layout=widgets.Layout(width='200px'),
+    )
+    anim_status = widgets.HTML('')
     anim_play = widgets.Button(
         description='▶ Play', disabled=True,
+        tooltip='Play the vibration trajectory in a loop',
         layout=widgets.Layout(width='90px'),
     )
     anim_pause = widgets.Button(
         description='⏸ Pause', disabled=True,
+        tooltip='Pause the playback; Reset Geometry restores the TS',
         layout=widgets.Layout(width='90px'),
+    )
+    anim_reset = widgets.Button(
+        description='Reset Geometry', disabled=True,
+        tooltip='Show the optimized TS geometry again',
+        layout=widgets.Layout(width='140px'),
     )
     anim_amp = widgets.FloatSlider(
         value=0.25, min=0.05, max=1.0, step=0.05,
         description='Amplitude:', continuous_update=False,
+        tooltip='Displacement amplitude in Angstrom (frames are re-scaled)',
         layout=widgets.Layout(width='200px'),
     )
     anim_speed = widgets.FloatSlider(
         value=1.0, min=0.25, max=3.0, step=0.25,
-        description='Geschw.:', continuous_update=False,
-        tooltip='Animation speed (1 = 1.6 s per period)',
+        description='Speed:', continuous_update=False,
+        tooltip='Playback speed (1 = 5 frames per second)',
         layout=widgets.Layout(width='180px'),
     )
     anim_arrows_toggle = widgets.Checkbox(
-        value=False, description='Schwingungspfeile anzeigen',
+        value=False, description='Show Displacement Arrows',
+        tooltip='Draw mode displacement arrows on the static geometry',
         layout=widgets.Layout(width='240px'),
     )
-    anim_row = widgets.HBox(
-        [anim_toggle, anim_play, anim_pause, anim_amp, anim_speed,
-         anim_arrows_toggle],
-        layout=widgets.Layout(margin='2px 0', flex_flow='row wrap',
-                              width='100%'),
+    anim_row = widgets.VBox(
+        [widgets.HBox(
+            [anim_toggle, anim_generate, anim_play, anim_pause, anim_reset],
+            layout=widgets.Layout(flex_flow='row wrap', width='100%',
+                                  margin='2px 0')),
+         widgets.HBox(
+            [anim_amp, anim_speed, anim_arrows_toggle],
+            layout=widgets.Layout(flex_flow='row wrap', width='100%',
+                                  margin='2px 0')),
+         anim_status],
     )
     constraints_label = widgets.HTML(
         '<b>Constraint atoms (0-based ORCA indices):</b>')
@@ -150,12 +176,12 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='140px'),
     )
     reset_prop_btn = widgets.Button(
-        description='Auswahl zurücksetzen',
+        description='Reset Selection',
         tooltip='Restore the automatic reactive-centre proposal',
         layout=widgets.Layout(width='170px'),
     )
     clear_sel_btn = widgets.Button(
-        description='Alle Constraints entfernen',
+        description='Clear Constraints',
         tooltip='Clear every constraint (fully manual selection)',
         layout=widgets.Layout(width='200px'),
     )
@@ -187,15 +213,15 @@ def build_ts_goat_panel(
         layout=widgets.Layout(width='200px'),
     )
     close_btn = widgets.Button(
-        description='✕ Schließen', layout=widgets.Layout(width='110px'),
+        description='✕ Close', layout=widgets.Layout(width='110px'),
     )
     center_btn = widgets.Button(
-        description='Ansicht zentrieren',
+        description='Center View',
         tooltip='Re-center and re-zoom the 3D view',
         layout=widgets.Layout(width='150px'),
     )
     cancel_btn = widgets.Button(
-        description='Abbrechen',
+        description='Cancel',
         tooltip='Close TS→GOAT and restore the normal file view',
         layout=widgets.Layout(width='110px'),
     )
@@ -380,12 +406,6 @@ def build_ts_goat_panel(
             return
         indices = _parse_constraints(constraints_field.value)
         arrows = state.get('mode_arrows')
-        if anim_toggle.value and state.get('mode_displaced'):
-            displaced = state['mode_displaced'].get(
-                mode_dropdown.value if mode_dropdown.value is not None
-                else -1)
-            if displaced:
-                atoms = displaced
         try:
             # the animation needs the displacement vectors in EVERY
             # render (also without visible arrows); the arrows toggle
@@ -397,61 +417,120 @@ def build_ts_goat_panel(
                 arrows if anim_arrows_toggle.value else None,
                 output_widget=viewer_out,
                 mode_vector=state.get('mode_arrows'),
+                frames_payload=_load_frames_payload(),
             )
         except Exception as exc:  # visible error, never a blank area
             _viewer_fallback(
                 f'Viewer could not be rendered: {type(exc).__name__}: {exc}')
 
-    def _on_anim_toggle(_change=None):
-        anim_active = anim_toggle.value
-        anim_play.disabled = not anim_active
-        anim_pause.disabled = not anim_active
-        if not anim_active:
-            # back to the undistorted optimized geometry; constraint
-            # marks stay visible
-            state['mode_displaced'] = None
-        else:
-            _recompute_displaced()
-        _render_integrated_viewer()
+    # ---- vibration trajectory (orca_pltvib) ------------------------------
+    # The trajectory is generated once per (hess, mode) in a cache
+    # directory next to the Hessian, validated (atom order + TS
+    # geometry match), then loaded into the viewer as frames.  Play
+    # runs entirely in the browser (setFrame loop); speed and
+    # amplitude re-load the payload with re-scaled frames.
 
-    def _recompute_displaced():
+    def _load_frames_payload():
+        """Frames for the current mode + amplitude, or None on failure."""
+        traj = state.get('traj')
+        if traj is None or not traj.frames:
+            return None
+        scaled = traj.scaled(anim_amp.value)
+        return ts_goat_traj.frames_to_xyz(scaled)
+
+    def _set_anim_buttons():
+        has_frames = bool(state.get('traj') and state['traj'].frames)
+        anim_play.disabled = not has_frames
+        anim_pause.disabled = not has_frames
+        anim_reset.disabled = not has_frames
+
+    def _anim_error(message):
+        anim_status.value = (
+            f'<span style="color:#d32f2f; font-size:12px;">'
+            f'{html.escape(message)}</span>')
+
+    def _anim_info(message):
+        anim_status.value = (
+            f'<span style="color:#2e7d32; font-size:12px;">'
+            f'{html.escape(message)}</span>')
+
+    def _generate_traj(_b=None):
+        """Generate/load + validate the trajectory for the selected mode."""
         hess = state.get('hess_path')
         idx = mode_dropdown.value
         if hess is None or idx is None:
-            state['mode_displaced'] = None
+            _anim_error('No Hessian or imaginary mode available.')
             return
-        try:
-            from delfin.imag import displaced_geometries
-            disp = displaced_geometries(hess, idx, anim_amp.value)
-            state['mode_displaced'] = {idx: disp['pos']}
-            state['mode_displaced_neg'] = {idx: disp['neg']}
-        except Exception:
+        anim_status.value = (
+            f'<span style="color:#1976d2; font-size:12px;">'
+            f'Generating vibration trajectory for mode {idx} ...</span>')
+        result = ts_goat_traj.generate_vibration_trajectory(
+            Path(hess), int(idx),
+            frequency_cm1=None,
+        )
+        if result.error or result.trajectory is None:
+            state['traj'] = None
+            _set_anim_buttons()
+            _anim_error(result.error or 'unknown trajectory failure')
+            # the static TS geometry stays visible -- the viewer is
+            # NOT touched on failure
+            return
+        state['traj'] = result.trajectory
+        _set_anim_buttons()
+        freq = result.trajectory.frequency_cm1
+        freq_txt = f' ({freq:.1f} cm-1)' if freq is not None else ''
+        _anim_info(
+            f'Mode {idx}{freq_txt}: {result.trajectory.n_frames} frames '
+            + ('loaded' if result.reused else 'generated') + '.')
+        _render_integrated_viewer()
+
+    def _on_anim_toggle(_change=None):
+        anim_active = anim_toggle.value
+        if not anim_active:
+            # stop playback, back to the optimized geometry; constraint
+            # marks stay visible
+            vid = get_viewer_id() if get_viewer_id else None
+            if vid and animate_in_panel:
+                animate_in_panel(vid, False)
             state['mode_displaced'] = None
+        else:
+            # enabling the mode view is the one-click workflow: if the
+            # trajectory is missing it is generated on the spot
+            if not state.get('traj'):
+                _generate_traj()
+                if not state.get('traj'):
+                    anim_toggle.value = False
+                    return
+        _set_anim_buttons()
+        _render_integrated_viewer()
 
     def _on_anim_amp(_change=None):
-        if anim_toggle.value:
-            _recompute_displaced()
-            _render_integrated_viewer()
+        # Amplitude rescales the frames (linear in the mode vector);
+        # the trajectory itself is reused.
+        _render_integrated_viewer()
 
     anim_toggle.observe(_on_anim_toggle, names='value')
     anim_amp.observe(_on_anim_amp, names='value')
     anim_arrows_toggle.observe(
         lambda _c: _render_integrated_viewer(), names='value')
+    anim_generate.on_click(_generate_traj)
 
     def _on_speed_change(_change=None):
-        """Write the period for the browser loop (base 1600 ms)."""
+        """Write the frame delay for the browser loop (base 400 ms)."""
         vid = get_viewer_id() if get_viewer_id else None
         if vid and animate_in_panel:
             animate_in_panel(vid, 'speed')
 
     def _on_play(_b=None):
-        if not anim_toggle.value:
-            return
-        _recompute_displaced()
+        # one-click workflow: generate the trajectory if missing
+        if not state.get('traj'):
+            _generate_traj()
+            if not state.get('traj'):
+                return
         vid = get_viewer_id() if get_viewer_id else None
         if vid and animate_in_panel:
-            # periodical sinus animation entirely in the browser; the
-            # static render keeps its optimised geometry meanwhile
+            # setFrame loop over the preloaded frames in the browser;
+            # the camera never moves
             animate_in_panel(vid, True)
         else:
             _render_integrated_viewer()
@@ -460,12 +539,16 @@ def build_ts_goat_panel(
         vid = get_viewer_id() if get_viewer_id else None
         if vid and animate_in_panel:
             animate_in_panel(vid, False)
-        # back to the undistorted geometry, marks stay
-        state['mode_displaced'] = None
+
+    def _on_reset(_b=None):
+        vid = get_viewer_id() if get_viewer_id else None
+        if vid and animate_in_panel:
+            animate_in_panel(vid, False)
         _render_integrated_viewer()
 
     anim_play.on_click(_on_play)
     anim_pause.on_click(_on_pause)
+    anim_reset.on_click(_on_reset)
     anim_speed.observe(_on_speed_change, names='value')
 
     # ---- atom click -> constraint toggle --------------------------------
@@ -558,9 +641,12 @@ def build_ts_goat_panel(
         state['imaginary_modes'] = open_result.get('imaginary_modes', [])
         state['hess_path'] = open_result.get('hess_path')
         state['mode_displaced'] = None
+        state['traj'] = None
         anim_toggle.value = False
         anim_play.disabled = True
         anim_pause.disabled = True
+        anim_reset.disabled = True
+        anim_status.value = ''
         state['reactant_path'] = open_result.get('reactant_path')
         state['product_path'] = open_result.get('product_path')
         mode_opts = [

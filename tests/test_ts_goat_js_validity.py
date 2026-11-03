@@ -52,11 +52,11 @@ def test_step_js_is_valid():
     _check(ts_goat_viewer_step_js("vid-test", 1.0), "ts_goat_viewer_step_js")
 
 
-def test_anim_js_is_valid():
-    from delfin.dashboard.molecule_viewer import ts_goat_viewer_anim_js
+def test_frames_js_is_valid():
+    from delfin.dashboard.molecule_viewer import ts_goat_viewer_frames_js
     _check(
-        ts_goat_viewer_anim_js("vid-test", running=True),
-        "ts_goat_viewer_anim_js")
+        ts_goat_viewer_frames_js("vid-test", running=True),
+        "ts_goat_viewer_frames_js")
 
 
 def test_center_js_is_valid():

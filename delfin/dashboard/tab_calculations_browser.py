@@ -10228,7 +10228,7 @@ def create_tab(ctx):
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
             _calc_show_spin_density_panel(False)
-            calc_content_area.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
             calc_ts_goat_panel.children = []
             calc_ts_goat_panel.layout.display = 'block'
             _ts_labels = _calc_selected_labels()
@@ -10243,7 +10243,8 @@ def create_tab(ctx):
 
                 def _ts_render_in_panel(atoms, indices, arrows=None,
                                         output_widget=None,
-                                        mode_vector=None):
+                                        mode_vector=None,
+                                        frames_payload=None):
                     """Render the TS INTO the panel's own Output widget.
 
                     The panel passes its ``viewer_out`` Output widget as
@@ -10279,6 +10280,7 @@ def create_tab(ctx):
                         output_widget, xyz_lines, width=640, height=450,
                         highlight_indices=list(indices or []),
                         arrows=arrows_payload,
+                        frames=frames_payload,
                     )
                     if vid:
                         _ts_viewer_state['vid'] = vid
@@ -10349,7 +10351,7 @@ def create_tab(ctx):
                 def _ts_anim_speed_value():
                     """Current speed from the panel widget, if reachable."""
                     for w in _ts_panel_widgets['items']:
-                        if getattr(w, 'description', '') == 'Geschw.:':
+                        if getattr(w, 'description', '') == 'Speed:':
                             return getattr(w, 'value', 1.0)
                     return 1.0
 
@@ -10374,6 +10376,7 @@ def create_tab(ctx):
                     },
                 )
                 if open_result['error']:
+                    calc_content_area.layout.display = 'block'
                     calc_ts_goat_panel.children = [widgets.HTML(
                         '<b>TS → GOAT:</b> '
                         + open_result['error'])]

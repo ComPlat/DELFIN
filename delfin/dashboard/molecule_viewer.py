@@ -6959,13 +6959,18 @@ def render_xyz_in_output(output_widget, xyz_text, width=None, height=None, extra
 
 def static_viewer_html(xyz_text, width=640, height=450,
                        highlight_indices=None, viewer_id=None,
-                       arrows=None):
+                       arrows=None, frames=None):
     """Pure builder for the script-free viewer markup.
 
     Returns ``(viewer_id, html)``.  The payload sits in an inert
     ``<script type="application/json">`` block (not executed by any
     browser); the executable bootstrap comes separately from
     :func:`ts_goat_viewer_bootstrap_js` and runs through ctx.run_js.
+
+    ``frames`` is a multi-frame XYZ string (validated orca_pltvib
+    trajectory); the frame player in :func:`ts_goat_viewer_frames_js`
+    loads it once with ``addModelsAsFrames`` and then only calls
+    ``setFrame`` -- the camera never moves.
     """
     vid = viewer_id or f'tsgoatviewer_{abs(hash(xyz_text)) % 10**8}'
     payload = {
@@ -6974,6 +6979,7 @@ def static_viewer_html(xyz_text, width=640, height=450,
         'highlight': list(highlight_indices or []),
         'arrows': list(arrows or []),
         'show_arrows': False,  # 2026-11-02 user report: arrows dominated
+        'frames': frames or None,
     }
     html = (
         f'<div style="width:{width}px;height:{height}px;position:relative;'
@@ -6989,7 +6995,7 @@ def static_viewer_html(xyz_text, width=640, height=450,
 
 def render_xyz_static_div(output_widget, xyz_text, width=640, height=450,
                           highlight_indices=None, viewer_id=None,
-                          arrows=None):
+                          arrows=None, frames=None):
     """Store ONLY the static viewer div + highlight data in an Output.
 
     No <script> reaches the output, so replaying it can never fail.
@@ -7009,7 +7015,7 @@ def render_xyz_static_div(output_widget, xyz_text, width=640, height=450,
         vid, html = static_viewer_html(
             xyz_text, width=width, height=height,
             highlight_indices=highlight_indices,
-            viewer_id=viewer_id, arrows=arrows)
+            viewer_id=viewer_id, arrows=arrows, frames=frames)
         display(HTML(html))
         return vid
 
@@ -7064,7 +7070,12 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "var viewer = new $3Dmol.createViewer(el, {backgroundColor: 'white', antialias: true});\n"
         "window.__tsGoatViewers = window.__tsGoatViewers || {};\n"
         "window.__tsGoatViewers[vid] = viewer;\n"
-        "viewer.addModel(payload.xyz, 'xyz');\n"
+        "if (payload.frames) {\n"
+        "  viewer.addModelsAsFrames(payload.frames, 'xyz');\n"
+        "  viewer.setFrame(0);\n"
+        "} else {\n"
+        "  viewer.addModel(payload.xyz, 'xyz');\n"
+        "}\n"
         "viewer.setStyle({}, {stick: {radius: 0.11}, sphere: {scale: 0.28}});\n"
         "var allAtoms = viewer.getModel().selectedAtoms({}) || [];\n"
         "for (var h = 0; h < payload.highlight.length; h++) {\n"
@@ -7072,9 +7083,13 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "  for (var ai = 0; ai < allAtoms.length; ai++) {\n"
         "    if (allAtoms[ai].serial !== serial) continue;\n"
         "    var at = allAtoms[ai];\n"
-        "    viewer.addSphere({center: {x: at.x, y: at.y, z: at.z},\n"
-        "      radius: 0.62, color: 0xff6d00, opacity: 0.45});\n"
-                        "  }\n"
+        # Per-atom style instead of an overlay sphere: with frames
+        # loaded (addModelsAsFrames) only atom-attached styling travels
+        # with setFrame -- an overlay sphere would stay behind while
+        # the atom moves.  Atom-only: bonds keep their normal colors.
+        "    viewer.addStyle({serial: serial},\n"
+        "      {sphere: {scale: 0.42, color: 0xff6d00, opacity: 0.95}});\n"
+        "  }\n"
         "}\n"
         "var arrows = " + arrow_payload + ";\n"
         "if (payload.show_arrows && arrows && arrows.length) {\n"
@@ -7168,17 +7183,16 @@ def ts_goat_viewer_step_js(viewer_id, direction):
     )
 
 
-def ts_goat_viewer_anim_js(viewer_id, running):
-    """Start/stop a self-contained sinusoidal mode animation.
+def ts_goat_viewer_frames_js(viewer_id, running):
+    """Start/stop playback of preloaded vibration frames.
 
-    A setInterval loop inside the browser displaces the model
-    ``A*sin(2*pi*t/T)`` along the stored mode arrows around the
-    optimised geometry (t in [0, T)), then re-renders -- no kernel
-    round-trip per frame.  ``A`` is the display amplitude only
-    (``window.__tsGoatAmp``); the reactive-centre analysis uses its
-    own fixed reference displacement.  Highlights travel with the
-    atoms because the sphere centers are recomputed per frame from
-    the displaced coordinates.
+    The orca_pltvib trajectory is already in the viewer as frames
+    (bootstrap: ``addModelsAsFrames``).  A browser ``setInterval``
+    advances ``viewer.setFrame`` and re-renders -- the camera is never
+    touched, so it stays fixed while the atoms move.  Halos for the
+    constraint atoms travel with the atoms because the highlight is
+    re-applied per frame.  ``running=False`` stops the loop and shows
+    the optimized geometry (frame 0).
     """
     return (
         "(function(){\n"
@@ -7191,44 +7205,18 @@ def ts_goat_viewer_anim_js(viewer_id, running):
         "window.__tsGoatAnimStop = window.__tsGoatAnimStop || {};\n"
         "var existing = window.__tsGoatAnimStop[vid];\n"
         "if (existing) { clearInterval(existing); delete window.__tsGoatAnimStop[vid]; }\n"
-        + ("" if running else "return;\n") +
-        "var arrows = payload.arrows || [];\n"
-        "var lines = payload.xyz.split('\\n');\n"
-        "var n = parseInt(lines[0], 10) || 0;\n"
-        "var base = [];\n"
-        "for (var a = 0; a < n; a++) {\n"
-        "  var row = lines[2 + a].split(/\\s+/);\n"
-        "  base.push([parseFloat(row[1]), parseFloat(row[2]), parseFloat(row[3])]);\n"
-        "}\n"
-        "var period = (window.__tsGoatPeriodMs || 1600);\n"
-        "var t0 = performance.now();\n"
+        + ("" if running else "viewer.setFrame(0); viewer.render(); return;\n") +
+        "var delayMs = window.__tsGoatPeriodMs || 400;\n"
+        "var nFrames = 0;\n"
+        "try { nFrames = viewer.getLength ? viewer.getLength() : 0; }\n"
+        "catch (e) { nFrames = 0; }\n"
+        "if (nFrames <= 1) { console.warn('DELFIN TS-GOAT: no frames loaded for ' + vid); return; }\n"
+        "var frame = 0;\n"
         "var timer = setInterval(function(){\n"
-        "  var phase = ((performance.now() - t0) % period) / period;\n"
-        "  var disp = Math.sin(2 * Math.PI * phase);\n"
-        "  var amp = window.__tsGoatAmp || 0.25;\n"
-        "  var out = [lines[0], 'mode animation'];\n"
-        "  for (var a = 0; a < n; a++) {\n"
-        "    var x = base[a][0] + disp * amp * (arrows[a*3] || 0);\n"
-        "    var y = base[a][1] + disp * amp * (arrows[a*3+1] || 0);\n"
-        "    var z = base[a][2] + disp * amp * (arrows[a*3+2] || 0);\n"
-        "    out.push(lines[2 + a].split(/\\s+/)[0] + ' ' + x.toFixed(6)\n"
-        "      + ' ' + y.toFixed(6) + ' ' + z.toFixed(6));\n"
-        "  }\n"
-        "  viewer.clear();\n"
-        "  viewer.addModel(out.join('\\n'), 'xyz');\n"
-        "  viewer.setStyle({}, {stick: {radius: 0.11}, sphere: {scale: 0.28}});\n"
-        "  var atomsNow = viewer.getModel().selectedAtoms({}) || [];\n"
-        "  for (var h = 0; h < payload.highlight.length; h++) {\n"
-        "    var hSerial = payload.highlight[h] + 1;\n"
-        "    for (var bi = 0; bi < atomsNow.length; bi++) {\n"
-        "      if (atomsNow[bi].serial !== hSerial) continue;\n"
-        "      var bt = atomsNow[bi];\n"
-        "      viewer.addSphere({center: {x: bt.x, y: bt.y, z: bt.z},\n"
-        "        radius: 0.62, color: 0xff6d00, opacity: 0.45});\n"
-                        "    }\n"
-        "  }\n"
+        "  frame = (frame + 1) % nFrames;\n"
+        "  try { viewer.setFrame(frame); } catch (e) { clearInterval(timer); return; }\n"
         "  viewer.render();\n"
-        "}, 60);\n"
+        "}, delayMs);\n"
         "window.__tsGoatAnimStop[vid] = timer;\n"
         "})();\n"
     )
@@ -7354,7 +7342,9 @@ def _fukui_atom_positions_from_xyz(xyz_text):
         if len(parts) < 4:
             continue
         try:
-            x = float(parts[1]); y = float(parts[2]); z = float(parts[3])
+            x = float(parts[1])
+            y = float(parts[2])
+            z = float(parts[3])
         except ValueError:
             continue
         positions.append((parts[0], x, y, z))

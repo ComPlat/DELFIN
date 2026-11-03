@@ -23,7 +23,7 @@ from tests.test_ts_goat_dialog_regression import (  # noqa: E402
 
 
 def test_close_button_restores_normal_view(tmp_path):
-    """✕ Schließen hides the panel and resets the options dropdown."""
+    """✕ Close hides the panel and resets the options dropdown."""
     captured = {}
     out, _r = _open_dialog(tmp_path, _FakeBackend(), extra_callbacks={
         'on_close': lambda: captured.setdefault('closed', True),
@@ -56,7 +56,8 @@ def test_constraint_field_edit_updates_viewer(tmp_path):
     calls = []
     out, _r = _open_dialog(tmp_path, _FakeBackend(), extra_callbacks={
         'render_in_panel': lambda atoms, indices, arrows=None,
-                           output_widget=None, mode_vector=None:
+                           output_widget=None, mode_vector=None,
+                           frames_payload=None:
                            calls.append(list(indices)),
     })
     reg = out['registry']
