@@ -576,3 +576,28 @@ def test_atom_click_sequence_tokens_allow_repeat(tmp_path):
     sync.value = '0:102'
     after_second = set(reg['parse_constraints'](field.value))
     assert after_second == original
+
+
+def test_ts_goat_responsive_centered_stage_and_click_input():
+    """3Dmol must fill the actual right pane and send clicks to a real input."""
+    from delfin.dashboard.molecule_viewer import (
+        static_viewer_html, ts_goat_viewer_bootstrap_js,
+    )
+
+    vid, markup = static_viewer_html(
+        '2\nTS\nH 0 0 0\nO 0 0 1\n',
+        width=640, height=450, highlight_indices=[0],
+    )
+    assert 'width:100%;height:450px' in markup
+    assert 'width:100%;height:100%' in markup
+    assert 'width:640px' not in markup
+    assert vid in markup
+
+    boot = ts_goat_viewer_bootstrap_js(vid)
+    assert "el.getBoundingClientRect().width < 100" in boot
+    assert "var sync = syncHost ? syncHost.querySelector('input')" in boot
+    assert "setter.set.call(sync, clickValue)" in boot
+    assert 'viewer.resize()' in boot
+    assert 'viewer.zoomTo(); viewer.center()' in boot
+    assert 'viewer.setView(savedView)' in boot
+    assert 'ResizeObserver' in boot
