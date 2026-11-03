@@ -44,13 +44,14 @@ sys.stdout.write(text)
 '''
 
 # Tree-inherent, capability-free lines: branch/status line of the
-# live-state block, one-line recent-commit entries (<sha9> <title>),
-# and the memory fence nonces.
+# live-state block, one-line recent-commit entries (<sha> <title>; git
+# abbreviates to 7-12 hex digits depending on the clone -- 8 on CI), and
+# the memory fence nonces.
 _DYNAMIC = (
     re.compile(r"^branch: .*$", re.M),
     re.compile(r"^cwd: .*$", re.M),
     re.compile(r"^status: .*$", re.M),
-    re.compile(r"^  [0-9a-f]{9} .*$", re.M),
+    re.compile(r"^  [0-9a-f]{7,12} .*$", re.M),
     re.compile(r"fence: [0-9a-f]{16}"),
     # Memory-store state: which memories are shown depends on the
     # task-class-keyed recall, which this change deliberately re-buckets
