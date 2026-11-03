@@ -13565,8 +13565,15 @@ def create_tab(ctx):
         )
 
     def _turn_thread_alive() -> bool:
+        """True while the turn's thread runs on after its turn was ended
+        from outside (Stop). The worker asks this itself, from its own
+        cleanup, as the last thing it does for the UI: there it is alive by
+        definition, and a True from that call left Stop enabled and red
+        after every turn, because nothing asks again once the thread has
+        exited. The thread asking about itself is a finished turn."""
         t = state.get("_turn_thread")
-        return bool(t is not None and t.is_alive())
+        return bool(t is not None and t.is_alive()
+                    and t is not threading.current_thread())
 
     def _update_button_states():
         engine = state["engine"]
