@@ -601,7 +601,7 @@ def test_ts_goat_responsive_centered_stage_and_click_input():
     assert "var sync = syncHost ? syncHost.querySelector('input')" in boot
     assert "setter.set.call(sync, clickValue)" in boot
     assert 'viewer.resize()' in boot
-    assert 'viewer.zoomTo(); viewer.center()' in boot
+    assert 'viewer.zoomTo({model: 0}); viewer.center({model: 0});' in boot
     assert 'viewer.setView(savedView)' in boot
     assert 'ResizeObserver' in boot
 
