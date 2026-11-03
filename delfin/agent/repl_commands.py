@@ -471,6 +471,93 @@ def _rewind(ctx, _args: str) -> CommandResult:
         return CommandResult(output=f"no change report available ({exc})")
 
 
+# Branches on this checkout: the dashboard's rules, the same words the
+# messenger answers (delfin/agent/branch_commands.py formats, branch_ops
+# does). Nothing here switches the shared checkout; a deletion is only
+# /cleanup ok, through branch_cleanup.delete with its rules re-read.
+
+def _branches(ctx, args: str) -> CommandResult:
+    """``/branches [view]`` lists; ``/branches test <n|name>``,
+    ``/branches pull`` and ``/branches cleanup [ok <n|name>]`` act.
+
+    The actions live under /branches instead of top-level /test, /pull,
+    /cleanup: /cle is then unambiguous for /clear again (the tab
+    completion test pins that), and one command groups everything the
+    dashboard's branch panel does.
+    """
+    from . import branch_commands
+    word, _, rest = args.strip().partition(" ")
+    word = word.strip().lower()
+    rest = rest.strip()
+    if word in ("test", "pull", "cleanup"):
+        if word == "test":
+            handler, label = _test, "/branches test"
+        elif word == "pull":
+            handler, label = _pull, "/branches pull"
+        else:
+            handler, label = _cleanup, "/branches cleanup"
+        result = handler(ctx, rest)
+        if result.output.startswith(f"/{word} failed:"):
+            result.output = f"{label} failed:{result.output.split(':', 1)[1]}"
+        return result
+    try:
+        out = branch_commands.rows_text(ctx.workspace, word or "mine", rest)
+    except Exception as exc:
+        return CommandResult(output=f"/branches failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _test(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    token = args.strip()
+    if not token:
+        return CommandResult(output=(
+            "which branch? /branches test <number|name> -- /branches lists them"))
+    try:
+        out = branch_commands.test_text(ctx.workspace, token)
+    except Exception as exc:
+        return CommandResult(output=f"/test failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _pull(ctx, _args: str) -> CommandResult:
+    from . import branch_commands
+    try:
+        out = branch_commands.pull_text(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"/pull failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _cleanup(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    word, _, rest = args.strip().partition(" ")
+    word = word.strip().lower()
+    try:
+        if word in ("ok", "yes", "confirm", "y"):
+            out, _deleted = branch_commands.cleanup_confirm_text(
+                ctx.workspace, rest.strip())
+            return CommandResult(output=out)
+        if word:
+            # a number or name without the ok: show what it is, delete
+            # nothing (a bare name is not a confirmation)
+            ref = branch_commands.resolve(ctx.workspace, word)
+            if not ref:
+                return CommandResult(output=(
+                    f"no branch {word!r}; /branches cleanup lists what may be "
+                    "deleted, /branches cleanup ok <number> deletes it"))
+            note = branch_commands.unmerged_note(ctx.workspace, ref)
+            return CommandResult(output=(
+                f"{ref} is in the cleanup listing only when it is merged. "
+                + (note or "/branches cleanup ok " + word + " deletes it "
+                          "(merged branches only); it is re-checked at "
+                          "deletion.")))
+        out = branch_commands.cleanup_text(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"cleanup failed: {exc}")
+    return CommandResult(output=out)
+
+
 def _tasks(ctx, _args: str) -> CommandResult:
     """This session's open work, on demand.
 
@@ -2078,6 +2165,10 @@ BUILTINS: dict[str, ReplCommand] = {
                     _session, True),
         ReplCommand("/rewind", "history", "What the agent changed here",
                     _rewind),
+        ReplCommand("/branches", "git", "Branches of this checkout: "
+                    "[view] lists (mine, all, hidden, merged, remote); "
+                    "test <n|name>, pull, cleanup [ok <n>] act", _branches,
+                    True),
         ReplCommand("/tasks", "history", "This session's open work", _tasks),
         ReplCommand("/memories", "history", "Stored memories", _memories, True),
         ReplCommand("/forget", "history", "Delete one memory by name",

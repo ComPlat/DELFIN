@@ -408,12 +408,16 @@ class Bridge:
             self._connect_service()
         return self._service
 
-    async def _request(self, method: str, params: dict | None = None) -> dict:
+    async def _request(self, method: str, params: dict | None = None,
+                       timeout: float | None = None) -> dict:
         params = params or {}
         sid = params.get("sessionId")
         if sid and activation.record(sid).get("endpoint"):
             return await asyncio.to_thread(activation.ask_dashboard, sid, method, params)
-        reply = await asyncio.to_thread(self._client().request, method, params)
+        client = self._client()
+        reply = await asyncio.to_thread(
+            client.request, method, params, **({"timeout": timeout}
+                                               if timeout is not None else {}))
         if method == "sessions.list":
             for record in activation.records():
                 if not record.get("endpoint"):
@@ -486,6 +490,41 @@ class Bridge:
                               "options": self._redactor().value(req.get("options", [])),
                               "choices": req.get("choices", [])})
             return {"ok": True, "items": items}
+        if action == "branch":
+            # Branch operations in this session's workspace: the dashboard's
+            # rules (branch_ops), from the phone. A deletion rides
+            # branch.cleanup with confirm=true only; branch.test can run
+            # minutes, so it asks the service directly, not through a turn.
+            ws = str(row.get("workspace") or "")
+            if not ws:
+                return {"error": "Diese Sitzung hat keinen Arbeitsordner."}
+            sub = str(params.get("sub") or "")
+            request = {"workspace": ws}
+            if sub in {"list", "pull", "test", "cleanup"}:
+                pass
+            else:
+                return {"error": "Unbekannter Branch-Befehl."}
+            if sub == "list":
+                request.update(view=str(params.get("view") or "mine"),
+                               text=str(params.get("text") or ""))
+                reply = await self._request("branch.list", request)
+            elif sub == "pull":
+                reply = await self._request("branch.pull", request)
+            elif sub == "test":
+                request.update(ref=str(params.get("ref") or ""))
+                reply = await self._request("branch.test", request,
+                                            timeout=1200.0)
+            else:
+                request.update(delete=params.get("delete") or [],
+                               confirm=bool(params.get("confirm", False)))
+                reply = await self._request("branch.cleanup", request,
+                                            timeout=300.0)
+            if reply.get("error"):
+                return {"error": str(reply["error"])}
+            return {"ok": bool(reply.get("ok")), "text": str(reply.get("text") or ""),
+                    **({"rows": reply["rows"]} if "rows" in reply else {}),
+                    **({"candidates": reply["candidates"]}
+                       if "candidates" in reply else {})}
         if action in {"answer", "approve", "deny", "decide"}:
             code = str(params.get("id") or "")
             issued = self._issued.get(code)

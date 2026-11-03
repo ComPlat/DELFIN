@@ -1211,6 +1211,78 @@ class Supervisor:
         asyncio.get_running_loop().call_soon(self.stop, "restart" if self.restart else "stop")
         return {"stopping": True, "sessions": count}
 
+    # -- branches (delfin/agent/branch_ops.py) --------------------------------------------
+    # The dashboard's branch logic, run in a workspace. Nothing here
+    # switches the shared checkout; a deletion goes only through
+    # branch_cleanup.delete (confirm=true), with its rules re-read at
+    # deletion. Every handler runs in a thread: branch.test runs pytest in
+    # a worktree, which takes minutes.
+
+    @staticmethod
+    def _branch_workspace(params: dict) -> dict:
+        """branch_ops' answer for *params*, or the not-a-checkout answer."""
+        workspace = Path(str(params.get("workspace") or "")).expanduser()
+        if not str(params.get("workspace") or "").strip() or not workspace.is_dir():
+            return {"ok": False, "text": f"no such folder: {params.get('workspace')!r}"}
+        return {"workspace": workspace}
+
+    async def _m_branch_list(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"], "rows": []}
+        answer = await asyncio.to_thread(
+            branch_ops.rows, ws["workspace"], str(params.get("view") or "mine"),
+            str(params.get("text") or ""),
+            refresh=bool(params.get("refresh")))
+        if not isinstance(answer, dict) or not answer.get("ok"):
+            # branch_ops.rows answers the refusal dict for a non-checkout;
+            # a service call carries it as its own answer.
+            if isinstance(answer, dict):
+                return answer
+            return {"ok": False, "text": "not a git checkout", "rows": []}
+        return answer
+
+    async def _m_branch_pull(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"]}
+        return await asyncio.to_thread(branch_ops.pull_main, ws["workspace"])
+
+    async def _m_branch_test(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"]}
+        ref = str(params.get("ref") or "").strip()
+        if not ref:
+            return {"ok": False, "text": "no branch named"}
+        return await asyncio.to_thread(
+            branch_ops.test_branch, ws["workspace"], ref,
+            keep=bool(params.get("keep")))
+
+    async def _m_branch_cleanup(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"], "candidates": []}
+        delete = [str(n) for n in params.get("delete") or []]
+        if not delete:
+            candidates, kept = await asyncio.to_thread(
+                branch_ops.cleanup_candidates, ws["workspace"],
+                include_unmerged=bool(params.get("includeUnmerged")),
+                refresh=bool(params.get("refresh")))
+            if candidates is None:
+                # a non-git workspace: the refusal, not an empty list
+                # (which would read as "nothing to clean up")
+                return {"ok": False, "text": "not a git checkout",
+                        "candidates": [], "kept": []}
+            return {"ok": True, "candidates": candidates, "kept": kept}
+        return await asyncio.to_thread(
+            branch_ops.cleanup_delete, ws["workspace"], delete,
+            confirm=bool(params.get("confirm")))
+
     # -- what needs the user ---------------------------------------------------------------
     async def _m_attention_list(self, _client: Client, _params: dict) -> dict:
         stale = time.monotonic() - self._attention_at >= ATTENTION_POLL_S
