@@ -26,7 +26,9 @@ reading it back off the screen.
 A test that replaces :func:`plan` may also answer
 ``{"tools": [{"tool": name, "args": dict}, ...]}`` -- one response carrying
 several calls, the parallel calls a backend sends in one round -- and add
-``"say": text`` to a tool step, streamed as content before the call(s).
+``"say": text`` to a tool step, streamed as content before the call(s), or
+``"think": text`` to any streamed step, sent first as ``reasoning_content``
+(the channel a reasoning model's thinking arrives on).
 
 Rejected: a monkeypatched client inside the child. It skips the HTTP
 layer, the streaming parser and the wait indicator, which are the parts
@@ -240,6 +242,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._chunk({"role": "assistant"})
             if step.get("delay"):
                 time.sleep(step["delay"])
+            if step.get("think"):
+                self._chunk({"reasoning_content": step["think"]})
             calls = self._calls(step)
             if calls:
                 if step.get("say"):

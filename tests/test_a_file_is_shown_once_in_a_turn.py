@@ -240,10 +240,14 @@ def test_a_file_another_tool_wrote_is_one_view(run_turn):
 
 def test_a_formula_written_then_shown_is_the_formula_card(run_turn):
     """show_molecule draws .smi as the structural formula card; the plain
-    preview of the written file is not drawn beside it."""
+    preview of the written file is not drawn beside it. The round that
+    calls it opens with thinking, as a reasoning model's does: thinking is
+    the model choosing its next call and does not draw the held preview."""
     pytest.importorskip("rdkit")
     msgs = run_turn([_write("ethanol.smi", "CCO ethanol\n"),
-                     _show("ethanol.smi"), {"text": "Done."}])
+                     dict(_show("ethanol.smi"), think="Show the formula."),
+                     {"text": "Done."}])
+    assert any(m.get("role") == "thinking" for m in msgs), "no thinking came"
     assert _views(msgs) == [("formula", "ethanol.smi")]
     card_at = next(i for i, m in enumerate(msgs)
                    if "delfin-artifact" in str(m.get("content")))
@@ -325,3 +329,39 @@ def test_a_viewed_image_alone_is_still_drawn(run_turn):
                      {"text": "fig.png looks right."}],
                     files={"fig.png": PNG})
     assert _views(msgs) == [("file", "fig.png")]
+
+
+# -- the view key ----------------------------------------------------------------
+
+
+def test_only_a_cubes_isovalue_makes_another_view():
+    from delfin.dashboard import tab_agent as T
+
+    assert T._artifact_view_key("a.xyz") == ""
+    assert T._artifact_view_key("a.xyz", 0.05) == ""
+    assert T._artifact_view_key("fig.png") == ""
+    assert T._artifact_view_key("h.cube") == "iso=0.02"
+    for default in (None, 0, True, "0.05", float("nan"), float("inf")):
+        assert T._artifact_view_key("h.cube", default) == "iso=0.02", default
+    assert T._artifact_view_key("h.CUBE", -0.05) == "iso=0.05"
+
+
+def test_the_view_key_is_the_level_the_card_draws(tmp_path):
+    from delfin.dashboard import tab_agent as T
+
+    (tmp_path / "h.cube").write_text(H_CUBE)
+    for iso in (None, 0.05, -0.1, 0, 1e-3):
+        drawn = T._mol3d_payload(tmp_path / "h.cube", iso)["iso"]
+        assert T._artifact_view_key("h.cube", iso) == f"iso={drawn:g}"
+
+
+def test_the_held_formats_are_those_show_molecule_draws_differently():
+    """Held: a cube (its isovalue) and the structural formula formats.
+    Each is a format show_molecule draws; holding any other preview would
+    only delay it."""
+    from delfin.dashboard import chat_viewer
+    from delfin.dashboard import tab_agent as T
+
+    held = set(T._HELD_PREVIEW_SUFFIXES)
+    assert held == {".cube", *chat_viewer.FORMULA_SUFFIXES}
+    assert held <= set(chat_viewer.DRAWN_SUFFIXES + chat_viewer.FORMULA_SUFFIXES)
