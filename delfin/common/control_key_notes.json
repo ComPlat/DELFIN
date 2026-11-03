@@ -324,6 +324,31 @@
       "default": "none",
       "read_by": "delfin/workflows/pipeline.py _apply_mlp_preopt, called from normalize_input_file; FieldSpec :2306.",
       "best_practice": "Use on element-clean, closed-shell organic systems whose builder geometry is poor (large flexible molecules, many rotatable bonds): a cheaper, better starting geometry shortens the DFT optimisation. Off (keep the default) for metals, open-shell or charged systems unless the backend models them (only aimnet2 takes charge/mult; the adapter refuses the rest fail-closed, delfin/tools/adapters/mlp.py). Never trust MLP energies: they are screening values, not comparable with DFT."
+    },
+    "global_opt_method": {
+      "meaning": "Method the GOAT global optimiser (global_optimizer=GOAT) optimises with. Empty: the xTB_method, the classic input unchanged. mlip:<plugin>: an orca-mlips machine-learned potential through ORCA's ExtOpt (ORCA 6.1 manual 4.1.10 and 4.10), run inside the workflow's own job; the output file names stay those of the xTB GOAT. The ensemble's MLIP energies are a screen, not final numbers.",
+      "valid_values": "empty | mlip:uma | mlip:mace | mlip:orb | mlip:aimnet2 (_as_global_opt_method); refused with global_optimizer=CREST (CREST runs xTB only)",
+      "default": "(empty: GOAT with the xTB_method)",
+      "read_by": "delfin/xtb_crest.py XTB_GOAT -> _xtb_goat_mlip; cross-key checks delfin/common/control_validator.py _global_opt_method_errors.",
+      "best_practice": "Neutral closed-shell organics inside the model's element set; charged, open-shell or metal-containing systems need a DFT re-ranking of the lowest conformers (agent skill mlp-method, section 'GOAT with an MLIP'). Weights: UMA gated (user's own HF login), MACE non-commercial (Academic Software License), ORB Apache-2.0, AIMNet2 MIT (delfin/mlp_tools/registry.py)."
+    },
+    "global_opt_mlip_model": {
+      "meaning": "Model name passed to the orca-mlips plugin as --model when global_opt_method is mlip:<plugin>; empty uses the plugin's default model.",
+      "valid_values": "empty | one token of letters, digits, _ . + - (_as_global_opt_mlip_model)",
+      "default": "(empty)",
+      "read_by": "delfin/xtb_crest.py _xtb_goat_mlip (Ext_Params via delfin/mlp_tools/orca_mlips.py ext_params_for)."
+    },
+    "global_opt_mlip_device": {
+      "meaning": "Device the orca-mlips plugin runs on for an MLIP GOAT. cuda requires a GPU visible to the workflow's process; without one the GOAT step stops with a message instead of falling back to the CPU.",
+      "valid_values": "cuda | cpu (_as_global_opt_mlip_device)",
+      "default": "cuda",
+      "read_by": "delfin/xtb_crest.py _xtb_goat_mlip (_gpu_visible check)."
+    },
+    "refuse_noncommercial_weights": {
+      "meaning": "Refuse an MLIP whose model weights are non-commercially licensed (LICENSE_GUARD.md family 4); applies to global_opt_method (mlip:mace).",
+      "valid_values": "yes | no (_as_yes_no)",
+      "default": "no",
+      "read_by": "delfin/common/control_validator.py _global_opt_method_errors; delfin/xtb_crest.py _xtb_goat_mlip."
     }
   }
 }
