@@ -26,7 +26,11 @@ def _write(path: Path, body: str) -> None:
 
 
 def _run(*args: str, store: Path | None = None, env_extra=None):
-    env = dict(os.environ)
+    # A private HOME for the child (conftest.child_env): the CLI resolves
+    # its settings, and so every ~/.delfin sink, outside the real home.
+    import tempfile
+    from conftest import child_env
+    env = child_env(Path(tempfile.mkdtemp(prefix="fixtures-store-home-")))
     if store is not None:
         env["DELFIN_PRIVATE_FIXTURES"] = str(store)
     else:
