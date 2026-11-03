@@ -138,6 +138,7 @@ unchanged; then it takes seconds.
 | `pi_firstboot.sh` | Pi (cloud-init) | First boot: `pi_bootstrap.sh` + `pi_install.sh` from the card |
 | `pi_github_deploy_key.sh` | Pi (agent user) | Push access to one repository via a deploy key, GitHub host key pinned |
 | `pi_harden_host.sh` | Pi (root) | Host lockdown: sshd key only, nftables, fail2ban, security updates, sudo password |
+| `delfin_people.sh` | Pi (agent user) | `delfin-people`: who works in the account through the Windows launcher, `--attach NAME` to watch |
 
 ## New card (Windows)
 
@@ -205,6 +206,19 @@ What only a person can do, in this order:
   add the printed key with "Allow write access", then
   `... pi_github_deploy_key.sh --check`. Do not log `gh` in on the Pi.
 - VS Code: Remote-SSH to `delfin@delfin-pi.local`.
+- Several people in the `delfin` account: `pi_install.sh` turns on the
+  Windows launcher's people mode (`~/.config/delfin/launcher-people.conf`;
+  `DELFIN_PI_PEOPLE=0` leaves it off). Each Windows user gets
+  `~/people/<name>` as home: own sessions, dashboard and token, tmux and agent
+  service, sharing the installation, the account's credentials and settings.
+  `delfin-people` lists who is there; `delfin-people --attach NAME` shows that
+  person's dashboard session. They are one Unix user: everyone can read
+  everything in the account, credentials included. Put only neutral, project
+  credentials (a project KIT key, the repository deploy key, a neutral git
+  identity) into it; personal ones belong in personal accounts.
+- The agent install is an editable install in compat (path) mode: with
+  setuptools' finder mode the folder `~/delfin` shadowed the package for a
+  `python -c` started in `~`. `pi_install.sh` converts an older install.
 - Dashboard: service `delfin-dashboard` on `127.0.0.1:8866` only. On the Pi use
   the "DELFIN Dashboard" menu entry; from your PC use a tunnel
   `ssh -L 8866:127.0.0.1:8866 delfin@delfin-pi.local` and open the URL printed

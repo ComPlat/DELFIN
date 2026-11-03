@@ -34,6 +34,25 @@ PYMOL_GIT="git+https://github.com/schrodinger/pymol-open-source.git@edcda80f3a73
 cd "$ROOT"
 [[ -x "$VENV_PY" ]] || { echo "error: $VENV_PY missing - run pi_bootstrap.sh first" >&2; exit 1; }
 
+# Editable as a plain path on sys.path (compat), not setuptools' finder: the
+# finder sits after the path search, so from ~ the folder ~/delfin (this
+# install's root, no __init__.py) won as an empty namespace package and
+# `python -c "import delfin..."` found nothing. A path entry keeps the real
+# package ahead of any same-named plain folder.
+install_delfin_editable() {
+    "$UV" pip install --python "$VENV_PY" --no-deps --config-setting editable_mode=compat -e "$ROOT/src"
+}
+
+# A venv installed before with the finder gets the path form once.
+ensure_compat_editable() {
+    local site
+    site="$("$VENV_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+    if compgen -G "$site/__editable___delfin*finder.py" >/dev/null; then
+        echo "==> DELFIN editable install: finder -> path (compat)"
+        install_delfin_editable
+    fi
+}
+
 install_deps() {
     "$VENV_PY" - "$SKIP_EXTRAS" "$SKIP_DEPS_RE" > "$ROOT/requirements.pi.txt" <<'EOF'
 import re, sys, tomllib
@@ -50,7 +69,7 @@ EOF
     # CPU torch: PyPI's aarch64 torch drags in multi-GB CUDA (sbsa) wheels.
     # shellcheck disable=SC2086
     "$UV" pip install --python "$VENV_PY" --torch-backend cpu -r "$ROOT/requirements.pi.txt" $EXTRA_PIP
-    "$UV" pip install --python "$VENV_PY" --no-deps -e "$ROOT/src"
+    install_delfin_editable
     if ! "$VENV_PY" -c "import pymol" 2>/dev/null; then
         echo "==> building pymol from source (optional, only for report images)"
         # --no-deps: pymol's master declares numpy>=2 and would upgrade past
@@ -145,6 +164,17 @@ if not str((raw.get("agent") or {}).get("provider") or "").strip():
 EOF
     [[ -d "$ROOT/work/DELFIN/.git" ]] || git clone -q "$DELFIN_GIT_URL" "$ROOT/work/DELFIN" \
         || echo "warning: clone of $DELFIN_GIT_URL failed" >&2
+    # Several people work in this account through the Windows launcher: each
+    # gets ~/people/<windows user> as home (own sessions, dashboard, tmux,
+    # agent service). DELFIN_PI_PEOPLE=0 leaves it off. An overview, not a
+    # boundary: they are one Unix user.
+    if [[ "${DELFIN_PI_PEOPLE:-1}" == "1" && ! -f "$HOME/.config/delfin/launcher-people.conf" ]]; then
+        mkdir -p "$HOME/.config/delfin"
+        printf '%s\n' "# Windows launcher: one home per person under ~/people (remote_bootstrap.sh)." \
+            > "$HOME/.config/delfin/launcher-people.conf"
+        echo "==> launcher people mode on (~/people/<name>; overview: delfin-people)"
+    fi
+    install -D -m 755 "$ROOT/src/scripts/pi/delfin_people.sh" "$HOME/.local/bin/delfin-people"
 }
 
 restart_dashboard() {
@@ -187,6 +217,7 @@ install)
     else
         echo "==> pyproject unchanged: code swapped, no reinstall needed"
     fi
+    ensure_compat_editable
     drop_foreign_tests_pkg
     smoke
     set_up_extras
@@ -204,6 +235,7 @@ rollback)
     mv src src.bad && mv src.prev src && mv src.bad src.prev
     carry_tui_modules src.prev src
     if ! cmp -s src/pyproject.toml src.prev/pyproject.toml; then install_deps; fi
+    ensure_compat_editable
     drop_foreign_tests_pkg
     smoke
     set_up_extras
