@@ -88,9 +88,22 @@ _TRIPS: list[str] = []
 _LOCK = threading.Lock()
 
 
+def _where() -> str:
+    """The innermost frames of the product (``delfin/``) and the test that
+    led to the refusal: what a reader needs to replace it with a fake."""
+    import traceback
+    frames = [f for f in traceback.extract_stack()[:-3]
+              if (os.sep + "delfin" + os.sep in f.filename
+                  or os.path.basename(f.filename).startswith("test_"))
+              and not f.filename.endswith("external_agent_guard.py")]
+    return " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}"
+                       for f in reversed(frames[-4:]))
+
+
 def _record(what: str) -> None:
+    where = _where()
     with _LOCK:
-        _TRIPS.append(what)
+        _TRIPS.append(f"{what}  [at {where}]" if where else what)
 
 
 def take_trips() -> list[str]:
@@ -197,7 +210,7 @@ def _refuse_program(argv, executable=None, env=None) -> None:
     if os.sep not in prog:
         search = None
         if env is not None:
-            search = (env.get("PATH") if isinstance(env, dict) else None)
+            search = env.get("PATH") if hasattr(env, "get") else None
         resolved = _STATE["originals"]["which"](prog, path=search)
         if resolved and os.path.dirname(os.path.abspath(resolved)) == _STATE["shim_dir"]:
             _record(f"spawned an agent CLI by name: {' '.join(items)[:300]}")
