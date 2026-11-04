@@ -7112,6 +7112,7 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "var viewer = new $3Dmol.createViewer(el, {backgroundColor: 'white', antialias: true});\n"
         "viewer.__tsGoatDataEl = dataEl;\n"
         "viewer.__tsGoatFrameCount = payload.frame_count || 0;\n"
+        "viewer.__tsGoatHighlightIndices = payload.highlight.slice();\n"
         "window.__tsGoatViewers[vid] = viewer;\n"
         "if (payload.frames) {\n"
         "  viewer.addModelsAsFrames(payload.frames, 'xyz');\n"
@@ -7127,8 +7128,8 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "  viewer.removeAllShapes();\n"
         "  var atoms = viewer.getModel().selectedAtoms({}) || [];\n"
         "  var chosen = {};\n"
-        "  for (var i = 0; i < payload.highlight.length; i++) {\n"
-        "    chosen[payload.highlight[i]] = true;\n"
+        "  for (var i = 0; i < viewer.__tsGoatHighlightIndices.length; i++) {\n"
+        "    chosen[viewer.__tsGoatHighlightIndices[i]] = true;\n"
         "  }\n"
         "  for (var k = 0; k < atoms.length; k++) {\n"
         "    var a = atoms[k];\n"
@@ -7138,7 +7139,7 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         # without replacing the atom's CPK sphere or changing bond colours.
         "    var radius = a.elem === 'H' ? 0.58 : 0.79;\n"
         "    viewer.addSphere({center:{x:a.x,y:a.y,z:a.z},\n"
-        "      radius:radius,color:0x80a9c5,opacity:0.40,\n"
+        "      radius:radius,color:0x80a9c5,opacity:0.48,\n"
         "      clickable:false});\n"
         "  }\n"
         "};\n"
@@ -7238,6 +7239,34 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "setTimeout(scheduleResize, 1100);\n"
         "}\n"
         "boot();\n"
+        "})();\n"
+    )
+
+
+def ts_goat_viewer_highlights_js(viewer_id, indices):
+    """Change constraint halos without touching the 3Dmol canvas or camera.
+
+    This runs through the existing Voila run_js channel when the
+    constraints Textarea changes. Atom clicks and manual edits update
+    the currently rendered model instead of clearing the Output widget,
+    preventing asynchronous canvas disposal/reinitialisation races.
+    """
+    clean = sorted({int(i) for i in indices if int(i) >= 0})
+    return (
+        "(function(){\n"
+        "var vid = " + json.dumps(viewer_id) + ";\n"
+        "var indices = " + json.dumps(clean) + ";\n"
+        "var viewer = (window.__tsGoatViewers || {})[vid];\n"
+        "var payloadEl = document.getElementById(vid + '_data');\n"
+        "if (!viewer || !payloadEl || viewer.__tsGoatDataEl !== payloadEl) {\n"
+        "  console.warn('DELFIN TS-GOAT: selection update skipped; viewer not ready');\n"
+        "  return;\n"
+        "}\n"
+        "viewer.__tsGoatHighlightIndices = indices;\n"
+        "if (viewer.__tsGoatUpdateHighlights) {\n"
+        "  viewer.__tsGoatUpdateHighlights();\n"
+        "  viewer.render();\n"
+        "}\n"
         "})();\n"
     )
 
