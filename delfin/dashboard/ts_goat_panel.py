@@ -170,7 +170,7 @@ def build_ts_goat_panel(
         # toolbar sits above this panel in the DOM; an unbounded panel
         # grew past the container and clipped it (user report 2026-11-02).
         # Bound the panel and scroll INSIDE it instead.
-        max_height='calc(100vh - 180px)', overflow_y='auto',
+        max_height='calc(100vh - 180px)', overflow='auto',
     ))
     panel.add_class('ts-goat-panel')
     title = widgets.HTML(
@@ -356,7 +356,7 @@ def build_ts_goat_panel(
     )
     preview_label = widgets.HTML('<b>ORCA input preview:</b>')
     preview_box = widgets.HTML('', layout=widgets.Layout(
-        max_height='18em', overflow_y='auto', width='100%',
+        max_height='18em', overflow='auto', width='100%',
         border='1px solid #cfd8dc'))
     submit_btn = widgets.Button(
         description='▶ Submit GOAT job', button_style='success',
