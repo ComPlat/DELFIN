@@ -78,6 +78,20 @@ def _write_esd_dir(esd_dir, states=("S0", "S1", "T1")):
         (esd_dir / f"{st}.xyz").write_text("\n".join(lines) + "\n")
 
 
+@pytest.fixture
+def esd_env(tmp_path, monkeypatch):
+    """cwd the classic writer needs for the S0 job: it reads
+    ``initial.xyz``/``start.txt`` relative to the process cwd, not the
+    ESD directory (esd_input_generator.py:1455-1463 and :858-871).  Both
+    writers must therefore run from tmp_path with an initial.xyz there."""
+    monkeypatch.chdir(tmp_path)
+    lines = ["6", "synthetic S0 start geometry"] + [
+        f"{el} {x} {y} {z}" for el, (x, y, z) in _ATOMS
+    ]
+    (tmp_path / "initial.xyz").write_text("\n".join(lines) + "\n")
+    return tmp_path
+
+
 def _run_classic_state(case, esd_dir):
     return Path_text(classic.create_state_input(
         state=case["state"],
@@ -253,8 +267,8 @@ def _control_matrix():
 
 
 @pytest.mark.parametrize("case", _control_matrix(), ids=lambda c: c["name"])
-def test_esd_input_parity(tmp_path, case):
-    esd_dir = tmp_path / "classic"
+def test_esd_input_parity(tmp_path, esd_env, case):
+    esd_dir = esd_env / "classic"
     _write_esd_dir(esd_dir, states=("S0", "S1", "T1", "T2"))
     if "kind" not in case:
         classic_text = _run_classic_state(case, esd_dir)
@@ -274,8 +288,8 @@ def test_esd_input_parity(tmp_path, case):
     )
 
 
-def test_esd_opi_file_names_follow_the_classic_ones(tmp_path):
-    esd_dir = tmp_path / "classic"
+def test_esd_opi_file_names_follow_the_classic_ones(tmp_path, esd_env):
+    esd_dir = esd_env / "classic"
     _write_esd_dir(esd_dir, states=("S0", "S1", "T1"))
     lot = {"functional": "PBE0", "main_basisset": "def2-SVP",
            "ESD_modus": "TDDFT"}
