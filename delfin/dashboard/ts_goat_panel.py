@@ -162,6 +162,7 @@ def build_ts_goat_panel(
     scroll_top,
     viewer_output=None,
     render_in_panel=None,
+    update_highlights_in_panel=None,
     on_close=None,
     center_viewer=None,
     get_viewer_id=None,
@@ -631,6 +632,29 @@ def build_ts_goat_panel(
             _viewer_fallback(
                 f'Viewer could not be rendered: {type(exc).__name__}: {exc}')
 
+    def _update_selection_only():
+        """Update constraint halos in the existing viewer, without replacing DOM.
+
+        The previous constraints-field observer called
+        _render_integrated_viewer() on every atom click. That cleared the
+        Output and disposed/recreated the WebGL canvas while Voila was
+        still syncing widget state, intermittently leaving a white viewer.
+        Coordinates, camera and loaded ORCA vibration frames never change
+        when an atom is toggled, so there is no reason to rebuild them.
+        """
+        if state['ts_atoms'] is None:
+            return
+        indices = _parse_constraints(constraints_field.value)
+        if update_highlights_in_panel is None:
+            # Standalone panel integrations without the fast browser
+            # callback retain their old behaviour.
+            _render_integrated_viewer()
+            return
+        try:
+            update_highlights_in_panel(indices)
+        except Exception as exc:
+            _anim_error(f'Could not update constraint highlights: {exc}')
+
     # ---- vibration trajectory (orca_pltvib) ------------------------------
     # The trajectory is generated once per (hess, mode) in a cache
     # directory next to the Hessian, validated (atom order + TS
@@ -826,7 +850,7 @@ def build_ts_goat_panel(
 
     mode_dropdown.observe(_on_mode_change, names='value')
 
-    highlight_btn.on_click(lambda _b: _render_integrated_viewer())
+    highlight_btn.on_click(lambda _b: _update_selection_only())
 
     def show(open_result):
         """Open the panel with a prepared analysis (from the tab handler)."""
@@ -1018,7 +1042,7 @@ def build_ts_goat_panel(
     for editor in (basis_field, pal_field, maxcore_field):
         editor.observe(lambda _c: _refresh_preview(), names='value')
     constraints_field.observe(lambda _c: (_refresh_preview(),
-                                          _render_integrated_viewer()),
+                                          _update_selection_only()),
                               names='value')
 
     def _on_click_sync(change):
