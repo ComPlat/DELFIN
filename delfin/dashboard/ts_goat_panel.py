@@ -78,6 +78,43 @@ TS_GOAT_CONTROL_CSS = """
 .ts-goat-panel .ts-goat-slider .noUi-handle::after {
     display: none !important;
 }
+/* Fallback thumb: a Voila theme may suppress the real noUi handle.
+   The noUi-origin moves with the value, so this marker remains aligned
+   with the actual draggable widget handle even when its CSS is missing. */
+.ts-goat-panel .ts-goat-slider .noUi-origin {
+    overflow: visible !important;
+    visibility: visible !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-origin::after {
+    content: "" !important;
+    display: block !important;
+    position: absolute !important;
+    top: -7px !important;
+    right: -11px !important;
+    width: 20px !important;
+    height: 20px !important;
+    box-sizing: border-box !important;
+    border: 2px solid #397ca3 !important;
+    border-radius: 50% !important;
+    background: #ffffff !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3) !important;
+    pointer-events: none !important;
+    z-index: 30 !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-target,
+.ts-goat-panel .ts-goat-slider .noUi-base,
+.ts-goat-panel .ts-goat-slider .noUi-origin {
+    overflow: visible !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-handle {
+    display: block !important;
+    visibility: visible !important;
+    z-index: 31 !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-handle::before,
+.ts-goat-panel .ts-goat-slider .noUi-handle::after {
+    content: none !important;
+}
 .ts-goat-panel .ts-goat-slider input[type="range"] {
     width: 100% !important;
     min-width: 160px !important;
@@ -226,7 +263,7 @@ def build_ts_goat_panel(
         description='', continuous_update=False, readout=True,
         readout_format='.2f',
         tooltip='Displacement amplitude (frames are rescaled)',
-        style={'description_width': '0px'},
+        style={'description_width': '0px', 'handle_color': '#397ca3'},
         layout=widgets.Layout(
             flex='1 1 260px', width='100%', min_width='250px'),
     )
@@ -235,7 +272,7 @@ def build_ts_goat_panel(
         description='', continuous_update=False, readout=True,
         readout_format='.2f',
         tooltip='Playback speed (1 = 5 frames per second)',
-        style={'description_width': '0px'},
+        style={'description_width': '0px', 'handle_color': '#397ca3'},
         layout=widgets.Layout(
             flex='1 1 260px', width='100%', min_width='250px'),
     )
@@ -249,8 +286,8 @@ def build_ts_goat_panel(
                                             flex='0 0 80px')),
          anim_amp],
         layout=widgets.Layout(
-            flex='1 1 390px', min_width='345px', align_items='center',
-            gap='6px'),
+            width='min(100%, 650px)', min_width='300px',
+            align_items='center', gap='12px'),
     )
     speed_group = widgets.HBox(
         [widgets.HTML('<b style="font-size:12px;">Speed</b>',
@@ -258,8 +295,8 @@ def build_ts_goat_panel(
                                             flex='0 0 62px')),
          anim_speed],
         layout=widgets.Layout(
-            flex='1 1 370px', min_width='325px', align_items='center',
-            gap='6px'),
+            width='min(100%, 650px)', min_width='300px',
+            align_items='center', gap='12px'),
     )
     # One visible Play action: it loads the trajectory on demand.  The
     # previous "Imaginary Mode" toggle + "Generate / Load" button duplicated
@@ -269,11 +306,11 @@ def build_ts_goat_panel(
             [anim_play, anim_pause, anim_reset],
             layout=widgets.Layout(flex_flow='row wrap', width='100%',
                                   gap='5px', margin='2px 0')),
-         widgets.HBox(
+         widgets.VBox(
             [amp_group, speed_group],
             layout=widgets.Layout(
-                display='flex', flex_flow='row wrap', width='100%',
-                gap='12px', margin='5px 0 2px 0')),
+                display='flex', width='100%', gap='8px',
+                margin='7px 0 2px 0')),
          anim_status],
     )
     constraints_label = widgets.HTML(
