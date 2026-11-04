@@ -10326,6 +10326,14 @@ def create_tab(ctx):
                     """The last panel viewer id, for 'Ansicht zentrieren'."""
                     return _ts_viewer_state.get('vid')
 
+                def _ts_update_highlights_in_panel(indices):
+                    """Toggle atom halos without clearing/recreating WebGL."""
+                    vid = _ts_viewer_state.get('vid')
+                    if vid:
+                        from delfin.dashboard import molecule_viewer as _mv
+                        _run_js(_mv.ts_goat_viewer_highlights_js(
+                            vid, indices))
+
                 def _ts_center_viewer(vid):
                     """Re-center the panel viewer ('Ansicht zentrieren')."""
                     from delfin.dashboard import molecule_viewer as _mv
@@ -10388,6 +10396,7 @@ def create_tab(ctx):
                         'render_viewer': _ts_render_viewer,
                         'scroll_top': _ts_scroll_top,
                         'render_in_panel': _ts_render_in_panel,
+                        'update_highlights_in_panel': _ts_update_highlights_in_panel,
                         'on_close': _ts_on_close,
                         'center_viewer': _ts_center_viewer,
                         'get_viewer_id': _ts_get_viewer_id,
