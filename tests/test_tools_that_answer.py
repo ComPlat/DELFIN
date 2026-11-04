@@ -397,7 +397,10 @@ def test_each_tool_gets_an_environment_of_its_own():
     # And a floor under xtb, so the build that could not optimise cannot come
     # back -- a floor rather than a pin, so newer ones are still taken.
     assert 'XTB_MINIMUM="${XTB_MINIMUM:-' in text
-    assert '"xtb>=${XTB_MINIMUM}"' in text
+    # The floor is the default spec; a host that pins a build (the Pi)
+    # names XTB_SPEC instead.
+    assert 'XTB_SPEC="${XTB_SPEC:-xtb>=${XTB_MINIMUM}}"' in text
+    assert 'install_managed_or_adopt xtb "${XTB_SPEC}" xtb' in text
 
 
 def test_a_failure_names_the_binary_that_produced_it():
