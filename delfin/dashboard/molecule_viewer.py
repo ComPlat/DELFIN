@@ -7128,17 +7128,17 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         "  var atoms = viewer.getModel().selectedAtoms({}) || [];\n"
         "  var chosen = {};\n"
         "  for (var i = 0; i < payload.highlight.length; i++) {\n"
-        "    chosen[payload.highlight[i] + 1] = true;\n"
+        "    chosen[payload.highlight[i]] = true;\n"
         "  }\n"
         "  for (var k = 0; k < atoms.length; k++) {\n"
         "    var a = atoms[k];\n"
-        "    if (!chosen[a.serial]) continue;\n"
+        "    if (!chosen[k]) continue;\n"
         # A wireframe sphere at 12% opacity was effectively invisible.
         # A solid, softly translucent *separate* shell is distinguishable
         # without replacing the atom's CPK sphere or changing bond colours.
-        "    var radius = a.elem === 'H' ? 0.43 : 0.62;\n"
+        "    var radius = a.elem === 'H' ? 0.58 : 0.79;\n"
         "    viewer.addSphere({center:{x:a.x,y:a.y,z:a.z},\n"
-        "      radius:radius,color:0x8fbcd3,opacity:0.18,\n"
+        "      radius:radius,color:0x85afc7,opacity:0.32,\n"
         "      clickable:false});\n"
         "  }\n"
         "};\n"
@@ -7167,7 +7167,18 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         # SAME atom must emit a new Text value, otherwise traitlets
         # suppresses the second on_change and the atom cannot toggle off.
         "    window.__tsGoatClickSeq = (window.__tsGoatClickSeq || 0) + 1;\n"
-        "    var clickValue = String(atom.serial - 1) + ':' + window.__tsGoatClickSeq;\n"
+                # Click indices must match the zero-based line order of the XYZ
+        # file, also used in ORCA { C index C } constraints.
+        "    var orderedAtoms = viewer.getModel().selectedAtoms({}) || [];\n"
+        "    var clicked = orderedAtoms.indexOf(atom);\n"
+        "    if (clicked < 0 && typeof atom.index === 'number') clicked = atom.index;\n"
+        "    if (clicked < 0) clicked = orderedAtoms.findIndex(function(a){\n"
+        "      return a.serial === atom.serial && a.elem === atom.elem;\n"
+        "    });\n"
+        "    if (clicked < 0 || clicked >= orderedAtoms.length) {\n"
+        "      console.error('DELFIN TS-GOAT: clicked atom not in XYZ model'); return;\n"
+        "    }\n"
+        "    var clickValue = String(clicked) + ':' + window.__tsGoatClickSeq;\n"
         "    var setter = Object.getOwnPropertyDescriptor(\n"
         "      window.HTMLInputElement.prototype, 'value');\n"
         "    if (setter && setter.set) setter.set.call(sync, clickValue);\n"
