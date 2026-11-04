@@ -952,7 +952,16 @@ def build_ts_goat_panel(
         stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         job_name = f'GOAT_TS_{Path(files.out_path).stem}_{stamp}'
         job_dir = source_dir / job_name
-        job_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # Never overwrite another GOAT run (e.g. two clicks within
+            # the same second) or re-use a failed run's folder.
+            job_dir.mkdir(parents=True, exist_ok=False)
+        except OSError as exc:
+            status.value = (
+                f'<span style="color:#c62828;">Cannot create GOAT folder: '
+                f'{_esc(exc)}</span>'
+            )
+            return
 
         inp_file = f'{job_name}.inp'
         try:
@@ -968,6 +977,12 @@ def build_ts_goat_panel(
                 base_name=job_name,
             )
         except Exception as exc:
+            # Leave any non-empty folder untouched; only delete the empty
+            # directory that this click created before input generation.
+            try:
+                job_dir.rmdir()
+            except OSError:
+                pass
             status.value = (
                 f'<span style="color:#c62828;">Failed to write GOAT input: '
                 f'{_esc(exc)}</span>'
