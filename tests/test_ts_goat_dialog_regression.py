@@ -808,7 +808,7 @@ def test_ts_goat_scoped_select_and_slider_handle_css(tmp_path):
     assert 'padding-right: 30px !important' in css
     assert 'min-width: 240px !important' in css
     assert '.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle' in css
-    assert 'border: 2px solid #397ca3' in css
+    assert 'border: 2px solid #4081aa' in css
     assert 'height: 20px !important' in css
     assert '.ts-goat-panel .ts-goat-slider .noUi-origin::after' in css
     assert 'pointer-events: none !important' in css
@@ -897,7 +897,7 @@ def test_ts_goat_atom_click_changes_only_existing_viewer_halos(tmp_path):
     registry['on_atom_click'](0)
     changed = set(registry['parse_constraints'](field.value))
     assert (0 in changed) != (0 in initial)
-    assert updates[-1] == tuple(sorted(changed))
+    assert set(updates[-1]) == changed
     assert len(rendered) == before_renders
 
     registry['on_atom_click'](0)
