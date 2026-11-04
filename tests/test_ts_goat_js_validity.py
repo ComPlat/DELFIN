@@ -69,3 +69,11 @@ def test_bootstrap_without_arrows_is_valid():
     _check(
         ts_goat_viewer_bootstrap_js("vid-test", arrows=None),
         "ts_goat_viewer_bootstrap_js(no arrows)")
+
+
+
+def test_highlight_js_is_valid():
+    from delfin.dashboard.molecule_viewer import ts_goat_viewer_highlights_js
+    _check(
+        ts_goat_viewer_highlights_js("vid-test", [0, 1, 8]),
+        "ts_goat_viewer_highlights_js")
