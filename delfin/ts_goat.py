@@ -573,6 +573,7 @@ def analyze_reactive_center(
     # contacts actually open or close; only those contacts prove that the
     # selected mode acts on the bond in question.
     response_pairs: set = set()
+    displaced = None
     if mode_index is not None:
         from delfin.imag import displaced_geometries  # noqa: PLC0415
         try:
