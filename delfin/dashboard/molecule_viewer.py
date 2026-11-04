@@ -7138,7 +7138,7 @@ def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
         # without replacing the atom's CPK sphere or changing bond colours.
         "    var radius = a.elem === 'H' ? 0.58 : 0.79;\n"
         "    viewer.addSphere({center:{x:a.x,y:a.y,z:a.z},\n"
-        "      radius:radius,color:0x85afc7,opacity:0.32,\n"
+        "      radius:radius,color:0x80a9c5,opacity:0.40,\n"
         "      clickable:false});\n"
         "  }\n"
         "};\n"
