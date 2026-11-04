@@ -116,6 +116,8 @@ def test_the_gateway_sends_the_worktree_word(tmp_path, monkeypatch):
             if command.get("cmd") == "sessions":
                 return {"sessions": [{"id": "s-new", "name": "x",
                                       "messengerEnabled": True}]}
+            if command.get("action") == "status":
+                return {"ok": True, "title": "Notizen", "messengerEnabled": True}
             return {"ok": True}
 
     class _Daemon:
