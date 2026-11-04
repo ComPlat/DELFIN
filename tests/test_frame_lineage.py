@@ -139,3 +139,17 @@ def test_json_roundtrip(stage_dir):
     data = json.loads(json.dumps(res.to_json()))
     assert data["stages"][1]["summary"]["appeared"] == 1
     assert len(data["edges"]) == 4
+
+
+def test_api_frame_lineage_tool(stage_dir):
+    """The MCP agent tool (delfin.api.frame_lineage) returns the lineage."""
+    from delfin.api import frame_lineage
+    data = frame_lineage([str(stage_dir / "stageA"),
+                          str(stage_dir / "stageB")], rmsd_tol=0.05)
+    kept = {(e["src_frame"], e["dst_frame"]) for e in data["edges"]
+            if e["status"] == "kept"}
+    assert kept == {("frame_1.xyz", "frame_0.xyz"),
+                    ("frame_0.xyz", "frame_2.xyz"),
+                    ("frame_2.xyz", "frame_3.xyz")}
+    assert data["stages"][1]["summary"]["appeared"] == 1
+    assert data["rmsd_tol"] == 0.05
