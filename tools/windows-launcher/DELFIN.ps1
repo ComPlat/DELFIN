@@ -7,7 +7,7 @@ $store = Join-Path $env:LOCALAPPDATA 'DELFIN Launcher'
 $profilesFile = Join-Path $store 'profiles.json'
 
 function Normalize-Profile($value) {
-    $defaults = [ordered]@{ Id=[guid]::NewGuid().ToString(); Name=''; Target=''; Directory=''; Executable=''; Port=0; KeepSession=$false; OpenWorkingTerminal=$false }
+    $defaults = [ordered]@{ Id=[guid]::NewGuid().ToString(); Name=''; Target=''; Directory=''; Executable=''; Port=0; KeepSession=$false; OpenWorkingTerminal=$false; RememberLogin=$true }
     foreach ($key in @($defaults.Keys)) {
         $property = $value.PSObject.Properties[$key]
         if ($null -ne $property -and $null -ne $property.Value) { $defaults[$key] = $property.Value }
@@ -42,11 +42,44 @@ function Quote-NativeArgument([string]$value) {
     $escaped = [regex]::Replace($escaped,'(\\+)$','$1$1')
     return '"' + $escaped + '"'
 }
-function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '') {
+function Get-PersonName {
+    # Who sits at this Windows account. A server that runs several people on one
+    # account (remote_bootstrap.sh, ~/.config/delfin/launcher-people.conf) gives
+    # each a home of their own; every other server ignores it.
+    $name = [regex]::Replace(([string]$env:USERNAME).ToLowerInvariant(), '[^a-z0-9_-]', '-').Trim('-')
+    if ($name.Length -gt 32) { $name = $name.Substring(0, 32).TrimEnd('-') }
+    return $name
+}
+function Get-LoginKey {
+    # Remember login: one ed25519 key per Windows user, without a passphrase,
+    # protected by the Windows account. remote_bootstrap.sh adds its public
+    # half to the server on the first (password) login. $null when OpenSSH's
+    # ssh-keygen is missing or the key cannot be made: the login stays as is.
+    $folder = Join-Path $env:USERPROFILE '.ssh'
+    $key = Join-Path $folder 'delfin_launcher_ed25519'
+    if (-not (Test-Path -LiteralPath $key)) {
+        $keygen = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'
+        if (-not (Test-Path -LiteralPath $keygen)) { return $null }
+        [void][IO.Directory]::CreateDirectory($folder)
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = $keygen
+        $info.Arguments = (@('-q','-t','ed25519','-N','','-C',('delfin-launcher-' + (Get-PersonName)),'-f',$key) | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
+        $info.UseShellExecute = $false
+        $made = [Diagnostics.Process]::Start($info)
+        $made.WaitForExit()
+        if ($made.ExitCode -ne 0) { return $null }
+    }
+    $public = $key + '.pub'
+    if (-not (Test-Path -LiteralPath $public)) { return $null }
+    $line = (Get-Content -LiteralPath $public -Raw).Trim()
+    if ($line -notmatch '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9@._-]{1,64})?$') { return $null }
+    return [pscustomobject]@{ Key=$key; Public=$line }
+}
+function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '', [string]$publicKey = '') {
     $bootstrap = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'remote_bootstrap.sh')))
     $payload = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'remote_launcher.py')))
     $script = 'eval "$(printf %s ' + $bootstrap + ' | base64 -d)"'
-    return 'bash -ilc ' + (Shell-Quote $script) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $payload) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' })
+    return 'bash -ilc ' + (Shell-Quote $script) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $payload) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' }) + ' ' + (Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)
 }
 function Get-FreeLocalPort([int]$preferred) {
     $candidates = if ($preferred -eq 0) { @(0) } else { @($preferred..([Math]::Min(65535,$preferred+100))) + @(0) }
@@ -171,13 +204,18 @@ public static class DelfinConsole {
             $tunnelPath = '/tmp/delfin-win-tunnel-' + [guid]::NewGuid().ToString() + '/dashboard.sock'
         }
         $options = @(Get-SSHOptions $Mode $LocalPort $RemotePort $tunnelPath)
+        $loginKey = $null
+        if ($p.RememberLogin) { try { $loginKey = Get-LoginKey } catch { $loginKey = $null } }
+        $publicKey = ''
+        if ($loginKey) { $options += @('-i',$loginKey.Key); $publicKey = $loginKey.Public }
         if ($ConnectionId) {
             if ($ConnectionId -notmatch '^[a-f0-9-]{36}$' -or ($Mode -eq 'Terminal' -and ($LocalPort -lt 1024 -or $RemotePort -lt 1024))) { throw 'Invalid tunnel request.' }
             $readyFile = Join-Path $store ('connection-' + $ConnectionId + '.json')
         }
         if ($Mode -eq 'Terminal') {
             Write-Host 'Working terminal. Password and OTP prompts are handled exclusively by OpenSSH.'
-            $terminalCommand = Get-RemoteCommand $p 'terminal'
+            Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
+            $terminalCommand = Get-RemoteCommand $p 'terminal' '' $publicKey
             $terminalInfo = New-Object Diagnostics.ProcessStartInfo
             $terminalInfo.FileName = $ssh
             $terminalArgs = @($options) + @([string]$p.Target,$terminalCommand)
@@ -189,9 +227,11 @@ public static class DelfinConsole {
             Write-Host "SSH ended (exit code $($sshProcess.ExitCode))."
         } else {
             $port = [int]$p.Port
-            $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath
+            $remote = Get-RemoteCommand $p 'dashboard' $tunnelPath $publicKey
             Write-Host 'Dashboard terminal: enter your password and OTP directly in OpenSSH.'
+            Write-Host 'To paste a password here: right-click in this window. Ctrl+V does not paste into this console; it sends a control character, and the server sees a wrong password.'
             Write-Host 'On first login, compare the host fingerprint with the official server fingerprint.'
+            if ($loginKey) { Write-Host 'Remember login ON: after this login the server knows this PC; the next connection needs no password (where the server allows keys).' }
             Write-Host 'The browser signs in automatically.'
             if ($p.KeepSession) {
                 Write-Host 'Keep session ON: close this SSH window or detach with Ctrl+B, then D. Reconnect: start the app again.'
@@ -408,6 +448,13 @@ $keepToggle.Text = 'Keep session after disconnect'
 $keepToggle.Location = New-Object Drawing.Point(180,245)
 $keepToggle.Size = New-Object Drawing.Size(380,25)
 $form.Controls.Add($keepToggle)
+$rememberToggle = New-Object Windows.Forms.CheckBox
+$rememberToggle.Text = 'Remember login on this PC (SSH key)'
+$rememberToggle.Checked = $true
+$rememberToggle.Location = New-Object Drawing.Point(180,445)
+$rememberToggle.Size = New-Object Drawing.Size(380,25)
+$form.Controls.Add($rememberToggle)
+$advancedControls += @($rememberToggle)
 $advanced = New-Object Windows.Forms.CheckBox
 $advanced.Text = 'Advanced settings'
 $advanced.Location = New-Object Drawing.Point(180,285)
@@ -422,6 +469,7 @@ $combo.add_SelectedIndexChanged({
         foreach ($key in $keys) { $fields[$key].Text = [string]$p.$key }
         $workingToggle.Checked = [bool]$p.OpenWorkingTerminal
         $keepToggle.Checked = [bool]$p.KeepSession
+        $rememberToggle.Checked = [bool]$p.RememberLogin
         $advanced.Checked = [bool]($p.Directory -or $p.Executable -or [int]$p.Port -ne 0)
     }
 })
@@ -433,7 +481,7 @@ $form.Controls.Add($note)
 function Save-Current {
     $id = $script:selectedId
     if (-not $id) { $id = [guid]::NewGuid().ToString() }
-    $p = [pscustomobject]@{ Id=$id; Name=$fields.Target.Text.Trim(); Target=$fields.Target.Text.Trim(); Directory=$fields.Directory.Text.Trim(); Executable=$fields.Executable.Text.Trim(); Port=[int]$fields.Port.Text; KeepSession=$keepToggle.Checked; OpenWorkingTerminal=$workingToggle.Checked }
+    $p = [pscustomobject]@{ Id=$id; Name=$fields.Target.Text.Trim(); Target=$fields.Target.Text.Trim(); Directory=$fields.Directory.Text.Trim(); Executable=$fields.Executable.Text.Trim(); Port=[int]$fields.Port.Text; KeepSession=$keepToggle.Checked; OpenWorkingTerminal=$workingToggle.Checked; RememberLogin=$rememberToggle.Checked }
     Check-Profile $p
     $script:profiles = @($script:profiles | Where-Object { $_.Id -ne $id }) + @($p)
     [void][IO.Directory]::CreateDirectory($store)
@@ -451,7 +499,7 @@ foreach ($spec in @(@('New',15),@('Save',130),@('Start / Reconnect',280))) {
     $button.Location = New-Object Drawing.Point($spec[1],420)
     $button.Size = New-Object Drawing.Size($(if ($spec[1] -eq 280) { 285 } else { 105 }),35)
     if ($spec[0] -eq 'New') {
-        $button.add_Click({ $script:selectedId=$null; $combo.SelectedIndex=-1; foreach ($key in $keys) { $fields[$key].Text='' }; $fields.Port.Text='0'; $advanced.Checked=$false; $workingToggle.Checked=$false; $keepToggle.Checked=$false })
+        $button.add_Click({ $script:selectedId=$null; $combo.SelectedIndex=-1; foreach ($key in $keys) { $fields[$key].Text='' }; $fields.Port.Text='0'; $advanced.Checked=$false; $workingToggle.Checked=$false; $keepToggle.Checked=$false; $rememberToggle.Checked=$true })
     } elseif ($spec[0] -eq 'Save') {
         $button.add_Click({ try { [void](Save-Current) } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'DELFIN') } })
     } else {
@@ -522,11 +570,11 @@ $statusTimer.Start()
 $form.add_FormClosing({ Disconnect-Owned; $statusTimer.Stop() })
 function Show-Advanced {
     foreach ($control in $advancedControls) { $control.Visible = $advanced.Checked }
-    $note.Location = New-Object Drawing.Point(15,$(if ($advanced.Checked) { 450 } else { 325 }))
-    foreach ($button in $actionButtons) { $button.Top = $(if ($advanced.Checked) { 500 } else { 375 }) }
-    foreach ($control in $connectionButtons) { $control.Top = $(if ($advanced.Checked) { 545 } else { 420 }) }
-    $script:connectionStatus.Top = $(if ($advanced.Checked) { 580 } else { 455 })
-    $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 625 } else { 500 }))
+    $note.Location = New-Object Drawing.Point(15,$(if ($advanced.Checked) { 490 } else { 325 }))
+    foreach ($button in $actionButtons) { $button.Top = $(if ($advanced.Checked) { 540 } else { 375 }) }
+    foreach ($control in $connectionButtons) { $control.Top = $(if ($advanced.Checked) { 585 } else { 420 }) }
+    $script:connectionStatus.Top = $(if ($advanced.Checked) { 620 } else { 455 })
+    $form.ClientSize = New-Object Drawing.Size(590,$(if ($advanced.Checked) { 665 } else { 500 }))
 }
 $advanced.add_CheckedChanged({ Show-Advanced })
 Show-Advanced

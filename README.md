@@ -465,6 +465,7 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 * `MANTA_*` — the MANTA builder and its funnel: construction quality, gates, screening, optimisation, refinement, time budget
 * `XTB_preOPT = yes | no` / `global_optimizer = GOAT | CREST`
   * the older spellings `XTB_OPT` / `XTB_GOAT` / `CREST` are still accepted
+  * `global_opt_method = mlip:uma | mlip:mace | mlip:orb | mlip:aimnet2` (optional, GOAT only) runs GOAT with an orca-mlips MLIP on the job's GPU; `global_opt_mlip_model`, `global_opt_mlip_device = cuda | cpu`, `refuse_noncommercial_weights = yes | no`
 * `XTB_SOLVATOR = yes | no`
 
 ### Resource management

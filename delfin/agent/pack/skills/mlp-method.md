@@ -122,6 +122,121 @@ warning says so. FieldSpec `:2306` in
 `delfin/common/control_validator.py`; notes in
 `delfin/common/control_key_notes.json` (key `mlp_preopt`).
 
+## ExtOpt providers: delfin-mlp-extopt (default) and orca-mlips
+
+ORCA `! ExtOpt` runs can be driven by two providers:
+
+- **`delfin-mlp-extopt`** (default, `delfin/mlp_tools/orca_extopt.py`): our
+  own wrapper around the registry backends; one fresh process per ORCA
+  step (torch import + model load each step — fine for preopt, slow for
+  long optimizations).
+- **`orca-mlips`** (`delfin/mlp_tools/orca_mlips.py`, optional package
+  `pip install orca-mlips[...]`, MIT): resident model server, so repeated
+  calls during an optimization are fast; supports xTB implicit solvent
+  (`--solvent`, `--solvent-model alpb|cpcmx`) and the two-step analytical
+  Hessian (`--dump-hessian` + `%geom inhess Read / InHessName`) for
+  OptTS/Freq. UMA weights are gated (user's own HF login); MACE-OMOL-0
+  weights are non-commercial (Academic Software License). Use the
+  prefixed ProgExt names (`orca-mlips-uma`), not the short ones.
+
+Plan jobs with `mlp_extopt_plan` (dry run — writes input + job script,
+submits nothing); GPU partition configured -> one sbatch job with
+`--nodes=1` so ORCA and the MLIP server share a node; no GPU -> local CPU
+fallback (<= 2 cores, < 30 min, small systems only) or refusal.
+
+## Setting up an MLIP environment on a cluster (orca-mlips)
+
+Only when the user asks to set MLIPs up (or a planned ExtOpt job has no
+environment). Order, each step shown to the user before the next:
+
+1. `mlp_setup_probe` (read-only): GPU partitions + gres, NVIDIA driver
+   (only where `nvidia-smi` exists; a login node usually has none), CUDA
+   and ORCA modules, ORCA >= 6.1, micromamba/mamba/conda, existing MLIP
+   envs and their `orca-mlips-*` commands, current `runtime.mlp`. No
+   Slurm or no GPU is an answer, not an error.
+2. `mlp_setup_plan` (read-only): partition, backend with its code AND
+   weight licence (UMA: gated, the user's own Hugging Face approval and
+   login; MACE: non-commercial weights; ORB: Apache-2.0; AIMNet2: MIT),
+   the torch build for the probed CUDA version, the install commands, the
+   settings diff, the removal command. Show the licence lines to the user.
+3. Install: run each command of kind `run` as its OWN bash call, in
+   order; the shell gate asks the user for every one, in every mode.
+   Stop at the first refusal or failure. A `manual` step (`hf auth
+   login`) is for the user in their own terminal: never run it, never ask
+   for, read, print or store a token. After it, probe again.
+4. `mlp_setup_configure` with `write=false` shows the diff; with
+   `write=true` it writes through `save_settings` (asked).
+5. `mlp_setup_verify` writes a water job (dry run); submit it with the
+   returned `sbatch` command via bash (asked), then
+   `mlp_setup_verify_result` reports pass/fail with the cold vs warm
+   ProgExt call (start + model load vs one gradient) and the ExtOpt Opt
+   time; on failure it names the likely cause (CUDA mismatch, login,
+   partition, module, env).
+6. Removal: the plan's `remove_command`, via bash (asked).
+
+In a terminal the same flow is `delfin mlp_setup probe|plan|install|
+configure|verify|result|remove`; `install` and `remove` ask for each
+command and refuse without a terminal.
+
+## When an MLIP is enough, and when DFT must follow
+
+### MLIP preopt / TS guess: sound when
+
+- neutral, closed-shell organic molecules inside the model's element set
+  (see the tables above);
+- the goal is a STARTING GEOMETRY or a conformer ranking, and a DFT
+  optimization/verification follows;
+- for TS guesses: the MLIP Hessian is a *guess* for the `%geom inhess`
+  first guess — the TS must be re-optimized and characterized with DFT.
+
+### DFT check REQUIRED when
+
+- the species is charged or open-shell outside `aimnet2`'s scope (adapter
+  refuses), or contains metals outside the model's training set — an MLP
+  number here is not just imprecise, it is silently wrong physics;
+- reaction barriers or spin-state splittings are the question;
+- an MLIP optimization reports convergence: still verify with a DFT
+  Hessian — MLIP local minima can keep extra imaginary frequencies
+  (orca-mlips README explicitly warns about FP32 precision there);
+- any number is going into a publication: MLP energies are screening
+  values on the model's own scale, never comparable with DFT.
+
+### GOAT with an MLIP: the ensemble is a screen
+
+`mlp_extopt_plan(run_type="goat", provider="orca_mlips", ...)` plans ORCA's
+GOAT (manual 4.10, "GOAT: global geometry optimization and ensemble
+generator") with the MLIP as the ExtOpt method (manual 4.1.10). GPU
+partition only; `goat_max_workers` caps the workers (multiple of 4). The
+job writes `<job>.finalensemble.xyz` and `<job>.globalminimum.xyz`
+(4.10.2/4.10.3); `read_mlips_goat` reads them (energies in Eh and
+relative kcal/mol, `final: False`). Not yet verified in a real job:
+whether one orca-mlips server serves GOAT's parallel workers cleanly.
+
+The MLIP ensemble is SOUND as a screen when the molecule is neutral,
+closed-shell, organic and inside the model's element set: GOAT's
+filters (RMSD 0.125 A, ENDIFF 0.1 kcal/mol, MAXEN window; Table 4.9)
+then sort structures on a PES the model describes.
+
+A DFT RE-RANKING of the lowest conformers is REQUIRED (re-optimise or
+single-point the conformers inside a few kcal/mol of the minimum, then
+use the DFT order) when:
+
+- the molecule is charged, open-shell, or holds a metal or element
+  outside the model's training set -- the MLIP ensemble order is then
+  untested physics, not an approximation;
+- energy differences inside the window are close to the model's error
+  (sub-kcal/mol gaps decide nothing on an MLIP scale);
+- conformer energies, Boltzmann weights, Gconf/Sconf or a "global
+  minimum" are reported as results: MLIP energies are a screen, never
+  final numbers. GOAT "will work with any method in ORCA, all you need
+  is the gradient" (4.10.10.3) -- the method still decides the order.
+
+### Licence discipline (LICENSE_GUARD.md family 4)
+
+No weights or HF tokens ever enter DELFIN, the repo or the logs; gated
+checkpoints are the user's own login. `refuse_noncommercial_weights=True`
+(or the CONTROL/tool option) refuses non-commercially licensed weights.
+
 ## References
 
 See the DOI table above; each adapter table also carries its source string

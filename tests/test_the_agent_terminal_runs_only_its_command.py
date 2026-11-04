@@ -103,7 +103,10 @@ def test_without_a_configured_command_there_is_no_terminal(monkeypatch):
 @pytest.mark.parametrize("command", [
     "/bin/bash", "/usr/bin/sh", "/usr/bin/zsh", sys.executable,
     "/usr/bin/python3.11", "/usr/bin/node", "/usr/bin/env", "/usr/bin/sudo",
-    "/usr/bin/tmux"])
+    "/usr/bin/tmux"],
+    # sys.executable by name: its path carries the patch version, and CI's
+    # shards must collect the same ids on every runner image.
+    ids=lambda c: "sys.executable" if c == sys.executable else c)
 def test_a_shell_or_an_interpreter_is_never_the_terminal(monkeypatch, command):
     """The manager refuses them even when the launcher was bypassed."""
     monkeypatch.setenv(CT.ARGV_ENV, json.dumps([command]))

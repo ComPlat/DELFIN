@@ -219,11 +219,78 @@ def tool_mlp_rank(xyz_ensemble: str, backend: str = "ani2x", charge: int = 0,
 
 def tool_mlp_preoptimize(xyz: str, backend: str = "ani2x", fmax: float = 0.05,
                          steps: int = 200, charge: int = 0, mult: int = 1,
-                         device: str = "cpu") -> str:
+                         device: str = "cpu",
+                         refuse_noncommercial_weights: bool = False) -> str:
     """MLP pre-optimisation before ORCA; confirm everything with DFT."""
     return _dumps(delfin_api.mlp_preoptimize(xyz, backend, fmax=fmax,
                                              steps=steps, charge=charge,
-                                             mult=mult, device=device))
+                                             mult=mult, device=device,
+                                             refuse_noncommercial_weights=refuse_noncommercial_weights))
+
+
+def tool_mlp_extopt_plan(
+    xyz: str, run_type: str = "opt", provider: str = "delfin",
+    backend: str = "ani2x", mlips_backend: str = "uma", model: str = "",
+    device: str = "cpu", solvent: str = "", charge: int = 0, mult: int = 1,
+    gpu_partitions: str = "", gres: str = "gpu:1", env_activation: str = "",
+    job_name: str = "extopt_job", allow_local: bool = False,
+    work_dir: str = "", goat_options: str = "", goat_variant: str = "GOAT",
+    goat_max_workers: int = 0,
+) -> str:
+    """Plan an ORCA+ExtOpt MLP job (dry run: input + script, nothing submitted).
+
+    run_type goat: orca_mlips on a GPU partition; goat_options is a JSON
+    object of %goat options, goat_max_workers caps the workers (multiple
+    of 4, 0 = no cap); the result names the ensemble files it will write.
+    """
+    return _dumps(delfin_api.mlp_extopt_plan(
+        xyz, run_type=run_type, provider=provider, backend=backend,
+        mlips_backend=mlips_backend, model=model or None, device=device,
+        solvent=solvent or None, charge=charge, mult=mult,
+        gpu_partitions=gpu_partitions, gres=gres,
+        env_activation=env_activation, job_name=job_name,
+        allow_local=allow_local, work_dir=work_dir,
+        goat_options=goat_options or None, goat_variant=goat_variant,
+        goat_max_workers=goat_max_workers or None,
+    ))
+
+
+def tool_mlp_setup_probe() -> str:
+    """Probe this host for an orca-mlips set-up (read-only): Slurm GPU partitions and gres, NVIDIA driver, CUDA modules, ORCA 6.1, conda tool, MLIP envs and their ProgExt commands, current runtime.mlp settings."""
+    return _dumps(delfin_api.mlp_setup_probe())
+
+
+def tool_mlp_setup_plan(backend: str = "", partition: str = "",
+                        env_name: str = "delfin-mlip", cuda: str = "") -> str:
+    """orca-mlips set-up plan (read-only): partition, backend (uma|orb|mace|aimnet2) with code/weight licences, install commands to run one per bash call (each asked), settings diff, removal command."""
+    return _dumps(delfin_api.mlp_setup_plan(backend=backend, partition=partition,
+                                            env_name=env_name, cuda=cuda))
+
+
+def tool_mlp_setup_verify_result(job_dir: str) -> str:
+    """Read an MLIP verify job directory (read-only): pass/fail, cold vs warm ProgExt call, ExtOpt timings, likely cause on failure."""
+    return _dumps(delfin_api.mlp_setup_verify_result(job_dir))
+
+
+def tool_mlp_setup_configure(backend: str = "", partition: str = "",
+                             env_name: str = "delfin-mlip", cuda: str = "",
+                             write: bool = False, allow_mutate: bool = False) -> str:
+    """Write the plan's runtime.slurm.gpu_partitions / runtime.mlp.* settings (write=true) or show the diff (write=false)."""
+    if write and not allow_mutate:
+        return _dumps({"ok": False, "written": False,
+                       "error": "writing settings needs the host's grant; "
+                                "call with write=false for the diff"})
+    return _dumps(delfin_api.mlp_setup_configure(
+        backend=backend, partition=partition, env_name=env_name, cuda=cuda,
+        write=bool(write)))
+
+
+def tool_mlp_setup_verify(backend: str = "", job_dir: str = "", orca: str = "orca",
+                          allow_mutate: bool = False) -> str:
+    """Write the MLIP verify job directory (dry run, nothing submitted); submit with the returned sbatch command via bash."""
+    if not allow_mutate:
+        return _dumps({"ok": False, "error": "writing the verify job needs the host's grant"})
+    return _dumps(delfin_api.mlp_setup_verify(backend=backend, job_dir=job_dir, orca=orca))
 
 
 def tool_result_checks(work_dir: str, base_name: str, job_type: str,
@@ -1915,6 +1982,13 @@ def tool_geometry_rotate(xyz: str, indices: list, axis, degrees: float) -> str:
     return _dumps(delfin_api.geometry_rotate(xyz, indices, axis, degrees))
 
 
+def tool_trajectory_xyz(orca_out: str) -> str:
+    """Every CARTESIAN COORDINATES (ANGSTROEM) block of an ORCA output
+    (relaxed scan, opt, IRC) as one multi-frame xyz {xyz, n_frames};
+    write xyz to a file and show_molecule opens the rotation movie."""
+    return _dumps(delfin_api.trajectory_xyz(orca_out))
+
+
 def tool_geometry_add_atom(xyz: str, element: str, bonded_to: int,
                            bond_length: float) -> str:
     """Add an atom at a bond length from an existing atom."""
@@ -2002,6 +2076,9 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="csp_check")(_safe("csp_check", tool_csp_check))
     mcp.tool(name="mlp_check")(_safe("mlp_check", tool_mlp_check))
     mcp.tool(name="mlp_list_backends")(_safe("mlp_list_backends", tool_mlp_list_backends))
+    mcp.tool(name="mlp_setup_probe")(_safe("mlp_setup_probe", tool_mlp_setup_probe))
+    mcp.tool(name="mlp_setup_plan")(_safe("mlp_setup_plan", tool_mlp_setup_plan))
+    mcp.tool(name="mlp_setup_verify_result")(_safe("mlp_setup_verify_result", tool_mlp_setup_verify_result))
     mcp.tool(name="analysis_check")(_safe("analysis_check", tool_analysis_check))
     mcp.tool(name="result_checks")(_safe("result_checks", tool_result_checks))
     mcp.tool(name="list_dashboard_patterns")(_safe("list_dashboard_patterns", tool_list_dashboard_patterns))
@@ -2021,6 +2098,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="geometry_set_dihedral")(_safe("geometry_set_dihedral", tool_geometry_set_dihedral))
     mcp.tool(name="geometry_translate")(_safe("geometry_translate", tool_geometry_translate))
     mcp.tool(name="geometry_rotate")(_safe("geometry_rotate", tool_geometry_rotate))
+    mcp.tool(name="trajectory_xyz")(_safe("trajectory_xyz", tool_trajectory_xyz))
     mcp.tool(name="geometry_add_atom")(_safe("geometry_add_atom", tool_geometry_add_atom))
     mcp.tool(name="geometry_remove_atoms")(_safe("geometry_remove_atoms", tool_geometry_remove_atoms))
     mcp.tool(name="geometry_replace_ligand")(_safe("geometry_replace_ligand", tool_geometry_replace_ligand))
@@ -2073,6 +2151,14 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="mlp_optimize")(_safe("mlp_optimize", tool_mlp_optimize))
     mcp.tool(name="mlp_rank")(_safe("mlp_rank", tool_mlp_rank))
     mcp.tool(name="mlp_preoptimize")(_safe("mlp_preoptimize", tool_mlp_preoptimize))
+    mcp.tool(name="mlp_extopt_plan")(_safe("mlp_extopt_plan", tool_mlp_extopt_plan))
+    # MLIP set-up, acting: settings write and the verify job directory.
+    # Installs, the verify submission and the env removal are NOT tools:
+    # the agent runs them as bash commands, which the shell gate asks for
+    # in every mode -- a side-effecting MCP tool is admitted unasked under
+    # bypassPermissions.
+    mcp.tool(name="mlp_setup_configure")(_host_gated(_safe("mlp_setup_configure", tool_mlp_setup_configure)))
+    mcp.tool(name="mlp_setup_verify")(_host_gated(_safe("mlp_setup_verify", tool_mlp_setup_verify)))
     # Job lifecycle (read-only list + mutating submit/cancel)
     mcp.tool(name="list_active_calculations")(_safe("list_active_calculations", tool_list_active_calculations))
     mcp.tool(name="submit_calculation")(_host_gated(tool_submit_calculation))

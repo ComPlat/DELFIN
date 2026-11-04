@@ -2991,16 +2991,198 @@ def mlp_rank(xyz_ensemble: str, backend: str = "ani2x", *, charge: int = 0,
     return _mlp_run(_run, backend, xyz=xyz_ensemble)
 
 
+def mlp_extopt_plan(
+    xyz: str,
+    *,
+    run_type: str = "opt",
+    provider: str = "delfin",
+    backend: str = "ani2x",
+    mlips_backend: str = "uma",
+    model: str = None,
+    device: str = "cpu",
+    solvent: str = None,
+    charge: int = 0,
+    mult: int = 1,
+    gpu_partitions: str = "",
+    gres: str = "gpu:1",
+    env_activation: str = "",
+    job_name: str = "extopt_job",
+    allow_local: bool = False,
+    work_dir: str = "",
+    goat_options: dict | str | None = None,
+    goat_variant: str = "GOAT",
+    goat_max_workers: int | None = None,
+    cpus_per_task: int | None = None,
+) -> dict:
+    """Plan an ORCA+ExtOpt MLP job (DRY RUN — writes input + script, submits nothing).
+
+    Chooses provider ("delfin" = delfin-mlp-extopt wrapper, default, or
+    "orca_mlips") and model/device; with gpu_partitions configured the
+    rendered sbatch script puts ORCA and the MLIP (and the orca-mlips
+    resident server) on the SAME node (--nodes=1, --gres, env activation
+    inside the script); without one the plan is a refusal or, with
+    allow_local=True and a small system, a local CPU script within the
+    host limits (<= 2 cores, < 30 min).  Submission (submit=True through
+    delfin.mlp_tools.extopt_submit.submit_extopt_job) is a separate,
+    explicit act.
+
+    ``run_type="goat"`` (provider "orca_mlips", GPU partition only):
+    ``goat_options`` is the %goat block (dict or JSON object text; keys
+    validated against ORCA's known options), ``goat_variant`` one of
+    GOAT | GOAT-ENTROPY | GOAT-EXPLORE | GOAT-REACT | GOAT-DIVERSITY,
+    ``goat_max_workers`` caps the workers (multiple of 4).  ``produces``
+    names the files the job writes (output, final ensemble, global
+    minimum); their MLIP energies are a screen for a DFT re-ranking.
+    """
+    import json as _json
+
+    from delfin.mlp_tools.cluster_dispatch import MLPClusterConfig
+    from delfin.mlp_tools.extopt_submit import (
+        ExtOptJobRequest, plan_extopt_job,
+    )
+
+    if isinstance(goat_options, str):
+        goat_options = _json.loads(goat_options) if goat_options.strip() else None
+    if goat_options is not None and not isinstance(goat_options, dict):
+        raise ValueError("goat_options must be a JSON object of %goat options")
+    atoms = _mlp_read_atoms(xyz)
+    req = ExtOptJobRequest(
+        run_type=run_type,
+        elements=list(atoms.get_chemical_symbols()),
+        coordinates=[[float(c) for c in row] for row in atoms.get_positions()],
+        charge=charge, mult=mult, provider=provider, backend=backend,
+        mlips_backend=mlips_backend, model=model, device=device,
+        solvent=solvent, job_name=job_name, allow_local=allow_local,
+        work_dir=Path(work_dir) if work_dir else Path.cwd(),
+        goat_options=goat_options, goat_variant=goat_variant,
+        goat_max_workers=goat_max_workers or None,
+    )
+    cfg_kw = {"cpus_per_task": int(cpus_per_task)} if cpus_per_task else {}
+    cfg = MLPClusterConfig(
+        gpu_partitions=gpu_partitions, gres=gres,
+        env_activation=env_activation, **cfg_kw,
+    )
+    plan = plan_extopt_job(req, cfg=cfg)
+    out_progext = {}
+    if provider == "orca_mlips":
+        from delfin.mlp_tools.orca_mlips import detect_orca_mlips
+
+        name = f"orca-mlips-{mlips_backend}"
+        out_progext = {
+            "progext": name,
+            # The job runs in the environment env_activation selects; this
+            # only says whether THIS process's environment has the command.
+            "progext_installed_here": name in detect_orca_mlips()["progext_names"],
+        }
+    return {
+        "ok": True,
+        "mode": plan.mode,
+        "input": plan.input,
+        "script": plan.script,
+        "pal": plan.pal,
+        "reason": plan.reason,
+        "produces": [str(p) for p in plan.produces],
+        **out_progext,
+        "dry_run": True,
+        "note": "Dry run: nothing submitted. Submit explicitly with "
+                "submit_extopt_job(submit=True) (goes through "
+                "delfin.scheduler_client).",
+    }
+
+
+def mlp_setup_probe() -> dict:
+    """Read-only inventory for an orca-mlips set-up on this host.
+
+    Slurm GPU partitions and gres (through delfin.scheduler_client), the
+    NVIDIA driver (nvidia-smi only where present), CUDA toolkit/modules,
+    ORCA >= 6.1, micromamba/mamba/conda, environments with orca-mlips /
+    fairchem / mace / orb / aimnet and their orca-mlips-* ProgExt commands,
+    and the runtime.slurm / runtime.mlp settings. Installs, writes and
+    submits nothing; a missing part is a stated absence.
+    """
+    from delfin.mlp_tools.guided_setup import probe
+    return probe()
+
+
+def mlp_setup_plan(*, backend: str = "", partition: str = "",
+                   env_name: str = "delfin-mlip", cuda: str = "") -> dict:
+    """Proposal for an orca-mlips set-up: partition, backend with its code
+    and weight licence records, the install commands (shown, not run), the
+    settings diff it would write, and the removal command. Read-only."""
+    from delfin.mlp_tools import guided_setup as gs
+    found = gs.probe()
+    plan = gs.propose(found, backend=backend, partition=partition,
+                      env_name=env_name, cuda=cuda)
+    plan["settings_diff"] = gs.configure(plan["settings"])["diff"]
+    plan["probe_summary"] = found["summary"]
+    plan["how_to_install"] = (
+        "Run each command in `commands` (kind 'run') as its own bash call; "
+        "the shell gate asks for every install command in every mode. "
+        "Commands of kind 'manual' are for the user to run themselves.")
+    return plan
+
+
+def mlp_setup_configure(*, backend: str = "", partition: str = "",
+                        env_name: str = "delfin-mlip", cuda: str = "",
+                        write: bool = False) -> dict:
+    """The settings diff of the plan; written through save_settings only
+    with write=True (runtime.slurm.gpu_partitions, runtime.mlp.*)."""
+    from delfin.mlp_tools import guided_setup as gs
+    plan = gs.propose(gs.probe(), backend=backend, partition=partition,
+                      env_name=env_name, cuda=cuda)
+    if write and not plan["partition"]:
+        out = gs.configure(plan["settings"])
+        out["error"] = ("not written: no GPU partition (" + plan["partition_reason"]
+                        + "); pass partition")
+        return out
+    return gs.configure(plan["settings"], write=bool(write))
+
+
+def mlp_setup_verify(*, backend: str = "", job_dir: str = "",
+                     orca: str = "orca") -> dict:
+    """Dry run: write the verify job (water energy+gradient via orca-mlips,
+    cold vs warm call timing, short ExtOpt Opt) for the configured GPU
+    partition. Submits nothing; returns the sbatch command to run."""
+    from delfin.mlp_tools import guided_setup as gs
+    b = backend or gs.load_mlp_backend() or gs.default_backend()[0]
+    return gs.prepare_verify_job(gs.cluster_config(), backend=b,
+                                 job_dir=Path(job_dir) if job_dir else Path.cwd() / "mlp_verify",
+                                 orca=orca)
+
+
+def mlp_setup_verify_result(job_dir: str) -> dict:
+    """Read a verify job directory: pass/fail, the timings, and on failure
+    the likely causes (CUDA mismatch, login, partition, module, env)."""
+    from delfin.mlp_tools import guided_setup as gs
+    res = gs.read_verify_result(Path(job_dir))
+    res["summary"] = gs.verify_summary(res)
+    return res
+
+
 def mlp_preoptimize(xyz: str, backend: str = "ani2x", *, fmax: float = 0.05,
                     steps: int = 200, charge: int = 0, mult: int = 1,
-                    device: str = "cpu") -> dict:
+                    device: str = "cpu",
+                    refuse_noncommercial_weights: bool = False) -> dict:
     """MLP pre-optimisation: relax a starting geometry before ORCA.
 
     Returns an optimised geometry (``xyz``) to hand to the DFT step plus
     the MLP screening energy; the DFT energy of that geometry is the only
-    final number.
+    final number.  ``refuse_noncommercial_weights=True`` refuses backends
+    whose model weights are non-commercially licensed (LICENSE_GUARD.md
+    family 4).
     """
     defaults = {"fmax": 0.05, "steps": 200}
+    if refuse_noncommercial_weights:
+        from delfin.mlp_tools import registry
+
+        allowed, refused = registry.filter_backends_by_licence(
+            [backend], refuse_noncommercial=True)
+        if refused:
+            lic = registry.get_backend(refused[0]).weight_licence
+            return _mlp_error(
+                f"backend {backend!r} uses non-commercial model weights "
+                f"({lic['name']}, {lic['url']}); refuse_noncommercial_"
+                "weights is set -- refusing.")
     out = mlp_optimize(xyz, backend=backend, fmax=fmax, steps=steps,
                        optimizer="LBFGS", charge=charge, mult=mult,
                        device=device)
@@ -3078,6 +3260,20 @@ def geometry_rotate(xyz: str, indices: list, axis, degrees: float) -> dict:
     out = _xyz_result(g)
     out["change"] = ch
     return out
+
+
+def trajectory_xyz(orca_out: str) -> dict:
+    """Every CARTESIAN COORDINATES (ANGSTROEM) block of an ORCA output
+    (relaxed scan, opt, IRC) as one multi-frame xyz: {xyz, n_frames}.
+
+    The agent's native show_molecule opens the xyz string written to a
+    file as the rotation movie; this is glue, not a new renderer.
+    """
+    xyz = _ge().trajectory_xyz(orca_out)
+    # count the "frame N" comment lines directly
+    n_frames = sum(1 for line in xyz.splitlines()
+                   if line.startswith("frame "))
+    return {"xyz": xyz, "n_frames": n_frames}
 
 
 def geometry_add_atom(xyz: str, element: str, bonded_to: int,
@@ -3179,10 +3375,24 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Rank a conformer ensemble by MLP energy (lowest first)."},
     {"name": "mlp_preoptimize", "category": "ml",
      "summary": "MLP pre-optimisation before ORCA; confirm with DFT."},
+    {"name": "mlp_extopt_plan", "category": "ml",
+     "summary": "Plan an ORCA+ExtOpt MLP job (dry run: input + sbatch/local "
+                "script, nothing submitted; provider delfin|orca_mlips; "
+                "run_type goat for an MLIP conformer ensemble)."},
     {"name": "analysis_check", "category": "checks",
      "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
     {"name": "result_checks", "category": "checks",
      "summary": "Validate a finished run and a chemistry answer's numbers."},
+    {"name": "mlp_setup_probe", "category": "checks",
+     "summary": "Probe GPU partitions, CUDA, ORCA, conda and MLIP envs (read-only)."},
+    {"name": "mlp_setup_plan", "category": "checks",
+     "summary": "orca-mlips set-up plan: partition, backend+licences, commands (read-only)."},
+    {"name": "mlp_setup_verify_result", "category": "checks",
+     "summary": "Read an MLIP verify job: pass/fail, timings, likely cause (read-only)."},
+    {"name": "mlp_setup_configure", "category": "ml",
+     "summary": "Write the MLIP settings diff via save_settings (mutating)."},
+    {"name": "mlp_setup_verify", "category": "ml",
+     "summary": "Write the MLIP verify job (dry run; submit via bash sbatch, asked)."},
     # delfin-ops — workflow execution (mutating)
     {"name": "pipeline_prepare", "category": "workflow",
      "summary": "Generate a CONTROL.txt template (mutating)."},
@@ -3325,6 +3535,13 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Catalog of DELFIN concepts (control_keys, OCCUPIER, …)."},
     {"name": "explain_delfin_feature", "category": "explainer",
      "summary": "Curated explanation of one DELFIN concept."},
+    # ORCA knowledge on demand (wave14/w04)
+    {"name": "orca_explain", "category": "explainer",
+     "summary": "Purpose/requirements/manual section of one ORCA keyword."},
+    {"name": "orca_check_input", "category": "validation",
+     "summary": "Check a described ORCA calc against knowledge cards."},
+    {"name": "workflow_candidates", "category": "workflow",
+     "summary": "Rank DELFIN workflows for a request; CONTROL keys included."},
     # delfin-docs (other MCP server, listed for cross-reference)
     {"name": "search_docs", "category": "literature",
      "summary": "TF-IDF search over indexed PDFs."},
@@ -3354,6 +3571,8 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Translate selected atoms by a vector."},
     {"name": "geometry_rotate", "category": "geometry",
      "summary": "Rotate selected atoms about an axis by degrees."},
+    {"name": "trajectory_xyz", "category": "geometry",
+     "summary": "ORCA output (scan/opt/IRC) to multi-frame xyz for the rotation movie."},
     {"name": "geometry_add_atom", "category": "geometry",
      "summary": "Add an atom at a bond length from an existing atom."},
     {"name": "geometry_remove_atoms", "category": "geometry",
@@ -4886,6 +5105,199 @@ def list_delfin_features(category: str = "") -> list[dict]:
             "summary": info["summary"][:140],
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# ORCA knowledge on demand (wave14/w04 RULE 1)
+# ---------------------------------------------------------------------------
+
+
+def orca_explain(word: str) -> dict:
+    """Explain one ORCA keyword/block option from the shipped knowledge.
+
+    Use when an ORCA input must mention a keyword and its meaning,
+    requirements or manual section is not already known. Answers come
+    from ``delfin/orca_knowledge`` (the keyword dictionary and the
+    verified knowledge cards); nothing is run. Unknown words return
+    ``found: false`` plus near-miss suggestions, not an error.
+
+    Args:
+        word: ORCA simple-input keyword, alias or block option,
+            case-blind (e.g. ``TightSCF``, ``3conv``, ``NoSplitRIJ``).
+    """
+    from delfin.orca_knowledge.dictionary import explain as _dict_explain
+    from delfin.orca_knowledge.dictionary import records as _records
+
+    if not isinstance(word, str) or not word.strip():
+        return {"found": False, "error": "no keyword given"}
+    record = _dict_explain(word.strip())
+    if record is None:
+        query = word.strip().lower()
+        scored = []
+        for rec in _records():
+            for key in {rec.get("keyword"), *rec.get("aliases", [])}:
+                if isinstance(key, str) and key:
+                    k = key.lower()
+                    scored.append((_prefix_score(query, k), -len(k), k, rec))
+        scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+        suggestions = []
+        for prefix, _neglen, _k, rec in scored[:5]:
+            if prefix > 0 and rec["keyword"] not in suggestions:
+                suggestions.append(rec["keyword"])
+        return {
+            "found": False,
+            "word": word.strip(),
+            "suggestions": suggestions,
+        }
+    return {
+        "found": True,
+        "id": record.get("id"),
+        "keyword": record.get("keyword"),
+        "aliases": list(record.get("aliases") or []),
+        "category": record.get("category"),
+        "purpose": record.get("purpose") or "",
+        "requires": record.get("requires"),
+        "excludes": record.get("excludes"),
+        "pairs_with": record.get("pairs_with"),
+        "defaults": record.get("defaults"),
+        "typical_use": record.get("typical_use"),
+        "opi": record.get("opi"),
+        "note": record.get("note"),
+        "status": record.get("status"),
+        "manual": dict(record.get("manual") or {}),
+    }
+
+
+def _prefix_score(query: str, candidate: str) -> int:
+    """Longest common prefix length of query and candidate, capped at 3."""
+    n = 0
+    for a, b in zip(query, candidate):
+        if a != b:
+            break
+        n += 1
+        if n >= 3:
+            break
+    return n
+
+
+def orca_check_input(calc_description: str) -> dict:
+    """Check a described ORCA calculation against the knowledge cards.
+
+    Use before writing or submitting an ORCA input: the verified
+    knowledge cards (``delfin/orca_knowledge``) are matched against the
+    description. Cards whose executable ``check`` applies and fails come
+    back as ``findings`` (severity, statement, sources, detail); the
+    remaining relevant cards for the described method/job come back as
+    ``relevant_cards`` (id, severity, statement, sources). Nothing is run.
+
+    Args:
+        calc_description: JSON object describing the calculation, e.g.
+            ``{"keywords": ["RKS", "TightSCF"], "blocks": {"scf":
+            {"maxiter": 200}}, "method_family": "dft", "job": "opt",
+            "charge": 0, "mult": 1, "elements": ["Fe"],
+            "orca_version": "6.1.1"}``.
+    """
+    import json as _json
+
+    import delfin.orca_knowledge as _ok
+    from delfin.orca_knowledge.checks import applies as _applies
+    from delfin.orca_knowledge.checks import findings as _findings
+
+    try:
+        calc = _json.loads(calc_description)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "error": f"calc_description is not JSON: {exc}",
+                "findings": [], "relevant_cards": []}
+    if not isinstance(calc, dict):
+        return {"ok": False,
+                "error": "calc_description must be a JSON object",
+                "findings": [], "relevant_cards": []}
+    try:
+        found = _findings(calc, _ok.cards())
+    except Exception as exc:  # malformed card must not break the answer
+        return {"ok": False, "error": str(exc),
+                "findings": [], "relevant_cards": []}
+    # Cards without an executable check are statements, not findings —
+    # but the ones that describe THIS calculation are exactly what the
+    # model needs before writing the input, so surface them.
+    relevant = []
+    try:
+        for card in _ok.cards():
+            if card["id"] in {f["id"] for f in found}:
+                continue
+            if not _card_matches(card, calc):
+                continue
+            relevant.append({
+                "id": card.get("id"),
+                "severity": card.get("severity"),
+                "statement": card.get("statement"),
+                "sources": card.get("sources") or [],
+            })
+    except Exception:
+        pass
+    return {"ok": True, "findings": found, "n_findings": len(found),
+            "relevant_cards": relevant,
+            "n_relevant_cards": len(relevant)}
+
+
+def _card_matches(card: dict, calc: dict) -> bool:
+    """Whether a statement card describes ``calc`` (topic/keyword match).
+
+    Executable conditions (``applies``) are honoured by ``findings``; this
+    is the descriptive match for v1 cards: a card matches when its topic
+    or one of its keywords appears in the calculation description's
+    method family, keywords or blocks.
+    """
+    from delfin.orca_knowledge.checks import applies as _applies
+
+    if card.get("applies") and not _applies(card, calc):
+        return False
+    ks = {str(k).lower() for k in calc.get("keywords") or []}
+    ks |= {str(v).lower() for b in (calc.get("blocks") or {}).values()
+           for v in (b if isinstance(b, dict) else [b])}
+    family = str(calc.get("method_family") or "").lower()
+    job = str(calc.get("job") or "").lower()
+    topic = str(card.get("topic") or "").lower()
+    card_kws = {str(k).lower() for k in card.get("keywords") or []}
+    if card_kws and (card_kws & ks):
+        return True
+    if topic and (topic == family or topic == job):
+        return True
+    # topic-to-method-family synonyms the manual itself uses
+    synonyms = {
+        "tddft": ("tddft", "esd", "excited-states"),
+        "esd": ("esd", "tddft"),
+        "scf": ("scf", "dft", "hf"),
+        "optimization": ("opt",),
+        "transition-state": ("ts", "neb", "irc"),
+        "frequencies": ("freq",),
+        "solvation": ("solv",),
+        "ri": ("ri",),
+        "parallel": ("par",),
+    }
+    if topic in synonyms and family in synonyms[topic]:
+        return True
+    return False
+
+
+def workflow_candidates(task_text: str, available=None) -> list:
+    """Rank DELFIN's existing workflows against a calculation request.
+
+    Rule: an existing workflow first; extend it when it lacks a step;
+    compose from the ORCA building blocks only when nothing fits. This
+    tool is the deterministic (no model call) first step: it returns the
+    ranked candidates, each with the reason it matched and the CONTROL
+    keys to set. An empty list means nothing fits — extend or compose.
+
+    Args:
+        task_text: the request as the chemist phrases it, e.g.
+            ``redox potential of this Fe complex``.
+        available: optional list of workflow names to rank among
+            (default: everything registered).
+    """
+    from delfin.tools.workflow_candidates import workflow_candidates as _rank
+
+    return _rank(task_text, available)
 
 
 def explain_delfin_feature(name: str) -> dict:
@@ -6586,4 +6998,8 @@ __all__ = [
     # DELFIN-feature explainer
     "list_delfin_features",
     "explain_delfin_feature",
+    # ORCA knowledge on demand (wave14/w04)
+    "orca_explain",
+    "orca_check_input",
+    "workflow_candidates",
 ]

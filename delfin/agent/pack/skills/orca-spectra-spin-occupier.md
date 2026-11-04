@@ -16,6 +16,13 @@ Spin-state comparisons run through DELFIN's OCCUPIER workflow (CONTROL
 `delfin/tools/templates/_occupier.py`, entry point `occupier_stages`,
 engine `delfin/occupier.py`).
 
+The existing-workflow-first order applies here too: (a) OCCUPIER *is*
+the existing workflow for spin-state questions — the ranking tool
+`workflow_candidates(task_text)` names it with its CONTROL keys, use it;
+(b) a missing step (e.g. a following single point at a larger basis) is
+added as an extension, not a replacement; (c) composing an ad-hoc ORCA
+input sequence instead of OCCUPIER is reserved for requests nothing fits.
+
 **Before starting a run: propose the CONTROL, then confirm.** The agent
 researches the system (charge states, candidate multiplicities, metal
 basis need — see `metal_basis` / `NewGTO` handling in occupier.py:174-296),
