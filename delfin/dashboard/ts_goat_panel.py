@@ -107,6 +107,12 @@ TS_GOAT_CONTROL_CSS = """
     min-width: 48px !important;
     text-align: right;
 }
+/* ipywidgets Layout exposes overflow but not overflow_x/overflow_y.
+   Scope axis-specific scrolling to this analysis pane. */
+.ts-goat-panel .ts-goat-analysis-scroller {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
 </style>
 """
 
@@ -389,8 +395,9 @@ def build_ts_goat_panel(
     analysis_scroller = widgets.VBox(
         [files_box, analysis_box],
         layout=widgets.Layout(
-            max_height='235px', overflow_y='auto', overflow_x='hidden',
+            max_height='235px', overflow='auto',
             width='100%', padding='4px 8px 8px 4px'))
+    analysis_scroller.add_class('ts-goat-analysis-scroller')
     source_details = widgets.Accordion(
         children=[analysis_scroller], selected_index=None,
         layout=widgets.Layout(width='94%', align_self='flex-start',
