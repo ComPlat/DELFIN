@@ -34,30 +34,27 @@ COVALENT_RADII = {
     "Na": 1.66, "Mg": 1.41, "Al": 1.21, "Si": 1.11, "P": 1.07,
     "S": 1.05, "Cl": 1.02, "Ar": 1.06, "K": 2.03, "Ca": 1.76,
     "Ti": 1.60, "Cr": 1.39, "Mn": 1.39, "Fe": 1.32, "Co": 1.26,
-    "Ni": 1.24, "Cu": 1.32, "Zn": 1.22, "Br": 1.20, "I": 1.39,
+    "Ni": 1.24, "Cu": 1.32, "Zn": 1.22, "Rh": 1.42, "Br": 1.20, "I": 1.39,
     "Pd": 1.39, "Ag": 1.45, "Pt": 1.36, "Au": 1.36, "Hg": 1.32,
 }
 _DEFAULT_RADIUS = 1.5
 
-# Thresholds for the mode-based reactive-centre analysis.  All distances
-# are in Bohr because the Hessian coordinates (and therefore the mode
-# displacement via displaced_geometries) are in Bohr.
-#
-# _MAX_RELEVANT_CONTACT_BOHR: contacts farther apart than ~12 Angstrom
-# (22.7 Bohr) are chemically irrelevant for bond making/breaking; they
-# are skipped so torsional motion of distant groups cannot inflate
-# scores.  (A forming contact may still be long at the TS, hence the
-# generous limit.)
-_MAX_RELEVANT_CONTACT_BOHR = 22.7
+# Mode-based reactive-centre analysis uses Angstrom throughout.
+# delfin.imag._hessian_atoms and displaced_geometries already convert
+# the Hessian's $atoms Bohr coordinates to Angstrom. A previous constant
+# named *_BOHR set to 22.7 therefore admitted contacts 22.7 Angstrom
+# apart (instead of the intended ~12 Angstrom). This search radius is
+# only diagnostic; automatic constraints additionally require local
+# bonding evidence, not merely an arbitrary distance change.
+_MAX_RELEVANT_CONTACT_ANGSTROM = 12.0
 # _RELATIVE_MOTION_THRESHOLD: two atoms whose mode-displacement vectors
 # differ by more than 0.10 (fraction of the largest atom displacement)
 # are moving relative to each other rather than being carried along
 # coherently -- the signature of a contact that opens or closes.
 _RELATIVE_MOTION_THRESHOLD = 0.10
-# _DISTANCE_RESPONSE_THRESHOLD_BOHR: a contact must change by at least
-# ~0.05 Angstrom (0.095 Bohr) along the +/- mode for the mode to count
-# as acting on it.
-_DISTANCE_RESPONSE_THRESHOLD_BOHR = 0.095
+# Minimum absolute distance change during the +/- 0.25 Angstrom
+# perturbation of the most displaced atom. This is in Angstrom, not Bohr.
+_DISTANCE_RESPONSE_THRESHOLD_ANGSTROM = 0.095
 # _RESPONSE_FRACTION: a contact must change by at least this fraction
 # of its equilibrium distance for the mode to count as acting on it.
 # 0.04 = 4%: a bond end merely rotating (2nd-order distance change
@@ -551,7 +548,7 @@ def analyze_reactive_center(
                 if i not in mode_displacement and j not in mode_displacement:
                     continue
                 d0 = _distance(ts_atoms[i], ts_atoms[j])
-                if d0 > _MAX_RELEVANT_CONTACT_BOHR:
+                if d0 > _MAX_RELEVANT_CONTACT_ANGSTROM:
                     continue
                 v_i, v_j = disp[i], disp[j]
                 dot = sum((v_i[k] - v_j[k]) ** 2 for k in range(3))
@@ -587,7 +584,7 @@ def analyze_reactive_center(
             for i in range(n):
                 for j in range(i + 1, n):
                     d0 = _distance(ts_atoms[i], ts_atoms[j])
-                    if d0 > _MAX_RELEVANT_CONTACT_BOHR:
+                    if d0 > _MAX_RELEVANT_CONTACT_ANGSTROM:
                         continue
                     dp = abs(_distance(displaced["pos"][i], displaced["pos"][j]) - d0)
                     dn = abs(_distance(displaced["neg"][i], displaced["neg"][j]) - d0)
@@ -596,7 +593,7 @@ def analyze_reactive_center(
                     # shows an absolute change that grows with d0*sin(a)
                     # but stays a small FRACTION of a covalent length
                     if (max(dp, dn) > _RESPONSE_FRACTION * d0
-                            and max(dp, dn) > _DISTANCE_RESPONSE_THRESHOLD_BOHR):
+                            and max(dp, dn) > _DISTANCE_RESPONSE_THRESHOLD_ANGSTROM):
                         response_pairs.add((i, j))
             for i, j in sorted(response_pairs):
                 for a in (i, j):
@@ -607,80 +604,139 @@ def analyze_reactive_center(
                 "the contacts the selected mode acts on"
             )
 
-    # -- pick the atoms ---------------------------------------------------
-    ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
-    # Priority: atoms of contacts that BOTH move relatively AND respond
-    # in distance (bond forming/breaking under this mode); then contacts
-    # with only one of the two evidences; then pure displacement.  The
-    # selection stops once the score drops to a small fraction of the
-    # leader -- no fixed atom count, no blind top-N.  Displacement alone
-    # NEVER qualifies an atom: a torsion moves whole groups, so only
-    # atoms with pair evidence (relative motion or distance response)
-    # enter the proposal.
-    strong: set = set()
-    for i, j in response_pairs:
-        if any(p[0] == i and p[1] == j for p in responding_pairs):
-            strong.update((i, j))
-    # The distance response along +/- mode is the PRIMARY evidence: a
-    # contact the mode actually opens or closes.  Relative motion alone
-    # does NOT qualify an atom (torsion also produces relative motion
-    # between atoms whose distance never changes).
-    # 2026-11-02 real-run review (BF3H2O hydrogen-bond TS): FOUR H...F
-    # contacts responded with fractions of 4.0-5.2 % -- right at the
-    # candidacy threshold -- and 71 % of the molecule was proposed.
-    # A marginal response is noise, not a bond being made: SELECT by
-    # contact strength, not by every candidate.  The strongest
-    # responding contact sets the reference; only contacts that
-    # respond at least half as strongly stay in the proposal.
-    contact_fraction: dict = {}
-    if mode_index is not None:
+    # The broad distance-response scan above is useful to EXPLAIN a
+    # normal mode, but it is not sufficient evidence for fixing atoms:
+    # a single translating fragment creates many long-range responding
+    # pairs. In a real 68-atom Rh TS (mode 6), all 40 responding pairs
+    # also met the relative-motion test, adding 33 unique atoms to the
+    # old `strong` set before max_atoms=8 was even considered.
+    #
+    # For automatic GOAT constraints, first look for contacts whose
+    # bond-like status switches between the two opposite displacements.
+    # The 1.3 x sum of covalent radii cutoff follows ORCA's topology
+    # criterion. It is only *geometric evidence*, never proof of a
+    # reaction mechanism; metal coordination is particularly subtle.
+    max_atoms = max(0, int(max_atoms))
+    crossings: list[tuple[int, int, float, float, float, float]] = []
+    if displaced:
         for i, j in response_pairs:
             d0 = _distance(ts_atoms[i], ts_atoms[j])
-            contact_fraction[(i, j)] = contact_fraction.get(
-                (i, j), 0.0) or _pair_response_fraction(
-                    i, j, d0, displaced)
-    reference = max(contact_fraction.values(), default=0.0)
-    pair_evidence: set = set()
-    for pair, frac in contact_fraction.items():
-        if reference > 0 and frac >= 0.5 * reference:
-            pair_evidence.update(pair)
-    for i, j in response_pairs:
-        if (i, j) not in contact_fraction or reference <= 0:
-            pair_evidence.update((i, j))
-    selected: set = set(strong)
-    for a, _score in ranked:
-        if len(selected) >= max_atoms:
-            break
-        if a in selected:
-            continue
-        if a in pair_evidence:
-            selected.add(a)
-    indices = tuple(sorted(selected))
-    elements = tuple(str(ts_atoms[a][0]) for a in indices)
+            dp = _distance(displaced["pos"][i], displaced["pos"][j])
+            dn = _distance(displaced["neg"][i], displaced["neg"][j])
+            radius_i = COVALENT_RADII.get(
+                str(ts_atoms[i][0]).capitalize(), _DEFAULT_RADIUS)
+            radius_j = COVALENT_RADII.get(
+                str(ts_atoms[j][0]).capitalize(), _DEFAULT_RADIUS)
+            bond_cutoff = BOND_SCALE * (radius_i + radius_j)
+            if min(dp, dn) < bond_cutoff < max(dp, dn):
+                fraction = max(abs(dp - d0), abs(dn - d0)) / d0
+                crossings.append((i, j, fraction, d0, dp, dn))
 
-    if not indices:
-        # last resort: the atoms that move most along the mode -- flagged
-        indices = tuple(sorted(mode_displacement, key=lambda a: -mode_displacement[a])[:4])
-        elements = tuple(str(ts_atoms[a][0]) for a in indices)
+    crossings.sort(key=lambda p: (-p[2], p[0], p[1]))
+    selected: set[int] = set()
+    accepted: list[tuple[int, int, float, float, float, float]] = []
+    truncated = False
+
+    if crossings:
+        # Add complete reacting PAIRS, strongest first. Never select
+        # only one end of a bond, and never bypass max_atoms.
+        for pair in crossings:
+            i, j = pair[:2]
+            additional = {i, j} - selected
+            if len(selected) + len(additional) <= max_atoms:
+                selected.update((i, j))
+                accepted.append(pair)
+            else:
+                truncated = True
+        for i, j, fraction, d0, dp, dn in accepted:
+            reasons.append(
+                f"candidate reactive contact {i}({ts_atoms[i][0]})-"
+                f"{j}({ts_atoms[j][0]}): TS {d0:.2f} A, "
+                f"-mode {dn:.2f} A, +mode {dp:.2f} A "
+                f"({fraction * 100:.1f}% max change; "
+                "bond-distance threshold crossed)"
+            )
         reasons.append(
-            "fallback: the four atoms with the largest mode displacement "
-            "(no pair evidence was available)"
+            f"{len(crossings)} candidate bond-status-changing contacts; "
+            f"{len(selected)} unique atoms proposed for constraints "
+            "(geometric evidence, not a proven chemical mechanism)"
+        )
+    else:
+        # If there is NO bond-status crossing, a confident automatic
+        # TS reaction centre cannot be inferred from the Hessian alone.
+        # Retain a tiny, explicitly low-confidence fallback to keep the
+        # GUI editable, rather than freezing all moving groups.
+        nearest_response = []
+        if displaced:
+            for i, j in response_pairs:
+                d0 = _distance(ts_atoms[i], ts_atoms[j])
+                cutoff = BOND_SCALE * (
+                    COVALENT_RADII.get(
+                        str(ts_atoms[i][0]).capitalize(), _DEFAULT_RADIUS)
+                    + COVALENT_RADII.get(
+                        str(ts_atoms[j][0]).capitalize(), _DEFAULT_RADIUS)
+                )
+                if d0 <= 2.0 * cutoff:
+                    nearest_response.append((
+                        _pair_response_fraction(i, j, d0, displaced), i, j))
+        nearest_response.sort(reverse=True)
+        if max_atoms >= 2 and nearest_response:
+            _fraction, i, j = nearest_response[0]
+            selected.update((i, j))
+            reasons.append(
+                f"no bond-distance threshold crossing; tentative contact "
+                f"{i}({ts_atoms[i][0]})-{j}({ts_atoms[j][0]}) "
+                "requires manual chemical review"
+            )
+        elif max_atoms >= 2 and mode_displacement:
+            movers = sorted(
+                mode_displacement,
+                key=lambda a: (-mode_displacement[a], a))
+            selected.update(movers[:min(2, max_atoms)])
+            reasons.append(
+                "no chemically plausible contact switch identified; "
+                "fallback to two mode-moving atoms, NOT a validated "
+                "reactive centre -- manually select the constraints"
+            )
+        else:
+            reasons.append(
+                "no reliable reactive-centre proposal; select atoms "
+                "manually after inspecting the imaginary mode"
+            )
+
+    # Independent reacting components imply an uncertain, potentially
+    # concerted/multicentre rearrangement: surface that ambiguity.
+    components: list[set[int]] = []
+    for i, j, *_ in accepted:
+        touching = [part for part in components if i in part or j in part]
+        for part in touching:
+            components.remove(part)
+        merged = {i, j}
+        for part in touching:
+            merged.update(part)
+        components.append(merged)
+    disconnected = len(components) > 1
+    if truncated:
+        reasons.append(
+            f"reactive-contact proposal exceeds the {max_atoms}-atom "
+            "safety limit; some whole pairs were omitted -- review manually"
+        )
+    if disconnected:
+        reasons.append(
+            "several disconnected candidate reactive centres; "
+            "the chemical mechanism needs manual confirmation"
         )
 
-    # -- reliability ------------------------------------------------------
-    reliability = "low"
-    if strong:
-        reliability = "high"
-    elif responding_pairs or response_pairs:
-        reliability = "medium"
+    indices = tuple(sorted(selected))
+    elements = tuple(str(ts_atoms[a][0]) for a in indices)
+    reliability = (
+        "high" if accepted and not truncated and not disconnected
+        else "medium" if accepted else "low"
+    )
     ambiguous = (
-        # no pair evidence at all -- displacement only
-        not strong and not responding_pairs and not response_pairs
-    ) or (
-        # the proposal covers most of the molecule -- not a small,
-        # chemically meaningful selection
-        len(indices) >= max(4, (n + 1) // 2)
-    ) or len(indices) > max_atoms
+        not accepted or truncated or disconnected
+        or len(indices) >= max(4, (n + 1) // 2)
+    )
     if ambiguous:
         reasons.append(
             "the proposal is ambiguous -- please check and adjust the "
