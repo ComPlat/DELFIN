@@ -13,8 +13,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 from delfin.tools.frame_lineage import (  # noqa: E402
-    load_stage_frames,
     lineage_between_stages,
+    load_stage_frames,
 )
 
 HEADER = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output"
@@ -88,31 +88,49 @@ def test_lineage_never_by_index(stage_dir):
     assert res.stages[1].summary["appeared"] == 1
 
 
-def test_lineage_rmsd_tolerance(stage_dir):
-    """A tolerance far too small matches nothing; a large one matches."""
-    strict = lineage_between_stages([stage_dir / "stageA", stage_dir / "stageB"],
-                                    rmsd_tol=0.05)
-    assert all(e.status == "kept" for e in strict.edges if e.status != "appeared")
-    none = lineage_between_stages([stage_dir / "stageA", stage_dir / "stageB"],
-                                  rmsd_tol=1e-12)
-    assert not [e for e in none.edges if e.status == "kept"]
+def test_lineage_rmsd_tolerance(stage_dir, tmp_path):
+    """A tolerance below the structural distortion matches nothing; above it
+    matches.  Rigid copies are 0 RMSD by construction (Kabsch removes
+    rotation+translation), so the discriminator must be a distortion of a
+    frame with >=3 non-collinear heavy atoms (a mono-heavy-atom frame is
+    0 RMSD at any tolerance by construction)."""
+    d = tmp_path / "stages_d"
+    (d / "src").mkdir(parents=True)
+    (d / "dst").mkdir(parents=True)
+    BENT = np.array([[0., 0., 0.], [-1.1, 0., 0.], [1.0, 0.3, 0.]])
+    # one end atom pulled 0.1 A -> Kabsch RMSD ~0.047 A (probed)
+    stretch = BENT.copy()
+    stretch[1, 0] += 0.1
+    _xyz(d / "src" / "frame_0.xyz", ["C", "O", "O"], BENT)
+    _xyz(d / "dst" / "frame_0.xyz", ["C", "O", "O"], stretch)
+    loose = lineage_between_stages([d / "src", d / "dst"], rmsd_tol=1.0)
+    assert [e.status for e in loose.edges] == ["kept"]
+    strict = lineage_between_stages([d / "src", d / "dst"], rmsd_tol=0.01)
+    assert sorted(e.status for e in strict.edges) == ["appeared", "vanished"]
 
 
 def test_lineage_merge_and_vanish(stage_dir):
-    """Two A frames within tolerance of the same B frame: the better one is
-    kept, the worse one is reported as merged-into the same B frame, and the
-    surplus B frame (appeared) stays accounted for."""
+    """Two source frames within tolerance of the same destination frame: the
+    better one (least RMSD) is kept, the worse one is merged into it, and the
+    sources with no destination at all are vanished."""
+    sA = stage_dir / "stageD"
+    sA.mkdir()
+    _xyz(sA / "frame_0.xyz", ["O", "H", "H"], WATER)
+    _xyz(sA / "frame_1.xyz", ["O", "H", "H"],  # worse water copy
+         WATER + np.array([[0.0, 0.0, 0.0], [0.0, 0.03, 0.0], [0.0, 0.0, 0.03]]))
+    _xyz(sA / "frame_2.xyz", ["N", "H", "H", "H"], AMMONIA)
     d = stage_dir / "stageC"
     d.mkdir()
     _xyz(d / "frame_0.xyz", ["O", "H", "H"], WATER + np.array([0.2, 0.0, 0.0]))
-    res = lineage_between_stages([stage_dir / "stageA", d], rmsd_tol=0.05)
+    res = lineage_between_stages([sA, d], rmsd_tol=0.05)
     statuses = sorted(e.status for e in res.edges)
-    assert statuses == ["kept", "merged", "vanished", "vanished"]
-    merged = [e for e in res.edges if e.status == "merged"]
-    assert merged[0].src_frame == "frame_0.xyz"  # water is the worse water copy
-    # the kept edge is the ammonia (identical geometry)
+    assert statuses == ["kept", "merged", "vanished"]
+    # the kept edge is the better water copy (A0); A1 merged into the same dst
     kept = [e for e in res.edges if e.status == "kept"][0]
-    assert kept.src_frame == "frame_1.xyz" and kept.dst_frame == "frame_0.xyz"
+    assert kept.src_frame == "frame_0.xyz" and kept.dst_frame == "frame_0.xyz"
+    merged = [e for e in res.edges if e.status == "merged"][0]
+    assert merged.src_frame == "frame_1.xyz" and merged.dst_frame == "frame_0.xyz"
+    assert res.stages[0].summary["vanished"] == 1
 
 
 def test_json_roundtrip(stage_dir):
