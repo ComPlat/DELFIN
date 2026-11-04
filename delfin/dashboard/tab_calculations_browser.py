@@ -10363,7 +10363,9 @@ def create_tab(ctx):
                 def _ts_anim_speed_value():
                     """Current speed from the panel widget, if reachable."""
                     for w in _ts_panel_widgets['items']:
-                        if getattr(w, 'description', '') == 'Speed:':
+                        if ('ts-goat-speed-slider' in
+                                getattr(w, '_dom_classes', ()) or
+                                getattr(w, 'description', '') == 'Speed:'):
                             return getattr(w, 'value', 1.0)
                     return 1.0
 
