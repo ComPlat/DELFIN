@@ -223,4 +223,4 @@ case "$dashboard_help" in
     *--strict-port*) ;;
     *) printf '%s\n' 'DELFIN: Server DELFIN is too old for this launcher (--strict-port is missing). Update the server installation to the Windows-launcher release; updating the Windows app alone is not enough.' >&2; exit 1 ;;
 esac
-exec "$python" -c "$no_cwd"';import base64;exec(base64.b64decode(sys.argv.pop(1)))' "$payload" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working"
+exec "$python" -c "$no_cwd"';import base64,gzip;exec(gzip.decompress(base64.b64decode(sys.argv.pop(1))))' "$payload" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working"

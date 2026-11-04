@@ -5,6 +5,8 @@ from pathlib import Path
 import socket
 from urllib.parse import parse_qs, urlsplit
 
+import gzip
+
 import pytest
 
 from delfin import cli_voila
@@ -182,7 +184,7 @@ def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_pat
         hint = str(python)
     elif source == 'explicit-repo':
         hint = str(repo)
-    payload = base64.b64encode(b'import os,sys; print("CHOSEN=" + sys.executable); print("ACTIVATED=" + os.environ.get("VIRTUAL_ENV", ""))').decode()
+    payload = base64.b64encode(gzip.compress(b'import os,sys; print("CHOSEN=" + sys.executable); print("ACTIVATED=" + os.environ.get("VIRTUAL_ENV", ""))')).decode()
     script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
     result = subprocess.run(['bash', str(script), '0', '' if automatic else str(repo), hint, payload, 'dashboard'],
                             env=env, text=True, capture_output=True, timeout=15)
@@ -335,7 +337,7 @@ def _installed_like_an_editable_finder(tmp_path):
 def _run_bootstrap(env, home, payload_code, *, person=''):
     import base64
     import subprocess
-    payload = base64.b64encode(payload_code.encode()).decode()
+    payload = base64.b64encode(gzip.compress(payload_code.encode())).decode()
     script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
     return subprocess.run(['bash', str(script), '0', '', '', payload, 'dashboard', '', '0', '0', person],
                           env=env, text=True, capture_output=True, timeout=30, cwd=str(home))
@@ -554,7 +556,7 @@ def test_the_account_without_people_mode_gets_no_settings_layer(tmp_path):
 def _run_bootstrap_with_key(env, home, payload_code, key):
     import base64
     import subprocess
-    payload = base64.b64encode(payload_code.encode()).decode()
+    payload = base64.b64encode(gzip.compress(payload_code.encode())).decode()
     script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
     return subprocess.run(['bash', str(script), '0', '', '', payload, 'dashboard', '', '0', '0', '', key],
                           env=env, text=True, capture_output=True, timeout=30, cwd=str(home))
@@ -612,3 +614,16 @@ def test_the_app_and_the_server_agree_on_the_login_key_argument():
     assert 'person=${9:-}' in server and 'login_key=${10:-}' in server
     assert "$options += @('-i',$loginKey.Key)" in app
     assert 'RememberLogin=$rememberToggle.Checked' in app and 'RememberLogin=$true' in app
+
+
+def test_the_shipped_command_fits_the_windows_command_line():
+    import base64
+    # CreateProcess takes at most 32767 characters. Both scripts travel
+    # gzip-compressed inside the SSH command; keep well under the limit.
+    root = Path(__file__).resolve().parents[1] / 'tools/windows-launcher'
+    size = sum(len(base64.b64encode(gzip.compress((root / n).read_bytes())))
+               for n in ('remote_bootstrap.sh', 'remote_launcher.py'))
+    assert size < 24000, size
+    app = (root / 'DELFIN.ps1').read_text(encoding='utf-8')
+    assert "| base64 -d | gzip -dc)" in app and 'ConvertTo-GzipBase64' in app
+    assert 'gzip.decompress(base64.b64decode(' in (root / 'remote_bootstrap.sh').read_text()
