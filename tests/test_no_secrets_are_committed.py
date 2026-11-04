@@ -177,16 +177,16 @@ def test_staged_mode_reports_a_planted_staged_change(tmp_path):
         GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
     env = {**dict(__import__("os").environ), **git_env}
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, env=env)
-    _plant(tmp_path, "docs/x.md", "password=hunter2-hunter2\n")
+    _plant(tmp_path, "configs/app.cfg", "password=hunter2-hunter2\n")
     r = subprocess.run(
         [sys.executable, str(_ROOT / "scripts" / "secret_guard.py"), "--staged"],
         cwd=str(tmp_path), capture_output=True, text=True)
     # nothing is staged yet -> clean exit
     assert r.returncode == 0, r.stdout + r.stderr
-    subprocess.run(["git", "add", "docs/x.md"], cwd=str(tmp_path),
+    subprocess.run(["git", "add", "configs/app.cfg"], cwd=str(tmp_path),
                    check=True, env=env)
     r = subprocess.run(
         [sys.executable, str(_ROOT / "scripts" / "secret_guard.py"), "--staged"],
         cwd=str(tmp_path), capture_output=True, text=True)
     assert r.returncode == 1, r.stdout + r.stderr
-    assert "docs/x.md" in r.stdout
+    assert "configs/app.cfg" in r.stdout
