@@ -538,9 +538,14 @@ def test_ts_goat_playback_uses_validated_frames_and_distinct_pause_reset():
     # Separate GL shapes preserve normal atomic CPK colours.
     assert 'viewer.__tsGoatUpdateHighlights' in boot
     assert 'viewer.removeAllShapes()' in boot
-    assert 'opacity:0.18' in boot
+    assert 'opacity:0.32' in boot
+    assert "chosen[payload.highlight[i]]" in boot
+    assert "if (!chosen[k]) continue" in boot
+    assert "chosen[payload.highlight[i] + 1]" not in boot
+    assert "String(atom.serial - 1)" not in boot
+    assert "String(clicked)" in boot
     assert 'wireframe:true' not in boot
-    assert 'color:0x8fbcd3' in boot
+    assert 'color:0x85afc7' in boot
     assert 'viewer.addStyle({serial: serial}' not in boot
     play = ts_goat_viewer_frames_js('viewer', True)
     pause = ts_goat_viewer_frames_js('viewer', 'pause')
@@ -782,3 +787,55 @@ def test_ts_goat_mode_and_sliders_have_usable_width(tmp_path):
     ]
     assert any('Amplitude' in label for label in labels)
     assert any('Speed' in label for label in labels)
+
+
+
+def test_ts_goat_scoped_select_and_slider_handle_css(tmp_path):
+    """Voila must render a real select width and visible noUi slider thumbs."""
+    from ipywidgets import Dropdown, FloatSlider
+
+    from delfin.dashboard.ts_goat_panel import TS_GOAT_CONTROL_CSS
+
+    result, _ = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    panel = result['registry']['panel']
+    assert 'ts-goat-panel' in panel._dom_classes
+
+    css = TS_GOAT_CONTROL_CSS
+    assert '.ts-goat-panel .ts-goat-mode select' in css
+    assert 'padding-right: 30px !important' in css
+    assert 'min-width: 240px !important' in css
+    assert '.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle' in css
+    assert 'border: 2px solid #397ca3' in css
+    assert 'height: 20px !important' in css
+    assert '.ts-goat-panel .ts-goat-slider input[type="range"]' in css
+
+    right = panel.children[0].children[1].children[1]
+    modes = [w for w in _iter_widgets(right)
+             if isinstance(w, Dropdown) and w.description == 'Mode:']
+    assert len(modes) == 1
+    assert 'ts-goat-mode' in modes[0]._dom_classes
+    sliders = [w for w in _iter_widgets(right)
+               if isinstance(w, FloatSlider)]
+    assert len(sliders) == 2
+    assert all('ts-goat-slider' in s._dom_classes for s in sliders)
+    assert any('ts-goat-speed-slider' in s._dom_classes for s in sliders)
+
+
+def test_ts_goat_click_and_play_speed_match_real_widget_labels():
+    """Clicked atom maps to the same zero-based XYZ index as constraints."""
+    from pathlib import Path
+    from delfin.dashboard.molecule_viewer import ts_goat_viewer_bootstrap_js
+
+    js = ts_goat_viewer_bootstrap_js('vid-test')
+    assert 'var clicked = orderedAtoms.indexOf(atom)' in js
+    assert "var clickValue = String(clicked)" in js
+    assert "var clickValue = String(atom.serial - 1)" not in js
+    assert 'if (!chosen[k]) continue' in js
+
+    browser = (
+        Path(__file__).resolve().parents[1]
+        / 'delfin/dashboard/tab_calculations_browser.py'
+    ).read_text(encoding='utf-8')
+    assert "'ts-goat-speed-slider' in" in browser
+    assert "getattr(w, '_dom_classes', ())" in browser
