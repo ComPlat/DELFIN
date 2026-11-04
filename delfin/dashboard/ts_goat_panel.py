@@ -48,93 +48,64 @@ TS_GOAT_CONTROL_CSS = """
 .ts-goat-panel .ts-goat-slider {
     min-width: 250px !important;
     flex: 1 1 auto !important;
-    min-height: 40px !important;
-    overflow: visible !important;
 }
 .ts-goat-panel .ts-goat-slider .slider-container {
-    display: flex !important;
-    align-items: center !important;
     flex: 1 1 auto !important;
-    min-width: 175px !important;
-    height: 40px !important;
-    padding: 12px 12px !important;
-    overflow: visible !important;
-    box-sizing: border-box !important;
+    min-width: 160px !important;
+    padding: 9px 9px !important;
+    min-height: 30px !important;
 }
 .ts-goat-panel .ts-goat-slider .noUi-target {
-    background: #dde6ee !important;
-    height: 6px !important;
-    border: 0 !important;
+    background: #d8e4ec !important;
+    height: 7px !important;
+    border: 1px solid #b6ccd9 !important;
     border-radius: 999px !important;
-    box-shadow: inset 0 1px 2px rgba(30,60,80,0.08) !important;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.08) !important;
 }
 .ts-goat-panel .ts-goat-slider .noUi-connect {
-    background: #4b8bb5 !important;
+    background: #5b99c0 !important;
     border-radius: 999px !important;
 }
-.ts-goat-panel .ts-goat-slider .noUi-origin {
-    visibility: visible !important;
-    overflow: visible !important;
+.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle {
+    width: 20px !important;
+    height: 20px !important;
+    top: -7px !important;
+    right: -10px !important;
+    background: #ffffff !important;
+    border: 2px solid #397ca3 !important;
+    border-radius: 50% !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.20) !important;
+    cursor: ew-resize !important;
+    opacity: 1 !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-handle::before,
+.ts-goat-panel .ts-goat-slider .noUi-handle::after {
+    display: none !important;
 }
 .ts-goat-panel .ts-goat-slider .noUi-target,
 .ts-goat-panel .ts-goat-slider .noUi-base,
-.ts-goat-panel .ts-goat-slider .noUi-horizontal {
+.ts-goat-panel .ts-goat-slider .noUi-origin {
     overflow: visible !important;
 }
-/* The underlying noUi hitbox remains draggable. A single visible
-   thumb is rendered on the value-positioned origin to avoid the older
-   Voila theme hiding/clipping the handle. */
-.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle {
+.ts-goat-panel .ts-goat-slider .noUi-handle {
     display: block !important;
     visibility: visible !important;
-    opacity: 0 !important;
-    width: 32px !important;
-    height: 32px !important;
-    top: -13px !important;
-    right: -16px !important;
-    border: 0 !important;
-    background: transparent !important;
-    cursor: ew-resize !important;
-    pointer-events: auto !important;
+    z-index: 31 !important;
 }
 .ts-goat-panel .ts-goat-slider .noUi-handle::before,
 .ts-goat-panel .ts-goat-slider .noUi-handle::after {
     content: none !important;
 }
-.ts-goat-panel .ts-goat-slider .noUi-origin::after {
-    content: "" !important;
-    display: block !important;
-    position: absolute !important;
-    top: -8px !important;
-    right: -10px !important;
-    width: 20px !important;
-    height: 20px !important;
-    box-sizing: border-box !important;
-    border: 2px solid #4081aa !important;
-    border-radius: 50% !important;
-    background: linear-gradient(160deg, #ffffff, #edf6fa) !important;
-    box-shadow: 0 2px 5px rgba(22,52,70,0.2) !important;
-    pointer-events: none !important;
-    z-index: 30 !important;
-}
-.ts-goat-panel .ts-goat-slider .noUi-origin:hover::after,
-.ts-goat-panel .ts-goat-slider .noUi-origin:focus-within::after {
-    border-color: #28678f !important;
-    box-shadow: 0 0 0 3px rgba(64,129,170,0.16),
-                0 2px 5px rgba(22,52,70,0.22) !important;
-}
 .ts-goat-panel .ts-goat-slider input[type="range"] {
     width: 100% !important;
-    min-width: 175px !important;
-    accent-color: #4081aa;
-    cursor: ew-resize;
+    min-width: 160px !important;
+    accent-color: #397ca3;
+    cursor: pointer;
 }
 .ts-goat-panel .ts-goat-slider .widget-readout {
-    flex: 0 0 50px !important;
-    min-width: 50px !important;
-    padding-left: 8px !important;
-    text-align: right !important;
-    font-variant-numeric: tabular-nums;
+    flex: 0 0 48px !important;
+    min-width: 48px !important;
+    text-align: right;
 }
 </style>
 """
