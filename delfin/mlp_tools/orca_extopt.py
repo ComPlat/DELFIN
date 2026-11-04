@@ -341,7 +341,12 @@ def build_extopt_input(
     wrapper_path : path ORCA passes as ``ProgExt`` (the wrapper script).
     backend : MLP backend name, passed to the wrapper through
         ``Ext_Params`` as ``--backend <name>`` (manual 4.1.10: Ext_Params
-        arguments are forwarded verbatim to the script).
+        arguments are forwarded verbatim to the script).  An
+        ``external_cli`` registry provider (kind="external_cli", e.g.
+        orca_mlips_aimnet2) may also be named: its plugin executable then
+        becomes the ``ProgExt`` target directly and Ext_Params stays
+        empty except for the plugin's own options, because the plugin is
+        the program, not a --backend switch of the DELFIN wrapper.
     extra_keywords : additional simple keywords (e.g. constraints).
     scan : for ``run_type="scan"``, a dict for the ``%geom Scan`` block
         with keys ``mode`` ("A"/"B"/"D"), ``atom1``, ``atom2``, optional
@@ -368,6 +373,30 @@ def build_extopt_input(
         raise ValueError("run_type='scan' requires the scan= dict")
     keywords = list(EXTOPT_RUN_TYPES[run_type])
     keywords.extend(extra_keywords)
+
+    # external_cli provider: the plugin executable IS the ProgExt target
+    # (Phase C).  Anything else routes through the DELFIN wrapper with
+    # --backend as before — existing inputs are byte-identical.
+    try:
+        from delfin.mlp_tools.registry import get_backend
+        spec = get_backend(backend)
+        if spec.kind == "external_cli":
+            wrapper_path = spec.executable
+            ext_params = "--device cpu"
+            xyz_name = f"{base_name}.xyz"
+            try:
+                return _build_with_opi(
+                    keywords, elements, coordinates, charge, mult,
+                    wrapper_path, ext_params, scan, base_name, work_dir,
+                )
+            except ImportError:
+                return _write_plain_input(
+                    keywords, elements, coordinates, charge, mult,
+                    wrapper_path, ext_params, scan, xyz_name,
+                    Path(work_dir) / f"{base_name}.inp",
+                )
+    except ValueError:
+        pass  # not a registry name — legacy wrapper route below
 
     ext_params = f"--backend {backend} --device cpu"
     xyz_name = f"{base_name}.xyz"
