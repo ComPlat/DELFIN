@@ -161,7 +161,6 @@ def test_dropdown_selection_shows_clear_error_for_non_ts(tmp_path):
 def test_submit_creates_input_in_dedicated_folder(tmp_path):
     """The confirmation flow: submit writes the GOAT input into a NEW
     folder next to the TS run, leaving the original files untouched."""
-    pytest.importorskip('opi')  # build_ts_goat_input delegates to the OPI writer
     backend = _FakeBackend()
     result, _rendered = _open_dialog(tmp_path, _FakeBackend())
     assert result['error'] is None
@@ -962,3 +961,43 @@ def test_ts_goat_slider_css_keeps_real_track_visible():
     assert '.noUi-origin::after' not in slider
     assert 'opacity: 0 !important' not in slider
     assert 'display: flex !important' not in slider
+
+
+
+def test_submit_button_writes_input_and_calls_backend_without_opi(
+    tmp_path, monkeypatch,
+):
+    """Real button click must reach the backend without importing OPI."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def without_opi(name, *args, **kwargs):
+        if name == "opi" or name.startswith("opi."):
+            raise ModuleNotFoundError("No module named 'opi'")
+        return real_import(name, *args, **kwargs)
+
+    backend = _FakeBackend()
+    result, _ = _open_dialog(tmp_path, backend)
+    assert result['error'] is None, result['error']
+    monkeypatch.setattr(builtins, "__import__", without_opi)
+
+    submit = next(
+        w for w in _iter_widgets(result['registry']['panel'])
+        if isinstance(w, widgets.Button)
+        and w.description == '▶ Submit GOAT job'
+    )
+    submit.click()
+    assert len(backend.calls) == 1
+    submitted = backend.calls[0]
+    inp = submitted['job_dir'] / submitted['inp_file']
+    assert inp.is_file()
+    content = inp.read_text(encoding='utf-8')
+    assert '! GOAT XTB' in content
+    assert '%pal\n  nprocs 12\nend' in content
+    assert '%maxcore 1000' in content
+    for idx in result['registry']['parse_constraints'](
+        result['registry']['constraints_field'].value
+    ):
+        assert f'{{ C {idx} C }}' in content
+    assert "Failed to write GOAT input" not in result['registry']['status'].value
