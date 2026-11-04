@@ -17,6 +17,82 @@ from IPython.display import HTML, display
 from delfin import ts_goat_traj
 
 
+# Scoped Voila/ipywidgets styling. The existing dashboard theme left the
+# native <select> too narrow and noUiSlider handles effectively invisible.
+# Never apply this globally to other DELFIN panels.
+TS_GOAT_CONTROL_CSS = """
+<style>
+.ts-goat-panel .ts-goat-mode {
+    display: flex !important;
+    align-items: center;
+    width: 365px !important;
+    min-width: 330px !important;
+    max-width: 100%;
+}
+.ts-goat-panel .ts-goat-mode .widget-label {
+    flex: 0 0 50px !important;
+    width: 50px !important;
+    min-width: 50px !important;
+}
+.ts-goat-panel .ts-goat-mode select {
+    flex: 1 1 auto !important;
+    width: 100% !important;
+    min-width: 240px !important;
+    max-width: none !important;
+    box-sizing: border-box !important;
+    padding-right: 30px !important;
+    font-variant-numeric: tabular-nums;
+}
+.ts-goat-panel .ts-goat-slider {
+    min-width: 250px !important;
+    flex: 1 1 auto !important;
+}
+.ts-goat-panel .ts-goat-slider .slider-container {
+    flex: 1 1 auto !important;
+    min-width: 160px !important;
+    padding: 6px 2px !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-target {
+    background: #d5e3ed !important;
+    height: 8px !important;
+    border: 1px solid #b6ccd9 !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-connect {
+    background: #5b99c0 !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle {
+    width: 20px !important;
+    height: 20px !important;
+    top: -7px !important;
+    right: -10px !important;
+    background: #ffffff !important;
+    border: 2px solid #397ca3 !important;
+    border-radius: 50% !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25) !important;
+    cursor: ew-resize !important;
+    opacity: 1 !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-handle::before,
+.ts-goat-panel .ts-goat-slider .noUi-handle::after {
+    display: none !important;
+}
+.ts-goat-panel .ts-goat-slider input[type="range"] {
+    width: 100% !important;
+    min-width: 160px !important;
+    accent-color: #397ca3;
+    cursor: pointer;
+}
+.ts-goat-panel .ts-goat-slider .widget-readout {
+    flex: 0 0 48px !important;
+    min-width: 48px !important;
+    text-align: right;
+}
+</style>
+"""
+
+
 def _two_column_layout(title_row, left, right):
     """Title bar + left (info/settings) | right (3D viewer) columns.
 
@@ -71,8 +147,10 @@ def build_ts_goat_panel(
         # Bound the panel and scroll INSIDE it instead.
         max_height='calc(100vh - 180px)', overflow_y='auto',
     ))
+    panel.add_class('ts-goat-panel')
     title = widgets.HTML(
-        '<b>TS &rarr; GOAT</b> '
+        TS_GOAT_CONTROL_CSS
+        + '<b>TS &rarr; GOAT</b> '
         '<span style="color:#607d8b;font-size:12px;">'
         'Constrained conformer search from an optimized TS</span>'
     )
@@ -117,6 +195,7 @@ def build_ts_goat_panel(
             width='340px', min_width='320px', max_width='100%',
             flex='0 0 340px'),
     )
+    mode_dropdown.add_class('ts-goat-mode')
     mode_warning = widgets.HTML('')
     # Imaginary-mode animation: validated orca_pltvib frames are
     # loaded into the viewer (addModelsAsFrames) and played back with
@@ -160,6 +239,10 @@ def build_ts_goat_panel(
         layout=widgets.Layout(
             flex='1 1 260px', width='100%', min_width='250px'),
     )
+    anim_amp.add_class('ts-goat-slider')
+    anim_amp.add_class('ts-goat-amplitude-slider')
+    anim_speed.add_class('ts-goat-slider')
+    anim_speed.add_class('ts-goat-speed-slider')
     amp_group = widgets.HBox(
         [widgets.HTML('<b style="font-size:12px;">Amplitude</b>',
                       layout=widgets.Layout(width='80px',
@@ -596,6 +679,8 @@ def build_ts_goat_panel(
                 return
         vid = get_viewer_id() if get_viewer_id else None
         if vid and animate_in_panel:
+            # Honour speed even if the user never moved the slider.
+            _on_speed_change()
             # setFrame loop over the preloaded frames in the browser;
             # the camera never moves
             animate_in_panel(vid, True)
