@@ -75,7 +75,8 @@ def rows_to_markdownish(columns: List[dict], rows: List[dict],
         head.append(
             f"<th style='padding:10px 12px;text-align:left;"
             f"position:sticky;top:0;background:#1e293b;color:#f8fafc;"
-            f"font-weight:600;white-space:nowrap;z-index:1;"
+            f"font-weight:600;white-space:normal;vertical-align:top;"
+            f"max-width:160px;min-width:96px;z-index:1;"
             f"border-bottom:2px solid #334155'>"
             f"<a href='#' class='ro-sort' data-col="
             f"'{_html.escape(col['id'])}' style='color:inherit;text-"
@@ -105,7 +106,7 @@ def rows_to_markdownish(columns: List[dict], rows: List[dict],
         "<table style='border-collapse:collapse'>"
         f"<thead><tr><th style='padding:10px 12px;text-align:left;"
         f"position:sticky;left:0;top:0;background:#1e293b;color:#f8fafc;"
-        f"font-weight:600;white-space:nowrap;z-index:2'>Calculation</th>"
+        f"font-weight:600;z-index:2'>Calculation</th>"
         f"{head_html}"
         f"</tr></thead>"
         f"<tbody>{''.join(body_rows)}</tbody></table></div>"
