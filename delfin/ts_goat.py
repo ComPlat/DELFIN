@@ -780,13 +780,100 @@ def _distance(a, b) -> float:
 
 def render_constraints_block(indices: Sequence[int],
                              elements: Sequence[str]) -> str:
-    """The ORCA ``%geom Constraints`` block, 0-based, cartesian 'C' fixed."""
+    """ORCA Cartesian constraints, with zero-based atom indices.
+
+    In a line such as { C 12 C }, the first C means Cartesian
+    coordinates, NOT the atom's element. Earlier versions wrote e.g.
+    { Rh 12 C }, which is invalid ORCA syntax. The elements argument
+    remains for compatibility but does not appear in the constraint.
+    """
+    if len(indices) != len(elements):
+        raise ValueError("constraint indices and element labels differ in length")
     lines = ["%geom", "  Constraints"]
-    for idx, el in zip(indices, elements):
-        lines.append(f"    {{ {el} {int(idx)} C }}")
-    lines.append("  end")
-    lines.append("end")
+    for idx in indices:
+        lines.append(f"    {{ C {int(idx)} C }}")
+    lines.extend(["  end", "end"])
     return "\n".join(lines)
+
+
+_TS_GOAT_METHODS = frozenset({
+    "XTB", "XTB1", "XTBFF", "r2SCAN-3c", "B3LYP",
+})
+
+
+def render_ts_goat_input(
+    elements: Sequence[str],
+    coordinates: Sequence[Sequence[float]],
+    constraint_indices: Sequence[int],
+    *,
+    charge: int = 0,
+    mult: int = 1,
+    method: str = "XTB",
+    functional: str = "",
+    basis: str = "",
+    aux_basis: str = "",
+    dispersion: str = "",
+    maxcore: int = 1000,
+    ncores: int = 1,
+) -> str:
+    """Render the exact constrained TS-GOAT ORCA input without optional OPI.
+
+    Deliberately restricted to method choices presented in the
+    TS-GOAT dialog. Validate every field before an input file is
+    created, and reuse this function for the interactive preview.
+    """
+    method = str(method).strip()
+    if method not in _TS_GOAT_METHODS:
+        raise ValueError(f"Unsupported TS-GOAT method: {method!r}")
+    if method == "B3LYP" and not basis:
+        basis = "def2-SVP"
+    if method in {"XTB", "XTB1", "XTBFF", "r2SCAN-3c"} and basis:
+        raise ValueError(f"{method} does not accept an external basis")
+    if int(ncores) < 1 or int(maxcore) < 1:
+        raise ValueError("Cores and MB/core must both be positive")
+    if int(mult) < 1:
+        raise ValueError("Multiplicity must be a positive integer")
+
+    keywords = [method, functional, basis, aux_basis, dispersion]
+    for keyword in keywords:
+        if keyword and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+()/\-]*",
+                                        str(keyword)):
+            raise ValueError(f"Invalid ORCA keyword: {keyword!r}")
+
+    if not elements or len(elements) != len(coordinates):
+        raise ValueError("Elements and coordinates must have equal nonzero length")
+    atoms = []
+    for el, position in zip(elements, coordinates):
+        if not re.fullmatch(r"[A-Z][a-z]?", str(el)):
+            raise ValueError(f"Invalid element symbol: {el!r}")
+        if len(position) != 3:
+            raise ValueError("Each atom must have three coordinates")
+        xyz = tuple(float(v) for v in position)
+        if not all(math.isfinite(v) for v in xyz):
+            raise ValueError("Atom coordinates must be finite")
+        atoms.append((str(el), *xyz))
+
+    indices = tuple(dict.fromkeys(int(idx) for idx in constraint_indices))
+    if not indices:
+        raise ValueError("Select at least one constrained atom")
+    if any(idx < 0 or idx >= len(atoms) for idx in indices):
+        raise ValueError("Constraint atom index outside XYZ atom order")
+
+    lines = [
+        "! " + " ".join(["GOAT"] + [str(kw) for kw in keywords if kw]),
+        "%pal",
+        f"  nprocs {int(ncores)}",
+        "end",
+        f"%maxcore {int(maxcore)}",
+        "",
+        render_constraints_block(indices, [atoms[i][0] for i in indices]),
+        "",
+        f"* xyz {int(charge)} {int(mult)}",
+    ]
+    for el, x, y, z in atoms:
+        lines.append(f"  {el:<2s} {x:16.8f} {y:16.8f} {z:16.8f}")
+    lines.append("*")
+    return "\n".join(lines) + "\n"
 
 
 def build_ts_goat_input(
@@ -806,42 +893,19 @@ def build_ts_goat_input(
     ncores: int = 1,
     base_name: str = "goat_ts",
 ) -> Path:
-    """Write the constrained GOAT input for a TS conformer search.
+    """Write the preview-matching TS-GOAT input without requiring OPI.
 
-    Delegates to the existing ``build_goat_input`` (OPI-based) and then
-    inserts the ``%geom Constraints`` block before the coordinate
-    section, because the OPI goat block does not model ORCA geometry
-    constraints.  Returns the written input path.
+    The general DELFIN GOAT adapter remains untouched. Rendering and
+    validating the ORCA input happens before creating the file.
     """
-    from delfin.tools.adapters.orca_goat_opi import build_goat_input  # noqa: PLC0415
-
-    inp_path = build_goat_input(
-        Path(work_dir),
-        elements=elements,
-        coordinates=coordinates,
-        charge=charge,
-        mult=mult,
-        method=method,
-        goat_options=None,
-        extra_keywords=None,
-        functional=functional,
-        basis=basis,
-        aux_basis=aux_basis,
-        dispersion=dispersion,
-        maxcore=maxcore,
-        ncores=ncores,
-        base_name=base_name,
+    input_text = render_ts_goat_input(
+        elements, coordinates, constraint_indices,
+        charge=charge, mult=mult, method=method,
+        functional=functional, basis=basis, aux_basis=aux_basis,
+        dispersion=dispersion, maxcore=maxcore, ncores=ncores,
     )
-    block = render_constraints_block(
-        constraint_indices,
-        [str(elements[i]) for i in constraint_indices],
-    )
-    text = inp_path.read_text(encoding="utf-8")
-    # The coordinate section starts at the '*' card; ORCA accepts %geom
-    # blocks anywhere before it.
-    star = re.search(r"^\s*\*", text, re.MULTILINE)
-    if star is None:
-        raise ValueError("generated GOAT input has no coordinate section")
-    patched = text[:star.start()] + block + "\n\n" + text[star.start():]
-    inp_path.write_text(patched, encoding="utf-8")
+    if not base_name or Path(base_name).name != base_name:
+        raise ValueError("Invalid GOAT output basename")
+    inp_path = Path(work_dir) / f"{base_name}.inp"
+    inp_path.write_text(input_text, encoding="utf-8")
     return inp_path
