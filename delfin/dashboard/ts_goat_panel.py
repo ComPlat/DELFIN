@@ -43,88 +43,98 @@ TS_GOAT_CONTROL_CSS = """
     padding-right: 30px !important;
     font-variant-numeric: tabular-nums;
 }
+
+/* Modern, unclipped sliders. Scope strictly to TS→GOAT. */
 .ts-goat-panel .ts-goat-slider {
     min-width: 250px !important;
     flex: 1 1 auto !important;
+    min-height: 40px !important;
+    overflow: visible !important;
 }
 .ts-goat-panel .ts-goat-slider .slider-container {
+    display: flex !important;
+    align-items: center !important;
     flex: 1 1 auto !important;
-    min-width: 160px !important;
-    padding: 6px 2px !important;
+    min-width: 175px !important;
+    height: 40px !important;
+    padding: 12px 12px !important;
+    overflow: visible !important;
+    box-sizing: border-box !important;
 }
 .ts-goat-panel .ts-goat-slider .noUi-target {
-    background: #d5e3ed !important;
-    height: 8px !important;
-    border: 1px solid #b6ccd9 !important;
-    border-radius: 6px !important;
-    box-shadow: none !important;
+    background: #dde6ee !important;
+    height: 6px !important;
+    border: 0 !important;
+    border-radius: 999px !important;
+    box-shadow: inset 0 1px 2px rgba(30,60,80,0.08) !important;
 }
 .ts-goat-panel .ts-goat-slider .noUi-connect {
-    background: #5b99c0 !important;
+    background: #4b8bb5 !important;
+    border-radius: 999px !important;
 }
-.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle {
-    width: 20px !important;
-    height: 20px !important;
-    top: -7px !important;
-    right: -10px !important;
-    background: #ffffff !important;
-    border: 2px solid #397ca3 !important;
-    border-radius: 50% !important;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.25) !important;
-    cursor: ew-resize !important;
-    opacity: 1 !important;
-}
-.ts-goat-panel .ts-goat-slider .noUi-handle::before,
-.ts-goat-panel .ts-goat-slider .noUi-handle::after {
-    display: none !important;
-}
-/* Fallback thumb: a Voila theme may suppress the real noUi handle.
-   The noUi-origin moves with the value, so this marker remains aligned
-   with the actual draggable widget handle even when its CSS is missing. */
 .ts-goat-panel .ts-goat-slider .noUi-origin {
-    overflow: visible !important;
     visibility: visible !important;
-}
-.ts-goat-panel .ts-goat-slider .noUi-origin::after {
-    content: "" !important;
-    display: block !important;
-    position: absolute !important;
-    top: -7px !important;
-    right: -11px !important;
-    width: 20px !important;
-    height: 20px !important;
-    box-sizing: border-box !important;
-    border: 2px solid #397ca3 !important;
-    border-radius: 50% !important;
-    background: #ffffff !important;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.3) !important;
-    pointer-events: none !important;
-    z-index: 30 !important;
+    overflow: visible !important;
 }
 .ts-goat-panel .ts-goat-slider .noUi-target,
 .ts-goat-panel .ts-goat-slider .noUi-base,
-.ts-goat-panel .ts-goat-slider .noUi-origin {
+.ts-goat-panel .ts-goat-slider .noUi-horizontal {
     overflow: visible !important;
 }
-.ts-goat-panel .ts-goat-slider .noUi-handle {
+/* The underlying noUi hitbox remains draggable. A single visible
+   thumb is rendered on the value-positioned origin to avoid the older
+   Voila theme hiding/clipping the handle. */
+.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle {
     display: block !important;
     visibility: visible !important;
-    z-index: 31 !important;
+    opacity: 0 !important;
+    width: 32px !important;
+    height: 32px !important;
+    top: -13px !important;
+    right: -16px !important;
+    border: 0 !important;
+    background: transparent !important;
+    cursor: ew-resize !important;
+    pointer-events: auto !important;
 }
 .ts-goat-panel .ts-goat-slider .noUi-handle::before,
 .ts-goat-panel .ts-goat-slider .noUi-handle::after {
     content: none !important;
 }
+.ts-goat-panel .ts-goat-slider .noUi-origin::after {
+    content: "" !important;
+    display: block !important;
+    position: absolute !important;
+    top: -8px !important;
+    right: -10px !important;
+    width: 20px !important;
+    height: 20px !important;
+    box-sizing: border-box !important;
+    border: 2px solid #4081aa !important;
+    border-radius: 50% !important;
+    background: linear-gradient(160deg, #ffffff, #edf6fa) !important;
+    box-shadow: 0 2px 5px rgba(22,52,70,0.2) !important;
+    pointer-events: none !important;
+    z-index: 30 !important;
+}
+.ts-goat-panel .ts-goat-slider .noUi-origin:hover::after,
+.ts-goat-panel .ts-goat-slider .noUi-origin:focus-within::after {
+    border-color: #28678f !important;
+    box-shadow: 0 0 0 3px rgba(64,129,170,0.16),
+                0 2px 5px rgba(22,52,70,0.22) !important;
+}
 .ts-goat-panel .ts-goat-slider input[type="range"] {
     width: 100% !important;
-    min-width: 160px !important;
-    accent-color: #397ca3;
-    cursor: pointer;
+    min-width: 175px !important;
+    accent-color: #4081aa;
+    cursor: ew-resize;
 }
 .ts-goat-panel .ts-goat-slider .widget-readout {
-    flex: 0 0 48px !important;
-    min-width: 48px !important;
-    text-align: right;
+    flex: 0 0 50px !important;
+    min-width: 50px !important;
+    padding-left: 8px !important;
+    text-align: right !important;
+    font-variant-numeric: tabular-nums;
 }
 </style>
 """
@@ -287,7 +297,7 @@ def build_ts_goat_panel(
                                             flex='0 0 80px')),
          anim_amp],
         layout=widgets.Layout(
-            width='min(100%, 650px)', min_width='300px',
+            width='min(100%, 560px)', min_width='300px',
             align_items='center', gap='12px'),
     )
     speed_group = widgets.HBox(
@@ -296,7 +306,7 @@ def build_ts_goat_panel(
                                             flex='0 0 62px')),
          anim_speed],
         layout=widgets.Layout(
-            width='min(100%, 650px)', min_width='300px',
+            width='min(100%, 560px)', min_width='300px',
             align_items='center', gap='12px'),
     )
     # One visible Play action: it loads the trajectory on demand.  The
@@ -847,6 +857,9 @@ def build_ts_goat_panel(
             + '</span>'
         )
         _refresh_constraints_display()
+        # Mode changes require a new trajectory; atom clicks do not.
+        if panel.layout.display == 'block':
+            _render_integrated_viewer()
 
     mode_dropdown.observe(_on_mode_change, names='value')
 
