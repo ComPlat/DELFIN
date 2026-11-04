@@ -538,14 +538,15 @@ def test_ts_goat_playback_uses_validated_frames_and_distinct_pause_reset():
     # Separate GL shapes preserve normal atomic CPK colours.
     assert 'viewer.__tsGoatUpdateHighlights' in boot
     assert 'viewer.removeAllShapes()' in boot
-    assert 'opacity:0.40' in boot
-    assert "chosen[payload.highlight[i]]" in boot
+    assert 'opacity:0.48' in boot
+    assert "viewer.__tsGoatHighlightIndices = payload.highlight.slice()" in boot
+    assert "chosen[viewer.__tsGoatHighlightIndices[i]]" in boot
     assert "if (!chosen[k]) continue" in boot
     assert "chosen[payload.highlight[i] + 1]" not in boot
     assert "String(atom.serial - 1)" not in boot
     assert "String(clicked)" in boot
     assert 'wireframe:true' not in boot
-    assert 'color:0x85afc7' in boot
+    assert 'color:0x80a9c5' in boot
     assert 'viewer.addStyle({serial: serial}' not in boot
     play = ts_goat_viewer_frames_js('viewer', True)
     pause = ts_goat_viewer_frames_js('viewer', 'pause')
@@ -863,5 +864,75 @@ def test_ts_goat_sliders_stay_on_separate_rows(tmp_path):
                 for group in w.children)
     ]
     assert len(grouped) == 1
-    assert all(group.layout.width == 'min(100%, 650px)'
+    assert all(group.layout.width == 'min(100%, 560px)'
                for group in grouped[0].children)
+
+
+
+def test_ts_goat_atom_click_changes_only_existing_viewer_halos(tmp_path):
+    """Click/clear/edit must not reinitialise GLViewer or erase the Output."""
+    rendered = []
+    updates = []
+    backend = _FakeBackend()
+
+    def render_in_panel(atoms, indices, arrows=None, **kwargs):
+        rendered.append((tuple(indices), kwargs.get('frames_payload')))
+
+    result, _ = _open_dialog(
+        tmp_path, backend,
+        extra_callbacks={
+            'render_in_panel': render_in_panel,
+            'update_highlights_in_panel': lambda indices: updates.append(
+                tuple(indices)),
+        },
+    )
+    assert result['error'] is None
+    assert len(rendered) >= 1
+    registry = result['registry']
+    field = registry['constraints_field']
+    initial = set(registry['parse_constraints'](field.value))
+    before_renders = len(rendered)
+
+    # Repeated clicks must still toggle the SAME zero-based index.
+    registry['on_atom_click'](0)
+    changed = set(registry['parse_constraints'](field.value))
+    assert (0 in changed) != (0 in initial)
+    assert updates[-1] == tuple(sorted(changed))
+    assert len(rendered) == before_renders
+
+    registry['on_atom_click'](0)
+    assert set(registry['parse_constraints'](field.value)) == initial
+    assert len(rendered) == before_renders
+
+    # Manual editing also takes the non-destructive path.
+    field.value = '1, 2'
+    assert updates[-1] == (1, 2)
+    assert len(rendered) == before_renders
+
+
+def test_ts_goat_highlights_js_only_changes_shapes():
+    """Keep WebGL canvas, camera and ORCA animation frames on atom clicks."""
+    from delfin.dashboard.molecule_viewer import ts_goat_viewer_highlights_js
+
+    js = ts_goat_viewer_highlights_js('tsgoatviewer_test', [0, 2, 2])
+    assert 'var indices = [0, 2]' in js
+    assert 'viewer.__tsGoatHighlightIndices = indices' in js
+    assert 'viewer.__tsGoatUpdateHighlights()' in js
+    assert 'viewer.render()' in js
+    assert 'viewer.__tsGoatDataEl !== payloadEl' in js
+    assert 'viewer.addModel(' not in js
+    assert 'viewer.zoomTo(' not in js
+    assert 'viewer.clear(' not in js
+    assert 'viewer.removeAllModels(' not in js
+
+    from pathlib import Path
+    panel = (Path(__file__).resolve().parents[1] /
+             'delfin/dashboard/ts_goat_panel.py').read_text(
+                 encoding='utf-8')
+    assert 'update_highlights_in_panel(indices)' in panel
+    assert 'update_highlights_in_panel=None' in panel
+    browser = (Path(__file__).resolve().parents[1] /
+               'delfin/dashboard/tab_calculations_browser.py').read_text(
+                   encoding='utf-8')
+    assert "'update_highlights_in_panel': _ts_update_highlights_in_panel" in browser
+    assert '_mv.ts_goat_viewer_highlights_js(' in browser
