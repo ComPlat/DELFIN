@@ -12,6 +12,7 @@ never overwritten -- so a per-session "Merge back" action exists.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -32,9 +33,13 @@ def _form(tmp_path, monkeypatch, home):
     from delfin.dashboard.context import DashboardContext
 
     monkeypatch.setattr(AS, "_OPEN_SESSIONS_PATH", tmp_path / "open.json")
+    (tmp_path / "open.json").write_text("[]")
     monkeypatch.setattr(S, "_GLOBAL", S.Scheduler(path=tmp_path / "cron.json"))
     monkeypatch.delenv("DELFIN_RESUME_SESSION", raising=False)
     monkeypatch.setenv("DELFIN_LAUNCH_CWD", str(home))
+    # No session opens by itself (create_tab opens the default workspace
+    # otherwise): the tests drive the start form only.
+    monkeypatch.setattr(AS, "default_workspace", lambda ctx: str(home))
 
     def build(ctx):
         state = {"active_session_id": "", "chat_messages": [],
@@ -44,6 +49,10 @@ def _form(tmp_path, monkeypatch, home):
     ctx = DashboardContext(calc_dir=tmp_path / "calc",
                            agent_dir=str(home))
     _widget, refs = AS.create_tab(ctx, build=build)
+    # create_tab opens the default workspace when nothing is open; the
+    # tests only judge what the form adds, so the pre-opened one is closed.
+    for rec in list(refs["sessions"]()):
+        refs["close"](rec["key"])
     form = refs["form"]
     form["new"].click()
     return refs, form
@@ -72,14 +81,27 @@ def test_the_box_is_offered_in_a_plain_folder_with_what_it_costs(
     assert (AS.OWN_WORKTREE_LABEL_IN_REPO == "Own worktree")
 
 
+def _worktree_sessions(refs):
+    """The sessions the form added: create_tab always keeps one default
+    session open (closing the last re-opens it), so the tests pick the
+    sessions whose workspace is a session worktree."""
+    from delfin.dashboard import agent_sessions as AS
+    return [rec for rec in refs["sessions"]()
+            if AS.read_worktree_sidecar(rec["workspace"]) is not None
+            or ".delfin/worktrees/" in str(rec["workspace"])]
+
+
 def test_a_start_without_a_yes_changes_nothing(plain, tmp_path, monkeypatch):
-    """No consent recorded, no repository, no session."""
+    """No consent recorded, no repository, no worktree session."""
     refs, form = _form(tmp_path, monkeypatch, plain)
     form["workdir"].value = str(plain)
     form["own_worktree"].value = True
-    form["start"].click()
+    form["start"].click()          # the confirm row appears, nothing done
     assert not (plain / ".git").exists()
-    assert refs["sessions"]() == []
+    assert _worktree_sessions(refs) == []
+    form["consent_no"].click()
+    assert not (plain / ".git").exists()
+    assert _worktree_sessions(refs) == []
 
 
 def test_a_yes_makes_the_folder_a_project_and_starts_in_its_worktree(
@@ -87,11 +109,9 @@ def test_a_yes_makes_the_folder_a_project_and_starts_in_its_worktree(
     refs, form = _form(tmp_path, monkeypatch, plain)
     form["workdir"].value = str(plain)
     form["own_worktree"].value = True
-    form["start"].click()
-    # The consent was asked exactly once -- the yes is remembered for the
-    # rest of this form's life (the engine asks per attempt, the window
-    # per folder).
-    sessions = refs["sessions"]()
+    form["start"].click()          # asks: the confirm row
+    form["consent_yes"].click()    # the yes
+    sessions = _worktree_sessions(refs)
     assert len(sessions) == 1
     where = sessions[0]["workspace"]
     assert where.startswith(str(plain / ".delfin" / "worktrees"))
@@ -110,16 +130,20 @@ def test_merge_back_brings_the_changes_and_reports_a_conflict(
     form["workdir"].value = str(plain)
     form["own_worktree"].value = True
     form["start"].click()
+    form["consent_yes"].click()
     form["own_worktree"].value = True
-    form["start"].click()
-    wt_a, wt_b = [rec["workspace"] for rec in refs["sessions"]()]
+    form["start"].click()          # already a project: no consent needed
+    wt_a, wt_b = [Path(rec["workspace"]) for rec in _worktree_sessions(refs)]
     (wt_a / "notes.md").write_text("from a\n", encoding="utf-8")
     (wt_b / "notes.md").write_text("from b\n", encoding="utf-8")
-
-    ok = AS.merge_session_worktree(wt_a)
-    assert ok["status"] == "ok"
+    recs = _worktree_sessions(refs)
+    buttons = {rec["workspace"]: rec.get("merge_btn") for rec in recs}
+    assert all(buttons.values()), "every session worktree row offers merge"
+    buttons[str(wt_a)].click()
+    assert "Merged back" in refs["notice"].value, refs["notice"].value
+    # The button did the whole merge: the change is in the main checkout,
+    # uncommitted, for review.
     assert (plain / "notes.md").read_text(encoding="utf-8") == "from a\n"
-    # Uncommitted, for review: the main checkout shows the change.
     assert "notes.md" in _git(plain, "status", "--porcelain")
 
     conflict = AS.merge_session_worktree(wt_b)
