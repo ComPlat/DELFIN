@@ -538,7 +538,7 @@ def test_ts_goat_playback_uses_validated_frames_and_distinct_pause_reset():
     # Separate GL shapes preserve normal atomic CPK colours.
     assert 'viewer.__tsGoatUpdateHighlights' in boot
     assert 'viewer.removeAllShapes()' in boot
-    assert 'opacity:0.32' in boot
+    assert 'opacity:0.40' in boot
     assert "chosen[payload.highlight[i]]" in boot
     assert "if (!chosen[k]) continue" in boot
     assert "chosen[payload.highlight[i] + 1]" not in boot
@@ -779,6 +779,7 @@ def test_ts_goat_mode_and_sliders_have_usable_width(tmp_path):
     assert all(w.layout.width == '100%' for w in sliders)
     assert all(w.layout.min_width == '250px' for w in sliders)
     assert all(w.style.description_width == '0px' for w in sliders)
+    assert all(w.style.handle_color == '#397ca3' for w in sliders)
     assert all(w.readout for w in sliders)
     assert all(w.readout_format == '.2f' for w in sliders)
     labels = [
@@ -808,6 +809,9 @@ def test_ts_goat_scoped_select_and_slider_handle_css(tmp_path):
     assert '.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle' in css
     assert 'border: 2px solid #397ca3' in css
     assert 'height: 20px !important' in css
+    assert '.ts-goat-panel .ts-goat-slider .noUi-origin::after' in css
+    assert 'pointer-events: none !important' in css
+    assert 'z-index: 30 !important' in css
     assert '.ts-goat-panel .ts-goat-slider input[type="range"]' in css
 
     right = panel.children[0].children[1].children[1]
@@ -839,3 +843,25 @@ def test_ts_goat_click_and_play_speed_match_real_widget_labels():
     ).read_text(encoding='utf-8')
     assert "'ts-goat-speed-slider' in" in browser
     assert "getattr(w, '_dom_classes', ())" in browser
+
+
+
+def test_ts_goat_sliders_stay_on_separate_rows(tmp_path):
+    """Readouts must not collide with the next slider's label."""
+    from ipywidgets import FloatSlider, VBox
+
+    result, _ = _open_dialog(tmp_path, _FakeBackend())
+    assert result['error'] is None
+    panel = result['registry']['panel']
+    right = panel.children[0].children[1].children[1]
+    grouped = [
+        w for w in _iter_widgets(right)
+        if isinstance(w, VBox)
+        and len(getattr(w, 'children', ())) == 2
+        and all(len(getattr(group, 'children', ())) == 2
+                and any(isinstance(x, FloatSlider) for x in group.children)
+                for group in w.children)
+    ]
+    assert len(grouped) == 1
+    assert all(group.layout.width == 'min(100%, 650px)'
+               for group in grouped[0].children)
