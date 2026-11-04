@@ -259,7 +259,10 @@ def scan_text(relpath: str, text: str) -> list[tuple[int, str, str]]:
         for lineno, line in enumerate(text.splitlines(), start=1):
             if ALLOW_COMMENT in line:
                 continue
-            m = _PRIVATE_NET_RE.search(line)
+            # CIDR notation (a/b) is a network definition (firewall rules,
+            # nftables sets), not a site address.
+            line_wo_cidr = re.sub(r"\b\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}\b", "", line)
+            m = _PRIVATE_NET_RE.search(line_wo_cidr)
             if m:
                 findings.append((lineno, "private_net", m.group(0)))
     return findings
