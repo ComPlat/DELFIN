@@ -98,6 +98,12 @@ def configure_room(chat: str, *, owner: str, **settings) -> None:
         _write(data)
 
 
+def room_of_session(session_id: str | None) -> str | None:
+    """The chat bound to a session, or None (no chat, not ready)."""
+    return next((chat for chat, room in rooms().items()
+                 if room.get('session_id') == session_id), None)
+
+
 def schedules_room() -> str | None:
     """The chat the schedules are managed and reported in; None before it
     is opened. A new pairing starts without one (``save``)."""

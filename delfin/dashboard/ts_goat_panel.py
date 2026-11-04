@@ -343,6 +343,15 @@ def build_ts_goat_panel(
         value='', placeholder='def2-SVP (DFT only)',
         description='Basis:', layout=widgets.Layout(width='240px'),
     )
+    # Unknown charge/spin must be explicitly entered; never silently assume 0/1.
+    charge_field = widgets.Text(
+        value='', description='Charge:', placeholder='required',
+        layout=widgets.Layout(width='155px'),
+    )
+    mult_field = widgets.Text(
+        value='', description='Multiplicity:', placeholder='required',
+        layout=widgets.Layout(width='200px'),
+    )
     pal_field = widgets.IntText(
         value=12, description='Cores:', layout=widgets.Layout(width='145px'),
     )
@@ -411,8 +420,12 @@ def build_ts_goat_panel(
         [maxcore_field, slurm_time_field],
         layout=widgets.Layout(display='flex', flex_flow='row wrap',
                               gap='6px', width='100%'))
+    electronic_row = widgets.HBox(
+        [charge_field, mult_field],
+        layout=widgets.Layout(display='flex', flex_flow='row wrap',
+                              gap='6px', width='100%'))
     settings_group = widgets.VBox(
-        [settings_row, resources_row, basis_field],
+        [electronic_row, settings_row, resources_row, basis_field],
         layout=widgets.Layout(width='94%', gap='4px'))
     constraint_actions = widgets.HBox(
         [reset_prop_btn, clear_sel_btn],
@@ -511,19 +524,40 @@ def build_ts_goat_panel(
         elif not basis_field.value.strip():
             basis_field.value = 'def2-SVP'
 
+    def _electronic_state():
+        try:
+            charge = int(charge_field.value.strip())
+            mult = int(mult_field.value.strip())
+        except (TypeError, ValueError):
+            raise ValueError(
+                'Enter an integer charge and a positive integer '
+                'multiplicity before submitting GOAT.'
+            ) from None
+        if mult < 1:
+            raise ValueError('Multiplicity must be a positive integer.')
+        return charge, mult
+
     def _refresh_preview():
         indices = _parse_constraints(constraints_field.value)
         atoms = state['ts_atoms'] or []
         n_atoms = len(atoms)
         bad = [i for i in indices if i >= n_atoms]
         _update_constraint_count(indices, n_atoms)
+        try:
+            charge, mult = _electronic_state()
+        except ValueError as exc:
+            preview_box.value = (
+                '<div style="color:#c62828;">Input not ready: '
+                + _esc(exc) + '</div>'
+            )
+            return
         preview_box.value = (
             '<pre style="font-size:11px;">' + _esc(
                 render_constraints_preview(
                     state['elements'], state['coordinates'], indices,
                     method=method_field.value,
                     basis=basis_field.value,
-                    charge=state['charge'], mult=state['mult'],
+                    charge=charge, mult=mult,
                     pal=pal_field.value, maxcore=maxcore_field.value,
                 )
             ) + '</pre>'
@@ -850,8 +884,14 @@ def build_ts_goat_panel(
         state['proposed'] = open_result['proposed']
         state['elements'] = open_result['elements']
         state['coordinates'] = open_result['coordinates']
-        state['charge'] = open_result.get('charge', 0)
-        state['mult'] = open_result.get('mult', 1)
+        state['charge'] = open_result.get('charge')
+        state['mult'] = open_result.get('mult')
+        charge_field.value = (
+            str(state['charge']) if state['charge'] is not None else ''
+        )
+        mult_field.value = (
+            str(state['mult']) if state['mult'] is not None else ''
+        )
         state['mode_arrows'] = open_result.get('mode_arrows')
         state['mode_arrows_by_index'] = open_result.get(
             'mode_arrows_by_index', {})
@@ -948,9 +988,16 @@ def build_ts_goat_panel(
                 f'{_esc(bad)}: the molecule has {len(atoms)} atoms.</span>'
             )
             return
-        _do_submit(indices)
+        try:
+            charge, mult = _electronic_state()
+        except ValueError as exc:
+            status.value = (
+                '<span style="color:#c62828;">' + _esc(exc) + '</span>'
+            )
+            return
+        _do_submit(indices, charge, mult)
 
-    def _do_submit(indices):
+    def _do_submit(indices, charge, mult):
         """Create a dedicated folder and submit through the existing backend."""
         import datetime
 
@@ -978,7 +1025,7 @@ def build_ts_goat_panel(
                 elements=state['elements'],
                 coordinates=state['coordinates'],
                 constraint_indices=indices,
-                charge=state['charge'], mult=state['mult'],
+                charge=charge, mult=mult,
                 method=method_field.value, basis=basis_field.value,
                 ncores=pal_field.value, maxcore=maxcore_field.value,
                 base_name=job_name,
@@ -1045,7 +1092,8 @@ def build_ts_goat_panel(
         names='value')
     # The preview is the exact input the user is about to submit: resource
     # and basis edits must update it, not only method/constraint edits.
-    for editor in (basis_field, pal_field, maxcore_field):
+    for editor in (basis_field, pal_field, maxcore_field,
+                   charge_field, mult_field):
         editor.observe(lambda _c: _refresh_preview(), names='value')
     constraints_field.observe(lambda _c: (_refresh_preview(),
                                           _update_selection_only()),
@@ -1081,6 +1129,7 @@ def build_ts_goat_panel(
         'parse_constraints': _parse_constraints,
         'on_atom_click': on_atom_click,
         'constraints_field': constraints_field,
+        'charge_field': charge_field, 'mult_field': mult_field,
         'click_sync': click_sync,
         'center_btn': center_btn,
     }
@@ -1154,6 +1203,15 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             )
             result['error_kind'] = 'inconsistent_geometry'
             return result
+        if not ts_goat._same_ts_geometry(
+            ts_atoms, ts_goat._hessian_reference_atoms(files.hess_path)
+        ):
+            result['error'] = (
+                'TS XYZ coordinates do not match the optimized Hessian '
+                'geometry (0.10 Angstrom tolerance).'
+            )
+            result['error_kind'] = 'inconsistent_geometry'
+            return result
         if status.auto_mode_index is not None and all(
             idx != status.auto_mode_index for idx, _f in status.imaginary_modes
         ):
@@ -1221,8 +1279,8 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             'files': files, 'ts_atoms': ts_atoms, 'proposed': proposed,
             'elements': [a[0] for a in ts_atoms],
             'coordinates': [(x, y, z) for _, x, y, z in ts_atoms],
-            'charge': charge if charge is not None else 0,
-            'mult': mult if mult is not None else 1,
+            'charge': charge,
+            'mult': mult,
             'mode_arrows': arrows,
             'mode_arrows_by_index': mode_arrows_by_index,
             'imaginary_modes': list(status.imaginary_modes),

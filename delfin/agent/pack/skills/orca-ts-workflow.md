@@ -61,6 +61,11 @@ optimized geometry.
 - IRC endpoints are checked as minima before the mechanism is claimed.
 - No barrier compared across different levels of theory.
 - Keywords cited from the ORCA manual via search_docs, not from memory.
+- Before the TS verdict, run the `result_checks` tool (delfin-ops) on
+  the frequency run with `job_type="ts"`: it confirms exactly one
+  imaginary mode with the mode index/frequency named, converged SCF,
+  and that every number you report traces to the output file it was
+  read from (a value with no source is flagged `not_computed`).
 
 ## Output format
 **Reaction** → **Guess strategy** → **TS verification** (n_imag, mode

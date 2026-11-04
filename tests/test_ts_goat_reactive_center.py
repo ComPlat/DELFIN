@@ -728,3 +728,34 @@ def test_ts_goat_preview_matches_written_input(tmp_path):
         base_name="preview",
     )
     assert preview == path.read_text(encoding="utf-8")
+
+
+def test_reject_different_xyz_coordinates_even_when_elements_match(tmp_path):
+    """Prefer the actual TS over a composition-identical unrelated geometry."""
+    d = tmp_path / 'geometry_check'
+    d.mkdir()
+    atoms = _water_ts_atoms()
+    _write_hess(d / 'TS.hess', atoms, [], [-300.0])
+    wrong = [(el, x + 2.0, y, z) for el, x, y, z in atoms]
+    _write_orca_xyz(d / 'a_decoy.xyz', wrong)
+    _write_orca_xyz(d / 'z_actual.xyz', atoms)
+    files = collect_ts_files(d, out_path=d / 'TS.out')
+    assert files.xyz_path == d / 'z_actual.xyz'
+    assert any('coordinates do not match' in reason
+               for reason in files.problems) is False
+    from delfin.ts_goat import _same_ts_geometry
+    assert not _same_ts_geometry(wrong, atoms)
+    assert _same_ts_geometry(atoms, atoms)
+
+
+def test_reject_only_xyz_if_geometry_does_not_match(tmp_path):
+    d = tmp_path / 'geometry_check'
+    d.mkdir()
+    atoms = _water_ts_atoms()
+    _write_hess(d / 'TS.hess', atoms, [], [-300.0])
+    wrong = [(el, x + 1.0, y, z) for el, x, y, z in atoms]
+    _write_orca_xyz(d / 'TS.xyz', wrong)
+    files = collect_ts_files(d, out_path=d / 'TS.out')
+    assert files.xyz_path is None
+    assert any('coordinates do not match' in msg
+               for msg in files.problems)

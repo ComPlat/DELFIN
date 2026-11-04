@@ -63,7 +63,14 @@ from opi.output.core import Output
 from delfin.api import parse_orca_output
 from delfin.smart_recalc import has_ok_marker
 
-FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "orca611"
+# Real ORCA fixtures live in the private store outside the repo
+# (LICENSE_GUARD.md rule family 2); skip without DELFIN_PRIVATE_FIXTURES.
+from test_lc1_fixtures_helper import lc1_fixture_dir as _lc1_fixture_dir  # noqa: E402
+
+
+def _fixture(name: str) -> Path:
+    return _lc1_fixture_dir(f"tests/fixtures/orca611/{name}")
+
 
 # name -> (expect terminated_normally, expect scf_converged,
 #          DELFIN opt_converged, OPI geometry_optimization_converged)
@@ -79,7 +86,7 @@ EXPECT = {
 
 def _opi_status(name: str):
     """OPI's three status booleans for a fixture; reads the .out directly."""
-    out = Output(basename=name, working_dir=FIXTURE_ROOT / name)
+    out = Output(basename=name, working_dir=_fixture(name))
     return (
         out.terminated_normally(),
         out.scf_converged(),
@@ -90,9 +97,9 @@ def _opi_status(name: str):
 def _delfin_status(name: str):
     from delfin.doc_server.calc_indexer import outcome_of_folder
 
-    out = FIXTURE_ROOT / name / f"{name}.out"
+    out = _fixture(name) / f"{name}.out"
     parsed = parse_orca_output(str(out))
-    folder = FIXTURE_ROOT / name
+    folder = _fixture(name)
     return {
         "outcome": outcome_of_folder(folder),
         "scf_converged": parsed.scf_converged,

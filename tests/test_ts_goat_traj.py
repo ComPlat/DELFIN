@@ -1,9 +1,9 @@
 """Tests for delfin.ts_goat_traj: orca_pltvib multi-frame XYZ for the
 TS -> GOAT panel.
 
-Committed fixtures only -- no private molecular data.  The Hessian
-fixture (sh1_cu_nh3_imagmode) ships with the suite; orca_pltvib runs
-are exercised only when the binary is on PATH (skipped otherwise).
+The unit tests build a small, synthetic Hessian and do not rely on
+fixtures removed from main. Real orca_pltvib is tested only when its
+binary is available (skipped otherwise).
 """
 
 from __future__ import annotations
@@ -24,8 +24,19 @@ if str(_REPO_ROOT) not in sys.path:
 
 from delfin import ts_goat_traj  # noqa: E402  (path anchored above)
 
-FIXTURE_HESS = Path(
-    'tests/fixtures/orca611/sh1_cu_nh3_imagmode/sh1_cu_nh3_imagmode.hess')
+@pytest.fixture
+def hessian(tmp_path):
+    """Synthetic ORCA Hessian with a real 3N-mode table and known frequency."""
+    from tests.test_ts_goat_reactive_center import _write_hess
+    atoms = [('O', 0.0, 0.0, 0.0), ('H', 0.96, 0.0, 0.0),
+             ('H', -0.3, 0.8, 0.0)]
+    zero = [(0.0, 0.0, 0.0)] * len(atoms)
+    mode = [(0.1, 0, 0), (0, 0, 0), (0, 0, 0)]
+    hess = tmp_path / 'm.hess'
+    _write_hess(hess, atoms, [zero] * 6 + [mode] + [zero] * 2,
+                [100.0] * 6 + [-21.86] + [100.0] * 2)
+    return hess
+
 
 MULTIFRAME = """3
 frame a
@@ -124,44 +135,68 @@ def test_mode_outside_hessian_rejected():
     assert result.trajectory is None and result.error
 
 
-def test_pltvib_unavailable_fails_cleanly(tmp_path):
-    """No orca_pltvib on PATH -> visible error, nothing rendered."""
-    hess = tmp_path / 'm.hess'
-    shutil.copy(FIXTURE_HESS, hess)
+def test_pltvib_unavailable_fails_cleanly(hessian, tmp_path):
+    """Missing orca_pltvib -> visible error, no rendered trajectory."""
     result = ts_goat_traj.generate_vibration_trajectory(
-        hess, 6, cache_dir=tmp_path / 'cache', pltvib='orca_pltvib-definitely-missing')
+        hessian, 6, cache_dir=tmp_path / 'cache',
+        pltvib='orca_pltvib-definitely-missing')
     assert result.trajectory is None
-    assert 'orca_pltvib' in result.error.lower() or result.error
+    assert result.error and 'orca_pltvib' in result.error.lower()
 
 
-def test_cache_reuse_returns_hessian_frequency(tmp_path):
-    """A reused cached trajectory still reports the frequency read from
-    the Hessian's $vibrational_frequencies block."""
-    hess = tmp_path / 'm.hess'
-    shutil.copy(FIXTURE_HESS, hess)
-    first = ts_goat_traj.generate_vibration_trajectory(
-        hess, 6, cache_dir=tmp_path / 'cache', pltvib='no-such-binary')
-    # without a generator the first call cannot produce frames ...
-    if first.trajectory is None:
-        pytest.skip('orca_pltvib not available to seed the cache')
-    reuse = ts_goat_traj.generate_vibration_trajectory(
-        hess, 6, cache_dir=tmp_path / 'cache')
-    assert reuse.trajectory is not None and reuse.reused
-    # mode 6 of the fixture Hessian: -21.857 cm^-1 (hess:599)
-    assert abs(reuse.trajectory.frequency_cm1 - (-21.8570393312490694)) < 1e-3
+def _seed_cache(hessian, cache_dir):
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    local = cache_dir / hessian.name
+    shutil.copy2(hessian, local)
+    xyz = ts_goat_traj.pltvib_output_path(local, 6)
+    xyz.write_text(
+        '3\nframe 1\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.3 0.8 0.0\n'
+        '3\nframe 2\nO 0.1 0.0 0.0\nH 0.96 0.0 0.0\nH -0.3 0.8 0.0\n',
+        encoding='utf-8')
+    return xyz
 
 
-def test_real_pltvib_against_committed_fixture():
-    """Real-integration gate: orca_pltvib on the committed fixture
-    Hessian must yield a valid multi-frame trajectory.  Skipped when
-    the ORCA utilities are not installed on the host."""
+def test_cache_reuse_returns_hessian_frequency(hessian, tmp_path):
+    """A real cached XYZ is reused with the current Hessian's frequency."""
+    cached = _seed_cache(hessian, tmp_path / 'cache')
+    result = ts_goat_traj.generate_vibration_trajectory(
+        hessian, 6, cache_dir=cached.parent, pltvib='not-needed')
+    assert result.trajectory is not None and result.reused
+    assert result.trajectory.frequency_cm1 == pytest.approx(-21.86)
+
+
+def test_changed_hessian_invalidates_cached_mode(hessian, tmp_path):
+    """Same-name Hessian with changed modes must discard old XYZ frames."""
+    cached = _seed_cache(hessian, tmp_path / 'cache')
+    assert cached.is_file()
+    # Changing a frequency alone must invalidate the cached trajectory.
+    text = hessian.read_text(encoding='utf-8')
+    hessian.write_text(text.replace('-21.86', '-31.86'), encoding='utf-8')
+    result = ts_goat_traj.generate_vibration_trajectory(
+        hessian, 6, cache_dir=cached.parent, pltvib='orca_pltvib-not-installed')
+    assert result.trajectory is None and result.error
+    assert not cached.exists()
+
+
+def test_real_pltvib_against_committed_fixture(hessian):
+    """Integration gate for real ORCA, if a real compatible Hessian is present.
+
+    Synthetic ORCA Hessians are for unit tests only and may not be accepted
+    by the external ORCA utility.
+    """
     pltvib = shutil.which('orca_pltvib')
     if pltvib is None:
         pytest.skip('orca_pltvib not installed on this host')
+    fixture = _REPO_ROOT / (
+        'tests/fixtures/orca611/sh1_cu_nh3_imagmode/'
+        'sh1_cu_nh3_imagmode.hess'
+    )
+    if not fixture.is_file():
+        pytest.skip('optional real ORCA Hessian fixture not installed')
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         hess = Path(td) / 'fixture.hess'
-        shutil.copy(FIXTURE_HESS, hess)
+        shutil.copy(fixture, hess)
         result = ts_goat_traj.generate_vibration_trajectory(
             hess, 6, cache_dir=Path(td) / 'cache', pltvib=pltvib)
         assert result.error is None, result.error

@@ -19,6 +19,7 @@ Design rules (2026-11-02 user briefing):
 
 from __future__ import annotations
 
+import hashlib
 import math
 import shutil
 import subprocess
@@ -211,8 +212,30 @@ def generate_vibration_trajectory(
     cache_dir = Path(cache_dir) if cache_dir else hess_path.parent / "ts_goat_vib_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     local_hess = cache_dir / hess_path.name
-    if not local_hess.is_file():
-        shutil.copy2(hess_path, local_hess)
+    # Never reuse a trajectory computed from an earlier Hessian with the
+    # same filename. Comparing bytes also catches recalculations that keep
+    # their old mtime/size and have unchanged optimized coordinates.
+    def _digest(path: Path) -> bytes:
+        with path.open('rb') as handle:
+            return hashlib.file_digest(handle, 'sha256').digest()
+
+    try:
+        changed = (
+            not local_hess.is_file()
+            or _digest(local_hess) != _digest(hess_path)
+        )
+        if changed:
+            # Remove ONLY mode trajectories belonging to this Hessian name.
+            # A changed normal-mode matrix invalidates all mode animations.
+            prefix = local_hess.name + '.v'
+            for cached in cache_dir.iterdir():
+                if (cached.is_file() and cached.name.startswith(prefix)
+                        and cached.name.endswith('.xyz')):
+                    cached.unlink()
+            if local_hess.resolve() != hess_path.resolve():
+                shutil.copy2(hess_path, local_hess)
+    except OSError as exc:
+        return TrajectoryResult(error=f"Hessian cache unavailable: {exc}")
 
     out_xyz = pltvib_output_path(local_hess, mode_index)
 

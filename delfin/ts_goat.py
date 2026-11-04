@@ -292,6 +292,22 @@ def _same_composition(a: Sequence, b: Sequence) -> bool:
     )
 
 
+def _same_ts_geometry(a: Sequence, b: Sequence, tolerance: float = 0.10) -> bool:
+    """Match atom order AND Cartesian positions, in Angstrom.
+
+    The Hessian parser already converts ORCA Bohr coordinates to Angstrom.
+    Reject a different geometry even when its elemental formula matches.
+    """
+    return (
+        _same_composition(a, b)
+        and all(
+            math.dist(tuple(map(float, atom_a[1:4])),
+                      tuple(map(float, atom_b[1:4]))) <= tolerance
+            for atom_a, atom_b in zip(a, b)
+        )
+    )
+
+
 def _hessian_reference_atoms(hess_path: Path) -> list[tuple[str, float, float, float]]:
     """Element sequence of the Hessian's $atoms block (Bohr coords).
 
@@ -400,6 +416,12 @@ def collect_ts_files(calc_dir: Path, out_path: Path | None = None) -> TSFiles:
         if reference is not None and not _same_composition(atoms, reference):
             mismatch = _composition_mismatch(atoms, reference)
             xyz_rejections.append(f"{cand.name}: {mismatch}")
+            continue
+        if reference is not None and not _same_ts_geometry(atoms, reference):
+            xyz_rejections.append(
+                f"{cand.name}: coordinates do not match the optimized "
+                "Hessian geometry (0.10 Angstrom tolerance)"
+            )
             continue
         # Do not mistake reactant/product endpoint files for the TS itself;
         # they are not part of the TS->GOAT workflow (a plain OptTS run has

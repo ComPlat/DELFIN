@@ -244,8 +244,20 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        "fakeDelay": "number?", "fakeSave": "boolean?", "attach": "boolean?",
                        # What to look into (the context event); its title
                        # names the row.
-                       "brief": "string?", "briefTitle": "string?"},
+                       "brief": "string?", "briefTitle": "string?",
+                       # worktree: the session runs in its own worktree and
+                       # branch of cwd's repository (session_worktree.py);
+                       # initProject: the user agreed that a cwd without
+                       # git becomes a local project first. Without it such
+                       # a cwd is refused with NEEDS_LOCAL_PROJECT, the
+                       # question to put in the error's text.
+                       "worktree": "boolean?", "initProject": "boolean?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
+    # The session worktrees of cwd's repository, and one merged back into
+    # the main checkout (uncommitted, for review; a conflict changes
+    # nothing). Refused while a session of this service works in it.
+    "session.worktrees": {"cwd": "string"},
+    "session.merge": {"path": "string"},
     "session.pending": {"sessionId": "string"},
     "session.detach": {"sessionId": "string"},
     # A message for a session elsewhere (dashboard, another terminal).
@@ -259,12 +271,42 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     # restart: a new service follows at once (an update); windows reconnect
     # to it instead of leaving.
     "service.shutdown": {"restart": "boolean?"},
+    # Branch operations (delfin/agent/branch_ops.py): the dashboard's
+    # branch logic, run in *workspace* (a session's or a window's). list:
+    # the rows of one view (mine|all|hidden|merged|remote), narrowed by
+    # text. pull: fast-forward-only main, never a switch. test: a worktree
+    # at ref, the branch's changed test files run there (capped, nice),
+    # worktree removed unless keep. cleanup: what may be deleted; delete
+    # only with confirm=true (branch_cleanup.delete itself, rules re-read
+    # at deletion). Nothing here switches the shared checkout.
+    "branch.list": {"workspace": "string", "view": "string?",
+                    "text": "string?", "refresh": "boolean?"},
+    "branch.pull": {"workspace": "string"},
+    "branch.test": {"workspace": "string", "ref": "string",
+                    "keep": "boolean?"},
+    "branch.cleanup": {"workspace": "string", "includeUnmerged": "boolean?",
+                       "refresh": "boolean?", "delete": "[string]?",
+                       "confirm": "boolean?"},
     # What needs the user, from every DELFIN process (attention_feed.py):
     # the items of ATTENTION_ITEM. answer: a parked question's answer, for
     # the next session in its workspace; dismiss: cleared, never answered.
     "attention.list": {},
     "attention.answer": {"id": "string", "text": "string"},
     "attention.dismiss": {"id": "string"},
+    # Swarm management (package SW2b; the logic is SW1's
+    # delfin/agent/swarm/, the wrappers delfin/agent/service/swarm_rpc.py).
+    # spec: the spec object, or specYaml: swarm.yaml text. swarm.start is
+    # a dry run unless confirm=true -- the TUI sends confirm only after
+    # the user approved the plan it showed.
+    "swarm.status": {"spec": "object?", "specYaml": "string?"},
+    "swarm.plan": {"spec": "object?", "specYaml": "string?"},
+    "swarm.validate": {"spec": "object?", "specYaml": "string?"},
+    "swarm.start": {"spec": "object?", "specYaml": "string?",
+                    "dryRun": "boolean?", "confirm": "boolean?"},
+    "swarm.pause": {},
+    "swarm.resume": {},
+    "swarm.triage.list": {"queue": "[object]"},
+    "swarm.triage.answer": {"item": "object", "answer": "string"},
 }
 
 SERVICE_RESULTS: dict[str, dict[str, str]] = {
@@ -278,7 +320,10 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     # point the window is subscribed at (later events arrive live).
     "session.create": {"sessionId": "string", "session": "object",
                        "state": "string", "pending": "[object]",
-                       "events": "[object]"},
+                       "events": "[object]", "worktree": "object?"},
+    "session.worktrees": {"worktrees": "[object]"},
+    "session.merge": {"status": "string", "files": "[string]",
+                      "target": "string", "message": "string"},
     "session.attach": {"session": "object", "state": "string",
                        "pending": "[object]", "events": "[object]",
                        "summary": "object"},
@@ -295,6 +340,25 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "attention.list": {"items": "[object]", "version": "integer?"},
     "attention.answer": {"ok": "boolean", "error": "string?"},
     "attention.dismiss": {"ok": "boolean", "error": "string?"},
+    # The status schema SW1 documents (status.py STATUS_SCHEMA); plan
+    # carries the launch plan plus dry_run_text; start is a dry run
+    # unless confirm=true. pause/resume answer available=false until SW1
+    # ships the verbs. triage.answer: answered, item_id, logged.
+    "swarm.status": {"schema_version": "integer", "goal": "string",
+                     "packages": "[object]",
+                     "waiting_for_user": "[object]"},
+    "swarm.plan": {"goal": "string", "members": "[object]",
+                   "start_spacing_s": "integer?", "memory_gate": "boolean?",
+                   "dry_run_text": "string"},
+    "swarm.validate": {"valid": "boolean", "errors": "[string]"},
+    "swarm.start": {"dry_run": "boolean", "goal": "string",
+                    "members": "[object]?", "dry_run_text": "string?",
+                    "started": "[object]", "refused": "string?"},
+    "swarm.pause": {"available": "boolean", "reason": "string"},
+    "swarm.resume": {"available": "boolean", "reason": "string"},
+    "swarm.triage.list": {"items": "[object]"},
+    "swarm.triage.answer": {"answered": "boolean", "item_id": "string?",
+                            "logged": "string?"},
 }
 
 #: Events from the service itself, to every window.
@@ -348,6 +412,9 @@ SESSION_SUMMARY: dict[str, str] = {
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005
+#: session.create with worktree in a folder without git and no initProject:
+#: the error text is the question to put to the user.
+NEEDS_LOCAL_PROJECT = -32006
 
 #: Events kept in the session's durable log (eventlog.py) and replayed to
 #: a window that attaches later. Only these carry a sequence number. Deltas,

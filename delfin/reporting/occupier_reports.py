@@ -12,7 +12,8 @@ from ..common.logging import get_logger
 from ..utils import (
     search_transition_metals,
 )
-from ..parser import extract_last_uhf_deviation, extract_last_J3
+from ..parser import extract_last_J3
+from ..orca_read import Quantity, read
 from .. import smart_recalc
 from ..occupier_auto import (
     BOLTZMANN_PARENT_THRESHOLD,
@@ -24,6 +25,19 @@ from ..config_manager import DelfinConfig
 from delfin.common.control_validator import resolve_occupier_compare
 
 logger = get_logger(__name__)
+
+
+def _orca_s2_deviation(out_file: str) -> Optional[float]:
+    """<S**2> deviation of a finished OCCUPIER run via :mod:`delfin.orca_read`.
+
+    In the occupier flow no OPI ``*.property.json`` sits next to the run's
+    ``output*.out``, so orca_read resolves to DELFIN's established text reader
+    (``extract_last_uhf_deviation``) and returns the identical value: the last
+    ``Deviation`` of the UHF spin-contamination block, or ``None`` for a
+    closed-shell run (no UHF block), a failed run, or a missing file.
+    """
+    p = Path(out_file)
+    return read(p.parent, p.stem, Quantity.S2_DEVIATION).value
 
 # Create default config instance for accessing default parameter values
 _DEFAULT_CONFIG = DelfinConfig()
@@ -398,7 +412,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     def get_dev(idx: int) -> Optional[float]:
         if idx not in dev_cache:
             try:
-                dev_cache[idx] = extract_last_uhf_deviation(file_for_index(idx))
+                dev_cache[idx] = _orca_s2_deviation(file_for_index(idx))
             except Exception:
                 dev_cache[idx] = None
         return dev_cache[idx]
@@ -1098,7 +1112,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     def get_dev(idx: int) -> Optional[float]:
         if idx not in dev_cache:
             try:
-                dev_cache[idx] = extract_last_uhf_deviation(file_for_index(idx))
+                dev_cache[idx] = _orca_s2_deviation(file_for_index(idx))
             except Exception:
                 dev_cache[idx] = None
         return dev_cache[idx]

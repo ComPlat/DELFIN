@@ -1008,3 +1008,50 @@ def test_submit_button_writes_input_and_calls_backend_without_opi(
     ):
         assert f'{{ C {idx} C }}' in content
     assert "Failed to write GOAT input" not in result['registry']['status'].value
+
+
+def test_missing_input_requires_charge_and_multiplicity_before_submit(tmp_path):
+    """Without an .inp, an unknown electronic state must not become 0/1."""
+    from delfin.dashboard.ts_goat_panel import open_ts_goat_dialog
+    out = _write_ts_fixture(tmp_path)
+    (tmp_path / 'ts_run.inp').unlink()
+    backend = _FakeBackend()
+    result = open_ts_goat_dialog(out, callbacks={
+        'backend': backend, 'render_viewer': lambda *a, **kw: None,
+        'scroll_top': lambda: None, 'reset_dropdown': lambda: None,
+        'render_in_panel': lambda *a, **kw: None,
+    })
+    assert result['error'] is None, result['error']
+    registry = result['registry']
+    assert registry['charge_field'].value == ''
+    assert registry['mult_field'].value == ''
+    # The value controls are connected to the preview and submission path.
+    registry['charge_field'].value = '1'
+    registry['mult_field'].value = '2'
+    # Verify both the blocked and successful paths through the actual
+    # Submit button; no external backend calculation is performed.
+    def find_submit(widget):
+        if (isinstance(widget, widgets.Button)
+                and widget.description == '▶ Submit GOAT job'):
+            return widget
+        for child in getattr(widget, 'children', ()):
+            found = find_submit(child)
+            if found is not None:
+                return found
+        return None
+
+    submit = find_submit(registry['panel'])
+    assert submit is not None
+    registry['charge_field'].value = ''
+    registry['mult_field'].value = ''
+    registry['constraints_field'].value = '0, 1'
+    submit.click()
+    assert not backend.calls
+
+    registry['charge_field'].value = '1'
+    registry['mult_field'].value = '2'
+    submit.click()
+    assert len(backend.calls) == 1
+    job = backend.calls[0]
+    rendered = (job['job_dir'] / job['inp_file']).read_text(encoding='utf-8')
+    assert '* xyz 1 2' in rendered

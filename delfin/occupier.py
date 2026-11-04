@@ -41,10 +41,23 @@ from .parallel_classic_manually import (
     normalize_parallel_token,
 )
 from .process_checker import check_and_warn_competing_processes
-from .parser import extract_last_uhf_deviation
+from .orca_read import Quantity, read
 from . import smart_recalc
 
 logger = get_logger(__name__)
+
+
+def _orca_s2_deviation(out_path) -> Optional[float]:
+    """<S**2> deviation of a finished OCCUPIER run via :mod:`delfin.orca_read`.
+
+    In the occupier flow no OPI ``*.property.json`` sits next to the run's
+    ``output*.out``, so orca_read resolves to DELFIN's established text reader
+    (``extract_last_uhf_deviation``) and returns the identical value: the last
+    ``Deviation`` of the UHF spin-contamination block, or ``None`` for a
+    closed-shell run (no UHF block), a failed run, or a missing file.
+    """
+    p = Path(out_path)
+    return read(p.parent, p.stem, Quantity.S2_DEVIATION).value
 
 # Global lock to prevent race conditions when multiple FoBs read input0.xyz simultaneously
 _geometry_file_lock = threading.RLock()
@@ -685,7 +698,7 @@ def _check_contamination_trigger(
         return None
 
     try:
-        deviation = extract_last_uhf_deviation(str(out_path))
+        deviation = _orca_s2_deviation(out_path)
     except Exception as exc:
         logger.debug(
             "[contamination_trigger] Could not read contamination from '%s': %s", out_path, exc

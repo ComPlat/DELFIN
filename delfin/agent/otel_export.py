@@ -22,6 +22,13 @@ Redaction: tool input/output/error text goes through
 scan — the same path ``turn_metrics._clean_error`` uses) and outputs are cut
 to 500 characters. No secret, key, token or approval code reaches a span.
 
+The held-credential values are resolved ONCE per export (OT2), not once per
+span field: ``spans()`` snapshots them at entry and passes them to
+``scrub_secrets(exact_values=...)``. A credential that enters the store
+during a single export is caught by the shape scan, not by the exact pass
+of that export — a documented, tested snapshot choice, see the comment on
+``_held_exact_values``.
+
 No network. Sending to a collector is a separate, person-gated step
 (:func:`write_otlp_json` writes a file; nothing here phones home).
 """
@@ -40,6 +47,45 @@ INPUT_CAP = 200
 #: a broken redact path is VISIBLE ("note"), never a silent raw-text export.
 _REDACT_FAILURES: list = []
 
+#: Snapshot semantics (OT2, QS ruling): the held-credential values are
+#: resolved ONCE per spans() call, at export start. A credential that enters
+#: the credential store DURING a single export call is therefore not caught
+#: by the exact pass in that export (the pattern scan still applies); the
+#: next export picks it up. This is a documented, tested choice, not an
+#: accidental window: the export is one atomic snapshot of "what DELFIN
+#: holds", exactly like every other attribute of the trace is a snapshot of
+#: what happened.
+_HELD_EXACT: list | None = None
+_HELD_EXACT_FAILED = False
+
+
+def _reset_held_exact() -> None:
+    """Clear the once-per-export snapshot (called at spans() entry)."""
+    global _HELD_EXACT, _HELD_EXACT_FAILED
+    _HELD_EXACT = None
+    _HELD_EXACT_FAILED = False
+
+
+def _held_exact_values() -> "list | tuple":
+    """The held-credential values, resolved at most once per spans() call.
+
+    Mirrors the per-call behaviour of scrub_secrets: a raising lookup
+    degrades to the empty exact pass (the shape scan still runs); today
+    that exception is swallowed inside scrub_secrets (output_guard.py).
+    The failure is remembered so every field of this export degrades the
+    same way, not just the first one.
+    """
+    global _HELD_EXACT, _HELD_EXACT_FAILED
+    if _HELD_EXACT is not None:
+        return _HELD_EXACT
+    try:
+        from .web_tools import _known_secret_values
+        _HELD_EXACT = list(_known_secret_values())
+    except Exception:
+        _HELD_EXACT = []
+        _HELD_EXACT_FAILED = True
+    return _HELD_EXACT
+
 
 def _redact(text: Any, cap: int) -> str:
     """Redact then cut, or DROP the content on a redact failure.
@@ -48,6 +94,9 @@ def _redact(text: Any, cap: int) -> str:
     raw text in a span. The field content is dropped ("[redaction
     unavailable]") and the caller records a visible note — the failure is
     loud, the raw text never leaves.
+
+    OT2: uses the once-per-export held-credential snapshot (see
+    _held_exact_values) instead of a per-field lookup.
     """
     if not isinstance(text, str):
         try:
@@ -57,7 +106,7 @@ def _redact(text: Any, cap: int) -> str:
             text = str(text or "")
     try:
         from .output_guard import scrub_secrets
-        return scrub_secrets(text)[:cap]
+        return scrub_secrets(text, exact_values=_held_exact_values())[:cap]
     except Exception:
         _REDACT_FAILURES.append(1)
         return "[redaction unavailable]"[:cap]
@@ -167,6 +216,7 @@ def spans(session: str, *, notes: bool = False):
     """
     note_list: list[str] = []
     _REDACT_FAILURES.clear()
+    _reset_held_exact()
     session_span = {
         "trace_id": _id(session, "trace"),
         "span_id": _id(session, "session"),

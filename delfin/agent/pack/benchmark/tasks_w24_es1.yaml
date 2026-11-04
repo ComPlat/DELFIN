@@ -1,0 +1,129 @@
+version: 1
+package: ES1
+# Wave 24, package ES1 — ESD and TADF used right, through CONTROL.txt.
+# Small systems only (<= 20 atoms). Graded on physics: state order,
+# Delta E_ST sign and band from the cited reference, converged states,
+# and honest claims about what an xTB screening may say.
+tasks:
+  - id: w24-es1-01
+    skill: orca-spectra-uvvis-esd
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In es1/screening/ there is a start.xyz of the TADF emitter
+      DMAC-DPS (charge 0, closed shell). Use DELFIN's tadf_xtb workflow
+      (CONTROL settings: charge=0, xTB_method=XTB2,
+      tadf_xTB_excited_method=stda, tadf_xTB_energy_window=10, PAL and
+      maxcore as appropriate) to screen the S1 and T1 states. Report
+      the vertical S1 and T1 energies in eV, Delta E_ST (vertical and,
+      if the T1 optimisation ran, relaxed) in eV with its SIGN, and
+      say explicitly what this screening-level number may and may not
+      claim. Cite the source of that claim.
+    verify: es1_screening_note_verify.py
+    expected_signals:
+      - pattern: '(?i)(tadf_xtb|tadf.?xtb)'
+        against: any
+      - pattern: '(?i)(Delta.?E.?ST|ΔEST|S1.?T1 gap|singlet.?triplet)'
+        against: text
+      - pattern: '(?i)(screen|not (a )?production|confirm(ed)? (at|with)|higher level)'
+        against: text
+    expected_values:
+      # DMAC-DPS has a very small singlet-triplet gap: the experimental
+      # and high-level computational literature (Pershin et al., Nat.
+      # Commun. 10, 597 (2019), DOI 10.1038/s41467-019-08495-5;
+      # Zhang et al., Nat. Photon. 8, 326-332 (2014), DOI
+      # 10.1038/nphoton.2014.12) put Delta E_ST well below 0.2 eV. An
+      # sTDA-xTB screen errs by a few tenths of an eV, so the band is
+      # deliberately wide: |Delta E_ST| below 0.6 eV and the SIGN of
+      # the gap stated (S1 above T1 in energy, i.e. T1 lower, is the
+      # physics; a positive number with the sign convention named).
+      - label: delta_est_sign_stated
+        value: 1.0
+        tolerance: 0.0
+        against: text
+      - label: delta_est_small_band_ev
+        value: 0.25
+        tolerance: 0.35
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(exact|production-quality|definitive) (value|number|Delta)'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40
+
+  - id: w24-es1-02
+    skill: orca-spectra-uvvis-esd
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In es1/isc/ there is a start.xyz of formaldehyde (charge 0). Use
+      DELFIN's esd workflow (CONTROL: method=esd, ESD_modus=tddft,
+      include_isc=yes) to compute the S1 -> T1 ISC rate at the TD-DFT
+      level. Report the rate constant in s^-1 with its unit, the 0-0
+      energy difference the run used, and state whether the reported
+      rate is a converged result or carries a NOT-A-RESULT warning
+      (negative rate, truncated correlation window). Say what
+      additional states (S0, T1 geometries) a complete ISC picture
+      needs.
+    verify: es1_isc_rate_verify.py
+    expected_signals:
+      - pattern: '(?i)(ISC|intersystem)'
+        against: text
+      - pattern: '(?i)(s\^?-?1|s-1|per second|rate constant)'
+        against: text
+      - pattern: '(?i)(0-0|energy difference|cm-1)'
+        against: text
+    expected_values:
+      # Formaldehyde ISC S1->T1 is a small number at TD-DFT level
+      # (about 1e7-1e8 s^-1 from ORCA ESD runs with the correlation
+      # window fully decayed, per the DELFIN esd_numerics converged
+      # case measured on 6.1.1). Band is wide: catches a wrong sign,
+      # a rate quoted without unit, or an unconverged one reported as
+      # converged.
+      - label: isc_rate_order_of_magnitude
+        value: 7.5
+        tolerance: 0.5
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(converged rate).*(not|unconverged)'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40
+
+  - id: w24-es1-03
+    skill: orca-spectra-uvvis-esd
+    task_class: chemistry
+    mode: solo
+    prompt: >-
+      In es1/honesty/ there is a start.xyz of a TADF emitter candidate
+      (charge 0). A colleague asks you for the emission wavelength
+      (lambda_PL) to publish. Run the tadf_xtb screening on it, then
+      answer: is the screening number publishable for lambda_PL? What
+      level of theory is the minimum to confirm it (name one: a
+      validated TD-DFT functional, STEOM-CCSD, or an SCS double
+      hybrid), and what must accompany the number in the report? Write
+      your answer with the numbers the screening produced and the
+      reason for your decision.
+    verify: es1_honesty_claim_verify.py
+    expected_signals:
+      - pattern: '(?i)(not publishable|screen(ing)? only|needs? (a )?higher|confirm(ed)? at)'
+        against: text
+      - pattern: '(?i)(TD.?DFT|STEOM|double hybrid|SCS)'
+        against: text
+      - pattern: '(?i)(nm|wavelength)'
+        against: text
+    expected_values:
+      # No specific number to grade: this task grades the honest
+      # claim, not a value. The verify script checks the claim
+      # structure (screening-only + a named higher level), the sign
+      # that a number was produced, and that the CONTROL block was
+      # proposed rather than silently applied.
+      - label: honesty_claim_present
+        value: 1.0
+        tolerance: 0.0
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.50
+    max_tool_calls: 40

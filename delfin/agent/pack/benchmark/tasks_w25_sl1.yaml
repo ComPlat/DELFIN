@@ -1,0 +1,136 @@
+version: 1
+package: SL1
+# Wave 25, package SL1 — operate SLURM correctly and economically
+# (agent/s13-sl1b). Four offline tasks: each prompt INLINES recorded
+# scheduler/output text (host-neutral fixtures from setup scripts), and
+# each acceptance script grades answer.txt (+ the artifacts the task
+# names) with plain filesystem reads — no subprocess, clock or network.
+# The grading targets are the four capabilities the package brief
+# names: resource choice with justification, wait-reason reading,
+# failure classification through DELFIN's recalc path, and efficiency
+# accounting. Never accepted: lowering pal/maxcore/time just to start
+# earlier, raw sbatch/scancel, hand-edited ORCA inputs, silently
+# changed CONTROL values.
+tasks:
+  - id: w25-sl1-01-size-and-justify
+    skill: cluster-workflows
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      I need to run a geometry optimisation + frequency calculation on a
+      38-atom organic molecule (CPCM water, r2SCAN-3c) on bwUniCluster
+      3.0. DELFIN's site profile offers the partitions cpu (80 nodes)
+      and cpu_il (264 nodes); a measured sbatch --test-only said cpu
+      expects a start twelve days later than cpu_il for this request.
+      Tell me which partitions the job should be submitted for, which
+      PAL, maxcore and time limit you would set, and WHY each value —
+      cite DELFIN's own sizing logic (cluster_efficiency.advise /
+      auto_configure_resources) and the earliest-start partition rule.
+      Write your answer to answer.txt and the proposed CONTROL resource
+      lines to sl1/size/CONTROL_resources.txt. Never lower PAL, maxcore
+      or time just to start earlier.
+    verify: sl1_w25_01_size_justify_verify.py
+    expected_signals:
+      - pattern: '(?i)(cpu_il|cpu\s*,\s*cpu_il|partition)'
+        against: text
+      - pattern: '(?i)(PAL|maxcore)'
+        against: text
+      - pattern: '(?i)(earliest|whichever|first (available|fitting))'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(lower (the )?(PAL|maxcore|time limit).{0,60}(start earlier|start sooner|queue))'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w25-sl1-02-pending-reason
+    skill: cluster-workflows
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      My DELFIN job 7925001 has sat PENDING for 3 hours. squeue (DELFIN's
+      throttled job listing) reports: state PD, reason
+      "ReqNodeNotAvail, Reserved for maintenance", and SLURM's start
+      estimate "2026-11-02T04:30". The job asks 40 cores, 240 GB,
+      48 h. Decide: change anything or wait? State the reason's meaning,
+      the estimated start, and if you recommend changing something,
+      WHICH field and why — never lower pal/maxcore/time just to start
+      earlier. Answer in answer.txt.
+    verify: sl1_w25_02_pending_reason_verify.py
+    expected_signals:
+      - pattern: '(?i)(ReqNodeNotAvail|maintenance|reserved)'
+        against: text
+      - pattern: '(?i)(04:30|estimated start|estimated)'
+        against: text
+      - pattern: '(?i)(wait|nothing to change|no change)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(reduce|lower).{0,40}(pal|maxcore|time).{0,60}(start|earlier|sooner)|scancel|resubmit with fewer'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w25-sl1-03-failure-classify-recalc
+    skill: diagnose-failed-run
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      Job 7924102 failed. The job .err ends with "slurmstepd: error:
+      *** JOB 7924102 CANCELLED AT 2026-11-01T03:12 DUE TO TIME LIMIT ***
+      " and sacct shows State TIMEOUT, Elapsed 48:00:00, Timelimit
+      48:00:00; the .out shows an ongoing optimisation with NO "ORCA
+      finished by error termination". The CONTROL.txt carried
+      "time_limit = 24:00:00" (recorded in
+      sl1/failure/CONTROL_snippet.txt). Classify the failure, state why
+      sacct's TotalCPU of 0 % is NOT evidence the job idled, and prepare
+      the fix through DELFIN's recalc path — write the proposal (fix
+      kind, the exact field it changes, and that it applies only after
+      my confirmation) to sl1/failure/fix_proposal.txt and the reasoning
+      to answer.txt. Never hand-edit the ORCA input.
+    setup: sl1_w25_failure_fixture.py
+    verify: sl1_w25_03_failure_classify_verify.py
+    expected_signals:
+      - pattern: '(?i)(time limit|walltime|TIMEOUT)'
+        against: text
+      - pattern: '(?i)(TotalCPU|artefact|artifact|not trustworthy|0 %)'
+        against: text
+      - pattern: '(?i)(recalc|time_limit)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(new \.?inp|hand-edited|rewrote the input|I changed maxiter|loosen.*converg)'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25
+
+  - id: w25-sl1-04-efficiency-audit
+    skill: cluster-workflows
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      Audit the efficiency of my last run. DELFIN's account() (one
+      batched sacct) reported for job 7922181 (SOLVATOR step, pal 2):
+      State FAILED exit code 138, Elapsed 01:39:08, AllocCPUS 2,
+      TotalCPU unreadable (artefact state), cpu_efficiency UNKNOWN; its
+      .out carries the line "CPU Efficiency: 1.53% of 01:39:08
+      core-walltime". A second run 7922985 of a smaller sibling shell
+      (pal 1) measured cpu_efficiency 35.75 % over 00:24:47. Say: what
+      core-hours each run used or wasted, what to change NEXT time (one
+      concrete recommendation), and why the two runs are NOT a clean
+      A/B comparison. Answer in answer.txt.
+    verify: sl1_w25_04_efficiency_verify.py
+    expected_signals:
+      - pattern: '(?i)(1\.53|core-?hours|wasted)'
+        against: text
+      - pattern: '(?i)(pal 1|35\.75|smaller|not a clean|not the same task)'
+        against: text
+      - pattern: '(?i)(next time|recommendation|change)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(pal 1 finished the same task|clean a/?b|proves pal 1 is)'
+        against: text
+    max_duration_s: 600
+    max_cost_usd: 0.50
+    max_tool_calls: 25

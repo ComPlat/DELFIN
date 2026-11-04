@@ -11,6 +11,7 @@ export const ERRORS = {
   NOT_ALLOWED: -32003,
   UNKNOWN_SESSION: -32004,
   WORKER_GONE: -32005,
+  NEEDS_LOCAL_PROJECT: -32006,
   INVALID_REQUEST: -32600,
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
@@ -425,10 +426,18 @@ export interface SessionCreateParams {
   "attach"?: boolean | null
   "brief"?: string | null
   "briefTitle"?: string | null
+  "worktree"?: boolean | null
+  "initProject"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
   "turns"?: number | null
+}
+export interface SessionWorktreesParams {
+  "cwd": string
+}
+export interface SessionMergeParams {
+  "path": string
 }
 export interface SessionPendingParams {
   "sessionId": string
@@ -449,6 +458,27 @@ export interface ServiceStatusParams {}
 export interface ServiceShutdownParams {
   "restart"?: boolean | null
 }
+export interface BranchListParams {
+  "workspace": string
+  "view"?: string | null
+  "text"?: string | null
+  "refresh"?: boolean | null
+}
+export interface BranchPullParams {
+  "workspace": string
+}
+export interface BranchTestParams {
+  "workspace": string
+  "ref": string
+  "keep"?: boolean | null
+}
+export interface BranchCleanupParams {
+  "workspace": string
+  "includeUnmerged"?: boolean | null
+  "refresh"?: boolean | null
+  "delete"?: string[] | null
+  "confirm"?: boolean | null
+}
 export interface AttentionListParams {}
 export interface AttentionAnswerParams {
   "id": string
@@ -457,20 +487,61 @@ export interface AttentionAnswerParams {
 export interface AttentionDismissParams {
   "id": string
 }
+export interface SwarmStatusParams {
+  "spec"?: Record<string, unknown> | null
+  "specYaml"?: string | null
+}
+export interface SwarmPlanParams {
+  "spec"?: Record<string, unknown> | null
+  "specYaml"?: string | null
+}
+export interface SwarmValidateParams {
+  "spec"?: Record<string, unknown> | null
+  "specYaml"?: string | null
+}
+export interface SwarmStartParams {
+  "spec"?: Record<string, unknown> | null
+  "specYaml"?: string | null
+  "dryRun"?: boolean | null
+  "confirm"?: boolean | null
+}
+export interface SwarmPauseParams {}
+export interface SwarmResumeParams {}
+export interface SwarmTriageListParams {
+  "queue": Record<string, unknown>[]
+}
+export interface SwarmTriageAnswerParams {
+  "item": Record<string, unknown>
+  "answer": string
+}
 export interface ServiceRequests {
   "hello": HelloParams
   "sessions.list": SessionsListParams
   "session.create": SessionCreateParams
   "session.attach": SessionAttachParams
+  "session.worktrees": SessionWorktreesParams
+  "session.merge": SessionMergeParams
   "session.pending": SessionPendingParams
   "session.detach": SessionDetachParams
   "session.message": SessionMessageParams
   "sessions.past": SessionsPastParams
   "service.status": ServiceStatusParams
   "service.shutdown": ServiceShutdownParams
+  "branch.list": BranchListParams
+  "branch.pull": BranchPullParams
+  "branch.test": BranchTestParams
+  "branch.cleanup": BranchCleanupParams
   "attention.list": AttentionListParams
   "attention.answer": AttentionAnswerParams
   "attention.dismiss": AttentionDismissParams
+  "swarm.status": SwarmStatusParams
+  "swarm.plan": SwarmPlanParams
+  "swarm.validate": SwarmValidateParams
+  "swarm.start": SwarmStartParams
+  "swarm.pause": SwarmPauseParams
+  "swarm.resume": SwarmResumeParams
+  "swarm.triage.list": SwarmTriageListParams
+  "swarm.triage.answer": SwarmTriageAnswerParams
 }
 export interface HelloResult {
   "protocolVersion": number
@@ -491,6 +562,16 @@ export interface SessionCreateResult {
   "state": string
   "pending": Record<string, unknown>[]
   "events": Record<string, unknown>[]
+  "worktree"?: Record<string, unknown> | null
+}
+export interface SessionWorktreesResult {
+  "worktrees": Record<string, unknown>[]
+}
+export interface SessionMergeResult {
+  "status": string
+  "files": string[]
+  "target": string
+  "message": string
 }
 export interface SessionAttachResult {
   "session": Record<string, unknown>
@@ -536,10 +617,53 @@ export interface AttentionDismissResult {
   "ok": boolean
   "error"?: string | null
 }
+export interface SwarmStatusResult {
+  "schema_version": number
+  "goal": string
+  "packages": Record<string, unknown>[]
+  "waiting_for_user": Record<string, unknown>[]
+}
+export interface SwarmPlanResult {
+  "goal": string
+  "members": Record<string, unknown>[]
+  "start_spacing_s"?: number | null
+  "memory_gate"?: boolean | null
+  "dry_run_text": string
+}
+export interface SwarmValidateResult {
+  "valid": boolean
+  "errors": string[]
+}
+export interface SwarmStartResult {
+  "dry_run": boolean
+  "goal": string
+  "members"?: Record<string, unknown>[] | null
+  "dry_run_text"?: string | null
+  "started": Record<string, unknown>[]
+  "refused"?: string | null
+}
+export interface SwarmPauseResult {
+  "available": boolean
+  "reason": string
+}
+export interface SwarmResumeResult {
+  "available": boolean
+  "reason": string
+}
+export interface SwarmTriageListResult {
+  "items": Record<string, unknown>[]
+}
+export interface SwarmTriageAnswerResult {
+  "answered": boolean
+  "item_id"?: string | null
+  "logged"?: string | null
+}
 export interface ServiceResults {
   "hello": HelloResult
   "sessions.list": SessionsListResult
   "session.create": SessionCreateResult
+  "session.worktrees": SessionWorktreesResult
+  "session.merge": SessionMergeResult
   "session.attach": SessionAttachResult
   "session.pending": SessionPendingResult
   "session.detach": SessionDetachResult
@@ -550,6 +674,14 @@ export interface ServiceResults {
   "attention.list": AttentionListResult
   "attention.answer": AttentionAnswerResult
   "attention.dismiss": AttentionDismissResult
+  "swarm.status": SwarmStatusResult
+  "swarm.plan": SwarmPlanResult
+  "swarm.validate": SwarmValidateResult
+  "swarm.start": SwarmStartResult
+  "swarm.pause": SwarmPauseResult
+  "swarm.resume": SwarmResumeResult
+  "swarm.triage.list": SwarmTriageListResult
+  "swarm.triage.answer": SwarmTriageAnswerResult
 }
 export interface SessionSummaryEvent {
   "summary": Record<string, unknown>
