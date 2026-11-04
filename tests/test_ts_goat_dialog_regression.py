@@ -808,11 +808,17 @@ def test_ts_goat_scoped_select_and_slider_handle_css(tmp_path):
     assert 'padding-right: 30px !important' in css
     assert 'min-width: 240px !important' in css
     assert '.ts-goat-panel .ts-goat-slider .noUi-horizontal .noUi-handle' in css
-    assert 'border: 2px solid #4081aa' in css
+    assert 'border: 2px solid #397ca3' in css
     assert 'height: 20px !important' in css
-    assert '.ts-goat-panel .ts-goat-slider .noUi-origin::after' in css
-    assert 'pointer-events: none !important' in css
-    assert 'z-index: 30 !important' in css
+    # A genuine noUi handle and the original slider-container layout are
+    # critical: the earlier flex/height override hid the entire track.
+    assert '.ts-goat-panel .ts-goat-slider .noUi-target' in css
+    assert 'background: #d8e4ec !important' in css
+    assert 'opacity: 1 !important' in css
+    assert 'opacity: 0 !important' not in css
+    assert '.noUi-origin::after' not in css
+    assert 'display: flex !important' not in css
+    assert 'height: 40px !important' not in css
     assert '.ts-goat-panel .ts-goat-slider input[type="range"]' in css
 
     right = panel.children[0].children[1].children[1]
@@ -936,3 +942,23 @@ def test_ts_goat_highlights_js_only_changes_shapes():
                    encoding='utf-8')
     assert "'update_highlights_in_panel': _ts_update_highlights_in_panel" in browser
     assert '_mv.ts_goat_viewer_highlights_js(' in browser
+
+
+
+def test_ts_goat_slider_css_keeps_real_track_visible():
+    """Regression: never hide noUi track while decorating its handle."""
+    from delfin.dashboard.ts_goat_panel import TS_GOAT_CONTROL_CSS
+    css = TS_GOAT_CONTROL_CSS
+    slider = css.split('.ts-goat-panel .ts-goat-slider {', 1)[1]
+    slider = slider.split('</style>', 1)[0]
+    assert '.slider-container {' in slider
+    assert 'padding: 9px 9px !important' in slider
+    assert '.noUi-target {' in slider
+    assert 'height: 7px !important' in slider
+    assert '.noUi-horizontal .noUi-handle {' in slider
+    assert 'opacity: 1 !important' in slider
+    # Prior broken revision made a synthetic ::after decoration while
+    # hiding the real draggable noUi handle and overriding flex layout.
+    assert '.noUi-origin::after' not in slider
+    assert 'opacity: 0 !important' not in slider
+    assert 'display: flex !important' not in slider
