@@ -404,42 +404,32 @@ def test_multiple_xyz_candidates_pick_hessian_ordered_one(tmp_path):
 # ------------------- mode-only analysis (ORCA TS-conformer workflow) -------
 
 def test_group_torsion_proposes_only_the_reacting_pair(tmp_path):
-    """Whole groups with large absolute displacement, but the reactive
-    centre is only visible through RELATIVE atom motion.
+    """A local O--O bond-switch outranks strongly moving spectator groups.
 
-    Two fragments (atoms 0-2 and 3-5) translate rigidly (torsion-like,
-    coherent motion), while atoms 3 and 0 additionally move towards each
-    other along the mode (bond formation).  The proposal must not pick
-    the whole moving groups -- only the two atoms of the reacting pair
-    dominate the pair evidence.
+    The synthetic fixture must contain an actual bond-threshold crossing:
+    a pair at 9 A would be chemically irrelevant, and an H--H pair
+    moving along its own bond is not an inert torsional spectator.
     """
-    # Chemically clean design: the reacting pair (0, 3) approaches
-    # (distance 9 -> responds), while the spectator pairs (1, 2) and
-    # (4, 5) rotate INTERNALLY around their own midpoint -- every
-    # spectator distance is preserved to 2nd order, no spectator
-    # contact responds.  The spectators show large absolute
-    # displacement (0.9 tangent) but never change a distance.
-    # The spectators sit FAR from both anchors (> 12 Angstrom, the
-    # _MAX_RELEVANT_CONTACT_BOHR window): they rotate internally with a
-    # large tangent displacement, but their distances to every reacting
-    # atom exceed the relevance window, so only the pair (0, 3) can be
-    # proposed.  (Physically, a spectator bound to an anchor that moves
-    # in the mode always shares the anchor's distance response -- one
-    # normal mode cannot separate them; the window models the chemical
-    # reality that far spectators are irrelevant for GOAT constraints.)
+    # O0--O3 starts at 1.8 A, just beyond the 1.3*(0.66+0.66)
+    # bond-distance cutoff (~1.716 A). The +/-0.25 A mode displacement
+    # makes this contact 1.3/2.3 A, so it is a bond-switch candidate.
+    # H1--H2 and H4--H5 are remote spectators whose relatively large
+    # motions are PERPENDICULAR to the internal H--H separation. They
+    # never cross a bond-distance threshold. This is an explicitly
+    # synthetic diagnostic, not a realistic water reaction mechanism.
     mode = [
         (1.2, 0.0, 0.0),                      # 0: towards 3
         (0.0, 0.9, 0.0),                      # 1: rotates with 2 (far away)
         (0.0, -0.9, 0.0),                     # 2: rotates with 1
         (-1.2, 0.0, 0.0),                     # 3: towards 0
-        (0.0, 0.0, 0.9),                      # 4: rotates with 5 (far away)
-        (0.0, 0.0, -0.9),                     # 5: rotates with 4
+        (0.0, 0.9, 0.0),                      # 4: moves tangent to spectator H--H
+        (0.0, -0.9, 0.0),                     # 5: moves tangent to spectator H--H
     ]
     atoms = [
         ("O", 0.0, 0.0, 0.0),              # anchor A
         ("H", 40.0, 0.0, 0.0),             # spectator pair far above
         ("H", 40.0, 0.0, 1.0),
-        ("O", 9.0, 0.0, 0.0),              # anchor B
+        ("O", 1.8, 0.0, 0.0),              # reacting anchor B
         ("H", -40.0, 0.0, 0.0),            # spectator pair far below
         ("H", -40.0, 0.0, 1.0),
     ]
@@ -452,9 +442,10 @@ def test_group_torsion_proposes_only_the_reacting_pair(tmp_path):
     # biggest movers): they move coherently around their anchor
     assert not (1 in rc.indices or 2 in rc.indices)
     assert len(rc.indices) <= 4
-    # pair evidence, not displacement only
-    assert any("distance when the structure is displaced" in r or
-               "relative motion" in r for r in rc.reasons)
+    # The two anchors cross the covalent-radius distance threshold.
+    assert any("candidate reactive contact 0(O)-3(O)" in r
+               for r in rc.reasons)
+    assert rc.indices == (0, 3)
 
 
 def test_small_sensible_selection_not_top_n(tmp_path):
