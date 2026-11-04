@@ -1235,24 +1235,20 @@ def render_constraints_preview(
     elements, coordinates, indices, *, method='XTB', basis='',
     charge=0, mult=1, pal=1, maxcore=1000,
 ) -> str:
-    """The ORCA input text exactly as it will be written, for the dialog."""
-    from delfin.ts_goat import render_constraints_block
+    """Display the SAME ORCA input that the Submit action will write.
 
-    keywords = ['!', method]
-    if basis:
-        keywords.append(basis)
-    keywords.append('GOAT')
-    lines = [' '.join(k for k in keywords if k), '%pal']
-    lines.append(f'  ncores {int(pal)}')
-    lines.append('end')
-    lines.append(f'%maxcore {int(maxcore)}')
-    lines.append('')
-    lines.append(render_constraints_block(indices, [
-        str(elements[i]) for i in indices if i < len(elements)
-    ]))
-    lines.append('')
-    lines.append(f'* xyz {int(charge)} {int(mult)}')
-    for el, (x, y, z) in zip(elements, coordinates):
-        lines.append(f'  {el} {x:>14.8f} {y:>14.8f} {z:>14.8f}')
-    lines.append('*')
-    return '\n'.join(lines)
+    Avoid a second, divergent input builder: in particular, Cartesian
+    constraints must be { C atom-index C } for ALL elements, and the
+    parallel block uses ORCA's nprocs keyword. The preview is read-only
+    and never creates files or starts a calculation.
+    """
+    from delfin.ts_goat import render_ts_goat_input
+
+    try:
+        return render_ts_goat_input(
+            elements, coordinates, indices,
+            method=method, basis=basis, charge=charge, mult=mult,
+            ncores=pal, maxcore=maxcore,
+        )
+    except (TypeError, ValueError) as exc:
+        return f"Input not ready: {exc}"
