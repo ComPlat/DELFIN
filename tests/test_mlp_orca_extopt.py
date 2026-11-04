@@ -29,14 +29,18 @@ from delfin.mlp_tools.orca_extopt import (
 
 SYN = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
 
-#: Consistency anchor: Bohr in Angstrom = eV-per-Eh / (Eh/Bohr per eV/A).
-ANG_PER_BOHR = 27.211386245988 / EV_PER_ANG_TO_EH_PER_BOHR
+#: CODATA 2018 anchor as an independent literal (not derived from the
+#: module's factor, which used to hide a reciprocal-factor bug).
+ANG_PER_BOHR = 0.529177210903
 
 
 def test_unit_factors_are_consistent():
     # CODATA: 1 Eh = 27.211386245988 eV; 1 Bohr = 0.529177210903 Angstrom.
     assert EV_TO_EH == pytest.approx(1.0 / 27.211386245988, rel=1e-10)
-    assert ANG_PER_BOHR == pytest.approx(0.529177210903, rel=1e-8)
+    # Eh/Bohr per eV/Angstrom = Bohr/Eh = 0.0194469..., NOT ~51.42.
+    assert EV_PER_ANG_TO_EH_PER_BOHR == pytest.approx(
+        ANG_PER_BOHR / 27.211386245988, rel=1e-10
+    )
 
 
 class FakeCalculator:

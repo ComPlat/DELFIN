@@ -325,23 +325,40 @@ install_alignn() {
 # ---------------------------------------------------------------------------
 install_extopt_wrapper() {
   # ORCA's ExtOpt needs an executable script as the ProgExt target.
-  # The Python wrapper module ships with the package; the bin/ launcher
-  # is created here (not shipped: mlp_tools/bin/* is wheel-excluded).
+  # The launcher's single source of truth is the checked-in
+  # delfin/mlp_tools/bin/delfin-mlp-extopt -- the installer copies it
+  # (not shipped: mlp_tools/bin/* is wheel-excluded), so a freshly
+  # installed wrapper always behaves exactly like the repo version.
   mkdir -p "${ROOT}/bin"
-  cat > "${ROOT}/bin/delfin-mlp-extopt" <<'EOF'
+  _src_launcher="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/bin/delfin-mlp-extopt"
+  if [ -f "${_src_launcher}" ]; then
+    cp "${_src_launcher}" "${ROOT}/bin/delfin-mlp-extopt"
+  else
+    # Tarball/pip installs have no repo checkout: fall back to a
+    # generated copy with the same priority logic.
+    cat > "${ROOT}/bin/delfin-mlp-extopt" <<'LAUNCHER_EOF'
 #!/usr/bin/env bash
-# ORCA ExtOpt wrapper entry point (ProgExt target). Execs the Python
-# wrapper module so the interpreter has delfin + the MLP backends.
+# Generated fallback launcher (repo source missing at install time).
 set -euo pipefail
 if [ -n "${DELFIN_MLP_PYTHON:-}" ]; then
     _python="${DELFIN_MLP_PYTHON}"
 elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
     _python="${VIRTUAL_ENV}/bin/python"
+elif [ -x "$(dirname "$(dirname "$(readlink -f "$0")")")/../.venv/bin/python" ]; then
+    _python="$(dirname "$(dirname "$(readlink -f "$0")")")/../.venv/bin/python"
 else
     _python="python3"
 fi
+if [ -z "${AIMNET_CACHE_DIR:-}" ]; then
+    if [ -n "${DELFIN_MLP_CACHE_DIR:-}" ]; then
+        export AIMNET_CACHE_DIR="${DELFIN_MLP_CACHE_DIR}"
+    elif [ -d "${HOME}/mlip-envs/aimnet-cache" ]; then
+        export AIMNET_CACHE_DIR="${HOME}/mlip-envs/aimnet-cache"
+    fi
+fi
 exec "${_python}" -m delfin.mlp_tools.orca_extopt "$@"
-EOF
+LAUNCHER_EOF
+  fi
   chmod +x "${ROOT}/bin/delfin-mlp-extopt"
   log "ExtOpt wrapper: ${ROOT}/bin/delfin-mlp-extopt"
   log "  (source delfin/mlp_tools/env.sh to put it on PATH, then use"

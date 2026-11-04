@@ -89,7 +89,7 @@ EV_TO_EH: float = 1.0 / 27.211386245988
 
 #: Hartree/Bohr per eV/Angstrom: 1 Eh/Bohr = 1 Eh / (Bohr) = 27.211386245988 eV
 #: / 0.529177210903 A = 51.422067480645 eV/A, so eV/A -> Eh/Bohr DIVIDES by it.
-EV_PER_ANG_TO_EH_PER_BOHR: float = 27.211386245988 / 0.529177210903
+EV_PER_ANG_TO_EH_PER_BOHR: float = 0.529177210903 / 27.211386245988
 
 #: CPU thread cap for MLP evaluation on shared hosts (machine rule:
 #: real MLP runs here only on CPU, <= 2 threads, no GPU).

@@ -102,3 +102,29 @@ def test_launcher_sets_the_home_fallback_only(tmp_path, monkeypatch):
     assert '[ -z "${AIMNET_CACHE_DIR:-}" ]' in text
     mode = LAUNCHER.stat().st_mode
     assert mode & stat.S_IXUSR
+
+
+def test_launcher_bash_priority_matches_python(tmp_path):
+    """bin/delfin-mlp-extopt must honour DELFIN_MLP_CACHE_DIR before the
+    home fallback -- priority parity with env_setup.py (Phase B2)."""
+    launcher = REPO / "delfin" / "mlp_tools" / "bin" / "delfin-mlp-extopt"
+    text = launcher.read_text(encoding="utf-8")
+    # ordering: the DELFIN key branch must appear before the home dir test
+    delfin_key_at = text.index("DELFIN_MLP_CACHE_DIR")
+    home_at = text.index("mlip-envs/aimnet-cache")
+    assert delfin_key_at < home_at
+    # and the whole block must sit behind the explicit-override guard
+    guard = text.index('if [ -z "${AIMNET_CACHE_DIR:-}" ]; then')
+    assert guard < delfin_key_at
+
+
+def test_installer_copies_the_repo_launcher(tmp_path):
+    """install_mlp_tools.sh must copy the checked-in launcher (single
+    source of truth) instead of a diverging template (Phase B2)."""
+    launcher = REPO / "delfin" / "mlp_tools" / "bin" / "delfin-mlp-extopt"
+    installer_text = (
+        REPO / "delfin" / "mlp_tools" / "install_mlp_tools.sh"
+    ).read_text(encoding="utf-8")
+    assert "cp \"${_src_launcher}\"" in installer_text
+    # the generated fallback template must carry the same cache priority
+    assert installer_text.count("DELFIN_MLP_CACHE_DIR") >= 2
