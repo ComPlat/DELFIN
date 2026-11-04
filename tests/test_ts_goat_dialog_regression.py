@@ -422,16 +422,14 @@ def test_click_sync_widget_observes_and_routes(tmp_path):
     # first click toggles: if the proposal covers every atom the click
     # REMOVES it; either way the value must change coherently
     target = 0 if 0 not in start else (1 if 1 not in start else 2)
-    sync.value = str(target)
+    sync.value = f'{target}:1'
     after = reg['parse_constraints'](field.value)
     assert (target in after) != (target in start)
-    # an observe() fires only on value CHANGE: route through another
-    # value so the second click actually arrives (like two real clicks
-    # do through the JS channel).
-    sync.value = str(999 if target != 999 else 998)
-    sync.value = str(target)
-    # second click toggles back: 2 is re-added
-    assert target in reg['parse_constraints'](field.value)
+    # Mirror the real JS click bridge: same atom, incremented sequence.
+    # After two clicks, the ORIGINAL selection must be restored,
+    # regardless of whether the atom started selected or unselected.
+    sync.value = f'{target}:2'
+    assert set(reg['parse_constraints'](field.value)) == set(start)
 
 
 def test_animation_payload_holds_displacement_vectors(tmp_path):
@@ -724,7 +722,12 @@ def test_ts_goat_analysis_is_scrollable_and_accordion_narrow(tmp_path):
     scroller = detail.children[0]
     assert isinstance(scroller, VBox)
     assert scroller.layout.max_height == '235px'
-    assert scroller.layout.overflow_y == 'auto'
+    assert scroller.layout.overflow == 'auto'
+    assert 'ts-goat-analysis-scroller' in scroller._dom_classes
+    from delfin.dashboard.ts_goat_panel import TS_GOAT_CONTROL_CSS
+    assert '.ts-goat-panel .ts-goat-analysis-scroller' in TS_GOAT_CONTROL_CSS
+    assert 'overflow-y: auto !important' in TS_GOAT_CONTROL_CSS
+    assert 'overflow-x: hidden !important' in TS_GOAT_CONTROL_CSS
 
 
 def test_ts_goat_displacement_arrows_control_removed(tmp_path):
@@ -816,8 +819,12 @@ def test_ts_goat_scoped_select_and_slider_handle_css(tmp_path):
     assert 'opacity: 1 !important' in css
     assert 'opacity: 0 !important' not in css
     assert '.noUi-origin::after' not in css
-    assert 'display: flex !important' not in css
-    assert 'height: 40px !important' not in css
+    # The mode dropdown uses flex legitimately; only slider-specific
+    # overrides previously hid the track. Restrict this check to it.
+    slider_css = css.split('.ts-goat-panel .ts-goat-slider {', 1)[1]
+    slider_css = slider_css.split('.ts-goat-panel .ts-goat-analysis-scroller', 1)[0]
+    assert 'display: flex !important' not in slider_css
+    assert 'height: 40px !important' not in slider_css
     assert '.ts-goat-panel .ts-goat-slider input[type="range"]' in css
 
     right = panel.children[0].children[1].children[1]
