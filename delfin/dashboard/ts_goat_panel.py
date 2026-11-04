@@ -1185,6 +1185,8 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             scroll_top=callbacks['scroll_top'],
             viewer_output=callbacks.get('viewer_output'),
             render_in_panel=callbacks.get('render_in_panel'),
+            update_highlights_in_panel=callbacks.get(
+                'update_highlights_in_panel'),
             on_close=callbacks.get('on_close'),
             center_viewer=callbacks.get('center_viewer'),
             get_viewer_id=callbacks.get('get_viewer_id'),
