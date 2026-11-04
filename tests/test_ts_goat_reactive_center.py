@@ -542,3 +542,91 @@ def test_marginal_contacts_do_not_dilute_the_proposal(tmp_path):
     _write_hess(ts_dir / "TS.hess", atoms, [mode], [-400.0])
     rc = analyze_reactive_center(ts_dir / "TS.hess", atoms)
     assert rc.indices == (0, 1)
+
+
+
+def test_metal_bond_switch_excludes_bystander_atoms(tmp_path):
+    """A migrating carbon can change dozens of irrelevant contact lengths.
+
+    Genuine geometric bond-status changes Rh--C and C--N still form a
+    compact three-atom candidate core. This uses an entirely SYNTHETIC
+    fixture, not an uploaded user's scientific calculation.
+    """
+    atoms = [
+        ("Rh", 0.0, 0.0, 0.0),   # Rh--C coordination weakens along +mode
+        ("C", 2.91, 0.0, 0.0),  # migrating C
+        ("N", 4.91, 0.0, 0.0),  # C--N contact forms along +mode
+    ]
+    # Spectator carbons are nearby enough that their distances to C1
+    # change by >4% during the 0.25 A mode displacement, but their
+    # distances do not cross any local covalent-bond threshold.
+    atoms.extend(
+        ("C", 6.6 + 0.16 * k, 2.2 + (k % 3) * 0.25, 0.4 * (k % 2))
+        for k in range(12)
+    )
+    mode = [(0.0, 0.0, 0.0)] * len(atoms)
+    mode[1] = (1.0, 0.0, 0.0)
+    hess = tmp_path / "ts.hess"
+    _write_hess(hess, atoms, [mode], [-219.11])
+
+    proposal = analyze_reactive_center(hess, atoms, mode_index=0)
+    assert proposal.indices == (0, 1, 2)
+    assert len(proposal.indices) <= 8
+    assert proposal.reliability == "medium"  # Rh--C needs human review
+    assert proposal.ambiguous
+    details = " ".join(proposal.reasons)
+    assert "candidate reactive contact 0(Rh)-1(C)" in details
+    assert "candidate reactive contact 1(C)-2(N)" in details
+    assert "coordination-metal" in details
+    assert all(i not in proposal.indices for i in range(3, len(atoms)))
+
+
+def test_pairwise_max_atoms_is_hard_limit(tmp_path):
+    """Even many disconnected responders must not bypass max_atoms."""
+    atoms = []
+    mode = []
+    for k in range(6):
+        # Six independent O--H contacts cross the 1.3 x covalent radii
+        # threshold in opposite imaginary-mode displacements.
+        x = 20.0 * k
+        atoms.extend([("O", x, 0.0, 0.0), ("H", x + 1.30, 0.0, 0.0)])
+        mode.extend([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)])
+    hess = tmp_path / "ts.hess"
+    _write_hess(hess, atoms, [mode], [-330.0])
+
+    proposal = analyze_reactive_center(hess, atoms, mode_index=0, max_atoms=8)
+    assert len(proposal.indices) == 8
+    assert proposal.ambiguous
+    assert "safety limit" in " ".join(proposal.reasons)
+    # Never accept one end of a bond without the other.
+    for k in range(6):
+        assert (2 * k in proposal.indices) == (2 * k + 1 in proposal.indices)
+
+
+def test_bond_switch_requires_local_chemistry_not_distant_motion(tmp_path):
+    """Far-changing distances alone are not confident bond evidence."""
+    atoms = [
+        ("C", 0.0, 0.0, 0.0), ("N", 5.0, 0.0, 0.0),
+        ("C", 40.0, 0.0, 0.0), ("N", 44.0, 0.0, 0.0),
+    ]
+    mode = [
+        (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+    ]
+    hess = tmp_path / "ts.hess"
+    _write_hess(hess, atoms, [mode], [-280.0])
+    proposal = analyze_reactive_center(hess, atoms, mode_index=0)
+    assert len(proposal.indices) <= 2
+    assert proposal.ambiguous
+    assert proposal.reliability == "low"
+    assert not any(
+        "bond-distance threshold crossed" in r for r in proposal.reasons
+    )
+
+
+def test_reactive_center_distances_are_in_angstrom():
+    """The Hessian atom parser already converts Bohr to Angstrom."""
+    from delfin import ts_goat
+    assert ts_goat._MAX_RELEVANT_CONTACT_ANGSTROM == 12.0
+    assert ts_goat._DISTANCE_RESPONSE_THRESHOLD_ANGSTROM == 0.095
+    assert ts_goat.COVALENT_RADII["Rh"] == 1.42
