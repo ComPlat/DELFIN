@@ -521,7 +521,7 @@ def analyze_reactive_center(
         norms = [
             math.sqrt(sum(v * v for v in vector[3 * a:3 * a + 3]))
             for a in range(n)
-        ]
+        ] if vector is not None else []
         biggest = max(norms) if norms else 0.0
         if biggest > 0:
             mode_displacement = {
@@ -730,12 +730,27 @@ def analyze_reactive_center(
 
     indices = tuple(sorted(selected))
     elements = tuple(str(ts_atoms[a][0]) for a in indices)
+    metal_elements = {
+        "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+        "Ru", "Rh", "Pd", "Ag", "Mo", "W", "Os", "Ir", "Pt", "Au",
+    }
+    metal_contact = any(
+        str(ts_atoms[a][0]).capitalize() in metal_elements
+        for a in indices
+    )
+    if metal_contact and accepted:
+        reasons.append(
+            "candidate coordination-metal bond change: distance-based "
+            "bond criteria are approximate for metal-ligand chemistry; "
+            "check the proposed constraints and reaction mechanism manually"
+        )
     reliability = (
         "high" if accepted and not truncated and not disconnected
+        and not metal_contact
         else "medium" if accepted else "low"
     )
     ambiguous = (
-        not accepted or truncated or disconnected
+        not accepted or truncated or disconnected or metal_contact
         or len(indices) >= max(4, (n + 1) // 2)
     )
     if ambiguous:
