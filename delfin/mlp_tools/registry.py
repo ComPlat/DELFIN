@@ -59,8 +59,17 @@ class BackendSpec:
     capabilities: Capabilities = field(default_factory=Capabilities)
     # None = not enumerated (universal / model-dependent); do not guess lists
     elements: Optional[tuple[str, ...]] = None
-    kind: str = "ml_potential"     # or "gpu_batch_optimiser"
+    kind: str = "ml_potential"     # or "gpu_batch_optimiser", "external_cli"
     aliases: tuple[str, ...] = ()
+    # --- external_cli fields (orca-mlips-style providers) ---
+    # executable: the ProgExt target (plugin name or absolute path).
+    # None for ASE backends.  license_note: status of the MODEL WEIGHTS
+    # licence (never the software licence) — a non-empty note marks the
+    # backend as licence-restricted: usable only if the user has cleared
+    # the note, never auto-downloaded.
+    executable: Optional[str] = None
+    backend_python_env: Optional[str] = None   # env key, not a host path
+    license_note: Optional[str] = None
 
     @property
     def charge_aware(self) -> bool:
@@ -258,6 +267,76 @@ _SPECS: dict[str, BackendSpec] = {
         install_hint="pip install gpuma",
         kind="gpu_batch_optimiser",
     ),
+    # ---- external_cli providers: orca-mlips ProgExt plugins (Phase C) ----
+    # These run INSIDE ORCA via ExtOpt (manual 4.1.10); the plugin computes
+    # E/gradient in its own Python env.  They are NOT ASE-calculator
+    # backends — _factory_for refuses them by design.  Plugin names are
+    # the orca-mlips ProgExt aliases documented upstream (README):
+    # "ProgExt 'aimnet2' runs the wrong plugin — use orca-mlips-aimnet2".
+    "orca_mlips_aimnet2": BackendSpec(
+        name="orca_mlips_aimnet2",
+        description="AIMNet2 via orca-mlips ProgExt plugin (runs inside "
+                    "ORCA ExtOpt; analytic Hessian via --dump-hessian).",
+        scope="molecular",
+        device_policy="cpu|cuda (plugin --device)",
+        literature=("Anstine-2025-ChemSci",),
+        requires_packages=(),
+        install_hint="pip install orca-mlips[aimnet2]; use ProgExt "
+                     "'orca-mlips-aimnet2' (plain 'aimnet2' aliases a "
+                     "different plugin)",
+        kind="external_cli",
+        executable="orca-mlips-aimnet2",
+        aliases=("orca_mlips_aimnet2",),
+    ),
+    "orca_mlips_uma": BackendSpec(
+        name="orca_mlips_uma",
+        description="UMA (FAIR-Chem) via orca-mlips ProgExt plugin. "
+                    "WEIGHTS LICENCE UNVERIFIED: gated on Hugging Face; "
+                    "no auto-download, use only after explicit clearance.",
+        scope="molecular",
+        device_policy="cpu|cuda (plugin --device)",
+        literature=("Wood-2025-UMA",),
+        requires_packages=(),
+        install_hint="pip install orca-mlips[uma]; HF token + licence "
+                     "clearance required for the weights",
+        kind="external_cli",
+        executable="orca-mlips-uma",
+        license_note="UMA model weights gated on Hugging Face; licence "
+                     "terms unverified for this deployment (2026-11-04)",
+        aliases=("orca_mlips_uma",),
+    ),
+    "orca_mlips_orb": BackendSpec(
+        name="orca_mlips_orb",
+        description="ORB (orb-models) via orca-mlips ProgExt plugin. "
+                    "Weights: open distribution via HF/orbital-materials; "
+                    "exact checkpoint licence to be re-verified per model.",
+        scope="molecular",
+        device_policy="cpu|cuda (plugin --device)",
+        literature=("ORB-2025",),
+        requires_packages=(),
+        install_hint="pip install orca-mlips[orb]",
+        kind="external_cli",
+        executable="orca-mlips-orb",
+        aliases=("orca_mlips_orb",),
+    ),
+    "orca_mlips_mace": BackendSpec(
+        name="orca_mlips_mace",
+        description="MACE (ACEsuit) via orca-mlips ProgExt plugin. "
+                    "MACE foundation checkpoints ship under the Academic "
+                    "Software License (non-commercial) — restricted.",
+        scope="molecular",
+        device_policy="cpu|cuda (plugin --device)",
+        literature=("Kovacs-2025-MACE",),
+        requires_packages=(),
+        install_hint="pip install orca-mlips[mace]; ASL licence check for "
+                     "the intended checkpoint required",
+        kind="external_cli",
+        executable="orca-mlips-mace",
+        license_note="MACE foundation checkpoints under Academic Software "
+                     "License (non-commercial); verify per checkpoint "
+                     "(2026-11-04)",
+        aliases=("orca_mlips_mace",),
+    ),
 }
 
 # aliases: legacy table from calculators.py must resolve here too
@@ -278,6 +357,11 @@ _REGISTRY_ALIASES: dict[str, str] = {
     "sevennet": "sevennet", "7net": "sevennet",
     "xtb": "xtb", "gfn2": "xtb", "gfn-ff": "xtb", "gfnff": "xtb",
     "gpuma": "gpuma",
+    # orca-mlips external_cli providers (Phase C)
+    "orca_mlips_aimnet2": "orca_mlips_aimnet2",
+    "orca_mlips_uma": "orca_mlips_uma", "orca-mlips-uma": "orca_mlips_uma",
+    "orca_mlips_orb": "orca_mlips_orb", "orca-mlips-orb": "orca_mlips_orb",
+    "orca_mlips_mace": "orca_mlips_mace", "orca-mlips-mace": "orca_mlips_mace",
 }
 
 # Test hook: name -> factory replacing the real one (no torch needed).
@@ -334,6 +418,17 @@ def _gpuma_entry():
 def check_availability(name: str) -> tuple[bool, str]:
     """(available, reason) for a backend name. Never raises."""
     spec = _SPECS[name]
+    if spec.kind == "external_cli":
+        # Executable presence first; weights-licence note stays even when
+        # available — it is an authorisation signal, not an install state.
+        from shutil import which
+        exe = which(spec.executable) if spec.executable else None
+        if exe is None:
+            return False, (f"executable '{spec.executable}' not found on "
+                           f"PATH ({spec.install_hint})")
+        if spec.license_note:
+            return True, f"licence-restricted: {spec.license_note}"
+        return True, ""
     if spec.kind == "gpu_batch_optimiser":
         module, entry = _gpuma_entry()
         if module is None:
@@ -398,6 +493,11 @@ def describe_backend(name: str) -> dict:
         "device_policy": spec.device_policy,
         "literature": list(spec.literature),
         "requires_packages": list(spec.requires_packages),
+        # external_cli additions (absent/None for ASE backends — additive,
+        # backwards compatible for agent consumers)
+        "backend_type": spec.kind,
+        "executable": spec.executable,
+        "license_note": spec.license_note,
     }
 
 
@@ -478,6 +578,18 @@ def _factory_for(spec: BackendSpec) -> Callable:
     """The real factory: dispatch to legacy calculators.py for the eight
     legacy backends (single implementation, no second copy); dedicated
     factories for the new state-of-the-art models."""
+    if spec.kind == "external_cli":
+        def _external_cli_refused(*args, **kwargs):
+            raise NotImplementedError(
+                f"Backend '{spec.name}' is an external_cli provider (kind="
+                f"{spec.kind!r}): it runs through the ORCA ExtOpt "
+                f"ProgExt target '{spec.executable}', not through the "
+                f"in-process ASE calculator factory. Use build_extopt_input "
+                f"(orca_extopt) to run it inside ORCA."
+            )
+
+        return _external_cli_refused
+
     from delfin.mlp_tools import calculators as legacy
 
     if spec.name in legacy._FACTORIES:
