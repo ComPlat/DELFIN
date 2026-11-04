@@ -95,7 +95,8 @@ COMMANDS = {
                "id": "string?", "text": "string?"},
     "prompt": {"session": "string?", "text": "string"},
     "stop": {},
-    "create": {"name": "string?"},
+    "create": {"name": "string?", "worktree": "boolean?"},
+    "merge": {"path": "string"},
     "schedules": {"after": "string?"},
     "schedule": {"action": "string", "id": "string?", "text": "string?",
                  "session": "string?", "check": "string?"},
@@ -817,12 +818,44 @@ class Bridge:
         self._created.append(now)
         reply = await self._request("session.create", {
             "cwd": folder, "title": title or slug, "permissionMode": "default",
-            "attach": False})
+            "attach": False,
+            # `neu NAME arbeitskopie`: the typed word is the consent -- the
+            # folder may become a local project and the session runs in its
+            # own worktree of it.
+            **({"worktree": True, "initProject": True}
+               if params.get("worktree") else {})})
         sid = str(reply.get("sessionId") or "")
         if not sid:
             return {"error": "Sitzung wurde nicht gestartet."}
         activation.configure(sid)
         return {"ok": True, "sessionId": sid, "title": title or slug, "folder": slug}
+
+    async def _cmd_merge(self, params: dict) -> dict:
+        """`zusammenführen [pfad]`: merge a session worktree back into its
+        main checkout. Without a path, session.worktrees lists the ones of
+        the workspaces root; with one, session.merge does it. A conflict is
+        reported as such -- the main checkout is left as it was and the
+        worktree is kept, so nothing is overwritten. The path must stay
+        inside the workspaces root (DELFIN_MESSENGER_WORKSPACES), like the
+        create folders do."""
+        import os
+        root = os.environ.get(WORKSPACES_ENV, "").strip()
+        path = str(params.get("path") or "").strip()
+        if not path:
+            if not root or not os.path.isabs(root) or not os.path.isdir(root):
+                return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
+            reply = await self._request("session.worktrees", {"cwd": root})
+            worktrees = reply.get("worktrees") or []
+            return {"ok": True, "worktrees": worktrees}
+        if not root or not os.path.isabs(root):
+            return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
+        inside = os.path.realpath(path)
+        if os.path.commonpath([os.path.realpath(root), inside]) != os.path.realpath(root):
+            return {"error": "Der Pfad liegt nicht in den Sitzungsordnern des Telefons."}
+        reply = await self._request("session.merge", {"path": inside})
+        if reply.get("error"):
+            return {"error": reply["error"]}
+        return {"ok": True, **reply}
 
 
     # -- the user's schedules ---------------------------------------------------------
