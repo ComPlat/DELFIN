@@ -5,11 +5,14 @@ testing the DELFIN agent. The agent runs as its own user `delfin`, without
 root: free inside its frame, and the frame is not its to widen (see
 "Security" below).
 
-QM binaries (ORCA, xtb, CREST, ...) are **not** installed. Everything else is:
+ORCA is **not** installed (there is no ARM build); what the Pi's hardware
+can run is (see "What the Pi can run" below). Installed:
 
-- DELFIN with **every extra in `pyproject.toml`** except `ai-retro`, `orca`
-  and `pymol` (new extras reach the Pi with the next deploy by themselves;
+- DELFIN with **every extra in `pyproject.toml`** except `ai-retro` and
+  `pymol` (new extras reach the Pi with the next deploy by themselves;
   override with `DELFIN_PI_SKIP_EXTRAS`), torch as the CPU build;
+- the optional groups PySCF, OpenMM, torch + MACE, xtb/CREST/tblite/dftd4,
+  each with its own switch, and a smoke test of each after every deploy;
 - the terminal UI (`delfin-agent tui`) with the patched OpenTUI library, so
   rows stay in the scrollback of xterm.js terminals (VS Code, JupyterLab);
 - the Claude Code and Codex CLIs (agent `backend=cli`), the GitHub CLI `gh`;
@@ -20,14 +23,62 @@ QM binaries (ORCA, xtb, CREST, ...) are **not** installed. Everything else is:
 - the Raspberry Pi OS kernel rebuilt with Landlock, beside the stock kernel
   (see "Landlock kernel" below).
 
-Check the result with `delfin-agent doctor` (expected warnings: xtb, orca,
-git identity / `gh` login until you set them, benchmark ground truth).
+Check the result with `delfin-agent doctor` (expected warnings: orca,
+git identity / `gh` login until you set them, benchmark ground truth; the
+`optional: <group>` rows name each group's state).
 
 Excluded extras: `ai-retro` (aizynthfinder pins `rdkit<2023`, which conflicts
-with DELFIN's `rdkit>=2023.3` on every platform), `orca` (QM). PyMOL has no
-aarch64 distribution on PyPI and is built from a pinned source commit
-(`--no-deps`, it runs on DELFIN's numpy<2); if that build fails only the PyMOL
-images in DOCX/ESP reports are missing.
+with DELFIN's `rdkit>=2023.3` on every platform). PyMOL has no aarch64
+distribution on PyPI and is built from a pinned source commit (`--no-deps`, a
+numpy-2 build that also runs on numpy 1.26); if that build fails only the
+PyMOL images in DOCX/ESP reports are missing.
+
+## What the Pi can run
+
+Small, short jobs: a check, a few-atom test, a structure for a figure, an
+input to look at before it goes elsewhere. A Pi 5 has four cores, 8 GB at
+most and no GPU; anything bigger (DFT on a complex, conformer searches, MD
+beyond a few thousand atoms, training) goes to a cluster.
+
+| Group | What | Switch (default 1) | Installed from |
+| --- | --- | --- | --- |
+| `opi` | ORCA's Python interface (`orca-pi==2.0.0`): builds ORCA inputs, reads ORCA outputs; no ORCA run | `orca` in `DELFIN_PI_SKIP_EXTRAS` turns it off | the `orca` extra |
+| `pyscf` | PySCF: HF, DFT, MP2, CC on small molecules | `DELFIN_PI_PYSCF` | PyPI `pyscf==2.14.0` (aarch64 wheel) |
+| `openmm` | OpenMM, CPU/Reference platforms | `DELFIN_PI_OPENMM` | PyPI `openmm==8.6.1` (manylinux_2_34 aarch64 wheel) |
+| `torch` | torch (CPU) + MACE | `DELFIN_PI_TORCH` | PyPI CPU index, `mace-torch==0.3.17` (also in the `mlp-full` extra) |
+| `xtb` | xtb 6.7.1, CREST 3.0.2, tblite, dftd4 | `DELFIN_PI_XTB` | conda-forge linux-aarch64 via `install_qm_tools.sh` into `~/.delfin/qm_tools` |
+
+A switch is read where `deploy_pi.sh` runs and forwarded to the Pi
+(`DELFIN_PI_PYSCF=0 scripts/pi/deploy_pi.sh delfin@<host>`); `0` means this
+deploy does not install the group, nothing is removed. A group is installed
+only while it is missing. A group that cannot be installed prints
+`warning: optional <group> not installed: <reason>` and the deploy goes on.
+The Python groups install with the venv's current versions as constraints,
+so they never move a version the extras resolved. xtb and CREST come from
+DELFIN's own QM installer (one micromamba environment per tool; micromamba is
+fetched as one pinned release held to its SHA-256), pinned through
+`XTB_SPEC`/`CREST_SPEC`; xtb brings tblite and dftd4, linked beside it.
+
+After every deploy each group runs one tiny computation
+(`python -m delfin.agent.optional_tools smoke`, ~1 s each, torch + MACE
+import longer) and prints `smoke <group> ok|partial|missing|failed|off
+<detail>`: water RHF/STO-3G in PySCF (-74.963 Eh), one harmonic bond in an
+OpenMM context (0.2 kJ/mol), a 2x2 eigenproblem in torch with MACE's model
+class imported, `xtb --version` + a GFN2 water single point (-5.070 Eh) and
+the versions of CREST, tblite, dftd4, an ORCA input written by OPI. A failed
+smoke test does not fail the deploy. `python -m delfin.agent.optional_tools
+list` shows presence only, as the doctor does.
+
+The `orca` extra resolves on the Pi through one override,
+`scripts/pi/pi-overrides.txt` (`numpy>=2.2.6,<2.3`, inside the core's own
+range): orca-pi 2.0.0 needs numpy>=2.2.6 and rdkit<2026, and every mendeleev
+DELFIN admits declares numpy<2 on Python < 3.12 (numpy 2 on 3.12). Resolved
+for aarch64/cp311 on 2026-11-03 with `uv pip compile --python-platform
+aarch64-unknown-linux-gnu --python-version 3.11 --torch-backend cpu
+--overrides pi-overrides.txt`: numpy 2.2.6, rdkit 2025.9.6 (was 2026.9.1),
+mendeleev 0.20.1, pandas 3.1.0, orca-pi 2.0.0; 319 of 329 packages have an
+aarch64 or pure wheel, the same ten sdists as without the extra. A set that
+does not install is retried without the extra, and OPI is reported missing.
 
 ## Security
 
@@ -140,7 +191,8 @@ unchanged; then it takes seconds.
 | `pi_kernel_landlock.sh` | Pi (root) | Rebuild the stock kernel with Landlock, tryboot into it, keep it once it runs |
 | `deploy_pi.sh` | PC (Git Bash / WSL / Linux / macOS) | Push the current working tree to a running Pi, roll back, run tests |
 | `pi_bootstrap.sh` | Pi (root) | System setup: packages, agent user, uv + Python 3.11 venv, CLIs, dashboard service |
-| `pi_install.sh` | Pi (agent user) | Unpack a source tarball, install deps when `pyproject.toml` changed, keep `src.prev` for rollback |
+| `pi_install.sh` | Pi (agent user) | Unpack a source tarball, install deps when `pyproject.toml`, `pi-overrides.txt` or the skipped extras changed, the optional groups while missing, smoke-test them, keep `src.prev` for rollback |
+| `pi-overrides.txt` | Pi (read by `pi_install.sh`) | The one uv override that lets the `orca` extra resolve on Python 3.11 |
 | `pi_firstboot.sh` | Pi (cloud-init) | First boot: `pi_bootstrap.sh` + `pi_install.sh` from the card |
 | `pi_github_deploy_key.sh` | Pi (agent user) | Push access to one repository via a deploy key, GitHub host key pinned |
 | `pi_harden_host.sh` | Pi (root) | Host lockdown: sshd key only, nftables, fail2ban, security updates, sudo password |
@@ -184,8 +236,8 @@ What only a person can do, in this order:
    force pushes, restrict deletions.
 4. `delfin`: the deploy key (`pi_github_deploy_key.sh`, then `--check`), and
    check that a push to `main` is refused.
-5. `delfin-agent doctor`: expected warnings are xtb, orca, the `gh` login and
-   benchmark ground truth.
+5. `delfin-agent doctor`: expected warnings are orca, the `gh` login and
+   benchmark ground truth (and any optional group switched off).
 
 ## Accounts and access
 
