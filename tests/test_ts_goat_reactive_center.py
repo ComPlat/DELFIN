@@ -154,6 +154,17 @@ def test_render_constraints_block_zero_based():
         "  end\n"
         "end"
     )
+    # In { C 12 C }, the first C is the Cartesian constraint TYPE,
+    # never the element symbol (critical for Rh/O/H systems).
+    assert render_constraints_block([12, 57, 58], ["Rh", "C", "N"]) == (
+        "%geom\n"
+        "  Constraints\n"
+        "    { C 12 C }\n"
+        "    { C 57 C }\n"
+        "    { C 58 C }\n"
+        "  end\n"
+        "end"
+    )
 
 
 def test_collect_ts_files_matches_by_atom_order(tmp_path):
@@ -192,10 +203,7 @@ def test_collect_ts_files_reports_missing(tmp_path):
 
 
 def test_build_ts_goat_input_writes_constraints(tmp_path, monkeypatch):
-    """The input writer embeds the %geom Constraints block (OPI may be
-    absent in CI; the block itself is what the test pins down)."""
-    pytest.importorskip("opi")
-    from delfin.tools.adapters.orca_goat_opi import build_goat_input  # noqa: F401
+    """The input writer embeds Cartesian constraints without requiring OPI."""
 
     inp = build_ts_goat_input(
         tmp_path,
@@ -208,7 +216,12 @@ def test_build_ts_goat_input_writes_constraints(tmp_path, monkeypatch):
         base_name="goat_ts",
     )
     text = inp.read_text(encoding="utf-8")
-    assert "{ H 1 C }" in text
+    assert "{ C 1 C }" in text
+    assert "{ H 1 C }" not in text
+    assert "! GOAT XTB" in text
+    assert "%pal\n  nprocs 1\nend" in text
+    assert "%maxcore 1000" in text
+    assert "* xyz 0 1" in text
     assert text.index("%geom") < text.index("* xyz")
 
 
@@ -630,3 +643,97 @@ def test_reactive_center_distances_are_in_angstrom():
     assert ts_goat._MAX_RELEVANT_CONTACT_ANGSTROM == 12.0
     assert ts_goat._DISTANCE_RESPONSE_THRESHOLD_ANGSTROM == 0.095
     assert ts_goat.COVALENT_RADII["Rh"] == 1.42
+
+
+
+def test_ts_goat_input_writer_does_not_import_opi(tmp_path, monkeypatch):
+    """The live panel can write its file even if opi is not installed."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def without_opi(name, *args, **kwargs):
+        if name == "opi" or name.startswith("opi."):
+            raise ModuleNotFoundError("No module named 'opi'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_opi)
+    path = build_ts_goat_input(
+        tmp_path,
+        elements=("Rh", "C", "N"),
+        coordinates=((0, 0, 0), (2.9, 0, 0), (4.9, 0, 0)),
+        constraint_indices=(0, 1, 2),
+        charge=1, mult=2, method="XTB",
+        ncores=12, maxcore=1000, base_name="metal_ts",
+    )
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("! GOAT XTB\n")
+    assert "{ C 0 C }" in text and "{ C 2 C }" in text
+    assert "{ Rh 0 C }" not in text
+    assert "%pal\n  nprocs 12\nend" in text
+    assert "* xyz 1 2" in text
+    assert text.rstrip().endswith("*")
+
+
+@pytest.mark.parametrize(
+    "method,basis,expected",
+    [
+        ("XTB", "", "! GOAT XTB"),
+        ("XTB1", "", "! GOAT XTB1"),
+        ("XTBFF", "", "! GOAT XTBFF"),
+        ("r2SCAN-3c", "", "! GOAT r2SCAN-3c"),
+        ("B3LYP", "def2-SVP", "! GOAT B3LYP def2-SVP"),
+    ],
+)
+def test_ts_goat_five_method_variants_without_opi(
+    tmp_path, method, basis, expected,
+):
+    path = build_ts_goat_input(
+        tmp_path,
+        elements=["C", "H"],
+        coordinates=[(0.1, 0.2, 0.3), (1.0, 0.0, 0.0)],
+        constraint_indices=[1], method=method, basis=basis,
+        base_name="methods",
+    )
+    text = path.read_text(encoding="utf-8")
+    assert expected in text
+    assert "{ C 1 C }" in text
+    assert "* xyz 0 1" in text
+
+
+@pytest.mark.parametrize("indices", [[-1], [2], []])
+def test_ts_goat_rejects_invalid_indices_before_writing(tmp_path, indices):
+    with pytest.raises(ValueError):
+        build_ts_goat_input(
+            tmp_path,
+            elements=["O", "H"],
+            coordinates=[(0, 0, 0), (1, 0, 0)],
+            constraint_indices=indices,
+            base_name="must_not_exist",
+        )
+    assert not (tmp_path / "must_not_exist.inp").exists()
+
+
+def test_ts_goat_preview_matches_written_input(tmp_path):
+    """The preview and file must match exactly, not merely be similar."""
+    from delfin.dashboard.ts_goat_panel import render_constraints_preview
+
+    atoms = [("Rh", (0.1, 0.2, 0.3)),
+             ("C", (1.2, 0.0, -0.2)),
+             ("N", (3.1, -0.1, 0.0))]
+    elements = [a[0] for a in atoms]
+    coordinates = [a[1] for a in atoms]
+    preview = render_constraints_preview(
+        elements, coordinates, [0, 2],
+        method="B3LYP", basis="def2-SVP",
+        charge=1, mult=2, pal=8, maxcore=1500,
+    )
+    path = build_ts_goat_input(
+        tmp_path,
+        elements=elements, coordinates=coordinates,
+        constraint_indices=[0, 2],
+        method="B3LYP", basis="def2-SVP",
+        charge=1, mult=2, ncores=8, maxcore=1500,
+        base_name="preview",
+    )
+    assert preview == path.read_text(encoding="utf-8")
