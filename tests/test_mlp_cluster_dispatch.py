@@ -57,7 +57,10 @@ def test_sbatch_text_requests_gpu_and_time(tmp_path, cluster_env):
     assert "--job-name=mlp_opt" in script
 
 
-def test_sbatch_text_activates_env_from_config_not_hardcoded_paths(tmp_path, cluster_env):
+def test_sbatch_text_activates_env_from_config_not_hardcoded_paths(tmp_path, cluster_env, monkeypatch):
+    # resolve_mlp_cache_dir reads $HOME; pin it so no host-specific path
+    # leaks into the rendered sbatch text
+    monkeypatch.setenv("HOME", str(tmp_path))
     cfg = MLPClusterConfig.from_sources(
         settings={
             "slurm": {"gpu_partitions": "gpu_a100"},

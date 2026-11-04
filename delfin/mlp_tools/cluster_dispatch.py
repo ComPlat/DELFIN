@@ -201,6 +201,11 @@ def render_mlp_sbatch(cfg: MLPClusterConfig, *, job_dir, xyz, backend: str,
         "DELFIN_MULT": str(int(mult)),
         "DELFIN_PAL": str(cpus),
     }
+    # model weights cache: resolve centrally so the job finds the same
+    # persistent cache the agent-side factory used (read-only $HOME
+    # clusters fail without an explicit override)
+    from .env_setup import resolve_mlp_cache_dir
+    env["AIMNET_CACHE_DIR"] = resolve_mlp_cache_dir()[0]
     if task == "rank":
         env["DELFIN_MLP_BATCH_FILE"] = str(Path(batch))
     lines = [

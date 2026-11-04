@@ -15,7 +15,6 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Optional
 
 from ase.calculators.calculator import Calculator
 
@@ -229,6 +228,10 @@ def create_calculator(
         except ImportError:
             logger.warning("PyTorch not installed — falling back to CPU")
             device = "cpu"
+    # model weights need a writable cache before any factory runs
+    # (read-only $HOME clusters would otherwise fail mid-download)
+    from .env_setup import ensure_mlp_cache_env
+    ensure_mlp_cache_env()
     return factory(device=device, charge=charge, mult=mult, **kwargs)
 
 

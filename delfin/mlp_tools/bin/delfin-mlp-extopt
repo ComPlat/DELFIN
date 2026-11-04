@@ -23,4 +23,11 @@ else
     _python="python3"
 fi
 
+# Model weights cache: default to the Phase-A2-convention directory when
+# it exists and nothing else is configured (read-only $HOME clusters
+# fail at ~/.cache/aimnet).  Explicit AIMNET_CACHE_DIR always wins.
+if [ -z "${AIMNET_CACHE_DIR:-}" ] && [ -d "${HOME}/mlip-envs/aimnet-cache" ]; then
+    export AIMNET_CACHE_DIR="${HOME}/mlip-envs/aimnet-cache"
+fi
+
 exec "${_python}" -m delfin.mlp_tools.orca_extopt "$@"

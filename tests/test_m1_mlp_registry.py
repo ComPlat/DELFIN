@@ -249,7 +249,8 @@ def test_neutral_charge_mult_accepted_everywhere(monkeypatch, fake_factory):
 
 # ---------------------------------------------------------------- legacy surface
 
-def test_old_create_calculator_names_unchanged():
+def test_old_create_calculator_names_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
     calc = legacy.create_calculator("ani2x", device="cpu",
                                     charge=0, mult=1,
                                     _factory_override=FakeCalc)
@@ -263,7 +264,10 @@ def test_legacy_alias_table_unchanged():
     assert len(legacy._BACKEND_ALIASES) == 18  # exact table, unchanged
 
 
-def test_legacy_single_point_default_backend_ani2x():
+def test_legacy_single_point_default_backend_ani2x(tmp_path, monkeypatch):
+    # create_calculator now resolves the model cache up front; pin home
+    # to tmp so the host's existing mlip-envs fallback cannot interfere
+    monkeypatch.setenv("HOME", str(tmp_path))
     atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.7]])
     # inject a fake via the documented override hook; no torch needed
     calc = legacy.create_calculator("ani2x", _factory_override=lambda **kw: FakeCalc())

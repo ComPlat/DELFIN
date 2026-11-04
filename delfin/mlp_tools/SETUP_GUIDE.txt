@@ -151,6 +151,28 @@ AIMNet2 notes for ExtOpt:
     fetched on first use by the aimnet package (aimnetcentral); run one
     single-point once before a long ExtOpt job to populate the cache.
 
+Model-weights cache (AIMNET_CACHE_DIR):
+  DELFIN resolves one cache directory for all MLIP entry points
+  (calculator factory, ExtOpt launcher, SLURM jobs) in this priority:
+
+    1. AIMNET_CACHE_DIR             - upstream override; wins if set
+    2. DELFIN_MLP_CACHE_DIR         - DELFIN key for shared caches
+    3. $HOME/mlip-envs/aimnet-cache - used only if it already exists
+    4. ~/.cache/aimnet              - upstream default (created on demand)
+
+  On clusters with a read-only $HOME (~/.cache not writable) setting
+  AIMNET_CACHE_DIR is required, e.g.:
+
+    export AIMNET_CACHE_DIR=$HOME/mlip-envs/aimnet-cache
+
+  A not-writable or uncreatable cache raises a clear error naming the
+  override key. Existing weights are reused; nothing is re-downloaded.
+  Licence note: the AIMNet2 weights (aimnet2_wb97m_d3_0.pt, hosted on
+  the aimnetcentral GCS bucket) carry no explicit licence document;
+  the aimnet software is MIT. Public availability is not a licence
+  grant - cite the model paper in publications (Anstine/Zubatyuk/
+  Isayev, Chem. Sci. 2025, DOI 10.1039/D4SC08572H).
+
 
 7. CHOOSING A BACKEND
 ---------------------------------------------------------------------------
