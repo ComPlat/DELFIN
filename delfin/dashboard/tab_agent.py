@@ -4887,6 +4887,48 @@ _ANSWER_FILE_RE = re.compile(
     + "|".join(re.escape(x) for x in _ANSWER_FILE_SUFFIXES) + r"))\b")
 
 
+def _session_agent_workspace(engine, fallback):
+    """The directory this session's agent actually works in.
+
+    Input: the engine (or None) and the legacy fallback (``ctx.agent_dir``).
+    Output: ``engine.kit_permissions.workspace`` — the same path the
+    engine's write permissions use — else ``engine.repo_dir``, else the
+    fallback. Used by the chat's artifact scans, which previously read
+    ``ctx.agent_dir`` and so missed files written in a launch-folder
+    workspace (Code mode started from a project directory).
+    """
+    try:
+        kp = getattr(engine, "kit_permissions", None)
+        ws = getattr(kp, "workspace", None) or getattr(engine, "repo_dir", None)
+        if ws:
+            return Path(ws)
+    except Exception:
+        pass
+    return fallback
+
+
+def _changed_workspace_files(known, directory):
+    """Diff the workspace against the last snapshot, by file name.
+
+    Input: ``known`` — the previous ``{name: (mtime_ns, size)}`` snapshot —
+    and the directory to scan (top level only, files only, as before).
+    Output: ``(changed, stamps)`` — the files whose stamp differs (new or
+    rewritten, sorted by name) and the fresh snapshot to store.
+    """
+    try:
+        current = {
+            p.name: p for p in Path(directory).iterdir() if p.is_file()
+        }
+        stamps = {n: _artifact_stamp(p) for n, p in current.items()}
+    except Exception:
+        return [], dict(known or {})
+    changed = [
+        (n, current[n]) for n in sorted(stamps)
+        if (known or {}).get(n) != stamps[n] and n in current
+    ]
+    return [p for _n, p in changed], stamps
+
+
 def _files_named_in_answer(text: str, workspace, already=(), limit: int = 3):
     """Files the answer names that exist inside *workspace*, in order."""
     out = []
@@ -21324,21 +21366,16 @@ def create_tab(ctx):
                     """
                     try:
                         before = dict(state.get("_ws_known_files") or {})
-                        current = {
-                            p.name: p for p in ctx.agent_dir.iterdir()
-                            if p.is_file()
-                        }
-                        stamps = {n: _artifact_stamp(p)
-                                  for n, p in current.items()}
+                        _scan_dir = _session_agent_workspace(
+                            engine, getattr(ctx, "agent_dir", None))
+                        changed, stamps = _changed_workspace_files(
+                            before, _scan_dir)
                     except Exception:
                         return
-                    changed = [n for n, st in stamps.items()
-                               if before.get(n) != st]
                     if not changed:
                         return
-                    for name in sorted(changed):
-                        path = current.get(name)
-                        if path is None or _shown_already(path):
+                    for path in sorted(changed):
+                        if _shown_already(path):
                             continue
                         if path.suffix.lower() in _HELD_PREVIEW_SUFFIXES:
                             _drop_held_preview(path)
@@ -21727,13 +21764,16 @@ def create_tab(ctx):
                 if _handoff:
                     current_msg = f"{_handoff}\n\n{current_msg}"
 
-                # D4: snapshot agent_workspace before the turn so we can
-                # diff and inline-render any new artifacts the agent
-                # creates (PNG/SVG/CSV/JSON).
+                # D4: snapshot the session workspace before the turn so we
+                # can diff and inline-render any new artifacts the agent
+                # creates (PNG/SVG/CSV/JSON). The same directory the
+                # engine's write permissions use, not the legacy agent_dir.
                 try:
                     state["_ws_known_files"] = {
                         p.name: _artifact_stamp(p)
-                        for p in ctx.agent_dir.iterdir() if p.is_file()
+                        for p in _session_agent_workspace(
+                            engine, getattr(ctx, "agent_dir", None)).iterdir()
+                        if p.is_file()
                     }
                 except Exception:
                     state["_ws_known_files"] = {}
@@ -22017,12 +22057,18 @@ def create_tab(ctx):
 
                     # Files the answer NAMED, which the artifact diff above
                     # cannot see: it only knows what this turn wrote. See
-                    # _files_named_in_answer for what bounds it. A path
-                    # drawn this turn in any view is not drawn again.
+                    # _files_named_in_answer for what bounds it. Searched
+                    # in the session's workspace, like the diff above. A
+                    # path drawn this turn in any view is not drawn again.
                     try:
                         for _f in _files_named_in_answer(
-                                "".join(chunks), ctx.agent_dir,
-                                already=state.get("_emitted_artifacts") or ()):
+                                "".join(chunks),
+                                _session_agent_workspace(
+                                    engine,
+                                    getattr(ctx, "agent_dir", None)),
+                                already=list(
+                                    (state.get("_emitted_artifacts")
+                                     or {}).keys())):
                             _show_artifact(_f)
                     except Exception:
                         pass
