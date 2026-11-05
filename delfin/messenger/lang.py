@@ -426,4 +426,7 @@ EN = {
     "This person's agent service is not running. Open a session at the computer.",
     'Unbekannte Person.': 'Unknown person.',
     'Unbekannte Pairing-Aktion.': 'Unknown pairing action.',
+    'Im Forum nur Text an eine Sitzung, keine Befehle.': 'In the forum only text to a session, no commands.',
+    'Ein Shell-Befehl vom Handy wird nicht ausgeführt. Bitte als Auftrag formulieren.':
+    'A shell command from the phone is not run. Please phrase it as a task.',
 }

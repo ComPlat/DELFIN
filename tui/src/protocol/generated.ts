@@ -28,6 +28,7 @@ export interface InitializeParams {
 export interface SessionPromptParams {
   "text": string
   "how"?: string | null
+  "via"?: string | null
 }
 export interface SessionCancelParams {}
 export interface SessionSetModeParams {

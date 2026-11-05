@@ -63,6 +63,10 @@ SERVICE_VERSION = 3
 #: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
 SERVICE_REQUESTS = protocol.SERVICE_REQUESTS
 
+#: The window name the messenger bridge says hello with (bridge.Bridge.
+#: CLIENT_NAME): its prompts are a phone's.
+MESSENGER_BRIDGE_CLIENT = "delfin-messenger-bridge"
+
 #: Session requests, forwarded to the session's worker (with "sessionId").
 FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
                        "session.status", "session.replay", "session.shutdown",
@@ -906,6 +910,13 @@ class Supervisor:
     async def _forward(self, client: Client, method: str, params: dict) -> Any:
         sid = str(params.get("sessionId") or "")
         rest = {k: v for k, v in params.items() if k != "sessionId"}
+        if method == "session.prompt":
+            # Where a prompt comes from is the service's to say, never the
+            # sender's: the messenger bridge's prompts are the phone's
+            # (the worker runs no window command for them).
+            rest.pop("via", None)
+            if str(getattr(client, "name", "") or "") == MESSENGER_BRIDGE_CLIENT:
+                rest["via"] = "messenger"
         if sid in self._waking and method == "session.shutdown":
             # Being woken: stop what the wake brings up, not a record.
             try:

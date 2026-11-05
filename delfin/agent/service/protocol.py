@@ -50,7 +50,10 @@ REQUESTS: dict[str, dict[str, str]] = {
     # A line exactly as the user typed it: a message, a /command, !shell or
     # a # note. While a turn runs, how="queue" (the default) waits for the
     # turn to end and how="steer" sends it into the running turn.
-    "session.prompt": {"text": "string", "how": "string?"},
+    # via: set by the service, never by a window: "messenger" for a prompt
+    # the messenger bridge sends (a phone's); the worker then runs no
+    # window command (/sync, /pair, a builtin, a shell line) for it.
+    "session.prompt": {"text": "string", "how": "string?", "via": "string?"},
     # Esc: end the running turn. A tool call already running finishes first.
     "session.cancel": {},
     "session.setMode": {"mode": "string", "confirmed": "boolean?"},

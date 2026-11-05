@@ -118,7 +118,11 @@ class DashboardSession:
             self.stop()
             return {'ok': True}
         if method == 'session.prompt':
-            accepted = self.send(command.get('text', ''))
+            text = str(command.get('text', ''))
+            if text.lstrip()[:1] in {'/', '!'}:
+                # A phone's line is never a dashboard command or shell line.
+                return {'accepted': False, 'error': 'Ein Befehl vom Handy wird hier nicht ausgeführt.'}
+            accepted = self.send(text)
             return {'accepted': bool(accepted), **({} if accepted else {'error': 'Dashboard hat eine Eingabe offen; Nachricht nicht gesendet.'})}
         if method == 'permission.reply':
             self.pending()

@@ -615,10 +615,16 @@ class Rooms:
                 return target
             if not text:
                 return t('Form: @NAME Text.')
+            if text[:1] in {'/', '!'}:
+                # A phone's text is never a window's command (/sync, /pair,
+                # a builtin) nor a shell line.
+                return t('Im Forum nur Text an eine Sitzung, keine Befehle.')
             targets = [target]
             command = text.partition(' ')[0].lower().lstrip('/')
         elif text.startswith('/') and command not in {'status', 'pending', 'stop', 'update'}:
             return t('Unbekannter Befehl. /help zeigt die verfügbaren Befehle.')
+        elif text.startswith('!'):
+            return t('Ein Shell-Befehl vom Handy wird nicht ausgeführt. Bitte als Auftrag formulieren.')
         else:
             targets = [room] if sid else [r for r in store.rooms().values()
                                           if r['session_id'] in self._active and r.get('ready')

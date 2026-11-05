@@ -1451,6 +1451,15 @@ class Worker:
         text = str(params.get("text") or "").strip()
         if not text:
             raise _Refusal(protocol.INVALID_PARAMS, "empty prompt")
+        if params.get("via") == "messenger" and text[:1] in {"/", "!"}:
+            # A phone's line is never a window's command. The one exception
+            # changes nothing: the bridge shows the session its state.
+            if text.split() == ["/sync", "status"]:
+                from delfin.messenger.activation import configure
+                self.emitter.emit("notice", text=configure(self.emitter.session_id, "status"))
+                return {"accepted": True}
+            raise _Refusal(protocol.NOT_ALLOWED,
+                           "a command from the messenger is not run; type it in a window")
         if text.split()[0].lower() == "/sync":
             from delfin.messenger.activation import configure, parse_sync
             args = text[5:].strip()
