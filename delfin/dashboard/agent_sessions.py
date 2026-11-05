@@ -32,6 +32,9 @@ _REFRESH_S = 3.0
 _RESUME_REFRESH_S = 60.0
 # How long the first click on "Stop all agents" waits for the second.
 _STOP_ARM_S = 8.0
+# How often, at most, a dashboard whose agent service went away tries to
+# reach it again (on the refresh tick; no loop of its own).
+_RECONNECT_S = 10.0
 
 #: Ids of contexts whose splitter init script is already registered. The
 #: dashboard builds the agent tab once, but a settings change can rebuild a
@@ -481,8 +484,12 @@ def load_open_sessions() -> list[dict]:
         host = str(row.get("host") or "")
         if host and host != here:
             continue
-        out.append({"session_id": str(row["session_id"]).strip(),
-                    "workspace": str(row.get("workspace") or "")})
+        item = {"session_id": str(row["session_id"]).strip(),
+                "workspace": str(row.get("workspace") or "")}
+        if row.get("live"):
+            # Ran in the agent service: reopened as a view on it.
+            item["live"] = True
+        out.append(item)
     return out[:_MAX_OPEN]
 
 
@@ -1075,18 +1082,299 @@ def _session_title(state: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Sessions in the agent service
+# ---------------------------------------------------------------------------
+
+#: Where sessions run: "service" (the default: the person's agent service,
+#: so the terminal and the phone open them too) or "kernel" (this
+#: dashboard's kernel, as before the service). The environment variable
+#: wins over agent.dashboard_sessions in the settings.
+SESSIONS_ENV = "DELFIN_DASHBOARD_SESSIONS"
+
+#: The permission profiles the agent tab's ladder stores, and the posture
+#: each starts a service session in. Bypass cannot be a start posture
+#: (the worker's --permission-mode stops at acceptEdits); it is switched to
+#: after the start, confirmed, and refused where policy or isolation do not
+#: allow it -- the page then says so.
+_PROFILE_START = {"plan": "plan", "ask_all": "default", "repo_free": "acceptEdits",
+                  "all_free": "acceptEdits"}
+_PROFILE_OLD_NAMES = {"default": "ask_all", "erlaubt": "repo_free", "full": "all_free",
+                      "acceptEdits": "repo_free", "auto": "all_free",
+                      "bypassPermissions": "all_free"}
+
+
+def sessions_where() -> str:
+    """``"service"`` or ``"kernel"``: where this dashboard starts sessions."""
+    raw = os.environ.get(SESSIONS_ENV, "").strip().lower()
+    if not raw:
+        try:
+            from delfin.user_settings import load_settings
+            raw = str(((load_settings() or {}).get("agent") or {})
+                      .get("dashboard_sessions") or "").strip().lower()
+        except Exception:
+            raw = ""
+    return "kernel" if raw == "kernel" else "service"
+
+
+def dashboard_session_settings() -> dict:
+    """The create settings of a new service session: the agent tab's saved
+    choices (provider, model, effort, agent mode, permission profile), so a
+    session started here runs as the in-kernel tab would have run it.
+    ``_bypass``: the profile is Bypass (switched to after the start)."""
+    try:
+        from delfin.user_settings import load_settings
+        saved = (load_settings() or {}).get("agent", {}) or {}
+    except Exception:
+        saved = {}
+    out: dict = {}
+    provider = str(saved.get("provider") or "")
+    if provider in ("claude", "openai", "kit"):
+        out["provider"] = provider
+    for key in ("model", "effort", "mode"):
+        if str(saved.get(key) or "").strip():
+            out[key] = str(saved[key]).strip()
+    profile = str(saved.get("permission_profile", saved.get("permission_mode", "")) or "")
+    profile = _PROFILE_OLD_NAMES.get(profile, profile)
+    if profile in _PROFILE_START:
+        out["permissionMode"] = _PROFILE_START[profile]
+        out["_bypass"] = profile == "all_free"
+    return out
+
+
+def _service_connector(service: Any, explicit_build: bool):
+    """What gives the session list its agent-service client, or None for
+    sessions in the kernel only. ``service``: False (none), a callable
+    returning a ``live_sessions.LiveClient``, a client, or None -- the
+    person's service unless a stand-in ``build`` was given or the setting
+    says kernel."""
+    if service is False:
+        return None
+    if callable(service):
+        return service
+    if service is not None:
+        return lambda: service
+    if explicit_build or sessions_where() == "kernel":
+        return None
+    from delfin.dashboard import live_sessions
+    return lambda: live_sessions.connect(start=True)
+
+
+_RUNNING_CSS = """<style>
+.delfin-running-head { align-items: center; justify-content: space-between; padding: 6px 2px 0 6px; }
+.delfin-running-count { font-size: 11px; color: #9a3412; font-weight: 600; }
+.delfin-running-list { gap: 2px; max-height: calc(50vh - 120px); overflow-y: auto !important;
+    overflow-x: hidden !important; }
+.delfin-running-item { width: 100%; align-items: center; gap: 2px; padding: 4px 4px 4px 8px;
+    border-radius: 8px; }
+.delfin-running-item:hover { background: #eef2f7; }
+.delfin-running-item.delfin-running-here { box-shadow: inset 3px 0 0 #93c5fd; }
+.delfin-running-item.delfin-running-needs { background: #fff7ed; }
+.delfin-running-item.delfin-running-needs .delfin-running-state { color: #c2410c; font-weight: 700; }
+.delfin-running-state { font-weight: 600; }
+.delfin-running-rename { gap: 4px; }
+.delfin-running-rename .widget-text { width: 100% !important; margin: 0; }
+.delfin-running-rename .jupyter-button { width: auto !important; height: 24px !important;
+    padding: 0 6px !important; font-size: 11px; }
+.delfin-running-empty { font-size: 11px; color: #6b7280; padding: 2px 6px; }
+</style>"""
+
+
+class RunningPanel:
+    """The sidebar's "Running sessions": every session of the person's
+    agent service -- all folders, started anywhere -- with its name, folder,
+    model, state and time since its last activity; "needs you" first and
+    marked. One click opens it here; the pencil renames it (Enter saves,
+    Esc cancels). Kept current by the service's summary events: an event
+    marks it changed and arms one short timer, nothing polls."""
+
+    RENDER_DELAY_S = 0.25
+
+    def __init__(self, client: Any, on_open: Callable[[str], None],
+                 is_open: Callable[[str], bool]) -> None:
+        from delfin.dashboard import live_sessions as LS
+
+        self.client = client
+        self.on_open = on_open
+        self.is_open = is_open
+        self.running = LS.RunningList()
+        self.buttons: dict[str, widgets.Button] = {}
+        self._rows: dict[str, dict] = {}
+        self._timer: Optional[threading.Timer] = None
+        self._lock = threading.Lock()
+        self._shown = -1
+        self._unsubscribe: Optional[Callable[[], None]] = None
+        heading = widgets.HTML("Running sessions")
+        heading.add_class("delfin-session-heading")
+        self.count = widgets.HTML("")
+        self.count.add_class("delfin-running-count")
+        head = widgets.HBox([heading, self.count])
+        head.add_class("delfin-running-head")
+        self.list_box = widgets.VBox()
+        self.list_box.add_class("delfin-running-list")
+        self.empty = widgets.HTML("No session runs in the agent service.")
+        self.empty.add_class("delfin-running-empty")
+        self.widget = widgets.VBox([widgets.HTML(_RUNNING_CSS), head, self.empty, self.list_box])
+
+    # -- feeding it ---------------------------------------------------------------
+    def attach(self, client: Any) -> None:
+        """Follow ``client``'s service: its list now, its events from here."""
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+        self.client = client
+        self._unsubscribe = client.subscribe(self._on_event)
+        try:
+            self.running.load(client.sessions())
+        except Exception:
+            pass
+        self.render()
+
+    def detach(self) -> None:
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+    def _on_event(self, event: dict) -> None:
+        if self.running.apply(event):
+            with self._lock:
+                if self._timer is not None:
+                    return
+                self._timer = threading.Timer(self.RENDER_DELAY_S, self.render)
+                self._timer.daemon = True
+                timer = self._timer
+            timer.start()
+
+    def rows(self) -> list[dict]:
+        return self.running.rows()
+
+    # -- what is shown ------------------------------------------------------------
+    def _row(self, sid: str) -> dict:
+        row = self._rows.get(sid)
+        if row is not None:
+            return row
+        title = widgets.Button(description="", tooltip="Open this session here")
+        title.add_class("delfin-session-title")
+        info = widgets.HTML("")
+        info.add_class("delfin-session-path")
+        pencil = widgets.Button(description="✎", tooltip="Rename (Enter saves, Esc cancels)")
+        pencil.add_class("delfin-session-close")
+        edit = widgets.Text(continuous_update=False,
+                            placeholder="Name (empty: folder and short id)")
+        save = widgets.Button(description="Save")
+        cancel = widgets.Button(description="Cancel")
+        cancel.add_class("delfin-live-rename-cancel")
+        rename = widgets.HBox([edit, save, cancel], layout=widgets.Layout(display="none"))
+        rename.add_class("delfin-running-rename")
+        rename.add_class("delfin-live-rename")
+        text = widgets.VBox([title, info, rename])
+        text.add_class("delfin-session-text")
+        box = widgets.HBox([text, pencil])
+        box.add_class("delfin-running-item")
+        row = {"box": box, "title": title, "info": info, "pencil": pencil, "edit": edit,
+               "rename": rename, "classes": set()}
+
+        def open_it(_b=None, _sid=sid):
+            self.on_open(_sid)
+
+        def start_rename(_b=None, _row=row, _sid=sid):
+            summary = self.running.summary(_sid) or {}
+            _row["edit"].value = str(summary.get("title") or "")
+            _row["rename"].layout.display = ""
+            _row["title"].layout.display = "none"
+
+        def end_rename(_b=None, _row=row):
+            _row["rename"].layout.display = "none"
+            _row["title"].layout.display = ""
+
+        def save_rename(_b=None, _row=row, _sid=sid):
+            try:
+                self.client.rename(_sid, _row["edit"].value)
+            except Exception as exc:
+                _row["info"].value = html.escape(f"not renamed: {getattr(exc, 'message', exc)}")
+                return
+            end_rename()
+
+        def on_enter(change, _row=row):
+            if _row["rename"].layout.display != "none" and change.get("new") != change.get("old"):
+                save_rename()
+
+        title.on_click(open_it)
+        pencil.on_click(start_rename)
+        save.on_click(save_rename)
+        cancel.on_click(end_rename)
+        edit.observe(on_enter, names="value")
+        self._rows[sid] = row
+        self.buttons[sid] = title
+        return row
+
+    def render(self) -> None:
+        """The rows as the list stands; widgets are reused, only text and
+        order change."""
+        with self._lock:
+            self._timer = None
+        rows = self.running.rows()
+        children = []
+        needs = 0
+        for r in rows:
+            sid = r["sessionId"]
+            row = self._row(sid)
+            if row["title"].description != r["name"]:
+                row["title"].description = r["name"]
+            row["title"].tooltip = f"{r['name']} ({r['shortId']}): open it here"
+            state = (f'<span class="delfin-running-state">{html.escape(r["state"])}</span>')
+            bits = [html.escape(r["folder"]), html.escape(r["model"]), state, html.escape(r["age"])]
+            if r["needs"] and r["waiting"]:
+                bits.append(html.escape(r["waiting"][:60]))
+            value = " · ".join(b for b in bits if b)
+            if row["info"].value != value:
+                row["info"].value = value
+            wanted = {"delfin-running-needs"} if r["needs"] else set()
+            if self.is_open(sid):
+                wanted.add("delfin-running-here")
+            for cls in ("delfin-running-needs", "delfin-running-here"):
+                if cls in wanted and cls not in row["classes"]:
+                    row["box"].add_class(cls)
+                elif cls not in wanted and cls in row["classes"]:
+                    row["box"].remove_class(cls)
+            row["classes"] = wanted
+            needs += r["needs"]
+            children.append(row["box"])
+        for sid in [s for s in self._rows if s not in {r["sessionId"] for r in rows}]:
+            self._rows.pop(sid, None)
+            self.buttons.pop(sid, None)
+        if tuple(self.list_box.children) != tuple(children):
+            self.list_box.children = tuple(children)
+        self.empty.layout.display = "none" if rows else ""
+        count = f"{needs} need{'s' * (needs == 1)} you" if needs else ""
+        if self.count.value != count:
+            self.count.value = count
+
+
+# ---------------------------------------------------------------------------
 # The tab
 # ---------------------------------------------------------------------------
 
-def create_tab(ctx: Any, *, build: Optional[Callable] = None):
+def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = None,
+               session_defaults: Optional[Callable[[], dict]] = None):
     """Build the session list and reopen the sessions that were open.
 
-    ``build`` makes one session's tab from its context
-    (``tab_agent.create_tab`` by default). Returns ``(widget, refs)``.
+    ``build`` makes one in-kernel session's tab from its context
+    (``tab_agent.create_tab`` by default). ``service``: where sessions run
+    (see ``_service_connector``; by default the person's agent service,
+    started if needed, and the kernel when there is none -- said on the
+    page). ``session_defaults``: the create settings of a new service
+    session (``dashboard_session_settings`` by default). Returns
+    ``(widget, refs)``.
     """
+    connector = _service_connector(service, explicit_build=build is not None)
     if build is None:
         from delfin.dashboard import tab_agent
         build = tab_agent.create_tab
+    if session_defaults is None:
+        session_defaults = dashboard_session_settings
 
     sessions: list[dict] = []
     view: dict[str, Any] = {"active": "", "restoring": True,
@@ -1134,9 +1422,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                  "servers, and the daemons. Schedules are disabled and "
                  "nothing starts on its own afterwards; cluster jobs keep "
                  "running.")), "delfin-session-stopall")
+    # The agent service: every session started here runs in it, and the
+    # running list shows every session it holds. Without one, the kernel.
+    live: dict[str, Any] = {"client": None, "why": "", "retry_at": 0.0, "scripts": False}
+    running_panel = RunningPanel(None, on_open=lambda sid: open_live(sid),
+                                 is_open=lambda sid: any(r.get("session_id") == sid
+                                                         for r in sessions))
+    running_panel.widget.layout.display = "none"
     sidebar = _classed(widgets.VBox(
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
-         resume_dropdown, elsewhere_note, stop_all_btn]), "delfin-sessions")
+         running_panel.widget, resume_dropdown, elsewhere_note, stop_all_btn]),
+        "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
     splitter_host = _classed(widgets.HBox([widgets.HTML("")]),
                              "delfin-splitter-host")
@@ -1162,11 +1458,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         """One dot per row: what the session needs from you beats that it
         is working, which beats that it finished while you looked away."""
         state = _state(rec)
-        busy = bool(state.get("streaming"))
+        if rec.get("live"):
+            # A view on a service session: what its events say.
+            busy, needs = bool(rec["refs"]["busy"]()), bool(rec["refs"]["needs"]())
+        else:
+            busy, needs = bool(state.get("streaming")), needs_you(state)
         if rec.get("_was_busy") and not busy and view["active"] != rec["key"]:
             rec["unseen"] = True
         rec["_was_busy"] = busy
-        wanted = session_dot(busy=busy, needs=needs_you(state),
+        wanted = session_dot(busy=busy, needs=needs,
                              unseen=bool(rec.get("unseen")))
         for cls in _DOT_CLASSES.values():
             if cls == wanted:
@@ -1256,7 +1556,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if view["restoring"]:
             return
         save_open_sessions([
-            {"session_id": sid, "workspace": rec["workspace"]}
+            {"session_id": sid, "workspace": rec["workspace"],
+             **({"live": True} if rec.get("live") else {})}
             for rec in sessions for sid in [_remembered_id(rec)] if sid])
 
     def _remembered_id(rec: dict) -> str:
@@ -1296,11 +1597,190 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         resume_dropdown.options = options
         resume_dropdown.value = ""
 
+    # -- the agent service --------------------------------------------------
+
+    def _connect() -> bool:
+        """Reach the service (``connector``); True when there is a client.
+        A failure is said on the page, never swallowed."""
+        if connector is None:
+            return False
+        import time as _time
+        from delfin.dashboard import live_sessions as LS
+        live["retry_at"] = _time.monotonic() + _RECONNECT_S
+        try:
+            client = connector()
+        except LS.ServiceUnavailable as exc:
+            live["client"], live["why"] = None, str(exc)
+            return False
+        except Exception as exc:                          # noqa: BLE001
+            live["client"], live["why"] = None, f"the agent service could not be reached: {exc}"
+            return False
+        live["client"], live["why"] = client, ""
+        live["had"], live["stopped"] = True, False
+        client.on_close(_service_lost)
+
+        def _heard(event: dict) -> None:
+            if event.get("type") == "service.stopping" and not event.get("restart"):
+                live["stopped"] = True          # stopped on purpose: not restarted from here
+        client.subscribe(_heard)
+        running_panel.attach(client)
+        running_panel.widget.layout.display = ""
+        return True
+
+    def _kernel_notice() -> str:
+        return (f"The agent service is not available ({live['why']}). Sessions run "
+                "in this dashboard's kernel: the terminal and the phone cannot open "
+                "them, and they end with this dashboard.")
+
+    def _service_lost() -> None:
+        """The service stopped (a restart, an update, a stop): the views
+        say so; the refresh tick connects again and reopens them."""
+        live["client"] = None
+        running_panel.detach()
+        if live.get("stopped"):
+            live["why"] = "it was stopped"
+            text = ("The agent service was stopped; its sessions are saved. Reload "
+                    "the page to start it again.")
+        else:
+            live["why"] = "it went away; connecting again"
+            text = "The agent service went away. Connecting again…"
+        _say(text)
+        for rec in sessions:
+            if rec.get("live"):
+                rec["refs"]["say"](text)
+
+    def _reconnect() -> None:
+        """After a restart or a service that vanished (never after a stop
+        given on purpose, nor when there never was one): at most every
+        _RECONNECT_S, on the refresh tick."""
+        import time as _time
+        if connector is None or live["client"] is not None or not live.get("had") \
+                or live.get("stopped") or _time.monotonic() < live["retry_at"]:
+            return
+        if not _connect():
+            return
+        _say("")
+        for rec in [r for r in sessions if r.get("live")]:
+            _rebuild_live(rec)
+
+    def _live_tab(sid: str, key: str, attached: Optional[dict] = None):
+        from delfin.dashboard import live_tab
+        scripts = not live["scripts"]
+        live["scripts"] = True
+        return live_tab.build_live_tab(
+            live["client"], sid, attached=attached, page_scripts=scripts,
+            on_change=lambda _key=key: _on_live_change(_key))
+
+    def _on_live_change(key: str) -> None:
+        rec = _find(key)
+        if rec is None:
+            return
+        name = rec["refs"]["name"]()
+        if rec["title_btn"].description != name:
+            rec["title_btn"].description = name
+        _mark(rec)
+
+    def _rebuild_live(rec: dict) -> None:
+        """A view on the new connection, in the old one's place."""
+        tab, refs = _live_tab(rec["session_id"], rec["key"])
+        refs["state"] = rec["refs"]["state"]
+        refs["shutdown"] = refs["close"]
+        rec["tab"], rec["refs"] = tab, refs
+        tab.layout.display = "" if view["active"] == rec["key"] else "none"
+        stage.children = tuple(r["tab"] for r in sessions)
+
+    def open_live(sid: str, workspace: str = "") -> Optional[dict]:
+        """A view on service session ``sid`` (one click in the running
+        list): its recent turns, then live. Shown again when it is open."""
+        for rec in sessions:
+            if rec.get("session_id") == sid or _session_id(rec) == sid:
+                activate(rec["key"])
+                return rec
+        if live["client"] is None:
+            _say("The agent service is not reachable now; try again in a moment.")
+            return None
+        if len(sessions) >= _MAX_OPEN:
+            _say(f"{_MAX_OPEN} sessions are open — close one first.")
+            return None
+        summary = running_panel.running.summary(sid) or {}
+        where = str(workspace or summary.get("workspace") or "")
+        key = _address_for(sid)
+        tab, refs = _live_tab(sid, key)
+        if not refs.get("opened"):
+            _say(f"Session {sid[:8]} could not be opened: "
+                 f"{html.unescape(refs['notice'].value) or 'the service refused it'}")
+            refs["close"]()
+            return None
+        where = where or str(refs["transcript"].info.get("workspace") or "")
+        refs["state"] = {"active_session_id": sid, "chat_messages": [],
+                         "streaming": False, "engine": None}
+        refs["shutdown"] = refs["close"]
+        status = widgets.HTML("")
+        title_btn = _classed(widgets.Button(description=refs["name"](), tooltip=where),
+                             "delfin-session-title")
+        close_btn = _classed(widgets.Button(description="×", tooltip=(
+            "Close this view -- the session keeps running in the agent service; "
+            "the terminal and the phone still have it")), "delfin-session-close")
+        info = _classed(widgets.HTML(html.escape(_display_path(where))), "delfin-session-path")
+        row = _classed(widgets.HBox([
+            _classed(widgets.VBox([title_btn, info]), "delfin-session-text"),
+            close_btn]), "delfin-session-item")
+        rec = {"key": key, "workspace": where, "tab": tab, "refs": refs, "live": True,
+               "session_id": sid,
+               "ctx": _SessionContext(ctx, agent_workspace=where, initial_session_id=sid,
+                                      sessions_managed=True, session_open_elsewhere=None,
+                                      agent_engine=None, agent_state=refs["state"],
+                                      agent_status_html=status,
+                                      add_init_js=lambda script: None, presence_key=key),
+               "title_btn": title_btn, "info": info, "row": row}
+        title_btn.on_click(lambda _b, _key=key: activate(_key))
+        close_btn.on_click(lambda _b, _key=key: close_session(_key))
+        sessions.append(rec)
+        stage.children = tuple(r["tab"] for r in sessions)
+        activate(key)
+        running_panel.render()
+        _persist()
+        return rec
+
+    def _open_in_service(where: str, resume: str = "") -> Optional[dict]:
+        """A new session in the service (or ``resume``: a saved one, woken
+        there), then a view on it. None when the service refused it -- the
+        caller then runs it in the kernel and the page says why."""
+        from delfin.dashboard import live_sessions as LS
+        client = live["client"]
+        if resume and running_panel.running.summary(resume):
+            return open_live(resume, where)        # it runs there already
+        settings = dict(session_defaults() or {})
+        bypass = bool(settings.pop("_bypass", False))
+        if str(settings.get("mode") or "") == "dashboard":
+            live["note"] = ("Dashboard mode works on this page's own tabs: this session "
+                            "runs in this dashboard's kernel, and the terminal and the "
+                            "phone cannot open it.")
+            return None
+        try:
+            started = client.create(where, resume=resume or None, **settings)
+        except (LS.ServiceError, TimeoutError, OSError) as exc:
+            live["note"] = (f"The agent service did not start the session "
+                            f"({getattr(exc, 'message', exc)}); it runs in this "
+                            "dashboard's kernel instead.")
+            return None
+        sid = str(started.get("sessionId") or "")
+        rec = open_live(sid, where)
+        if rec is not None and bypass:
+            try:
+                client.posture(sid, "bypassPermissions", confirmed=True)
+            except LS.ServiceError as exc:
+                rec["refs"]["say"](f"Bypass is not available here ({exc.message}); "
+                                   "this session asks as Accept Edits.")
+        return rec
+
     # -- open, close ----------------------------------------------------------
 
-    def open_session(workspace: str = "", session_id: str = "") -> Optional[dict]:
+    def open_session(workspace: str = "", session_id: str = "", *,
+                     in_kernel: bool = False) -> Optional[dict]:
         """Open a session working in ``workspace``; with ``session_id``, the
-        saved conversation. A conversation already open is shown instead."""
+        saved conversation. A conversation already open is shown instead.
+        In the agent service when there is one (``in_kernel``: never)."""
         sid = str(session_id or "").strip()
         if sid:
             for rec in sessions:
@@ -1310,7 +1790,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         if len(sessions) >= _MAX_OPEN:
             _say(f"{_MAX_OPEN} sessions are open — close one first.")
             return None
-        _say("")
+        if live["client"] is not None and not in_kernel:
+            where = str(workspace or "").strip() or default_workspace(ctx)
+            live["note"] = ""
+            rec = _open_in_service(where, resume=sid)
+            if rec is not None:
+                return rec
+            _say(live["note"] or _kernel_notice())
+        elif connector is not None and not in_kernel:
+            _say(_kernel_notice())
+        else:
+            _say("")
         key = _address_for(sid)
         where = str(workspace or "").strip() or default_workspace(ctx)
         session_ctx = _SessionContext(
@@ -1366,6 +1856,20 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
                 shutdown()
         except Exception:
             pass
+        if rec.get("live"):
+            # Only this view goes: the session runs on in the service, its
+            # worktree and its presence record are the worker's.
+            sessions.remove(rec)
+            stage.children = tuple(r["tab"] for r in sessions)
+            if sessions and view["active"] == key:
+                activate(sessions[-1]["key"])
+            elif not sessions:
+                view["active"] = ""
+            _render_list()
+            running_panel.render()
+            _persist()
+            _refresh_resume_options()
+            return
         try:
             from delfin.agent import session_presence as _presence
             _presence.withdraw(key)
@@ -1400,7 +1904,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         """Titles, the working marker, the shared engine for the Activity
         tab, and the remembered list once a session has an id."""
         changed = False
+        _reconnect()
+        if live["client"] is not None:
+            running_panel.render()        # the ages; the rows follow events
         for rec in sessions:
+            if rec.get("live"):
+                # The service's session: named, announced and messaged by
+                # its worker; its view follows the service's events.
+                _on_live_change(rec["key"])
+                continue
             state = _state(rec)
             label = _session_title(state)
             if rec["title_btn"].description != label:
@@ -1488,6 +2000,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         Idempotent; called from inside a tick it marks the stop and the
         tick does not reschedule."""
         loop["stopped"] = True
+        running_panel.detach()
         timer = loop["timer"]
         if timer is not None:
             timer.cancel()
@@ -1662,17 +2175,28 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
             wanted = ""
     if wanted and all(row["session_id"] != wanted for row in rows):
         rows.insert(0, {"session_id": wanted, "workspace": ""})
+    _connect()
     for row in rows[:_MAX_OPEN]:
+        if live["client"] is not None and running_panel.running.summary(row["session_id"]):
+            # The service runs it (or keeps it asleep): a view on it.
+            try:
+                open_live(row["session_id"], row["workspace"])
+            except Exception:
+                pass
+            continue
         data = _saved_session(row["session_id"])
         if not data:
             continue                    # deleted since: nothing to reopen
         try:
+            # Saved: resumed in the service when there is one, else here.
             open_session(row["workspace"] or str(data.get("workspace") or ""),
                          row["session_id"])
         except Exception:
             continue
     if not sessions:
         open_session()
+    if connector is not None and live["client"] is None:
+        _say(_kernel_notice())
     if wanted:
         for rec in sessions:
             if _session_id(rec) == wanted:
@@ -1719,4 +2243,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None):
         # removes directories should not be reachable only at startup.
         "reclaim_worktrees": reclaim_orphaned_worktrees,
         "notice": notice,
+        "service": lambda: live["client"],
+        "running": running_panel.running,
+        "running_panel": running_panel,
+        "open_live": open_live,
     }

@@ -344,7 +344,14 @@ def test_every_control_of_the_live_tab_reaches_the_session(service, tui, dash):
     tui.wait_for(lambda e: e.get("type") == "session.updated" and e.get("approval") == "plan", after=mark)
     assert _until(lambda: refs["transcript"].info.get("approval") == "plan")
     # The control shows what the session has, not what was clicked.
-    assert refs["perm"].value == "plan"
+    assert _until(lambda: refs["perm"].value == "plan")
+    # Bypass asks a second time before it is sent.
+    mark = len(tui.events)
+    refs["perm"].value = "bypassPermissions"
+    assert "again" in refs["notice"].value and refs["perm"].value == "plan"
+    time.sleep(0.3)
+    assert not [e for e in tui.events[mark:] if e.get("type") == "session.updated"
+                and e.get("approval") == "bypassPermissions"]
     mark = len(tui.events)
     refs["effort"].value = "high"
     tui.wait_for(lambda e: e.get("type") == "user.message" and e.get("text") == "/effort high", after=mark)
