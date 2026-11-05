@@ -485,4 +485,30 @@ def status() -> dict:
         processes.append({"pid": pid, "command": cmdline[:160]})
     result["agent_processes_here"] = processes
     result["outlived_their_start_here"] = _outlived_their_start()
+    result["agent_service"] = _agent_service_here()
     return result
+
+
+def _agent_service_here() -> dict | None:
+    """The agent service of this host, as it is meant to run: on its own,
+    whatever started it (a terminal, a dashboard), with the sessions its
+    roster lists -- None when none runs. Its sessions outlive every window
+    on purpose; this says that they are there."""
+    try:
+        from .service import rundir
+        pid = rundir.service_pid()
+        if not pid:
+            return None
+        info = rundir.read_run_file() or {}
+        try:
+            roster = json.loads(rundir.roster_file().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            roster = {}
+        sessions = roster.get("sessions") or [] if isinstance(roster, dict) else []
+        dormant = roster.get("dormant") or [] if isinstance(roster, dict) else []
+        return {"pid": pid, "socket": str(info.get("socket") or ""),
+                "started_at": info.get("startedAt") or info.get("started_at"),
+                "sessions": len(sessions), "asleep": len(dormant),
+                "runs_on_its_own": True}
+    except Exception:
+        return None
