@@ -77,12 +77,27 @@ class FakeDaemon:
         self.dropped: list[str] = []
         self.links: list[str] = []
         self.updated: list[tuple[str, str, str]] = []
+        self.quotes: list[tuple[str, str]] = []
+        self.profile_commands: list = []
+        self.contact_menus: list[tuple[str, list]] = []
+        self.group_menus: list[tuple[str, list]] = []
         self._item = 0
 
-    async def send_chat(self, chat, text):
+    async def send_chat(self, chat, text, quote=None):
         self.sent.append((chat, text))
+        if quote is not None:
+            self.quotes.append((chat, str(quote)))
         self._item += 1
         return {"chatItems": [{"chatItem": {"meta": {"itemId": self._item}}}]}
+
+    async def set_bot_profile(self, commands):
+        self.profile_commands = list(commands)
+
+    async def set_contact_menu(self, cid, commands):
+        self.contact_menus.append((str(cid), list(commands)))
+
+    async def enable_receipts(self):
+        pass
 
     async def update_message(self, chat, item_id, text):
         self.updated.append((chat, str(item_id), text))
@@ -94,8 +109,10 @@ class FakeDaemon:
     async def invite(self, chat, cid):
         self.invited.append((chat, cid))
 
-    async def rename_group(self, chat, title):
+    async def rename_group(self, chat, title, commands=None):
         self.renamed.append((chat, title))
+        if commands is not None:
+            self.group_menus.append((chat, list(commands)))
 
     async def new_invitation(self):
         n = len(self.links) + 1
