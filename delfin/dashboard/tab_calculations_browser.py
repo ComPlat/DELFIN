@@ -9110,10 +9110,11 @@ def create_tab(ctx):
             # re-checks and explains why a file does not qualify, so the
             # dropdown never guesses from the name alone.
             try:
+                # Head-only check: this runs on every .out selection, so
+                # it must not read a whole (possibly huge) output.
                 out_path_candidate = _calc_path_for_label(selected)
-                from delfin.ts_goat import read_ts_status
-                _ts_status = read_ts_status(out_path_candidate)
-                if _ts_status.is_ts:
+                from delfin.ts_goat import is_optts_output
+                if is_optts_output(out_path_candidate):
                     out_options.append('TS → GOAT')
             except Exception:
                 pass

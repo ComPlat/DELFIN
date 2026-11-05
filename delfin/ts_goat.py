@@ -193,6 +193,29 @@ def read_inp_charge_mult(inp_path: Path) -> tuple[int | None, int | None]:
     )
 
 
+#: ORCA simple keywords are case-insensitive (``! optts`` is valid input).
+_OPTTS_RE = re.compile(r"\bOptTS\b", re.IGNORECASE)
+#: ORCA echoes the input near the top of the output, after the program
+#: header (a few tens of kB); 1 MiB leaves ample room for long inputs.
+_OPTTS_HEAD_BYTES = 1 << 20
+
+
+def is_optts_output(out_path: Path, max_bytes: int = _OPTTS_HEAD_BYTES) -> bool:
+    """Whether the input echo at the head of an ORCA output names OptTS.
+
+    Reads at most ``max_bytes``: this answers the Calculations Browser's
+    option list on every selection of a .out, where a full read of a
+    multi-hundred-MB output would block the tab. The TS -> GOAT panel
+    still runs :func:`read_ts_status` on the whole file when it opens.
+    """
+    try:
+        with Path(out_path).open("rb") as handle:
+            head = handle.read(max(0, int(max_bytes)))
+    except OSError:
+        return False
+    return bool(_OPTTS_RE.search(head.decode("utf-8", errors="ignore")))
+
+
 def read_ts_status(out_path: Path) -> TSStatus:
     """Is this .out an OptTS job, did it converge, how many imaginary modes?"""
     status = TSStatus()
@@ -203,7 +226,7 @@ def read_ts_status(out_path: Path) -> TSStatus:
         status.reasons.append(f"output not readable: {exc}")
         return status
 
-    status.is_ts = bool(re.search(r"\bOptTS\b", text))
+    status.is_ts = bool(_OPTTS_RE.search(text))
     if not status.is_ts:
         status.reasons.append("no OptTS keyword in the output")
 
