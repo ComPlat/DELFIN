@@ -358,6 +358,21 @@ Within OCCUPIER this is split once more: keys that only the stage frequency jobs
 | `XTB_preOPT` | `no` | Run xTB geometry optimisation before DFT |
 | `global_optimizer` | (empty) | Global optimisation: `GOAT`, `CREST`, or none |
 | `multiplicity_global_opt` | (empty) | Override multiplicity for pre-optimisation |
+| `global_opt_method` | (empty) | Method GOAT optimises with: empty = the `xTB_method`; `mlip:uma`, `mlip:mace`, `mlip:orb` or `mlip:aimnet2` = an orca-mlips machine-learned potential through ORCA's ExtOpt. Not with CREST |
+| `global_opt_mlip_model` | (empty) | Model name for the orca-mlips plugin (`--model`); empty = its default |
+| `global_opt_mlip_device` | `cuda` | `cuda` or `cpu`; `cuda` without a visible GPU stops the GOAT step |
+| `refuse_noncommercial_weights` | `no` | `yes` refuses MLIP weights under a non-commercial licence (`mlip:mace`) |
+
+With `global_opt_method=mlip:<plugin>` the GOAT step runs inside the
+workflow's own job, so that job must run on a node with the GPU (and the
+orca-mlips environment active). The files keep their names
+(`<xTB_method>_GOAT/XTB_GOAT.inp`, `output_XTB_GOAT.out`,
+`XTB_GOAT.globalminimum.xyz`); `XTB_GOAT.method.json` records the method.
+The ensemble's MLIP energies are a screen: for charged, open-shell or
+metal-containing systems re-rank the lowest conformers with DFT. Weights:
+UMA is gated (your own HuggingFace access), MACE is non-commercial
+(Academic Software License). The four keys are not in the shipped
+template; without them GOAT runs with xTB exactly as before.
 
 The older spellings are still accepted, so existing CONTROL.txt files keep
 working unchanged: `XTB_preOPT` is read as the older `XTB_OPT`, and `XTB_GOAT=yes` /
@@ -1883,6 +1898,16 @@ Self-contained work is delegated to an isolated agent with its own tool loop and
 Launch with `/explore`, `/review`, `/plan`, `/delegate <task>`, or let the agent delegate on its own. Several run in parallel — a writing preset gets its own git worktree, so concurrent edits cannot collide — or in the background, and a finished one can be continued with its context intact. Each run is bounded in wall-clock time, tool calls and output, and a subagent may not spawn subagents of its own unless that depth is raised; both in Settings.
 
 Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
+
+### A workspace folder without git: local projects
+
+Worktrees, branches, parallel writing subagents and sessions in their own worktree need git. When one of them is requested in a workspace folder that is not a git repository (for example your default `agent_workspace`), the agent asks you once whether the folder should become a **local** repository. A yes runs `git init` (branch `main`), writes a `.gitignore` and makes one first commit of what is there. Kept out of that commit, and of later ones: QM program output and artifacts (`*.out`, `*.gbw`, `*.hess`, `*.engrad`, `*.densities`, `*.tmp`, `*.opt`, ..., and any file whose content is ORCA output whatever its name -- ORCA output may not be redistributed, see LICENSE_GUARD.md), checkpoints and model weights (`*.ckpt`, `*.pt`, `*.pth`, `*.safetensors`), archives, files above 10 MB (listed by name), nested repositories and secrets (`.env`, `credentials*`, `*.key`, `id_*`). An existing `.gitignore` is extended, not replaced. No remote is added: nothing leaves the machine, and adding a remote (`git remote add origin <url>`) is your step. A no leaves the folder unchanged and is not asked again in that session. Refused without a question: your home directory itself, system paths, a mount point, a folder inside another repository, plan mode and auto iterations.
+
+With a local project:
+
+- `orchestrate` gives each writing subagent its own worktree and branch; with `"merge": true` the finished worktrees are merged back into the folder, uncommitted, for review. A conflict is reported (`merges[].status = "conflict"`) and leaves the folder as it was, the conflicting worktree kept for a manual merge. A writer that asked for its own worktree never runs in the folder itself.
+- Several sessions in the same workspace: start each in its own worktree ("Own worktree" in the dashboard's new-session form; `session.create` with `worktree: true` in the agent service -- with `initProject: true` once you agreed to make a plain folder a local project). The trees live in `<workspace>/.delfin/worktrees/`, each on a `session/...` branch. `session.merge` brings a finished session's commits and changes back into the folder (refused while a session still works in that tree); a conflict is reported and nothing is written.
+- The branch views list the local branches; Pull is disabled with the reason (there is no `origin`).
 
 ### Memory and sessions
 

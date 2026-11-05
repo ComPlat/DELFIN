@@ -566,6 +566,8 @@ MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".delfin/messenger_sessions",
     # The user's schedules (delfin.agent.schedules).
     ".delfin/user_schedules",
+    # The workspace freedom profiles (delfin.agent.workspace_profiles).
+    ".delfin/user_schedules/workspace_profiles.json",
 )
 
 
