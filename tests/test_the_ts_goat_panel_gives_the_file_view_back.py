@@ -81,3 +81,28 @@ def test_opening_another_file_restores_label_and_toolbar(refs):
     _open_panel(refs)
     _click(refs, 'other.out')
     _assert_file_view(refs)
+
+
+def test_a_refusal_shows_the_folder_name_as_text(tmp_path):
+    """The no-geometry refusal names the folder; markup in it stays text."""
+    calc = tmp_path / 'calc'
+    for name in ('calc', 'archive', 'office'):
+        (tmp_path / name).mkdir()
+    job = calc / '<img src=x onerror=alert(1)>'
+    job.mkdir()
+    (job / 'ts.out').write_text(
+        '|  1> ! OptTS\nTHE OPTIMIZATION HAS CONVERGED\n'
+        '     6:      -567.89 cm**-1  ***imaginary mode***\n',
+        encoding='utf-8')
+    ctx = DashboardContext(
+        calc_dir=calc, archive_dir=tmp_path / 'archive',
+        office_dir=tmp_path / 'office')
+    ctx.run_js = lambda script: None
+    ctx.backend = _FakeBackend()
+    _widget, refs = browser.create_tab(ctx)
+    refs['calc_path_input'].value = str(job)
+    _click(refs, 'ts.out')
+    refs['calc_options_dropdown'].value = 'TS → GOAT'
+    shown = refs['calc_ts_goat_panel'].children[0].value
+    assert 'No matching TS geometry' in shown
+    assert '<img' not in shown and '&lt;img' in shown

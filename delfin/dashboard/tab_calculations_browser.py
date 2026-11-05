@@ -10406,9 +10406,11 @@ def create_tab(ctx):
                 )
                 if open_result['error']:
                     _ts_restore_file_ui()
+                    # the message carries folder names and exception
+                    # text: external text, escaped like every other
                     calc_ts_goat_panel.children = [widgets.HTML(
                         '<b>TS → GOAT:</b> '
-                        + open_result['error'])]
+                        + _html.escape(str(open_result['error'])))]
                 else:
                     calc_ts_goat_panel.children = [open_result['panel']]
                     _ts_collect_speed(open_result['panel'])
