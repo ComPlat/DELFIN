@@ -52,11 +52,32 @@ def _env_float(name: str, default: float) -> float:
 
 
 def session_params(entry: dict, settings: dict | None) -> dict:
-    """The session.create settings of a run of ``entry``."""
+    """The session.create settings of a run of ``entry``.
+
+    The bypass cap of ``scheduled_permission_mode`` is replaced by the
+    caged rule (the swarm side's, ``api_client._bash_runs_caged``): the
+    run starts in bypassPermissions only when the host can hold a shell
+    command in the bash cage (``workspace_profiles.host_cage_decision``,
+    the same decision the bash executor builds its argv from) AND the
+    schedule's workspace carries the confirmed profile ``free`` --
+    workspace work inside the cage runs free, push, network, installers
+    and anything uncaged still ask. Every other case keeps the capped
+    ``acceptEdits``.
+    """
     from ..scheduler_daemon import scheduled_permission_mode
+    from .. import workspace_profiles
     mode = scheduled_permission_mode(settings or {})
-    if mode not in ("plan", "default", "acceptEdits"):
-        mode = "acceptEdits" if mode == "bypassPermissions" else "default"
+    if mode not in ("plan", "default", "acceptEdits", "bypassPermissions"):
+        mode = "default"
+    if mode == "bypassPermissions":
+        try:
+            caged = workspace_profiles.host_can_cage()
+            free = workspace_profiles.get_profile(
+                str(entry["workspace"])) == "free"
+        except Exception:
+            caged, free = False, False
+        if not (caged and free):
+            mode = "acceptEdits"
     task = str(entry.get("task") or "")
     title = f"schedule #{entry['id']} · {task[:40]}".strip()
     params: dict[str, Any] = {

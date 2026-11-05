@@ -1123,11 +1123,14 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
     # there. Read raw, like the kit files: load_settings() fills in a
     # value nobody chose. A value that is no mode (an old profile name)
     # is no setting.
+    # In the launcher's people mode the account's defaults file lies under
+    # the person's own (settings_layers: personal first).
     try:
-        from delfin.user_settings import get_settings_path
+        from delfin.user_settings import settings_layers
         from .launch_guard import _VALID_MODES
-        own = get_settings_path()
-        if own.exists():
+        for own in settings_layers():
+            if not own.exists():
+                continue
             agent_block = json.loads(own.read_text()).get("agent") or {}
             declared = agent_block.get("permission_mode")
             if isinstance(declared, str) and declared in _VALID_MODES:

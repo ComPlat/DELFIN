@@ -75,10 +75,21 @@ function Get-LoginKey {
     if ($line -notmatch '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [A-Za-z0-9@._-]{1,64})?$') { return $null }
     return [pscustomobject]@{ Key=$key; Public=$line }
 }
+function ConvertTo-GzipBase64([string]$path) {
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $buffer = New-Object IO.MemoryStream
+    $gzip = New-Object IO.Compression.GZipStream($buffer, [IO.Compression.CompressionMode]::Compress)
+    $gzip.Write($bytes, 0, $bytes.Length)
+    $gzip.Close()
+    return [Convert]::ToBase64String($buffer.ToArray())
+}
 function Get-RemoteCommand($p, [string]$role, [string]$tunnelPath = '', [string]$publicKey = '') {
-    $bootstrap = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'remote_bootstrap.sh')))
-    $payload = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'remote_launcher.py')))
-    $script = 'eval "$(printf %s ' + $bootstrap + ' | base64 -d)"'
+    # Both scripts travel gzip-compressed: as plain base64 they were 33k
+    # characters, over Windows' 32767-character command-line limit
+    # ("Der Dateiname oder die Erweiterung ist zu lang").
+    $bootstrap = ConvertTo-GzipBase64 (Join-Path $PSScriptRoot 'remote_bootstrap.sh')
+    $payload = ConvertTo-GzipBase64 (Join-Path $PSScriptRoot 'remote_launcher.py')
+    $script = 'eval "$(printf %s ' + $bootstrap + ' | base64 -d | gzip -dc)"'
     return 'bash -ilc ' + (Shell-Quote $script) + ' delfin ' + [int]$p.Port + ' ' + (Shell-Quote $p.Directory) + ' ' + (Shell-Quote $p.Executable) + ' ' + (Shell-Quote $payload) + ' ' + (Shell-Quote $role) + ' ' + (Shell-Quote $tunnelPath) + ' ' + $(if ($p.KeepSession) { '1' } else { '0' }) + ' ' + $(if ($p.OpenWorkingTerminal) { '1' } else { '0' }) + ' ' + (Shell-Quote (Get-PersonName)) + ' ' + (Shell-Quote $publicKey)
 }
 function Get-FreeLocalPort([int]$preferred) {

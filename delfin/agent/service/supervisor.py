@@ -71,7 +71,8 @@ FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
                        "session.toggleTasks", "session.setTitle"})
 
 #: What a watch-only connection may not do.
-ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
+ACTING = frozenset({"session.create", "session.merge", "session.prompt",
+                    "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
                     "session.setTitle", "attention.answer", "attention.dismiss",
@@ -1044,11 +1045,78 @@ class Supervisor:
             # One session, one worker: two would append to the same log.
             raise _Refusal(protocol.NOT_ALLOWED,
                            f"session {resume} runs here already; attach to it")
+        worktree: dict = {}
+        if params.get("worktree") and not resume and not params.get("continue"):
+            # Its own worktree and branch of cwd's repository, so sessions
+            # of one person in one workspace do not edit each other's files
+            # (session_worktree.py). A resumed session keeps its folder.
+            from .. import session_worktree as _sw
+            from .. import worktree as _wt
+            try:
+                worktree = await asyncio.to_thread(
+                    _sw.start, cwd, init_project=bool(params.get("initProject")))
+            except _sw.NeedsLocalProject as exc:
+                raise _Refusal(protocol.NEEDS_LOCAL_PROJECT, exc.question) from None
+            except (_wt.WorktreeError, OSError) as exc:
+                raise _Refusal(protocol.NOT_ALLOWED, str(exc)) from None
+            params = {**params, "cwd": worktree["path"],
+                      "worktreeOf": str(cwd)}
+            cwd = Path(worktree["path"])
         self._creating += 1
         try:
-            return await self._create(client, params, cwd)
+            out = await self._create(client, params, cwd)
+        except BaseException:
+            if worktree:
+                # Nothing ran in it: no session, no tree left behind.
+                from .. import worktree as _wt
+                try:
+                    await asyncio.to_thread(_wt.exit_worktree, _wt.WorktreeInfo(
+                        repo_dir=Path(worktree["repo"]),
+                        path=Path(worktree["worktree"]),
+                        branch=worktree["branch"], base_ref=worktree["base_ref"],
+                        created_at=0.0), keep_if_changed=True)
+                except Exception:
+                    pass
+            raise
         finally:
             self._creating -= 1
+        if worktree:
+            out["worktree"] = worktree
+        return out
+
+    def _sessions_in(self, path: Path) -> list[str]:
+        """Ids of the running, starting and sleeping sessions whose folder
+        is *path* or inside it."""
+        def inside(cwd) -> bool:
+            try:
+                return Path(str(cwd)).resolve().is_relative_to(path)
+            except (OSError, ValueError):
+                return False
+        ids = [sid for sid, s in self.sessions.items()
+               if inside(s.settings.get("cwd"))]
+        ids += ["(starting)" for s in self.starting if inside(s.settings.get("cwd"))]
+        ids += [sid for sid, rec in self.dormant.items()
+                if inside((rec.get("settings") or {}).get("cwd"))]
+        return ids
+
+    async def _m_session_worktrees(self, _client: Client, params: dict) -> dict:
+        from .. import session_worktree as _sw
+        rows = await asyncio.to_thread(_sw.listing, str(params["cwd"]))
+        for row in rows:
+            row["sessions"] = self._sessions_in(Path(row.get("path", "")).resolve())
+        return {"worktrees": rows}
+
+    async def _m_session_merge(self, _client: Client, params: dict) -> dict:
+        from .. import session_worktree as _sw
+        path = Path(str(params["path"])).expanduser()
+        if not path.is_absolute() or not path.is_dir():
+            raise _Refusal(protocol.INVALID_PARAMS, f"no such worktree: {path}")
+        busy = self._sessions_in(path.resolve())
+        if busy:
+            raise _Refusal(protocol.NOT_ALLOWED, (
+                f"session(s) {', '.join(busy)} work in {path}; end them "
+                "first -- a clean merge removes the worktree"))
+        return await asyncio.to_thread(_sw.merge, str(path))
 
     async def _create(self, client: Client, params: dict, cwd: Path) -> dict:
         args = [*self.worker_cmd, "--cwd", str(cwd)]
@@ -1210,6 +1278,78 @@ class Supervisor:
         self.restart = bool(params.get("restart"))
         asyncio.get_running_loop().call_soon(self.stop, "restart" if self.restart else "stop")
         return {"stopping": True, "sessions": count}
+
+    # -- branches (delfin/agent/branch_ops.py) --------------------------------------------
+    # The dashboard's branch logic, run in a workspace. Nothing here
+    # switches the shared checkout; a deletion goes only through
+    # branch_cleanup.delete (confirm=true), with its rules re-read at
+    # deletion. Every handler runs in a thread: branch.test runs pytest in
+    # a worktree, which takes minutes.
+
+    @staticmethod
+    def _branch_workspace(params: dict) -> dict:
+        """branch_ops' answer for *params*, or the not-a-checkout answer."""
+        workspace = Path(str(params.get("workspace") or "")).expanduser()
+        if not str(params.get("workspace") or "").strip() or not workspace.is_dir():
+            return {"ok": False, "text": f"no such folder: {params.get('workspace')!r}"}
+        return {"workspace": workspace}
+
+    async def _m_branch_list(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"], "rows": []}
+        answer = await asyncio.to_thread(
+            branch_ops.rows, ws["workspace"], str(params.get("view") or "mine"),
+            str(params.get("text") or ""),
+            refresh=bool(params.get("refresh")))
+        if not isinstance(answer, dict) or not answer.get("ok"):
+            # branch_ops.rows answers the refusal dict for a non-checkout;
+            # a service call carries it as its own answer.
+            if isinstance(answer, dict):
+                return answer
+            return {"ok": False, "text": "not a git checkout", "rows": []}
+        return answer
+
+    async def _m_branch_pull(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"]}
+        return await asyncio.to_thread(branch_ops.pull_main, ws["workspace"])
+
+    async def _m_branch_test(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"]}
+        ref = str(params.get("ref") or "").strip()
+        if not ref:
+            return {"ok": False, "text": "no branch named"}
+        return await asyncio.to_thread(
+            branch_ops.test_branch, ws["workspace"], ref,
+            keep=bool(params.get("keep")))
+
+    async def _m_branch_cleanup(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"], "candidates": []}
+        delete = [str(n) for n in params.get("delete") or []]
+        if not delete:
+            candidates, kept = await asyncio.to_thread(
+                branch_ops.cleanup_candidates, ws["workspace"],
+                include_unmerged=bool(params.get("includeUnmerged")),
+                refresh=bool(params.get("refresh")))
+            if candidates is None:
+                # a non-git workspace: the refusal, not an empty list
+                # (which would read as "nothing to clean up")
+                return {"ok": False, "text": "not a git checkout",
+                        "candidates": [], "kept": []}
+            return {"ok": True, "candidates": candidates, "kept": kept}
+        return await asyncio.to_thread(
+            branch_ops.cleanup_delete, ws["workspace"], delete,
+            confirm=bool(params.get("confirm")))
 
     # -- what needs the user ---------------------------------------------------------------
     async def _m_attention_list(self, _client: Client, _params: dict) -> dict:
