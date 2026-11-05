@@ -167,6 +167,45 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
     return 'SimpleX für diese Sitzung aktiviert. Der eingerichtete Messenger lädt dich in ihren Chat ein.'
 
 
+#: A session's deliberate notes to the phone (push_notification): at most
+#: one per NOTE_EVERY seconds, the last NOTE_KEEP kept.
+NOTE_EVERY = 60.0
+NOTE_KEEP = 5
+
+
+def _notes_path(sid, directory=None):
+    return _base(directory) / (hashlib.sha256(sid.encode()).hexdigest() + '.notes')
+
+
+def notes(sid, *, directory=None):
+    """The session's recent notes to the phone, oldest first:
+    ``[{"id", "ts", "title", "body"}]``."""
+    try:
+        value = json.loads(_notes_path(sid, directory).read_text())
+        return [n for n in value if isinstance(n, dict)] if isinstance(value, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def post_note(sid, title, body='', *, directory=None, now=None):
+    """Queue a note for the session's phone (the gateway sends it with its
+    next look). Output: True, ``'rate_limited'`` (one per NOTE_EVERY s),
+    or False when the session is not on the phone."""
+    import time
+    if not sid or not enabled(sid, directory=directory):
+        return False
+    now = time.time() if now is None else now
+    kept = notes(sid, directory=directory)
+    if kept and now - float(kept[-1].get('ts') or 0) < NOTE_EVERY:
+        return 'rate_limited'
+    from delfin.agent.state_paths import write_text_atomic
+    kept.append({'id': secrets.token_hex(6), 'ts': now,
+                 'title': ' '.join(str(title or '').split())[:80],
+                 'body': str(body or '').strip()[:300]})
+    write_text_atomic(_notes_path(sid, directory), json.dumps(kept[-NOTE_KEEP:]))
+    return True
+
+
 class LocalSession:
     """Dashboard adapter in the existing private per-user socket directory.
 

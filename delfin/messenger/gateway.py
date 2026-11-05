@@ -224,6 +224,11 @@ class Rooms:
         self._more: dict[str, str] = {}
         #: chat -> (when, code) of each approval card sent (plain_decision).
         self._cards_sent: dict[str, deque] = {}
+        #: Session ids whose current turn the person started from the phone.
+        self._phone_turns: set = set()
+        #: Agent notes already handled, and when notes were sent per chat.
+        self._notes_seen: set = set()
+        self._notes_sent: dict[str, list] = {}
 
     # -- who is acting -------------------------------------------------------------
 
@@ -702,7 +707,7 @@ class Rooms:
                 return t('Im Forum nur Text an eine Sitzung, keine Befehle.')
             targets = [target]
             command = text.partition(' ')[0].lower().lstrip('/')
-        elif text.startswith('/') and command not in {'status', 'pending', 'stop', 'update'}:
+        elif text.startswith('/') and command not in {'status', 'pending', 'stop', 'update', 'details'}:
             return t('Unbekannter Befehl. /help zeigt die verfügbaren Befehle.')
         elif text.startswith('!'):
             return t('Ein Shell-Befehl vom Handy wird nicht ausgeführt. Bitte als Auftrag formulieren.')
@@ -729,9 +734,9 @@ class Rooms:
                         result = reply.get('error') or (t('Offene Anfragen oben; direkt darauf antworten.') if items else t('Nichts offen.'))
                     else:
                         result = reply.get('error') or self.pending_text(items)
-                elif command == 'status':
+                elif command in {'status', 'details'}:
                     reply = await self.session(target_sid, 'status')
-                    result = reply.get('error') or status_text(reply)
+                    result = reply.get('error') or status_text(reply, details=command == 'details')
                 elif (len(targets) == 1 and command not in {'stop', 'update'}
                       and (answered := await self.answer_open_question(target_sid, text, chat)) is not None):
                     result = answered
@@ -739,6 +744,8 @@ class Rooms:
                     action = 'stop' if command == 'stop' else 'update' if command == 'update' else 'prompt'
                     task = t(UPDATE) if command == 'update' else text
                     reply = await self.session(target_sid, action, **({'text': task} if action in {'prompt', 'update'} else {}))
+                    if action in {'prompt', 'update'} and not reply.get('error'):
+                        self._phone_turns.add(target_sid)
                     result = reply.get('error') or (t('Lauf wird angehalten.') if action == 'stop' else t('Nachricht übergeben.'))
             except Exception:
                 result = t('Zustellung unklar: Verbindung unterbrochen. Vor erneutem Senden /status prüfen.')
@@ -1571,13 +1578,16 @@ class Rooms:
                 fingerprint = (state, answer)
                 before = self._shown.get((chat, 'status'))
                 if state == 'running' and (before is None or before[0] != 'running'):
-                    # One "working" message per turn, in the session chat
-                    # only; it is edited when the turn ends.
-                    mids = await self.send(chat, t('⏳ Arbeitet …'))
-                    if mids:
-                        self._working[chat] = mids[-1]
+                    # One "working" message per turn the person started
+                    # from the phone, in the session chat only; it is
+                    # edited when the turn ends.
+                    if sid in self._phone_turns:
+                        mids = await self.send(chat, t('⏳ Arbeitet …'))
+                        if mids:
+                            self._working[chat] = mids[-1]
                 elif state in {'idle', 'done', 'failed', 'error', 'ended'} and before is not None \
                         and before != fingerprint:
+                    self._phone_turns.discard(sid)
                     working = self._working.pop(chat, None)
                     if working is not None:
                         try:
@@ -1594,6 +1604,7 @@ class Rooms:
                     elif state == 'failed':
                         notices.append(t('⚠️ Der Lauf ist fehlgeschlagen.'))
                 next_shown[(chat, 'status')] = fingerprint
+                await self.relay_notes(chat, room, status.get('notes') or [], forums)
                 pending = await self.session(sid, 'pending')
                 items = pending.get('items', [])
                 live_ids = {item['id'] for item in items}
@@ -1615,6 +1626,29 @@ class Rooms:
             self._shown = next_shown
             if relay_on and room.get('forum', True):
                 await self.relay_announcement(sid, room, bindings, forums)
+
+    #: The phone gets at most this many agent notes per chat per hour.
+    NOTES_PER_HOUR = 6
+
+    async def relay_notes(self, chat, room, notes, forums):
+        """The session's deliberate notes (push_notification) to its chat:
+        each once ("🔔 *title*\nbody"), notes older than ten minutes
+        never, at most NOTES_PER_HOUR per chat."""
+        now = time.time()
+        sent = [when for when in self._notes_sent.get(chat, []) if now - when < 3600]
+        for note in notes:
+            nid = str(note.get('id') or '')
+            if not nid or nid in self._notes_seen or now - float(note.get('ts') or 0) > 600:
+                self._notes_seen.add(nid)
+                continue
+            self._notes_seen.add(nid)
+            if len(sent) >= self.NOTES_PER_HOUR:
+                continue
+            sent.append(now)
+            text = '🔔 *' + (note.get('title') or '').replace('*', '') + '*' + \
+                   ('\n' + note['body'] if note.get('body') else '')
+            await self.send(chat, text)
+        self._notes_sent[chat] = sent
 
     async def relay_announcement(self, sid, room, bindings, forums):
         now = time.monotonic()

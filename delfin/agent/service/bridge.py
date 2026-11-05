@@ -687,7 +687,12 @@ class Bridge:
                     "folder": _truncate(self._redactor().text(Path(str(row.get("workspace") or "")).name), 60),
                     "messengerEnabled": True, "generation": self._record(sid).get("generation"),
                     "activity": _truncate(self._redactor().text(str(row.get("activity") or ""))),
-                    "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 4000)}
+                    "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 4000),
+                    # The session's deliberate notes to the phone (push_notification).
+                    "notes": [{"id": str(n.get("id") or "")[:16], "ts": n.get("ts"),
+                               "title": _truncate(self._redactor().text(str(n.get("title") or "")), 80),
+                               "body": _truncate(self._redactor().text(str(n.get("body") or "")), 300)}
+                              for n in activation.notes(sid, **self._where())]}
         if action == "pending":
             live = await self._request("session.pending", {"sessionId": sid})
             items = []

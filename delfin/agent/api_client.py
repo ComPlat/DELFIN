@@ -12723,7 +12723,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "push_notification",
             "description": (
-                "Send a local desktop notification. Use sparingly."
+                "Notify the user (desktop; phone if connected). Use sparingly."
             ),
             "parameters": {
                 "type": "object",
@@ -18805,7 +18805,7 @@ class _DocToolExecutor:
 
         # Notifications + remote triggers.
         if name == "push_notification":
-            return self._execute_push_notification(arguments)
+            return self._execute_push_notification(arguments, permissions)
         if name == "remote_trigger":
             return self._execute_remote_trigger(arguments, permissions)
 
@@ -27051,13 +27051,26 @@ class _DocToolExecutor:
 
     # ------- Notifications / remote triggers ------------------------------
 
-    def _execute_push_notification(self, arguments: dict) -> str:
+    def _execute_push_notification(self, arguments: dict, perms=None) -> str:
+        """A desktop notification, and a note to the person's phone when
+        this session is on it (messenger.activation.post_note: one per
+        minute; the gateway sends it). ``phone``: True, "rate_limited" or
+        False (not connected)."""
         from . import notify as _n
         title = str(arguments.get("title", "")).strip() or "delfin agent"
         body = str(arguments.get("body", ""))
         urgency = str(arguments.get("urgency", "normal"))
         ok = _n.send_notification(title, body, urgency=urgency)
-        return json.dumps({"status": "ok" if ok else "noop", "sent": ok})
+        phone: Any = False
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        if sid:
+            try:
+                from delfin.messenger.activation import post_note
+                phone = post_note(sid, title, body)
+            except Exception:
+                phone = False
+        return json.dumps({"status": "ok" if ok or phone is True else "noop",
+                           "sent": ok, "phone": phone})
 
     def _execute_remote_trigger(
         self, arguments: dict, perms: Optional["KitToolPermissions"]

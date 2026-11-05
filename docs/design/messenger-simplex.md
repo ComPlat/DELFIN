@@ -171,8 +171,18 @@ group's name says which session it is. In the forum each session's part starts
 with its name in bold (`*Office*`). No raw id or hash is shown anywhere
 (delfin/messenger/render.py).
 
-What a turn sends: one "⏳ Working …" message when it starts (edited to
-"✓ Done." when it ends) and the final answer as the model wrote it, in
+The phone is a contact channel: it hears questions, approvals, done and failed
+(the default level, `meldungen kurz`), and what the agent deliberately sends it;
+never a tool-call stream. `details` shows what the session is doing right now.
+`push_notification` reaches the phone when the session is on it
+(`activation.post_note`: one note per minute per session, the last five kept;
+the gateway sends each once as "🔔 *title*", at most six per chat per hour,
+none older than ten minutes); the tool result says `phone: true`,
+`"rate_limited"` or `false`.
+
+What a turn sends: one "⏳ Working …" message when it starts, only for a turn
+the person started from the phone (edited to "✓ Done." when it ends), and the
+final answer as the model wrote it, in
 SimpleX markdown. An answer longer than 900 characters is cut at a paragraph,
 sentence or word end with "… full answer: `more`"; `more` sends the next part.
 The first look at an idle session (a gateway start) sends nothing.

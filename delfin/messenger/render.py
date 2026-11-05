@@ -128,15 +128,15 @@ _STATE = {'idle': 'Bereit.', 'running': '⏳ Arbeitet …', 'needs_input': 'Wart
           'ended': 'Sitzung beendet.'}
 
 
-def status_text(reply: dict) -> str:
-    """``status``: the state in words, what it is doing, the last answer
-    (cut)."""
+def status_text(reply: dict, details: bool = False) -> str:
+    """``status``: the state in words and the last answer (cut);
+    ``details`` adds what the session is doing right now."""
     state = str(reply.get('state') or '')
     out = [t(_STATE[state]) if state in _STATE else state]
-    if reply.get('activity'):
+    if (details or state == 'running') and reply.get('activity'):
         out.append(str(reply['activity']))
     if reply.get('answer'):
-        out.append(cut(str(reply['answer']), 400)[0])
+        out.append(cut(str(reply['answer']), 1200 if details else 400)[0])
     return '\n'.join(filter(None, out))
 
 

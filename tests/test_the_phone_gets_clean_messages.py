@@ -120,6 +120,7 @@ def test_the_forum_names_the_session_in_bold(acct):
 def test_one_working_message_per_turn_and_a_clean_answer(acct):
     refresh(acct)
     assert acct.daemon.to("#a1") == [], "the first look at an idle session sends nothing"
+    acct.say("21", "#a1", "compute the barrier")     # a turn started from the phone
     acct.row["state"] = "running"
     refresh(acct)
     refresh(acct)
