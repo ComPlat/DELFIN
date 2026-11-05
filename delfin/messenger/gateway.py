@@ -1895,8 +1895,9 @@ class Rooms:
         token = _PERSON.set(person)
         try:
             await self.daemon.send_chat('@' + cid, t(
-                'Connected to {bot} ✓ ({who}). This phone reaches your sessions only. help lists the '
-                'commands.').format(bot=bot_name(), who=person_name(person)))
+                'Connected to {bot} ✓ ({who}). This phone reaches your sessions only.\n'
+                'Try: sessions – your running sessions · get N – bring one here · new NAME – start '
+                'one · help – all commands.').format(bot=bot_name(), who=person_name(person)))
             for other in self._phones(person):
                 if other != cid:
                     await self.daemon.send_chat('@' + other, t(

@@ -1,5 +1,6 @@
 """Adapt a live dashboard tab to the bridge, using its existing UI callbacks."""
 from __future__ import annotations
+import re
 import secrets
 import threading
 import time
@@ -162,12 +163,16 @@ class PairPanel:
     expiry and cancel. Everything else /pair says goes to the chat (``say``),
     and none of that carries the link or the security code.
 
-    ``render(html)``: sets the panel widget ("" hides it). ``ttl_s``: when
-    the panel is removed at the latest if no answer comes."""
+    ``render(html)``: sets the panel widget ("" hides it). ``on_stage``:
+    told the step the panel is at -- "offer" (scan the code), "code" (type
+    the code the phone got; the dashboard shows its code field) or None
+    (closed). ``ttl_s``: when the panel is removed at the latest if no
+    answer comes."""
 
-    def __init__(self, *, render, say, ttl_s=None, clock=time.monotonic):
+    def __init__(self, *, render, say, ttl_s=None, clock=time.monotonic, on_stage=None):
         from .pairing import INVITATION_TTL_S
         self.render, self.say, self.clock = render, say, clock
+        self.on_stage = on_stage or (lambda stage: None)
         self.ttl_s = INVITATION_TTL_S + 30 if ttl_s is None else float(ttl_s)
         self._deadline = None
         self._lock = threading.Lock()
@@ -178,7 +183,10 @@ class PairPanel:
         or the security code (the invitation and the connected step)."""
         text = str(text or '')
         return ('simplex:/' in text or 'simplex.chat/' in text
-                or text.startswith('Phone connected') or 'security code' in text)
+                or text.startswith('Phone connected') or 'security code' in text
+                or text.startswith('Wrong code'))
+
+    _LINK = re.compile(r'(?:simplex:/|https://simplex\.chat/)\S+')
 
     def show(self, text):
         if not self.transient(text):
@@ -187,10 +195,29 @@ class PairPanel:
                 self.say(text)
             return
         import html
+        text = str(text)
         with self._lock:
             self._deadline = self.clock() + self.ttl_s
-        self.render('<div class="delfin-messenger-pair"><pre style="white-space:pre-wrap;'
-                    'line-height:1.0;margin:4px 0">' + html.escape(str(text)) + '</pre></div>')
+        link = self._LINK.search(text)
+        if link:
+            from . import qr
+            # The steps and the link as text, the code as a picture: the
+            # text code's block lines are dropped beside it.
+            words = [line for line in text.splitlines() if not set(line) <= set('█▀▄ ')]
+            try:
+                picture = qr.svg(link.group(0), scale=4)
+            except Exception:  # noqa: BLE001 - the link below still works
+                picture = ''
+            body = ('<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start">'
+                    f'<div>{picture}</div><pre style="white-space:pre-wrap;margin:4px 0;flex:1 1 260px">'
+                    + html.escape('\n'.join(words)) + '</pre></div>')
+            stage = 'offer'
+        else:
+            body = ('<pre style="white-space:pre-wrap;margin:4px 0">' + html.escape(text) + '</pre>'
+                    '<div><b>Type the 6-digit code from your phone in the field below.</b></div>')
+            stage = 'code'
+        self.render('<div class="delfin-messenger-pair">' + body + '</div>')
+        self.on_stage(stage)
         if self.ttl_s > 0:
             timer = threading.Timer(self.ttl_s, self.expire_if_due)
             timer.daemon = True
@@ -200,6 +227,7 @@ class PairPanel:
         with self._lock:
             self._deadline = None
         self.render('')
+        self.on_stage(None)
 
     def expire_if_due(self):
         with self._lock:

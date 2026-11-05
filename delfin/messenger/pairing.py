@@ -401,19 +401,13 @@ def forget(requester: str) -> None:
 
 
 def qr_text(link: str) -> str | None:
-    """The link as a text QR code (qrencode -t utf8, an argument, never a
-    shell), or None when qrencode is not installed."""
-    import shutil
-    import subprocess
-    tool = shutil.which("qrencode")
-    if tool is None:
-        return None
+    """The link as a text QR code (half blocks, delfin/messenger/qr.py: no
+    tool needed), or None when it cannot be drawn."""
+    from . import qr
     try:
-        done = subprocess.run([tool, "-t", "utf8", "-m", "1", link], capture_output=True,
-                              text=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
+        return qr.text_blocks(link) + "\n"
+    except Exception:  # noqa: BLE001 - the link below still works
         return None
-    return done.stdout if done.returncode == 0 and done.stdout.strip() else None
 
 
 STEPS = ("Connect your phone in three steps:\n"
@@ -431,8 +425,6 @@ def offer_text(res: dict) -> str:
     parts = [STEPS, ""]
     if qr:
         parts.append(qr.rstrip("\n"))
-    else:
-        parts.append("(a QR code needs qrencode: apt install qrencode)")
     parts += [f"Link (one-time, valid {minutes} min, only for you):", link]
     return "\n".join(parts)
 

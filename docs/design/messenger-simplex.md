@@ -382,8 +382,13 @@ It installs the pinned simplex-chat build and lets its daemon create the bot
 profile, makes the gateway venv (Python 3.11 from `MESSENGER_PYTHON`, uv or
 `python3.11`; websockets with `--require-hashes`, DELFIN copied root-owned from
 the checkout the script lies in), writes the units and, with `--pair`, prints the
-invitation, as a QR code too when `qrencode` is installed, the link last (a
-phone's terminal shows the end of the output). It waits up to 60 s for a daemon
+invitation as a QR code (drawn by delfin/messenger/qr.py, no tool needed) and the
+link last (a phone's terminal shows the end of the output). In the dashboard the
+**Phone** button does the same as `/pair`: the panel above the input shows the
+steps, the code as a picture and the link; once the phone connects, a field for
+the 6-digit code appears (a wrong code keeps it, with the attempts left); a
+verified phone closes the panel. The first message on the phone names what to
+try: sessions, get N, new NAME, help. It waits up to 60 s for a daemon
 still starting. Scan the code or paste the link in SimpleX; once the phone
 connects, the script prints the security code (the chat core's `/_get code`,
 best effort) to compare on the phone, and the bot sends a first message.

@@ -476,8 +476,12 @@ DE = {
     '/pair {code}). Valid 10 minutes; until then nothing is done here.':
     'DELFIN-Kopplung: Code {code}. Am Rechner eingeben, wo die Kopplung gestartet wurde (in der Sitzung: '
     '/pair {code}). Gilt 10 Minuten; bis dahin wird hier nichts ausgeführt.',
-    'Connected to {bot} ✓ ({who}). This phone reaches your sessions only. help lists the commands.':
-    'Verbunden mit {bot} ✓ ({who}). Dieses Handy erreicht nur deine Sitzungen. hilfe zeigt die Befehle.',
+    'Connected to {bot} ✓ ({who}). This phone reaches your sessions only.\n'
+    'Try: sessions – your running sessions · get N – bring one here · new NAME – start '
+    'one · help – all commands.':
+    'Verbunden mit {bot} ✓ ({who}). Dieses Handy erreicht nur deine Sitzungen.\n'
+    'Probier: sitzungen – deine laufenden Sitzungen · hol N – eine hierher holen · neu NAME '
+    '– eine starten · hilfe – alle Befehle.',
     '📱 {label} · {state}': '📱 {label} · {state}',
     'Phone unpaired: {label}.': 'Handy entkoppelt: {label}.',
     'verified': 'bestätigt',

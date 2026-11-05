@@ -10930,11 +10930,21 @@ def create_tab(ctx):
     # chat by the height of the list, and closing it moved everything back.
     _palette_pop = widgets.VBox([palette_search, palette_select])
     _palette_pop.add_class("delfin-agent-palette-pop")
-    # The phone pairing panel (/pair): the one-time invitation shown here,
-    # never in the chat transcript or the saved session.
+    # The phone pairing panel (/pair, or the Phone button): the one-time
+    # invitation shown here, never in the chat transcript or the saved
+    # session; once the phone connected, a field for the code it got.
     messenger_pair_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    messenger_code_input = widgets.Text(
+        placeholder="6-digit code from your phone",
+        layout=widgets.Layout(width="200px"))
+    messenger_code_btn = widgets.Button(description="Confirm", button_style="primary",
+                                        layout=widgets.Layout(width="auto"))
+    messenger_cancel_btn = widgets.Button(description="Cancel", layout=widgets.Layout(width="auto"))
+    messenger_code_row = widgets.HBox(
+        [messenger_code_input, messenger_code_btn, messenger_cancel_btn],
+        layout=widgets.Layout(display="none", gap="6px", margin="2px 0 4px 0"))
     _input_area = widgets.VBox(
-        [_palette_pop, messenger_pair_html,
+        [_palette_pop, messenger_pair_html, messenger_code_row,
          widgets.HBox(
              [palette_toggle_btn, image_upload, input_row],
              layout=widgets.Layout(
@@ -10983,6 +10993,25 @@ def create_tab(ctx):
         _chat_area = widgets.HBox([chat_frame, agent_term_panel])
         _chat_area.add_class("delfin-agent-chat-row")
         ctx.add_init_js(_agent_term.init_js())
+    # Connect a phone: the same as typing /pair; the code goes the same way.
+    messenger_phone_btn = widgets.Button(
+        description="Phone", icon="mobile",
+        tooltip=("Connect your phone (SimpleX): scan the code shown above the input, "
+                 "then type the 6-digit code your phone gets."),
+        layout=widgets.Layout(width="auto", flex="0 0 auto"))
+
+    def _messenger_send_code(_b=None):
+        code = "".join(ch for ch in str(messenger_code_input.value or "") if ch.isdigit())
+        if len(code) != 6:
+            _append_system_message("The code has 6 digits; it is in the first message on your phone.")
+            return
+        messenger_code_input.value = ""
+        _handle_slash_command("/pair " + code)
+
+    messenger_phone_btn.on_click(lambda _b: _handle_slash_command("/pair"))
+    messenger_code_btn.on_click(_messenger_send_code)
+    messenger_cancel_btn.on_click(lambda _b: _handle_slash_command("/pair cancel"))
+    git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
@@ -15674,8 +15703,14 @@ def create_tab(ctx):
                 def _render(value):
                     messenger_pair_html.value = value
                     messenger_pair_html.layout.display = "" if value else "none"
+
+                def _stage(stage):
+                    # The code field only while the gateway waits for it.
+                    messenger_code_row.layout.display = "" if stage == "code" else "none"
+                    if stage != "code":
+                        messenger_code_input.value = ""
                 _panel = state["_messenger_pair_panel"] = _PairPanel(
-                    render=_render, say=_append_system_message)
+                    render=_render, say=_append_system_message, on_stage=_stage)
             if text[5:].strip().lower() == "cancel":
                 _panel.clear()
             _sid = str(getattr(state.get("engine"), "session_id", "")

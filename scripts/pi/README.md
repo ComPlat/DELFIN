@@ -360,7 +360,6 @@ Set up in one run on the Pi (or any Linux with systemd and glibc >= 2.34),
 after a deploy, as the admin user (`pi`; the agent user has no sudo):
 
 ```bash
-sudo apt install qrencode          # optional: the pairing link as a QR code
 sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair --name=Pi
 ```
 
