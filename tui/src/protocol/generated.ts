@@ -51,6 +51,7 @@ export interface PermissionReplyParams {
   "persist"?: boolean | null
   "text"?: string | null
   "command"?: string | null
+  "client"?: string | null
 }
 export interface SessionCommandsParams {}
 export interface SessionCompletePathParams {
@@ -158,6 +159,7 @@ export interface SessionInfoEvent {
   "workspace": string
   "provider": string
   "model": string
+  "effort"?: string | null
   "mode": string
   "approval": string
   "title"?: string | null
@@ -177,6 +179,7 @@ export interface SessionUpdatedEvent {
   "approval"?: string | null
   "model"?: string | null
   "effort"?: string | null
+  "mode"?: string | null
   "title"?: string | null
   "tasks"?: Record<string, unknown>[] | null
   "bypassBlocked"?: string | null
@@ -361,6 +364,7 @@ export interface PermissionResolvedEvent {
   "requestId": string
   "decision": string
   "by": string
+  "client"?: string | null
   "type": "permission.resolved"
   "session": string
   "ts": number
@@ -429,6 +433,7 @@ export interface SessionCreateParams {
   "briefTitle"?: string | null
   "worktree"?: boolean | null
   "initProject"?: boolean | null
+  "untitled"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
@@ -735,6 +740,8 @@ export interface SessionSummary {
   "activity"?: string | null
   "waiting"?: string | null
   "answer"?: string | null
+  "name"?: string | null
+  "lastInput"?: number | null
 }
 
 export interface AttentionItem {
