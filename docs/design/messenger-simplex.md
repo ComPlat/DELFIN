@@ -272,6 +272,11 @@ requires a vision-capable model. Downloads come only from the corresponding
 `datei NAME`. Images can also be downloaded as file attachments. Symlink,
 hardlink, device, directory and traversal downloads are rejected. Files are sent
 as binary data on explicit request, not automatically redacted like text summaries.
+`.delfin-messenger/` is read-only to the agent's write tools and shell write
+targets, except a plain file directly in the writing session's own `outbox`
+(`forum.txt` included); a refused write names that outbox path
+(`messenger.media.internal_write_refusal`, security event
+`messenger_internal_write`).
 
 Voice transcription is optional and local. `sudo bash scripts/pi/pi_messenger.sh
 --whisper` installs it: faster-whisper 1.2.1 in a venv of its own

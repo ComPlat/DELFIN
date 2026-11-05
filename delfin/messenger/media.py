@@ -26,12 +26,47 @@ def filename(name):
     return name or 'attachment.bin'
 
 
+#: The messenger's directory in a session workspace.
+ROOT = '.delfin-messenger'
+
+
+def session_hash(sid):
+    """The directory name of session ``sid`` under ROOT."""
+    return hashlib.sha256(str(sid).encode()).hexdigest()[:24]
+
+
+def internal_write_refusal(path, sid=''):
+    """Why the agent may not write ``path``, or None.
+
+    Input: the resolved target of a write tool or a shell write, and the
+    writing session's id. Under ROOT only a plain file directly in the
+    session's own ``outbox`` (what the phone can fetch, forum.txt
+    included) is writable; the phone's uploads (``inbox``), other
+    sessions' directories and everything else there are read-only to the
+    agent. Without a session id any session's outbox file is allowed.
+    The refusal names the outbox path, the one place to offer a file."""
+    parts = Path(str(path)).parts
+    if ROOT not in parts:
+        return None
+    at = parts.index(ROOT)
+    base, rest = Path(*parts[:at + 1]), parts[at + 1:]
+    own = session_hash(sid) if sid else ''
+    if len(rest) == 3 and rest[1] == 'outbox' and rest[0] == (own or rest[0]):
+        return None
+    outbox = base / (own or '<session>') / 'outbox'
+    return (f"'{path}' is inside the messenger's own directory, which is "
+            "read-only to the agent (the phone's uploads, other sessions' "
+            "files). To offer a file for download on the phone, write it "
+            f"as a plain file into {outbox}/ and name the file in your "
+            "reply; the user fetches it by that name.")
+
+
 @contextmanager
 def directory(workspace, sid, box):
     if not workspace or not Path(workspace).is_absolute():
         raise ValueError('Sitzung hat keinen gültigen Arbeitsordner.')
     fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    parts = ['.delfin-messenger', hashlib.sha256(sid.encode()).hexdigest()[:24], box]
+    parts = [ROOT, session_hash(sid), box]
     try:
         for part in parts:
             try:

@@ -21842,6 +21842,16 @@ class _DocToolExecutor:
         _rule_refusal = _rule_denies_path(perms, "write", resolved)
         if _rule_refusal:
             return _rule_refusal
+        # The messenger's directory: read-only but for a file offered in
+        # the session's own outbox (messenger.media.internal_write_refusal).
+        from delfin.messenger.media import internal_write_refusal
+        _messenger_refusal = internal_write_refusal(
+            resolved, str(getattr(perms, "task_session_id", "") or ""))
+        if _messenger_refusal:
+            _record_security_event(
+                "messenger_internal_write", name,
+                self._display_path(resolved, perms), blocked=True)
+            return _messenger_refusal
         if not _write_in_scope(resolved, perms):
             _record_security_event(
                 "out_of_write_scope", name, self._display_path(resolved, perms),

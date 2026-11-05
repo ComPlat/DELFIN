@@ -806,13 +806,13 @@ class Bridge:
             if row.get('workspace'):
                 from delfin.messenger.media import directory
                 with directory(row['workspace'], sid, 'outbox') as (_, outbox):
-                    text += ('\n\n[Messenger: Dateien/Bilder nur auf ausdrücklichen Wunsch des Nutzers '
-                             'für den Download in ' + str(outbox) + ' bereitstellen. '
-                             'Keine Geheimnisse oder Zugangsdaten exportieren. Den Dateinamen nennen; '
-                             'der Nutzer ruft ihn mit datei NAME ab. Kein kompletter Chat-Export. '
-                             'Für eine ausdrückliche kurze Mitteilung an andere Agenten kannst du forum.txt '
-                             'dort ablegen (max. 1400 UTF-8-Bytes). Nur bei vom Nutzer eingeschaltetem '
-                             'Austausch wird sie weitergegeben. Keine automatischen Antworten auf fremde Mitteilungen.]')
+                    text += ('\n\n[Messenger: offer files or images for download only when the user '
+                             'asks, as plain files in ' + str(outbox) + '. No secrets or credentials, '
+                             'no full chat export. Name the file; the user fetches it by that name. '
+                             'For an explicit short note to other agents, put forum.txt there '
+                             '(at most 1400 UTF-8 bytes); it is passed on only when the user turned '
+                             'the exchange on. No automatic replies to other agents\' notes. The rest '
+                             'of the messenger directory is read-only.]')
             reply = await self._request("session.prompt", {"sessionId": sid, "text": text, "how": "steer" if action == "update" else "queue"})
             return {"ok": True, "sessionId": sid, **reply}
         if action == "stop":
