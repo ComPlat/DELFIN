@@ -496,6 +496,29 @@ def _to_xyz(block: str, comment: str) -> str:
     return f"{len(atoms)}\n{comment}\n" + "\n".join(atoms) + "\n"
 
 
+def _write_whole(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` so that a reader sees the old file or the new one, never a
+    truncated one: write a temporary file in the same directory, then rename it over the
+    destination.  ``Path.write_text`` truncates the destination first, and a second run into
+    the same output directory (or anything reading it) then finds an empty frame file."""
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        _umask = os.umask(0)
+        os.umask(_umask)
+        os.chmod(tmp, 0o666 & ~_umask)          # the permissions write_text would give
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="delfin-manta",
@@ -644,13 +667,13 @@ def main(argv=None) -> int:
     for i, (xyz, label) in enumerate(isomers):
         fname = _safe_name(label, i)
         comment = f"{label}  |  {args.smiles}" if label else args.smiles
-        (out / fname).write_text(_to_xyz(xyz, comment))
+        _write_whole(out / fname, _to_xyz(xyz, comment))
         natoms = len(_atom_lines(xyz))
         manifest.append({"index": i, "label": label, "file": fname, "natoms": natoms})
         if not args.quiet:
             print(f"  [{i:03d}] {label or '(single)'}  ({natoms} atoms)  -> {fname}")
 
-    (out / "manifest.json").write_text(json.dumps(
+    _write_whole(out / "manifest.json", json.dumps(
         {
             "smiles": args.smiles,
             "count": len(manifest),
