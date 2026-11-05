@@ -136,7 +136,7 @@ DORMANT_KEEP_S = 7 * 86400.0
 #: the brief went out already.
 RESUME_SETTINGS = ("cwd", "name", "title", "model", "provider", "effort", "mode", "permissionMode",
                    "addDirs", "readDirs", "isolate", "noIsolate", "fake", "fakeDelay", "fakeSave",
-                   "brief", "briefTitle")
+                   "brief", "briefTitle", "untitled")
 
 #: How long a wake waits for the worker of a service that died to finish
 #: saving the session (it ends on its own when its pipe closes).
@@ -297,6 +297,8 @@ class Session:
         # What the agent view's row says (SESSION_SUMMARY's last five).
         self.first_prompt = ""
         self.last_prompt = ""
+        #: When someone last wrote to it (SESSION_SUMMARY.lastInput); 0: never.
+        self.last_input = 0.0
         self.activity = ""
         self.answer = ""
         self.subscribers: dict["Client", int] = {}    # client -> last seq replayed
@@ -410,6 +412,8 @@ class Session:
         if kind == "permission.resolved":
             return self.pending.pop(str(event.get("requestId")), None) is not None
         if kind == "user.message":
+            if str(event.get("source") or "user") in ("user", "queued", "steer"):
+                self.last_input = float(event.get("ts") or time.time())
             self.last_prompt = _gist(str(event.get("text") or ""))
             self.first_prompt = self.first_prompt or self.last_prompt
             return True
@@ -488,7 +492,8 @@ class Session:
                 "lastPrompt": self.last_prompt or None,
                 "activity": self.activity or None,
                 "waiting": _asked_gist(next(iter(self.pending.values()))) if self.pending else None,
-                "answer": self.answer or None}
+                "answer": self.answer or None,
+                "lastInput": round(self.last_input, 3) or None}
 
     def resume_settings(self) -> dict:
         """What resumes this session as it is now: its create settings, with
@@ -505,7 +510,12 @@ class Session:
             if self.info.get(info_key):
                 out[key] = str(self.info[info_key])
         if "title" in self.info and not self.info.get("title"):
-            out.pop("title", None)          # renamed back to the default
+            # Renamed back to the default: said explicitly, or a worker
+            # started with -n would take that address as its title again.
+            out.pop("title", None)
+            out["untitled"] = True
+        elif self.info.get("title"):
+            out.pop("untitled", None)
         approval = str(self.info.get("approval") or "")
         if approval in ("plan", "default", "acceptEdits"):
             out["permissionMode"] = approval
@@ -554,6 +564,12 @@ class Session:
         first = next((e for e, _ in older if e.get("type") == "user.message"), None)
         if first is not None:
             self.first_prompt = _gist(str(first.get("text") or "")) or self.first_prompt
+        if not self.last_input:
+            # A woken or resumed session: when it was last written to, from
+            # its log, so a quiet one does not look freshly used.
+            typed = [float(e.get("ts") or 0) for e, _ in older if e.get("type") == "user.message"
+                     and str(e.get("source") or "user") in ("user", "queued", "steer")]
+            self.last_input = max(typed, default=0.0)
 
 
 def _named(summary: dict) -> dict:
@@ -967,8 +983,10 @@ class Supervisor:
                 summary["name"] = protocol.display_name(title, summary.get("workspace"), sid)
                 if title:
                     record["settings"]["title"] = title
+                    record["settings"].pop("untitled", None)
                 else:
                     record["settings"].pop("title", None)
+                    record["settings"]["untitled"] = True
                 self._make_dormant(record)
                 # Saved under it too: stopped before it wakes, the session
                 # is still resumed by that name later.
@@ -1159,7 +1177,7 @@ class Supervisor:
                 args += [flag, str(params[key])]
         for key, flag in (("continue", "--continue"), ("fork", "--fork-session"),
                           ("isolate", "--isolate"), ("noIsolate", "--no-isolate"),
-                          ("fake", "--fake")):
+                          ("fake", "--fake"), ("untitled", "--untitled")):
             if params.get(key):
                 args.append(flag)
         if params.get("unattended"):

@@ -225,3 +225,57 @@ def test_a_person_sees_and_reaches_only_their_own_service(tmp_path, monkeypatch)
     finally:
         anna.stop()
         ben.stop()
+
+
+# -- a reset to the default stays one --------------------------------------------------
+
+def _sleepy(tmp_path: Path) -> ServiceProcess:
+    svc = ServiceProcess(tmp_path, start=False)
+    svc.env["DELFIN_AGENT_SLEEP_AFTER_S"] = "1"
+    svc.start()
+    return svc
+
+
+def _state_is(c: ServiceClient, sid: str, state: str) -> dict:
+    return _until(lambda: (lambda s: s if s["state"] == state else None)(_summary(c, sid)), 40)
+
+
+@pytest.mark.parametrize("asleep_when_reset", [False, True])
+def test_a_named_session_reset_to_the_default_stays_on_it_after_sleep(tmp_path, asleep_when_reset):
+    """Started with -n (its address), reset to the default name: the worker
+    must not fall back to the address when it wakes."""
+    svc = _sleepy(tmp_path)
+    try:
+        a = svc.client()
+        sid = svc.session(a, attach=False, name="the-address", cwd=str(svc.workspace("calc")))
+        default = f"calc · {sid[:8]}"
+        assert _summary(a, sid)["name"] == "the-address"
+        if not asleep_when_reset:
+            a.request("session.setTitle", {"sessionId": sid, "title": ""})
+        assert _state_is(a, sid, "sleeping")
+        if asleep_when_reset:
+            a.request("session.setTitle", {"sessionId": sid, "title": ""})
+        assert _summary(a, sid)["name"] == default
+        woken = a.request("session.attach", {"sessionId": sid, "turns": 0}, timeout=120)
+        assert woken["session"].get("title") in (None, "")
+        assert woken["summary"]["name"] == default
+        # Asleep again and woken again: still the default.
+        a.request("session.detach", {"sessionId": sid})
+        assert _state_is(a, sid, "sleeping")["name"] == default
+        again = a.request("session.attach", {"sessionId": sid, "turns": 0}, timeout=120)
+        assert again["summary"]["name"] == default
+        # A name given later is kept as usual.
+        a.request("session.setTitle", {"sessionId": sid, "title": "named again"})
+        assert _until(lambda: _summary(a, sid)["name"] == "named again")
+    finally:
+        svc.stop()
+
+
+def test_every_summary_says_when_someone_last_wrote_to_it(service):
+    a = service.client()
+    sid = service.session(a)
+    assert _summary(a, sid).get("lastInput") is None
+    t0 = time.time()
+    turn(a, sid, "hello")
+    got = _until(lambda: _summary(a, sid).get("lastInput"))
+    assert got and t0 - 1 <= got <= time.time() + 1

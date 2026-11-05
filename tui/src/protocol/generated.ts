@@ -430,6 +430,7 @@ export interface SessionCreateParams {
   "briefTitle"?: string | null
   "worktree"?: boolean | null
   "initProject"?: boolean | null
+  "untitled"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
@@ -737,6 +738,7 @@ export interface SessionSummary {
   "waiting"?: string | null
   "answer"?: string | null
   "name"?: string | null
+  "lastInput"?: number | null
 }
 
 export interface AttentionItem {

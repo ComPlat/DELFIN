@@ -43,6 +43,10 @@ CLIENT_NAME = "delfin-dashboard"
 #: Turns replayed when a session is opened (the TUI's replayTurns).
 REPLAY_TURNS = 20
 
+#: A session awake this long since anyone wrote to it (summary lastInput,
+#: else its start) is marked "running N h without input" in the list.
+IDLE_NOTICE_S = 3600.0
+
 
 class ServiceUnavailable(RuntimeError):
     """No agent service can be reached or started here; the text says why."""
@@ -285,6 +289,13 @@ class RunningList:
         for s in summaries:
             sid = str(s["sessionId"])
             word = state_word(s)
+            # A session runs on when its window is gone: one nobody wrote
+            # to for an hour is said so, beside its Stop.
+            idle = ""
+            if word != "asleep":
+                since = float(s.get("lastInput") or s.get("createdAt") or now)
+                if now - since >= IDLE_NOTICE_S:
+                    idle = f"running {age_text(now - since)} without input"
             rows.append({
                 "sessionId": sid,
                 "name": str(s.get("name") or protocol.display_name(
@@ -298,6 +309,7 @@ class RunningList:
                 "waiting": str(s.get("waiting") or ""),
                 "activity": str(s.get("activity") or ""),
                 "age": age_text(now - float(s.get("lastActivity") or now)),
+                "idle": idle,
                 "createdAt": float(s.get("createdAt") or 0.0),
             })
         rows.sort(key=lambda r: (_STATE_ORDER[r["state"]], -r["createdAt"]))

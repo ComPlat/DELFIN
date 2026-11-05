@@ -262,7 +262,11 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        # git becomes a local project first. Without it such
                        # a cwd is refused with NEEDS_LOCAL_PROJECT, the
                        # question to put in the error's text.
-                       "worktree": "boolean?", "initProject": "boolean?"},
+                       "worktree": "boolean?", "initProject": "boolean?",
+                       # untitled: renamed back to the default name; the
+                       # worker takes neither `name` nor a saved title as
+                       # its title (a wake of such a session sets it).
+                       "untitled": "boolean?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
     # The session worktrees of cwd's repository, and one merged back into
     # the main checkout (uncommitted, for review; a conflict changes
@@ -423,7 +427,11 @@ SESSION_SUMMARY: dict[str, str] = {
     # What every window calls it (display_name): its title, else the
     # default -- folder name and short id. Absent only in a roster written
     # by a service before this field.
-    "name": "string?"}
+    "name": "string?",
+    # When someone last wrote to it (a prompt typed, queued or steered; not
+    # one the harness sent), epoch seconds; none yet: absent. What a window
+    # tells a session that runs on unattended by.
+    "lastInput": "number?"}
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005

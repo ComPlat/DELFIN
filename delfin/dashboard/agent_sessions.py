@@ -1171,6 +1171,8 @@ _RUNNING_CSS = """<style>
 .delfin-running-item.delfin-running-needs { background: #fff7ed; }
 .delfin-running-item.delfin-running-needs .delfin-running-state { color: #c2410c; font-weight: 700; }
 .delfin-running-state { font-weight: 600; }
+.delfin-running-idle { color: #b45309; font-weight: 600; }
+.delfin-running-item .delfin-running-stop { opacity: 1; color: #b91c1c; }
 .delfin-running-rename { gap: 4px; }
 .delfin-running-rename .widget-text { width: 100% !important; margin: 0; }
 .delfin-running-rename .jupyter-button { width: auto !important; height: 24px !important;
@@ -1198,6 +1200,12 @@ class RunningPanel:
         self.is_open = is_open
         self.running = LS.RunningList()
         self.buttons: dict[str, widgets.Button] = {}
+        #: Each row's Stop, its confirmation and the two answers: nothing
+        #: runs on forgotten (a session outlives every window).
+        self.stops: dict[str, widgets.Button] = {}
+        self.confirms: dict[str, widgets.HBox] = {}
+        self.confirm_yes: dict[str, widgets.Button] = {}
+        self.confirm_no: dict[str, widgets.Button] = {}
         self._rows: dict[str, dict] = {}
         self._timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
@@ -1269,12 +1277,40 @@ class RunningPanel:
         rename = widgets.HBox([edit, save, cancel], layout=widgets.Layout(display="none"))
         rename.add_class("delfin-running-rename")
         rename.add_class("delfin-live-rename")
-        text = widgets.VBox([title, info, rename])
+        stop = widgets.Button(description="■", tooltip=(
+            "Stop this session for every window (it is saved and can be resumed)"))
+        stop.add_class("delfin-session-close")
+        stop.add_class("delfin-running-stop")
+        yes = widgets.Button(description="End it", button_style="danger")
+        no = widgets.Button(description="Keep it")
+        confirm = widgets.HBox([widgets.HTML("End for every window?"), yes, no],
+                               layout=widgets.Layout(display="none"))
+        confirm.add_class("delfin-running-rename")
+        text = widgets.VBox([title, info, rename, confirm])
         text.add_class("delfin-session-text")
-        box = widgets.HBox([text, pencil])
+        box = widgets.HBox([text, pencil, stop])
         box.add_class("delfin-running-item")
         row = {"box": box, "title": title, "info": info, "pencil": pencil, "edit": edit,
-               "rename": rename, "classes": set()}
+               "rename": rename, "confirm": confirm, "classes": set()}
+
+        def ask_stop(_b=None, _row=row):
+            _row["confirm"].layout.display = ""
+
+        def keep(_b=None, _row=row):
+            _row["confirm"].layout.display = "none"
+
+        def end(_b=None, _row=row, _sid=sid):
+            _row["confirm"].layout.display = "none"
+            try:
+                self.client.stop(_sid)
+            except Exception as exc:
+                _row["info"].value = html.escape(f"not stopped: {getattr(exc, 'message', exc)}")
+
+        stop.on_click(ask_stop)
+        no.on_click(keep)
+        yes.on_click(end)
+        self.stops[sid], self.confirms[sid] = stop, confirm
+        self.confirm_yes[sid], self.confirm_no[sid] = yes, no
 
         def open_it(_b=None, _sid=sid):
             self.on_open(_sid)
@@ -1328,6 +1364,8 @@ class RunningPanel:
             bits = [html.escape(r["folder"]), html.escape(r["model"]), state, html.escape(r["age"])]
             if r["needs"] and r["waiting"]:
                 bits.append(html.escape(r["waiting"][:60]))
+            if r["idle"]:
+                bits.append(f'<span class="delfin-running-idle">{html.escape(r["idle"])}</span>')
             value = " · ".join(b for b in bits if b)
             if row["info"].value != value:
                 row["info"].value = value
@@ -1344,7 +1382,9 @@ class RunningPanel:
             children.append(row["box"])
         for sid in [s for s in self._rows if s not in {r["sessionId"] for r in rows}]:
             self._rows.pop(sid, None)
-            self.buttons.pop(sid, None)
+            for widgets_of in (self.buttons, self.stops, self.confirms, self.confirm_yes,
+                               self.confirm_no):
+                widgets_of.pop(sid, None)
         if tuple(self.list_box.children) != tuple(children):
             self.list_box.children = tuple(children)
         self.empty.layout.display = "none" if rows else ""

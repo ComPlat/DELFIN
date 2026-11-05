@@ -451,3 +451,47 @@ def test_one_click_in_the_running_list_opens_a_tui_session_here(home, service, t
     panel.buttons[other].click()
     assert sum(1 for r in refs["sessions"]() if r.get("session_id") == other) == 1
     refs["stop_refresh"]()
+
+
+# -- nothing runs forgotten -------------------------------------------------------------
+
+def test_a_long_quiet_session_is_named_as_such():
+    now = 100_000.0
+    listing = {"sessions": [
+        {"sessionId": "a" * 16, "title": "quiet", "workspace": "/w/a", "model": "m", "state": "idle",
+         "pending": 0, "createdAt": now - 4 * 3600, "lastActivity": now - 3 * 3600,
+         "lastInput": now - 3 * 3600 - 60},
+        {"sessionId": "b" * 16, "title": "fresh", "workspace": "/w/b", "model": "m", "state": "running",
+         "pending": 0, "createdAt": now - 600, "lastActivity": now, "lastInput": now - 300},
+        {"sessionId": "c" * 16, "title": "asleep", "workspace": "/w/c", "model": "m", "state": "sleeping",
+         "pending": 0, "createdAt": now - 9 * 3600, "lastActivity": now - 9 * 3600},
+        {"sessionId": "d" * 16, "title": "never asked", "workspace": "/w/d", "model": "m",
+         "state": "idle", "pending": 0, "createdAt": now - 2 * 3600, "lastActivity": now - 2 * 3600},
+    ]}
+    rows = {r["name"]: r for r in LS.RunningList.of(listing).rows(now=now)}
+    assert rows["quiet"]["idle"] == "running 3 h without input"
+    assert rows["fresh"]["idle"] == ""
+    assert rows["asleep"]["idle"] == ""          # asleep: nothing runs
+    assert rows["never asked"]["idle"] == "running 2 h without input"
+
+
+def test_every_running_session_has_a_stop_in_the_list_that_asks_first(home, service, tui, dash):
+    from delfin.dashboard import agent_sessions as AS
+
+    other = service.session(tui, cwd=str(service.workspace("forgotten")))
+    _widget, refs = AS.create_tab(_ctx(home), build=_Build(), service=lambda: dash,
+                                  session_defaults=lambda: dict(_FAKE))
+    panel = refs["running_panel"]
+    assert _until(lambda: other in panel.buttons)
+    assert set(panel.stops) == {r["sessionId"] for r in panel.rows()}
+    panel.stops[other].click()                              # asks first
+    assert panel.confirms[other].layout.display != "none"
+    assert other in {s["sessionId"] for s in tui.request("sessions.list")["sessions"]}
+    panel.confirm_no[other].click()
+    assert panel.confirms[other].layout.display == "none"
+    mark = len(tui.events)
+    panel.stops[other].click()
+    panel.confirm_yes[other].click()
+    tui.wait_for(lambda e: e.get("type") == "session.removed" and e.get("session") == other, after=mark)
+    assert _until(lambda: other not in panel.buttons)
+    refs["stop_refresh"]()

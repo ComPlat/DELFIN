@@ -1025,6 +1025,8 @@ def initial_title(args: argparse.Namespace, engine) -> str:
     """What a session is called when it starts: the title or the name given;
     resumed, continued or forked without one, the one it was saved under
     (if it was given one -- never the store's stand-in, its first message)."""
+    if getattr(args, "untitled", False) and not args.title:
+        return ""                     # reset to the default name: kept so
     title = args.title or args.name
     if not title and (args.resume or args.continue_session or args.fork_session):
         title = stored_title(str(getattr(engine, "session_id", "") or args.resume))
@@ -1054,7 +1056,8 @@ class Worker:
 
     def __init__(self, engine, *, writer: protocol.LineWriter, reader,
                  workspace: Path, banner: list[str], notices: list[str],
-                 name: str = "", title: str = "", fake: bool = False, save: bool = True):
+                 name: str = "", title: str | None = None, fake: bool = False,
+                 save: bool = True):
         from ..repl import ReplOptions
 
         self.engine = engine
@@ -1064,9 +1067,10 @@ class Worker:
         #: The address: the name it started with (mail, approvals and presence
         #: reach the session by it, or by its id when there is none).
         self.name = name
-        #: What it is called: the title given, else that name; a rename
-        #: changes this, never the address.
-        self.title = protocol.clean_title(title or name)
+        #: What it is called: the title given (initial_title: that name when
+        #: none, "" for a session renamed back to the default), else that
+        #: name; a rename changes this, never the address.
+        self.title = protocol.clean_title(name if title is None else title)
         self.fake = fake
         self.save = save
         sid = str(getattr(engine, "session_id", "") or "")
@@ -1809,6 +1813,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="the address the session is reached by (mail, approvals)")
     p.add_argument("--title", default="",
                    help="what the session is called (`/rename`); the name when not given")
+    p.add_argument("--untitled", action="store_true",
+                   help="renamed back to the default name: no title, neither the name "
+                        "(-n, its address) nor the saved one (the service's wake)")
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
     p.add_argument("--effort", default="")
