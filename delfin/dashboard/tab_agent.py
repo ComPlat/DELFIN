@@ -2707,12 +2707,14 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
 # The cap was defensible in itself; what it could not do is call itself
 # Bypass. A user who sets a control and is then asked anyway learns that
 # the control is decorative, and afterwards reads no label at all.
-PROFILE_TO_CLI_PERM: dict[str, str] = {
-    "plan":      "plan",                # read-only
-    "ask_all":   "default",             # asks before every write and shell
-    "repo_free": "acceptEdits",         # writes go through, shell asks
-    "all_free":  "bypassPermissions",   # asks nothing inside the folders
-}
+#
+# The table itself is delfin.agent.permission_profile.PROFILE_TO_MODE: the
+# terminal and headless doors start from the same stored profile, and one
+# object cannot drift from itself.
+from delfin.agent.permission_profile import (  # noqa: E402
+    PROFILE_TO_MODE as PROFILE_TO_CLI_PERM,
+    normalise as _normalise_profile,
+)
 
 
 def resolve_office_workspace(configured) -> Path | None:
@@ -7141,14 +7143,10 @@ def create_tab(ctx):
         finally:
             state["_controls_sync_internal"] = False
         _saved_perm = _saved.get("permission_profile", _saved.get("permission_mode", ""))
-        # Migrate old permission names to new profiles
-        _perm_migration = {
-            "default": "ask_all", "erlaubt": "repo_free", "full": "all_free",
-            "acceptEdits": "repo_free", "auto": "all_free",
-            "bypassPermissions": "all_free",
-        }
-        _saved_perm = _perm_migration.get(_saved_perm, _saved_perm)
-        if _saved_perm in ("plan", "ask_all", "repo_free", "all_free"):
+        # Old permission names migrate to the current profiles
+        # (permission_profile.LEGACY_NAMES); "" when it names none.
+        _saved_perm = _normalise_profile(_saved_perm)
+        if _saved_perm:
             # Assigning a value the dropdown does not carry raises, and
             # the whole restore -- model, effort, everything after it --
             # would be lost to the except below. Every rung is offered in

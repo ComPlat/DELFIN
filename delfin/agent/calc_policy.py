@@ -44,6 +44,13 @@ Resources
     :data:`MAX_QUEUED_JOBS` of the user's jobs pending or running with the
     new one.
 
+Information calls
+    ``xtb --version``, ``crest --cite``, ``orca -v``, ``sbatch --usage``,
+    ``command -v xtb`` (:func:`information_call`,
+    :data:`INFORMATION_FLAGS`) start nothing and are not checked as a
+    calculation: the verdict has ``information`` set and admits when the
+    command's other segments are auto-allowed.
+
 Rejected: a regular expression per program on the auto-allow list (what
 ``xtb <file>.xyz`` had). It admits ``-P 64`` on a login node and an odd
 electron count as readily as a correct run.
@@ -70,14 +77,38 @@ _DELFIN_RUN_FORMS = ((), ("--recalc",))
 _WRAPPERS = ("time", "nice", "nohup", "setsid", "timeout")
 _GEOMETRY_SUFFIXES = (".xyz", ".coord", ".sdf", ".mol", ".tmol")
 
+# The flags with which each program prints information and exits without
+# reading an input: its version, help, citation or licence. Spelled as the
+# program spells them (measured: xtb 6.7/3.0 `--help`; CREST 3.0.2 `--help`;
+# ORCA 6.1.1 prints its header and stops for each of the four; sbatch and
+# delfin per their argparse/getopt tables). Not here: xtb `-v` and CREST
+# `-v` (xtb's is --verbose and needs an input; CREST's aborts), and any
+# flag a program would read as an input name. CREST without an input reads
+# `coord` from the directory, so an unknown flag there is a run, which is
+# why the sets are exact and every word must be in them.
+INFORMATION_FLAGS = {
+    "xtb": ("--version", "--help", "-h", "--citation", "--license"),
+    "crest": ("--version", "--help", "-h", "--cite"),
+    "orca": ("--version", "-v", "--help", "-h"),
+    "delfin": ("--version", "-V", "--help", "-h"),
+    "sbatch": ("--version", "-V", "--help", "-h", "--usage"),
+}
+# `crest --help <section>` prints that section of the help.
+_CREST_HELP_SECTIONS = ("general", "compare", "conf", "thermo", "qcg",
+                        "other")
+
 
 @dataclass
 class Verdict:
+    """``information``: the command only asks the programs for their
+    version, help or location (information_call) and starts nothing;
+    ``calculation`` is then False."""
     calculation: bool = False
     admit: bool = False
     summary: str = ""
     reason: str = ""
     notes: list = field(default_factory=list)
+    information: bool = False
 
 
 @dataclass
@@ -117,13 +148,27 @@ def local_core_limit(kind: str) -> int:
     return max(1, _available_cpus() // 2)
 
 
+#: The most threads a command that names none gets outside a Slurm job.
+DEFAULT_THREADS_CAP = 4
+
+
 def default_threads(kind: str, env: Optional[dict] = None) -> int:
     """The thread count a program gets when its command names none.
 
-    The same number the agent's shell environment sets
-    (``_scrubbed_bash_env``): a value the user's environment already has,
-    the allocation inside a job, the login-node limit on a login node,
-    else at most four.
+    Input: the host kind and the environment (default ``os.environ``).
+    Output: the user's own ``OMP_NUM_THREADS`` when set (kept, and judged
+    like an explicit count); else ``SLURM_CPUS_PER_TASK``; else the unasked
+    local limit (``local_core_limit``), capped at
+    :data:`DEFAULT_THREADS_CAP` outside a Slurm job.
+
+    The one source of this number: the agent's shell environment sets it
+    (``api_client._scrubbed_bash_env``) and the calculation check assumes
+    it, so the two cannot disagree. It used to be ``min(4, os.cpu_count())``
+    on a workstation, against a limit of half the available CPUs: on a
+    4-core machine every command without ``-P`` asked for 4 cores where 2
+    run unasked, and was refused. Rejected: raising the limit to the
+    default -- the limit is the share of the user's own machine a command
+    may take without asking, the default has to fit inside it.
     """
     env = os.environ if env is None else env
     own = str(env.get("OMP_NUM_THREADS", "")).strip()
@@ -132,9 +177,10 @@ def default_threads(kind: str, env: Optional[dict] = None) -> int:
     cap = str(env.get("SLURM_CPUS_PER_TASK", "")).strip()
     if cap.isdigit() and int(cap) > 0:
         return int(cap)
-    if kind == "login_node":
-        return LOGIN_LOCAL_CORES
-    return max(1, min(4, os.cpu_count() or 1))
+    limit = local_core_limit(kind)
+    if kind == "slurm_job":
+        return max(1, limit)     # the allocation
+    return max(1, min(DEFAULT_THREADS_CAP, limit))
 
 
 def unasked_cpu_set(kind: Optional[str] = None) -> Optional[list]:
@@ -303,8 +349,11 @@ def _duration_s(text: str) -> Optional[float]:
                                 "d": 86400}[m.group(2)]
 
 
-def _parse_run(segment: str) -> Optional[_Run]:
-    """The calculation in one shell segment, or None if it starts none."""
+def _segment_words(segment: str) -> Optional[tuple]:
+    """``(words, env, wall_s, detached)`` of one shell segment: the
+    command's words after its leading assignments and launch wrappers
+    (time, nice, nohup, setsid, timeout), or None when it names no
+    command or does not tokenise."""
     text = segment.strip()
     detached = text.endswith("&") and not text.endswith("&&")
     if detached:
@@ -339,17 +388,14 @@ def _parse_run(segment: str) -> Optional[_Run]:
             wall = _duration_s(words.pop(0))
     if not words:
         return None
-    program = os.path.basename(words[0])
-    if program not in LOCAL_PROGRAMS + ("sbatch",):
-        return None
-    if program == "delfin" and tuple(
-            w for w in words[1:]
-            if not re.fullmatch(r"\d*>>?|\d*>&\d+|&>>?|\S*>\S*", w)
-    ) not in _DELFIN_RUN_FORMS:
-        return None
+    return words, env, wall, detached
+
+
+def _without_redirections(words: list) -> list:
+    """``words`` without the shell's redirections and their targets."""
     argv = []
     skip = False
-    for w in words[1:]:
+    for w in words:
         if skip:
             skip = False
             continue
@@ -359,7 +405,70 @@ def _parse_run(segment: str) -> Optional[_Run]:
         if re.match(r"^(\d*>>?|\d*<|&>>?)\S", w) or re.fullmatch(r"\d*>&\d+", w):
             continue
         argv.append(w)
-    return _Run(program, argv, env, wall, detached)
+    return argv
+
+
+def information_call(segment: str) -> Optional[str]:
+    """The program a segment only asks for information, else None.
+
+    Input: one shell segment (no ``;``/``&&``/``|``). Output: the program's
+    name when the segment is ``<program> <information flags>`` with every
+    word in :data:`INFORMATION_FLAGS` for that program (redirections and
+    leading assignments/wrappers allowed), or ``command -v``/``-V`` naming
+    programs of that table; else None.
+
+    Such a call reads no input and starts no calculation, so the setup
+    check does not apply. It refused ``xtb --version 2>&1 | head -3`` with
+    "no input file named on the command line" before. Anything else
+    stays with the check: an information flag next to an input name, a
+    flag outside the set, the bare program.
+    """
+    parsed = _segment_words(segment)
+    if parsed is None:
+        return None
+    words = parsed[0]
+    program = os.path.basename(words[0])
+    argv = _without_redirections(words[1:])
+    if program == "command":
+        if len(argv) >= 2 and argv[0] in ("-v", "-V") and all(
+                os.path.basename(w) in INFORMATION_FLAGS for w in argv[1:]):
+            return os.path.basename(argv[1])
+        return None
+    flags = INFORMATION_FLAGS.get(program)
+    if not flags or not argv:
+        return None
+    if (program == "crest" and len(argv) == 2 and argv[0] == "--help"
+            and argv[1] in _CREST_HELP_SECTIONS):
+        return program
+    return program if all(w in flags for w in argv) else None
+
+
+def information_pattern() -> str:
+    """The plain forms of :func:`information_call` as one anchored regular
+    expression (``xtb --version``, ``crest -h``), for the bash auto-allow
+    list, so the list and the check read one table."""
+    alts = "|".join(
+        re.escape(p) + r"(?:\s+(?:" + "|".join(map(re.escape, flags)) + "))+"
+        for p, flags in INFORMATION_FLAGS.items())
+    return r"^\s*(?:" + alts + r")\s*$"
+
+
+def _parse_run(segment: str) -> Optional[_Run]:
+    """The calculation in one shell segment, or None if it starts none."""
+    parsed = _segment_words(segment)
+    if parsed is None:
+        return None
+    words, env, wall, detached = parsed
+    program = os.path.basename(words[0])
+    if program not in LOCAL_PROGRAMS + ("sbatch",):
+        return None
+    if program == "delfin" and tuple(
+            w for w in words[1:]
+            if not re.fullmatch(r"\d*>>?|\d*>&\d+|&>>?|\S*>\S*", w)
+    ) not in _DELFIN_RUN_FORMS:
+        return None
+    return _Run(program, _without_redirections(words[1:]), env, wall,
+                detached)
 
 
 def _flag_value(argv: list, *names: str) -> Optional[str]:
@@ -872,7 +981,12 @@ def judge_command(segments: list, cwd: Path,
     kind = kind or host_kind()
     here: Optional[Path] = Path(cwd)
     summaries, problems, found = [], [], False
+    asked: list = []
     for seg in segments:
+        program = information_call(seg)
+        if program:
+            asked.append(seg.strip()[:60])
+            continue
         run = _parse_run(seg)
         if run is None:
             m = re.fullmatch(r"\s*cd\s+(\S+)\s*", seg)
@@ -898,6 +1012,12 @@ def judge_command(segments: list, cwd: Path,
         else:
             summaries.append(summary)
     if not found:
+        # Only information calls besides auto-allowed segments: admitted as
+        # such, never named as a calculation that was started. A segment
+        # off the list leaves it to the ordinary gate (Verdict()).
+        if asked and not problems:
+            return Verdict(admit=True, information=True,
+                           summary="information only: " + "; ".join(asked))
         return Verdict()
     if problems:
         return Verdict(True, False, "", "; ".join(problems))

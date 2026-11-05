@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
+from . import calc_policy as _calc_policy
 from . import german as _german
 from . import go_ahead as _ga
 from . import inline_payload as _inline_payload
@@ -3801,8 +3802,11 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*seq\b",
     # Asking a chemistry tool about itself. Anchored to the exact asking
     # forms: `xtb input.xyz` (a real calculation) is not matched, and the
-    # flags are end-anchored so nothing rides after --help.
-    r"^\s*(?:xtb|orca_2mkl|crest)\s+(?:--version|--help|-h)\s*$",
+    # flags are end-anchored so nothing rides after --help. The programs
+    # and their flags are calc_policy.INFORMATION_FLAGS, the table the
+    # calculation check reads (one copy).
+    _calc_policy.information_pattern(),
+    r"^\s*orca_2mkl\s+(?:--version|--help|-h)\s*$",
     # cd <literal-path>: harmless on its own (it executes nothing, and each
     # bash call is a fresh subprocess) and the common prefix in
     # `cd /path && <cmd>`. Auto-allowed ONLY for a literal path — the char class
@@ -23473,6 +23477,24 @@ class _DocToolExecutor:
             # upload the egress scan flagged is never admitted here.
             _calc = _calculation_verdict(perms, cmd, args, wall_limit_s)
             _calc_reason = ""
+            # An information call (`xtb --version 2>&1 | head -3`, `command
+            # -v crest`) starts nothing: admitted here when every other
+            # segment is auto-allowed, within the managed only_allow, with
+            # no rule of the user's on it; never named as a calculation.
+            if (_calc is not None and getattr(_calc, "information", False)
+                    and _calc.admit and egress is None
+                    and not _approved_here
+                    and _managed_only_allow_admits(perms, cmd)):
+                _info_rule = _permission_rule_hit(perms, "bash",
+                                                  {"command": cmd})
+                if _info_rule is not None and _info_rule[0] == "deny":
+                    return _refuse_by_rule("bash", _info_rule[1])
+                if _info_rule is None:
+                    _record_security_event(
+                        "information_call", "bash", _calc.summary[:200],
+                        blocked=False)
+                    return self._classifier_second_opinion(
+                        perms, name, args, mode)
             if _calc is not None and _calc.calculation:
                 _calc_rule = _permission_rule_hit(perms, "bash",
                                                   {"command": cmd})
@@ -30219,14 +30241,18 @@ def _scrubbed_bash_env() -> dict:
     # program started without it takes every core the host has (measured:
     # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
     # on a cluster login node are everyone's cores. Inside a Slurm
-    # allocation the cap is the allocation, on a login node the local limit
-    # calc_policy admits (2), elsewhere at most four. A job
-    # submitted from here inherits it unless its script sets its own.
+    # allocation the cap is the allocation, elsewhere the local limit
+    # calc_policy admits unasked (2 on a login node, half the available
+    # CPUs and at most four on a workstation): calc_policy.default_threads
+    # is the one source, so the gate judges the number this shell sets. A
+    # job submitted from here inherits it unless its script sets its own.
+    # If that check cannot be consulted, one thread: never more than any
+    # host's unasked limit (no second copy of the rule here).
     try:
         from . import calc_policy as _cp
         _cap = str(_cp.default_threads(_cp.host_kind(env), env))
     except Exception:
-        _cap = str(max(1, min(4, os.cpu_count() or 1)))
+        _cap = "1"
     for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
                   "OPENBLAS_NUM_THREADS"):
         env.setdefault(_name, _cap)
