@@ -132,15 +132,12 @@ def _peer_is_agent(sock) -> bool:
 
 
 def _start_time(pid) -> str | None:
-    """A process's start time (``/proc/<pid>/stat`` field 22, clock ticks
-    since boot) as text, or None where it cannot be read. With the pid it
-    names one process: a pid reused later has another start time."""
-    try:
-        with open(f"/proc/{int(pid)}/stat", "rb") as stream:
-            data = stream.read(4096).decode("ascii", "replace")
-        return data[data.rindex(")") + 2:].split()[19]
-    except (OSError, ValueError, IndexError):
-        return None
+    """A process's start time (clock ticks since boot, proc_identity's one
+    reader) as text, or None where it cannot be read. With the pid it names
+    one process: a pid reused later has another start time."""
+    from delfin.agent.proc_identity import start_ticks
+    ticks = start_ticks(pid)
+    return None if ticks is None else str(ticks)
 
 
 def _peer_pid(sock) -> int:
