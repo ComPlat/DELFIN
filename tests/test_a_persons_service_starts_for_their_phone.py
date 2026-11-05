@@ -65,18 +65,29 @@ def _kinds():
     return [e.kind for e in security_events.recent(100)]
 
 
+def _settle(acct, text):
+    """One phone message, then the gateway's answer after the start."""
+    import asyncio
+
+    async def main():
+        await acct.rooms.handle({"chat": "@21", "sender": "21", "text": text,
+                                 "id": str(len(acct.daemon.sent) + 1)})
+        await asyncio.wait_for(asyncio.gather(*list(acct.rooms._retries)), 10)
+    asyncio.run(main())
+
+
 def test_a_phone_command_starts_the_persons_service_and_gets_its_answer(acct):
-    acct.say("21", "@21", "sessions")
+    _settle(acct, "sessions")
     assert acct.starts == ["anna"]
     assert "1. Butan" in acct.daemon.to("@21")[-1]
     assert "messenger_service_started" in _kinds()
 
 
 def test_starts_are_rate_limited_per_person(acct):
-    acct.say("21", "@21", "sessions")
+    _settle(acct, "sessions")
     acct.up = False
     acct.bridge._person_bridge("anna")._service = None
-    acct.say("21", "@21", "sessions")
+    _settle(acct, "sessions")
     assert acct.starts == ["anna"]
     assert "läuft gerade nicht" in acct.daemon.to("@21")[-1]
     assert "messenger_service_start_refused" in _kinds()
