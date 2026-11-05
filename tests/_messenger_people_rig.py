@@ -142,6 +142,22 @@ class Account:
         handy = tmp_path / "DELFIN-Handy"
         handy.mkdir()
         monkeypatch.setattr(people, "account_home", lambda: self.home)
+        # Each person's private runtime directory (their pairing doors, the
+        # bridge's delivery check), short enough for a Unix socket path.
+        import shutil
+        import tempfile
+        import weakref
+        self.runtime = {name: Path(tempfile.mkdtemp(prefix="dpair-", dir="/tmp"))
+                        for name in ("", "anna", "ben")}
+        for path in self.runtime.values():
+            weakref.finalize(self, shutil.rmtree, str(path), True)
+        monkeypatch.setattr(people, "door_root", lambda name, account=None: self.runtime.get(name), raising=False)
+        from delfin.messenger import pairing as _pairing
+        pairing_dirs = {name: (self.home if not name else self.home / "people" / name)
+                        / ".delfin" / "messenger_pairing" for name in self.runtime}
+        monkeypatch.setattr(_pairing, "_door_dir", lambda directory=None: next(
+            (self.runtime[n] for n, d in pairing_dirs.items() if directory is not None
+             and Path(directory) == d), self.runtime[""]), raising=False)
         monkeypatch.setattr(activation, "_DIR", self.home / ".delfin" / "messenger_sessions")
         monkeypatch.setenv("DELFIN_MESSENGER_DIR", str(tmp_path / "gateway-state"))
         monkeypatch.setenv("DELFIN_MESSENGER_WORKSPACES", str(handy))
