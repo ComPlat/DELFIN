@@ -410,11 +410,17 @@ User=${SERVICE_USER}
 # when it can read the client's /proc/<pid>/environ, which Linux allows
 # only with uid and gid equal. The socket's directory carries delfin-gw
 # instead (setgid, so the socket inherits it): the gateway reaches the
-# socket, nothing else of this process.
-RuntimeDirectory=delfin-messenger-bridge delfin-person-start
-RuntimeDirectoryMode=2750
-ExecStartPre=+/bin/chgrp ${GW_USER} /run/delfin-messenger-bridge
-ExecStartPre=+/bin/chmod 2750 /run/delfin-messenger-bridge
+# socket, nothing else of this process. Not a RuntimeDirectory=: systemd
+# chowns one of those to User=/Group= again when it sets up ExecStart, after
+# an ExecStartPre=+ chgrp, so the gateway lost the directory on every start.
+ExecStartPre=+/bin/rm -rf /run/delfin-messenger-bridge
+ExecStartPre=+/usr/bin/install -d -m 2750 -o ${SERVICE_USER} -g ${GW_USER} /run/delfin-messenger-bridge
+ExecStopPost=+/bin/rm -rf /run/delfin-messenger-bridge
+# Person-start requests (people mode): the bridge's alone, read by the root
+# starter (delfin-person-start.path). Made the same way, 0700.
+ExecStartPre=+/bin/rm -rf /run/delfin-person-start
+ExecStartPre=+/usr/bin/install -d -m 0700 -o ${SERVICE_USER} -g ${SERVICE_USER} /run/delfin-person-start
+ExecStopPost=+/bin/rm -rf /run/delfin-person-start
 Environment=DELFIN_MESSENGER_PEER_UID=$(id -u "${GW_USER}")
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
 Environment=DELFIN_MESSENGER_PERSON_STARTS=/run/delfin-person-start
