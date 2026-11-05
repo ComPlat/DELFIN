@@ -90,18 +90,19 @@ def test_english_on_request(rooms, monkeypatch):
     room, daemon = rooms
     monkeypatch.setenv("DELFIN_MESSENGER_LANG", "en")
     _say(room, "/help", "1")
-    assert daemon.sent[-1][1] == lang.EN[HELP]
+    # Every message in a session's chat starts with the session's name.
+    assert daemon.sent[-1][1] == "[t]\n" + lang.EN[HELP]
     _say(room, "calculate this", "2")
     assert "This session is not available" in daemon.sent[-1][1]
     _say(room, "notify questions", "3")
-    assert daemon.sent[-1][1].startswith("Automatic notifications: fragen.")
+    assert daemon.sent[-1][1].startswith("[t]\nAutomatic notifications: fragen.")
 
 
 def test_german_by_default(rooms, monkeypatch):
     room, daemon = rooms
     monkeypatch.delenv("DELFIN_MESSENGER_LANG", raising=False)
     _say(room, "/help", "1")
-    assert daemon.sent[-1][1] == HELP
+    assert daemon.sent[-1][1] == "[t]\n" + HELP
 
 
 def test_what_the_agent_wrote_is_never_translated(rooms, monkeypatch):
