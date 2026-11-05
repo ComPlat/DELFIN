@@ -89,6 +89,13 @@ def collect(workspace: Any, *, now: Optional[float] = None,
             if (not _sa._entry_owned_by_us(entry)
                     or _theirs(entry.get("owner_session"))):
                 continue      # another session's delegate
+            if session_id and entry.get("foreground"):
+                # A foreground run blocks the turn on screen. Until it carried
+                # an owner, the strict owner check above left it out of every
+                # session-scoped view; this keeps that answer unchanged now
+                # that it has one. Without a session_id (the terminal zone)
+                # it was listed, and still is.
+                continue
             view["agents"].append({
                 "id": str(sa_id),
                 "label": (f"{entry.get('type') or 'agent'} · "
