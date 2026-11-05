@@ -212,3 +212,15 @@ def test_the_gateway_exits_when_idle(tmp_path, monkeypatch):
     started = time.monotonic()
     asyncio.run(asyncio.wait_for(Rooms(Quiet(), Bridge()).run(idle_exit_s=0.3, idle_poll_s=0.05), 10))
     assert time.monotonic() - started < 5
+
+
+def test_the_rootless_state_and_units_are_masked_from_agents():
+    """One user: the daemon's database (the chats), the gateway's store key
+    and the units that say what runs are out of the agent's reach -- the
+    cage masks them, the file tools refuse them."""
+    from delfin.agent import boundaries, sandbox
+    from delfin.agent.api_client import KitToolPermissions
+    for entry in (".local/share/delfin-messenger", *(".config/systemd/user/" + u for u in rootless.UNITS)):
+        assert entry in boundaries.MASKED_HOME_ENTRIES and entry in sandbox.MASKED_HOME_ENTRIES
+    perms = KitToolPermissions(workspace="/srv/w", mode="acceptEdits")
+    assert perms.matches_path_deny("home/u/.local/share/delfin-messenger/gateway/pair.json")
