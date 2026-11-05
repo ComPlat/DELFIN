@@ -157,6 +157,20 @@ class LiveClient(ServiceClient):
         return self.request("session.shutdown", {"sessionId": sid}, timeout=60)
 
 
+#: The first service a dashboard view works with: summary names, the empty
+#: rename, permission.resolved.client (supervisor.SERVICE_VERSION 4).
+MIN_SERVICE_VERSION = 4
+
+
+def _new_enough(hello: dict) -> None:
+    version = int((hello or {}).get("serviceVersion") or 0)
+    if version < MIN_SERVICE_VERSION:
+        raise ServiceUnavailable(
+            f"the agent service running here is of an older release (service version "
+            f"{version}, this dashboard needs {MIN_SERVICE_VERSION}) and is busy, so it was "
+            "not moved over; `delfin-agent service restart` moves it once its sessions are idle")
+
+
 def connect(*, start: bool = True, path: Path | None = None) -> LiveClient:
     """A connection to this person's agent service; with ``start`` the
     service is started when none runs (``launcher.ensure_service``, the
@@ -166,13 +180,23 @@ def connect(*, start: bool = True, path: Path | None = None) -> LiveClient:
         from delfin.agent.service import launcher, rundir
 
         target = Path(path) if path is not None else rundir.socket_path()
-        hello, why = _client.probe(target)
-        if hello is None:
-            if not start or path is not None:
+        if start and path is None:
+            # The TUI's way: an idle service of an older release is moved
+            # over to this one, none is started, a busy one is left as it is.
+            hello = launcher.ensure_service()
+        else:
+            hello, why = _client.probe(target)
+            if hello is None:
                 raise ServiceUnavailable(
                     f"no agent service answers here ({launcher.why_in_words(why)})")
-            launcher.ensure_service()
-        return LiveClient(target)
+        _new_enough(hello)
+        client = LiveClient(target)
+        try:
+            _new_enough(client.hello)          # the one actually talked to
+        except ServiceUnavailable:
+            client.close()
+            raise
+        return client
     except ServiceUnavailable:
         raise
     except Exception as exc:                                  # noqa: BLE001
