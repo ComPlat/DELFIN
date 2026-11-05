@@ -50,7 +50,7 @@ def acct(tmp_path, monkeypatch):
 def _pair(acct, person="anna", requester="session:s-anna"):
     rid = pairing.begin(requester, directory=acct.pairing_dir(person))
     acct.round()
-    return rid, pairing.result(rid, directory=acct.pairing_dir(person))
+    return rid, pairing.read(rid, requester, directory=acct.pairing_dir(person))
 
 
 def _code(acct, cid):
@@ -241,7 +241,7 @@ def test_the_session_command_shows_the_invitation_live_and_confirms(acct, monkey
     assert "invitation" in out
     rid = pairing.open_request("session:s9")
     acct.round()
-    text = pairing.offer_text(pairing.result(rid, directory=acct.pairing_dir("anna")))
+    text = pairing.offer_text(pairing.read(rid, "session:s9", directory=acct.pairing_dir("anna")))
     assert "1. /pair" in text and "2. scan" in text and "3. type" in text
     assert acct.daemon.links[0] in text
     acct.connect("21", "901")
