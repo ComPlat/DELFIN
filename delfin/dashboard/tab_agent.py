@@ -1061,6 +1061,65 @@ _CHAT_MORPH_TAG = ('<img src="" alt="" style="display:none" onerror="'
                    + _html.escape(_CHAT_MORPH_JS, quote=True) + '">')
 
 
+# Where the agent tab starts on the page (--delfin-agent-top), measured in
+# the browser; see the call site in create_tab for why it is measured.
+#
+# The measurement sets the untrimmed top, reads the page's overflow and
+# sets the trimmed top, all in one task. The untrimmed value makes the tab
+# taller by the trim (12 px at 1920x1080), and reading scrollHeight forces
+# a layout at that height: the chat host is 12 px taller in it, so a host
+# scrolled to its end is clamped 12 px up, and the second write does not
+# give that back. Measured 2026-11-03 on a real page, per animation frame:
+# every 1.5 s (the interval below) the host's scrollTop went 1511 -> 1499,
+# idle or streaming, only with the reader at the end (scrolled up, the
+# clamp has nothing to cut). The chat's scroll listener undid it in the
+# next frame unless the reader had touched wheel or pointer within 300 ms;
+# then the 12 px stayed on screen until the next output pulled the view
+# down again.
+#
+# Now:
+# - The interval re-measures only when the input changed: the tab's top,
+#   the window height, or the overflow at the CURRENT value. In steady
+#   state that is nothing, so nothing is written and no intermediate
+#   layout happens.
+# - A re-measurement (a resize, the page settling) puts every chat host
+#   that was at its end back at its end, in the same task, before paint.
+# Rejected: computing the trimmed top without the intermediate write. The
+# overflow at the untrimmed value is not observable from the trimmed
+# layout (a page that does not overflow reports 0, not how much room is
+# left), so it needs the layout it measures.
+_MEASURE_AGENT_TOP_JS = (
+    "(function(){if(window.__delfinAgentTop)return;"
+    "window.__delfinAgentTop=1;var de=document.documentElement;"
+    "var done='';"
+    "function scrollers(el){var out=[];"
+    "for(var p=el.parentElement;p;p=p.parentElement){"
+    "var oy=getComputedStyle(p).overflowY;"
+    "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
+    "return out;}"
+    "function overflow(ss){var o=0;for(var k=0;k<ss.length;k++)"
+    "o=Math.max(o,ss[k].scrollHeight-ss[k].clientHeight);return o;}"
+    "function m(){"
+    "var rs=document.querySelectorAll('.delfin-agent-root');"
+    "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
+    "var ss=scrollers(r),k,y=0;"
+    "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
+    "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
+    "var key=t+'|'+window.innerHeight+'|'+overflow(ss);"
+    "if(key===done)return;"
+    "var hs=r.querySelectorAll('.delfin-agent-chat-host'),ends=[];"
+    "for(k=0;k<hs.length;k++){var h=hs[k];"
+    "if(h.clientHeight&&h.scrollHeight-h.scrollTop-h.clientHeight<=1)ends.push(h);}"
+    "de.style.setProperty('--delfin-agent-top',t+'px');"
+    "var over=overflow(ss);"
+    "if(over>0&&over<200&&r.offsetHeight-over>=320){"
+    "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
+    "for(k=0;k<ends.length;k++)ends[k].scrollTop=ends[k].scrollHeight;"
+    "done=t+'|'+window.innerHeight+'|'+overflow(ss);"
+    "return;}}"
+    "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
+
+
 def _chat_value(transcript_html: str) -> str:
     """The value of the chat widget for ``transcript_html``.
 
@@ -3611,9 +3670,14 @@ _ARCHIVE_PLACEHOLDER = "🗃 Subagent archive…"
 #: How far back the archive row reaches. The store keeps more; this is how
 #: many a single dropdown stays usable with.
 _ARCHIVE_LIMIT = 40
+#: Value of the fold header above the records no session owns. A label row,
+#: never a view: the pick handler ignores it, and no sa_id can collide with
+#: it (sa_ids are hex).
+_ARCHIVE_UNASSIGNED_HEADER = "__unassigned__"
+_ARCHIVE_UNASSIGNED_LABEL = "── older, unassigned ──"
 
 
-def archive_rows(running, finished) -> list[tuple[str, str]]:
+def archive_rows(running, finished, unassigned=()) -> list[tuple[str, str]]:
     """``(label, sa_id)`` rows for the finished-delegate archive, newest first.
 
     Input: ``running`` as ``subagents.read_running()`` returns it (sa_id ->
@@ -3628,22 +3692,38 @@ def archive_rows(running, finished) -> list[tuple[str, str]]:
     already carries it, and a row that appears in both places invites the
     reader to open the stale copy.
 
-    Deliberately NOT filtered by the current session's start time. That
-    filter is what made a finished delegate look deleted: the saved session
-    stayed on disk and no control could reach it. Age bounds the list
-    (``_ARCHIVE_LIMIT`` at the call site), not session identity.
+    Scope is session OWNERSHIP, not the session's start time. The caller
+    passes ``finished`` as ``list_finished(session=<this session>)``, so a
+    kept or resumed session still reaches its own earlier delegates (the
+    owner id is stable across a resume), while another session's never
+    appear. The old start-time cutoff is what made a finished delegate
+    look deleted; ownership has no such edge.
+
+    ``unassigned`` -- ``list_finished(unassigned=True)``: records written
+    before ownership was recorded. They belong to no session, so they
+    appear in none of the session lists; they are still on disk and still
+    readable, so they are listed below a separate header row
+    (``_ARCHIVE_UNASSIGNED_HEADER``) instead of being unreachable.
     """
-    rows: list[tuple[str, str]] = []
-    for rec in finished or ():
-        sa_id = str((rec or {}).get("sa_id") or "")
-        if not sa_id or sa_id in (running or {}):
-            continue
-        label = ("✅" if not rec.get("error") else "❌") + " " + str(
-            rec.get("subagent_type", "?"))[:16]
-        desc = str(rec.get("description", ""))[:48].strip()
-        if desc:
-            label += " · " + desc
-        rows.append((label, sa_id))
+    def _rows(records) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        for rec in records or ():
+            sa_id = str((rec or {}).get("sa_id") or "")
+            if not sa_id or sa_id in (running or {}):
+                continue
+            label = ("✅" if not rec.get("error") else "❌") + " " + str(
+                rec.get("subagent_type", "?"))[:16]
+            desc = str(rec.get("description", ""))[:48].strip()
+            if desc:
+                label += " · " + desc
+            out.append((label, sa_id))
+        return out
+
+    rows = _rows(finished)
+    legacy = _rows(unassigned)
+    if legacy:
+        rows.append((_ARCHIVE_UNASSIGNED_LABEL, _ARCHIVE_UNASSIGNED_HEADER))
+        rows.extend(legacy)
     return rows
 
 _ACTION_ROUND_CEILING_DEFAULT = 40
@@ -4396,6 +4476,16 @@ def _mol3d_card_html(path, name_html: str,
     )
 
 
+def _mol3d_iso(isovalue) -> float:
+    """The level a cube card draws both isosurface signs at: the magnitude
+    of *isovalue* when it is a positive finite number (a bool is not one),
+    else 0.02."""
+    if (isinstance(isovalue, (int, float)) and not isinstance(isovalue, bool)
+            and 0 < abs(isovalue) < float("inf")):
+        return abs(float(isovalue))
+    return 0.02
+
+
 def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
     """What a 3D card would show for this file, or None for no card.
 
@@ -4442,10 +4532,7 @@ def _mol3d_payload(path, isovalue: float | None = None) -> dict | None:
             n_atoms, formula = summary
             label = (f"{n_atoms} atoms · {formula}" if frames == 1
                      else f"{n_atoms} atoms · {frames} frames · {formula}")
-    iso = 0.02
-    if (isinstance(isovalue, (int, float)) and not isinstance(isovalue, bool)
-            and 0 < abs(isovalue) < float("inf")):
-        iso = abs(float(isovalue))
+    iso = _mol3d_iso(isovalue)
     if fmt == "cube":
         label = f"volumetric data · two isosurfaces at ±{iso:g}"
     return {"fmt": fmt, "text": text, "frames": frames, "label": label,
@@ -4608,6 +4695,49 @@ def _make_plot_card_html(tool_output) -> str | None:
     )
 
 
+def _view_image_card_html(tool_output) -> str | None:
+    """The chat card for a successful ``view_image`` result, or None.
+
+    Input: the tool's JSON result (``status``, ``path``, ``mime``). Output:
+    the chat's artifact preview of that image (``_render_artifact_inline``:
+    base64 ``<img>`` with its header's width/height, so the box is
+    reserved before the image decodes; over the inline cap, a one-line
+    "too large" card). Without it the model sees the image and the user
+    does not, and an answer saying "the image is in the chat" is false.
+
+    No access beyond the tool's: the path must be absolute and already
+    resolved (the executor reports the resolved path it read), so a link
+    placed there after the read is not followed; the suffix's type must be
+    the reported ``mime`` and one ``view_image`` accepts. None for an
+    error, any other shape, or a file that is gone; the caller then
+    escapes the result like any tool output.
+    """
+    import json as _json
+    from delfin.agent.image_input import _ALLOWED_MIMES
+
+    try:
+        payload = _json.loads(tool_output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return None
+    raw, mime = payload.get("path"), payload.get("mime")
+    if not isinstance(raw, str) or mime not in _ALLOWED_MIMES:
+        return None
+    path = Path(raw)
+    try:
+        if not path.is_absolute() or path.resolve() != path:
+            return None
+    except (OSError, RuntimeError):
+        return None
+    if _ARTIFACT_MIME.get(path.suffix.lower()) != mime:
+        return None
+    try:
+        return _render_artifact_inline(path)
+    except Exception:
+        return None
+
+
 def _render_xyz_summary(path) -> tuple[int, str] | None:
     """Parse an XYZ file and return ``(atom_count, summary_string)``.
 
@@ -4678,6 +4808,7 @@ _ARTIFACT_MIME = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".gif": "image/gif",
+    ".webp": "image/webp",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".xyz": "chemical/x-xyz",
@@ -4793,6 +4924,56 @@ def _artifact_stamp(p) -> tuple:
         return (st.st_mtime_ns, st.st_size)
     except OSError:
         return (0, -1)
+
+
+# One view per file content per turn.
+#
+# Four paths draw a file into the chat in one turn: the workspace diff
+# after a file-writing tool, the cards of show_molecule, make_plot and
+# view_image, and the scan for files the answer names. Each drew without
+# asking the others: one write_file of an .xyz and one show_molecule of it
+# put the molecule on screen twice (field report, Raspberry Pi), and a
+# shown file the answer named, a plot followed by any later write, and an
+# image the turn wrote and then viewed were doubled the same way.
+#
+# The turn's ledger, ``state["_emitted_artifacts"]``, maps each resolved
+# path to the (stamp, view key) pairs drawn: the diff and the image cards
+# skip a content already on screen in any view, show_molecule one already
+# shown in the view it asks for, and the answer scan any path drawn at all.
+# The stamp is _artifact_stamp's (mtime, size): a file written again is
+# new content and is drawn again, as the diff always did. Rejected: a
+# content hash, which reads every candidate file a second time to catch a
+# rewrite with identical bytes.
+
+def _artifact_view_key(path, isovalue=None) -> str:
+    """Which drawing of a file a card is, beyond the file's content.
+
+    Input: a path and, for a show_molecule card, the isovalue it was
+    given. Output: ``"iso=<level>"`` for a cube, at the level its card
+    draws (``_mol3d_iso``, formatted as the card's ``data-mol3d-iso``),
+    and "" for every other file. A cube's isovalue is the one argument
+    that changes a card's drawing; show_molecule's label is the file's
+    path, not something the call chooses.
+    """
+    if Path(path).suffix.lower() == ".cube":
+        return f"iso={_mol3d_iso(isovalue):g}"
+    return ""
+
+
+# The workspace diff holds the preview of these until the turn's next
+# event, because a show_molecule card of the same file draws what the
+# preview does not: a cube at the isovalue the call chose, a .smi, .mol or
+# .sdf as the structural formula card (chat_viewer.FORMULA_SUFFIXES)
+# instead of the plain depiction. A show_molecule as that next event
+# draws the file once, with its own card; any other event (text, another
+# call, a notice, a first-byte wait tick, a refusal, the end of the turn)
+# draws the held preview first. Thinking does not end the hold: it is the
+# model choosing that next event, and it is not drawn before it either.
+# The wait tick bounds the hold when the endpoint is slow to answer. An
+# .xyz/.trj/.traj preview is the 3D card show_molecule draws, and is drawn
+# at once: holding it would delay it by the model's next round and change
+# nothing on screen.
+_HELD_PREVIEW_SUFFIXES = (".cube", ".smi", ".mol", ".sdf")
 
 
 def _format_bytes(n: int) -> str:
@@ -4987,7 +5168,7 @@ def _render_artifact_inline(path) -> str | None:
 def _img_box(data: bytes) -> str:
     """`` width="W" height="H"`` read from an image's header, or "".
 
-    Input: the image's bytes (PNG, GIF, JPEG or SVG text). Output: the two
+    Input: the image's bytes (PNG, GIF, JPEG, WebP or SVG text). Output: the two
     attributes for its ``<img>``. With them the browser reserves the box
     before the data URI is decoded; without them an image is 0 px tall
     until then, and Python replaces the whole transcript on every update,
@@ -5001,6 +5182,21 @@ def _img_box(data: bytes) -> str:
             w, h = struct.unpack(">II", data[16:24])
         elif data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
             w, h = struct.unpack("<HH", data[6:10])
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 30:
+            # The first chunk: lossy (VP8), lossless (VP8L) or extended
+            # (VP8X) -- three header layouts, per the WebP container spec.
+            chunk = data[12:16]
+            if chunk == b"VP8 ":
+                w, h = struct.unpack("<HH", data[26:30])
+                w, h = w & 0x3FFF, h & 0x3FFF
+            elif chunk == b"VP8L":
+                bits = int.from_bytes(data[21:25], "little")
+                w, h = (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+            elif chunk == b"VP8X":
+                w = int.from_bytes(data[24:27], "little") + 1
+                h = int.from_bytes(data[27:30], "little") + 1
+            else:
+                return ""
         elif data[:2] == b"\xff\xd8":
             i, w, h = 2, 0, 0
             while i + 9 < len(data):
@@ -5079,7 +5275,7 @@ def _render_artifact_body(path) -> str | None:
     name_html = _html.escape(p.name)
 
     # ---- Images via base64 ---------------------------------------------
-    if suffix in (".png", ".jpg", ".jpeg", ".gif"):
+    if suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
         try:
             data = p.read_bytes()
         except OSError:
@@ -6425,8 +6621,11 @@ def create_tab(ctx):
         # name -> (mtime_ns, size) at turn start (D4). A rewritten file
         # is a new artifact; a name-only snapshot said it was not.
         "_ws_known_files": {},
-        # Absolute paths whose card is already on screen this turn.
-        "_emitted_artifacts": set(),
+        # This turn's views: resolved path -> {(stamp, view key)}; see
+        # _artifact_view_key. Diff previews held for a show_molecule card:
+        # resolved paths, in order (_HELD_PREVIEW_SUFFIXES).
+        "_emitted_artifacts": {},
+        "_held_previews": [],
         "_job_states_seen": {},   # last-seen {job_id: status} for proactive notifications (D5)
         "_job_event_thread": None,  # background watcher (D5)
         "_job_event_thread_stop": False,
@@ -7899,9 +8098,10 @@ def create_tab(ctx):
                                   flex_flow="row wrap", gap="4px"))
     # Finished delegates move HERE. Still readable — the same drill-in view
     # renders them from the saved session store — but collapsed into one row
-    # that does not grow. It reaches past this session on purpose: a run is
-    # worth studying after the session that started it has gone, and the store
-    # already keeps it (subagents._SESSIONS_DIR).
+    # that does not grow. Scoped by ownership, not by time: it lists the
+    # delegates this session's turns started, however long ago (a kept or
+    # resumed session keeps its id, so it keeps its archive), plus -- under a
+    # separate header -- records from before ownership was recorded.
     agent_archive_dropdown = widgets.Dropdown(
         options=[(_ARCHIVE_PLACEHOLDER, "")], value="",
         layout=widgets.Layout(display="none", width="auto",
@@ -7919,12 +8119,21 @@ def create_tab(ctx):
         upper bound in practice, while the number of things worth one click
         does. Selecting a row enters that delegate's transcript exactly as a
         chip does — ``_render_agent_transcript`` loads a finished run from the
-        saved session store, so the entry does not have to be from this
-        session to be readable.
+        saved session store by id.
+
+        Both lists are this session's (``_background_owner()`` as the
+        ``session`` filter); unassigned legacy records follow the
+        archive's own rows under a header row.
         """
         try:
             from delfin.agent.subagents import read_running, list_finished
-            running = read_running()
+            # This session's delegates only: the stores are account-wide and
+            # every open session used to list every session's runs. The
+            # owner is the id the engine's permissions carry as
+            # task_session_id, which every delegate (nested ones through
+            # the derived permissions) records as owner_session.
+            _owner = _background_owner()
+            running = read_running(session=_owner)
             entries = [("💬 Main", "main", "")]
             for sid, sa in running.items():
                 entries.append(("🟡 " + str(sa.get("type", "?"))[:16], sid,
@@ -7932,10 +8141,15 @@ def create_tab(ctx):
             # No session-start cutoff. Hiding earlier runs was what made a
             # finished delegate "disappear": the saved session was still on
             # disk and nothing in the UI could reach it.
-            archive = archive_rows(running, list_finished(_ARCHIVE_LIMIT))
+            archive = archive_rows(
+                read_running(),
+                list_finished(_ARCHIVE_LIMIT, session=_owner),
+                list_finished(_ARCHIVE_LIMIT, unassigned=True))
             cur = state.get("_view_agent", "main")
             # The archive ids count as valid views: a selected archive entry
             # must not be reset to Main by the next tick.
+            # (The fold header's value is never a current view: the pick
+            # handler sends it back to the placeholder.)
             vals = [v for _, v, _ in entries] + [v for _, v in archive]
             if cur not in vals:
                 cur = "main"
@@ -7945,7 +8159,7 @@ def create_tab(ctx):
 
             # --- the archive dropdown ---
             opts = [(_ARCHIVE_PLACEHOLDER, "")] + archive
-            arch_vals = {v for _, v in archive}
+            arch_vals = {v for _, v in archive} - {_ARCHIVE_UNASSIGNED_HEADER}
             sig_a = (tuple(opts), cur in arch_vals and cur or "")
             if state.get("_view_archive_sig") != sig_a:
                 state["_view_archive_sig"] = sig_a
@@ -7997,6 +8211,11 @@ def create_tab(ctx):
         if state.get("_view_archive_programmatic"):
             return
         sid = str((change or {}).get("new") or "")
+        if sid == _ARCHIVE_UNASSIGNED_HEADER:
+            # The fold header: a label, not an entry. Back to the
+            # placeholder, which this handler ignores as well.
+            agent_archive_dropdown.value = ""
+            return
         if not sid:
             return
         state["_view_agent"] = sid
@@ -9064,6 +9283,15 @@ def create_tab(ctx):
         var MAXH = 280;
         function grow(ta) {
             if (!ta) return;
+            // Measuring writes height:auto, so for one forced layout the
+            // box is at its 80 px floor and the chat frame above it is
+            // taller by the rest. The browser clamps a transcript at (or
+            // near) its end to that taller box, and the final height does
+            // not give the offset back. Offsets are kept and the ones
+            // that went down are put back before anything is painted.
+            var kept = [];
+            document.querySelectorAll('.delfin-agent-chat-host').forEach(
+                function(h) { if (h.clientHeight) kept.push([h, h.scrollTop]); });
             ta.style.height = 'auto';
             // The height includes the borders (box-sizing: border-box),
             // scrollHeight does not: set to scrollHeight alone, a box
@@ -9071,6 +9299,9 @@ def create_tab(ctx):
             // and drew a scrollbar (measured: 98 px box, 96 px inside).
             var edge = ta.offsetHeight - ta.clientHeight;
             ta.style.height = Math.min(ta.scrollHeight + edge, MAXH) + 'px';
+            kept.forEach(function(p) {
+                if (p[0].scrollTop < p[1]) p[0].scrollTop = p[1];
+            });
             // Writing at the end of a box past its cap: keep the line being
             // written inside the frame with its padding, not on the edge.
             if (ta.selectionStart === ta.value.length) {
@@ -9812,7 +10043,9 @@ def create_tab(ctx):
             was_active = False
             while not state.get("_subagent_live_stop"):
                 try:
-                    active = bool(_rr())
+                    # Another session's delegate is not a reason to redraw
+                    # this one's panel and chat every tick.
+                    active = bool(_rr(session=_background_owner()))
                     # Refresh while any run, plus once after the last finishes
                     # (flip running → recent without a main-loop tool result).
                     if active or was_active:
@@ -10720,28 +10953,7 @@ def create_tab(ctx):
     # during startup replaced it before the browser executed it (measured
     # 2026-10-20: window.__delfinAgentTop undefined, the 140px fallback in
     # use on every page since 2026-10-09).
-    _measure_top_js = (
-        "(function(){if(window.__delfinAgentTop)return;"
-        "window.__delfinAgentTop=1;var de=document.documentElement;"
-        "function scrollers(el){var out=[];"
-        "for(var p=el.parentElement;p;p=p.parentElement){"
-        "var oy=getComputedStyle(p).overflowY;"
-        "if(oy==='auto'||oy==='scroll'||p===document.scrollingElement)out.push(p);}"
-        "return out;}"
-        "function m(){"
-        "var rs=document.querySelectorAll('.delfin-agent-root');"
-        "for(var i=0;i<rs.length;i++){var r=rs[i];if(!r.offsetParent)continue;"
-        "var ss=scrollers(r),k,y=0;"
-        "for(k=0;k<ss.length;k++)y+=ss[k].scrollTop;"
-        "var t=Math.max(0,Math.round(r.getBoundingClientRect().top+y));"
-        "de.style.setProperty('--delfin-agent-top',t+'px');"
-        "var over=0;for(k=0;k<ss.length;k++)"
-        "over=Math.max(over,ss[k].scrollHeight-ss[k].clientHeight);"
-        "if(over>0&&over<200&&r.offsetHeight-over>=320){"
-        "de.style.setProperty('--delfin-agent-top',(t+over)+'px');}"
-        "return;}}"
-        "window.addEventListener('resize',m);setInterval(m,1500);m();})();")
-    ctx.add_init_js(_measure_top_js)
+    ctx.add_init_js(_MEASURE_AGENT_TOP_JS)
 
     if not _yaml_ok:
         missing_html = widgets.HTML(
@@ -13565,8 +13777,15 @@ def create_tab(ctx):
         )
 
     def _turn_thread_alive() -> bool:
+        """True while the turn's thread runs on after its turn was ended
+        from outside (Stop). The worker asks this itself, from its own
+        cleanup, as the last thing it does for the UI: there it is alive by
+        definition, and a True from that call left Stop enabled and red
+        after every turn, because nothing asks again once the thread has
+        exited. The thread asking about itself is a finished turn."""
         t = state.get("_turn_thread")
-        return bool(t is not None and t.is_alive())
+        return bool(t is not None and t.is_alive()
+                    and t is not threading.current_thread())
 
     def _update_button_states():
         engine = state["engine"]
@@ -15706,7 +15925,7 @@ def create_tab(ctx):
             # tool's resume_id parameter (context intact).
             try:
                 from delfin.agent.subagents import list_finished
-                finished = list_finished(last_n=5)
+                finished = list_finished(last_n=5, session=_background_owner())
             except Exception:
                 finished = []
             if finished:
@@ -20587,6 +20806,7 @@ def create_tab(ctx):
                     never fired (a turn waited 1806 s, 2026-09-11); and it
                     was rendered inside the answer, three times over."""
                     state["_last_stream_activity"] = time.monotonic()
+                    _flush_held_previews()   # see _HELD_PREVIEW_SUFFIXES
                     # The open-tasks notice repeats what the task line at
                     # the foot of the chat already shows; the terminal,
                     # which has no such line, still prints it.
@@ -20638,6 +20858,9 @@ def create_tab(ctx):
                     """
                     _now = time.monotonic()
                     state["_last_stream_activity"] = _now
+                    # The endpoint is slow to start the next round: a held
+                    # preview waits no longer than the first tick.
+                    _flush_held_previews()
                     if text and text.strip():
                         state.setdefault("_wait_started", _now)
                         # In the transcript, as one line that rewrites
@@ -20655,6 +20878,7 @@ def create_tab(ctx):
                 def _on_token(text):
                     nonlocal last_update
                     _mark_output()
+                    _flush_held_previews()   # see _HELD_PREVIEW_SUFFIXES
                     state["_tool_inflight"] = {}   # see _on_thinking
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
@@ -20690,6 +20914,12 @@ def create_tab(ctx):
 
                 def _on_tool_use(tool_name, tool_input):
                     _mark_output()
+                    # A held preview waits through a show_molecule call,
+                    # whose card may be the one view of it; any other call
+                    # draws it first (see _HELD_PREVIEW_SUFFIXES).
+                    if tool_name not in ("show_molecule",
+                                         "mcp__delfin-docs__show_molecule"):
+                        _flush_held_previews()
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
                     # Text first, then thinking, then the tool: the order
@@ -21009,6 +21239,76 @@ def create_tab(ctx):
                             + _tool_param_html(parsed, tool_input)
                         )
 
+                # One view per file content per turn: the ledger and the
+                # held previews (see _artifact_view_key and
+                # _HELD_PREVIEW_SUFFIXES at module level).
+                def _shown_already(path, view=None) -> bool:
+                    """Whether this content of *path* is on screen this
+                    turn: in any view (view None), or in that view."""
+                    try:
+                        real = Path(path).resolve()
+                    except (OSError, RuntimeError, ValueError):
+                        return False
+                    stamp = _artifact_stamp(real)
+                    views = (state.get("_emitted_artifacts") or {}).get(
+                        str(real), ())
+                    return any(st == stamp and (view is None or v == view)
+                               for st, v in views)
+
+                def _note_shown(path, view: str = "") -> None:
+                    """Record a view of *path*, as its content is now."""
+                    try:
+                        real = Path(path).resolve()
+                    except (OSError, RuntimeError, ValueError):
+                        return
+                    shown = state.get("_emitted_artifacts")
+                    if not isinstance(shown, dict):
+                        shown = state["_emitted_artifacts"] = {}
+                    shown.setdefault(str(real), set()).add(
+                        (_artifact_stamp(real), view))
+
+                def _show_artifact(path) -> None:
+                    """Append the chat's preview of *path* and record it."""
+                    try:
+                        html_block = _render_artifact_inline(path)
+                    except Exception:
+                        html_block = None
+                    if html_block:
+                        _append_tool_message(html_block)
+                        _note_shown(path, _artifact_view_key(path))
+
+                def _flush_held_previews() -> None:
+                    """Draw the previews the diff held: the event that
+                    arrived is not a show_molecule of them."""
+                    held = state.get("_held_previews") or []
+                    if not held:
+                        return
+                    state["_held_previews"] = []
+                    for real in held:
+                        if not _shown_already(real):
+                            _show_artifact(Path(real))
+
+                def _drop_held_preview(path) -> None:
+                    """A show_molecule card shows *path*: its held preview
+                    is not drawn as well."""
+                    try:
+                        real = str(Path(path).resolve())
+                    except (OSError, RuntimeError, ValueError):
+                        return
+                    state["_held_previews"] = [
+                        p for p in (state.get("_held_previews") or [])
+                        if p != real]
+
+                def _say_shown_above() -> None:
+                    """A card call whose view is on screen already: its
+                    call line says so, in place of a second copy."""
+                    msgs = state["chat_messages"]
+                    if msgs and msgs[-1].get("role") == "tool":
+                        msgs[-1]["content"] += (
+                            ' <span class="tool-param">'
+                            '→ shown above</span>')
+                        _refresh_chat_html()
+
                 def _emit_new_workspace_artifacts() -> None:
                     """D4: scan agent_workspace for files the turn created or
                     rewrote, and append their previews to the chat.
@@ -21017,7 +21317,10 @@ def create_tab(ctx):
                     diff shows a report the first time it is written and
                     never again — and "make the same report with the
                     corrected numbers" is the second time, which is the
-                    one the user is waiting for.
+                    one the user is waiting for. A content already on
+                    screen this turn (a card call drew it) is not drawn
+                    again; a molecule file a show_molecule card would draw
+                    differently is held (_HELD_PREVIEW_SUFFIXES).
                     """
                     try:
                         before = dict(state.get("_ws_known_files") or {})
@@ -21035,17 +21338,15 @@ def create_tab(ctx):
                         return
                     for name in sorted(changed):
                         path = current.get(name)
-                        if path is None:
+                        if path is None or _shown_already(path):
                             continue
-                        try:
-                            html_block = _render_artifact_inline(path)
-                        except Exception:
-                            html_block = None
-                        if html_block:
-                            _append_tool_message(html_block)
-                            _shown = set(state.get("_emitted_artifacts") or ())
-                            _shown.add(str(path.resolve()))
-                            state["_emitted_artifacts"] = _shown
+                        if path.suffix.lower() in _HELD_PREVIEW_SUFFIXES:
+                            _drop_held_preview(path)
+                            state["_held_previews"] = (
+                                list(state.get("_held_previews") or [])
+                                + [str(path.resolve())])
+                            continue
+                        _show_artifact(path)
                     # Update the snapshot so we don't re-emit the same artifact.
                     state["_ws_known_files"] = stamps
 
@@ -21118,23 +21419,53 @@ def create_tab(ctx):
                     # output falls through and is escaped below. The OpenAI
                     # loop reports its own tools as mcp__delfin-docs__<name>;
                     # a tool of a configured MCP server is not this one.
+                    #
+                    # Each card is one view of its file in this turn's
+                    # ledger: one already on screen is not drawn again
+                    # (_artifact_view_key), and the call line says so.
                     if tool_name == "show_molecule" and _raw_name in (
                             "show_molecule", "mcp__delfin-docs__show_molecule"):
-                        _card = _show_molecule_card_html(tool_output)
+                        from delfin.dashboard import chat_viewer as _cv_sm
+                        _pl = _cv_sm.card_payload(tool_output)
+                        _card = None
+                        if _pl is not None:
+                            # Another isovalue on a cube is another view.
+                            _view = _artifact_view_key(
+                                _pl["path"], _pl.get("isovalue"))
+                            _drop_held_preview(_pl["path"])
+                            if _shown_already(_pl["path"], _view):
+                                _say_shown_above()
+                                return
+                            _card = _show_molecule_card_html(tool_output)
                         if _card is not None:
                             _append_tool_message(_card)
+                            _note_shown(_pl["path"], _view)
                             return
                     if tool_name == "make_plot" and _raw_name in (
                             "make_plot", "mcp__delfin-docs__make_plot"):
                         _card = _make_plot_card_html(tool_output)
                         if _card is not None:
                             _append_tool_message(_card)
-                            # Not offered again when the answer names it.
+                            # Not drawn again by a later diff, nor when the
+                            # answer names it.
                             from delfin.dashboard import chat_viewer as _cv
                             _pl = _cv.card_payload(tool_output, "plot")
-                            _shown = set(state.get("_emitted_artifacts") or ())
-                            _shown.add(str(Path(_pl["path"]).resolve()))
-                            state["_emitted_artifacts"] = _shown
+                            _note_shown(_pl["path"])
+                            return
+                    # view_image: the model is sent the image; the user
+                    # sees it here, drawn from the resolved path the tool
+                    # read. An error result falls through and is escaped.
+                    if tool_name == "view_image" and _raw_name in (
+                            "view_image", "mcp__delfin-docs__view_image"):
+                        _card = _view_image_card_html(tool_output)
+                        if _card is not None:
+                            import json as _json_vi
+                            _vi_path = _json_vi.loads(tool_output)["path"]
+                            if _shown_already(_vi_path):
+                                _say_shown_above()
+                            else:
+                                _append_tool_message(_card)
+                                _note_shown(_vi_path)
                             return
                     if tool_name == "skill_propose_patch":
                         # Diff only for a stored proposal; the raw result
@@ -21192,6 +21523,7 @@ def create_tab(ctx):
                         _emit_new_workspace_artifacts()
 
                 def _on_permission_denied(description):
+                    _flush_held_previews()   # see _HELD_PREVIEW_SUFFIXES
                     if chunks:
                         if not answer_shown[0]:
                             _update_last_assistant("".join(chunks), role_label)
@@ -21405,9 +21737,10 @@ def create_tab(ctx):
                     }
                 except Exception:
                     state["_ws_known_files"] = {}
-                # Cards already drawn THIS turn, so the answer scan below
-                # does not repeat what the tool output already showed.
-                state["_emitted_artifacts"] = set()
+                # Cards already drawn THIS turn, so no path draws a view
+                # another one already drew (_artifact_view_key).
+                state["_emitted_artifacts"] = {}
+                state["_held_previews"] = []
 
                 _turn_start_time = time.monotonic()
                 max_auto_steps = len(engine.route) + 1  # safety limit
@@ -21612,6 +21945,9 @@ def create_tab(ctx):
                         memory_context=_memory,
                         images=_vision_images,
                     )
+                    # A preview still held: nothing came after the call
+                    # that wrote the file.
+                    _flush_held_previews()
                     # Only the first turn was sent on its own; a later
                     # role of the cycle starts from the handoff.
                     _harness_send[0] = False
@@ -21681,18 +22017,13 @@ def create_tab(ctx):
 
                     # Files the answer NAMED, which the artifact diff above
                     # cannot see: it only knows what this turn wrote. See
-                    # _files_named_in_answer for what bounds it.
+                    # _files_named_in_answer for what bounds it. A path
+                    # drawn this turn in any view is not drawn again.
                     try:
                         for _f in _files_named_in_answer(
                                 "".join(chunks), ctx.agent_dir,
                                 already=state.get("_emitted_artifacts") or ()):
-                            _card = _render_artifact_inline(_f)
-                            if _card:
-                                _append_tool_message(_card)
-                                _shown = set(
-                                    state.get("_emitted_artifacts") or ())
-                                _shown.add(str(_f))
-                                state["_emitted_artifacts"] = _shown
+                            _show_artifact(_f)
                     except Exception:
                         pass
 
@@ -21883,6 +22214,7 @@ def create_tab(ctx):
                             thinking_budget=_budget,
                             memory_context=_memory,
                         )
+                        _flush_held_previews()   # as after the first call
                         if chunks:
                             _update_last_assistant("".join(chunks), role_label, finalize=True)
                     # Budget-stop notification. Only fires when the loop was
@@ -22007,6 +22339,7 @@ def create_tab(ctx):
                                 thinking_budget=_budget,
                                 memory_context=_memory,
                             )
+                            _flush_held_previews()   # as after the first call
                             if chunks:
                                 _update_last_assistant(
                                     "".join(chunks), role_label,
@@ -22055,6 +22388,7 @@ def create_tab(ctx):
                                     thinking_budget=_budget,
                                     memory_context=_memory,
                                 )
+                                _flush_held_previews()   # as after the first call
                                 if chunks:
                                     _update_last_assistant(
                                         "".join(chunks), role_label,
@@ -22111,6 +22445,7 @@ def create_tab(ctx):
                                     thinking_budget=_budget,
                                     memory_context=_memory,
                                 )
+                                _flush_held_previews()   # as after the first call
                                 if chunks:
                                     _update_last_assistant(
                                         "".join(chunks), role_label,
@@ -22664,6 +22999,12 @@ def create_tab(ctx):
 
             except Exception as exc:
                 error_text = str(exc)
+                # The file was written before the turn failed: its held
+                # preview is drawn, above the error.
+                try:
+                    _flush_held_previews()
+                except Exception:
+                    pass
                 # Stash the full traceback so a Bug Report captures it.
                 try:
                     import traceback as _tb

@@ -358,6 +358,21 @@ Within OCCUPIER this is split once more: keys that only the stage frequency jobs
 | `XTB_preOPT` | `no` | Run xTB geometry optimisation before DFT |
 | `global_optimizer` | (empty) | Global optimisation: `GOAT`, `CREST`, or none |
 | `multiplicity_global_opt` | (empty) | Override multiplicity for pre-optimisation |
+| `global_opt_method` | (empty) | Method GOAT optimises with: empty = the `xTB_method`; `mlip:uma`, `mlip:mace`, `mlip:orb` or `mlip:aimnet2` = an orca-mlips machine-learned potential through ORCA's ExtOpt. Not with CREST |
+| `global_opt_mlip_model` | (empty) | Model name for the orca-mlips plugin (`--model`); empty = its default |
+| `global_opt_mlip_device` | `cuda` | `cuda` or `cpu`; `cuda` without a visible GPU stops the GOAT step |
+| `refuse_noncommercial_weights` | `no` | `yes` refuses MLIP weights under a non-commercial licence (`mlip:mace`) |
+
+With `global_opt_method=mlip:<plugin>` the GOAT step runs inside the
+workflow's own job, so that job must run on a node with the GPU (and the
+orca-mlips environment active). The files keep their names
+(`<xTB_method>_GOAT/XTB_GOAT.inp`, `output_XTB_GOAT.out`,
+`XTB_GOAT.globalminimum.xyz`); `XTB_GOAT.method.json` records the method.
+The ensemble's MLIP energies are a screen: for charged, open-shell or
+metal-containing systems re-rank the lowest conformers with DFT. Weights:
+UMA is gated (your own HuggingFace access), MACE is non-commercial
+(Academic Software License). The four keys are not in the shipped
+template; without them GOAT runs with xTB exactly as before.
 
 The older spellings are still accepted, so existing CONTROL.txt files keep
 working unchanged: `XTB_preOPT` is read as the older `XTB_OPT`, and `XTB_GOAT=yes` /
