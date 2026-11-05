@@ -4477,6 +4477,19 @@ class TerminalAgent:
                 self._watch_last_look = _now
                 done = done + job_wake.finished_watched_jobs(
                     _ws, seen, session_id=sid)
+            # This session's own wake-ups (schedule_wakeup): the dashboard
+            # registers a fire listener; here the idle prompt pulls them,
+            # or they waited "due" forever and their row never left.
+            if sid:
+                try:
+                    from . import scheduler as _sch_mod
+                    _woken = _sch_mod.get_scheduler().take_due(lambda owner: owner == sid)
+                except Exception:
+                    _woken = []
+                if _woken:
+                    self._wake_kind = "schedule"
+                    return HarnessText("\n\n".join(
+                        f"[scheduled] {e.reason or e.prompt}\n\n{e.prompt}" for e in _woken))
             # A turn that ended blocked leaves its note here, so the
             # next prompt opens on the state and not on a task list
             # with no sentence about it (wave-10: an hour at a
