@@ -91,6 +91,10 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
     """
     deadline = time.monotonic() + timeout
     hello, why = client.probe()
+    if why.startswith("unsafe:"):
+        # Someone else's socket, or a planted one: neither used nor
+        # started beside.
+        raise ServiceDidNotStart(f"the agent service socket is not safely yours: {why[7:].strip()}")
     # A service being moved over to this release: never the one to use.
     old = 0
     if hello is not None:
