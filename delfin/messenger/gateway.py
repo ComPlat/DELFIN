@@ -92,6 +92,9 @@ _SENDER: contextvars.ContextVar = contextvars.ContextVar('messenger_sender', def
 #: Set for the notification rounds: they never start a person's service.
 _BACKGROUND: contextvars.ContextVar = contextvars.ContextVar('messenger_background', default=False)
 
+#: A phone verified less than this long ago cannot pull a session (hol).
+PULL_AFTER_S = 600.0
+
 #: A phone that is not verified yet hears this, at most once a minute.
 _VERIFY_FIRST_S = 60.0
 
@@ -790,10 +793,18 @@ class Rooms:
             if fall_through:
                 return None
             return t('Keine deiner laufenden Sitzungen heißt {name}. sessions zeigt sie.').format(name=wanted)
-        phone = (store.contact(sender) or {}).get('label') or sender
+        rec = store.contact(sender) or {}
+        phone = rec.get('label') or sender
+        if time.time() - float(rec.get('verified') or 0.0) < PULL_AFTER_S:
+            # A phone just verified (perhaps a taken one) cannot pull yet.
+            return t('Ein Handy darf erst 10 Minuten nach der Bestätigung Sitzungen holen.')
         attached = await self.ask({'cmd': 'attach', 'session': row['id'], 'label': str(phone)})
         if not attached.get('ok'):
             return attached.get('error') or t('Sitzung wurde nicht geholt.')
+        for other in self._phones():
+            if other != sender:
+                await self.daemon.send_chat('@' + other, t('{name} wurde aufs Handy {label} geholt.').format(
+                    name=attached.get('title') or row.get('name') or row['id'][:8], label=phone))
         audit.event('messenger_session_attached',
                     f'session {row["id"][:8]} of {person_name(self._person())} brought to phone {sender}')
         await self.active_sessions()

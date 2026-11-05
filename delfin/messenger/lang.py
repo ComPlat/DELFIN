@@ -434,4 +434,11 @@ EN = {
     'Der Agent-Dienst wird gestartet.': 'The agent service is starting.',
     'Der Agent-Dienst ist nicht rechtzeitig gestartet. Bitte später erneut.':
     'The agent service did not start in time. Please try again later.',
+    'Ein Handy darf erst 10 Minuten nach der Bestätigung Sitzungen holen.':
+    'A phone may pull sessions only 10 minutes after it was verified.',
+    '{name} wurde aufs Handy {label} geholt.': '{name} was pulled to the phone {label}.',
+    'Holen vom Handy ist für dich ausgeschaltet. Am Rechner: /sync policy pull on.':
+    'Pulling from the phone is switched off for you. At the computer: /sync policy pull on.',
+    'Diese Sitzung arbeitet nicht in deinem eigenen Ordner; vom Handy nicht holbar.':
+    'This session does not work in your own folder; it cannot be pulled from the phone.',
 }

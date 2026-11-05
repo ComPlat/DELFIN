@@ -107,10 +107,29 @@ on for the messenger, invites the person's phones to its chat and shows the
 session a notice (`/sync status`: "enabled (from phone LABEL)"); it is
 audited. A session switched off in the session (`/sync off`) cannot be brought
 from the phone. `weg` / `off` in a session's chat takes it off again; `hol`
-may bring it back. The display name is the session's title in the agent
-service (`/sync NAME`, `name NAME` on the phone, the TUI's rename): one field,
-at most 50 characters; the chat follows it. Every message in a session's chat
-starts with `[name]`.
+may bring it back. The commands are recognised only as a whole short message
+(`hol 2`, `hol NAME` with one token, `sessions`, `hilfe`); a longer line is a
+prompt for the session of its chat, and a `hol NAME` there that names no
+session goes to that session as well.
+
+Bounds of `hol`: it reaches only a session of the person that runs in the
+person's own tree (`~/people/<name>`; the owner: the account home outside
+`~/people`); the person can switch it off for all their phones with `/sync
+policy pull off` at a window (`/sync policy pull on` again; default on); every
+pull is announced in the session and to the person's other phones; a phone
+verified less than 10 minutes ago cannot pull. A stolen phone: the person sees
+its pulls on their other phones, revokes it (`/pair revoke LABEL` at a window,
+or the admin's `pi_messenger.sh --revoke=NAME`); the revocation removes it from
+every group, deletes the contact, and its later messages are ignored; then
+pair the new phone.
+
+The display name is the session's title in the agent service (`/sync name
+NAME`, `name NAME` on the phone, the TUI's rename): one field, at most 50
+characters; the chat follows it. `/sync` changes nothing for a word it does not
+know. A phone's line is never a window command: the agent service marks the
+bridge's prompts (`via: messenger`) and the worker runs no `/sync`, `/pair`,
+builtin or shell line for them. Every message in a session's chat starts with
+`[name]`.
 
 A person's agent service exits when idle. When their phone needs it and it is
 down, the bridge starts it the way the person's own windows do: the launcher's

@@ -50,6 +50,28 @@ def switched_off_in_session(sid, *, directory=None):
     return value.get('enabled') is False and value.get('by', 'session') != 'phone'
 
 
+def _policy_path(directory=None):
+    return _base(directory) / 'policy.json'
+
+
+def pull_allowed(*, directory=None):
+    """Whether this person's verified phones may pull a running session
+    (``hol``): the person's own switch, ``/sync policy pull on|off`` at a
+    window. Default on; an unreadable setting counts as off."""
+    path = _policy_path(directory)
+    if not path.exists():
+        return True
+    try:
+        return json.loads(path.read_text()).get('pull') is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def set_pull(on, *, directory=None):
+    from delfin.agent.state_paths import write_text_atomic
+    write_text_atomic(_policy_path(directory), json.dumps({'pull': bool(on)}))
+
+
 def records(*, directory=None):
     result = []
     for path in _base(directory).glob('*.json'):
@@ -79,8 +101,8 @@ def clean_name(text):
 #: What /sync understands (German matchers for what the user types).
 SYNC_ON = frozenset({'', 'on', 'an', 'ein', 'enable'})
 SYNC_OFF = frozenset({'off', 'aus', 'ausschalten', 'disable', 'stop'})
-SYNC_USAGE = ('Verwendung: /sync [on|off|status] oder /sync name NAME. '
-              'Gilt nur für diese Sitzung; anderes ändert nichts.')
+SYNC_USAGE = ('Verwendung: /sync [on|off|status] oder /sync name NAME; '
+              '/sync policy pull on|off für das Holen vom Handy. Anderes ändert nichts.')
 
 
 def parse_sync(args):
@@ -96,6 +118,9 @@ def parse_sync(args):
     if word == 'status':
         return 'status', ''
     head, _, rest = raw.partition(' ')
+    if head.lower() == 'policy':
+        setting = ' '.join(rest.lower().split())
+        return ('policy', setting) if setting in {'pull on', 'pull off'} else ('usage', '')
     if head.lower() == 'name' and clean_name(rest):
         return 'on', clean_name(rest)
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in '"\'' and clean_name(raw[1:-1]):
@@ -113,6 +138,10 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
     args, _name = parse_sync(args)
     if args == 'usage':
         return SYNC_USAGE
+    if args == 'policy':
+        on = _name == 'pull on'
+        set_pull(on, directory=directory)
+        return 'Sitzungen vom Handy holen (hol): ' + ('an.' if on else 'aus. /sync policy pull on erlaubt es wieder.')
     if args == 'status':
         old = record(sid, directory=directory)
         text = 'SimpleX für diese Sitzung: ' + ('aktiviert' if old.get('enabled') is True else 'ausgeschaltet')

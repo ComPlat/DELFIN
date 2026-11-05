@@ -839,6 +839,8 @@ class Bridge:
         session switched off in the session (``/sync off``) stays off."""
         sid = str(params.get("session") or "")
         label = str(params.get("label") or "")[:40]
+        if not activation.pull_allowed(**self._where()):
+            return {"error": "Holen vom Handy ist für dich ausgeschaltet. Am Rechner: /sync policy pull on."}
         if self._switched_off(sid):
             return {"error": "In der Sitzung mit /sync off ausgeschaltet. Dort mit /sync wieder einschalten."}
         listing = await self._request("sessions.list")
@@ -846,6 +848,8 @@ class Bridge:
                     if str(r.get("sessionId") or r.get("id") or "") == sid), None)
         if row is None or not sid:
             return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+        if not self._in_own_tree(str(row.get("workspace") or "")):
+            return {"error": "Diese Sitzung arbeitet nicht in deinem eigenen Ordner; vom Handy nicht holbar."}
         already = self._enabled(sid)
         if not already:
             self._configure(sid, "on", by="phone", phone=label)
@@ -853,6 +857,27 @@ class Bridge:
         name = row.get("title") or ""
         return {"ok": True, "sessionId": sid, "already": already,
                 "title": self._redactor().text(_truncate(str(name), 80))}
+
+    def _in_own_tree(self, workspace: str) -> bool:
+        """Whether ``workspace`` lies in this person's own tree: their
+        ~/people/<name>; for the owner the account home outside ~/people."""
+        from delfin.messenger import people
+        home = people.home(self.person) if self.person else people.account_home()
+        if not workspace or home is None:
+            return False
+        try:
+            ws = Path(workspace).resolve()
+            root = Path(home).resolve()
+            ws.relative_to(root)
+            if not self.person:
+                try:
+                    ws.relative_to(root / "people")
+                    return False
+                except ValueError:
+                    pass
+        except (OSError, ValueError):
+            return False
+        return True
 
     async def _cmd_pairing(self, params: dict) -> dict:
         """The pairing requests of every person, and the gateway's answers

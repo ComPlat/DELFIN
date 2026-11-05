@@ -130,7 +130,7 @@ def _migrate(old: dict) -> dict:
     cid = str(old.get("contact_id") or "")
     if cid:
         data["contacts"][cid] = {"person": OWNER, "state": "verified", "label": "",
-                                 "since": time.time(), "verified": time.time(),
+                                 "since": time.time(), "verified": 0.0,
                                  "request": "format-1", "legacy": True}
     for chat, room in (old.get("rooms") or {}).items():
         if isinstance(room, dict):
@@ -303,7 +303,8 @@ def _write(data: dict) -> None:
             os.unlink(name)
 
 
-def save(contact_id: str, *, person: str = OWNER, label: str = "") -> None:
+def save(contact_id: str, *, person: str = OWNER, label: str = "",
+         verified_at: float = 0.0) -> None:
     """Bind ``contact_id`` to ``person`` as a VERIFIED phone. For the
     migration and for tests; a pairing goes through :func:`bind` and
     :func:`check_code`."""
@@ -313,7 +314,7 @@ def save(contact_id: str, *, person: str = OWNER, label: str = "") -> None:
         if old and old.get("person") != person:
             raise PairingRefused("bound")
         data["contacts"][cid] = {"person": person, "state": "verified", "label": _clean_label(label),
-                                 "since": time.time(), "verified": time.time(),
+                                 "since": time.time(), "verified": float(verified_at),
                                  "request": "direct"}
 
 
