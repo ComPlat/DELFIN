@@ -201,3 +201,22 @@ def test_the_estop_daemon_reasserts_the_safe_state(lab):
     with store.locked_json("sim_world.json") as w:
         w["devices"]["lamp"]["values"]["power"] = "on"
     assert watchdog.enforce_estop(_kernel()) == []   # control: no stop, no action
+
+
+def test_a_module_estop_naming_no_module_is_refused_not_reported_ok(lab):
+    """A misspelled module scope stopped nothing and still answered ok, so a
+    hazardous write went through afterwards (review wave33/rv1, F1). It is
+    refused now, before any flag is written; the real module stays the
+    control."""
+    out = call(lab, "lab_estop", {"module": "syntehsis"})
+    assert out["ok"] is False and out["code"] == "unknown_module"
+    assert "synthesis" in out["known"]
+    # Nothing was latched: the analysis lamp still switches.
+    assert call(lab, "lab_set", {"device": "lamp", "channel": "power",
+                                 "value": "on"})["ok"]
+    # Control: the real module name stops its devices.
+    out = call(lab, "lab_estop", {"module": "synthesis"})
+    assert out["scope"] == "synthesis"
+    out = call(lab, "lab_set", {"device": "stirrer", "channel": "power",
+                                "value": "on"})
+    assert out["code"] == "estop"

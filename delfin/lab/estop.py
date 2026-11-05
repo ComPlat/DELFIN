@@ -34,12 +34,23 @@ def trigger(*, module: Optional[str] = None, reason: str = "",
     by = by or _store.person()
     now = _store.now()
     entry = {"by": by, "reason": reason or "e-stop", "ts": now}
+    kernel = kernel or Kernel.load()
+    # A module stop must name a module of the pinned manifest: a misspelled
+    # scope stopped nothing and still answered ok. Refused before any flag is
+    # written, for every caller (CLI, lab_estop tool, coordinator envelope).
+    if module:
+        known = sorted((kernel.manifest.modules if kernel.manifest else {}) or {})
+        if module not in known:
+            return {"ok": False, "code": "unknown_module", "scope": module,
+                    "known": known, "stopped": [], "not_confirmed": [],
+                    "error": f"no module {module!r} in the lab manifest"
+                             + (f"; known: {', '.join(known)}" if known else "")
+                             + "; nothing was stopped (a global e-stop needs no module)"}
     with _store.state() as doc:
         if module:
             doc["estop"]["modules"][module] = entry
         else:
             doc["estop"]["global"] = entry
-    kernel = kernel or Kernel.load()
     stopped, failed = [], []
     if kernel.manifest is not None:
         in_scope = [d for d in kernel.manifest.devices.values()
