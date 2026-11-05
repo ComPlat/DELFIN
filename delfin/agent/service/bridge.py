@@ -711,6 +711,8 @@ class Bridge:
                               "purpose": _truncate(self._redactor().text(str(req.get("purpose") or "")), 200),
                               "phoneApproval": allowed, "tool": req.get("tool", ""),
                               "options": self._redactor().value(req.get("options", [])),
+                              "question": _truncate(self._redactor().text(str(req.get("question") or "")), 1000),
+                              "multiSelect": bool(req.get("multiSelect")),
                               "choices": req.get("choices", [])})
             return {"ok": True, "items": items}
         if action == "branch":

@@ -10252,6 +10252,7 @@ def create_tab(ctx):
             state["_ask_user_args"] = dict(args or {})
             state["_ask_user_deadline"] = time.monotonic() + 300
         from html import escape as _esc
+        from delfin.agent.approval_answers import answer_hint as _answer_hint
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
                        f"margin-right:6px;'>{_esc(header)}</span>"
@@ -10260,7 +10261,7 @@ def create_tab(ctx):
             f"<div style='font-size:14px;'>{header_html}"
             f"<b>{_esc(question)}</b></div>"
             "<div style='color:#888;font-size:11px;margin-top:2px;'>"
-            "Pick an option, or type your own answer in the chat.</div>"
+            + _esc(_answer_hint(len(options), multi)) + "</div>"
         )
         chosen: set[str] = set()
         button_widgets: list = []
@@ -10429,7 +10430,13 @@ def create_tab(ctx):
         result = state.get("_ask_user_result")
         if ev is None or result is None or ev.is_set() or not text:
             return False
-        from delfin.agent.approval_answers import typed_answer
+        from delfin.agent.approval_answers import range_problem, typed_answer
+        problem = range_problem(text, state.get("_ask_user_args") or {})
+        if problem:
+            # Taken by the question (not sent to the model), refused with
+            # the real range.
+            _append_system_message(problem)
+            return True
         answer = typed_answer(text, state.get("_ask_user_args") or {})
         if not answer.get("answers"):
             return False

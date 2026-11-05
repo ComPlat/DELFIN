@@ -48,6 +48,12 @@ import { CLICK_PAUSE_MS, clickable, spanAt } from "../mouse"
 
 /** Lines of a preview shown at most (a diff, a command): the REPL's 24.
  *  ctrl+o writes the whole preview into the scrollback. */
+/** The numbers a question of n options takes: "1", "1 2", "1-3", the real
+ *  range (approval_answers.answer_hint draws the same on the Python side). */
+function answerRange(n: number): string {
+  return n <= 1 ? "1" : n === 2 ? "1 2" : `1-${n}`
+}
+
 export const PREVIEW_MAX = 24
 /** A key this soon after the question opened is a reflex or typeahead,
  *  not an answer. */
@@ -181,12 +187,13 @@ function panelLines(asked: Asked, ui: ApprovalState | null, max: number, preview
                     act: String(n) }])
     })
     const typed: Span = { text: "or type an answer below", tone: "faint" }
+    const range = answerRange(Math.min(choices.length, 9))
     const keys: Span[] = asked.multiSelect
-      ? [{ text: "[1-9] [space] pick  ", tone: "key", bold: true },
+      ? [{ text: `[${range}] [space] pick  `, tone: "key", bold: true },
          { text: "[enter] send  ", tone: "key", bold: true, act: "return" },
          { text: "[esc] dismiss  ", tone: "key", bold: true, act: "escape" }, typed]
       : choices.length
-        ? [{ text: "[1-9] answer  ", tone: "key", bold: true },
+        ? [{ text: `[${range}] answer  `, tone: "key", bold: true },
            { text: "[↑↓ enter] pick  ", tone: "key", bold: true },
            { text: "[esc] dismiss  ", tone: "key", bold: true, act: "escape" }, typed]
         : [{ text: "[enter] or [esc] dismiss  ", tone: "key", bold: true, act: "escape" }, typed]

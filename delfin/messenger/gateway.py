@@ -1082,9 +1082,13 @@ class Rooms:
 
     @staticmethod
     def pending_text(items):
+        from .render import question_card
         lines = []
         for item in items:
             kind = item.get('kind')
+            if kind == 'question':
+                lines.append(question_card(item))
+                continue
             name = t('❓ Rückfrage') if kind == 'question' else t('📋 Planfreigabe') if kind == 'plan' else t('🔐 Freigabe nötig')
             text = f"{name}\n\n"
             plain = _PLAIN.get(item.get('action') or '')

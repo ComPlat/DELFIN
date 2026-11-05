@@ -441,4 +441,10 @@ EN = {
     'Pulling from the phone is switched off for you. At the computer: /sync policy pull on.',
     'Diese Sitzung arbeitet nicht in deinem eigenen Ordner; vom Handy nicht holbar.':
     'This session does not work in your own folder; it cannot be pulled from the phone.',
+    # Questions (render.question_card).
+    'oder': 'or',
+    'Antworte mit {range} oder mit eigenem Text.': 'Reply {range}, or type your own answer.',
+    'Antworte mit einer oder mehreren von {range}, durch Kommas getrennt (z. B. 1,3), oder mit eigenem Text.':
+    'Reply one or more of {range}, separated by commas (e.g. 1,3), or type your own answer.',
+    'Bitte mit deiner Antwort antworten.': 'Please reply with your answer.',
 }

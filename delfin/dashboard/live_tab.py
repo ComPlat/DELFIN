@@ -384,6 +384,10 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 b.on_click(lambda _b, _l=label: call(
                     lambda: client.reply(sid, rid, answers=[_l]), "Not answered"))
                 picks.append(b)
+            from delfin.agent.approval_answers import answer_hint
+            # The real range, how to pick several, free text allowed: the
+            # same line every other surface shows.
+            hint = widgets.HTML(f"<small>{html.escape(answer_hint(len(labels), bool(asked.get('multiSelect'))))}</small>")
             typed = widgets.Text(placeholder="or type the answer")
             send = widgets.Button(description="Answer")
             send.on_click(lambda _b: typed.value.strip() and call(
@@ -391,7 +395,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             dismiss = widgets.Button(description="Dismiss")
             dismiss.on_click(lambda _b: call(lambda: client.reply(sid, rid, answers=[]),
                                              "Not dismissed"))
-            return _classed(widgets.VBox([text, widgets.HBox(picks), widgets.HBox([typed, send, dismiss])]),
+            return _classed(widgets.VBox([text, widgets.HBox(picks), hint, widgets.HBox([typed, send, dismiss])]),
                             "delfin-live-asked")
         buttons = []
         for option in asked.get("options") or []:

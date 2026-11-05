@@ -2536,9 +2536,10 @@ class TerminalAgent:
         if not options:
             self._apply(req, {"answers": []})
             return
+        from .approval_answers import answer_hint
         self.transcript.chrome(self.transcript.theme.dim(
-            f"  1-{len(options)} picks · or type your own answer and press "
-            "Enter · esc skips"))
+            "  " + answer_hint(len(options), bool(payload.get("multiSelect")))
+            + " Enter sends, Esc skips."))
         allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
         while True:
             # Same as _answer_request: an answer from outside ends the
@@ -2551,6 +2552,11 @@ class TerminalAgent:
             if not key:
                 continue                # answered while waiting
             if isinstance(key, tuple):  # ("text", line)
+                from .approval_answers import range_problem
+                problem = range_problem(key[1], payload)
+                if problem:
+                    self.transcript.chrome(self.transcript.theme.yellow("  " + problem))
+                    continue
                 if self._apply(req, typed_answer(key[1], payload)):
                     self.transcript.chrome(
                         f"  → {rr.strip_control(key[1])}")
