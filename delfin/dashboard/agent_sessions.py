@@ -1499,8 +1499,9 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         is working, which beats that it finished while you looked away."""
         state = _state(rec)
         if rec.get("live"):
-            # A view on a service session: what its events say.
-            busy, needs = bool(rec["refs"]["busy"]()), bool(rec["refs"]["needs"]())
+            # A view on a service session: what its events (shown) or the
+            # service's summary (hidden) say.
+            busy, needs = _live_flags(rec)
         else:
             busy, needs = bool(state.get("streaming")), needs_you(state)
         if rec.get("_was_busy") and not busy and view["active"] != rec["key"]:
@@ -1583,6 +1584,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         _mark(rec)
         for other in sessions:
             other["tab"].layout.display = "" if other["key"] == key else "none"
+        # A service session's view is attached only while it is on screen:
+        # the hidden ones let their sessions sleep.
+        for other in sessions:
+            if other.get("live") and other["key"] != key:
+                other["refs"]["hide"]()
+        if rec.get("live") and not rec["refs"]["show"]():
+            _say(f"Session {rec['session_id'][:8]} could not be opened: "
+                 f"{html.unescape(rec['refs']['notice'].value) or 'the service refused it'}")
         state = _state(rec)
         try:
             ctx.agent_state = state
@@ -1707,15 +1716,35 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         from delfin.dashboard import live_tab
         scripts = not live["scripts"]
         live["scripts"] = True
+        # Lazy: attached only while it is the view on screen (activate).
         return live_tab.build_live_tab(
-            live["client"], sid, attached=attached, page_scripts=scripts,
+            live["client"], sid, attached=attached, page_scripts=scripts, lazy=True,
             on_change=lambda _key=key: _on_live_change(_key))
+
+    def _live_summary(rec: dict) -> dict:
+        return running_panel.running.summary(rec.get("session_id") or "") or {}
+
+    def _live_name(rec: dict) -> str:
+        if rec["refs"]["attached"]():
+            return rec["refs"]["name"]()
+        summary = _live_summary(rec)
+        return str(summary.get("name") or rec["refs"]["name"]())
+
+    def _live_flags(rec: dict) -> tuple[bool, bool]:
+        """(working, needs you) of a view's session: from its events while
+        it is shown, from the service's summary while it is hidden."""
+        if rec["refs"]["attached"]():
+            return bool(rec["refs"]["busy"]()), bool(rec["refs"]["needs"]())
+        from delfin.dashboard import live_sessions as LS
+        summary = _live_summary(rec)
+        word = LS.state_word(summary) if summary else "done"
+        return word == "working", word == "needs you"
 
     def _on_live_change(key: str) -> None:
         rec = _find(key)
         if rec is None:
             return
-        name = rec["refs"]["name"]()
+        name = _live_name(rec)
         if rec["title_btn"].description != name:
             rec["title_btn"].description = name
         _mark(rec)
@@ -1726,15 +1755,21 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         refs["state"] = rec["refs"]["state"]
         refs["shutdown"] = refs["close"]
         rec["tab"], rec["refs"] = tab, refs
-        tab.layout.display = "" if view["active"] == rec["key"] else "none"
+        shown = view["active"] == rec["key"]
+        tab.layout.display = "" if shown else "none"
         stage.children = tuple(r["tab"] for r in sessions)
+        if shown:
+            refs["show"]()
 
-    def open_live(sid: str, workspace: str = "") -> Optional[dict]:
+    def open_live(sid: str, workspace: str = "", *, show: bool = True) -> Optional[dict]:
         """A view on service session ``sid`` (one click in the running
-        list): its recent turns, then live. Shown again when it is open."""
+        list): its recent turns, then live. Shown again when it is open.
+        ``show`` False: listed only (a restored view off screen), not
+        attached -- its session is not woken."""
         for rec in sessions:
             if rec.get("session_id") == sid or _session_id(rec) == sid:
-                activate(rec["key"])
+                if show:
+                    activate(rec["key"])
                 return rec
         if live["client"] is None:
             _say("The agent service is not reachable now; try again in a moment.")
@@ -1746,7 +1781,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         where = str(workspace or summary.get("workspace") or "")
         key = _address_for(sid)
         tab, refs = _live_tab(sid, key)
-        if not refs.get("opened"):
+        if show and not refs["show"]():
             _say(f"Session {sid[:8]} could not be opened: "
                  f"{html.unescape(refs['notice'].value) or 'the service refused it'}")
             refs["close"]()
@@ -1756,8 +1791,9 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                          "streaming": False, "engine": None}
         refs["shutdown"] = refs["close"]
         status = widgets.HTML("")
-        title_btn = _classed(widgets.Button(description=refs["name"](), tooltip=where),
-                             "delfin-session-title")
+        title_btn = _classed(widgets.Button(
+            description=str(summary.get("name") or refs["name"]()), tooltip=where),
+            "delfin-session-title")
         close_btn = _classed(widgets.Button(description="×", tooltip=(
             "Close this view -- the session keeps running in the agent service; "
             "the terminal and the phone still have it")), "delfin-session-close")
@@ -1777,7 +1813,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
         sessions.append(rec)
         stage.children = tuple(r["tab"] for r in sessions)
-        activate(key)
+        if show:
+            activate(key)
+        else:
+            tab.layout.display = "none"
+            _render_list()
         running_panel.render()
         _persist()
         return rec
@@ -2218,9 +2258,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     _connect()
     for row in rows[:_MAX_OPEN]:
         if live["client"] is not None and running_panel.running.summary(row["session_id"]):
-            # The service runs it (or keeps it asleep): a view on it.
+            # The service runs it (or keeps it asleep): a view on it,
+            # attached only once it is the one on screen (below) -- a
+            # reload must not wake every remembered session.
             try:
-                open_live(row["session_id"], row["workspace"])
+                open_live(row["session_id"], row["workspace"], show=False)
             except Exception:
                 pass
             continue
@@ -2235,6 +2277,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             continue
     if not sessions:
         open_session()
+    if sessions and _find(view["active"]) is None:
+        activate(sessions[-1]["key"])
     if connector is not None and live["client"] is None:
         _say(_kernel_notice())
     if wanted:

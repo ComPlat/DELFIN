@@ -199,8 +199,11 @@ def _state_chip(transcript: LS.Transcript) -> str:
 
 def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] = None,
                    on_change: Optional[Callable[[], None]] = None,
-                   page_scripts: bool = True) -> tuple[widgets.Widget, dict]:
+                   page_scripts: bool = True, lazy: bool = False) -> tuple[widgets.Widget, dict]:
     """The view of service session ``sid``: ``(widget, refs)``.
+
+    ``lazy``: not attached until ``refs["show"]()`` (the session list shows
+    a view when it is the one on screen and ``refs["hide"]()``s the others).
 
     Attaches (``attached``: an attach answer already in hand, e.g. from
     session.create) and subscribes; ``refs["close"]`` unsubscribes and
@@ -552,32 +555,50 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 view["syncing"] = False
 
     # -- attach ------------------------------------------------------------------------
+    # Attached only while shown (show/hide): the service lets a session
+    # nobody watches sleep, and a reload must not wake every remembered one.
     def attach() -> bool:
+        if view.get("attached"):
+            return True
         transcript._early = []
         view["unsubscribe"] = client.subscribe(on_event)
-        got = attached if attached is not None else call(lambda: client.attach(sid), "Not opened")
+        got = view.pop("first", None) or call(lambda: client.attach(sid), "Not opened")
         if got is None:
+            unsubscribe = view.pop("unsubscribe", None)
+            if unsubscribe is not None:
+                unsubscribe()
             return False
+        view["attached"] = True
         transcript.load(got)
         render_now()
         threading.Thread(target=load_choices, daemon=True, name="live-choices").start()
         return True
 
-    def close() -> None:
-        """This view goes; the session keeps running in the service."""
-        view["closed"] = True
-        unsubscribe = view.get("unsubscribe")
+    def hide() -> None:
+        """Off screen: detached, so its session may sleep; shown again, it
+        is attached again (its recent turns, then live)."""
+        if not view.get("attached"):
+            return
+        view["attached"] = False
+        unsubscribe = view.pop("unsubscribe", None)
         if unsubscribe is not None:
             unsubscribe()
         timer = view.get("timer")
         if timer is not None:
             timer.cancel()
+            view["timer"] = None
         try:
             client.detach(sid)
         except Exception:
             pass
 
-    opened = attach()
+    def close() -> None:
+        """This view goes; the session keeps running in the service."""
+        hide()
+        view["closed"] = True
+
+    view["first"] = attached
+    opened = attach() if not lazy else True
     refs = {"transcript": transcript, "send": send, "input": input_box, "send_btn": send_btn,
             "steer_btn": steer_btn, "cancel_btn": cancel_btn, "approval_box": approval_box,
             "name_html": name_html, "rename_btn": rename_btn, "rename_box": rename_box,
@@ -586,6 +607,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             "stop_no": stop_no, "perm": perm_dd, "mode": mode_dd, "model": model_dd,
             "effort": effort_dd, "chat": chat, "notice": notice_html, "close": close,
             "render_now": render_now, "opened": opened, "say": say,
+            "show": attach, "hide": hide, "attached": lambda: bool(view.get("attached")),
             "name": lambda: transcript.name, "busy": lambda: transcript.busy,
             "needs": lambda: transcript.needs_you, "sid": sid}
     return root, refs
