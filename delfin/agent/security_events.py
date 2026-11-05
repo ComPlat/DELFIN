@@ -138,6 +138,18 @@ _KINDS = {
     "handover_root":  ("📂", "Shared hand-over directory in use"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
+    # Lab device control (delfin/lab/audit.py LAB_EVENT_KINDS): the safety
+    # kernel refused a write, put a device in its safe state, tripped the
+    # dead-man, saw a readback that does not match, or refused an approval
+    # or a manifest; an e-stop and its clearing.
+    "lab_refused":    ("🧯", "Lab write refused by the safety kernel"),
+    "lab_safe_state": ("🧯", "Lab device put in its safe state"),
+    "lab_estop":      ("🛑", "Lab emergency stop"),
+    "lab_estop_cleared": ("🛑", "Lab emergency stop cleared by a person"),
+    "lab_deadman":    ("⏱", "Lab dead-man tripped (no heartbeat / owner gone)"),
+    "lab_readback_mismatch": ("🧯", "Lab device readback does not match"),
+    "lab_approval_refused": ("🚫", "Lab approval refused"),
+    "lab_manifest_refused": ("📕", "Lab manifest refused (changed or unpinned)"),
     "pr_create_unrequested": ("📤", "Pull request nobody asked for"),
     "pr_merge_contributor": ("🚫", "Merge attempted by a contributor"),
     "pr_merge_unrequested": ("📤", "Merge nobody asked for"),
