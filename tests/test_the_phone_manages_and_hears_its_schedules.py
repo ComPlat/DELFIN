@@ -33,6 +33,13 @@ from delfin.messenger import activation, store
 from delfin.messenger.gateway import Rooms
 
 
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+
+
 # ---------------------------------------------------------------------------
 # The bridge
 # ---------------------------------------------------------------------------

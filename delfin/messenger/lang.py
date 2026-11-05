@@ -1,8 +1,10 @@
 """The language of what the phone is told: English or German.
 
 The code writes every phone text in English. :func:`t` returns it, or its
-German entry in :data:`DE` when the phone is answered in German (the default;
-``DELFIN_MESSENGER_LANG=en`` selects English). Templates
+German entry in :data:`DE` when the phone is answered in German: the
+language of the phone being answered (delfin/messenger/language.py, set
+per message by the gateway), else of the person whose chats are being
+written, else DELFIN_MESSENGER_LANG (default English). Templates
 are translated before they are filled (``t('Name changed: {title}.')
 .format(title=...)``), so nothing the agent or the phone wrote is ever
 looked up or changed; a refusal the bridge sends as a whole string is
@@ -16,11 +18,37 @@ in the code besides :data:`DE`.
 """
 from __future__ import annotations
 
+import contextvars
 import os
+
+#: The language of the phone being answered right now ('en' | 'de'), set
+#: by the gateway while it handles one message.
+CURRENT: contextvars.ContextVar = contextvars.ContextVar('messenger_lang', default=None)
+#: The gateway's answer for a step that handles no message (the person's
+#: chats): a function returning 'en', 'de' or None.
+_resolver = None
+
+
+def set_resolver(fn) -> None:
+    global _resolver
+    _resolver = fn
+
+
+def current() -> str:
+    """The language a phone text is written in now."""
+    value = CURRENT.get()
+    if value is None and _resolver is not None:
+        try:
+            value = _resolver()
+        except Exception:
+            value = None
+    if value in ('en', 'de'):
+        return value
+    return 'de' if os.environ.get("DELFIN_MESSENGER_LANG", "").strip().lower() == "de" else 'en'
 
 
 def english() -> bool:
-    return os.environ.get("DELFIN_MESSENGER_LANG", "").strip().lower() == "en"
+    return current() == 'en'
 
 
 def t(text: str) -> str:
@@ -524,6 +552,12 @@ DE = {
     '⚠️ The run failed.': '⚠️ Der Lauf ist fehlgeschlagen.',
     'Nothing more.': 'Nichts weiter.',
     'Yes or no?': 'Ja oder nein?',
+    # language en|de|auto (language.py).
+    'English': 'Englisch',
+    'German': 'Deutsch',
+    'Language: {name}; it follows what you write.': 'Sprache: {name}; sie folgt dem, was du schreibst.',
+    'Language: {name} (fixed; language auto lets it follow what you write).':
+    'Sprache: {name} (fest; sprache auto lässt sie wieder dem folgen, was du schreibst).',
     '🎙 understood: {text}': '🎙 verstanden: {text}',
     '🎙 Nothing understood.': '🎙 Nichts verstanden.',
     'Lasting rules are confirmed by text only; please type yes or no. Nothing approved.':

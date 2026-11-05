@@ -10,10 +10,19 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from delfin.agent import schedules
 from delfin.agent.service.bridge import Bridge
 from delfin.messenger import gateway, lang
 from delfin.messenger.gateway import Rooms
+
+
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
 
 
 def test_a_report_says_what_was_seen():

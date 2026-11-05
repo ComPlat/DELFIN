@@ -67,5 +67,5 @@ def test_the_short_commands_still_work(acct):
     acct.say("21", "@21", "hol 2")
     assert "Ethan" in acct.daemon.to("@21")[-1]
     acct.say("21", "@21", "hilfe")
-    assert "hol" in acct.daemon.to("@21")[-1]
+    assert "get N" in acct.daemon.to("@21")[-1]          # the help, in English by default
     assert not _prompts(acct)

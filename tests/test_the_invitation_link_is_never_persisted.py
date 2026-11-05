@@ -36,6 +36,13 @@ from delfin.agent import audit_log, outcome_tracker, session_store
 from delfin.messenger import pairing, store
 from delfin.messenger.dashboard import PairPanel
 
+
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+
 SECURITY = "12345 67890 11111"
 
 

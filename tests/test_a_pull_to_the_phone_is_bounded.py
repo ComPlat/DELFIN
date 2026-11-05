@@ -22,6 +22,13 @@ import pytest
 from _messenger_people_rig import Account
 from delfin.messenger import activation, store
 
+
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+
 OLD = time.time() - 3600
 
 

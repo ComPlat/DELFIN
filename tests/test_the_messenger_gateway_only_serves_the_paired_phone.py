@@ -8,6 +8,13 @@ from delfin.messenger.lang import t
 from delfin.messenger.gateway import Rooms, UPDATE
 
 
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+
+
 class Daemon:
     def __init__(self):
         self.sent = []

@@ -98,9 +98,16 @@ def test_english_on_request(rooms, monkeypatch):
     assert daemon.sent[-1][1].startswith("Automatic notifications: fragen.")
 
 
-def test_german_by_default(rooms, monkeypatch):
+def test_english_by_default(rooms, monkeypatch):
     room, daemon = rooms
     monkeypatch.delenv("DELFIN_MESSENGER_LANG", raising=False)
+    _say(room, "/help", "1")
+    assert daemon.sent[-1][1] == HELP
+
+
+def test_german_for_a_new_phone_on_request(rooms, monkeypatch):
+    room, daemon = rooms
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
     _say(room, "/help", "1")
     assert daemon.sent[-1][1] == lang.DE[HELP]
 

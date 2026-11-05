@@ -18,7 +18,8 @@
 # DELFIN-<LABEL>, every chat carries it (default: the short host name;
 # [A-Za-z0-9_-], 24 characters). The bot profile takes it on first start.
 #
-# --lang=en sets the texts the phone receives to English (default: de).
+# --lang=de makes German the language of a new phone (default: en); each phone
+#                             then follows what its person writes.
 #
 # Works on any Linux with systemd and glibc >= 2.34 the pinned releases
 # cover -- a Raspberry Pi (aarch64, Raspberry Pi OS or Ubuntu), a login
@@ -127,7 +128,7 @@ want_nftables=1
 want_whisper=0
 want_pair=0
 want_phone_sessions=1
-lang=de
+lang=en
 label="${MESSENGER_HOSTNAME:-$(hostname 2>/dev/null || true)}"
 label="${label%%.*}"
 for arg in "$@"; do

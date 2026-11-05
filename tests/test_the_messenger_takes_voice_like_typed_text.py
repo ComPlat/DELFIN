@@ -28,6 +28,13 @@ from test_the_messenger_gateway_only_serves_the_paired_phone import (
     Bridge, Daemon)
 
 
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+
+
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
     monkeypatch.setenv("DELFIN_MESSENGER_DIR", str(tmp_path))

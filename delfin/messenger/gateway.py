@@ -21,7 +21,8 @@ import sys
 import time
 from collections import deque
 
-from . import audit, pairing, simplex, store
+from . import audit, language, pairing, simplex, store
+from . import lang as _lang
 from .lang import command_word, t, yes_no
 from .render import cut, in_forum, more_hint, status_text
 from .people import OWNER
@@ -84,10 +85,17 @@ _SCHEDULE_ACTIONS = {
 
 UPDATE = 'Please give me a short progress report: done, in progress, obstacles, next step. At most five sentences.'
 
+def _person_language():
+    """The language of the person a step acts for (lang.current)."""
+    person = _PERSON.get()
+    return None if person is None else language.of_person(person)
+
+
 #: The person a step acts for, and the contact whose message it handles.
 #: Set by handle() and by each person's turn of the notification loop;
 #: unset only in a direct call (tests), see Rooms._person.
 _PERSON: contextvars.ContextVar = contextvars.ContextVar('messenger_person', default=None)
+_lang.set_resolver(_person_language)
 _SENDER: contextvars.ContextVar = contextvars.ContextVar('messenger_sender', default=None)
 #: Set for the notification rounds: they never start a person's service.
 _BACKGROUND: contextvars.ContextVar = contextvars.ContextVar('messenger_background', default=False)
@@ -433,12 +441,33 @@ class Rooms:
                         f'contact {sender} of {person_name(person)} wrote in a chat of '
                         f'{person_name(room.get("person", OWNER))}', blocked=True)
             return
+        text = str(message.get('text') or '')
+        setting = language.explicit(text)
+        if setting is not None:
+            spoken = language.choose(sender, setting)
+        elif text and not message.get('file'):
+            spoken = language.observe(sender, text)
+        else:
+            spoken = language.of_contact(sender)
         person_token, sender_token = _PERSON.set(person), _SENDER.set(sender)
+        lang_token = _lang.CURRENT.set(spoken)
         try:
+            if setting is not None:
+                await self.send(chat, self.language_text(setting, spoken))
+                return
             await self._handle(message, room)
         finally:
+            _lang.CURRENT.reset(lang_token)
             _SENDER.reset(sender_token)
             _PERSON.reset(person_token)
+
+    @staticmethod
+    def language_text(setting, spoken):
+        """The reply to ``language en|de|auto``, in the language now in force."""
+        name = t('English') if spoken == 'en' else t('German')
+        if setting == 'auto':
+            return t('Language: {name}; it follows what you write.').format(name=name)
+        return t('Language: {name} (fixed; language auto lets it follow what you write).').format(name=name)
 
     async def _verify_first(self, sender, chat):
         now = time.monotonic()

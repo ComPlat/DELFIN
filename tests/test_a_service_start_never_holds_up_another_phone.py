@@ -25,6 +25,13 @@ from _messenger_people_rig import Account
 from delfin.messenger import people, store
 
 
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+
+
 @pytest.fixture
 def acct(tmp_path, monkeypatch):
     account = Account(tmp_path, monkeypatch)

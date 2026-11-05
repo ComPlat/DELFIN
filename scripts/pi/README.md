@@ -368,7 +368,9 @@ sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair --name=
 for the code the phone receives (later: `--verify`).
 `--name=` labels the bot (`DELFIN-Pi`) and every chat, for a phone paired with
 several machines; the default is the host name. The bot keeps the name of its
-first start. `--lang=en` sends every phone text in English (default German).
+first start. Each phone is answered in its person's language: English for a new
+phone (`--lang=de`: German), then German after two German messages in a row and
+back after two English ones; `language en|de|auto` (`sprache ...`) fixes it.
 
 The script waits for the SimpleX daemon, then prints the QR code and, last,
 the link (on a phone's terminal: copy the link and paste it in SimpleX under

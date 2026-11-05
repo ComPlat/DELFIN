@@ -387,8 +387,14 @@ phone's terminal shows the end of the output). It waits up to 60 s for a daemon
 still starting. Scan the code or paste the link in SimpleX; once the phone
 connects, the script prints the security code (the chat core's `/_get code`,
 best effort) to compare on the phone, and the bot sends a first message.
-`--lang=en` sets every phone text to English (`DELFIN_MESSENGER_LANG`);
-commands are understood in both languages (`notify short/questions/off`,
+Each phone is answered in its person's language (delfin/messenger/language.py):
+a new phone starts in `--lang` (`DELFIN_MESSENGER_LANG`, default English); two
+messages in a row in the other language switch it (a command, a number or a name
+counts for neither); `language en|de|auto` / `sprache en|de|auto` fixes it or
+frees it. Help, notices, cards and the command menu follow it; the agent's
+answers are its own and never translated. The setting is kept per contact in
+the gateway's state (`languages.json`, 0600). The code writes every phone text
+in English, `lang.DE` holds the German. Commands are understood in both languages (`notify short/questions/off`,
 `exchange on/off`, `new`, `files`, `change:` beside the German words). `--name=LABEL` names the installation
 (default: the short host name): the bot is `DELFIN-LABEL`, every session chat and
 the forum carry the label, so one phone paired with a Pi, a server and a login
