@@ -76,12 +76,16 @@ class FakeDaemon:
         self.deleted: list[str] = []
         self.dropped: list[str] = []
         self.links: list[str] = []
+        self.updated: list[tuple[str, str, str]] = []
         self._item = 0
 
     async def send_chat(self, chat, text):
         self.sent.append((chat, text))
         self._item += 1
         return {"chatItems": [{"chatItem": {"meta": {"itemId": self._item}}}]}
+
+    async def update_message(self, chat, item_id, text):
+        self.updated.append((chat, str(item_id), text))
 
     async def create_group(self, title):
         self.groups.append(title)
