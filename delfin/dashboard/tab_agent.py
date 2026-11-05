@@ -15694,7 +15694,7 @@ def create_tab(ctx):
             # the code step go to the pairing panel above the input (not the
             # chat, not the saved session); the rest to the chat.
             if state.get("_on_its_own"):
-                _append_system_message("Ein Handy koppelst nur du selbst, in dieser Sitzung.")
+                _append_system_message("Only you pair a phone, in a session of your own.")
                 return True
             from delfin.messenger import pairing as _pairing
             from delfin.messenger.dashboard import PairPanel as _PairPanel

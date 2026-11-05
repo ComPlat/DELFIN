@@ -152,35 +152,32 @@ def _command(keyword: str, label: str, params: str = '') -> dict:
     return entry
 
 
-#: The bot's command menu (SimpleX ChatBotCommand, bots/README.md): the
-#: keyword is what the phone sends after "/", in the person's language.
-_MENU = {
-    'en': [('sessions', 'Your sessions', ''), ('get', 'Bring a session here', '<N>'),
-           ('new', 'Start a session', '<NAME>'), ('status', 'Status', ''),
-           ('pending', 'Open requests', ''), ('more', 'Rest of the answer', ''),
-           ('language', 'Language', '<en|de|auto>'), ('help', 'Help', '')],
-    'de': [('sitzungen', 'Deine Sitzungen', ''), ('hol', 'Sitzung hierher holen', '<N>'),
-           ('neu', 'Sitzung starten', '<NAME>'), ('status', 'Stand', ''),
-           ('pending', 'Offene Anfragen', ''), ('mehr', 'Rest der Antwort', ''),
-           ('sprache', 'Sprache', '<en|de|auto>'), ('hilfe', 'Hilfe', '')],
-}
-_GROUP_MENU = {
-    'en': [('status', 'Status', ''), ('pending', 'Open requests', ''), ('stop', 'Stop the run', ''),
-           ('details', 'What it is doing', ''), ('more', 'Rest of the answer', ''),
-           ('name', 'Name this session', '<NAME>'), ('off', 'Take it off the phone', ''),
-           ('help', 'Help', '')],
-    'de': [('status', 'Stand', ''), ('pending', 'Offene Anfragen', ''), ('stop', 'Lauf anhalten', ''),
-           ('details', 'Was sie gerade tut', ''), ('mehr', 'Rest der Antwort', ''),
-           ('name', 'Sitzung benennen', '<NAME>'), ('weg', 'Vom Handy nehmen', ''),
-           ('hilfe', 'Hilfe', '')],
-}
+#: The bot's command menus (SimpleX ChatBotCommand, bots/README.md):
+#: (English keyword, the keyword a German phone sends, label, params). The
+#: German keywords are command words the gateway recognises (matchers);
+#: the German labels are lang.DE's.
+_MENU = [('sessions', 'sitzungen', 'Your sessions', ''), ('get', 'hol', 'Bring a session here', '<N>'),
+         ('new', 'neu', 'Start a session', '<NAME>'), ('status', 'status', 'Status', ''),
+         ('pending', 'pending', 'Open requests', ''), ('more', 'mehr', 'Rest of the answer', ''),
+         ('language', 'sprache', 'Language', '<en|de|auto>'), ('help', 'hilfe', 'Help', '')]
+_GROUP_MENU = [('status', 'status', 'Status', ''), ('pending', 'pending', 'Open requests', ''),
+               ('stop', 'stop', 'Stop the run', ''), ('details', 'details', 'What it is doing', ''),
+               ('more', 'mehr', 'Rest of the answer', ''), ('name', 'name', 'Name this session', '<NAME>'),
+               ('off', 'weg', 'Take it off the phone', ''), ('help', 'hilfe', 'Help', '')]
+
+
+def _menu(rows, lang):
+    from .lang import DE
+    german = lang == 'de'
+    return [_command(de if german else en, DE.get(label, label) if german else label, params)
+            for en, de, label, params in rows]
 
 
 def menu(lang: str) -> list[dict]:
     """The command menu of the bot's direct chat, in ``lang``."""
-    return [_command(*row) for row in _MENU['de' if lang == 'de' else 'en']]
+    return _menu(_MENU, lang)
 
 
 def group_menu(lang: str) -> list[dict]:
     """The command menu of a session chat (a group), in ``lang``."""
-    return [_command(*row) for row in _GROUP_MENU['de' if lang == 'de' else 'en']]
+    return _menu(_GROUP_MENU, lang)
