@@ -85,10 +85,13 @@ message and `hol`/`weg` is recorded with a `messenger_*` kind
 (refusals) and the gateway's hash-chained audit log. No link, code or security
 code is written to a log; log lines are masked once more before they are
 written. The gateway's store carries an HMAC under `store.key` (0600): a file
-whose mapping was edited without the key, a corrupt file or a format-1 file
-after the key exists refuses the whole store (nobody is served) and is
-audited. The key lives beside the store, so this detects edits by anything
-but the gateway's own user; it is not a boundary against that user.
+whose mapping was edited without the key, a key of the wrong length, a
+corrupt file, or a format-1 file once the store has been format 2 (its key or
+its `format` marker exists) refuses the whole store (nobody is served) and is
+audited. Key and marker live beside the store in the gateway's 0700 state
+directory: a process of the gateway's own user can rewrite the MAC, or delete
+key and marker together and write a format-1 file, undetected. It is a
+consistency check, not a boundary against that user.
 
 **Forum: one per person.** Each person gets their own forum with their own
 enabled sessions; phones of different people never share a group. Text in a

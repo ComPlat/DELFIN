@@ -23,14 +23,21 @@ code the phone received (:func:`check_code`); only ``verified`` contacts may
 command anything.
 
 Integrity: the file carries an HMAC under ``store.key`` (32 random bytes,
-0600, beside it, created with the first write). A file whose MAC does not
-match, a format-1 file once the key exists (a downgrade), a file that is not
-JSON or a contact bound to a person name that is not valid refuses the whole
-store: :func:`refused` is true, every reader sees no contact, every writer
-raises :class:`StoreRefused`, and one ``messenger_store_refused`` audit
-event is recorded per process. The MAC detects an edit by anything that
-does not hold the key; a process of the gateway's own user can read the key,
-so it is a consistency check, not a boundary against that user.
+0600, beside it, created with the first write); the first write also
+leaves a ``format`` marker. A file whose MAC does not match, a key file
+that is unreadable or not 32 bytes, a format-1 file once the key or the
+marker exists (a downgrade, also with the key deleted), a file that is not
+JSON or a contact bound to a person name that is not valid refuses the
+whole store: :func:`refused` is true, every reader sees no contact, every
+writer raises :class:`StoreRefused`, and one ``messenger_store_refused``
+audit event is recorded per process.
+
+What this does and does not hold: it detects an edit, a damaged key and a
+downgrade by anything that leaves the key or the marker in place. A process
+of the gateway's own user can read the key, rewrite a valid MAC, or delete
+key and marker together and write a format-1 file; that is not detected.
+It is a consistency check, not a boundary against that user (the
+gateway's state directory is 0700 of ``delfin-gw``).
 
 Format 1 (``{"contact_id", "rooms", ...}``, one phone per installation) is
 read and migrated on the first write without re-pairing: its contact becomes
@@ -81,6 +88,12 @@ def pair_file() -> Path:
 
 def key_file() -> Path:
     return state_dir() / "store.key"
+
+
+def format_file() -> Path:
+    """Written with the first format-2 write: from then on a format-1 file
+    is a downgrade, whether or not the key is still there."""
+    return state_dir() / "format"
 
 
 # -- reading -------------------------------------------------------------------------
@@ -160,7 +173,7 @@ def _load_checked() -> dict:
         _refuse("not an object")
     key = _key()
     if data.get("version") is None:
-        if key is not None:
+        if os.path.lexists(key_file()) or os.path.lexists(format_file()):
             _refuse("format 1 after format 2 (downgrade)")
         return _migrate(data)
     if data.get("version") != VERSION:
@@ -270,6 +283,12 @@ def _editing():
 def _write(data: dict) -> None:
     import tempfile
     key = _key(create=True)
+    if key is None:
+        _refuse("key file unreadable or of the wrong length")
+    if not os.path.lexists(format_file()):
+        fd = os.open(format_file(), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write("2\n")
     data = {**{k: v for k, v in data.items() if k != "mac"}, "version": VERSION}
     data["mac"] = _mac(key, data)
     fd, name = tempfile.mkstemp(dir=state_dir(), prefix='.pair-')
