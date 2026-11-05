@@ -135,7 +135,9 @@ def test_the_lower_rungs_still_ask(scene):
     # A command the auto-allow list does not carry. The loop that used to
     # stand here is now allowed when its body is (2026-09-17), which is
     # the body's rung, not a change to this one.
-    _run("bash", {"command": "pip install requests"}, perms)
+    # --no-index: the broker approves, and the command then runs; without
+    # it pip fetched the package from the index on every run.
+    _run("bash", {"command": "pip install --no-index requests"}, perms)
     assert broker.asked, "Accept Edits stopped asking before a shell command"
 
 

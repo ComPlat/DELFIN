@@ -284,7 +284,13 @@ _WORKER = textwrap.dedent("""
     events = []
     t0 = time.monotonic()
     idx = g.acquire()
-    events.append(("in", idx, time.monotonic() - t0))
+    # Absolute host-monotonic stamps, not delays from this worker's own
+    # t0: the children start seconds apart (interpreter + import cost
+    # differs per child under CI load), so relative timelines of two
+    # workers are on different clocks and an overlap between their
+    # holds is invisible (or invented). One shared clock sees it.
+    events.append(("in", idx, time.monotonic() - t0,
+                   time.monotonic()))
     time.sleep(0.4)
     g.release()
     events.append(("out",))
@@ -323,13 +329,17 @@ def test_three_processes_never_exceed_limit_one(runtime):
     g = G.EndpointGate(URL, "m")
     (g._dir() / "state.json").write_text(json.dumps({"limit": 1}))
     events = _run_workers(runtime, 3)
-    timelines = sorted((e[2], e[2] + 0.4) for ev in events
+    # Each hold is an absolute interval on the ONE host monotonic clock
+    # (worker e[3] = stamp at acquire, + 0.4 s hold). Overlap between
+    # two workers' holds -- whatever their import/startup offsets --
+    # must not exceed 1 simultaneous holder.
+    timelines = sorted((e[3], e[3] + 0.4) for ev in events
                        for e in ev if e[0] == "in")
     overlap = 0
     for a, b in timelines:
         held = sum(1 for c, d in timelines if c <= a < d)
         overlap = max(overlap, held)
-    assert overlap == 1
+    assert overlap == 1, timelines
     assert G.EndpointGate(URL, "m").current_limit() == 1
 
 

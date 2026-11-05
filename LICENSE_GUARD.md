@@ -118,7 +118,15 @@ and WEIGHT licence are separate things and both are declared per backend
   the upstream text is marked `verified=False`, never guessed.
 - **What an installer may do:** hint only (`pip install <pkg>` in an
   install_hint string). DELFIN never installs an MLIP package or weights
-  on its own.
+  on its own. The guided set-up (`delfin/mlp_tools/guided_setup.py`,
+  `delfin mlp_setup`) shows the exact commands with the backend's code
+  and weight licence records and runs a command only after the user
+  approved that command (terminal y/N, or the agent's shell gate, which
+  asks for every installer command in every mode). It installs packages
+  into a separate environment; weights are fetched by the backend into
+  the user's own cache on first use (the verify job), never into the
+  repository. For a gated checkpoint the plan tells the user to run
+  `hf auth login` themselves; the token never passes through DELFIN.
 - Every backend's `weight_licence.url` names the model card / licence page
   the user must check before depending on the checkpoint.
 

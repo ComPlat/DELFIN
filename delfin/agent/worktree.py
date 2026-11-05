@@ -28,6 +28,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -178,6 +179,48 @@ def _inside_a_work_tree(path: Path) -> bool:
         return True
 
 
+_ADD_LOCKS: dict = {}
+_ADD_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _worktree_add_lock(repo: Path) -> Iterator[None]:
+    """One ``git worktree add`` at a time per repository.
+
+    Two concurrent adds race inside git: one reads the other's
+    half-written ``.git/worktrees/<name>/commondir`` and fails with
+    "failed to read .git/worktrees/<name>/commondir" (measured: 2 of 400
+    four-way parallel adds here; on a CI runner it lost one of two
+    parallel orchestration writers). Parallel sub-agents and
+    orchestration stages make exactly that call from threads, and
+    several sessions of the service from processes. So: a thread lock per
+    git common directory, and inside it an ``flock`` on
+    ``<common dir>/delfin-worktree-add.lock`` for other processes.
+    Without ``fcntl`` (Windows) the thread lock alone holds.
+    Rejected: retrying the failed add (the loser's state is not known to
+    be clean, and the race stays open for other callers)."""
+    common = _run_git(repo, "rev-parse", "--path-format=absolute",
+                      "--git-common-dir").strip() or str(repo / ".git")
+    with _ADD_LOCKS_GUARD:
+        lock = _ADD_LOCKS.setdefault(common, threading.Lock())
+    with lock:
+        fh = None
+        try:
+            import fcntl
+            fh = open(Path(common) / "delfin-worktree-add.lock", "a")
+            fcntl.flock(fh, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            fh = None
+        try:
+            yield
+        finally:
+            if fh is not None:
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+
+
 def enter_worktree(
     repo_dir: Path | str,
     *,
@@ -229,10 +272,11 @@ def enter_worktree(
     wt_path = parent_dir / f"delfin-wt-{suffix}"
     if wt_path.exists():
         raise WorktreeError(f"worktree path collision: {wt_path}")
-    _run_git(
-        repo, "worktree", "add", "--quiet",
-        "-b", branch_name, str(wt_path), base_ref,
-    )
+    with _worktree_add_lock(repo):
+        _run_git(
+            repo, "worktree", "add", "--quiet",
+            "-b", branch_name, str(wt_path), base_ref,
+        )
     return WorktreeInfo(
         repo_dir=repo,
         path=wt_path,
