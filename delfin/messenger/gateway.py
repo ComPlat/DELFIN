@@ -89,6 +89,8 @@ UPDATE = 'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit,
 #: unset only in a direct call (tests), see Rooms._person.
 _PERSON: contextvars.ContextVar = contextvars.ContextVar('messenger_person', default=None)
 _SENDER: contextvars.ContextVar = contextvars.ContextVar('messenger_sender', default=None)
+#: Set for the notification rounds: they never start a person's service.
+_BACKGROUND: contextvars.ContextVar = contextvars.ContextVar('messenger_background', default=False)
 
 #: A phone that is not verified yet hears this, at most once a minute.
 _VERIFY_FIRST_S = 60.0
@@ -125,6 +127,11 @@ def group_name(title: str, sid: str | None, person: str = OWNER) -> str:
 
 class Refused(ValueError):
     """A refusal written for the phone; its text is shown as it is."""
+
+
+class Starting(Refused):
+    """The person's agent service is being started: told now, asked again
+    once it is up (Rooms._retry)."""
 
 
 def failure_text(exc: BaseException) -> str:
@@ -202,6 +209,8 @@ class Rooms:
         self._told_verify: dict[str, float] = {}
         #: Pair request ids being answered right now (one invitation each).
         self._pairing_now: set = set()
+        #: Messages asked again once their person's service is up.
+        self._retries: set = set()
 
     # -- who is acting -------------------------------------------------------------
 
@@ -264,9 +273,13 @@ class Rooms:
         person = self._person()
         if person:
             command = {**command, 'person': person}
+            if _BACKGROUND.get():
+                command['wake'] = False
         reply = await asyncio.to_thread(self.bridge.ask, command)
         if isinstance(reply, dict) and isinstance(reply.get('error'), str):
             reply['error'] = t(reply['error'])
+        if isinstance(reply, dict) and reply.get('starting'):
+            raise Starting(reply.get('error') or t('Der Agent-Dienst wird gestartet.'))
         return reply
 
     async def session(self, sid, action, **kwargs):
@@ -447,10 +460,43 @@ class Rooms:
                     await self.send(chat, result)
                 return
             result = await self.dispatch(text, room, quote_id=message.get('quote_id'), chat=chat)
+        except Starting as exc:
+            # Straight to the chat this phone wrote in (checked above): the
+            # session's status, which send() asks, is what is starting.
+            await self.daemon.send_chat(chat, str(exc))
+            task = asyncio.create_task(self._retry(message, room))
+            self._retries.add(task)
+            task.add_done_callback(self._retries.discard)
+            return
         except Exception as exc:
             # No raw service exceptions or credentials in phone error messages.
             result = failure_text(exc)
         await self.send(chat, result)
+
+    async def _retry(self, message, room, *, every=0.5, within=60.0):
+        """Once the person's service answers, dispatch the message again (it
+        was claimed already) and send the answer. Runs beside the gateway's
+        loop, so no other phone waits for it."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + within
+        while loop.time() < deadline:
+            await asyncio.sleep(every)
+            try:
+                if not self.paired():
+                    return
+                await self.active_sessions()
+            except Starting:
+                continue
+            except Exception:
+                break
+            try:
+                result = await self.dispatch(message['text'].strip(), room,
+                                             quote_id=message.get('quote_id'), chat=message['chat'])
+            except Exception as exc:
+                result = failure_text(exc)
+            await self.send(message['chat'], result)
+            return
+        await self.send(message['chat'], t('Der Agent-Dienst ist nicht rechtzeitig gestartet. Bitte später erneut.'))
 
     async def dispatch(self, text, room, *, quote_id=None, chat=None):
         if _PERSON.get() is None and chat and chat.startswith('@') and store.verified_person(chat[1:]) is not None:
@@ -1662,6 +1708,7 @@ class Rooms:
                         last = seen
                 for person in store.persons():
                     token = _PERSON.set(person)
+                    quiet = _BACKGROUND.set(True)
                     try:
                         steps = [self.refresh, self.approvals_news]
                         if person == OWNER:
@@ -1677,6 +1724,7 @@ class Rooms:
                                     print(f'[gateway] notifications: {seen}', file=sys.stderr, flush=True)
                                     last = seen
                     finally:
+                        _BACKGROUND.reset(quiet)
                         _PERSON.reset(token)
                 await asyncio.sleep(5)
         task = asyncio.create_task(notifications())

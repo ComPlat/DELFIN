@@ -166,6 +166,17 @@ class ServiceDown(RuntimeError):
     """A person's agent service is not running; the text is for the phone."""
 
 
+import contextvars
+
+#: Set for one gateway request that must not start a person's service.
+_NO_WAKE: contextvars.ContextVar = contextvars.ContextVar("bridge_no_wake", default=False)
+
+
+class ServiceStarting(ServiceDown):
+    """A person's agent service is being started (in a thread of its own);
+    the command is answered at once and asked again once it is up."""
+
+
 def configured_peer_uid() -> int | None:
     """The uid allowed to connect, from the environment; None means the
     check cannot pass (nobody may connect) unless testing disabled it."""
@@ -420,6 +431,15 @@ class Bridge:
     # -- commands ------------------------------------------------------------------------
 
     async def _run_command(self, request: dict) -> dict:
+        # wake: false -- the gateway's background look (notifications): it
+        # never starts a person's stopped service; a phone's command does.
+        token = _NO_WAKE.set(request.get("wake") is False)
+        try:
+            return await self._run_one({k: v for k, v in request.items() if k != "wake"})
+        finally:
+            _NO_WAKE.reset(token)
+
+    async def _run_one(self, request: dict) -> dict:
         cmd = str(request.get("cmd") or "")
         person = request.get(PERSON_FIELD)
         if cmd != "pairing" and PERSON_FIELD in request:
@@ -431,7 +451,7 @@ class Bridge:
                 sub = self._person_bridge(person)
                 if sub is None:
                     return {"error": "Unbekannte Person. Nichts ausgeführt."}
-                return await sub._run_command(request)
+                return await sub._run_one(request)
         if self.person and cmd in OWNER_ONLY | {"pairing"}:
             return {"error": "Für diese Person vom Handy nicht verfügbar."}
         params = {k: v for k, v in request.items() if k != "cmd"}
@@ -444,6 +464,8 @@ class Bridge:
             if problem:
                 return {"error": problem}
             return await handler(params)
+        except ServiceStarting as exc:
+            return {"error": str(exc), "starting": True}
         except ServiceDown as exc:
             return {"error": str(exc)}
         except Exception as exc:  # noqa: BLE001
@@ -482,21 +504,40 @@ class Bridge:
                 if not self.person:
                     raise
                 # A person's service exits when idle: started for the phone
-                # the way their windows start it (people.request_start).
-                if not self._start_person_service():
+                # the way their windows start it (people.request_start), in
+                # a thread of its own -- never on the bridge's event loop.
+                if _NO_WAKE.get():
+                    raise ServiceDown("Der Agent-Dienst dieser Person läuft gerade nicht.") from None
+                if not self._kick_person_start():
                     raise ServiceDown("Der Agent-Dienst dieser Person läuft gerade nicht. "
                                       "Am Rechner eine Sitzung öffnen.") from None
+                raise ServiceStarting("Der Agent-Dienst dieser Person wird gestartet; "
+                                      "die Antwort folgt gleich.") from None
         return self._service
+
+    def _kick_person_start(self) -> bool:
+        """A start of this person's service running in a thread: True when
+        one runs (begun now or before), False when it is refused."""
+        import threading
+        running = self.__dict__.get("_start_thread")
+        if running is not None and running.is_alive():
+            return True
+        if not self._may_start_person_service():
+            return False
+        thread = threading.Thread(target=self._start_person_service, daemon=True,
+                                  name=f"person-start-{self.person}")
+        self._start_thread = thread
+        thread.start()
+        return True
 
     #: Starts of one person's service per window, and the window.
     PERSON_STARTS = 1
     PERSON_START_WINDOW_S = 60.0
 
-    def _start_person_service(self) -> bool:
-        """Start this person's agent service and connect to it. Rate-limited
-        (PERSON_STARTS per PERSON_START_WINDOW_S), each start and each
-        refused one audited. True once connected."""
-        from delfin.messenger import audit, people
+    def _may_start_person_service(self) -> bool:
+        """The rate limit (PERSON_STARTS per PERSON_START_WINDOW_S); a
+        refused start is audited."""
+        from delfin.messenger import audit
         now = time.monotonic()
         starts = [t for t in self.__dict__.get("_person_starts", []) if now - t < self.PERSON_START_WINDOW_S]
         if len(starts) >= self.PERSON_STARTS:
@@ -506,6 +547,12 @@ class Bridge:
                         f"{int(self.PERSON_START_WINDOW_S)} s ago", blocked=True)
             return False
         self._person_starts = [*starts, now]
+        return True
+
+    def _start_person_service(self) -> bool:
+        """(In its own thread.) Start this person's agent service and
+        connect to it; audited. True once connected."""
+        from delfin.messenger import audit, people
         if not people.request_start(self.person):
             audit.event("messenger_service_start_refused",
                         f"agent service of {self.person}: start refused or failed", blocked=True)

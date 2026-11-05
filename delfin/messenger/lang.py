@@ -429,4 +429,9 @@ EN = {
     'Im Forum nur Text an eine Sitzung, keine Befehle.': 'In the forum only text to a session, no commands.',
     'Ein Shell-Befehl vom Handy wird nicht ausgeführt. Bitte als Auftrag formulieren.':
     'A shell command from the phone is not run. Please phrase it as a task.',
+    'Der Agent-Dienst dieser Person wird gestartet; die Antwort folgt gleich.':
+    "This person's agent service is starting; the answer follows shortly.",
+    'Der Agent-Dienst wird gestartet.': 'The agent service is starting.',
+    'Der Agent-Dienst ist nicht rechtzeitig gestartet. Bitte später erneut.':
+    'The agent service did not start in time. Please try again later.',
 }
