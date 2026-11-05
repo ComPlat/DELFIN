@@ -36,6 +36,7 @@ EN = {
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
     'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
     'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
+    'profil frei|standard – im Sitzungs-Chat für dessen Ordner; sonst: profil <sitzung> frei.\n'
     'sync aktualisiert die aktivierten Sitzungen.':
     'Enable SimpleX in each session you want with /sync; /sync off turns it off there.\n'
     'Session chat: text goes to this enabled session only. Forum: to all enabled sessions.\n'
@@ -48,6 +49,7 @@ EN = {
     'In the forum: exchange on/off – share explicit agent announcements (off by default).\n'
     'new NAME – start a session in a folder of its own; new NAME: task – with a first task.\n'
     'schedules – open the schedules chat; in a session chat: schedule WHEN TASK.\n'
+    'profil frei|standard – in a session chat for its folder; otherwise: profil <session> frei.\n'
     'sync refreshes the enabled sessions.',
     'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit, Hindernisse, nächster Schritt. Höchstens fünf Sätze.':
     'Please give me a short progress report: done, in progress, obstacles, next step. At most five sentences.',
@@ -320,6 +322,16 @@ EN = {
     'Der Ordner für Zeitpläne ist kein normaler Ordner.': 'The folder for schedules is not a plain folder.',
     'Höchstens fünf neue Zeitpläne in zehn Minuten. Bitte später erneut.':
     'At most five new schedules in ten minutes. Please try again later.',
+    # The branch commands (gateway._branch_word / _branch_ok). The inner
+    # texts come from delfin/agent/branch_commands.py, which is English
+    # already; these are the gateway's own words around them.
+    'Branchen nicht erreichbar: {e}': 'Branches unreachable: {e}',
+    'Nichts aufzuräumen: keine gemergten Branches, keine verwaisten Worktrees.':
+    'Nothing to clean up: no merged branches, no orphaned worktrees.',
+    'Bestätigen mit: ok <Nummer>': 'Confirm with: ok <number>',
+    'Keine Branches in dieser Ansicht.': 'No branches in this view.',
+    'Aufräumen nicht erreichbar: {e}': 'Cleanup unreachable: {e}',
+    '{t}': '{t}',
     # Approvals of every session on the phone (ok <n> / nein <n> / zeige <n>).
     '⏳ Freigaben nötig ({machine}):': '⏳ Approvals needed ({machine}):',
     '{n}. {tool}: {text}\n{risk}{sep}{hint}': '{n}. {tool}: {text}\n{risk}{sep}{hint}',
@@ -336,4 +348,8 @@ EN = {
     'freigegeben': 'approved',
     'abgelehnt': 'denied',
     'Fehler: {error}': 'Error: {error}',
+    # Workspace profiles from the phone (profil frei|standard).
+    'Profil {ws}: {p}': 'Profile {ws}: {p}',
+    'frei (Bypass im Käfig)': 'free (bypass inside the cage)',
+    'standard': 'default',
 }

@@ -524,7 +524,7 @@ def model_notes(model: str) -> str:
         return ""
     return "--- Model notes ---\n" + "\n".join(f"- {t}" for t in lines)
 
-_OVERRIDES_CACHE: tuple[float, dict] | None = None
+_OVERRIDES_CACHE: tuple[tuple, dict] | None = None
 
 
 def _load_overrides() -> dict:
@@ -532,30 +532,30 @@ def _load_overrides() -> dict:
 
     Reads the JSON directly instead of going through ``load_settings``:
     that helper rewrites the file when it fills in defaults, and this is
-    called while building a prompt. Cached on the file's mtime, so an edit
+    called while building a prompt. Cached on the files' stamps, so an edit
     is picked up on the next turn without re-reading per call.
     """
     global _OVERRIDES_CACHE
     try:
-        from delfin.user_settings import get_settings_path
-        path = get_settings_path()
-        mtime = path.stat().st_mtime if path.exists() else 0.0
+        from delfin.user_settings import load_declared_settings, settings_stamp
+        # Every layer (the personal file and, in the launcher's people
+        # mode, the account's defaults file under it).
+        stamp = settings_stamp()
     except Exception:
         return {}
-    if _OVERRIDES_CACHE is not None and _OVERRIDES_CACHE[0] == mtime:
+    if _OVERRIDES_CACHE is not None and _OVERRIDES_CACHE[0] == stamp:
         return _OVERRIDES_CACHE[1]
     table: dict = {}
-    if mtime:
+    if any(mtime is not None for _path, mtime, _size in stamp):
         try:
-            import json
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = load_declared_settings()
             found = (raw.get("agent") or {}).get("model_overrides") or {}
             if isinstance(found, dict):
                 table = {str(k): v for k, v in found.items()
                          if isinstance(v, dict)}
         except Exception:
             table = {}
-    _OVERRIDES_CACHE = (mtime, table)
+    _OVERRIDES_CACHE = (stamp, table)
     return table
 
 
