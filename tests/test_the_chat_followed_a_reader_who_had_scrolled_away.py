@@ -494,13 +494,11 @@ def test_the_chat_script_is_not_inside_the_keyboard_guard():
     resumed page. Nested inside that block, the chat script never ran
     there: the page came back with its library and without its chat.
     Each block guards itself and stands on its own."""
-    import inspect
-
     from delfin.dashboard import tab_agent
 
-    src = inspect.getsource(tab_agent)
-    start = src.index('_enter_js_output = widgets.Output()')
-    block = src[start:src.index('"""))', start)]
+    # The page script every agent tab (and every agent-service view) shows.
+    block = tab_agent._AGENT_PAGE_JS
+    assert "_ipyd(_JS(_VISIBLE_LOOKUP_JS + _AGENT_PAGE_JS))" in _module_source()
     guard = block.index("if (window.__delfinAgentKeys) return;")
     first_close = block.index("})();", guard)
     keyboard_block = block[guard:first_close]
