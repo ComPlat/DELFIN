@@ -104,6 +104,19 @@ class FakeEngine:
                         "mode": mode, "session_id": self.session_id}
 
     # -- the surface the worker and TerminalAgent use --------------------------
+    #: The agent modes the real engine offers (engine.available_modes).
+    MODES = ("solo", "dashboard", "office", "research")
+
+    def available_modes(self) -> list[str]:
+        return list(self.MODES)
+
+    def _load_mode(self, name: str) -> None:
+        """/mode: as the real engine's switch, any known mode."""
+        if name not in self.MODES:
+            raise ValueError(f"unknown mode {name!r}")
+        self.mode = name
+        self._status["mode"] = name
+
     def set_kit_permission_mode(self, mode: str, *, announce: bool = True) -> bool:
         self.kit_permissions.mode = mode
         return True

@@ -38,6 +38,10 @@ from delfin.dashboard import live_sessions as LS
 #: (the in-kernel tab's rate, about 8 per second).
 RENDER_DELAY_S = 0.12
 
+#: The effort picker's words (the in-kernel tab's labels).
+_EFFORT_LABELS = {"": "Default", "low": "Low", "medium": "Medium", "high": "High",
+                  "xhigh": "Extra High"}
+
 #: How long the second click of a lasting rule, of Bypass, waits.
 CONFIRM_S = 10.0
 
@@ -516,13 +520,17 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
     def load_choices() -> None:
         """The pickers' values, from the session (a model list may ask the
         provider: off the kernel's main thread)."""
-        for dd, what in ((mode_dd, "mode"), (model_dd, "model")):
+        for dd, what in ((mode_dd, "mode"), (model_dd, "model"), (effort_dd, "effort")):
             try:
                 got = client.choices(sid, what)
             except Exception:
                 continue
-            options = [(str(c.get("value")), str(c.get("value"))) for c in got.get("choices") or []
-                       if c.get("value")]
+            labels = _EFFORT_LABELS if what == "effort" else {}
+            options = [(labels.get(str(c.get("value") or ""), str(c.get("value") or "")),
+                        str(c.get("value") or "")) for c in got.get("choices") or []
+                       if c.get("value") or what == "effort"]
+            # The session's own value first (its info), then what the
+            # picker says is current.
             current = str(transcript.info.get(what) or got.get("current") or "")
             if current and current not in {v for _, v in options}:
                 options.insert(0, (current, current))

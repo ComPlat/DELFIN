@@ -158,6 +158,7 @@ export interface SessionInfoEvent {
   "workspace": string
   "provider": string
   "model": string
+  "effort"?: string | null
   "mode": string
   "approval": string
   "title"?: string | null

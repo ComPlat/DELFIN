@@ -138,6 +138,7 @@ EVENTS: dict[str, dict[str, str]] = {
     # What a window shows at the top of a session.
     "session.info": {"sessionId": "string", "workspace": "string",
                      "provider": "string", "model": "string",
+                     "effort": "string?",
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
                      "notices": "[string]", "tasks": "[object]?",

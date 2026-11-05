@@ -1304,6 +1304,9 @@ class Worker:
                 "workspace": str(self.workspace),
                 "provider": str(getattr(self.engine, "provider", "") or ""),
                 "model": facts["model"],
+                # As session.updated reports it later: a window that starts
+                # from this header must show the effort the session has.
+                "effort": facts["effort"],
                 "mode": str(getattr(self.engine, "mode", "") or ""),
                 "approval": facts["approval"],
                 "title": self.title or None,
@@ -1946,6 +1949,14 @@ def main(argv: list[str] | None = None) -> int:
             from .fake_engine import FakeEngine
             engine = FakeEngine(str(workspace), delay=args.fake_delay,
                                 steer_window=args.fake_steer_window)
+            # Started as asked, as a real engine is: what a window then
+            # shows of model, effort and mode is the session's own.
+            if args.model:
+                engine.client.model = args.model
+            if args.effort:
+                engine.effort = engine.client.effort = args.effort
+            if args.mode and args.mode in engine.MODES:
+                engine._load_mode(args.mode)
             if args.resume:
                 # As a real resume (cli._open_session restores the id): the
                 # session goes on under its id, in the same log -- with what
