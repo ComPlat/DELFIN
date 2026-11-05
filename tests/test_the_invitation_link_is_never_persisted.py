@@ -99,7 +99,8 @@ def test_the_dashboard_panel_shows_the_link_outside_the_transcript(acct):
     rid = pairing.open_request("dashboard:d1")
     panel.show(pairing.offer_text(pairing.read(rid, "dashboard:d1", directory=acct.pairing_dir("anna"))))
     link = acct.daemon.links[0]
-    assert link in rendered[-1]
+    import html
+    assert link in html.unescape(rendered[-1])
     acct.connect("21", "901")
     panel.show(pairing.state_text(pairing.read(rid, "dashboard:d1", directory=acct.pairing_dir("anna"))))
     assert SECURITY in rendered[-1]
@@ -128,3 +129,14 @@ def test_the_panel_is_removed_on_expiry_and_cancel(acct, end):
     else:
         panel.expire_if_due()
     assert rendered[-1] == ""
+
+
+def test_the_group_is_rfc_3526_group_14():
+    """A mistyped prime makes every seal fail (measured: one doubled digit
+    raised OverflowError on the first answer)."""
+    import hashlib
+    p = pairing._MODP
+    assert p.bit_length() == 2048
+    assert hashlib.sha256(format(p, "X").encode()).hexdigest()[:16] == "dcd8538e629d7b8b"
+    q = (p - 1) // 2                       # a safe prime: q prime too; 2 generates q's subgroup
+    assert pow(3, p - 1, p) == 1 and pow(3, q - 1, q) == 1 and pow(2, q, p) == 1

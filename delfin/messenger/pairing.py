@@ -22,9 +22,13 @@ Flow (each arrow one poll of the gateway, about 5 s):
    bridge checks ``sha256(nonce)`` against the pair request; the gateway
    checks the code (3 attempts, then the contact is removed).
 
-Until step 3 the contact is told only to verify first. Nothing here writes
-the link or a code to a log: they live in the 0600 result file while the
-step is open and are dropped from it at the next state.
+Until step 3 the contact is told only to verify first. The link and the
+SimpleX security code are never written in a readable form: the bridge
+seals them (:func:`seal`) to the Diffie-Hellman public value the pair
+request carries (RFC 3526 group 14, 2048 bits; the secret exponent stays in
+the memory of the asking process), so the 0600 answer file holds only the
+other public value, the ciphertext and its HMAC. Only the asking process
+opens it (:func:`read`); a log line gets the 12-character tag.
 """
 from __future__ import annotations
 
@@ -56,14 +60,26 @@ MAX_ATTEMPTS = 3
 
 KINDS = frozenset({"pair", "verify", "phones", "revoke", "cancel"})
 FINAL_STATES = frozenset({"verified", "refused", "expired", "failed", "done", "cancelled"})
-MAX_FILE_BYTES = 4096
+MAX_FILE_BYTES = 16384
 
 _DIR = Path.home() / ".delfin" / "messenger_pairing"
 _ID = re.compile(r"[0-9a-f]{32}")
 _HEX = re.compile(r"[0-9a-f]{64}")
 
-#: requester -> (pair request id, nonce): kept only in this process.
-_OPEN: dict[str, tuple[str, str]] = {}
+#: requester -> (pair request id, nonce, DH secret): kept only in this process.
+_OPEN: dict[str, tuple[str, str, int]] = {}
+
+#: RFC 3526 group 14 (2048-bit MODP, a safe prime), generator 2.
+_MODP = int(
+    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A0879"
+    "8E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B"
+    "0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA4836"
+    "1C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804"
+    "F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6"
+    "955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF", 16)
+_GEN = 2
+#: The answer fields that are sealed, never written as they are.
+SEALED_FIELDS = ("link", "securityCode")
 _OPEN_LOCK = threading.Lock()
 
 
@@ -90,6 +106,84 @@ def mask(text: object) -> str:
     text = re.sub(r"(simplex:/|https?://(?:www\.)?simplex\.chat/)\S*", r"\1…", text)
     text = re.sub(r"\d(?:[\d ]{4,})\d", "…", text)
     return text
+
+
+def _secret() -> int:
+    return secrets.randbits(320) | (1 << 319)
+
+
+def _public(secret: int) -> str:
+    return format(pow(_GEN, secret, _MODP), "x")
+
+
+def _keys(shared: int) -> tuple[bytes, bytes]:
+    base = hashlib.sha256(b"delfin-pairing-v1" + shared.to_bytes(256, "big")).digest()
+    return (hmac.new(base, b"enc", hashlib.sha256).digest(),
+            hmac.new(base, b"mac", hashlib.sha256).digest())
+
+
+def _stream(key: bytes, n: int) -> bytes:
+    return b"".join(hmac.new(key, i.to_bytes(4, "big"), hashlib.sha256).digest()
+                    for i in range((n + 31) // 32))[:n]
+
+
+def seal(public_hex: str, fields: dict) -> dict | None:
+    """``fields`` sealed to the requester's public value, or None when it is
+    not a valid group element (then nothing may be written)."""
+    import base64
+    try:
+        peer = int(str(public_hex), 16)
+    except ValueError:
+        return None
+    if not 1 < peer < _MODP - 1:
+        return None
+    mine = _secret()
+    enc, mac = _keys(pow(peer, mine, _MODP))
+    data = json.dumps(fields).encode()
+    ct = bytes(a ^ b for a, b in zip(data, _stream(enc, len(data))))
+    own = _public(mine)
+    tag = hmac.new(mac, own.encode() + b"." + ct, hashlib.sha256).hexdigest()
+    return {"B": own, "ct": base64.b64encode(ct).decode(), "tag": tag}
+
+
+def unseal_with(secret: int, sealed: dict) -> dict | None:
+    """The sealed fields, or None when the HMAC does not match."""
+    import base64
+    try:
+        peer = int(str(sealed["B"]), 16)
+        ct = base64.b64decode(str(sealed["ct"]), validate=True)
+    except (KeyError, ValueError, TypeError):
+        return None
+    if not 1 < peer < _MODP - 1:
+        return None
+    enc, mac = _keys(pow(peer, secret, _MODP))
+    want = hmac.new(mac, str(sealed["B"]).encode() + b"." + ct, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(want, str(sealed.get("tag") or "")):
+        return None
+    try:
+        value = json.loads(bytes(a ^ b for a, b in zip(ct, _stream(enc, len(ct)))))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def opened(res: dict | None, requester: str) -> dict | None:
+    """An answer with its sealed fields opened, when ``requester`` is the
+    process that asked for this pairing; otherwise without them."""
+    if res is None:
+        return None
+    out = {k: v for k, v in res.items() if k != "sealed"}
+    with _OPEN_LOCK:
+        entry = _OPEN.get(str(requester))
+    if res.get("sealed") and entry is not None:
+        out.update({k: v for k, v in (unseal_with(entry[2], res["sealed"]) or {}).items()
+                    if k in SEALED_FIELDS})
+    return out
+
+
+def read(rid: str, requester: str, *, directory: Path | None = None) -> dict | None:
+    """The answer to request ``rid`` as ``requester`` sees it (opened)."""
+    return opened(result(rid, directory=directory), requester)
 
 
 def link_tag(link: str) -> str:
@@ -179,10 +273,11 @@ def wait(rid: str, done, *, timeout: float, directory: Path | None = None,
 def begin(requester: str, *, directory: Path | None = None) -> str:
     """A pair request bound to ``requester`` (a session id or a process tag)."""
     nonce = secrets.token_hex(16)
-    rid = submit("pair", {"requester": str(requester)[:80], "nonce_sha": _sha(nonce)},
-                 directory=directory)
+    secret = _secret()
+    rid = submit("pair", {"requester": str(requester)[:80], "nonce_sha": _sha(nonce),
+                          "public": _public(secret)}, directory=directory)
     with _OPEN_LOCK:
-        _OPEN[str(requester)] = (rid, nonce)
+        _OPEN[str(requester)] = (rid, nonce, secret)
     return rid
 
 
@@ -199,7 +294,7 @@ def confirm(requester: str, code: str, *, directory: Path | None = None) -> str 
         entry = _OPEN.get(str(requester))
     if entry is None:
         return None
-    rid, nonce = entry
+    rid, nonce = entry[0], entry[1]
     return submit("verify", {"pair": rid, "nonce": nonce, "code": digits(code)[:16]},
                   directory=directory)
 
@@ -348,14 +443,14 @@ def session_command(args: str, *, requester: str, show, spawn=_spawn,
     rid = begin(requester, directory=directory)
 
     def after_pair():
-        offered = wait(rid, lambda r: r.get("state") in FINAL_STATES | {"offered"},
-                       timeout=timeout, directory=directory)
-        if offered is None or offered.get("state") != "offered":
+        offered = opened(wait(rid, lambda r: r.get("state") in FINAL_STATES | {"offered"},
+                              timeout=timeout, directory=directory), requester)
+        if offered is None or offered.get("state") != "offered" or not offered.get("link"):
             show(state_text(offered))
             return
         show(offer_text(offered))
-        connected = wait(rid, lambda r: r.get("state") != "offered",
-                         timeout=INVITATION_TTL_S + 30, directory=directory)
+        connected = opened(wait(rid, lambda r: r.get("state") != "offered",
+                                timeout=INVITATION_TTL_S + 30, directory=directory), requester)
         show(state_text(connected))
     spawn(after_pair)
     return "Asking the messenger gateway for a one-time invitation ..."
@@ -414,13 +509,15 @@ def cli_main(argv: list[str], *, ask=input, out=print, timeout: float = 30.0) ->
     requester = f"cli:{os.getpid()}:{secrets.token_hex(4)}"
     rid = begin(requester)
     out("Asking the messenger gateway for a one-time invitation ...")
-    res = wait(rid, lambda r: r.get("state") in FINAL_STATES | {"offered"}, timeout=timeout)
-    if res is None or res.get("state") != "offered":
+    res = opened(wait(rid, lambda r: r.get("state") in FINAL_STATES | {"offered"},
+                      timeout=timeout), requester)
+    if res is None or res.get("state") != "offered" or not res.get("link"):
         out(state_text(res))
         return 1
     out(offer_text(res))
     out("waiting for the phone to connect ...")
-    res = wait(rid, lambda r: r.get("state") != "offered", timeout=INVITATION_TTL_S + 30)
+    res = opened(wait(rid, lambda r: r.get("state") != "offered",
+                      timeout=INVITATION_TTL_S + 30), requester)
     out(state_text(res) if res is None or res.get("state") != "connected"
         else state_text(res).replace("Type it here: /pair CODE (terminal: at the prompt).",
                                      "Type it below."))
@@ -523,6 +620,14 @@ def answer(path: Path, rid: str, value: dict) -> bool:
         "kind", "state", "reason", "link", "expires", "label", "securityCode", "left",
         "phones", "revoked"}}
     value["kind"] = data["kind"]
+    # The link and the security code only sealed to the asking process.
+    secret = {k: value.pop(k) for k in SEALED_FIELDS if k in value}
+    if secret:
+        sealed = seal(str(data.get("public") or ""), secret) if data["kind"] == "pair" else None
+        if sealed is None:
+            value.update(state="refused", reason="no key to seal the invitation to")
+        else:
+            value["sealed"] = sealed
     _write(path / f"res-{rid}.json", value)
     final = data["kind"] != "pair" or value.get("state") in FINAL_STATES
     if final:

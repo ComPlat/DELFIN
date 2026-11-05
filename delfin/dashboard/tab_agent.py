@@ -10872,8 +10872,11 @@ def create_tab(ctx):
     # chat by the height of the list, and closing it moved everything back.
     _palette_pop = widgets.VBox([palette_search, palette_select])
     _palette_pop.add_class("delfin-agent-palette-pop")
+    # The phone pairing panel (/pair): the one-time invitation shown here,
+    # never in the chat transcript or the saved session.
+    messenger_pair_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
     _input_area = widgets.VBox(
-        [_palette_pop,
+        [_palette_pop, messenger_pair_html,
          widgets.HBox(
              [palette_toggle_btn, image_upload, input_row],
              layout=widgets.Layout(
@@ -15561,18 +15564,28 @@ def create_tab(ctx):
             return True
 
         if cmd == "/pair" or cmd.startswith("/pair "):
-            # Phone pairing (delfin.messenger.pairing). The invitation is
-            # shown in one live line that later answers overwrite, so the
-            # one-time link does not stay in the chat.
+            # Phone pairing (delfin.messenger.pairing). The invitation and
+            # the code step go to the pairing panel above the input (not the
+            # chat, not the saved session); the rest to the chat.
             if state.get("_on_its_own"):
                 _append_system_message("Ein Handy koppelst nur du selbst, in dieser Sitzung.")
                 return True
             from delfin.messenger import pairing as _pairing
+            from delfin.messenger.dashboard import PairPanel as _PairPanel
+            _panel = state.get("_messenger_pair_panel")
+            if _panel is None:
+                def _render(value):
+                    messenger_pair_html.value = value
+                    messenger_pair_html.layout.display = "" if value else "none"
+                _panel = state["_messenger_pair_panel"] = _PairPanel(
+                    render=_render, say=_append_system_message)
+            if text[5:].strip().lower() == "cancel":
+                _panel.clear()
             _sid = str(getattr(state.get("engine"), "session_id", "")
                        or state.get("active_session_id") or "")
             _append_system_message(_pairing.session_command(
                 text[5:].strip(), requester="dashboard:" + _sid if _sid else "",
-                show=lambda shown: _live_system_message(shown, "messenger_pair")))
+                show=_panel.show))
             return True
         if cmd == "/plans" or cmd.startswith("/plans "):
             from delfin.agent.memory_store import (

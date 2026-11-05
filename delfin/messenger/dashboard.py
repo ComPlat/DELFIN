@@ -148,3 +148,56 @@ class DashboardSession:
                         persist_pattern=pattern if choice == 'p' else None,
                         persist_kind=kind if choice == 'p' else None)}
         return {'error': 'Unsupported dashboard command'}
+
+
+class PairPanel:
+    """The dashboard's phone-pairing panel: the invitation (QR code and
+    link) and the waiting-for-the-code step shown in a widget of their own,
+    outside the chat transcript and the saved session; removed on success,
+    expiry and cancel. Everything else /pair says goes to the chat (``say``),
+    and none of that carries the link or the security code.
+
+    ``render(html)``: sets the panel widget ("" hides it). ``ttl_s``: when
+    the panel is removed at the latest if no answer comes."""
+
+    def __init__(self, *, render, say, ttl_s=None, clock=time.monotonic):
+        from .pairing import INVITATION_TTL_S
+        self.render, self.say, self.clock = render, say, clock
+        self.ttl_s = INVITATION_TTL_S + 30 if ttl_s is None else float(ttl_s)
+        self._deadline = None
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def transient(text):
+        """Whether ``text`` belongs in the panel: it shows a link, a QR code
+        or the security code (the invitation and the connected step)."""
+        text = str(text or '')
+        return ('simplex:/' in text or 'simplex.chat/' in text
+                or text.startswith('Phone connected') or 'security code' in text)
+
+    def show(self, text):
+        if not self.transient(text):
+            self.clear()
+            if text:
+                self.say(text)
+            return
+        import html
+        with self._lock:
+            self._deadline = self.clock() + self.ttl_s
+        self.render('<div class="delfin-messenger-pair"><pre style="white-space:pre-wrap;'
+                    'line-height:1.0;margin:4px 0">' + html.escape(str(text)) + '</pre></div>')
+        if self.ttl_s > 0:
+            timer = threading.Timer(self.ttl_s, self.expire_if_due)
+            timer.daemon = True
+            timer.start()
+
+    def clear(self):
+        with self._lock:
+            self._deadline = None
+        self.render('')
+
+    def expire_if_due(self):
+        with self._lock:
+            due = self._deadline is not None and self.clock() >= self._deadline
+        if due:
+            self.clear()
