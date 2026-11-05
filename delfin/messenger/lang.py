@@ -40,6 +40,9 @@ COMMAND_WORDS = {
     'handys': 'phones', 'geräte': 'phones', 'geraete': 'phones', 'phones': 'phones',
     'devices': 'phones',
     'hilfe': 'help', 'help': 'help', '?': 'help',
+    # the rest of a cut answer; the whole action of an approval card
+    'mehr': 'more', 'more': 'more',
+    'zeige': 'show', 'zeigen': 'show', 'show': 'show',
 }
 
 
@@ -178,7 +181,6 @@ EN = {
     'Zum Entscheiden auf diese Nachricht antworten: yes/ja, no/nein oder die angezeigte Option.':
     '\nFor this request only. Resolved or expired requests can no longer approve anything.\n'
     'To decide, reply to this message: yes, no or the option shown.',
-    '[{label}]\nNeue Rückfrage/Freigabe im Einzelchat.': '[{label}]\nNew question/approval in the session chat.',
     'Bitte im zugehörigen Sitzungs-Chat auf die Anfrage antworten.':
     "Please reply to the request in its session's chat.",
     'Diese Anfrage ist hier nicht mehr zugeordnet. Mit pending die aktuelle Frage anzeigen und darauf antworten.':
@@ -243,7 +245,6 @@ EN = {
     'Vier Anhänge in Bearbeitung; bitte später erneut senden.': 'Four attachments in progress; please send later.',
     # -- forum and pairing ---------------------------------------------------------
     'DELFIN Forum – aktivierte Sitzungen': 'DELFIN forum – enabled sessions',
-    '📣 Mitteilung von {who}\n\n{content}': '📣 Announcement from {who}\n\n{content}',
     'Verbunden mit {bot} ✓': 'Connected to {bot} ✓',
     # -- refusals the bridge sends as whole strings ----------------------------------
     'SimpleX ist für diese Sitzung ausgeschaltet. In TUI/Dashboard mit /sync aktivieren.':
@@ -457,4 +458,31 @@ EN = {
     'This request is always explicit: please approve it at the computer.',
     'Bitte mit ja oder nein antworten.': 'Please answer with yes or no.',
     'Unbekannte Aktion.': 'Unknown action.',
+    # Cards and notices (render.py).
+    'einen Befehl ausführen': 'run a command',
+    'eine Datei schreiben': 'write a file',
+    'eine Datei ändern': 'edit a file',
+    'einen Patch anwenden': 'apply a patch',
+    'eine Datei lesen': 'read a file',
+    'ein Notebook ändern': 'edit a notebook',
+    'eine Datei außerhalb des Arbeitsordners lesen': 'read a file outside the workspace',
+    'einen Plan freigeben': 'approve a plan',
+    ' auf {machine}': ' on {machine}',
+    ' ({n} Zeilen)': ' ({n} lines)',
+    'Grund laut Agent (ungeprüft): {purpose}': 'Why, as the agent says (unchecked): {purpose}',
+    'Bereit.': 'Ready.',
+    'Wartet auf eine Antwort.': 'Waiting for an answer.',
+    'Ganze Aktion: mit `show` antworten.': 'Whole action: reply `show`.',
+    'Weitere Antworten: ': 'Other answers: ',
+    'Nur am Rechner freizugeben.': 'Approve this at the computer; not from the phone.',
+    'Antworte mit *ja* oder *nein*.': 'Reply *yes* or *no*.',
+    'ganze Antwort: `more`': 'full answer: `more`',
+    'Neue Rückfrage/Freigabe im Einzelchat.': 'A question or approval waits in its chat.',
+    '⏳ Arbeitet …': '⏳ Working …',
+    '✓ Fertig.': '✓ Done.',
+    '⚠️ Fehlgeschlagen.': '⚠️ Failed.',
+    'Sitzung beendet.': 'Session ended.',
+    '⚠️ Der Lauf ist fehlgeschlagen.': '⚠️ The run failed.',
+    'Nichts weiter.': 'Nothing more.',
+    '📣 Mitteilung von *{who}*\n\n{content}': '📣 Note from *{who}*\n\n{content}',
 }

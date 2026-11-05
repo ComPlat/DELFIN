@@ -166,7 +166,16 @@ Phone `sync` refreshes invitations; it cannot activate another session.
 ## Everyday use
 
 Ordinary text in a session chat addresses exactly that session. Several sessions
-can run concurrently. Every notification includes the name and stable session ID.
+can run concurrently. A session chat's messages carry no name or id prefix: the
+group's name says which session it is. In the forum each session's part starts
+with its name in bold (`*Office*`). No raw id or hash is shown anywhere
+(delfin/messenger/render.py).
+
+What a turn sends: one "⏳ Working …" message when it starts (edited to
+"✓ Done." when it ends) and the final answer as the model wrote it, in
+SimpleX markdown. An answer longer than 900 characters is cut at a paragraph,
+sentence or word end with "… full answer: `more`"; `more` sends the next part.
+The first look at an idle session (a gateway start) sends nothing.
 `name Research` renames the session and its SimpleX group without changing routing.
 A name in the forum changes the forum title. Renaming is not a recipient switch.
 
@@ -178,6 +187,8 @@ Commands below are plain text; a leading slash is optional:
 | `update` | Ask the agent for a brief progress report |
 | `pending` | Show currently open questions and approvals |
 | `stop` | Cancel the current turn |
+| `more` (`mehr`) | The rest of the last answer that was cut |
+| `show` (`zeige`), as a reply to an approval card | The whole action, in a code block |
 | `sessions` | Your running sessions, numbered (📱: on the phone) |
 | `hol N` / `hol NAME` (`get`) | Bring a running session of yours to the phone |
 | `weg` (`off`) | In a session's chat: take it off the phone |
@@ -201,6 +212,20 @@ Forum text addresses enabled participants only, with a delivery result for each.
 `stop` in the forum cancels their current turns, not the service itself.
 
 ## Questions and approvals
+
+An approval is one card: what (the tool in words; a command names the machine
+it runs on), why (the agent's reason, marked unchecked), the action in a code
+block when it is at most 6 lines (else `show`), extra answers such as a lasting
+rule or a changed command, and "Reply *yes* or *no*".
+
+````
+🔐 *run a command* on DELFIN-Pi
+Why, as the agent says (unchecked): list the results
+```
+$ ls -l results
+```
+Reply *yes* or *no*.
+````
 
 **One authority per request.** The request belongs to the broker of the
 process that asked (`TerminalConfirmBroker`; in the agent service its

@@ -172,9 +172,11 @@ def test_unknown_and_unverified_contacts_are_ignored_in_groups(acct, sender):
     assert not _prompts(acct, "anna") and not acct.daemon.to("#a1")
 
 
-def test_every_message_in_a_session_chat_names_the_session(acct):
+def test_no_message_in_a_session_chat_carries_a_name_prefix(acct):
+    """The group's name says which session it is (render.py)."""
     acct.say("21", "#a1", "status")
-    assert acct.daemon.to("#a1")[-1].startswith("[Butan")
+    out = acct.daemon.to("#a1")[-1]
+    assert not out.startswith("[") and "s-anna" not in out
 
 
 def test_a_schedules_command_from_a_person_is_refused(acct):

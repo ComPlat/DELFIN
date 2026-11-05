@@ -90,19 +90,19 @@ def test_english_on_request(rooms, monkeypatch):
     room, daemon = rooms
     monkeypatch.setenv("DELFIN_MESSENGER_LANG", "en")
     _say(room, "/help", "1")
-    # Every message in a session's chat starts with the session's name.
-    assert daemon.sent[-1][1] == "[t]\n" + lang.EN[HELP]
+    # A session chat's messages carry no name prefix (the group says it).
+    assert daemon.sent[-1][1] == lang.EN[HELP]
     _say(room, "calculate this", "2")
     assert "This session is not available" in daemon.sent[-1][1]
     _say(room, "notify questions", "3")
-    assert daemon.sent[-1][1].startswith("[t]\nAutomatic notifications: fragen.")
+    assert daemon.sent[-1][1].startswith("Automatic notifications: fragen.")
 
 
 def test_german_by_default(rooms, monkeypatch):
     room, daemon = rooms
     monkeypatch.delenv("DELFIN_MESSENGER_LANG", raising=False)
     _say(room, "/help", "1")
-    assert daemon.sent[-1][1] == "[t]\n" + HELP
+    assert daemon.sent[-1][1] == HELP
 
 
 def test_what_the_agent_wrote_is_never_translated(rooms, monkeypatch):
@@ -112,4 +112,4 @@ def test_what_the_agent_wrote_is_never_translated(rooms, monkeypatch):
             "text": "echo 'Nichts offen.'", "purpose": "Nichts offen.", "options": []}
     shown = room.pending_text([item])
     assert "echo 'Nichts offen.'" in shown
-    assert "The agent's statement (unchecked): Nichts offen." in shown
+    assert "Why, as the agent says (unchecked): Nichts offen." in shown

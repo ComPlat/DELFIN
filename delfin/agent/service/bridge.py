@@ -687,7 +687,7 @@ class Bridge:
                     "folder": _truncate(self._redactor().text(Path(str(row.get("workspace") or "")).name), 60),
                     "messengerEnabled": True, "generation": self._record(sid).get("generation"),
                     "activity": _truncate(self._redactor().text(str(row.get("activity") or ""))),
-                    "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 1000)}
+                    "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 4000)}
         if action == "pending":
             live = await self._request("session.pending", {"sessionId": sid})
             items = []

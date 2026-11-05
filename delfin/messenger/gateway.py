@@ -23,6 +23,7 @@ from collections import deque
 
 from . import audit, pairing, simplex, store
 from .lang import command_word, t
+from .render import cut, in_forum, more_hint, status_text
 from .people import OWNER
 from .bridge_client import BridgeClient, BridgeDown, default_socket_path
 
@@ -167,17 +168,15 @@ _PLAIN = {
 
 
 def label(room: dict) -> str:
-    """A room's sender label: the session's name and short id; in a forum
-    of a person of people mode, the person in brackets after it."""
-    sid = room['session_id']
-    text = f"{room['title']} · {sid[:8]}" if sid else str(room['title'])
-    return text
+    """A room's sender label: the session's name (no id; the group name
+    of a session chat already says which session it is)."""
+    return str(room.get('title') or '')
 
 
 def forum_label(room: dict) -> str:
-    """How a session's post appears in the forum: ``<name> (<person>)``."""
-    person = room.get('person', OWNER)
-    return f'{label(room)} ({person})' if person else label(room)
+    """How a session's post appears in the forum: its name. A forum is one
+    person's, so the person is not named."""
+    return label(room)
 
 
 def person_name(person: str) -> str:
@@ -219,6 +218,10 @@ class Rooms:
         self._answered_here: set = set()
         #: person -> codes of room requests whose card was sent.
         self._room_shown: dict[str, set] = {}
+        #: chat -> the item id of this turn's "working" message.
+        self._working: dict[str, str] = {}
+        #: chat -> the rest of the last answer that was cut (``more``).
+        self._more: dict[str, str] = {}
 
     # -- who is acting -------------------------------------------------------------
 
@@ -370,28 +373,31 @@ class Rooms:
         return bool(room.get('ready')) and room.get('person', OWNER) == person
 
     async def send(self, chat, text, *, request=None):
+        """Send ``text`` to ``chat`` as it is (no prefix), in parts of at
+        most 2000 characters. Output: the item ids sent ([] when nothing
+        was sent); with ``request``, each id becomes a reply target."""
         if not self.paired() or not self._may_send(chat):
-            return
+            return []
         room = store.rooms().get(chat)
         if room and room['session_id']:
             current = await self.session(room['session_id'], 'status')
             if current.get('messengerEnabled') is not True:
-                return
-            # Every message in a session's chat names the session.
-            if not text.startswith('['):
-                text = f'[{room["title"]}]\n{text}'
+                return []
         # Split at message boundaries; never truncate an approval preview silently.
+        sent = []
         for start in range(0, len(text), 2000):
             if self.paired():
                 result = await self.daemon.send_chat(chat, text[start:start + 2000])
-                if request:
-                    for wrapped in (result or {}).get('chatItems', []):
-                        mid = ((wrapped.get('chatItem') or {}).get('meta') or {}).get('itemId')
-                        if mid is not None:
-                            self._reply_targets[(chat, str(mid))] = {
-                                **request, '_sent_at': time.monotonic(), '_person': self._person()}
-                            while len(self._reply_targets) > 512:
-                                self._reply_targets.pop(next(iter(self._reply_targets)))
+                for wrapped in (result or {}).get('chatItems', []):
+                    mid = ((wrapped.get('chatItem') or {}).get('meta') or {}).get('itemId')
+                    if mid is not None:
+                        sent.append(str(mid))
+                    if request and mid is not None:
+                        self._reply_targets[(chat, str(mid))] = {
+                            **request, '_sent_at': time.monotonic(), '_person': self._person()}
+                        while len(self._reply_targets) > 512:
+                            self._reply_targets.pop(next(iter(self._reply_targets)))
+        return sent
 
     async def handle(self, message):
         """One received message: refused unless its sender is a VERIFIED
@@ -528,6 +534,11 @@ class Rooms:
             return await self.approval_command(text)
         if named == 'help':
             return t(HELP)
+        if named == 'more' and self._more.get(chat):
+            head, left = cut(self._more.pop(chat, '') or '', 1500)
+            if left:
+                self._more[chat] = left
+            return (head + (more_hint() if left else '')) if head else t('Nichts weiter.')
         if named == 'sessions':
             return await self.sessions_text(chat)
         if named == 'get' and rest.strip():
@@ -713,7 +724,7 @@ class Rooms:
                         result = reply.get('error') or self.pending_text(items)
                 elif command == 'status':
                     reply = await self.session(target_sid, 'status')
-                    result = reply.get('error') or '\n'.join(filter(None, [reply.get('state'), reply.get('activity'), reply.get('answer')]))
+                    result = reply.get('error') or status_text(reply)
                 elif (len(targets) == 1 and command not in {'stop', 'update'}
                       and (answered := await self.answer_open_question(target_sid, text, chat)) is not None):
                     result = answered
@@ -724,7 +735,8 @@ class Rooms:
                     result = reply.get('error') or (t('Lauf wird angehalten.') if action == 'stop' else t('Nachricht übergeben.'))
             except Exception:
                 result = t('Zustellung unklar: Verbindung unterbrochen. Vor erneutem Senden /status prüfen.')
-            results.append(f'[{label(target)}]\n{result}')
+            results.append(result if len(targets) == 1 and sid is not None
+                           else in_forum(label(target), result))
         return '\n\n'.join(results)
 
     @staticmethod
@@ -734,7 +746,7 @@ class Rooms:
         hol/get with exactly one token. A longer line that starts with one
         of these words is a sentence for the session."""
         tokens = text.split()
-        if len(tokens) == 1 and command_word(tokens[0]) in {'help', 'sessions', 'phones', 'revoke', 'off'}:
+        if len(tokens) == 1 and command_word(tokens[0]) in {'help', 'sessions', 'phones', 'revoke', 'off', 'more'}:
             return command_word(tokens[0])
         if len(tokens) == 2 and command_word(tokens[0]) == 'get':
             return 'get'
@@ -1096,12 +1108,15 @@ class Rooms:
 
     @staticmethod
     def pending_text(items):
-        from .render import question_card
+        from .render import approval_card, question_card
         lines = []
         for item in items:
             kind = item.get('kind')
             if kind == 'question':
                 lines.append(question_card(item))
+                continue
+            if kind in {'confirm', 'plan'}:
+                lines.append(approval_card(item, bot_name()))
                 continue
             name = t('❓ Rückfrage') if kind == 'question' else t('📋 Planfreigabe') if kind == 'plan' else t('🔐 Freigabe nötig')
             text = f"{name}\n\n"
@@ -1127,7 +1142,7 @@ class Rooms:
         return '\n\n'.join(lines) or t('Nichts offen.')
 
     async def send_request(self, chat, room, item):
-        await self.send(chat, f'[{label(room)}]\n' + self.pending_text([item]), request=item)
+        await self.send(chat, self.pending_text([item]), request=item)
 
     async def reply(self, text, room, chat, quote_id):
         target = self._reply_targets.get((chat, str(quote_id)))
@@ -1142,6 +1157,9 @@ class Rooms:
                 or time.monotonic() - item.get('_sent_at', 0) > 600):
             return t('Diese Anfrage ist hier nicht mehr zugeordnet. Mit pending die aktuelle Frage anzeigen und darauf antworten.')
         sid = room['session_id']
+        if command_word(text) == 'show' and item.get('kind') in {'confirm', 'plan'}:
+            from .render import preview_block
+            return preview_block(item)
         if item.get('kind') == 'voice':
             if text.strip().lower() not in {'senden', 'send'}:
                 return t('Mit senden bestätigen oder die Aufnahme ignorieren. Freigaben bitte als Text beantworten.')
@@ -1506,8 +1524,30 @@ class Rooms:
             else:
                 state, answer = status.get('state'), status.get('answer') or ''
                 fingerprint = (state, answer)
-                if state in {'idle', 'done', 'failed', 'error', 'ended'} and self._shown.get((chat, 'status')) != fingerprint:
-                    notices.append(str(state) + ('\n' + answer if answer else ''))
+                before = self._shown.get((chat, 'status'))
+                if state == 'running' and (before is None or before[0] != 'running'):
+                    # One "working" message per turn, in the session chat
+                    # only; it is edited when the turn ends.
+                    mids = await self.send(chat, t('⏳ Arbeitet …'))
+                    if mids:
+                        self._working[chat] = mids[-1]
+                elif state in {'idle', 'done', 'failed', 'error', 'ended'} and before is not None \
+                        and before != fingerprint:
+                    working = self._working.pop(chat, None)
+                    if working is not None:
+                        try:
+                            await self.daemon.update_message(chat, working, t('✓ Fertig.') if state != 'failed'
+                                                             else t('⚠️ Fehlgeschlagen.'))
+                        except Exception:
+                            pass
+                    if answer and answer != before[1]:
+                        head, rest = cut(answer)
+                        self._more[chat] = rest
+                        notices.append(head + (more_hint() if rest else ''))
+                    elif state == 'ended':
+                        notices.append(t('Sitzung beendet.'))
+                    elif state == 'failed':
+                        notices.append(t('⚠️ Der Lauf ist fehlgeschlagen.'))
                 next_shown[(chat, 'status')] = fingerprint
                 pending = await self.session(sid, 'pending')
                 items = pending.get('items', [])
@@ -1521,12 +1561,12 @@ class Rooms:
                     for item in items:
                         await self.send_request(chat, room, item)
                     for forum in (forums if room.get('forum', True) else []):
-                        await self.send(forum, t('[{label}]\nNeue Rückfrage/Freigabe im Einzelchat.').format(label=forum_label(room)))
+                        await self.send(forum, in_forum(forum_label(room), t('Neue Rückfrage/Freigabe im Einzelchat.')))
                 next_shown[(chat, 'pending')] = items
             for notice in (notices if room.get('notifications', 'kurz') == 'kurz' else []):
-                text = f'[{label(room)}]\n{notice}'
-                for destination in [chat, *(forums if room.get('forum', True) else [])]:
-                    await self.send(destination, text)
+                await self.send(chat, notice)
+                for forum in (forums if room.get('forum', True) else []):
+                    await self.send(forum, in_forum(forum_label(room), notice))
             self._shown = next_shown
             if relay_on and room.get('forum', True):
                 await self.relay_announcement(sid, room, bindings, forums)
@@ -1542,7 +1582,7 @@ class Rooms:
         if not content or not result.get('id') or not store.claim_message('announcement:' + sid, result['id']):
             return
         self._announced.append((sid, now))
-        text = t('📣 Mitteilung von {who}\n\n{content}').format(who=forum_label(room), content=content)
+        text = t('📣 Mitteilung von *{who}*\n\n{content}').format(who=forum_label(room), content=content)
         for forum in forums:
             await self.send(forum, text)
         for target in bindings.values():
