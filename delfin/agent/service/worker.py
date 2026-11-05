@@ -1452,10 +1452,10 @@ class Worker:
         if not text:
             raise _Refusal(protocol.INVALID_PARAMS, "empty prompt")
         if text.split()[0].lower() == "/sync":
-            from delfin.messenger.activation import clean_name, configure
+            from delfin.messenger.activation import configure, parse_sync
             args = text[5:].strip()
             output = configure(self.emitter.session_id, args, endpoint="")
-            name = clean_name(args) if args.lower() not in {"", "on", "off", "status"} else ""
+            name = parse_sync(args)[1]
             if name:
                 # /sync NAME: the session's title -- the one display name
                 # every window and the phone chat show -- in the same step.

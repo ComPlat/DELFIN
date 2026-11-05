@@ -76,6 +76,33 @@ def clean_name(text):
         return ' '.join(''.join(c if c.isprintable() else ' ' for c in str(text or '')).split())[:NAME_MAX].strip()
 
 
+#: What /sync understands (German matchers for what the user types).
+SYNC_ON = frozenset({'', 'on', 'an', 'ein', 'enable'})
+SYNC_OFF = frozenset({'off', 'aus', 'ausschalten', 'disable', 'stop'})
+SYNC_USAGE = ('Verwendung: /sync [on|off|status] oder /sync name NAME. '
+              'Gilt nur für diese Sitzung; anderes ändert nichts.')
+
+
+def parse_sync(args):
+    """``/sync`` arguments as (action, name): action on | off | status |
+    usage; a name only after ``name`` or in quotes. Anything else is
+    ``usage`` -- it changes nothing (an unknown word never switches on)."""
+    raw = str(args or '').strip()
+    word = raw.lower()
+    if word in SYNC_ON:
+        return 'on', ''
+    if word in SYNC_OFF:
+        return 'off', ''
+    if word == 'status':
+        return 'status', ''
+    head, _, rest = raw.partition(' ')
+    if head.lower() == 'name' and clean_name(rest):
+        return 'on', clean_name(rest)
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in '"\'' and clean_name(raw[1:-1]):
+        return 'on', clean_name(raw[1:-1])
+    return 'usage', ''
+
+
 def configure(sid, args='', *, endpoint=None, directory=None, by='session', phone=''):
     """``/sync`` [on | off | status | NAME]: switch or report. ``NAME``
     switches on like ``on``; naming the session is the caller's (the
@@ -83,14 +110,9 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
     bridge passes ``phone`` and the phone's label for ``hol`` and ``weg``)."""
     if not sid:
         return 'Noch keine Sitzung. Zuerst eine Sitzung starten.'
-    raw = str(args or '').strip()
-    args = raw.lower()
-    name = ''
-    if args not in {'', 'on', 'off', 'status'}:
-        name = clean_name(raw)
-        if not name:
-            return 'Verwendung: /sync [NAME] | off | status. Gilt nur für diese Sitzung.'
-        args = 'on'
+    args, _name = parse_sync(args)
+    if args == 'usage':
+        return SYNC_USAGE
     if args == 'status':
         old = record(sid, directory=directory)
         text = 'SimpleX für diese Sitzung: ' + ('aktiviert' if old.get('enabled') is True else 'ausgeschaltet')

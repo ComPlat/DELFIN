@@ -140,11 +140,11 @@ def expand_at_references(text: str, workspace: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def _sync(ctx, args: str) -> CommandResult:
-    from delfin.messenger.activation import clean_name, configure
+    from delfin.messenger.activation import configure, parse_sync
     sid = str(ctx.session_id or getattr(ctx.engine, "session_id", "") or "")
     output = configure(sid, args, endpoint="")
-    # /sync NAME: also the session's title, the one display name.
-    name = clean_name(args) if sid and args.strip().lower() not in {"", "on", "off", "status"} else ""
+    # /sync name NAME: also the session's title, the one display name.
+    name = parse_sync(args)[1] if sid else ""
     return CommandResult(output=output + (f" Name: {name}." if name else ""), title=name)
 
 
@@ -2153,7 +2153,7 @@ BUILTINS: dict[str, ReplCommand] = {
                     _keys),
         ReplCommand("/editor", "session", "Write the next prompt in "
                     "$VISUAL or $EDITOR", _editor, True),
-        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status|NAME", _sync, True),
+        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status|name NAME", _sync, True),
         ReplCommand("/pair", "session", "Connect your phone (SimpleX): /pair, then /pair CODE",
                     _pair, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
