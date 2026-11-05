@@ -213,7 +213,11 @@ def _write_one_side(argv) -> int:
     side, smiles, out = argv[1], argv[2], Path(argv[3])
     import delfin
     runner = _side_cli if side == "cli" else _side_dashboard
-    data = runner(smiles, out.parent)
+    # A work directory of this result file alone: result files of concurrent runs may
+    # share a directory, and a shared cli_out would mix their frame files.
+    work = out.parent / f"{out.stem}.work"
+    work.mkdir(parents=True, exist_ok=True)
+    data = runner(smiles, work)
     data["delfin_file"] = delfin.__file__
     out.write_text(json.dumps(data))
     return 0
