@@ -778,7 +778,7 @@ class Bridge:
             if sub in {"list", "pull", "test", "cleanup"}:
                 pass
             else:
-                return {"error": "Unbekannter Branch-Befehl."}
+                return {"error": "Unknown branch command."}
             if sub == "list":
                 request.update(view=str(params.get("view") or "mine"),
                                text=str(params.get("text") or ""))
@@ -815,7 +815,7 @@ class Bridge:
             if action == "answer" and kind == "ask":
                 reply_params["text"] = str(params.get("text") or "")
                 if not reply_params["text"].strip():
-                    return {"error": "Leere Antwort."}
+                    return {"error": "Empty answer."}
             elif action in {"approve", "deny", "decide"} and kind in {"confirm", "plan"}:
                 choice = params.get("choice", "") if action == "decide" else "n" if action == "deny" else "d" if kind == "plan" else "y"
                 if choice not in {o.get("key") for o in req.get("options", [])}:
@@ -838,23 +838,20 @@ class Bridge:
                 return {"error": 'An answer and an approval must not be confused.'}
             # Consume before awaiting: concurrent replies cannot apply this code twice.
             if time.monotonic() - issued[3] >= 600 or self._issued.pop(code, None) != issued:
-                return {"error": "Anfrage bereits beantwortet."}
+                return {"error": "Request already answered."}
             reply = await self._request("permission.reply", reply_params)
-            return {"ok": bool(reply.get("applied")), "error": None if reply.get("applied") else "Anfrage bereits erledigt."}
+            return {"ok": bool(reply.get("applied")), "error": None if reply.get("applied") else "Request already settled."}
         if action in {"prompt", "update"}:
             text = str(params.get("text") or "").strip()
             if not text:
-                return {"error": "Leerer Auftrag."}
+                return {"error": "Empty task."}
+            # The person's text as written: the messenger's rules for the
+            # model are the session's messenger context line
+            # (engine.messenger_line), its origin the service's via.
             if row.get('workspace'):
                 from delfin.messenger.media import directory
-                with directory(row['workspace'], sid, 'outbox') as (_, outbox):
-                    text += ('\n\n[Messenger: offer files or images for download only when the user '
-                             'asks, as plain files in ' + str(outbox) + '. No secrets or credentials, '
-                             'no full chat export. Name the file; the user fetches it by that name. '
-                             'For an explicit short note to other agents, put forum.txt there '
-                             '(at most 1400 UTF-8 bytes); it is passed on only when the user turned '
-                             'the exchange on. No automatic replies to other agents\' notes. The rest '
-                             'of the messenger directory is read-only.]')
+                with directory(row['workspace'], sid, 'outbox'):
+                    pass                    # the outbox the context line names exists
             reply = await self._request("session.prompt", {"sessionId": sid, "text": text, "how": "steer" if action == "update" else "queue"})
             return {"ok": True, "sessionId": sid, **reply}
         if action == "stop":
@@ -874,7 +871,7 @@ class Bridge:
             self._configure(sid, "off", by="phone", phone=str(params.get("text") or ""))
             await self._tell_session(sid)
             return {"ok": True, "sessionId": sid}
-        return {"error": "Unbekannter Sitzungsbefehl."}
+        return {"error": "Unknown session command."}
 
     async def _tell_session(self, sid: str) -> None:
         """Show the session its messenger state as a notice (``/sync status``
@@ -1241,7 +1238,7 @@ class Bridge:
             items = approvals.get("items", [])
             item = next((i for i in items if i["n"] == n), None)
             if item is None:
-                return {"error": f"Keine offene Anfrage mit der Nummer {n}. Mit approvals die offenen ansehen."}
+                return {"error": f"No open request number {n}. approvals lists the open ones."}
             if not self._approvals_check_ok(items, check):
                 return {"error": 'The check does not match or the request has changed. First approvals, then answer.'}
             if not item["approvable"]:
@@ -1260,7 +1257,7 @@ class Bridge:
                 "sessionId": item["sessionId"], "requestId": item["requestId"],
                 "choice": "y" if ok else "n"})
             return {"ok": bool(reply.get("applied")),
-                    "error": None if reply.get("applied") else "Anfrage bereits erledigt."}
+                    "error": None if reply.get("applied") else "Request already settled."}
         code = str(params.get("id") or "")
         text = str(params.get("text") or "")
         if not code or not text:
@@ -1302,7 +1299,7 @@ class Bridge:
         folder = os.path.join(root, slug)
         if os.path.lexists(folder):
             if os.path.islink(folder) or not os.path.isdir(folder):
-                return {"error": f"{slug} gibt es dort schon und ist kein normaler Ordner."}
+                return {"error": f"{slug} exists there already and is not a normal folder."}
         else:
             os.mkdir(folder, 0o700)
         self._created.append(now)

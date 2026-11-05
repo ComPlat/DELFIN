@@ -319,6 +319,13 @@ MESSENGER_LINE = (
     "[Messenger] This session is connected to the user's phone through SimpleX: "
     "your replies appear there too. A file you offer for download (in the "
     "messenger outbox the messenger note names) can be fetched there.")
+#: The rest of the line: the session's outbox and the forum note (formerly
+#: appended by the bridge to every phone prompt). ~330 characters.
+MESSENGER_RULES = (
+    " Offer a file only when the user asks, as a plain file in {outbox} (no secrets, no "
+    "chat export; name it in your reply). An explicit short note to other agents: forum.txt "
+    "there, at most 1400 bytes, passed on only when the user enabled the exchange; never "
+    "answer other agents' notes on your own.")
 # Of those blocks, the ones worth re-sending when they change mid-turn. The
 # project pin never changes within a turn, and the backend notice is a
 # session-opening statement — re-sending either would cost tokens to say
@@ -2853,7 +2860,7 @@ class AgentEngine:
         # tail as a private key so every later request repeats the bytes
         # the endpoint already holds.
         volatile = (extra_blocks + ([dashboard_state] if dashboard_state else [])
-                    + ([MESSENGER_LINE] if self._on_the_phone() else []))
+                    + ([self.messenger_line()] if self._on_the_phone() else []))
         _last = self.messages[-1] if self.messages else None
         _has_turn = isinstance(_last, dict) and _last.get("role") == "user"
         if volatile and not _has_turn:
@@ -2895,6 +2902,20 @@ class AgentEngine:
         return self.loader.build_system_prompt(
             **self._prompt_build_args(
                 role, memory_context, task_text, live_state, _perm_mode))
+
+    def messenger_line(self) -> str:
+        """MESSENGER_LINE with this session's rules: where a file is offered
+        (its outbox) and the forum note. Stable for the session, so the
+        tail's bytes repeat (the prefix cache); said once per turn."""
+        sid = str(getattr(self, "session_id", "") or "")
+        try:
+            from delfin.messenger.media import ROOT, session_hash
+            perms = getattr(getattr(self, "client", None), "_permissions", None)
+            ws = Path(str(getattr(perms, "workspace", "") or self.repo_dir))
+            outbox = ws / ROOT / session_hash(sid) / "outbox"
+        except Exception:
+            return MESSENGER_LINE
+        return MESSENGER_LINE + MESSENGER_RULES.format(outbox=outbox)
 
     def _on_the_phone(self) -> bool:
         """Whether this session is enabled for the messenger (its /sync

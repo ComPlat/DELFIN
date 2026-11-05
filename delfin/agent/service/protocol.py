@@ -174,7 +174,7 @@ EVENTS: dict[str, dict[str, str]] = {
     # source: user | queued (sent while a turn ran; goes out after it) |
     # steer (sent into the running turn) | harness (nobody typed it: a
     # finished job, a message from another session, a continuation)
-    "user.message": {"text": "string", "source": "string"},
+    "user.message": {"text": "string", "source": "string", "via": "string?"},
     "turn.started": {"turnId": "string", "source": "string"},
     # stopped: ended by a cancel (Esc), not on its own.
     "turn.ended": {"turnId": "string", "durationMs": "integer",

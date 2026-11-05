@@ -473,7 +473,8 @@ class Transcript:
             return True
         if kind == "user.message":
             self._entry("user", str(event.get("text") or ""),
-                        source=str(event.get("source") or "user"), **extra)
+                        source=str(event.get("source") or "user"),
+                        **({"via": "phone"} if event.get("via") == "phone" else {}), **extra)
             return True
         if kind == "text.started":
             part = str(event.get("partId") or "")

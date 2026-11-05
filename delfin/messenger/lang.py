@@ -631,4 +631,11 @@ DE = {
                                                                                     'ansehen.',
     'New sessions from the phone are not set up on this computer.': 'Neue Sitzungen vom Handy sind auf '
                                                                     'diesem Rechner nicht eingerichtet.',
+    # More bridge refusals.
+    'Unknown branch command.': 'Unbekannter Branch-Befehl.',
+    'Empty answer.': 'Leere Antwort.',
+    'Request already answered.': 'Anfrage bereits beantwortet.',
+    'Request already settled.': 'Anfrage bereits erledigt.',
+    'Empty task.': 'Leerer Auftrag.',
+    'Unknown session command.': 'Unbekannter Sitzungsbefehl.',
 }

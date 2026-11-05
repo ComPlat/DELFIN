@@ -125,7 +125,9 @@ def _render_entry(T, entry: dict) -> str:
         body = T._md_to_html(text)
         if entry.get("source") == "harness":
             return f'<div class="delfin-chat-msg delfin-chat-system">{body}</div>'
-        return f'<div class="delfin-chat-msg delfin-chat-user">{body}</div>'
+        badge = ('<span class="delfin-chat-via" style="font-size:11px;opacity:.7">via phone</span>'
+                 if entry.get("via") == "phone" else "")
+        return f'<div class="delfin-chat-msg delfin-chat-user">{badge}{body}</div>'
     if role == "agent":
         if not text.strip() and not entry.get("streaming"):
             return ""

@@ -208,6 +208,7 @@ export interface SessionEndedEvent {
 export interface UserMessageEvent {
   "text": string
   "source": string
+  "via"?: string | null
   "type": "user.message"
   "session": string
   "ts": number

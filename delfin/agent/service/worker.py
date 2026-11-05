@@ -1498,6 +1498,9 @@ class Worker:
         if how not in ("queue", "steer"):
             raise _Refusal(protocol.INVALID_PARAMS, "how must be queue or steer")
         agent = self.agent
+        # Where the line came from, as metadata beside it (a badge in the
+        # windows), never inside it.
+        origin = {"via": "phone"} if params.get("via") == "messenger" else {}
         # As typed: the brief goes in front of the first prompt when its turn
         # starts (_brief_for_turn), not here -- a line can still be dropped.
         said = text
@@ -1514,7 +1517,7 @@ class Worker:
                 route = "next"
                 # Shown now, under the lock: before the loop can take it and
                 # announce the turn it starts.
-                self.emitter.emit("user.message", text=text, source="user")
+                self.emitter.emit("user.message", text=text, source="user", **origin)
             else:
                 # During a turn, or between a turn and its follow-up: like
                 # a line typed during the turn, it goes before any
@@ -1530,7 +1533,7 @@ class Worker:
             route = "queued"
         if route == "queued":
             agent.post(lambda: self.emitter.emit(
-                "user.message", text=text, source="queued"))
+                "user.message", text=text, source="queued", **origin))
             return {"accepted": True, "queued": True}
         return {"accepted": True}
 
