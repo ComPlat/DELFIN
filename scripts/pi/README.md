@@ -344,6 +344,17 @@ boot".
 
 ## SimpleX messenger: forum and session chats
 
+Each person connects their own phone, no admin needed: in your session type
+`/pair`, scan the QR code in SimpleX, type the 6-digit code the phone receives
+(`/pair 123456`). Then `hol NAME` on the phone brings a running session, `neu
+NAME` starts one, `/sync` in a session connects it. A phone reaches only its
+person's sessions (people mode: one Unix user, so an application-level
+boundary). Admin: `--people` lists every person's phones, `--revoke=NAME`
+unpairs them (lost phone: revoke, then `/pair` again). Details:
+[several people](../../docs/design/messenger-simplex.md#several-people-one-account-people-mode).
+
+Installing the messenger (once, by the admin):
+
 Set up in one run on the Pi (or any Linux with systemd and glibc >= 2.34),
 after a deploy, as the admin user (`pi`; the agent user has no sudo):
 
@@ -352,6 +363,8 @@ sudo apt install qrencode          # optional: the pairing link as a QR code
 sudo bash ~delfin/delfin/src/scripts/pi/pi_messenger.sh --whisper --pair --name=Pi
 ```
 
+`--pair` pairs the account owner's phone (sessions outside `~/people`); it asks
+for the code the phone receives (later: `--verify`).
 `--name=` labels the bot (`DELFIN-Pi`) and every chat, for a phone paired with
 several machines; the default is the host name. The bot keeps the name of its
 first start. `--lang=en` sends every phone text in English (default German).
@@ -373,7 +386,7 @@ leaves its session running: `delfin-agent tui --continue` in the same folder
 joins it again.
 
 On the phone, `neu NAME` (or `neu NAME: task`) starts a session in
-`~/DELFIN-Handy/NAME` and invites you to its chat; it asks before commands and
+`~/DELFIN-Handy/NAME` (a person: `~/people/<name>/DELFIN-Handy/NAME`) and invites you to its chat; it asks before commands and
 edits. A session started at the computer joins with `/sync` there. Reply to a
 question/approval with SimpleX's Reply gesture and `ja/nein`, an offered option or
 a text answer -- spoken or typed; a spoken sentence frees nothing. A shell

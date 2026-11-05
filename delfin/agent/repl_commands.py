@@ -144,6 +144,15 @@ def _sync(ctx, args: str) -> CommandResult:
     return CommandResult(output=configure(sid, args, endpoint=""))
 
 
+def _pair(ctx, args: str) -> CommandResult:
+    """Pair the person's phone (delfin.messenger.pairing): the invitation
+    and the gateway's later answers are printed to this terminal only."""
+    from delfin.messenger import pairing
+    sid = str(ctx.session_id or getattr(ctx.engine, "session_id", "") or "")
+    return CommandResult(output=pairing.session_command(
+        args, requester="session:" + sid if sid else "", show=lambda text: print("\n" + text, flush=True)))
+
+
 def _status(ctx, _args: str) -> CommandResult:
     engine = ctx.engine
     try:
@@ -2140,7 +2149,9 @@ BUILTINS: dict[str, ReplCommand] = {
                     _keys),
         ReplCommand("/editor", "session", "Write the next prompt in "
                     "$VISUAL or $EDITOR", _editor, True),
-        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status", _sync, True),
+        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status|NAME", _sync, True),
+        ReplCommand("/pair", "session", "Connect your phone (SimpleX): /pair, then /pair CODE",
+                    _pair, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
         ReplCommand("/usage", "session", "Token and cost detail, with the rate",

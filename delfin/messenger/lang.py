@@ -24,33 +24,58 @@ def t(text: str) -> str:
     return EN.get(text, text) if english() else text
 
 
+#: The words the user types for the phone commands of multi-person
+#: pairing, German and English, and the command each names. Recognised in
+#: both languages whatever DELFIN_MESSENGER_LANG says.
+COMMAND_WORDS = {
+    # the person's own running sessions, numbered
+    'sessions': 'sessions', 'sitzungen': 'sessions',
+    # bring one to the phone (hol N | NAME)
+    'hol': 'get', 'holen': 'get', 'get': 'get', 'fetch': 'get',
+    # take this session off the phone (in its chat)
+    'weg': 'off', 'trennen': 'off', 'off': 'off', 'disconnect': 'off',
+    # this phone unpairs itself (in its direct chat)
+    'entkoppeln': 'revoke', 'abmelden': 'revoke', 'revoke': 'revoke', 'unpair': 'revoke',
+    # the person's paired phones
+    'handys': 'phones', 'geräte': 'phones', 'geraete': 'phones', 'phones': 'phones',
+    'devices': 'phones',
+    'hilfe': 'help', 'help': 'help', '?': 'help',
+}
+
+
+def command_word(word: str) -> str | None:
+    """The command a typed word names (COMMAND_WORDS), or None."""
+    return COMMAND_WORDS.get(str(word or '').strip().lower().lstrip('/'))
+
+
 EN = {
     # -- help and prompts ---------------------------------------------------------
-    'SimpleX muss in jeder gewünschten Sitzung mit /sync aktiviert werden. /sync off schaltet es dort aus.\n'
-    'Einzelchat: Text geht nur an diese aktivierte Sitzung. Forum: an alle aktivierten Sitzungen.\n'
-    'status – Stand; update – kurzen Bericht anfordern; pending – offene Anfragen\n'
+    'Kurz: sessions – deine laufenden Sitzungen; hol N/NAME – Sitzung aufs Handy holen; '
+    'neu NAME – neue Sitzung; weg – Sitzung vom Handy nehmen (im Sitzungs-Chat).\n'
+    'Einzelchat: Text geht nur an diese Sitzung. Forum: an alle deine aktivierten Sitzungen; '
+    '@NAME Text an eine.\n'
+    'status – Stand; update – kurzen Bericht anfordern; pending – offene Anfragen; stop – Lauf anhalten.\n'
     'Auf die konkrete Frage/Freigabe per SimpleX-Antwortfunktion antworten: yes/no, ja/nein oder eine angezeigte Option.\n'
-    'stop – aktuellen Lauf anhalten; sessions – aktivierte Sitzungen anzeigen.\n'
     'name NAME – Sitzung und Chat benennen; forum on/off – Forumteilnahme; meldungen kurz/fragen/aus.\n'
     'dateien – bereitgestellte Dateien; datei NAME – herunterladen.\n'
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
-    'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
+    'neu NAME: Auftrag – mit erstem Auftrag. Am Rechner: /sync oder /sync NAME in der Sitzung.\n'
     'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
     'profil frei|standard – im Sitzungs-Chat für dessen Ordner; sonst: profil <sitzung> frei.\n'
-    'sync aktualisiert die aktivierten Sitzungen.':
-    'Enable SimpleX in each session you want with /sync; /sync off turns it off there.\n'
-    'Session chat: text goes to this enabled session only. Forum: to all enabled sessions.\n'
-    'status – state; update – ask for a short report; pending – open requests\n'
+    'handys – deine gekoppelten Handys; entkoppeln – dieses Handy abmelden. sync aktualisiert die Chats.':
+    'In short: sessions – your running sessions; get N/NAME – bring a session to the phone; '
+    'new NAME – a new session; off – take the session off the phone (in its chat).\n'
+    'Session chat: text goes to this session only. Forum: to all your enabled sessions; '
+    '@NAME text to one.\n'
+    'status – state; update – ask for a short report; pending – open requests; stop – stop the run.\n'
     'Answer a question or approval with SimpleX\'s Reply: yes/no or one of the options shown.\n'
-    'stop – stop the current run; sessions – list enabled sessions.\n'
-    'name NAME – name session and chat; forum on/off – forum participation; '
-    'notify short/questions/off.\n'
+    'name NAME – name session and chat; forum on/off – forum participation; notify short/questions/off.\n'
     'files – files made available; file NAME – download one.\n'
     'In the forum: exchange on/off – share explicit agent announcements (off by default).\n'
-    'new NAME – start a session in a folder of its own; new NAME: task – with a first task.\n'
+    'new NAME: task – with a first task. At the computer: /sync or /sync NAME in the session.\n'
     'schedules – open the schedules chat; in a session chat: schedule WHEN TASK.\n'
     'profil frei|standard – in a session chat for its folder; otherwise: profil <session> frei.\n'
-    'sync refreshes the enabled sessions.',
+    'phones – your paired phones; unpair – unpair this phone. sync refreshes the chats.',
     'Bitte gib mir einen kurzen Zwischenstand: erledigt, aktuell in Arbeit, Hindernisse, nächster Schritt. Höchstens fünf Sätze.':
     'Please give me a short progress report: done, in progress, obstacles, next step. At most five sentences.',
     'Sprachnachricht des Nutzers (Transkript):\n': "The user's voice message (transcript):\n",
@@ -352,4 +377,53 @@ EN = {
     'Profil {ws}: {p}': 'Profile {ws}: {p}',
     'frei (Bypass im Käfig)': 'free (bypass inside the cage)',
     'standard': 'default',
+    # -- several people, each with their own phones (multi-person pairing) --------
+    'Kontoinhaber': 'account owner',
+    'Nicht ausgeführt: unklar, für welche Person.': 'Not done: unclear for which person.',
+    'Dieser Chat dient nur der Einrichtung. sessions zeigt deine Sitzungen, hol N holt eine aufs Handy, /sync richtet Forum und Einzelchats ein.':
+    'This chat is for setup only. sessions lists your sessions, get N brings one to the phone, /sync sets up forum and session chats.',
+    'Keine laufenden Sitzungen. neu NAME startet eine.': 'No running sessions. new NAME starts one.',
+    'hol N oder hol NAME holt eine aufs Handy.': 'get N or get NAME brings one to the phone.',
+    'Erst bestätigen: den 6-stelligen Code aus der ersten Nachricht am Rechner eingeben, dort wo /pair getippt wurde (/pair CODE). Bis dahin wird nichts ausgeführt.':
+    'Verify first: type the 6-digit code from the first message at the computer, where /pair was typed (/pair CODE). Until then nothing is done.',
+    'Keine Handys gekoppelt.': 'No phones paired.',
+    'Zeitpläne vom Handy gibt es nur für den Kontoinhaber.': 'Schedules from the phone are for the account owner only.',
+    'Form: @NAME Text.': 'Form: @NAME text.',
+    'Mehrere Sitzungen heißen {name}. Bitte mit dem Anfang der ID ansprechen.':
+    'Several sessions are called {name}. Please address one by the start of its ID.',
+    'Mehrere Sitzungen heißen {name}. Bitte mit der Nummer aus sessions holen.':
+    'Several sessions are called {name}. Please use the number from sessions.',
+    'Sitzung wurde nicht geholt.': 'The session was not brought to the phone.',
+    '{name} ist aufs Handy geholt. Einladung zu ihrem Chat liegt in SimpleX.':
+    '{name} is on the phone now. The invitation to its chat is in SimpleX.',
+    'Nicht ausgeführt.': 'Not done.',
+    '{name} ist nicht mehr mit dem Handy verbunden. hol {name} holt sie zurück.':
+    '{name} is no longer connected to the phone. get {name} brings it back.',
+    'Entkoppelt. Dieses Handy erreicht keine Sitzung mehr; neu koppeln mit /pair am Rechner.':
+    'Unpaired. This phone reaches no session any more; pair again with /pair at the computer.',
+    'Keine aktivierte Sitzung heißt {name}. sessions zeigt deine Sitzungen.':
+    'No enabled session is called {name}. sessions lists your sessions.',
+    'Keine deiner laufenden Sitzungen heißt {name}. sessions zeigt sie.':
+    'None of your running sessions is called {name}. sessions lists them.',
+    'aus (in der Sitzung)': 'off (in the session)',
+    'DELFIN-Kopplung: Code {code}. Am Rechner eingeben, wo die Kopplung gestartet wurde (in der Sitzung: /pair {code}). Gilt 10 Minuten; bis dahin wird hier nichts ausgeführt.':
+    'DELFIN pairing: code {code}. Type it at the computer where the pairing was started (in the session: /pair {code}). Valid 10 minutes; until then nothing is done here.',
+    'Verbunden mit {bot} ✓ ({who}). Dieses Handy erreicht nur deine Sitzungen. hilfe zeigt die Befehle.':
+    'Connected to {bot} ✓ ({who}). This phone reaches your sessions only. help lists the commands.',
+    '📱 {label} · {state}': '📱 {label} · {state}',
+    'Handy entkoppelt: {label}.': 'Phone unpaired: {label}.',
+    'bestätigt': 'verified',
+    'wartet auf Bestätigung': 'waiting for its code',
+    'Neues Handy verbunden: {label}. Warst du das nicht: am Rechner /pair revoke {label}.':
+    'New phone connected: {label}. If that was not you: /pair revoke {label} at the computer.',
+    # The bridge's refusals of a person's context, translated whole.
+    'Person bereits gewählt.': 'Person already chosen.',
+    'Unbekannte Person. Nichts ausgeführt.': 'Unknown person. Nothing done.',
+    'Für diese Person vom Handy nicht verfügbar.': 'Not available from the phone for this person.',
+    'In der Sitzung mit /sync off ausgeschaltet. Dort mit /sync wieder einschalten.':
+    'Switched off in the session with /sync off. Switch it on there again with /sync.',
+    'Der Agent-Dienst dieser Person läuft gerade nicht. Am Rechner eine Sitzung öffnen.':
+    "This person's agent service is not running. Open a session at the computer.",
+    'Unbekannte Person.': 'Unknown person.',
+    'Unbekannte Pairing-Aktion.': 'Unknown pairing action.',
 }

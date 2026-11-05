@@ -224,6 +224,38 @@ class Daemon:
         self.invitation_id = (reply.get("connection") or {}).get("pccConnId")
         return (reply.get("connLinkInvitation") or {}).get("connFullLink")
 
+    async def new_invitation(self) -> tuple[str | None, str | None]:
+        """A one-time invitation: (link, connection id). The link carries the
+        connection's own keys; it is answered only once by the daemon."""
+        reply = await self.command(f"/_connect {await self.user_id()}")
+        conn = (reply.get("connection") or {}).get("pccConnId")
+        link = (reply.get("connLinkInvitation") or {}).get("connFullLink")
+        return link, (str(conn) if conn is not None else None)
+
+    # Revocation and expiry (best effort: the pinned v7.0.3 bot reference
+    # does not list these chat-core commands; a refusal is caught by the
+    # gateway, which then leaves the group instead).
+
+    async def delete_contact(self, contact_id: str) -> None:
+        await self.command(f"/_delete @{int(contact_id)} notify=off")
+
+    async def delete_pending(self, conn_id) -> None:
+        await self.command(f"/_delete :{int(conn_id)}")
+
+    async def remove_member(self, chat: str, contact_id: str) -> None:
+        """Remove the member that is ``contact_id`` from group ``chat``."""
+        group = int(chat[1:])
+        reply = await self.command(f"/_members #{group}")
+        members = (reply.get("group") or {}).get("members") or reply.get("members") or []
+        ids = [m.get("groupMemberId") for m in members
+               if str(m.get("memberContactId") or "") == str(int(contact_id))]
+        if not ids:
+            raise SimplexError("memberNotFound")
+        await self.command(f"/_remove #{group} {','.join(str(int(i)) for i in ids)}")
+
+    async def leave_group(self, chat: str) -> None:
+        await self.command(f"/_leave #{int(chat[1:])}")
+
 
 def extract_contact_list(reply: dict) -> list[dict]:
     """The contacts out of a getContacts response, however the daemon

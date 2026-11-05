@@ -8664,6 +8664,9 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
     "messenger_sessions", "messenger_sessions/**",
     "**/messenger_sessions", "**/messenger_sessions/**",
+    # Phone pairing requests and answers (delfin.messenger.pairing).
+    "messenger_pairing", "messenger_pairing/**",
+    "**/messenger_pairing", "**/messenger_pairing/**",
     # The user's schedules: written and confirmed by the user only.
     "user_schedules", "user_schedules/**",
     "**/user_schedules", "**/user_schedules/**",

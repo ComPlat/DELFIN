@@ -5,6 +5,14 @@
 #   sudo bash pi_messenger.sh [--whisper] [--pair] [--name=LABEL]
 #                             [--lang=de|en] [--no-phone-sessions]
 #                             [--no-nftables] [--uninstall]
+#   sudo bash pi_messenger.sh --verify | --people | --revoke=NAME
+#
+# --pair pairs the account owner's phone: the phone is sent a 6-digit code
+# that is typed here before it may do anything (--verify asks for it later
+# when the terminal was closed). Everyone else pairs their own phone in
+# their session with /pair, no admin needed. --people lists every person's
+# phones; --revoke=NAME unpairs person NAME's phones (owner: the account
+# owner's). These three change nothing else and install nothing.
 #
 # --name=LABEL names this installation on the phone: the bot is
 # DELFIN-<LABEL>, every chat carries it (default: the short host name;
@@ -114,6 +122,7 @@ say() { printf '[messenger] %s\n' "$*" >&2; }
 die() { printf '[messenger] ERROR: %s\n' "$*" >&2; exit 1; }
 
 action=install
+revoke_who=""
 want_nftables=1
 want_whisper=0
 want_pair=0
@@ -127,6 +136,9 @@ for arg in "$@"; do
     --no-nftables) want_nftables=0 ;;
     --whisper) want_whisper=1 ;;
     --pair) want_pair=1 ;;
+    --verify) action=verify ;;
+    --people) action=people ;;
+    --revoke=*) action=revoke; revoke_who="${arg#--revoke=}" ;;
     --no-phone-sessions) want_phone_sessions=0 ;;
     --name=*) label="${arg#--name=}" ;;
     --lang=de|--lang=en) lang="${arg#--lang=}" ;;
@@ -520,11 +532,17 @@ install_gateway_venv() {
   say "gateway venv ${venv}: websockets (hashed) + DELFIN from ${src}"
 }
 
-pair_phone() {
-  # Prints the invitation and waits for the phone; refuses when paired.
-  runuser -u "${GW_USER}" -- env DELFIN_MESSENGER_DIR="${STATE_DIR}/pairing" \
+as_gateway() {
+  # The gateway's own CLI as its user, on its state (python -m delfin.messenger).
+  runuser -u "${GW_USER}" -- env HOME="${STATE_DIR}" DELFIN_MESSENGER_DIR="${STATE_DIR}/pairing" \
     DELFIN_MESSENGER_PORT="${API_PORT}" DELFIN_MESSENGER_LABEL="${label}" \
-    DELFIN_MESSENGER_LANG="${lang}" "${PREFIX}/bin/venv/bin/python" -m delfin.messenger pair \
+    DELFIN_MESSENGER_LANG="${lang}" "${PREFIX}/bin/venv/bin/python" -m delfin.messenger "$@"
+}
+
+pair_phone() {
+  # Prints the invitation, waits for the phone, asks for the code the phone
+  # received; refuses when the owner is paired already.
+  as_gateway pair \
     || say "not paired now (already paired? revoke first: docs/design/messenger-simplex.md)"
 }
 
@@ -566,6 +584,15 @@ install_whisper() {
 # --- main -------------------------------------------------------------------
 case "${action}" in
   uninstall) uninstall ;;
+  verify|people|revoke)
+    [ -x "${PREFIX}/bin/venv/bin/python" ] || die "the messenger is not installed (run without --${action} first)"
+    if [ "${action}" = revoke ]; then
+      [ -n "${revoke_who}" ] || die "--revoke=NAME (owner: the account owner)"
+      as_gateway revoke "${revoke_who}"
+    else
+      as_gateway "${action}"
+    fi
+    ;;
   install)
     ensure_user
     install -d -m 0755 -o root -g root "${PREFIX}" "${PREFIX}/bin"

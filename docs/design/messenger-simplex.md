@@ -1,6 +1,110 @@
 # SimpleX: private session chats and optional forum
 
-Pair the phone once. Then type `/sync` in each desired TUI or dashboard session.
+Connect your phone in three steps, no admin needed:
+
+1. In your session type `/pair` (terminal: `delfin-agent messenger pair`).
+2. Scan the QR code in SimpleX (or paste the link: + > paste link).
+3. Type the 6-digit code DELFIN sends to the phone: `/pair 123456`.
+
+Then `hol NAME` / `get NAME` on the phone brings a running session to it,
+`neu NAME` starts one, and `/sync` (or `/sync NAME`) in a session connects
+it. `hilfe` / `help` on the phone lists the commands.
+
+## Several people, one account (people mode)
+
+On a box in the launcher's people mode every person has `~/people/<name>` as
+home, with their own agent service (`~/people/<name>/.run`), sessions,
+activation records and phone folder (`~/people/<name>/DELFIN-Handy`). Each
+person pairs their own phones; each phone is bound to exactly one person and
+reaches only that person's sessions, chats, approvals, files and forum.
+
+**What this boundary is.** Everyone in people mode is the same Unix user.
+The separation is enforced by the gateway and the bridge (application level),
+not by the operating system: a process of the account can read every person's
+files. It keeps phones from reaching another person's sessions by routing or
+mistake; it does not protect people of one account from each other.
+
+How a pairing works:
+
+- `/pair` writes a request into `~/.delfin/messenger_pairing` of the person's
+  home (0700 directory, 0600 files, masked from agent file tools and shells
+  like the activation records). It carries `sha256(nonce)`; the nonce stays in
+  the memory of the process that asked. `delfin-agent messenger pair` refuses
+  inside an agent's process tree; `/pair` in a service session arrives through
+  the agent service socket, which refuses agent processes.
+- The bridge (the agent-service user) collects every person's requests; the
+  person is the directory a request was found in. The gateway asks the daemon
+  for a one-time invitation (`/_connect`, random connection keys), records it
+  bound to the person and the request (10 minutes, single use), and the bridge
+  writes the link into the person's 0600 answer file. The session shows it as
+  a live notice that is not written to the session's event log; the audit log
+  gets a 12-character hash of the link only.
+- A phone that connects through it is bound to that person, **unverified**,
+  and receives a 6-digit code. Until the code is typed in the session that
+  started `/pair` (the verify request must carry the nonce), the phone hears
+  only "verify first"; nothing it sends is routed. Three wrong codes or 10
+  minutes without one remove the contact. The SimpleX security code is shown
+  in the session too, for comparison on the phone.
+- On verification the person's other phones are told ("new phone connected"),
+  the person's pairing notes (`/pair phones`) get a line, and the phone is
+  invited to the person's forum and enabled sessions.
+- A used, expired or superseded invitation binds nothing: a second phone
+  through the same link, a late scan and a replayed request id are refused and
+  audited. A new `/pair` supersedes the person's open invitation.
+- Limits: 3 phones per person, 3 invitations per person per 10 minutes.
+
+Revocation: `/pair revoke LABEL|all` in a session or `delfin-agent messenger
+unpair LABEL|all`; `entkoppeln` / `unpair` on the phone itself; the admin
+`sudo bash scripts/pi/pi_messenger.sh --people` and `--revoke=NAME` (`owner`
+for the account owner). A revoked phone is removed from its groups (or the bot
+leaves a group it cannot remove it from; the next sync makes a new one), its
+contact is deleted, the person's other phones are told. Lost phone: revoke,
+then pair the new one. A binding never changes in place: a phone moves to
+another person only through revocation and a new pairing.
+
+The admin path `sudo bash scripts/pi/pi_messenger.sh --pair` pairs the account
+owner (the sessions outside `~/people`) and needs the code as well: it is asked
+at that terminal, or later with `--verify` (asked for, never an argument, so
+it stays out of the shell history). An existing single-person installation is
+migrated on the first write: its paired contact becomes the owner's verified
+phone, its chats the owner's; nothing is re-paired.
+
+Every invitation, connection, verification, failed code, revocation, refused
+message and `hol`/`weg` is recorded with a `messenger_*` kind
+(`delfin/messenger/audit.py`) in the containment panel, the attention inbox
+(refusals) and the gateway's hash-chained audit log. No link, code or security
+code is written to a log; log lines are masked once more before they are
+written. The gateway's store carries an HMAC under `store.key` (0600): a file
+whose mapping was edited without the key, a corrupt file or a format-1 file
+after the key exists refuses the whole store (nobody is served) and is
+audited. The key lives beside the store, so this detects edits by anything
+but the gateway's own user; it is not a boundary against that user.
+
+**Forum: one per person.** Each person gets their own forum with their own
+enabled sessions; phones of different people never share a group. Text in a
+forum reaches only that person's enabled sessions (`@NAME text` one of them);
+explicit agent announcements (`austausch on`) are relayed only between that
+person's sessions. A shared forum would show one person's session results to
+everybody and feed one person's agent output into another person's agents as
+context; neither is wanted. Posts are labelled `<session name> (<person>)`.
+
+**Sessions to the phone by name.** `sessions` lists the person's own running
+sessions, numbered (`📱`: connected). `hol N` / `hol NAME` (`get`) switches one
+on for the messenger, invites the person's phones to its chat and shows the
+session a notice (`/sync status`: "enabled (from phone LABEL)"); it is
+audited. A session switched off in the session (`/sync off`) cannot be brought
+from the phone. `weg` / `off` in a session's chat takes it off again; `hol`
+may bring it back. The display name is the session's title in the agent
+service (`/sync NAME`, `name NAME` on the phone, the TUI's rename): one field,
+at most 50 characters; the chat follows it. Every message in a session's chat
+starts with `[name]`.
+
+What a person of people mode cannot do from the phone: schedules and
+workspace freedom profiles stay the account owner's (one store per account).
+
+## Sessions and the phone
+
+Type `/sync` in each desired TUI or dashboard session.
 New sessions default to **off**. `/sync off` immediately stops phone routing for
 that session; `/sync status` reports its setting. The setting is kept by session
 ID, not by title. A resumed dashboard needs `/sync` to connect its live tab again.
@@ -25,7 +129,13 @@ Commands below are plain text; a leading slash is optional:
 | `update` | Ask the agent for a brief progress report |
 | `pending` | Show currently open questions and approvals |
 | `stop` | Cancel the current turn |
-| `sessions` | List locally enabled sessions |
+| `sessions` | Your running sessions, numbered (📱: on the phone) |
+| `hol N` / `hol NAME` (`get`) | Bring a running session of yours to the phone |
+| `weg` (`off`) | In a session's chat: take it off the phone |
+| `@NAME text` | In the forum: to that one session |
+| `handys` (`phones`) | Your paired phones |
+| `entkoppeln` (`unpair`) | In the direct chat: this phone unpairs itself |
+| `hilfe` (`help`) | The commands, briefly |
 | `neu NAME` / `neu NAME: task` | Start a session in its own folder, invite to its chat, optionally with a first task |
 | `name NAME` | Name this session/chat |
 | `forum on` / `forum off` | Join/leave forum routing; in the forum itself, enable/disable it globally |
@@ -129,7 +239,8 @@ Turn this off with `austausch off`, or remove a session with `forum off`.
 ## Sessions started from the phone
 
 `neu NAME` starts a session in `~/DELFIN-Handy/NAME` of the agent-service user
-(`DELFIN_MESSENGER_WORKSPACES` in the bridge unit). The phone supplies the name
+(`DELFIN_MESSENGER_WORKSPACES` in the bridge unit); for a person of people mode
+in `~/people/<name>/DELFIN-Handy/NAME`, in that person's own agent service. The phone supplies the name
 only: it is reduced to letters, digits, `.`, `_` and `-` (no leading dot, 40
 characters), an existing entry is reused only when it is a real directory, never
 a symlink, and no folder, model or permission field is accepted from the gateway.
@@ -188,8 +299,9 @@ undone. `status` lists stored chat bindings.
 
 ## Security and validation
 
-Only the paired human's received messages are accepted, including inside groups.
-Other members, sent-message echoes and unbound rooms cannot command sessions.
+Only verified phones' received messages are accepted, including inside groups,
+and only in chats of the phone's own person. Other members, unverified or
+revoked phones, sent-message echoes and unbound rooms cannot command sessions.
 UID and agent-process checks protect local sockets. The daemon's API port is
 kept for `delfin-gw` by an nftables rule stored in
 `/etc/delfin-messenger/messenger.nft`: the daemon unit loads it before every

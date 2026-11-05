@@ -1137,6 +1137,9 @@ _HOME_SECRET_DIRS = (
     # own processes, never by a command an agent runs.
     ".delfin/trust_store",
     ".delfin/messenger_sessions",
+    # Phone pairing requests and the gateway's answers, invitation links
+    # among them (delfin.messenger.pairing): the person's, never an agent's.
+    ".delfin/messenger_pairing",
     # The user's schedules (delfin.agent.schedules): what runs unattended
     # is the user's to write and confirm, never an agent's.
     ".delfin/user_schedules",

@@ -2816,7 +2816,7 @@ def _awaiting_user_answer(state: dict) -> bool:
 # dispatcher. Kept at module scope so a test can drive the same routing
 # decision the send path makes.
 _BUILTIN_SLASH_PREFIXES = frozenset({
-    "/sync", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
+    "/sync", "/pair", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
     "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
     "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
     "/memories", "/memorize", "/tidy", "/remember", "/forget", "/plans", "/plan", "/hooks",
@@ -13828,8 +13828,7 @@ def create_tab(ctx):
         adapters = state.setdefault("_messenger_adapters", {})
         if args.strip().lower() in {"off", "status"}:
             return activation.configure(sid, args)
-        if args.strip().lower() not in {"", "on"}:
-            return activation.configure(sid, args)
+        # "", "on" and "/sync NAME" all switch on, with the live adapter.
         if sid not in adapters:
             def answer_detected_question(text):
                 if input_textarea.value.strip() or not state.get("_pending_question"):
@@ -15561,6 +15560,20 @@ def create_tab(ctx):
                 _append_system_message("\n".join(lines))
             return True
 
+        if cmd == "/pair" or cmd.startswith("/pair "):
+            # Phone pairing (delfin.messenger.pairing). The invitation is
+            # shown in one live line that later answers overwrite, so the
+            # one-time link does not stay in the chat.
+            if state.get("_on_its_own"):
+                _append_system_message("Ein Handy koppelst nur du selbst, in dieser Sitzung.")
+                return True
+            from delfin.messenger import pairing as _pairing
+            _sid = str(getattr(state.get("engine"), "session_id", "")
+                       or state.get("active_session_id") or "")
+            _append_system_message(_pairing.session_command(
+                text[5:].strip(), requester="dashboard:" + _sid if _sid else "",
+                show=lambda shown: _live_system_message(shown, "messenger_pair")))
+            return True
         if cmd == "/plans" or cmd.startswith("/plans "):
             from delfin.agent.memory_store import (
                 list_plans, get_plan, delete_plan,

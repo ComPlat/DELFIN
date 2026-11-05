@@ -5400,6 +5400,17 @@ def build_parser() -> argparse.ArgumentParser:
                           "add <slug> <text>")
     kno.set_defaults(func=cmd_knowledge)
 
+    # messenger -- the person's phone pairing (SimpleX), and the admin's
+    # listing and revocation (delfin/messenger/pairing.py cli_main)
+    msg = sub.add_parser(
+        "messenger",
+        help="Phone pairing: pair | phones | unpair LABEL|all; admin: people | "
+             "revoke NAME")
+    msg.add_argument("words", nargs=argparse.REMAINDER,
+                     help="pair | phones | unpair LABEL|all | people | revoke NAME")
+    msg.set_defaults(func=lambda a: __import__(
+        "delfin.messenger.pairing", fromlist=["cli_main"]).cli_main(a.words))
+
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
         "approvals",

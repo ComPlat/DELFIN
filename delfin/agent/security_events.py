@@ -199,6 +199,22 @@ _KINDS = {
     "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
+    # The phone messenger (delfin/messenger/audit.py KINDS, pinned equal by
+    # tests/test_every_person_pairs_their_own_phone.py): invitations,
+    # pairings, revocations and every refusal of a phone.
+    "messenger_invitation_issued": ("📱", "Messenger: one-time phone invitation issued"),
+    "messenger_invitation_refused": ("📱", "Messenger: phone invitation refused (limit or rate)"),
+    "messenger_invitation_expired": ("📱", "Messenger: phone invitation expired unused"),
+    "messenger_invitation_replayed": ("🚫", "Messenger: used or expired invitation presented again"),
+    "messenger_phone_connected": ("📱", "Messenger: phone connected, not yet verified"),
+    "messenger_phone_verified": ("📱", "Messenger: phone verified and bound to a person"),
+    "messenger_verification_failed": ("🚫", "Messenger: wrong phone confirmation code"),
+    "messenger_phone_revoked": ("📱", "Messenger: phone unpaired"),
+    "messenger_unverified_message": ("🚫", "Messenger: message from a phone not yet verified"),
+    "messenger_cross_person_refused": ("🚫", "Messenger: phone addressed another person's chat"),
+    "messenger_store_refused": ("🚫", "Messenger: pairing store failed its integrity check"),
+    "messenger_session_attached": ("📱", "Messenger: session brought to the phone"),
+    "messenger_session_detached": ("📱", "Messenger: session taken off the phone"),
 }
 
 
