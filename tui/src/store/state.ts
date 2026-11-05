@@ -220,7 +220,8 @@ function str(value: unknown): string {
 }
 
 export function applyInfo(s: SessionState, info: Record<string, unknown>): void {
-  if ("title" in info && info.title) s.title = str(info.title)
+  // "" is a rename back to the default name (the summary's `name`).
+  if ("title" in info && info.title != null) s.title = str(info.title)
   if ("workspace" in info) s.workspace = str(info.workspace)
   if ("provider" in info) s.provider = str(info.provider)
   if ("model" in info) s.model = str(info.model)

@@ -16,7 +16,7 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, renameOf, resumeOf, shellLead } from "./commands"
+import { WINDOW_COMMANDS, nameFromPrompt, nameOf, renameOf, resumeOf, shellLead } from "./commands"
 import { createSwarmView } from "./swarm/view"
 import type { ArgumentChoices } from "./composer/complete"
 import { CLICK_PAUSE_MS } from "./mouse"
@@ -228,17 +228,26 @@ export function App(props: AppProps): JSX.Element {
   /** /rename: what a session is called -- the prompt box, the agent view
    *  and the terminal's title show it; without a name, after what it was
    *  first asked. Done at once, also while a turn runs. */
-  const rename = async (id: string, asked: string): Promise<boolean> => {
+  const rename = async (id: string, asked: string, exact = false): Promise<boolean> => {
     const s = store.state.sessions[id]
-    const title = asked || nameFromPrompt(String(s?.summary?.firstPrompt ?? ""))
-    if (!title) {
+    // exact (/name): as given; "" is the default name, the service's.
+    const title = exact ? asked : asked || nameFromPrompt(String(s?.summary?.firstPrompt ?? ""))
+    if (!title && !exact) {
       say("nothing to name it after yet: /rename <name>")
       return true
     }
     const result = await call("session.setTitle", { sessionId: id, title })
     if (!result) return false                   // not asked (the note says why): the line stays
-    say(`renamed: ${result.title}`)
+    say(result.title ? `renamed: ${result.title}` : "renamed: back to the default name")
     return true
+  }
+  /** A /name or /rename line: the name it gives and whether it is exact
+   *  (/name: "" is the default), else null. */
+  const naming = (text: string): { title: string; exact: boolean } | null => {
+    const exact = nameOf(text)
+    if (exact !== null) return { title: exact, exact: true }
+    const loose = renameOf(text)
+    return loose === null ? null : { title: loose, exact: false }
   }
 
   const picker = createPicker({ clickPauseMs: props.clickPauseMs })
@@ -261,7 +270,7 @@ export function App(props: AppProps): JSX.Element {
       typingAt = 0
       // /rename here names the session peeked at, else the one selected --
       // it is never a new session's first prompt (nor a model's turn).
-      const named = renameOf(text)
+      const named = naming(text)
       if (named !== null && !agents.state.renaming) {
         const list = agents.rows()
         const row = agents.state.peek ? list.find((r) => r.id === agents.state.peek!.id) : list[agents.selected(list)]
@@ -277,7 +286,7 @@ export function App(props: AppProps): JSX.Element {
           say(`this is no session: ${props.keymap.label("agentsOpen")} opens it, ${props.keymap.label("agentsStop")} dismisses it`)
           return true
         }
-        return rename(row.id, named)
+        return rename(row.id, named.title, named.exact)
       }
       return agents.submit(text)
     }
@@ -335,8 +344,8 @@ export function App(props: AppProps): JSX.Element {
       return true
     }
     // Also with the key that steers: a rename is the window's, never the turn's.
-    const named = renameOf(text)
-    if (named !== null) return rename(sid(), named)
+    const named = naming(text)
+    if (named !== null) return rename(sid(), named.title, named.exact)
     // The session strips the text it shows, as a typed line is stripped.
     if (shown) props.sentAs?.set(text.trim(), shown)
     const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
@@ -385,11 +394,11 @@ export function App(props: AppProps): JSX.Element {
   const pins = props.pins ?? new Pins()
   const [pinned, setPinned] = createSignal(0)
   const sendTo = async (row: AgentRow, text: string) => {
-    const named = renameOf(text)
+    const named = naming(text)
     if (named !== null) {
       // Not mailed: a session elsewhere is renamed where it runs.
       if (row.kind === "elsewhere") say(`${row.name} runs elsewhere: it is renamed where it runs`)
-      else await rename(row.id, named)
+      else await rename(row.id, named.title, named.exact)
       return
     }
     if (row.kind === "elsewhere") {
@@ -656,6 +665,7 @@ export function App(props: AppProps): JSX.Element {
   const argumentChoices = async (command: string): Promise<ArgumentChoices> => {
     const s = session()
     if (command === "/rename") return { current: "", choices: [], usage: "/rename [name]  (no name: after its first prompt)" }
+    if (command === "/name") return { current: "", choices: [], usage: "/name [name]  (no name: folder and short id)" }
     if (command === "/resume") {
       if (!s) return { current: "", choices: [], usage: "" }
       const rows = await resumeRows(s)

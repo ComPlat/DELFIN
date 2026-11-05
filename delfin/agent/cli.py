@@ -3976,8 +3976,13 @@ def _print_stop_all_check(report: dict) -> int:
     print(f"  Outlived their start:    {len(outlived) or 'none'}")
     for row in outlived:
         print(f"    pid {row['pid']} ({row['why']}): {row['command']}")
+    service = report.get("agent_service")
+    print("  Agent service:           " + (
+        f"pid {service['pid']}, {service['sessions']} session(s) running, "
+        f"{service['asleep']} asleep -- they run on without any window "
+        "(dashboard, terminal, phone) on purpose" if service else "none"))
     running = bool(
-        fresh or schedules or here or outlived
+        fresh or schedules or here or outlived or (service and service["sessions"])
         or any(r.get("alive_here") for r in kept)
         or any(r.get("alive_here") for r in daemons.values()))
     if running:
