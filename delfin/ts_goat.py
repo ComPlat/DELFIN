@@ -884,6 +884,14 @@ def render_ts_goat_input(
         if keyword and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+()/\-]*",
                                         str(keyword)):
             raise ValueError(f"Invalid ORCA keyword: {keyword!r}")
+    # The basis is free text in the dialog. Check every word against the
+    # same vocabulary DELFIN's OPI GOAT step uses (orca_knowledge: the
+    # pinned OPI catalog + words ORCA's parser accepted); it reads a JSON
+    # catalog and does not import opi.
+    from delfin.orca_knowledge import known_keyword  # noqa: PLC0415
+    for keyword in keywords:
+        if keyword and not known_keyword(str(keyword)):
+            raise ValueError(f"{keyword!r} is not an ORCA keyword")
 
     if not elements or len(elements) != len(coordinates):
         raise ValueError("Elements and coordinates must have equal nonzero length")

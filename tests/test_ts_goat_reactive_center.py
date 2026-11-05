@@ -759,3 +759,29 @@ def test_reject_only_xyz_if_geometry_does_not_match(tmp_path):
     assert files.xyz_path is None
     assert any('coordinates do not match' in msg
                for msg in files.problems)
+
+
+def test_ts_goat_refuses_a_basis_orca_does_not_know(tmp_path):
+    """The basis field is free text; an unknown word never reaches a file."""
+    with pytest.raises(ValueError, match="not an ORCA keyword"):
+        build_ts_goat_input(
+            tmp_path, elements=["C", "H"],
+            coordinates=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
+            constraint_indices=[0], method="B3LYP", basis="def2-SVPX",
+            base_name="bad_basis",
+        )
+    assert not (tmp_path / "bad_basis.inp").exists()
+
+
+def test_ts_goat_input_passes_delfins_static_orca_check():
+    """The written text satisfies the checker every other submit path uses."""
+    from delfin.common.orca_input_checks import check_all
+    from delfin.ts_goat import render_ts_goat_input
+
+    for method, basis in (("XTB", ""), ("XTB1", ""), ("XTBFF", ""),
+                          ("r2SCAN-3c", ""), ("B3LYP", "def2-SVP")):
+        text = render_ts_goat_input(
+            ["C", "H", "O"], [(0, 0, 0), (1.0, 0, 0), (0, 1.2, 0)], [0, 2],
+            method=method, basis=basis, ncores=4, maxcore=2000)
+        errors = [i for i in check_all(text) if i.severity == "error"]
+        assert errors == [], (method, errors)
