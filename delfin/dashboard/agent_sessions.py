@@ -645,89 +645,29 @@ def _folders_like(typed: str) -> list[str]:
         return []
 
 
-def _exclude_locally(root: str, common_dir: str, pattern: str = ".delfin/") -> None:
-    """Keep ``pattern`` out of ``git status`` in this clone only: an entry
-    in its info/exclude, nothing committed. Skipped when already ignored."""
-    try:
-        from delfin.agent import safe_git
-        probe = safe_git.run(["check-ignore", "-q", ".delfin/worktrees/probe"],
-                             root, timeout=5)
-        if probe.returncode == 0:
-            return
-        exclude = Path(common_dir) / "info" / "exclude"
-        exclude.parent.mkdir(parents=True, exist_ok=True)
-        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
-        if pattern not in text.splitlines():
-            sep = "" if not text or text.endswith("\n") else "\n"
-            exclude.write_text(f"{text}{sep}{pattern}\n", encoding="utf-8")
-    except Exception:
-        pass
+#: The sidecar a session worktree carries (delfin.agent.session_worktree,
+#: which makes the tree; read below by read_worktree_sidecar).
+from delfin.agent.session_worktree import WORKTREE_SIDECAR as _WORKTREE_SIDECAR  # noqa: E402
+
+
+def _write_worktree_sidecar(info) -> None:
+    """Record repo, branch and owner for a session worktree. Never raises.
+    (delfin.agent.session_worktree.write_worktree_sidecar.)"""
+    from delfin.agent import session_worktree as _sw
+    _sw.write_worktree_sidecar(info)
 
 
 def session_worktree(workspace: str) -> str:
     """A fresh worktree of the repository ``workspace`` is in, on a branch of
     its own, for a session that must not share a checkout with another.
 
-    Under ``<repo>/.delfin/worktrees``, the way Claude Code keeps its own
-    under ``.claude/worktrees``, and kept out of ``git status`` there.
-    Returns the path at the same place inside the worktree as ``workspace``
-    is inside the repository.
+    ``delfin.agent.session_worktree.create`` -- the service's
+    ``session.create`` with ``worktree`` makes the same tree. Returns the
+    path at the same place inside the worktree as ``workspace`` is inside
+    the repository. Raises ValueError outside a repository.
     """
-    from delfin.agent import session_presence as _presence
-    from delfin.agent import worktree as _wt
-    repo = _presence.repository_of(workspace)
-    if not repo["root"]:
-        raise ValueError(f"{workspace} is not in a git repository")
-    _exclude_locally(repo["root"], repo["common_dir"])
-    info = _wt.enter_worktree(repo["root"], branch_prefix="session",
-                              parent=Path(repo["root"]) / ".delfin" / "worktrees")
-    # What a release will need, written INSIDE the tree so it goes away
-    # with it. Nothing kept the WorktreeInfo: this function returned a path
-    # string and dropped the rest on the floor, so no caller COULD release
-    # the tree -- neither close_session nor the tab's shutdown had a
-    # worktree step, and every "Own worktree" session left a checkout and
-    # an orphan session/<hex> branch behind for good.
-    #
-    # pid and host are recorded so a later reader can tell a tree whose
-    # session is gone from one that is still being worked in, without
-    # judging another node's pid.
-    _write_worktree_sidecar(info)
-    try:
-        inside = Path(workspace).resolve().relative_to(Path(repo["root"]))
-    except ValueError:
-        inside = Path(".")
-    return str((info.path / inside).resolve())
-
-
-#: Beside the worktree's own git metadata, not in a central registry: the
-#: record and the thing it describes are then removed by the same act, so
-#: there is no list that can outlive its entries.
-_WORKTREE_SIDECAR = ".delfin/session_worktree.json"
-
-
-def _write_worktree_sidecar(info) -> None:
-    """Record repo, branch and owner for a session worktree. Never raises."""
-    import json
-    import os
-    import socket
-    from delfin.agent import proc_identity as _proc_identity
-    try:
-        path = Path(info.path) / _WORKTREE_SIDECAR
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "repo_dir": str(info.repo_dir),
-            "path": str(info.path),
-            "branch": str(info.branch),
-            "base_ref": str(info.base_ref),
-            "created_at": float(info.created_at),
-            "pid": os.getpid(),
-            # With the pid: a number handed out again later names a
-            # different process (proc_identity).
-            "proc_start": _proc_identity.process_start(os.getpid()),
-            "host": (socket.gethostname() or "").strip(),
-        }), encoding="utf-8")
-    except Exception:
-        pass
+    from delfin.agent import session_worktree as _sw
+    return _sw.create(workspace)[0]
 
 
 def read_worktree_sidecar(workspace) -> dict | None:

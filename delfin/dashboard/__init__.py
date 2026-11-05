@@ -808,7 +808,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             _hint_state['hint'] = {'text': 'git status unavailable', 'icon': '⚠',
                                    'title': str(exc), 'state': 'warn'}
         lock_present = bool(_git_index_lock_message(rd))
-        pull_delfin_btn.disabled = lock_present
+        try:
+            from delfin.dashboard.branch_list import pull_unavailable
+            no_pull = pull_unavailable(rd)
+        except Exception:
+            no_pull = ''
+        pull_delfin_btn.disabled = lock_present or bool(no_pull)
+        pull_delfin_btn.tooltip = (no_pull or
+                                   'Update main from origin (fast-forward only)')
         rollback_delfin_btn.disabled = lock_present
         _draw_hint()
 
@@ -824,6 +831,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         if not rd or not Path(rd).exists():
             header_toasts.show('No DELFIN checkout found for this dashboard.',
                                level='error', details=f'path: {rd}')
+            return
+        try:
+            from delfin.dashboard.branch_list import pull_unavailable
+            no_pull = pull_unavailable(rd)
+        except Exception:
+            no_pull = ''
+        if no_pull:
+            header_toasts.show("Pull is not available.", level='error',
+                               details=no_pull, key='pull')
             return
         header_toasts.show('Updating main …', level='busy', key='pull')
         ctx.set_busy(True)
@@ -949,23 +965,21 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from delfin.dashboard import login_session as _login_session
     _logout = widgets.HTML(_login_session.logout_control_html())
 
-    # The right-hand group: what the dashboard is doing and holding.
+    # The right-hand group: what the dashboard is holding. What it is doing
+    # (the busy spinner, the agent's working line) sits just left of it, in
+    # the spacer, where its changing text cannot wrap the bar (top_bar).
     _status_group = widgets.HBox(
-        [busy_indicator, ctx.agent_status_html, home_usage_label]
+        [home_usage_label]
         + ([_session_strip] if _session_strip is not None else [])
         + [_logout])
-    _status_group.add_class('delfin-group')
-    _spacer = widgets.HBox([], layout=widgets.Layout(flex='1 1 auto'))
-    _bar = widgets.HBox(
+    # Wrap rather than shrink: the session strip carries an address, and a
+    # row that squeezes its items renders it unreadable before it overflows.
+    _bar = _hu.top_bar(
         [widgets.HTML(title_html)]
         + ([_preview_banner] if _preview_banner is not None else [])
-        + ([branch_panel.row] if branch_panel is not None else [])
-        + [_spacer, _status_group],
-        # Wrap rather than shrink: the session strip carries an address,
-        # and a row that squeezes its items renders it unreadable before
-        # it overflows.
-        layout=widgets.Layout(width='100%'))
-    _bar.add_class('delfin-topbar')
+        + ([branch_panel.row] if branch_panel is not None else []),
+        [busy_indicator, ctx.agent_status_html],
+        _status_group)
     _header_root = widgets.VBox(([_returning] if _returning else [])
                                 + ([_closing_beacon] if _closing_beacon else [])
                                 + [
