@@ -182,13 +182,25 @@ def _verify(code: str | None) -> int:
     return 0
 
 
-def _run() -> int:
+def _record_pid() -> None:
+    """Rootless mode: this process's pid and start time, where the bridge
+    reads who its gateway is (bridge.rootless_peer_ok)."""
+    import os
+    path = os.environ.get("DELFIN_MESSENGER_GATEWAY_PIDFILE", "").strip()
+    if not path:
+        return
+    from delfin.agent.state_paths import write_text_atomic
+    write_text_atomic(path, f"{os.getpid()} {pairing._start_time(os.getpid()) or ''}\n")
+
+
+def _run(idle_exit_s: float = 0) -> int:
     async def run() -> int:
+        _record_pid()
         async with simplex.Daemon(wait=DAEMON_WAIT_S) as daemon:
             # Serves with nobody paired too (people pair through it); the
             # gateway says so once and waits -- never an exit for that.
             print(f"serving {len(store.persons())} person(s) with a verified phone")
-            await Rooms(daemon).run()
+            await Rooms(daemon).run(idle_exit_s=idle_exit_s)
         return 0
 
     try:
@@ -284,7 +296,9 @@ def main(argv: list[str] | None = None) -> int:
     # Asked at the terminal when left out: a code on the command line
     # would stay in the shell's history.
     verify.add_argument("code", nargs="?")
-    sub.add_parser("run", help="serve the paired phones")
+    serve = sub.add_parser("run", help="serve the paired phones")
+    serve.add_argument("--idle-exit", type=float, default=0,
+                       help="exit after this many seconds without a message (rootless mode)")
     revoke = sub.add_parser("revoke", help="unpair a person's phones (--owner: the account "
                                            "owner's; no name: everybody)")
     revoke.add_argument("person", nargs="?")
@@ -304,8 +318,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.owner and args.person:
             parser.error("revoke: a person name or --owner, not both")
         return _revoke(args.person, owner=args.owner)
-    return {"pair": _pair, "run": _run, "people": _people,
-            "status": _status}[args.command]()
+    if args.command == "run":
+        return _run(args.idle_exit)
+    return {"pair": _pair, "people": _people, "status": _status}[args.command]()
 
 
 if __name__ == "__main__":

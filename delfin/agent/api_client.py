@@ -8672,6 +8672,9 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     "**/user_schedules", "**/user_schedules/**",
     "workspace_profiles.json", "workspace_profiles.json/**",
     "**/workspace_profiles.json", "**/workspace_profiles.json/**",
+    # The rootless messenger's state and units (delfin.messenger.rootless).
+    "**/.local/share/delfin-messenger", "**/.local/share/delfin-messenger/**",
+    "**/systemd/user/delfin-messenger-*.service",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always

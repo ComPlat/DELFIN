@@ -221,6 +221,6 @@ def test_the_rootless_state_and_units_are_masked_from_agents():
     from delfin.agent import boundaries, sandbox
     from delfin.agent.api_client import KitToolPermissions
     for entry in (".local/share/delfin-messenger", *(".config/systemd/user/" + u for u in rootless.UNITS)):
-        assert entry in boundaries.MASKED_HOME_ENTRIES and entry in sandbox.MASKED_HOME_ENTRIES
+        assert entry in boundaries.MASKED_HOME_ENTRIES and entry in sandbox._HOME_SECRET_DIRS
     perms = KitToolPermissions(workspace="/srv/w", mode="acceptEdits")
     assert perms.matches_path_deny("home/u/.local/share/delfin-messenger/gateway/pair.json")

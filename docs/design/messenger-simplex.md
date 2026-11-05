@@ -426,6 +426,42 @@ The direct contact remains a setup channel. `revoke` with the same environment
 removes routing authorization immediately; already dispatched commands are not
 undone. `status` lists stored chat bindings.
 
+## Without root (rootless mode)
+
+For hosts without root, such as cluster login nodes:
+
+```bash
+delfin-agent messenger setup --user --accept-loopback-risk --simplex-chat ~/bin/simplex-chat
+delfin-agent messenger stop --user
+```
+
+The same daemon, bridge and gateway run as the user (delfin/messenger/rootless.py):
+systemd --user units when `systemctl --user` answers, otherwise supervised
+background processes with a pid file each (`pid start-ticks`; `stop --user`
+ends a process only when both still match). nice 10 and the idle I/O class,
+no whisper, polling every 5 s, and an idle exit (`--idle-exit HOURS`, default
+12; 0 never). State lives under `$XDG_DATA_HOME/delfin-messenger` (0700); the
+simplex-chat binary must have one of the installer's pinned v7.0.3 digests.
+Setup prints a notice that some sites forbid long-running programs on login
+nodes, and refuses an agent session.
+
+What is weaker than the root install, said by setup and accepted only with
+`--accept-loopback-risk`:
+
+- The daemon's API listens on 127.0.0.1 at a random port with no firewall rule:
+  any local user can connect, read the bot's chats and write as the bot.
+  Approvals are not reachable that way; they go through the bridge.
+- The gateway, the bridge and the agent service are one user. The bridge's
+  socket is 0600 and admits its own uid only for the gateway's recorded process
+  (pid and start time from its pid file, its environment readable, no agent
+  marker: `bridge.rootless_peer_ok`); anything that cannot be told is refused.
+  The state directory and the three unit files are masked from agent commands
+  and refused to the agent's file tools. The boundary against the agent's own
+  commands is the agent's command cage, as in people mode: without a cage, a
+  command you approve runs as you.
+- The emergency stop does not end the messenger (it holds no agent work);
+  `stop --user` does.
+
 ## SimpleX bot standards
 
 Each behaviour and the official feature it uses (simplex-chat repository:

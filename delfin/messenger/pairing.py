@@ -548,6 +548,9 @@ def session_command(args: str, *, requester: str, show, spawn=_spawn,
 
 
 CLI_USAGE = """delfin-agent messenger pair      connect your phone (QR code, then the code it receives)
+delfin-agent messenger setup --user --accept-loopback-risk [--simplex-chat PATH] [--idle-exit HOURS]
+                                 without root: install, start and pair (delfin/messenger/rootless.py)
+delfin-agent messenger stop --user  stop the rootless messenger
 delfin-agent messenger phones    your paired phones
 delfin-agent messenger unpair LABEL|all
                                  unpair one of your phones, or all
@@ -575,6 +578,12 @@ def cli_main(argv: list[str], *, ask=input, out=print, timeout: float = 30.0) ->
     if head in {"people", "revoke"}:
         from . import __main__ as admin
         return admin.main(words)
+    if head in {"setup", "stop"} and "--user" in words:
+        # Rootless mode (delfin/messenger/rootless.py).
+        from . import rootless
+        if head == "stop":
+            return rootless.stop(out=out)
+        return rootless.setup(words[1:], out=out, ask=ask)
     if head not in {"pair", "phones", "unpair"}:
         out(CLI_USAGE)
         return 2

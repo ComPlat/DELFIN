@@ -199,12 +199,47 @@ def configured_peer_uid() -> int | None:
     # The gateway is a user of its own. The service's own uid would admit
     # every process of this user -- the agent's shell commands among them,
     # which could then answer the agent's own approvals as "the phone".
+    # Rootless mode (delfin/messenger/rootless.py) is one user by design:
+    # there each connection must also be the gateway's recorded process
+    # (rootless_peer_ok).
+    if uid == os.getuid() and rootless():
+        return uid
     if uid == os.getuid():
         print(f"[messenger] {PEER_UID_ENV} is this service's own uid; "
               "the bridge admits nobody. Run the gateway as its own user "
               "(scripts/pi/pi_messenger.sh).", file=sys.stderr)
         return None
     return uid
+
+
+def rootless() -> bool:
+    """Rootless mode: gateway, bridge and agent service are one user."""
+    return os.environ.get("DELFIN_MESSENGER_ROOTLESS", "").strip() == "1"
+
+
+def rootless_peer_ok(sock) -> bool:
+    """In rootless mode, whether the peer of ``sock`` is the gateway: this
+    user's uid, the pid AND start time the gateway recorded in its pid file
+    (DELFIN_MESSENGER_GATEWAY_PIDFILE), an environment that can be read
+    and carries no agent marker. False outside rootless mode, and wherever
+    any of it cannot be told (fail closed)."""
+    if not rootless():
+        return False
+    try:
+        from delfin.messenger.pairing import _start_time
+        from .supervisor import _environ_of, _peer_pid
+        from ..approval_guard import ENV_MARKER
+        if rundir.peer_uid(sock) != os.getuid():
+            return False
+        pid = int(_peer_pid(sock))
+        recorded = Path(os.environ.get("DELFIN_MESSENGER_GATEWAY_PIDFILE", "")).read_text().split()
+        ticks = _start_time(pid)
+        if pid <= 0 or not ticks or recorded[:2] != [str(pid), ticks]:
+            return False
+        environ = _environ_of(pid)
+        return environ is not None and f"{ENV_MARKER}=".encode() not in environ
+    except Exception:  # noqa: BLE001 - who it is cannot be told: refused
+        return False
 
 
 def peer_uid_allowed(uid: int | None, allowed: int | None) -> bool:
@@ -329,7 +364,8 @@ class Bridge:
             except OSError:
                 pass
         server = await asyncio.start_unix_server(self._client_task, path=str(path))
-        os.chmod(path, 0o660)
+        # Rootless: no gateway group, the socket is the user's alone.
+        os.chmod(path, 0o600 if rootless() else 0o660)
         # The provisioned unit makes the socket's directory setgid delfin-gw
         # (pi_messenger.sh), so the socket takes that group while this
         # process keeps the service user's own: the service reads a window's
@@ -390,7 +426,8 @@ class Bridge:
     async def _client_task(self, reader, writer) -> None:
         sock = writer.get_extra_info("socket")
         uid = rundir.peer_uid(sock) if sock is not None else None
-        if not peer_uid_allowed(uid, self.allowed_uid):
+        if not peer_uid_allowed(uid, self.allowed_uid) or (
+                rootless() and not rootless_peer_ok(sock)):
             writer.close()
             return
         queue: asyncio.Queue = asyncio.Queue(maxsize=self.queue_depth)

@@ -570,6 +570,12 @@ MASKED_HOME_ENTRIES: tuple[str, ...] = (
     ".delfin/user_schedules",
     # The workspace freedom profiles (delfin.agent.workspace_profiles).
     ".delfin/user_schedules/workspace_profiles.json",
+    # Rootless messenger (delfin.messenger.rootless): one user with the
+    # agent, so its daemon database, gateway store and units are masked.
+    ".local/share/delfin-messenger",
+    ".config/systemd/user/delfin-messenger-chat.service",
+    ".config/systemd/user/delfin-messenger-bridge.service",
+    ".config/systemd/user/delfin-messenger-gateway.service",
 )
 
 

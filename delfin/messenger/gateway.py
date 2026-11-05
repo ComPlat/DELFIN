@@ -273,6 +273,8 @@ class Rooms:
         self._more: dict[str, str] = {}
         #: chat -> (when, code) of each approval card sent (plain_decision).
         self._cards_sent: dict[str, deque] = {}
+        #: When the last message came (run's idle exit).
+        self._last_message = time.monotonic()
         #: Session ids whose current turn the person started from the phone.
         self._phone_turns: set = set()
         #: Agent notes already handled, and when notes were sent per chat.
@@ -519,7 +521,7 @@ class Rooms:
         phone and the chat is that phone's own direct chat or a ready room
         of the same person. Then dispatched in that person's context."""
         sender, chat = message['sender'], message['chat']
-        started = time.monotonic()
+        started = self._last_message = time.monotonic()
         room_of = store.rooms().get(chat) or {}
         if store.refused():
             eventlog.emit('in', 'message', room=chat, result='refused:store')
@@ -2145,7 +2147,23 @@ class Rooms:
             say('[gateway] no phone paired any more: waiting')
         return True
 
-    async def run(self):
+    async def run(self, *, idle_exit_s=0, idle_poll_s=60.0):
+        """Serve until the daemon's events end -- or, with ``idle_exit_s``,
+        until no message came for that long (rootless mode on a login
+        node: a clean exit, not a failure)."""
+        if idle_exit_s:
+            serving = asyncio.ensure_future(self._serve())
+            while not serving.done():
+                await asyncio.wait({serving}, timeout=idle_poll_s)
+                if time.monotonic() - self._last_message >= idle_exit_s and not serving.done():
+                    print(f'[gateway] idle for {int(idle_exit_s)} s: exiting', file=sys.stderr, flush=True)
+                    serving.cancel()
+                    await asyncio.gather(serving, return_exceptions=True)
+                    return
+            return serving.result()
+        return await self._serve()
+
+    async def _serve(self):
         await self.daemon.subscribe()
         await self.bot_setup()
         self.watch_pairing(now=asyncio.get_running_loop().time())
