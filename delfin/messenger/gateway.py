@@ -441,8 +441,8 @@ class Rooms:
                 return
             await self.active_sessions()
             if room and room['session_id'] and room['session_id'] not in self._active:
-                word = text.partition(' ')[0].lower().lstrip('/')
-                if command_word(word) == 'get':
+                # A session taken off the phone: only a bare hol / get here.
+                if len(text.split()) == 1 and command_word(text) == 'get':
                     result = await self.get_session(room['session_id'], chat=chat)
                     await self.send(chat, result)
                 return
@@ -465,7 +465,7 @@ class Rooms:
             return t('Bitte bei der konkreten SimpleX-Anfrage auf Antworten tippen und dort yes/no schreiben. So bleibt die Entscheidung eindeutig.')
         word, _, rest = text.partition(' ')
         command = word.lower().lstrip('/')
-        named = command_word(command)
+        named = self._short_command(text)
         if command in {'ok', 'nein', 'zeige'} and rest.strip().strip('.').isdigit() \
                 and not (command == 'ok' and self._branch_cleanup_open.get(chat)):
             # ok <n> is an approval answer — unless a branch cleanup listing
@@ -477,7 +477,11 @@ class Rooms:
         if named == 'sessions':
             return await self.sessions_text(chat)
         if named == 'get' and rest.strip():
-            return await self.get_session(rest.strip(), chat=chat)
+            got = await self.get_session(rest.strip(), chat=chat,
+                                         fall_through=bool(room and room['session_id']))
+            if got is not None:
+                return got
+            named = None                     # not a session: the line is for the agent
         if named == 'off' and room and room['session_id'] and not rest.strip():
             return await self.drop_session(room)
         if named == 'phones':
@@ -661,6 +665,19 @@ class Rooms:
             results.append(f'[{label(target)}]\n{result}')
         return '\n\n'.join(results)
 
+    @staticmethod
+    def _short_command(text):
+        """The phone command a WHOLE short message names, or None: one word
+        (sessions, hilfe/help, handys/phones, weg/off, entkoppeln/unpair) or
+        hol/get with exactly one token. A longer line that starts with one
+        of these words is a sentence for the session."""
+        tokens = text.split()
+        if len(tokens) == 1 and command_word(tokens[0]) in {'help', 'sessions', 'phones', 'revoke', 'off'}:
+            return command_word(tokens[0])
+        if len(tokens) == 2 and command_word(tokens[0]) == 'get':
+            return 'get'
+        return None
+
     async def _forum_target(self, name):
         """The person's enabled session room named ``name`` (case-folded
         exact name, or the head of its id with at least 4 characters), or a
@@ -699,9 +716,11 @@ class Rooms:
             return t('Keine laufenden Sitzungen. neu NAME startet eine.')
         return '\n'.join(lines) + '\n' + t('hol N oder hol NAME holt eine aufs Handy.')
 
-    async def get_session(self, which, *, chat=None):
+    async def get_session(self, which, *, chat=None, fall_through=False):
         """``hol N | NAME``: switch one of the person's running sessions on
-        for the messenger and invite their phones to its chat."""
+        for the messenger and invite their phones to its chat. With
+        ``fall_through`` (a session's chat), None when nothing matches: the
+        line then goes to that session as a prompt."""
         reply = await self.ask({'cmd': 'sessions'})
         if reply.get('error'):
             return reply['error']
@@ -722,6 +741,8 @@ class Rooms:
                 return t('Mehrere Sitzungen heißen {name}. Bitte mit der Nummer aus sessions holen.').format(name=wanted)
             row = hits[0] if hits else None
         if row is None:
+            if fall_through:
+                return None
             return t('Keine deiner laufenden Sitzungen heißt {name}. sessions zeigt sie.').format(name=wanted)
         phone = (store.contact(sender) or {}).get('label') or sender
         attached = await self.ask({'cmd': 'attach', 'session': row['id'], 'label': str(phone)})
