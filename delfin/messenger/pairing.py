@@ -129,6 +129,26 @@ def _peer_is_agent(sock) -> bool:
     return Supervisor._from_an_agent(identity, pid)
 
 
+def _start_time(pid) -> str | None:
+    """A process's start time (``/proc/<pid>/stat`` field 22, clock ticks
+    since boot) as text, or None where it cannot be read. With the pid it
+    names one process: a pid reused later has another start time."""
+    try:
+        with open(f"/proc/{int(pid)}/stat", "rb") as stream:
+            data = stream.read(4096).decode("ascii", "replace")
+        return data[data.rindex(")") + 2:].split()[19]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _peer_pid(sock) -> int:
+    from delfin.agent.service.supervisor import _peer_pid as peer
+    try:
+        return int(peer(sock))
+    except Exception:  # noqa: BLE001 - unknown peer: no pid
+        return 0
+
+
 def _peer_uid(sock):
     from delfin.agent.service import rundir
     return rundir.peer_uid(sock)
@@ -191,12 +211,15 @@ class Door:
                 pass
 
 
-def deliver(door: str, root: Path | None, rid: str, fields: dict) -> bool:
+def deliver(door: str, root: Path | None, rid: str, fields: dict, *,
+            pid=None, start=None) -> bool:
     """The bridge's side: hand ``fields`` to the door ``door`` of request
     ``rid``. Only a socket inside ``root`` (the person's own runtime
-    directory), owned by and listened on by this uid. True when the door
-    took them."""
-    if root is None or not door:
+    directory), owned by this uid, whose listening process (SO_PEERCRED)
+    runs as this uid, is the process the request names (``pid`` and, where
+    /proc says, its ``start`` time), and is not an agent's process. True
+    when the door took them."""
+    if root is None or not door or not pid:
         return False
     try:
         real = Path(door).resolve()
@@ -210,7 +233,12 @@ def deliver(door: str, root: Path | None, rid: str, fields: dict) -> bool:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(5)
             sock.connect(str(real))
-            if _peer_uid(sock) != os.getuid():
+            if _peer_uid(sock) != os.getuid() or _peer_is_agent(sock):
+                return False
+            listener = _peer_pid(sock)
+            if listener != int(pid):
+                return False
+            if start is not None and _start_time(listener) != str(start):
                 return False
             sock.sendall((json.dumps({"id": rid, **fields}) + "\n").encode())
             reply = sock.makefile("rb").readline(100)
@@ -337,7 +365,8 @@ def begin(requester: str, *, directory: Path | None = None) -> str:
     forget(requester)
     door = Door(rid, _door_dir(directory))
     submit("pair", {"requester": str(requester)[:80], "nonce_sha": _sha(nonce),
-                    "door": door.path}, directory=directory, rid=rid)
+                    "door": door.path, "pid": os.getpid(), "start": _start_time(os.getpid())},
+           directory=directory, rid=rid)
     with _OPEN_LOCK:
         _OPEN[str(requester)] = (rid, nonce, door)
     return rid
@@ -703,7 +732,9 @@ def answer(path: Path, rid: str, value: dict, *, door_root: Path | None = None) 
     delivered = None
     if private:
         delivered = data["kind"] == "pair" and deliver(
-            str(data.get("door") or ""), door_root, rid, private)
+            str(data.get("door") or ""), door_root, rid, private,
+            pid=data.get("pid") if isinstance(data.get("pid"), int) else None,
+            start=data.get("start"))
         if not delivered and "link" in private:
             value.update(state="refused", reason="the asking window is gone")
     _write(path / f"res-{rid}.json", value)

@@ -29691,16 +29691,10 @@ def _session_scratch_dir() -> str:
 
 def _home_secret_paths() -> list[str]:
     try:
-        from delfin.agent.sandbox import _HOME_SECRET_DIRS
+        from delfin.agent.sandbox import home_secret_paths
+        out = list(home_secret_paths())
     except Exception:
-        _HOME_SECRET_DIRS = ()
-    home = Path.home()
-    out = []
-    for rel in _HOME_SECRET_DIRS:
-        try:
-            out.append(str((home / rel).resolve()))
-        except OSError:
-            continue
+        out = []
     # The approval-code directory, created and at its redirected location.
     try:
         from delfin.agent.sandbox import runtime_masked_dirs
@@ -31456,19 +31450,6 @@ def _bash_isolation_argv(
         pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
-    for rel in _HOME_SECRET_DIRS:
-        p = home / rel
-        try:
-            # resolve() — on HPC, $HOME is often a symlink (/home/... →
-            # /pfs/...); bwrap cannot create mountpoints through symlinked
-            # paths ("Can't mkdir parents").  Mask the REAL path.
-            rp = p.resolve()
-            if rp.is_dir():
-                args += ["--tmpfs", str(rp)]
-            elif rp.is_file():
-                args += ["--ro-bind", "/dev/null", str(rp)]
-        except OSError:
-            continue
     try:
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
@@ -31542,6 +31523,16 @@ def _bash_isolation_argv(
     # every root is read-only already through the "/" bind.
     for room in _rooms:
         args += ["--ro-bind-try", room, room]
+    # The home secrets (credentials, the stores, in people mode every
+    # person's pairing, activation and runtime directories) after every
+    # bind: a granted ~/.delfin or ~/people bound later covered them again.
+    # Resolved paths (on HPC $HOME is often a symlink; bwrap cannot create
+    # mount points through one).
+    try:
+        from delfin.agent.sandbox import _bwrap_home_mask_args
+        args += _bwrap_home_mask_args(home)
+    except Exception:
+        pass
     # The approval-code directory is not readable at all, and masked after
     # every bind so a granted ~/.delfin cannot re-expose it.
     try:
