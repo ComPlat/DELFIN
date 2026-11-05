@@ -1213,7 +1213,7 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             geometry_source = 'hessian'
             geometry_notice = (
                 '<div style="color:#b26a00;font-size:12px;">'
-                'No compatible .xyz found: using optimized geometry from '
+                'No compatible .xyz found. Using optimized geometry from '
                 'the matching Hessian $atoms block ('
                 + html.escape(files.hess_path.name) +
                 '). Verify this Hessian belongs to the selected '

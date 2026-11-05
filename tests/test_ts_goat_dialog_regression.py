@@ -1103,7 +1103,7 @@ def test_missing_xyz_uses_matching_hessian_geometry(tmp_path):
     from ipywidgets import HTML
     labels = [w.value for w in _iter_widgets(result['panel'])
               if isinstance(w, HTML)]
-    assert any('Using' in label and 'Hessian' in label for label in labels)
+    assert any('using' in label.lower() and 'Hessian' in label for label in labels)
 
 
 def test_wrong_xyz_falls_back_to_hessian_not_unrelated_geometry(tmp_path):
