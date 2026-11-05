@@ -14411,7 +14411,9 @@ def create_tab(ctx):
         if calc_ts_goat_panel.children:
             calc_ts_goat_panel.children = []
             calc_ts_goat_panel.layout.display = 'none'
-            calc_content_area.layout.display = 'block'
+            # the panel hid the label and toolbar too; let the view
+            # decide all three for the current mode
+            calc_update_view()
         _calc_open_item(label)
 
     def calc_on_open_request(change):
@@ -14436,7 +14438,7 @@ def create_tab(ctx):
         if calc_ts_goat_panel.children and len(labels) != 1:
             calc_ts_goat_panel.children = []
             calc_ts_goat_panel.layout.display = 'none'
-            calc_content_area.layout.display = 'block'
+            calc_update_view()
         if len(labels) == 1:
             # The click bridge above has usually opened this one already.  This
             # path still serves keyboard navigation, and stands in whenever the
@@ -16531,6 +16533,8 @@ def create_tab(ctx):
         'calc_ketcher_container': calc_ketcher_container,
         'calc_recalc_toolbar': calc_recalc_toolbar,
         'calc_content_toolbar': calc_content_toolbar,
+        'calc_content_label': calc_content_label,
+        'calc_ts_goat_panel': calc_ts_goat_panel,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # the spreadsheet, for driving it the way the browser does
