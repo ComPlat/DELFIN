@@ -147,7 +147,7 @@ def test_freq_input_uses_hessian_too(tmp_path):
 def test_unknown_run_type_rejected(tmp_path):
     elements, coords = WATER
     with pytest.raises(ValueError, match="run_type"):
-        build_orca_mlips_input("neb", elements=elements, coordinates=coords,
+        build_orca_mlips_input("md", elements=elements, coordinates=coords,
                                work_dir=tmp_path)
 
 

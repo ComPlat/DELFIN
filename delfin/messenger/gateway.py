@@ -28,6 +28,7 @@ HELP = (
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
     'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
     'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
+    'profil frei|standard – im Sitzungs-Chat für dessen Ordner; sonst: profil <sitzung> frei.\n'
     'sync aktualisiert die aktivierten Sitzungen.'
 )
 
@@ -152,6 +153,8 @@ class Rooms:
         self._announced = deque()
         #: Schedule number -> the check the phone was last shown for it.
         self._checks = {}
+        #: Chat -> a cleanup listing is open there (an ok answers it).
+        self._branch_cleanup_open = {}
         #: The approval listing's check + the (n, sessionId, requestId) of
         #: the items the phone was shown, so ok <n> can answer with the
         #: check without the phone ever copying it.
@@ -281,7 +284,11 @@ class Rooms:
             return t('Bitte bei der konkreten SimpleX-Anfrage auf Antworten tippen und dort yes/no schreiben. So bleibt die Entscheidung eindeutig.')
         word, _, rest = text.partition(' ')
         command = word.lower().lstrip('/')
-        if command in {'ok', 'nein', 'zeige'} and rest.strip().strip('.').isdigit():
+        if command in {'ok', 'nein', 'zeige'} and rest.strip().strip('.').isdigit() \
+                and not (command == 'ok' and self._branch_cleanup_open.get(chat)):
+            # ok <n> is an approval answer — unless a branch cleanup listing
+            # is open in this chat, then the number is a cleanup row and the
+            # approval catch must not shadow it (delfin/agent/branch_commands.py).
             return await self.approval_command(text)
         if command in {'help', 'hilfe'}:
             return t(HELP)
@@ -325,6 +332,20 @@ class Rooms:
         if command in {'zeitpläne', 'zeitplaene', 'pläne', 'plaene', 'schedules', 'plans'}:
             await self.ensure_schedules_room()
             return t('Einladung zum Chat „Zeitpläne“ liegt in SimpleX. Dort: pläne, neu, ok, pause, jetzt, löschen.')
+        if command in {'profil', 'profile'}:
+            # profil frei|standard: in a session's own chat its workspace,
+            # otherwise the word followed by the session or folder name.
+            word = rest.strip()
+            sid = room['session_id'] if room else ''
+            parts = word.split(None, 1)
+            if not sid and len(parts) == 2:
+                sid, word = parts
+            reply = await self.ask({'cmd': 'profile', 'session': sid,
+                                    'text': word.strip()})
+            return reply.get('error') or t('Profil {ws}: {p}').format(
+                ws=reply.get('workspace') or '?',
+                p=t('frei (Bypass im Käfig)') if reply.get('profile') == 'free'
+                else t('standard'))
         if command in {'plan', 'zeitplan', 'schedule'} and room and room['session_id'] and rest.strip():
             # "plan the next step" is a message for the agent: only a line
             # that starts with a time is a schedule.
@@ -366,6 +387,29 @@ class Rooms:
                 return t('Syntax: /approve CODE, /deny CODE oder /answer CODE Text. /pending zeigt die Codes.')
             reply = await self.session(sid, command, id=code, **({'text': answer} if command == 'answer' else {}))
             return reply.get('error') or (t('Entscheidung übernommen.') if reply.get('ok') else t('Nicht übernommen.'))
+        if command in {'branches', 'branch'} and sid:
+            return await self._branch_word(sid, 'list', rest, chat)
+        if command == 'test' and sid and rest.strip():
+            return await self._branch_word(sid, 'test', rest, chat)
+        if command == 'pull' and sid and not rest.strip():
+            return await self._branch_word(sid, 'pull', '', chat)
+        if command == 'cleanup' and sid:
+            word, _, tail = rest.strip().partition(' ')
+            if word.lower() in {'ok', 'ja', 'yes', 'y'}:
+                return await self._branch_ok(sid, tail.strip())
+            return await self._branch_word(sid, 'cleanup', rest, chat)
+        if command in {'ok', 'ja', 'yes', 'y'} and sid \
+                and self._branch_cleanup_open.get(chat):
+            # The answer to a cleanup listing: ok (everything offered) or
+            # ok <n> (one row). Any other ok is a message for the session.
+            token = rest.strip()
+            answer = await self._branch_ok(sid, token)
+            # The listing stays open while nothing was deleted: a wrong or
+            # refused answer can be corrected without the listing again.
+            if 'Gelöscht' in answer or 'Deleted' in answer or \
+                    'gelöscht' in answer:
+                self._branch_cleanup_open.pop(chat, None)
+            return answer
         if text.startswith('@'):
             return t('Dieser Chat hat feste Empfänger. Bitte den Einzelchat der gewünschten Sitzung öffnen.')
         if text.startswith('/') and command not in {'status', 'pending', 'stop', 'update'}:
@@ -403,6 +447,59 @@ class Rooms:
         return '\n\n'.join(results)
 
     # -- the user's schedules -------------------------------------------------------
+
+    async def _branch_word(self, sid, sub, rest, chat=None):
+        """branches / test <n|name> / pull / cleanup: the session's branch
+        operations (delfin/agent/branch_ops.py, the dashboard's rules).
+        The answer is short lines; a listing is numbered, so an answer can
+        name one (test 2, ok 1)."""
+        word, _, tail = (rest or '').strip().partition(' ')
+        if sub == 'list':
+            view = word if word in {'mine', 'all', 'hidden', 'merged',
+                                    'remote'} else 'mine'
+            reply = await self.session(sid, 'branch', sub='list', view=view,
+                                       text=tail)
+        elif sub == 'test':
+            reply = await self.session(sid, 'branch', sub='test', ref=word)
+        else:
+            reply = await self.session(sid, 'branch', sub=sub)
+        if reply.get('error'):
+            return t('Branchen nicht erreichbar: {e}').format(e=reply['error'])
+        if not reply.get('ok'):
+            return t('{t}').format(t=reply.get('text') or 'Nicht möglich.')
+        if sub == 'cleanup' and not (reply.get('candidates') or []):
+            return t('Nichts aufzuräumen: keine gemergten Branches, keine '
+                     'verwaisten Worktrees.')
+        if sub == 'test':
+            return t('{t}').format(t=reply.get('text') or 'getestet')
+        if sub == 'pull':
+            return t('{t}').format(t=reply.get('text') or 'aktualisiert')
+        # list / cleanup: numbered, one line each
+        rows = reply.get('rows') or reply.get('candidates') or []
+        lines = []
+        for i, row in enumerate(rows, 1):
+            name = row.get('ref') or row.get('name') or ''
+            detail = row.get('ahead') or row.get('reason') or ''
+            lines.append(f"{i}. {name}" + (f" ({detail})" if detail else ""))
+        if sub == 'cleanup':
+            if chat:
+                self._branch_cleanup_open[chat] = True
+            lines.append(t('Bestätigen mit: ok <Nummer>'))
+        return '\n'.join(lines) or t('Keine Branches in dieser Ansicht.')
+
+    async def _branch_ok(self, sid, token):
+        """ok <n|name> after cleanup: the confirmation. The deletion runs
+        in the session's workspace through branch_cleanup.delete, whose
+        rules are re-read at deletion; the listing may be older than the
+        rules."""
+        reply = await self.session(sid, 'branch', sub='cleanup',
+                                   delete=[token] if token else [],
+                                   confirm=True)
+        if reply.get('error'):
+            return t('Aufräumen nicht erreichbar: {e}').format(e=reply['error'])
+        text = reply.get('text') or ('Gelöscht.' if reply.get('ok')
+                                     else 'Nicht gelöscht.')
+        return t('{t}').format(t=text)
 
     async def ensure_schedules_room(self):
         async with self._setup:

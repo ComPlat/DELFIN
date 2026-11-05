@@ -44,6 +44,24 @@ fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
 
+# DELFIN_PI_* set where this runs (DELFIN_PI_PYSCF=0, DELFIN_PI_SKIP_EXTRAS=...)
+# reach pi_install.sh on the Pi, as `env NAME='value'` words. Only names of
+# that form and values of letters, digits, space and ._,- pass; anything
+# else is refused, so no value can carry shell syntax to the remote side.
+pi_env() {
+    local name value words=""
+    for name in $(compgen -v DELFIN_PI_); do
+        [[ "$name" =~ ^DELFIN_PI_[A-Z0-9_]+$ ]] || continue
+        value="${!name}"
+        if [[ ! "$value" =~ ^[A-Za-z0-9\ ._,-]*$ ]]; then
+            echo "error: $name has characters a deploy does not forward: $value" >&2
+            return 1
+        fi
+        words+=" $name='$value'"
+    done
+    [[ -z "$words" ]] || printf 'env%s ' "$words"
+}
+
 push_helper() {
     tr -d '\r' < "$HERE/pi_install.sh" \
         | ssh "$HOST" 'mkdir -p ~/delfin && cat > ~/delfin/pi_install.sh && chmod +x ~/delfin/pi_install.sh'
@@ -72,9 +90,10 @@ install)
     version="$(git rev-parse --short HEAD)"
     [[ "$tree" == "$(git rev-parse 'HEAD^{tree}')" ]] || version="$version-dirty"
     echo "==> deploying $version to $HOST"
+    remote_env="$(pi_env)"
     push_helper
     git -c core.autocrlf=false -c core.eol=lf archive --format=tar.gz "$tree" \
-        | ssh "$HOST" "bash ~/delfin/pi_install.sh install '$version' $run_tests"
+        | ssh "$HOST" "${remote_env}bash ~/delfin/pi_install.sh install '$version' $run_tests"
     ;;
 landlock)
     # As the admin (the agent user has no root), from the agent's deployed
@@ -83,7 +102,8 @@ landlock)
     ssh -t "$HOST" "sudo bash $k build && sudo bash $k try"
     ;;
 rollback|status)
+    remote_env="$(pi_env)"
     push_helper
-    ssh "$HOST" "bash ~/delfin/pi_install.sh $action"
+    ssh "$HOST" "${remote_env}bash ~/delfin/pi_install.sh $action"
     ;;
 esac

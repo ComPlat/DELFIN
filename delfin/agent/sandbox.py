@@ -617,6 +617,121 @@ def unsafe_install_refusal(cmd: str, session_python: str, *,
     return None
 
 
+#: conda / mamba / micromamba subcommands that write an environment
+#: (``env create|update|remove`` included).
+_CONDA_PROGRAMS = frozenset({"conda", "mamba", "micromamba"})
+_CONDA_WRITING_SUBCOMMANDS = frozenset({
+    "create", "install", "update", "upgrade", "remove", "uninstall"})
+#: Short options that take a value; in a cluster the value is the rest of
+#: the word (``-yp /x``, ``-nmlip``).
+_CONDA_SHORT_VALUE_OPTS = frozenset("npcfr")
+#: Options whose value is the next word, passed over when looking for the
+#: subcommand (``micromamba -r /root create``).
+_CONDA_VALUE_OPTS = frozenset({
+    "-r", "--root-prefix", "--rc-file", "-n", "--name", "-p", "--prefix",
+    "-c", "--channel", "-f", "--file"})
+
+
+def conda_env_writes(rest: list[str]) -> Optional[tuple[str, list[str], bool]]:
+    """What a conda / mamba / micromamba argument list writes, or None.
+
+    Input: the arguments after the program name, quotes removed. Output
+    for a writing subcommand (``_CONDA_WRITING_SUBCOMMANDS``, also after
+    ``env``): (subcommand, the directories named by ``-p`` / ``--prefix``
+    / ``--prefix=`` / ``p`` in a short cluster, whether the environment
+    lies under the program's root prefix). Under the root prefix means:
+    ``-r`` / ``--root-prefix`` given, or no directory named and either
+    ``-n`` / ``--name`` given or the subcommand is ``create`` (``env create
+    -f FILE`` takes the name from the file). None for every other
+    subcommand and for ``-h`` / ``--help``.
+
+    The root prefix is the program's configuration (``MAMBA_ROOT_PREFIX``,
+    ``.condarc``), not the command text, so no path can be judged; the
+    caller asks instead (api_client, own-dialog tier).
+    """
+    if any(a in ("-h", "--help") for a in rest):
+        return None
+    words: list[str] = []
+    skip = False
+    for a in rest:
+        if skip:
+            skip = False
+            continue
+        if a in _CONDA_VALUE_OPTS:
+            skip = True
+            continue
+        if not a.startswith("-"):
+            words.append(a)
+    sub = words[1] if words[:1] == ["env"] and len(words) > 1 else (
+        words[0] if words else "")
+    if sub not in _CONDA_WRITING_SUBCOMMANDS:
+        return None
+    prefixes: list[str] = []
+    named = root = False
+    for i, a in enumerate(rest):
+        nxt = rest[i + 1] if i + 1 < len(rest) else ""
+        if a in ("-p", "--prefix"):
+            if nxt:
+                prefixes.append(nxt)
+        elif a.startswith("--prefix="):
+            prefixes.append(a.split("=", 1)[1])
+        elif a in ("-n", "--name") or a.startswith("--name="):
+            named = True
+        elif a in ("-r", "--root-prefix") or a.startswith("--root-prefix="):
+            root = True
+        elif a.startswith("-") and not a.startswith("--"):
+            for k, ch in enumerate(a[1:], start=1):
+                if ch in _CONDA_SHORT_VALUE_OPTS:
+                    val = a[k + 1:].lstrip("=") or nxt
+                    if ch == "p" and val:
+                        prefixes.append(val)
+                    elif ch == "n":
+                        named = True
+                    elif ch == "r":
+                        root = True
+                    break
+    under_root = root or (not prefixes and (named or sub == "create"))
+    return sub, prefixes, under_root
+
+
+def root_prefix_env_command(cmd: str, _depth: int = 0) -> str:
+    """The first conda / mamba / micromamba command in *cmd* that writes an
+    environment under the program's root prefix (:func:`conda_env_writes`),
+    as ``"<program> <subcommand>"``, or "".
+
+    Read like :func:`unsafe_install_refusal`: per shell segment after
+    quote removal, leading assignments and wrappers dropped, ``sh -c`` /
+    ``eval`` payloads and command substitutions read as commands.
+    """
+    if not cmd or not cmd.strip() or _depth > 3:
+        return ""
+    for m in _SUBSTITUTION_RE.finditer(cmd):
+        hit = root_prefix_env_command(m.group(1) or m.group(2) or "",
+                                      _depth + 1)
+        if hit:
+            return hit
+    for seg in _segments(cmd):
+        argv = _strip_prefix(seg, set())
+        if not argv:
+            continue
+        base = os.path.basename(argv[0])
+        rest = argv[1:]
+        if base in _SHELLS and "-c" in rest:
+            at = rest.index("-c") + 1
+            hit = root_prefix_env_command(
+                rest[at] if at < len(rest) else "", _depth + 1)
+        elif base == "eval":
+            hit = root_prefix_env_command(" ".join(rest), _depth + 1)
+        elif base in _CONDA_PROGRAMS:
+            got = conda_env_writes(rest)
+            hit = f"{base} {got[0]}" if got and got[2] else ""
+        else:
+            hit = ""
+        if hit:
+            return hit
+    return ""
+
+
 def _session_python() -> str:
     """:func:`delfin.installer.session_python`, or '' when it cannot load."""
     try:
@@ -1025,6 +1140,9 @@ _HOME_SECRET_DIRS = (
     # The user's schedules (delfin.agent.schedules): what runs unattended
     # is the user's to write and confirm, never an agent's.
     ".delfin/user_schedules",
+    # The workspace freedom profiles (delfin.agent.workspace_profiles)
+    # share the schedules directory.
+    ".delfin/user_schedules/workspace_profiles.json",
 )
 
 
