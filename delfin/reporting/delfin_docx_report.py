@@ -393,6 +393,30 @@ def _energy_ev(optimization: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+#: orca-mlips plugin -> the model family named in the report.
+_MLIP_REPORT_NAMES = {"uma": "UMA", "mace": "MACE", "orb": "ORB", "aimnet2": "AIMNet2"}
+
+
+def _global_opt_method_label(control: Dict[str, Any]) -> str:
+    """The method the GOAT step used, as the report names it.
+
+    ``global_opt_method=mlip:<plugin>`` -> "the <MODEL> machine-learned
+    potential (orca-mlips, ORCA ExtOpt)"; otherwise the xTB_method as
+    before (GFN2-xTB, GFN1-xTB, GFN-xTB).
+    """
+    method = str(control.get("global_opt_method") or "").strip().lower().replace(" ", "")
+    if method.startswith("mlip:"):
+        plugin = method.split(":", 1)[1]
+        name = _MLIP_REPORT_NAMES.get(plugin, plugin)
+        return f"the {name} machine-learned potential (orca-mlips, ORCA ExtOpt)"
+    xtb_method_raw = str(control.get("xTB_method", "")).strip().upper()
+    if xtb_method_raw == "XTB2":
+        return "GFN2-xTB"
+    if xtb_method_raw == "XTB1":
+        return "GFN1-xTB"
+    return "GFN-xTB"
+
+
 def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Optional[str], list[tuple[str, float, tuple[int, int, int]]], list[tuple[str, float, tuple[int, int, int]]]]:
     meta = data.get("metadata", {}) or {}
     control = (data.get("control", {}) or {}).get("validated", {}) or {}
@@ -516,13 +540,7 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
     # GOAT conformer count from JSON (if available)
     goat_conformer_count = meta.get("goat_conformer_count")
     xtb_goat_enabled = str(control.get("XTB_GOAT", "")).strip().lower() in {"yes", "true", "1", "on"}
-    xtb_method_raw = str(control.get("xTB_method", "")).strip().upper()
-    if xtb_method_raw == "XTB2":
-        xtb_method_label = "GFN2-xTB"
-    elif xtb_method_raw == "XTB1":
-        xtb_method_label = "GFN1-xTB"
-    else:
-        xtb_method_label = "GFN-xTB"
+    xtb_method_label = _global_opt_method_label(control)
 
     # Build summary
     parts = []
