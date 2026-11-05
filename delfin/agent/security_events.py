@@ -124,6 +124,9 @@ _KINDS = {
     # An agent session reaching for an approval: the answer command, an
     # answer function, or a write where answers and the CLI gate state live.
     "approval_self_answer": ("🚫", "Agent tried to answer an approval"),
+    # A write into the messenger's directory outside the session's own
+    # outbox (messenger.media.internal_write_refusal).
+    "messenger_internal_write": ("🚫", "Agent tried to write messenger internals"),
     # An agent session running the operator's actions (ops send, escalate,
     # pause; delfin-agent pause/resume).
     "operator_action_refused": ("🚫", "Agent tried to act as the operator"),
@@ -200,6 +203,24 @@ _KINDS = {
     "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
+    # The phone messenger (delfin/messenger/audit.py KINDS, pinned equal by
+    # tests/test_every_person_pairs_their_own_phone.py): invitations,
+    # pairings, revocations and every refusal of a phone.
+    "messenger_invitation_issued": ("📱", "Messenger: one-time phone invitation issued"),
+    "messenger_invitation_refused": ("📱", "Messenger: phone invitation refused (limit or rate)"),
+    "messenger_invitation_expired": ("📱", "Messenger: phone invitation expired unused"),
+    "messenger_invitation_replayed": ("🚫", "Messenger: used or expired invitation presented again"),
+    "messenger_phone_connected": ("📱", "Messenger: phone connected, not yet verified"),
+    "messenger_phone_verified": ("📱", "Messenger: phone verified and bound to a person"),
+    "messenger_verification_failed": ("🚫", "Messenger: wrong phone confirmation code"),
+    "messenger_phone_revoked": ("📱", "Messenger: phone unpaired"),
+    "messenger_unverified_message": ("🚫", "Messenger: message from a phone not yet verified"),
+    "messenger_cross_person_refused": ("🚫", "Messenger: phone addressed another person's chat"),
+    "messenger_store_refused": ("🚫", "Messenger: pairing store failed its integrity check"),
+    "messenger_session_attached": ("📱", "Messenger: session brought to the phone"),
+    "messenger_session_detached": ("📱", "Messenger: session taken off the phone"),
+    "messenger_service_started": ("📱", "Messenger: a person's agent service started for their phone"),
+    "messenger_service_start_refused": ("🚫", "Messenger: start of a person's agent service refused"),
 }
 
 

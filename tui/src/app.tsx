@@ -359,8 +359,8 @@ export function App(props: AppProps): JSX.Element {
   const sendTyped = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     const asked = agents.state.open ? undefined : session()?.pending[0]
     // Session routing must remain switchable while a question is waiting.
-    // /sync is a local control, never the text answer to that question.
-    if (asked && !how && shellLead(text) < 0 && !/^\/sync(?:\s|$)/i.test(text.trim())) {
+    // /sync and /pair are local controls, never the text answer to that question.
+    if (asked && !how && shellLead(text) < 0 && !/^\/(?:sync|pair)(?:\s|$)/i.test(text.trim())) {
       const took = approval.submitText(asked, text)
       if (took === "reflex") {
         say("sent as the question opened: not taken as its answer -- enter again to answer with it")

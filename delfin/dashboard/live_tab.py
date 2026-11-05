@@ -125,7 +125,9 @@ def _render_entry(T, entry: dict) -> str:
         body = T._md_to_html(text)
         if entry.get("source") == "harness":
             return f'<div class="delfin-chat-msg delfin-chat-system">{body}</div>'
-        return f'<div class="delfin-chat-msg delfin-chat-user">{body}</div>'
+        badge = ('<span class="delfin-chat-via" style="font-size:11px;opacity:.7">via phone</span>'
+                 if entry.get("via") == "phone" else "")
+        return f'<div class="delfin-chat-msg delfin-chat-user">{badge}{body}</div>'
     if role == "agent":
         if not text.strip() and not entry.get("streaming"):
             return ""
@@ -384,6 +386,10 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 b.on_click(lambda _b, _l=label: call(
                     lambda: client.reply(sid, rid, answers=[_l]), "Not answered"))
                 picks.append(b)
+            from delfin.agent.approval_answers import answer_hint
+            # The real range, how to pick several, free text allowed: the
+            # same line every other surface shows.
+            hint = widgets.HTML(f"<small>{html.escape(answer_hint(len(labels), bool(asked.get('multiSelect'))))}</small>")
             typed = widgets.Text(placeholder="or type the answer")
             send = widgets.Button(description="Answer")
             send.on_click(lambda _b: typed.value.strip() and call(
@@ -391,7 +397,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             dismiss = widgets.Button(description="Dismiss")
             dismiss.on_click(lambda _b: call(lambda: client.reply(sid, rid, answers=[]),
                                              "Not dismissed"))
-            return _classed(widgets.VBox([text, widgets.HBox(picks), widgets.HBox([typed, send, dismiss])]),
+            return _classed(widgets.VBox([text, widgets.HBox(picks), hint, widgets.HBox([typed, send, dismiss])]),
                             "delfin-live-asked")
         buttons = []
         for option in asked.get("options") or []:

@@ -43,6 +43,19 @@ Commands (one JSON object per line, both ways):
                                           -> new (a proposal), ok (with the
                                              check it was shown), show, pause,
                                              resume, delete, run
+    {"cmd": "attach", "session", "label"?} -> people mode's ``hol``: switch
+                                            a running session of the person
+                                            on for the messenger (not one
+                                            switched off in the session)
+    {"cmd": "pairing", "action": poll|answer|note, ...}
+                                          -> the persons' pairing requests
+                                             (delfin.messenger.pairing) and
+                                             the gateway's answers
+Every command may carry ``"person"`` (people mode, delfin.messenger.people):
+it then runs in that person's own context -- their agent service socket
+(``~/people/<name>/.run``), their activation records, their phone folder,
+their issued approval codes -- and never reaches another person's
+sessions. Same Unix user: an application-level boundary, not an OS one.
 Outgoing events (one JSON object per line):
     {"event": "session", ...}   a session's summary changed
     {"event": "attention", ...} what needs the user changed
@@ -101,7 +114,33 @@ COMMANDS = {
                  "session": "string?", "check": "string?"},
     "profile": {"session": "string?", "workspace": "string?",
                 "text": "string"},
+    # People mode: bring a running session of the person to the phone
+    # (``hol``). Refused for a session switched off in the session itself.
+    "attach": {"session": "string", "label": "string?"},
+    # The request room of sessions OUTSIDE the agent service (the terminal
+    # REPL, a dashboard tab with its own engine) that are enabled for the
+    # messenger: pending -> their open questions and approvals; answer ->
+    # one of them, with the session's one-time code (the asking broker
+    # reads it with its own checked reader). A service session's request
+    # is never offered here: its door is permission.reply.
+    "room": {"action": "string", "id": "string?", "text": "string?",
+             "choice": "string?"},
+    # The pairing requests of every person (delfin.messenger.pairing):
+    # poll -> the open requests; answer -> the gateway's answer to one;
+    # note -> a line for the person (a new phone, a revocation).
+    "pairing": {"action": "string", "person": "string?", "id": "string?",
+                "result": "object?", "text": "string?"},
 }
+
+#: Every command may carry ``person`` (a person of people mode, see
+#: delfin.messenger.people; absent or "" is the account owner). The command
+#: then runs in that person's own context: their agent service, their
+#: activation records, their phone folder -- never another person's.
+PERSON_FIELD = "person"
+
+#: Commands a person's context refuses: schedules and freedom profiles stay
+#: the account owner's (they are one store per account today).
+OWNER_ONLY = frozenset({"schedules", "schedule", "profile"})
 
 #: Schedules made from the phone per window of CREATE_WINDOW_S.
 SCHEDULE_LIMIT = 5
@@ -113,22 +152,38 @@ SCHEDULE_FOLDER = "zeitplaene"
 #: Why a schedule was refused, in the phone's words (schedules.ScheduleError
 #: codes); the phone translates these whole.
 SCHEDULE_ERRORS = {
-    "when": "Zeit nicht verstanden. Beispiele: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5",
-    "time": "Uhrzeit fehlt oder ist ungültig. Beispiele: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5",
-    "interval": "Der kürzeste Abstand ist 5 Minuten.",
-    "zone": "Unbekannte Zeitzone, z. B. tz=Europe/Berlin.",
-    "never": "Dieser Zeitplan würde nie laufen.",
-    "task": "Nach der Zeit fehlt die Aufgabe.",
-    "workspace": "Der Ordner fehlt.",
-    "unknown": "Zeitplan nicht gefunden. pläne zeigt die aktuellen.",
-    "budget": "Ungültige Grenzen.",
-    "command": "Ein Watcher führt nur lesende Befehle aus: squeue, sacct, sinfo, ls, tail, head, wc, grep, du, df und ähnliche.",
-    "path": "Pfade müssen im Ordner des Zeitplans liegen.",
+    "when": 'Time not understood. Examples: daily 07:30 · mon-fri 18:00 · every 2h · 30 7 * * 1-5',
+    "time": 'The time of day is missing or invalid. Examples: daily 07:30 · mon-fri 18:00 · every 2h · 30 7 * * 1-5',
+    "interval": 'The shortest interval is 5 minutes.',
+    "zone": 'Unknown time zone; e.g. tz=Europe/Berlin.',
+    "never": 'This schedule would never run.',
+    "task": 'The task is missing after the time.',
+    "workspace": 'The folder is missing.',
+    "unknown": 'Schedule not found. list shows the current ones.',
+    "budget": 'Invalid limits.',
+    "command": 'A watcher runs only reading commands: squeue, sacct, sinfo, ls, tail, head, wc, grep, du, df '
+               'and the like.',
+    "path": "Paths must lie inside the schedule's folder.",
 }
 
 
 class PeerRefused(RuntimeError):
     """A connection whose peer uid is not the configured one."""
+
+
+class ServiceDown(RuntimeError):
+    """A person's agent service is not running; the text is for the phone."""
+
+
+import contextvars
+
+#: Set for one gateway request that must not start a person's service.
+_NO_WAKE: contextvars.ContextVar = contextvars.ContextVar("bridge_no_wake", default=False)
+
+
+class ServiceStarting(ServiceDown):
+    """A person's agent service is being started (in a thread of its own);
+    the command is answered at once and asked again once it is up."""
 
 
 def configured_peer_uid() -> int | None:
@@ -144,12 +199,47 @@ def configured_peer_uid() -> int | None:
     # The gateway is a user of its own. The service's own uid would admit
     # every process of this user -- the agent's shell commands among them,
     # which could then answer the agent's own approvals as "the phone".
+    # Rootless mode (delfin/messenger/rootless.py) is one user by design:
+    # there each connection must also be the gateway's recorded process
+    # (rootless_peer_ok).
+    if uid == os.getuid() and rootless():
+        return uid
     if uid == os.getuid():
         print(f"[messenger] {PEER_UID_ENV} is this service's own uid; "
               "the bridge admits nobody. Run the gateway as its own user "
               "(scripts/pi/pi_messenger.sh).", file=sys.stderr)
         return None
     return uid
+
+
+def rootless() -> bool:
+    """Rootless mode: gateway, bridge and agent service are one user."""
+    return os.environ.get("DELFIN_MESSENGER_ROOTLESS", "").strip() == "1"
+
+
+def rootless_peer_ok(sock) -> bool:
+    """In rootless mode, whether the peer of ``sock`` is the gateway: this
+    user's uid, the pid AND start time the gateway recorded in its pid file
+    (DELFIN_MESSENGER_GATEWAY_PIDFILE), an environment that can be read
+    and carries no agent marker. False outside rootless mode, and wherever
+    any of it cannot be told (fail closed)."""
+    if not rootless():
+        return False
+    try:
+        from delfin.messenger.pairing import _start_time
+        from .supervisor import _environ_of, _peer_pid
+        from ..approval_guard import ENV_MARKER
+        if rundir.peer_uid(sock) != os.getuid():
+            return False
+        pid = int(_peer_pid(sock))
+        recorded = Path(os.environ.get("DELFIN_MESSENGER_GATEWAY_PIDFILE", "")).read_text().split()
+        ticks = _start_time(pid)
+        if pid <= 0 or not ticks or recorded[:2] != [str(pid), ticks]:
+            return False
+        environ = _environ_of(pid)
+        return environ is not None and f"{ENV_MARKER}=".encode() not in environ
+    except Exception:  # noqa: BLE001 - who it is cannot be told: refused
+        return False
 
 
 def peer_uid_allowed(uid: int | None, allowed: int | None) -> bool:
@@ -212,14 +302,28 @@ class Bridge:
 
     CLIENT_NAME = "delfin-messenger-bridge"
 
+    #: The owner's context unless __init__ says otherwise (a bridge built
+    #: without __init__ in a test is the owner's).
+    person = ""
+    activation_dir = None
+    runtime_dir = None
+
     def __init__(self, *, allowed_uid: int | None = None,
                  service_path: Path | None = None,
-                 redactor=None, queue_depth: int = 256):
+                 redactor=None, queue_depth: int = 256, person: str = "",
+                 activation_dir: Path | None = None, runtime_dir: Path | None = None):
         import socket as socket_mod
 
         self._socket = socket_mod
         self.allowed_uid = configured_peer_uid() if allowed_uid is None else allowed_uid
         self.service_path = service_path
+        #: The person this bridge acts for ("" the account owner), their
+        #: activation records (None: this HOME's) and the runtime directory
+        #: a dashboard endpoint of theirs must lie in (None: unchecked).
+        self.person = person
+        self.activation_dir = activation_dir
+        self.runtime_dir = runtime_dir
+        self._people: dict[str, "Bridge"] = {}
         self.redactor = redactor
         self.queue_depth = queue_depth
         self._subscribers: dict[asyncio.StreamWriter, object] = {}
@@ -260,7 +364,8 @@ class Bridge:
             except OSError:
                 pass
         server = await asyncio.start_unix_server(self._client_task, path=str(path))
-        os.chmod(path, 0o660)
+        # Rootless: no gateway group, the socket is the user's alone.
+        os.chmod(path, 0o600 if rootless() else 0o660)
         # The provisioned unit makes the socket's directory setgid delfin-gw
         # (pi_messenger.sh), so the socket takes that group while this
         # process keeps the service user's own: the service reads a window's
@@ -321,7 +426,8 @@ class Bridge:
     async def _client_task(self, reader, writer) -> None:
         sock = writer.get_extra_info("socket")
         uid = rundir.peer_uid(sock) if sock is not None else None
-        if not peer_uid_allowed(uid, self.allowed_uid):
+        if not peer_uid_allowed(uid, self.allowed_uid) or (
+                rootless() and not rootless_peer_ok(sock)):
             writer.close()
             return
         queue: asyncio.Queue = asyncio.Queue(maxsize=self.queue_depth)
@@ -371,7 +477,29 @@ class Bridge:
     # -- commands ------------------------------------------------------------------------
 
     async def _run_command(self, request: dict) -> dict:
+        # wake: false -- the gateway's background look (notifications): it
+        # never starts a person's stopped service; a phone's command does.
+        token = _NO_WAKE.set(request.get("wake") is False)
+        try:
+            return await self._run_one({k: v for k, v in request.items() if k != "wake"})
+        finally:
+            _NO_WAKE.reset(token)
+
+    async def _run_one(self, request: dict) -> dict:
         cmd = str(request.get("cmd") or "")
+        person = request.get(PERSON_FIELD)
+        if cmd != "pairing" and PERSON_FIELD in request:
+            request = {k: v for k, v in request.items() if k != PERSON_FIELD}
+            if person not in (None, ""):
+                # Another person's context: their service and records only.
+                if self.person:
+                    return {"error": 'Person already chosen.'}
+                sub = self._person_bridge(person)
+                if sub is None:
+                    return {"error": 'Unknown person. Nothing done.'}
+                return await sub._run_one(request)
+        if self.person and cmd in OWNER_ONLY | {"pairing"}:
+            return {"error": 'Not available from the phone for this person.'}
         params = {k: v for k, v in request.items() if k != "cmd"}
         try:
             handler = getattr(self, "_cmd_" + cmd, None)
@@ -382,7 +510,14 @@ class Bridge:
             if problem:
                 return {"error": problem}
             return await handler(params)
+        except ServiceStarting as exc:
+            return {"error": str(exc), "starting": True}
+        except ServiceDown as exc:
+            return {"error": str(exc)}
         except Exception as exc:  # noqa: BLE001
+            if self.person:
+                # A person's paths stay off the phone.
+                return {"error": f"Not done ({type(exc).__name__})."}
             return {"error": f"{type(exc).__name__}: {exc}"}
 
     @staticmethod
@@ -400,32 +535,163 @@ class Bridge:
                 return f"{key} must be an integer"
             if kind.startswith("string") and not isinstance(value, str):
                 return f"{key} must be a string"
+            if kind.startswith("object") and not isinstance(value, dict):
+                return f"{key} must be an object"
         extra = set(params) - {k.split("?")[0] for k in spec}
         if extra:
             return f"unknown fields: {sorted(extra)}"
         return None
 
     def _client(self):
-        if self._service is None:
-            self._connect_service()
+        if self._service is None or (self.person and getattr(self._service, "closed", False)):
+            try:
+                self._connect_service()
+            except OSError:
+                if not self.person:
+                    raise
+                # A person's service exits when idle: started for the phone
+                # the way their windows start it (people.request_start), in
+                # a thread of its own -- never on the bridge's event loop.
+                if _NO_WAKE.get():
+                    raise ServiceDown("This person's agent service is not running.") from None
+                if not self._kick_person_start():
+                    raise ServiceDown("This person's agent service is not running. Open a session at the "
+                                      'computer.') from None
+                raise ServiceStarting("This person's agent service is starting; the answer follows shortly.") from None
         return self._service
+
+    def _kick_person_start(self) -> bool:
+        """A start of this person's service running in a thread: True when
+        one runs (begun now or before), False when it is refused."""
+        import threading
+        running = self.__dict__.get("_start_thread")
+        if running is not None and running.is_alive():
+            return True
+        if not self._may_start_person_service():
+            return False
+        thread = threading.Thread(target=self._start_person_service, daemon=True,
+                                  name=f"person-start-{self.person}")
+        self._start_thread = thread
+        thread.start()
+        return True
+
+    #: Starts of one person's service per window, and the window.
+    PERSON_STARTS = 1
+    PERSON_START_WINDOW_S = 60.0
+
+    def _may_start_person_service(self) -> bool:
+        """The rate limit (PERSON_STARTS per PERSON_START_WINDOW_S); a
+        refused start is audited."""
+        from delfin.messenger import audit
+        now = time.monotonic()
+        starts = [t for t in self.__dict__.get("_person_starts", []) if now - t < self.PERSON_START_WINDOW_S]
+        if len(starts) >= self.PERSON_STARTS:
+            self._person_starts = starts
+            audit.event("messenger_service_start_refused",
+                        f"agent service of {self.person}: started less than "
+                        f"{int(self.PERSON_START_WINDOW_S)} s ago", blocked=True)
+            return False
+        self._person_starts = [*starts, now]
+        return True
+
+    def _start_person_service(self) -> bool:
+        """(In its own thread.) Start this person's agent service and
+        connect to it; audited. True once connected."""
+        from delfin.messenger import audit, people
+        if not people.request_start(self.person):
+            audit.event("messenger_service_start_refused",
+                        f"agent service of {self.person}: start refused or failed", blocked=True)
+            return False
+        audit.event("messenger_service_started",
+                    f"agent service of {self.person} started for the phone")
+        deadline = time.monotonic() + people.START_WAIT_S
+        while True:
+            try:
+                self._connect_service()
+                return True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.25)
+
+    # -- this context's activation records (the owner's: the module's own
+    #    defaults, so a test that replaces a function keeps working) -----------
+
+    def _where(self) -> dict:
+        return {} if self.activation_dir is None else {"directory": self.activation_dir}
+
+    def _enabled(self, sid) -> bool:
+        return activation.enabled(sid, **self._where())
+
+    def _record(self, sid) -> dict:
+        return activation.record(sid, **self._where())
+
+    def _records(self) -> list:
+        return activation.records(**self._where())
+
+    def _configure(self, sid, args="", **kwargs) -> str:
+        return activation.configure(sid, args, **self._where(), **kwargs)
+
+    def _switched_off(self, sid) -> bool:
+        return activation.switched_off_in_session(sid, **self._where())
+
+    def _ask_dashboard(self, sid: str, method: str, params: dict) -> dict:
+        if self.activation_dir is None:
+            return activation.ask_dashboard(sid, method, params)
+        return activation.ask_dashboard(sid, method, params, directory=self.activation_dir,
+                                        within=self.runtime_dir)
+
+    def _person_bridge(self, name: str) -> "Bridge | None":
+        """The context of person ``name`` (people mode), or None when the
+        name is not a person of this account. One per person, kept: its
+        issued approval codes and numbers are its own."""
+        from delfin.messenger import people
+        if not people.valid(name) or name == people.OWNER or people.home(name) is None:
+            return None
+        if "_people" not in self.__dict__:
+            self._people = {}
+        sub = self._people.get(name)
+        if sub is None:
+            sub = Bridge(allowed_uid=self.allowed_uid, service_path=people.runtime_socket(name),
+                         redactor=self._redactor(), person=name,
+                         activation_dir=people.activation_dir(name),
+                         runtime_dir=people.runtime_dir(name))
+            self._people[name] = sub
+        return sub
+
+    def _workspaces_root(self) -> str:
+        """Where ``neu NAME`` makes folders for this context ("" : not allowed)."""
+        from delfin.messenger import people
+        owner_root = os.environ.get(WORKSPACES_ENV, "").strip()
+        if not owner_root or not os.path.isabs(owner_root) or not os.path.isdir(owner_root):
+            return ""
+        if not self.person:
+            return owner_root
+        root = people.workspaces_root(self.person, owner_root)
+        if root is None:
+            return ""
+        if not os.path.lexists(root):
+            os.mkdir(root, 0o700)
+        if os.path.islink(root) or not os.path.isdir(root):
+            return ""
+        return str(root)
 
     async def _request(self, method: str, params: dict | None = None,
                        timeout: float | None = None) -> dict:
         params = params or {}
         sid = params.get("sessionId")
-        if sid and activation.record(sid).get("endpoint"):
-            return await asyncio.to_thread(activation.ask_dashboard, sid, method, params)
+        if sid and self._record(sid).get("endpoint"):
+            return await asyncio.to_thread(self._ask_dashboard, sid, method, params)
         client = self._client()
         reply = await asyncio.to_thread(
             client.request, method, params, **({"timeout": timeout}
                                                if timeout is not None else {}))
         if method == "sessions.list":
-            for record in activation.records():
+            for record in self._records():
                 if not record.get("endpoint"):
                     continue
                 try:
-                    status = await asyncio.to_thread(activation.ask_dashboard, record["session_id"], "session.status", {})
+                    status = await asyncio.to_thread(self._ask_dashboard, record["session_id"], "session.status", {})
                     if not status.get("error"):
                         reply.setdefault("sessions", []).append(status)
                 except (OSError, ValueError):
@@ -435,30 +701,35 @@ class Bridge:
     async def _cmd_session(self, params: dict) -> dict:
         """Room commands require an exact, local session ID; never fall back."""
         sid = params["session"]
-        if not activation.enabled(sid):
-            return {"error": "SimpleX ist für diese Sitzung ausgeschaltet. In TUI/Dashboard mit /sync aktivieren."}
-        generation = activation.record(sid).get("generation")
+        if not self._enabled(sid):
+            return {"error": 'SimpleX is off for this session. Enable it in the TUI/dashboard with /sync.'}
+        generation = self._record(sid).get("generation")
         listing = await self._request("sessions.list")
-        if not activation.enabled(sid) or activation.record(sid).get("generation") != generation:
-            return {"error": "SimpleX-Aktivierung wurde geändert. Anfrage nicht ausgeführt."}
+        if not self._enabled(sid) or self._record(sid).get("generation") != generation:
+            return {"error": 'The SimpleX activation changed. The request was not carried out.'}
         row = next((r for r in listing.get("sessions", [])
                     if str(r.get("sessionId") or r.get("id") or "") == sid), None)
         if row is None:
-            return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+            return {"error": 'This session is not available. No other agent was addressed.'}
         action = params["action"]
         if action in {'files', 'announcement'} or action.startswith(('upload.', 'download.')):
             from delfin.messenger.media import Exchange
             if not hasattr(self, '_media'):
                 self._media = Exchange()
-            return self._media.command(sid, activation.record(sid).get('generation'),
+            return self._media.command(sid, self._record(sid).get('generation'),
                 row.get('workspace'), action, token=params.get('id', ''), text=params.get('text', ''))
         if action == "status":
             return {"ok": True, "state": row.get("state"), "title": row.get("title"), "sessionId": sid,
                     # The folder's name only, for naming an untitled session's chat.
                     "folder": _truncate(self._redactor().text(Path(str(row.get("workspace") or "")).name), 60),
-                    "messengerEnabled": True, "generation": activation.record(sid).get("generation"),
+                    "messengerEnabled": True, "generation": self._record(sid).get("generation"),
                     "activity": _truncate(self._redactor().text(str(row.get("activity") or ""))),
-                    "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 1000)}
+                    "answer": _truncate(self._redactor().text(str(row.get("answer") or "")), 4000),
+                    # The session's deliberate notes to the phone (push_notification).
+                    "notes": [{"id": str(n.get("id") or "")[:16], "ts": n.get("ts"),
+                               "title": _truncate(self._redactor().text(str(n.get("title") or "")), 80),
+                               "body": _truncate(self._redactor().text(str(n.get("body") or "")), 300)}
+                              for n in activation.notes(sid, **self._where())]}
         if action == "pending":
             live = await self._request("session.pending", {"sessionId": sid})
             items = []
@@ -472,7 +743,7 @@ class Bridge:
                     choices = [str(choice) + (": " + str(details[i]) if i < len(details) and details[i] else "")
                                for i, choice in enumerate(req["choices"])]
                     preview += "\n" + self._redactor().text("\n".join(choices))
-                fingerprint = json.dumps([activation.record(sid).get("generation"), req], sort_keys=True)
+                fingerprint = json.dumps([self._record(sid).get("generation"), req], sort_keys=True)
                 code = next((k for k, v in self._issued.items() if v[:3] == (sid, rid, fingerprint)), None)
                 if code is None:
                     code = secrets.token_hex(4)
@@ -490,6 +761,8 @@ class Bridge:
                               "purpose": _truncate(self._redactor().text(str(req.get("purpose") or "")), 200),
                               "phoneApproval": allowed, "tool": req.get("tool", ""),
                               "options": self._redactor().value(req.get("options", [])),
+                              "question": _truncate(self._redactor().text(str(req.get("question") or "")), 1000),
+                              "multiSelect": bool(req.get("multiSelect")),
                               "choices": req.get("choices", [])})
             return {"ok": True, "items": items}
         if action == "branch":
@@ -499,13 +772,13 @@ class Bridge:
             # minutes, so it asks the service directly, not through a turn.
             ws = str(row.get("workspace") or "")
             if not ws:
-                return {"error": "Diese Sitzung hat keinen Arbeitsordner."}
+                return {"error": 'This session has no working folder.'}
             sub = str(params.get("sub") or "")
             request = {"workspace": ws}
             if sub in {"list", "pull", "test", "cleanup"}:
                 pass
             else:
-                return {"error": "Unbekannter Branch-Befehl."}
+                return {"error": "Unknown branch command."}
             if sub == "list":
                 request.update(view=str(params.get("view") or "mine"),
                                text=str(params.get("text") or ""))
@@ -531,57 +804,54 @@ class Bridge:
             code = str(params.get("id") or "")
             issued = self._issued.get(code)
             if issued is None or issued[0] != sid or time.monotonic() - issued[3] >= 600:
-                return {"error": "Anfrage abgelaufen oder gehört zu einer anderen Sitzung. pending erneut aufrufen."}
+                return {"error": 'Request expired or belongs to another session. Call pending again.'}
             live = await self._request("session.pending", {"sessionId": sid})
             req = next((r for r in live.get("pending", []) if r.get("requestId") == issued[1]), None)
-            if req is None or json.dumps([activation.record(sid).get("generation"), req], sort_keys=True) != issued[2]:
+            if req is None or json.dumps([self._record(sid).get("generation"), req], sort_keys=True) != issued[2]:
                 self._issued.pop(code, None)
-                return {"error": "Anfrage nicht mehr offen oder geändert."}
+                return {"error": 'The request is no longer open or has changed.'}
             kind = req.get("kind")
             reply_params = {"sessionId": sid, "requestId": issued[1]}
             if action == "answer" and kind == "ask":
                 reply_params["text"] = str(params.get("text") or "")
                 if not reply_params["text"].strip():
-                    return {"error": "Leere Antwort."}
+                    return {"error": "Empty answer."}
             elif action in {"approve", "deny", "decide"} and kind in {"confirm", "plan"}:
                 choice = params.get("choice", "") if action == "decide" else "n" if action == "deny" else "d" if kind == "plan" else "y"
                 if choice not in {o.get("key") for o in req.get("options", [])}:
-                    return {"error": "Diese Entscheidung ist für die Anfrage nicht verfügbar."}
+                    return {"error": 'This decision is not available for the request.'}
                 preview = self._redactor().text(str(req.get("preview") or ""))
                 if choice != "n" and len(preview) > 1400:
-                    return {"error": "Aktion zu lang für die Handyansicht. Bitte am Dashboard freigeben."}
+                    return {"error": 'The action is too long for the phone. Please approve it on the dashboard.'}
                 if choice == "?":
-                    return {"error": "Bitte eine der angezeigten Optionen auswählen."}
+                    return {"error": 'Please choose one of the options shown.'}
                 # Lasting rules need an explicit second reply to a new message.
                 if choice in {"A", "k", "p"} and not params.get("persist"):
                     return {"ok": False, "confirmationRequired": True, "id": code, "choice": choice}
                 # A changed command goes with choice c only, and c only with one.
                 command = str(params.get("command") or "")
                 if (choice == "c") != bool(command.strip()):
-                    return {"error": "Befehl ändern: mit „ändern: NEUER BEFEHL“ antworten."}
+                    return {"error": 'Change the command: reply "change: NEW COMMAND".'}
                 reply_params.update(choice=choice, persist=bool(params.get("persist", False)),
                                     **({"command": command} if choice == "c" else {}))
             else:
-                return {"error": "Antwort und Freigabe dürfen nicht verwechselt werden."}
+                return {"error": 'An answer and an approval must not be confused.'}
             # Consume before awaiting: concurrent replies cannot apply this code twice.
             if time.monotonic() - issued[3] >= 600 or self._issued.pop(code, None) != issued:
-                return {"error": "Anfrage bereits beantwortet."}
+                return {"error": "Request already answered."}
             reply = await self._request("permission.reply", reply_params)
-            return {"ok": bool(reply.get("applied")), "error": None if reply.get("applied") else "Anfrage bereits erledigt."}
+            return {"ok": bool(reply.get("applied")), "error": None if reply.get("applied") else "Request already settled."}
         if action in {"prompt", "update"}:
             text = str(params.get("text") or "").strip()
             if not text:
-                return {"error": "Leerer Auftrag."}
+                return {"error": "Empty task."}
+            # The person's text as written: the messenger's rules for the
+            # model are the session's messenger context line
+            # (engine.messenger_line), its origin the service's via.
             if row.get('workspace'):
                 from delfin.messenger.media import directory
-                with directory(row['workspace'], sid, 'outbox') as (_, outbox):
-                    text += ('\n\n[Messenger: Dateien/Bilder nur auf ausdrücklichen Wunsch des Nutzers '
-                             'für den Download in ' + str(outbox) + ' bereitstellen. '
-                             'Keine Geheimnisse oder Zugangsdaten exportieren. Den Dateinamen nennen; '
-                             'der Nutzer ruft ihn mit datei NAME ab. Kein kompletter Chat-Export. '
-                             'Für eine ausdrückliche kurze Mitteilung an andere Agenten kannst du forum.txt '
-                             'dort ablegen (max. 1400 UTF-8-Bytes). Nur bei vom Nutzer eingeschaltetem '
-                             'Austausch wird sie weitergegeben. Keine automatischen Antworten auf fremde Mitteilungen.]')
+                with directory(row['workspace'], sid, 'outbox'):
+                    pass                    # the outbox the context line names exists
             reply = await self._request("session.prompt", {"sessionId": sid, "text": text, "how": "steer" if action == "update" else "queue"})
             return {"ok": True, "sessionId": sid, **reply}
         if action == "stop":
@@ -589,12 +859,225 @@ class Bridge:
             return {"ok": True, **reply}
         if action == "rename":
             from .protocol import clean_title
-            title = clean_title(params.get("text"))
+            # The one display name: the service's session title, 50 characters.
+            title = clean_title(params.get("text"))[:activation.NAME_MAX].strip()
             if not title:
-                return {"error": "Bitte einen Namen angeben."}
+                return {"error": 'Please give a name.'}
             reply = await self._request("session.setTitle", {"sessionId": sid, "title": title})
             return {"ok": not reply.get("error"), **reply}
-        return {"error": "Unbekannter Sitzungsbefehl."}
+        if action == "detach":
+            # weg / off in the session's chat: off for the phone, recorded as
+            # the phone's switch, told in the session.
+            self._configure(sid, "off", by="phone", phone=str(params.get("text") or ""))
+            await self._tell_session(sid)
+            return {"ok": True, "sessionId": sid}
+        return {"error": "Unknown session command."}
+
+    async def _tell_session(self, sid: str) -> None:
+        """Show the session its messenger state as a notice (``/sync status``
+        through the session's own handler). Best effort: a session that
+        cannot be told is still switched."""
+        try:
+            await self._request("session.prompt", {"sessionId": sid, "text": "/sync status"})
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _cmd_attach(self, params: dict) -> dict:
+        """``hol`` on the phone: switch a running session of this person on
+        for the messenger. Its exact id, from this person's own service; a
+        session switched off in the session (``/sync off``) stays off."""
+        sid = str(params.get("session") or "")
+        label = str(params.get("label") or "")[:40]
+        if not activation.pull_allowed(**self._where()):
+            return {"error": 'Pulling from the phone is switched off for you. At the computer: /sync policy pull on.'}
+        if self._switched_off(sid):
+            return {"error": 'Switched off in the session with /sync off. Switch it on there again with /sync.'}
+        listing = await self._request("sessions.list")
+        row = next((r for r in listing.get("sessions", [])
+                    if str(r.get("sessionId") or r.get("id") or "") == sid), None)
+        if row is None or not sid:
+            return {"error": 'This session is not available. No other agent was addressed.'}
+        if not self._in_own_tree(str(row.get("workspace") or "")):
+            return {"error": 'This session does not work in your own folder; it cannot be pulled from the phone.'}
+        already = self._enabled(sid)
+        if not already:
+            self._configure(sid, "on", by="phone", phone=label)
+            await self._tell_session(sid)
+        name = row.get("title") or ""
+        return {"ok": True, "sessionId": sid, "already": already,
+                "title": self._redactor().text(_truncate(str(name), 80))}
+
+    def _in_own_tree(self, workspace: str) -> bool:
+        """Whether ``workspace`` lies in this person's own tree: their
+        ~/people/<name>; for the owner the account home outside ~/people."""
+        from delfin.messenger import people
+        home = people.home(self.person) if self.person else people.account_home()
+        if not workspace or home is None:
+            return False
+        try:
+            ws = Path(workspace).resolve()
+            root = Path(home).resolve()
+            ws.relative_to(root)
+            if not self.person:
+                try:
+                    ws.relative_to(root / "people")
+                    return False
+                except ValueError:
+                    pass
+        except (OSError, ValueError):
+            return False
+        return True
+
+    # -- the request room (sessions outside the service) -------------------------
+
+    def _room_dir(self) -> Path:
+        from delfin.agent import terminal_confirm as tc
+        from delfin.messenger import people
+        if not self.person:
+            return Path(tc._PENDING_DIR)
+        return people.home(self.person) / ".delfin" / "terminal_confirmations"
+
+    def _room_code(self, rid: str) -> str:
+        """The one-time code of a request in this context's room: the
+        approval_codes file of its person (0600, this uid, masked from
+        agents), read with approval_code's checks."""
+        from delfin.agent import approval_code
+        from delfin.messenger import people
+        if not self.person:
+            return approval_code.read_code_file(rid)
+        import stat as _stat
+        path = people.home(self.person) / ".delfin" / "approval_codes" / f"{rid}.code"
+        try:
+            info = path.lstat()
+            if (not _stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077):
+                return ""
+            return approval_code.normalize(path.read_text(encoding="ascii", errors="ignore"))
+        except OSError:
+            return ""
+
+    async def _room_records(self) -> list:
+        """Open room requests of this context's sessions that are enabled
+        for the messenger and NOT sessions of the service."""
+        from delfin.agent import file_confirm, terminal_confirm as tc
+        try:
+            listing = await self._request("sessions.list")
+            service = {str(r.get("sessionId") or r.get("id") or "")
+                       for r in listing.get("sessions") or []}
+        except ServiceDown:
+            service = set()
+        out = []
+        for record in file_confirm.pending(self._room_dir()):
+            sid = str(record.get("session_id") or "")
+            if (not sid or sid in service or not self._enabled(sid)
+                    or str(record.get("kind")) not in {tc.CONFIRM, tc.ASK}
+                    or tc._asker_is_gone(record)):
+                continue
+            out.append(record)
+        return out
+
+    @staticmethod
+    def _room_fingerprint(record: dict) -> str:
+        body = {k: v for k, v in record.items() if not str(k).startswith("_")}
+        return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+    async def _cmd_room(self, params: dict) -> dict:
+        from delfin.agent import approval_answers as AA
+        from delfin.agent import file_confirm, terminal_confirm as tc
+        action = str(params.get("action") or "")
+        issued = self.__dict__.setdefault("_room_issued", {})
+        records = await self._room_records()
+        if action == "pending":
+            items = []
+            for record in records:
+                rid = str(record.get("id") or "")
+                fp = self._room_fingerprint(record)
+                code = next((c for c, v in issued.items() if v == (rid, fp)), None)
+                if code is None:
+                    code = secrets.token_hex(4)
+                    issued[code] = (rid, fp)
+                ask = record.get("kind") == tc.ASK
+                payload = record.get("payload") or {}
+                red = self._redactor()
+                items.append({
+                    "id": code, "room": True,
+                    "kind": "question" if ask else "confirm",
+                    "sessionId": str(record.get("session_id") or ""),
+                    "tool": str(record.get("tool") or ""),
+                    "question": _truncate(red.text(str(payload.get("question") or "")), 1000) if ask else "",
+                    "choices": AA.option_labels(payload.get("options")) if ask else [],
+                    "multiSelect": bool(payload.get("multiSelect")),
+                    "text": _truncate(red.text(str(record.get("preview") or "")), 1400),
+                    "options": [] if ask else [{"key": "y", "label": "yes"}, {"key": "n", "label": "no"}],
+                    "phoneApproval": not ask and not record.get("protected"),
+                })
+            live = {self._room_fingerprint(r) for r in records}
+            for code in [c for c, v in issued.items() if v[1] not in live]:
+                issued.pop(code, None)
+            return {"ok": True, "items": items}
+        if action == "answer":
+            code = str(params.get("id") or "")
+            entry = issued.get(code)
+            record = next((r for r in records if entry and str(r.get("id")) == entry[0]
+                           and self._room_fingerprint(r) == entry[1]), None)
+            if record is None:
+                issued.pop(code, None)
+                return {"error": 'The request is no longer open or has changed.'}
+            rid = entry[0]
+            secret = self._room_code(rid)
+            if not secret:
+                return {"error": 'This request can only be answered at the computer.'}
+            if record.get("kind") == tc.ASK:
+                text = str(params.get("text") or "").strip()
+                problem = AA.range_problem(text, record.get("payload") or {})
+                if problem:
+                    return {"error": problem}
+                try:
+                    picks = AA.resolve_choice(record, text)
+                except AA.ChoiceError:
+                    return {"error": 'Please reply with the number of an option; your own text works for '
+                                     'this session only at the computer.'}
+                issued.pop(code, None)
+                AA.write_choice_answer(record, picks, room=self._room_dir(), by="phone", code=secret)
+                return {"ok": True}
+            if record.get("protected"):
+                return {"error": 'This request is always explicit: please approve it at the computer.'}
+            choice = str(params.get("choice") or "")
+            if choice not in {"y", "n"}:
+                return {"error": 'Please answer with yes or no.'}
+            issued.pop(code, None)
+            ok = file_confirm.answer(rid, choice == "y", room=self._room_dir(), by="phone", code=secret)
+            return {"ok": bool(ok)}
+        return {"error": 'Unknown action.'}
+
+    async def _cmd_pairing(self, params: dict) -> dict:
+        """The pairing requests of every person, and the gateway's answers
+        (delfin.messenger.pairing). The person is the directory a request
+        was found in, never a field the gateway sends unchecked."""
+        from delfin.messenger import pairing, people
+        action = str(params.get("action") or "")
+        if action == "poll":
+            found = []
+            for name in people.names():
+                path = people.pairing_dir(name)
+                if path is None or not path.is_dir():
+                    continue
+                # At most POLL_PER_PERSON of each person, oldest first: one
+                # person's flood never hides another person's request.
+                for item in pairing.collect(path)[:pairing.POLL_PER_PERSON]:
+                    found.append({**item, "person": name})
+            return {"ok": True, "requests": found}
+        name = str(params.get("person") or "")
+        path = people.pairing_dir(name) if people.valid(name) else None
+        if path is None:
+            return {"error": 'Unknown person.'}
+        if action == "answer":
+            return pairing.answer(path, str(params.get("id") or ""), dict(params.get("result") or {}),
+                                  door_root=people.door_root(name))
+        if action == "note":
+            pairing.note(path, str(params.get("text") or ""))
+            return {"ok": True}
+        return {"error": 'Unknown pairing action.'}
 
     async def _cmd_status(self, _params: dict) -> dict:
         reply = await self._request("service.status")
@@ -613,11 +1096,14 @@ class Bridge:
         reply = await self._request("sessions.list")
         rows = []
         for row in (reply.get("sessions") or []) + (reply.get("elsewhere") or []):
+            sid = str(row.get("sessionId") or row.get("id") or "")
             rows.append({
-                "id": str(row.get("sessionId") or row.get("id") or ""),
+                "id": sid,
                 "name": self._redactor().text(_truncate(str(row.get("title") or row.get("name") or ""))),
+                "folder": self._redactor().text(_truncate(Path(str(row.get("workspace") or "")).name, 40)),
+                "switchedOff": self._switched_off(sid),
                 "state": str(row.get("state") or ""),
-                "messengerEnabled": activation.enabled(str(row.get("sessionId") or row.get("id") or "")),
+                "messengerEnabled": self._enabled(sid),
                 "elsewhere": bool(row.get("host")) if row in (reply.get("elsewhere") or []) else False,
             })
         return {"ok": True, "sessions": rows}
@@ -747,23 +1233,23 @@ class Bridge:
         n, ok, check = params.get("n"), params.get("ok"), params.get("check")
         if n is not None or check is not None or ok is not None:
             if not isinstance(n, int) or not isinstance(ok, bool) or not isinstance(check, str) or not check:
-                return {"error": "Antwortform: ok <nummer> / nein <nummer>, mit der beigelegten Prüfung der Anfrage."}
+                return {"error": 'Answer as: ok <number> / no <number>, with the check that came with the request.'}
             approvals = await self._cmd_approvals({})
             items = approvals.get("items", [])
             item = next((i for i in items if i["n"] == n), None)
             if item is None:
-                return {"error": f"Keine offene Anfrage mit der Nummer {n}. Mit approvals die offenen ansehen."}
+                return {"error": f"No open request number {n}. approvals lists the open ones."}
             if not self._approvals_check_ok(items, check):
-                return {"error": "Prüfung stimmt nicht oder die Anfrage hat sich geändert. Erst approvals, dann antworten."}
+                return {"error": 'The check does not match or the request has changed. First approvals, then answer.'}
             if not item["approvable"]:
-                return {"error": "Diese Anfrage ist immer ausdrücklich: bitte am Dashboard freigeben."}
+                return {"error": 'This request is always explicit: please approve it at the dashboard.'}
             key = (item["sessionId"], item["requestId"])
             shown = self._approvals_raw.get(key)
             live = await self._request("session.pending", {"sessionId": item["sessionId"]})
             req = next((r for r in live.get("pending", [])
                         if r.get("requestId") == item["requestId"]), None)
             if req is None or shown is None or json.dumps(req, sort_keys=True) != json.dumps(shown, sort_keys=True):
-                return {"error": "Anfrage nicht mehr offen oder geändert. Mit approvals die offenen ansehen."}
+                return {"error": 'The request is no longer open or has changed. approvals lists the open ones.'}
             # Consume before awaiting: concurrent replies cannot approve twice;
             # the service applies a requestId once regardless.
             self._approvals_raw.pop(key, None)
@@ -771,7 +1257,7 @@ class Bridge:
                 "sessionId": item["sessionId"], "requestId": item["requestId"],
                 "choice": "y" if ok else "n"})
             return {"ok": bool(reply.get("applied")),
-                    "error": None if reply.get("applied") else "Anfrage bereits erledigt."}
+                    "error": None if reply.get("applied") else "Request already settled."}
         code = str(params.get("id") or "")
         text = str(params.get("text") or "")
         if not code or not text:
@@ -799,13 +1285,13 @@ class Bridge:
         """
         import re
         from .protocol import clean_title
-        root = os.environ.get(WORKSPACES_ENV, "").strip()
-        if not root or not os.path.isabs(root) or not os.path.isdir(root):
-            return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
+        root = self._workspaces_root()
+        if not root:
+            return {"error": 'New sessions from the phone are not set up on this computer.'}
         now = time.monotonic()
         self._created = [t for t in self._created if now - t < CREATE_WINDOW_S]
         if len(self._created) >= CREATE_LIMIT:
-            return {"error": "Höchstens drei neue Sitzungen in zehn Minuten. Bitte später erneut."}
+            return {"error": 'At most three new sessions in ten minutes. Please try again later.'}
         title = clean_title(params.get("name")) or ""
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip("-.")[:40].strip("-.")
         if not slug:
@@ -813,7 +1299,7 @@ class Bridge:
         folder = os.path.join(root, slug)
         if os.path.lexists(folder):
             if os.path.islink(folder) or not os.path.isdir(folder):
-                return {"error": f"{slug} gibt es dort schon und ist kein normaler Ordner."}
+                return {"error": f"{slug} exists there already and is not a normal folder."}
         else:
             os.mkdir(folder, 0o700)
         self._created.append(now)
@@ -822,8 +1308,8 @@ class Bridge:
             "attach": False})
         sid = str(reply.get("sessionId") or "")
         if not sid:
-            return {"error": "Sitzung wurde nicht gestartet."}
-        activation.configure(sid)
+            return {"error": 'The session was not started.'}
+        self._configure(sid)
         return {"ok": True, "sessionId": sid, "title": title or slug, "folder": slug}
 
 
@@ -871,18 +1357,15 @@ class Bridge:
         sid = str(params.get("session") or "")
         workspace = str(params.get("workspace") or "")
         if not workspace and sid:
-            if not activation.enabled(sid):
-                return {"error": "SimpleX ist für diese Sitzung "
-                                 "ausgeschaltet. In TUI/Dashboard mit "
-                                 "/sync aktivieren."}
+            if not self._enabled(sid):
+                return {"error": 'SimpleX is off for this session. Enable it in the TUI/dashboard with /sync.'}
             listing = await self._request("sessions.list")
             row = next((r for r in listing.get("sessions", [])
                         if str(r.get("sessionId") or r.get("id") or "") == sid),
                        None)
             workspace = str((row or {}).get("workspace") or "")
             if not workspace:
-                return {"error": "Diese Sitzung ist nicht verfügbar. "
-                                 "Kein anderer Agent wurde angesprochen."}
+                return {"error": 'This session is not available. No other agent was addressed.'}
         if not workspace:
             return {"error": "profil <sitzung|ordner> frei|standard"}
         try:
@@ -956,11 +1439,11 @@ class Bridge:
                 return {"ok": True, "id": entry["id"]}
             if action == "run":
                 if entry.get("host") != rundir.hostname():
-                    return {"error": "Dieser Zeitplan gehört zu einem anderen Rechner und läuft nur dort."}
+                    return {"error": 'This schedule belongs to another host and runs only there.'}
                 if not entry["confirmed"]:
-                    return {"error": "Noch nicht bestätigt: zuerst ok mit seiner Nummer senden."}
+                    return {"error": 'Not confirmed yet: send ok with its number first.'}
                 return {"ok": True, **self._schedule_view(schedules.request_run(entry["id"]))}
-            return {"error": "Unbekannter Zeitplan-Befehl."}
+            return {"error": 'Unknown schedule command.'}
         except schedules.ScheduleError as exc:
             return {"error": SCHEDULE_ERRORS.get(exc.code, SCHEDULE_ERRORS["when"]),
                     "code": exc.code}
@@ -969,29 +1452,29 @@ class Bridge:
         from delfin.agent import schedules
         sid = str(params.get("session") or "")
         if sid:
-            if not activation.enabled(sid):
-                return {"error": "SimpleX ist für diese Sitzung ausgeschaltet. In TUI/Dashboard mit /sync aktivieren."}
+            if not self._enabled(sid):
+                return {"error": 'SimpleX is off for this session. Enable it in the TUI/dashboard with /sync.'}
             listing = await self._request("sessions.list")
             row = next((r for r in listing.get("sessions", [])
                         if str(r.get("sessionId") or r.get("id") or "") == sid), None)
             folder = str((row or {}).get("workspace") or "")
             if not folder:
-                return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+                return {"error": 'This session is not available. No other agent was addressed.'}
         else:
             root = os.environ.get(WORKSPACES_ENV, "").strip()
             if not root or not os.path.isabs(root) or not os.path.isdir(root):
-                return {"error": "Zeitpläne aus diesem Chat brauchen einen Handy-Ordner auf dem Rechner. "
-                                 "Im Sitzungs-Chat mit plan ZEIT AUFGABE anlegen oder in der TUI mit /schedule add."}
+                return {"error": 'Schedules from this chat need a phone folder on the host. Make one in a '
+                                 'session chat with schedule WHEN TASK, or in the TUI with /schedule add.'}
             folder = os.path.join(root, SCHEDULE_FOLDER)
             if os.path.lexists(folder):
                 if os.path.islink(folder) or not os.path.isdir(folder):
-                    return {"error": "Der Ordner für Zeitpläne ist kein normaler Ordner."}
+                    return {"error": 'The folder for schedules is not a plain folder.'}
             else:
                 os.mkdir(folder, 0o700)
         now = time.monotonic()
         made = [t for t in getattr(self, "_schedules_made", []) if now - t < CREATE_WINDOW_S]
         if len(made) >= SCHEDULE_LIMIT:
-            return {"error": "Höchstens fünf neue Zeitpläne in zehn Minuten. Bitte später erneut."}
+            return {"error": 'At most five new schedules in ten minutes. Please try again later.'}
         entry = schedules.add(str(params.get("text") or ""), workspace=folder,
                               created_by="phone", confirm=False)
         self._schedules_made = [*made, now]

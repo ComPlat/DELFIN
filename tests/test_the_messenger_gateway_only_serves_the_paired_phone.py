@@ -4,7 +4,15 @@ import asyncio
 import pytest
 
 from delfin.messenger import store
+from delfin.messenger.lang import t
 from delfin.messenger.gateway import Rooms, UPDATE
+
+
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
 
 
 class Daemon:
@@ -29,6 +37,7 @@ class Bridge:
         self.pending = {}
         self.active = {"s1", "s2", "s3"}
         self.reads = []
+        self.answer = 'short result'
     def ask(self, command):
         if command.get("action") not in {None, "status", "pending"}:
             self.calls.append(command)
@@ -41,7 +50,7 @@ class Bridge:
             return {'error': 'Sitzung nicht verfügbar'}
         action = command['action']
         if action == 'status':
-            return {'ok': True, 'title': 'same title', 'state': 'idle', 'answer': 'short result', 'messengerEnabled': sid in self.active}
+            return {'ok': True, 'title': 'same title', 'state': 'idle', 'answer': self.answer, 'messengerEnabled': sid in self.active}
         if action == 'pending':
             return {'ok': True, 'items': self.pending.get(sid, [])}
         return {'ok': True, 'accepted': True}
@@ -72,7 +81,8 @@ def test_forum_delivers_once_to_each_connected_session(rig):
     rooms, daemon, bridge = rig
     asyncio.run(rooms.handle(message('#30', 'report progress')))
     assert [r['session'] for r in bridge.calls] == ['s1', 's2']
-    assert 's1' in daemon.sent[-1][1] and 's2' in daemon.sent[-1][1]
+    # One part per session, each under the session's name in bold.
+    assert daemon.sent[-1][1].count('*same title*\n') == 2
 
 
 def test_replay_stays_refused_after_restart(rig):
@@ -109,7 +119,7 @@ def test_status_and_update_stay_in_the_room(rig):
     asyncio.run(rooms.handle(message(text='/status')))
     asyncio.run(rooms.handle(message(text='/update', mid='2')))
     assert bridge.calls == [
-        {'cmd': 'session', 'session': 's1', 'action': 'update', 'text': UPDATE}]
+        {'cmd': 'session', 'session': 's1', 'action': 'update', 'text': t(UPDATE)}]
 
 
 def test_forum_update_and_stop_only_target_connected_sessions(rig):
@@ -150,9 +160,10 @@ def test_notifications_go_to_own_room_and_forum_only(rig):
     rooms, daemon, bridge = rig
     bridge.pending['s1'] = [{'id': 'abc', 'kind': 'confirm', 'text': 'run calculation', 'phoneApproval': True, 'sessionId': 's1', 'options': [{'key': 'y', 'label': 'yes'}, {'key': 'n', 'label': 'no'}]}]
     asyncio.run(rooms.refresh())
-    s1 = [(chat, text) for chat, text in daemon.sent if '· s1]' in text]
+    s1 = [(chat, text) for chat, text in daemon.sent if 'run calculation' in text or 'Einzelchat' in text]
     assert {chat for chat, _ in s1} == {'#10', '#30'}
-    assert any('yes/ja' in text for _, text in s1)
+    assert any('*ja*' in text for _, text in s1)
+    assert not [chat for chat, _ in daemon.sent if chat == '#20']
     count = len(daemon.sent)
     asyncio.run(rooms.refresh())
     assert len(daemon.sent) == count
@@ -205,7 +216,10 @@ def test_disconnected_recipient_does_not_hide_other_broadcast_results(rig):
 
 
 def test_failed_notification_is_retried(rig):
-    rooms, daemon, _ = rig
+    rooms, daemon, bridge = rig
+    asyncio.run(rooms.refresh())            # the first look sends nothing
+    assert not daemon.sent
+    bridge.answer = 'a new result'
     original = daemon.send_chat
     async def fail(chat, text):
         raise ConnectionError('offline')
@@ -281,7 +295,9 @@ def test_unquoted_yes_and_wrong_quote_cannot_approve(rig):
     msg = message(text='yes', mid='2')
     msg['quote_id'] = 'other-message'
     asyncio.run(rooms.handle(msg))
-    assert not bridge.calls
+    # With no approval card in the chat the unquoted yes is a message to
+    # the agent (plain_decision); nothing is decided either way.
+    assert [c['action'] for c in bridge.calls] == ['prompt']
 
 
 def test_plain_question_answer_is_bound_to_its_message(rig):
@@ -353,7 +369,7 @@ def test_voice_transcript_is_reviewed_and_never_answers_a_permission(rig):
         await rooms.handle({**message(text='yes', mid='voice-yes'), 'quote_id': mid})
         assert bridge.calls == []
         await rooms.handle({**message(text='senden', mid='voice-send'), 'quote_id': mid})
-        assert bridge.calls == [{'cmd': 'session', 'session': 's1', 'action': 'prompt', 'text': 'Sprachnachricht des Nutzers (Transkript):\nyes'}]
+        assert bridge.calls == [{'cmd': 'session', 'session': 's1', 'action': 'prompt', 'text': 'Voice message from the user (transcript):\nyes'}]
     asyncio.run(run())
 
 

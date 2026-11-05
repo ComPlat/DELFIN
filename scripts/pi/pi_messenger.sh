@@ -5,12 +5,21 @@
 #   sudo bash pi_messenger.sh [--whisper] [--pair] [--name=LABEL]
 #                             [--lang=de|en] [--no-phone-sessions]
 #                             [--no-nftables] [--uninstall]
+#   sudo bash pi_messenger.sh --verify | --people | --revoke=NAME | --revoke-owner
+#
+# --pair pairs the account owner's phone: the phone is sent a 6-digit code
+# that is typed here before it may do anything (--verify asks for it later
+# when the terminal was closed). Everyone else pairs their own phone in
+# their session with /pair, no admin needed. --people lists every person's
+# phones; --revoke=NAME unpairs person NAME's phones, --revoke-owner the
+# account owner's. These change nothing else and install nothing.
 #
 # --name=LABEL names this installation on the phone: the bot is
 # DELFIN-<LABEL>, every chat carries it (default: the short host name;
 # [A-Za-z0-9_-], 24 characters). The bot profile takes it on first start.
 #
-# --lang=en sets the texts the phone receives to English (default: de).
+# --lang=de makes German the language of a new phone (default: en); each phone
+#                             then follows what its person writes.
 #
 # Works on any Linux with systemd and glibc >= 2.34 the pinned releases
 # cover -- a Raspberry Pi (aarch64, Raspberry Pi OS or Ubuntu), a login
@@ -114,11 +123,12 @@ say() { printf '[messenger] %s\n' "$*" >&2; }
 die() { printf '[messenger] ERROR: %s\n' "$*" >&2; exit 1; }
 
 action=install
+revoke_who=""
 want_nftables=1
 want_whisper=0
 want_pair=0
 want_phone_sessions=1
-lang=de
+lang=en
 label="${MESSENGER_HOSTNAME:-$(hostname 2>/dev/null || true)}"
 label="${label%%.*}"
 for arg in "$@"; do
@@ -127,6 +137,10 @@ for arg in "$@"; do
     --no-nftables) want_nftables=0 ;;
     --whisper) want_whisper=1 ;;
     --pair) want_pair=1 ;;
+    --verify) action=verify ;;
+    --people) action=people ;;
+    --revoke=*) action=revoke; revoke_who="${arg#--revoke=}" ;;
+    --revoke-owner) action=revoke; revoke_who="--owner" ;;
     --no-phone-sessions) want_phone_sessions=0 ;;
     --name=*) label="${arg#--name=}" ;;
     --lang=de|--lang=en) lang="${arg#--lang=}" ;;
@@ -334,6 +348,50 @@ WantedBy=multi-user.target
 EOF
 }
 
+# A person's agent service (people mode) exits when idle; their phone starts
+# it again. The bridge has no network and runs in its own sandbox, so it only
+# leaves /run/delfin-person-start/start-<name>; this path unit then runs the
+# starter: root-owned code (the gateway venv's copy, never the service user's
+# writable venv), hardened, that starts each person's service as a transient
+# unit of its own (systemd-run --uid=<service user>: its own cgroup,
+# KillMode=mixed) -- the supervisor, as delfin-agent-service runs it, in the
+# person's environment.
+person_start_path_unit() {
+  cat <<EOF
+[Unit]
+Description=Start a person's DELFIN agent service for their phone (people mode)
+
+[Path]
+PathExistsGlob=/run/delfin-person-start/start-*
+Unit=delfin-person-start.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+person_start_unit() {
+  cat <<EOF
+[Unit]
+Description=Start the requested persons' DELFIN agent services
+
+[Service]
+Type=oneshot
+ExecStart=${PREFIX}/bin/venv/bin/python -I -m delfin.messenger.people start-requested /run/delfin-person-start ${BRIDGE_PYTHON}
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/delfin-person-start
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=64M
+EOF
+}
+
 phone_env() {
   if [ "${want_phone_sessions}" = 1 ]; then
     printf 'Environment=DELFIN_MESSENGER_WORKSPACES=%s\n' "${PHONE_ROOT}"
@@ -359,8 +417,14 @@ User=${SERVICE_USER}
 ExecStartPre=+/bin/rm -rf /run/delfin-messenger-bridge
 ExecStartPre=+/usr/bin/install -d -m 2750 -o ${SERVICE_USER} -g ${GW_USER} /run/delfin-messenger-bridge
 ExecStopPost=+/bin/rm -rf /run/delfin-messenger-bridge
+# Person-start requests (people mode): the bridge's alone, read by the root
+# starter (delfin-person-start.path). Made the same way, 0700.
+ExecStartPre=+/bin/rm -rf /run/delfin-person-start
+ExecStartPre=+/usr/bin/install -d -m 0700 -o ${SERVICE_USER} -g ${SERVICE_USER} /run/delfin-person-start
+ExecStopPost=+/bin/rm -rf /run/delfin-person-start
 Environment=DELFIN_MESSENGER_PEER_UID=$(id -u "${GW_USER}")
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
+Environment=DELFIN_MESSENGER_PERSON_STARTS=/run/delfin-person-start
 $(phone_env)
 ExecStart=${BRIDGE_PYTHON} -m delfin.agent.service.bridge
 Restart=on-failure
@@ -402,6 +466,8 @@ install_units() {
     [ -x "${BRIDGE_PYTHON}" ] || die "bridge Python not executable: ${BRIDGE_PYTHON}"
     if [ "${BRIDGE_PYTHON}" = "${USER_PYTHON}" ]; then
       agent_service_unit > "${UNIT_DIR}/delfin-agent-service.service"
+      person_start_unit > "${UNIT_DIR}/delfin-person-start.service"
+      person_start_path_unit > "${UNIT_DIR}/delfin-person-start.path"
     else
       say "no DELFIN venv at ${SERVICE_HOME}/delfin/.venv -- no agent service unit; start the service as ${SERVICE_USER} yourself"
     fi
@@ -424,6 +490,9 @@ install_units() {
     systemctl enable --now delfin-agent-service.service
   fi
   local unit
+  if [ -f "${UNIT_DIR}/delfin-person-start.path" ]; then
+    systemctl enable --now delfin-person-start.path
+  fi
   for unit in simplex-chat-daemon delfin-messenger-bridge delfin-messenger-gateway; do
     if [ -f "${UNIT_DIR}/${unit}.service" ]; then
       systemctl enable "${unit}.service"
@@ -469,6 +538,8 @@ uninstall() {
   rm -f "${UNIT_DIR}/delfin-messenger-bridge.service"
   systemctl disable --now delfin-agent-service.service 2>/dev/null || true
   rm -f "${UNIT_DIR}/delfin-agent-service.service"
+  systemctl disable --now delfin-person-start.path 2>/dev/null || true
+  rm -f "${UNIT_DIR}/delfin-person-start.path" "${UNIT_DIR}/delfin-person-start.service"
   systemctl disable --now simplex-chat-daemon.service 2>/dev/null || true
   rm -f "${UNIT_DIR}/delfin-messenger-gateway.service"
   rm -f "${UNIT_DIR}/simplex-chat-daemon.service"
@@ -521,11 +592,17 @@ install_gateway_venv() {
   say "gateway venv ${venv}: websockets (hashed) + DELFIN from ${src}"
 }
 
-pair_phone() {
-  # Prints the invitation and waits for the phone; refuses when paired.
-  runuser -u "${GW_USER}" -- env DELFIN_MESSENGER_DIR="${STATE_DIR}/pairing" \
+as_gateway() {
+  # The gateway's own CLI as its user, on its state (python -m delfin.messenger).
+  runuser -u "${GW_USER}" -- env HOME="${STATE_DIR}" DELFIN_MESSENGER_DIR="${STATE_DIR}/pairing" \
     DELFIN_MESSENGER_PORT="${API_PORT}" DELFIN_MESSENGER_LABEL="${label}" \
-    DELFIN_MESSENGER_LANG="${lang}" "${PREFIX}/bin/venv/bin/python" -m delfin.messenger pair \
+    DELFIN_MESSENGER_LANG="${lang}" "${PREFIX}/bin/venv/bin/python" -m delfin.messenger "$@"
+}
+
+pair_phone() {
+  # Prints the invitation, waits for the phone, asks for the code the phone
+  # received; refuses when the owner is paired already.
+  as_gateway pair \
     || say "not paired now (already paired? revoke first: docs/design/messenger-simplex.md)"
 }
 
@@ -567,6 +644,15 @@ install_whisper() {
 # --- main -------------------------------------------------------------------
 case "${action}" in
   uninstall) uninstall ;;
+  verify|people|revoke)
+    [ -x "${PREFIX}/bin/venv/bin/python" ] || die "the messenger is not installed (run without --${action} first)"
+    if [ "${action}" = revoke ]; then
+      [ -n "${revoke_who}" ] || die "--revoke=NAME, or --revoke-owner for the account owner"
+      as_gateway revoke "${revoke_who}"
+    else
+      as_gateway "${action}"
+    fi
+    ;;
   install)
     ensure_user
     install -d -m 0755 -o root -g root "${PREFIX}" "${PREFIX}/bin"

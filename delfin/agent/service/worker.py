@@ -330,6 +330,23 @@ class Emitter:
         self.redactor = Redactor()
         self._lock = threading.Lock()
 
+    def emit_live(self, text: str) -> None:
+        """A notice the open windows show and nothing keeps: not numbered,
+        not written to the session's event log, not replayed to a window
+        that attaches later. For the phone pairing invitation (a one-time
+        link) only. Not redacted either: the redactor would cut the link
+        it exists to show, and the text is the harness's own."""
+        try:
+            event = {"type": "notice", "session": self.session_id,
+                     "ts": round(time.time(), 3), "text": str(text)}
+            with self._lock:
+                self.writer.send(protocol.event(event))
+        except Exception as exc:                    # noqa: BLE001
+            try:
+                print(f"worker: live notice not sent: {type(exc).__name__}", file=sys.stderr)
+            except Exception:
+                pass
+
     def emit(self, type_: str, **fields: Any) -> None:
         try:
             event: dict[str, Any] = {"type": type_, "session": self.session_id,
@@ -1444,15 +1461,46 @@ class Worker:
         text = str(params.get("text") or "").strip()
         if not text:
             raise _Refusal(protocol.INVALID_PARAMS, "empty prompt")
+        if params.get("via") == "messenger" and text[:1] in {"/", "!"}:
+            # A phone's line is never a window's command. The one exception
+            # changes nothing: the bridge shows the session its state.
+            if text.split() == ["/sync", "status"]:
+                from delfin.messenger.activation import configure
+                self.emitter.emit("notice", text=configure(self.emitter.session_id, "status"))
+                return {"accepted": True}
+            raise _Refusal(protocol.NOT_ALLOWED,
+                           "a command from the messenger is not run; type it in a window")
         if text.split()[0].lower() == "/sync":
-            from delfin.messenger.activation import configure
-            output = configure(self.emitter.session_id, text[5:].strip(), endpoint="")
+            from delfin.messenger.activation import configure, parse_sync
+            args = text[5:].strip()
+            output = configure(self.emitter.session_id, args, endpoint="")
+            name = parse_sync(args)[1]
+            if name:
+                # /sync NAME: the session's title -- the one display name
+                # every window and the phone chat show -- in the same step.
+                try:
+                    self._m_session_setTitle({"title": name})
+                    output += f" Name: {name}."
+                except _Refusal:
+                    pass
+            self.emitter.emit("notice", text=output)
+            return {"accepted": True}
+        if text.split()[0].lower() == "/pair":
+            # Phone pairing for the person of this session's HOME. The
+            # invitation shows as a live notice: never in the event log.
+            from delfin.messenger import pairing
+            output = pairing.session_command(
+                text[5:].strip(), requester="session:" + str(self.emitter.session_id),
+                show=self.emitter.emit_live)
             self.emitter.emit("notice", text=output)
             return {"accepted": True}
         how = str(params.get("how") or "queue")
         if how not in ("queue", "steer"):
             raise _Refusal(protocol.INVALID_PARAMS, "how must be queue or steer")
         agent = self.agent
+        # Where the line came from, as metadata beside it (a badge in the
+        # windows), never inside it.
+        origin = {"via": "phone"} if params.get("via") == "messenger" else {}
         # As typed: the brief goes in front of the first prompt when its turn
         # starts (_brief_for_turn), not here -- a line can still be dropped.
         said = text
@@ -1469,7 +1517,7 @@ class Worker:
                 route = "next"
                 # Shown now, under the lock: before the loop can take it and
                 # announce the turn it starts.
-                self.emitter.emit("user.message", text=text, source="user")
+                self.emitter.emit("user.message", text=text, source="user", **origin)
             else:
                 # During a turn, or between a turn and its follow-up: like
                 # a line typed during the turn, it goes before any
@@ -1485,7 +1533,7 @@ class Worker:
             route = "queued"
         if route == "queued":
             agent.post(lambda: self.emitter.emit(
-                "user.message", text=text, source="queued"))
+                "user.message", text=text, source="queued", **origin))
             return {"accepted": True, "queued": True}
         return {"accepted": True}
 

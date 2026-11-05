@@ -10,6 +10,13 @@ import pytest
 from delfin.messenger.media import Exchange, directory, MAX_FILE
 
 
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
+
+
 def test_upload_download_roundtrip_and_no_cross_session_access(tmp_path):
     exchange = Exchange()
     def call(action, **kw):
