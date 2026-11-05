@@ -104,6 +104,19 @@ class FakeEngine:
                         "mode": mode, "session_id": self.session_id}
 
     # -- the surface the worker and TerminalAgent use --------------------------
+    #: The agent modes the real engine offers (engine.available_modes).
+    MODES = ("solo", "dashboard", "office", "research")
+
+    def available_modes(self) -> list[str]:
+        return list(self.MODES)
+
+    def _load_mode(self, name: str) -> None:
+        """/mode: as the real engine's switch, any known mode."""
+        if name not in self.MODES:
+            raise ValueError(f"unknown mode {name!r}")
+        self.mode = name
+        self._status["mode"] = name
+
     def set_kit_permission_mode(self, mode: str, *, announce: bool = True) -> bool:
         self.kit_permissions.mode = mode
         return True
@@ -305,6 +318,10 @@ class FakeEngine:
             # (api_client._execute_ask_user_question, normalised).
             cb = self.kit_permissions.ask_user_callback
             multi = "multi" in words
+            if "aloud" in words:
+                # As a model often does: its answer ends with the question
+                # it then asks through the tool.
+                say("I looked at the inputs.\n\nWhich solvent model?")
             reply = cb({
                 "question": ("Which properties should be computed?" if multi
                              else "Which solvent model?"),

@@ -1605,6 +1605,13 @@ def pytest_configure(config):
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
+    # A dashboard built by a test (a voila server, a create_tab without a
+    # stand-in build) keeps its sessions in its kernel: it must never reach
+    # the user's agent service, nor start one under /tmp. The tests of the
+    # service-backed dashboard give it a private service explicitly.
+    if "DELFIN_DASHBOARD_SESSIONS" in os.environ:
+        _LIFELINE_SAVED["DELFIN_DASHBOARD_SESSIONS"] = os.environ["DELFIN_DASHBOARD_SESSIONS"]
+    os.environ["DELFIN_DASHBOARD_SESSIONS"] = "kernel"
     _external_agent_guard.install(is_credential)
     _hypothesis_store_outside_the_checkout()
     _private_tmp_of_the_suite()
@@ -1613,6 +1620,7 @@ def pytest_configure(config):
 def pytest_unconfigure(config):
     import os
     _external_agent_guard.uninstall()
+    os.environ.pop("DELFIN_DASHBOARD_SESSIONS", None)
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()
