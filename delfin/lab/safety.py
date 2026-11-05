@@ -478,7 +478,7 @@ class Kernel:
                     value=num, unit=ch.unit, now=now)
                 doc_out = refuse(
                     "approval_required",
-                    f"{key} = {num:g}{' ' + ch.unit if ch.unit else ''} is "
+                    f"{key} = {num if ch.is_state else format(num, 'g')}{' ' + ch.unit if ch.unit else ''} is "
                     f"hazardous: a person approves exactly this action with "
                     f"`delfin-agent lab approve {rec['id']}`, then repeat the "
                     f"call with approval={rec['id']}",
