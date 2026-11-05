@@ -560,8 +560,8 @@ delfin-agent messenger phones    your paired phones
 delfin-agent messenger unpair LABEL|all
                                  unpair one of your phones, or all
 delfin-agent messenger people    (admin) every person's phones
-delfin-agent messenger revoke NAME
-                                 (admin) unpair person NAME's phones (owner: the account owner's)"""
+delfin-agent messenger revoke NAME | --owner
+                                 (admin) unpair person NAME's phones, or the account owner's"""
 
 
 def _from_an_agent() -> bool:

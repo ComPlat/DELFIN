@@ -43,11 +43,12 @@ def mode_on(account: Path | None = None) -> bool:
     return ((account or account_home()) / PEOPLE_CONF).is_file()
 
 
-def home(name: str, account: Path | None = None) -> Path | None:
+def home(name: str, account: Path | None = None, *, uid: int | None = None) -> Path | None:
     """The person's home, or None. A person's home must be a real directory
-    (never a link) of this uid under ``<account>/people``, and people mode
-    must be on."""
+    (never a link) of ``uid`` (default: this process's) under
+    ``<account>/people``, and people mode must be on."""
     account = account or account_home()
+    uid = os.getuid() if uid is None else uid
     if name == OWNER:
         return account
     if not valid(name) or not mode_on(account):
@@ -57,7 +58,7 @@ def home(name: str, account: Path | None = None) -> Path | None:
         info = os.lstat(path)
     except OSError:
         return None
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid:
         return None
     return path
 
@@ -171,6 +172,52 @@ def start_service(name: str, *, run=None, account: Path | None = None) -> bool:
     return getattr(done, "returncode", 1) == 0
 
 
+def transient_argv(name: str, *, account: Path | None = None, python: str | None = None) -> list | None:
+    """``systemd-run`` for person ``name``'s agent service as a transient
+    unit of its own (``delfin-person-<name>``: its own cgroup, stopped like
+    the account's unit, KillMode=mixed): the supervisor, as
+    delfin-agent-service runs it, as the account's user, in the person's
+    environment after the account's agent.env. None for anything but a
+    real ~/people/<name> owned by the account's user."""
+    import shutil
+    import sys
+    account = account or account_home()
+    try:
+        owner = os.stat(account)
+    except OSError:
+        return None
+    if name == OWNER or not valid(name) or home(name, account, uid=owner.st_uid) is None:
+        return None
+    base = account / "people" / name
+    env = {"HOME": str(base), "DELFIN_PERSON": name, "DELFIN_RUNTIME_DIR": str(base / ".run"),
+           "DELFIN_SETTINGS_DEFAULTS": str(account / ".delfin_settings.json"),
+           "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")}
+    argv = [shutil.which("systemd-run") or "/usr/bin/systemd-run", "--quiet", "--collect",
+            f"--unit=delfin-person-{name}", f"--uid={owner.st_uid}", f"--gid={owner.st_gid}",
+            f"--working-directory={base}", "--property=KillMode=mixed",
+            "--property=TimeoutStopSec=60"]
+    argv += [f"--setenv={k}={v}" for k, v in env.items()]
+    argv += ["/bin/bash", "-c", _WITH_AGENT_ENV, "delfin-person-service",
+             str(account / "delfin" / "agent.env"), python or sys.executable, "-P",
+             "-m", "delfin.agent.service.supervisor"]
+    return argv
+
+
+def start_unit(name: str, *, account: Path | None = None, python: str | None = None,
+               run=None) -> bool:
+    """The starter unit's start: :func:`transient_argv`, run once."""
+    import subprocess
+    argv = transient_argv(name, account=account, python=python)
+    if argv is None:
+        return False
+    try:
+        done = (run or subprocess.run)(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return getattr(done, "returncode", 1) == 0
+
+
 def request_start(name: str, *, run=None, account: Path | None = None) -> bool:
     """Start ``name``'s service: directly, or, where the starter unit is
     installed (START_REQUESTS_ENV), by a request file it acts on."""
@@ -188,11 +235,17 @@ def request_start(name: str, *, run=None, account: Path | None = None) -> bool:
     return True
 
 
-def start_requested(directory: Path, *, start=None) -> list[str]:
-    """The starter unit's work: each ``start-<name>`` file of this uid in
-    ``directory`` is removed, and ``name``'s service started when it is a
-    person. Returns the names started."""
+def start_requested(directory: Path, *, start=None, uid: int | None = None) -> list[str]:
+    """The starter unit's work: each ``start-<name>`` file of ``uid`` (the
+    owner of ``directory``, the bridge's user) in ``directory`` is removed,
+    and ``name``'s service started when it is a person. Returns the names
+    started."""
     start = start or start_service
+    if uid is None:
+        try:
+            uid = os.stat(directory).st_uid
+        except OSError:
+            return []
     done = []
     try:
         entries = sorted(os.listdir(directory))
@@ -206,7 +259,7 @@ def start_requested(directory: Path, *, start=None) -> list[str]:
         except OSError:
             continue
         name = entry[len("start-"):] if entry.startswith("start-") else ""
-        if info.st_uid != os.getuid() or not valid(name) or name == OWNER:
+        if info.st_uid != uid or not valid(name) or name == OWNER:
             continue
         if start(name):
             done.append(name)
@@ -214,13 +267,27 @@ def start_requested(directory: Path, *, start=None) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """``python -m delfin.messenger.people start-requested DIR`` (the starter unit)."""
+    """``python -m delfin.messenger.people start-requested DIR PYTHON`` (the
+    starter unit, as root from the root-owned gateway venv): each request
+    becomes a transient unit of the request directory owner's user, running
+    PYTHON (that user's DELFIN interpreter)."""
+    import pwd
     import sys
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 2 or args[0] != "start-requested":
-        print("usage: python -m delfin.messenger.people start-requested DIR", file=sys.stderr)
+    if len(args) != 3 or args[0] != "start-requested":
+        print("usage: python -m delfin.messenger.people start-requested DIR PYTHON", file=sys.stderr)
         return 2
-    for name in start_requested(Path(args[1])):
+    directory, python = Path(args[1]), args[2]
+    try:
+        uid = os.stat(directory).st_uid
+        account = Path(pwd.getpwuid(uid).pw_dir)
+    except (OSError, KeyError):
+        return 1
+    if uid == 0:
+        return 1                                   # never a person service as root
+    started = start_requested(directory, uid=uid,
+                              start=lambda name: start_unit(name, account=account, python=python))
+    for name in started:
         print(f"started the agent service of {name}")
     return 0
 

@@ -5,14 +5,14 @@
 #   sudo bash pi_messenger.sh [--whisper] [--pair] [--name=LABEL]
 #                             [--lang=de|en] [--no-phone-sessions]
 #                             [--no-nftables] [--uninstall]
-#   sudo bash pi_messenger.sh --verify | --people | --revoke=NAME
+#   sudo bash pi_messenger.sh --verify | --people | --revoke=NAME | --revoke-owner
 #
 # --pair pairs the account owner's phone: the phone is sent a 6-digit code
 # that is typed here before it may do anything (--verify asks for it later
 # when the terminal was closed). Everyone else pairs their own phone in
 # their session with /pair, no admin needed. --people lists every person's
-# phones; --revoke=NAME unpairs person NAME's phones (owner: the account
-# owner's). These three change nothing else and install nothing.
+# phones; --revoke=NAME unpairs person NAME's phones, --revoke-owner the
+# account owner's. These change nothing else and install nothing.
 #
 # --name=LABEL names this installation on the phone: the bot is
 # DELFIN-<LABEL>, every chat carries it (default: the short host name;
@@ -139,6 +139,7 @@ for arg in "$@"; do
     --verify) action=verify ;;
     --people) action=people ;;
     --revoke=*) action=revoke; revoke_who="${arg#--revoke=}" ;;
+    --revoke-owner) action=revoke; revoke_who="--owner" ;;
     --no-phone-sessions) want_phone_sessions=0 ;;
     --name=*) label="${arg#--name=}" ;;
     --lang=de|--lang=en) lang="${arg#--lang=}" ;;
@@ -349,8 +350,11 @@ EOF
 # A person's agent service (people mode) exits when idle; their phone starts
 # it again. The bridge has no network and runs in its own sandbox, so it only
 # leaves /run/delfin-person-start/start-<name>; this path unit then runs the
-# start as the service user (python -m delfin.messenger.people), the same
-# launcher command the person's own windows run, with NoNewPrivileges.
+# starter: root-owned code (the gateway venv's copy, never the service user's
+# writable venv), hardened, that starts each person's service as a transient
+# unit of its own (systemd-run --uid=<service user>: its own cgroup,
+# KillMode=mixed) -- the supervisor, as delfin-agent-service runs it, in the
+# person's environment.
 person_start_path_unit() {
   cat <<EOF
 [Unit]
@@ -372,12 +376,18 @@ Description=Start the requested persons' DELFIN agent services
 
 [Service]
 Type=oneshot
-User=${SERVICE_USER}
-WorkingDirectory=${SERVICE_HOME}
+ExecStart=${PREFIX}/bin/venv/bin/python -I -m delfin.messenger.people start-requested /run/delfin-person-start ${BRIDGE_PYTHON}
 NoNewPrivileges=yes
-# The started service outlives this oneshot (the launcher detaches it).
-KillMode=process
-ExecStart=${BRIDGE_PYTHON} -P -m delfin.messenger.people start-requested /run/delfin-person-start
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/delfin-person-start
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=64M
 EOF
 }
 
@@ -630,7 +640,7 @@ case "${action}" in
   verify|people|revoke)
     [ -x "${PREFIX}/bin/venv/bin/python" ] || die "the messenger is not installed (run without --${action} first)"
     if [ "${action}" = revoke ]; then
-      [ -n "${revoke_who}" ] || die "--revoke=NAME (owner: the account owner)"
+      [ -n "${revoke_who}" ] || die "--revoke=NAME, or --revoke-owner for the account owner"
       as_gateway revoke "${revoke_who}"
     else
       as_gateway "${action}"

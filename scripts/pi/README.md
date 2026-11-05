@@ -350,7 +350,8 @@ Each person connects their own phone, no admin needed: in your session type
 NAME` starts one, `/sync` in a session connects it. A phone reaches only its
 person's sessions (people mode: one Unix user, so an application-level
 boundary). Admin: `--people` lists every person's phones, `--revoke=NAME`
-unpairs them (lost phone: revoke, then `/pair` again). Details:
+unpairs a person's, `--revoke-owner` the account owner's (lost phone: revoke,
+then `/pair` again). Details:
 [several people](../../docs/design/messenger-simplex.md#several-people-one-account-people-mode).
 
 Installing the messenger (once, by the admin):

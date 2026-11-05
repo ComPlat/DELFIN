@@ -10,8 +10,8 @@ Run as the gateway's user (``delfin-gw``; pi_messenger.sh does it):
                  confirm the owner's phone that waits for its code (asked
                  for when left out; pi_messenger.sh --verify)
     run          serve: daemon events in, gateway decisions, answers out
-    revoke [P]   unpair person P's phones (``owner`` the owner's); no P:
-                 everybody
+    revoke [P]   unpair person P's phones; ``revoke --owner`` the account
+                 owner's; neither: everybody
     people       every person's phones: label, state, since (no codes)
     status       pairing, rooms, bridge reachability
 
@@ -199,15 +199,17 @@ def _run() -> int:
         return 0
 
 
-def _revoke(person: str | None = None) -> int:
-    if person is None:
+def _revoke(person: str | None = None, *, owner: bool = False) -> int:
+    if owner:
+        person = OWNER
+    elif person is None:
         if store.revoke():
             audit.event("messenger_phone_revoked", "every phone unpaired by the admin")
             print("unpaired")
             return 0
         print("was not paired")
         return 1
-    who = OWNER if person in {"owner", ""} else person
+    who = person
     if not valid_person(who):
         print(f"not a person name: {person!r}", file=sys.stderr)
         return 2
@@ -285,8 +287,11 @@ def main(argv: list[str] | None = None) -> int:
     # would stay in the shell's history.
     verify.add_argument("code", nargs="?")
     sub.add_parser("run", help="serve the paired phones")
-    revoke = sub.add_parser("revoke", help="unpair a person's phones (no name: everybody)")
+    revoke = sub.add_parser("revoke", help="unpair a person's phones (--owner: the account "
+                                           "owner's; no name: everybody)")
     revoke.add_argument("person", nargs="?")
+    revoke.add_argument("--owner", action="store_true",
+                        help="the account owner's phones (a person may be called owner)")
     sub.add_parser("people", help="every person's phones")
     sub.add_parser("status", help="pairing, rooms and bridge state")
     sub.add_parser("forum", help="create forum and chats for current sessions")
@@ -298,7 +303,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "verify":
         return _verify(args.code)
     if args.command == "revoke":
-        return _revoke(args.person)
+        if args.owner and args.person:
+            parser.error("revoke: a person name or --owner, not both")
+        return _revoke(args.person, owner=args.owner)
     return {"pair": _pair, "run": _run, "people": _people,
             "status": _status}[args.command]()
 

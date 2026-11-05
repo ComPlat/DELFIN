@@ -65,8 +65,8 @@ How a pairing works:
 
 Revocation: `/pair revoke LABEL|all` in a session or `delfin-agent messenger
 unpair LABEL|all`; `entkoppeln` / `unpair` on the phone itself; the admin
-`sudo bash scripts/pi/pi_messenger.sh --people` and `--revoke=NAME` (`owner`
-for the account owner). A revoked phone is removed from its groups (or the bot
+`sudo bash scripts/pi/pi_messenger.sh --people`, `--revoke=NAME` (person NAME,
+also one called `owner`) and `--revoke-owner` (the account owner). A revoked phone is removed from its groups (or the bot
 leaves a group it cannot remove it from; the next sync makes a new one), its
 contact is deleted, the person's other phones are told. Lost phone: revoke,
 then pair the new one. A binding never changes in place: a phone moves to
@@ -138,7 +138,12 @@ command (`python -m delfin.agent.service.launcher`) with the person's HOME,
 after the account's `agent.env`, as the same Unix user. On a provisioned host
 the bridge (no network, its own sandbox) only leaves
 `/run/delfin-person-start/start-<name>`; the path unit `delfin-person-start`
-runs the start as the service user with NoNewPrivileges. One start per person
+runs the hardened starter (root-owned code from the gateway venv; ProtectSystem,
+ProtectHome=read-only, PrivateTmp, RestrictSUIDSGID, LockPersonality,
+NoNewPrivileges, MemoryMax=64M), which starts the person's service as a
+transient unit of its own, `delfin-person-<name>` (`systemd-run
+--uid=<service user>`, own cgroup, KillMode=mixed): the supervisor, as
+`delfin-agent-service` runs it, in the person's environment. One start per person
 per minute; every start and every refused one is audited
 (`messenger_service_started`, `messenger_service_start_refused`); a name that
 is not a real, owned `~/people/<name>` is refused before anything runs.

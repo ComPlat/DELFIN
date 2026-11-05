@@ -58,6 +58,11 @@ def test_a_person_named_owner_is_revocable_by_name(state):
 
 def test_the_starter_unit_is_hardened(tmp_path):
     from test_the_messenger_provisioning_covers_every_pinned_server import run_script
+    # the service user's DELFIN venv: the units for it are written then
+    venv = tmp_path / "home-delfin" / "delfin/.venv/bin/python"
+    venv.parent.mkdir(parents=True)
+    venv.write_text("#!/bin/sh\nexit 0\n")
+    venv.chmod(0o755)
     done = run_script(tmp_path)
     assert done.returncode == 0, done.stderr
     unit = (tmp_path / "units" / "delfin-person-start.service").read_text()

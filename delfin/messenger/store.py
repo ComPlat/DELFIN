@@ -273,11 +273,15 @@ def _locked():
 
 @contextmanager
 def _editing():
-    """The store under the lock, written back when the block ends."""
+    """The store under the lock, written back when the block ends -- only
+    when it changed (the gateway's clock edits every 5 s; an SD card is
+    not rewritten for nothing)."""
     with _locked():
         data = _load_checked()
+        before = json.dumps(data, sort_keys=True)
         yield data
-        _write(data)
+        if json.dumps(data, sort_keys=True) != before or not os.path.lexists(pair_file()):
+            _write(data)
 
 
 def _write(data: dict) -> None:
