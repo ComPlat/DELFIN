@@ -49,7 +49,10 @@ Information calls
     ``command -v xtb`` (:func:`information_call`,
     :data:`INFORMATION_FLAGS`) start nothing and are not checked as a
     calculation: the verdict has ``information`` set and admits when the
-    command's other segments are auto-allowed.
+    command's other segments are auto-allowed. Only a bare name that the
+    session's PATH resolves outside its roots and temp dirs
+    (:func:`trusted_program`), with no prefix but a numeric thread count
+    and ``time``/``nice``/``timeout`` (:func:`_information_words`).
 
 Rejected: a regular expression per program on the auto-allow list (what
 ``xtb <file>.xyz`` had). It admits ``-P 64`` on a login node and an odd
@@ -408,49 +411,145 @@ def _without_redirections(words: list) -> list:
     return argv
 
 
-def information_call(segment: str) -> Optional[str]:
+#: The only assignments an information call may carry: a thread count.
+_INFORMATION_ENV = ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                    "OPENBLAS_NUM_THREADS")
+
+
+def _writable_temp_dirs() -> tuple:
+    """The temp dirs any process of the account can write (system and
+    session ``TMPDIR``): a program found there is not an installation."""
+    import tempfile
+    dirs = {tempfile.gettempdir(), "/tmp", "/var/tmp", "/dev/shm"}
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        value = str(os.environ.get(name, "") or "").strip()
+        if value:
+            dirs.add(value)
+    return tuple(dirs)
+
+
+def trusted_program(name: str, *, path: Optional[str] = None,
+                    untrusted=()) -> Optional[str]:
+    """The installed file a bare program name runs, or None.
+
+    Input: ``name`` (no slash), the ``PATH`` the command's shell gets
+    (default ``os.environ``), and directories the agent can write
+    (``untrusted``: the session's roots, its working and scratch dirs).
+    Output: the resolved real path of the first match on ``PATH``, None
+    when the name has a slash, the ``PATH`` has an empty or relative entry
+    (the shell would search the working directory or one below it), no
+    entry holds it, or it lies in ``untrusted`` or a temp dir
+    (:func:`_writable_temp_dirs`): a script the agent wrote and named
+    ``xtb`` is not the program.
+    """
+    if not name or "/" in name:
+        return None
+    path = os.environ.get("PATH", "") if path is None else path
+    entries = path.split(os.pathsep)
+    if not path or any(not e or not os.path.isabs(e) for e in entries):
+        return None
+    found = shutil.which(name, path=path)
+    if not found:
+        return None
+    real = os.path.realpath(found)
+    for d in tuple(untrusted) + _writable_temp_dirs():
+        try:
+            base = os.path.realpath(str(d))
+        except (OSError, ValueError):
+            continue
+        if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+            return None
+    return real
+
+
+def _information_words(segment: str) -> Optional[list]:
+    """The words of a segment that may be an information call: what is
+    left after the prefixes such a call may carry, or None.
+
+    Allowed in front: assignments of :data:`_INFORMATION_ENV` to a number;
+    ``time`` (``-p``), ``nice`` (``-n N`` / ``-N``) and ``timeout DURATION``
+    with numeric arguments. Refused: any other assignment (``LD_PRELOAD``,
+    ``PATH``, ``PYTHON*``, ``BASH_ENV``, ``ENV``, ``IFS``), any other
+    wrapper (``nohup``, ``setsid``, ``env``, ``exec``), a trailing ``&``,
+    and ``$``, a backtick or a process substitution anywhere, which run
+    something of their own (a redirection target included).
+    """
+    text = segment.strip()
+    if text.endswith("&") or any(c in text for c in ("$", "`", "<(", ">(")):
+        return None
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return None
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        name, value = words.pop(0).split("=", 1)
+        if name not in _INFORMATION_ENV or not value.isdigit():
+            return None
+    while words and words[0] in ("time", "nice", "timeout"):
+        wrapper = words.pop(0)
+        if wrapper == "time":
+            if words and words[0] == "-p":
+                words.pop(0)
+        elif wrapper == "nice":
+            if words and words[0] == "-n":
+                if len(words) < 2 or not re.fullmatch(r"-?\d+", words[1]):
+                    return None
+                del words[:2]
+            elif words and re.fullmatch(r"-\d+", words[0]):
+                words.pop(0)
+        else:
+            if not words or _duration_s(words[0]) is None:
+                return None
+            words.pop(0)
+    return words or None
+
+
+def information_call(segment: str,
+                     trusted: Optional[Callable[[str], bool]] = None,
+                     ) -> Optional[str]:
     """The program a segment only asks for information, else None.
 
-    Input: one shell segment (no ``;``/``&&``/``|``). Output: the program's
-    name when the segment is ``<program> <information flags>`` with every
-    word in :data:`INFORMATION_FLAGS` for that program (redirections and
-    leading assignments/wrappers allowed), or ``command -v``/``-V`` naming
-    programs of that table; else None.
+    Input: one shell segment (no ``;``/``&&``/``|``) and ``trusted``, the
+    test that a bare name runs the installed program (default:
+    :func:`trusted_program` on this process's ``PATH``). Output: the
+    program's name when the segment is ``<program> <information flags>``
+    with every word in :data:`INFORMATION_FLAGS` for that program, the
+    program a bare name that ``trusted`` accepts, and nothing in front but
+    what :func:`_information_words` allows (redirections are left to the
+    write path gate); or ``command -v``/``-V`` naming programs of that
+    table; else None.
 
     Such a call reads no input and starts no calculation, so the setup
     check does not apply. It refused ``xtb --version 2>&1 | head -3`` with
     "no input file named on the command line" before. Anything else
-    stays with the check: an information flag next to an input name, a
-    flag outside the set, the bare program.
+    stays with the check: a path-qualified program (``./xtb``), one the
+    PATH finds in a root of the session, an information flag next to an
+    input name, a flag outside the set, the bare program.
     """
-    parsed = _segment_words(segment)
-    if parsed is None:
+    words = _information_words(segment)
+    if not words:
         return None
-    words = parsed[0]
-    program = os.path.basename(words[0])
+    program = words[0]
+    if "/" in program:
+        return None
     argv = _without_redirections(words[1:])
     if program == "command":
+        # A lookup; the shell runs nothing.
         if len(argv) >= 2 and argv[0] in ("-v", "-V") and all(
-                os.path.basename(w) in INFORMATION_FLAGS for w in argv[1:]):
-            return os.path.basename(argv[1])
+                w in INFORMATION_FLAGS for w in argv[1:]):
+            return argv[1]
         return None
     flags = INFORMATION_FLAGS.get(program)
     if not flags or not argv:
         return None
-    if (program == "crest" and len(argv) == 2 and argv[0] == "--help"
-            and argv[1] in _CREST_HELP_SECTIONS):
-        return program
-    return program if all(w in flags for w in argv) else None
-
-
-def information_pattern() -> str:
-    """The plain forms of :func:`information_call` as one anchored regular
-    expression (``xtb --version``, ``crest -h``), for the bash auto-allow
-    list, so the list and the check read one table."""
-    alts = "|".join(
-        re.escape(p) + r"(?:\s+(?:" + "|".join(map(re.escape, flags)) + "))+"
-        for p, flags in INFORMATION_FLAGS.items())
-    return r"^\s*(?:" + alts + r")\s*$"
+    if not (program == "crest" and len(argv) == 2 and argv[0] == "--help"
+            and argv[1] in _CREST_HELP_SECTIONS) and not all(
+                w in flags for w in argv):
+        return None
+    if trusted is None:
+        def trusted(name: str) -> bool:
+            return trusted_program(name) is not None
+    return program if trusted(program) else None
 
 
 def _parse_run(segment: str) -> Optional[_Run]:
@@ -969,21 +1068,29 @@ def judge_command(segments: list, cwd: Path,
                   *, tool_wall_s: Optional[float] = None,
                   kind: Optional[str] = None,
                   limits_of: Optional[Callable] = None,
-                  jobs_now: Optional[Callable] = None) -> Verdict:
+                  jobs_now: Optional[Callable] = None,
+                  program_trusted: Optional[Callable[[str], bool]] = None,
+                  ) -> Verdict:
     """The verdict for a shell command given as its segments.
 
     ``segment_allowed`` is the gate's own auto-allow test for a segment
     that starts no calculation (``cd``, ``mkdir``...); a compound admits
-    only when every other segment passes it.
+    only when every other segment passes it. ``program_trusted`` decides
+    whether a bare program name of an information call runs the installed
+    program (the gate passes the session's PATH and roots); default
+    :func:`trusted_program` on this process's PATH with ``cwd`` untrusted.
     """
     limits_of = limits_of or partition_limits
     jobs_now = jobs_now or queued_jobs
     kind = kind or host_kind()
+    if program_trusted is None:
+        def program_trusted(name: str) -> bool:
+            return trusted_program(name, untrusted=(str(cwd),)) is not None
     here: Optional[Path] = Path(cwd)
     summaries, problems, found = [], [], False
     asked: list = []
     for seg in segments:
-        program = information_call(seg)
+        program = information_call(seg, program_trusted)
         if program:
             asked.append(seg.strip()[:60])
             continue
