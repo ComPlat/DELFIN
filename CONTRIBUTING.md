@@ -23,6 +23,20 @@ also permits 3.10, but nothing verifies it — do not rely on it.
 - **Run the fast suite.** `pytest -q -m "not slow"` is the core of the merge
   gate; the full list of required checks is in
   [docs/MAIN_PROTECTION.md](docs/MAIN_PROTECTION.md).
+- **Run the project-wide pins first: `delfin-dev precheck`.** A PR can pass
+  its own tests and still fail CI on a pin that lives elsewhere. `delfin-dev
+  precheck` diffs your branch against `origin/main...HEAD`, runs the changed
+  test files plus the pin tests guarding what changed (tool schema
+  dispatch, the tool-surface registry, the entry points, the console-script
+  gate, child_env, the licence guard, the launcher checksums), ruff with
+  CI's gated selection (`F821,F811,F601,F402,F823`), and — when
+  `delfin/agent/service/protocol.py` changed — compares
+  `tui/src/protocol/generated.ts` against a regeneration done in Python, so
+  bun is not needed. It exits non-zero on any failure. `--diff` takes
+  another revision range, `--python` another interpreter, `--skip-ruff`
+  skips the lint check. The mapping lives in one table in
+  `delfin/dev_precheck.py`; run it on the CI interpreter when your local
+  one differs.
 - **Prove it against the real thing.** If your change affects how ORCA, xTB or
   CREST are driven, run it. Unit tests do not catch that ORCA looks for a
   restart file in its working directory rather than next to the input, or that

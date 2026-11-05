@@ -133,7 +133,27 @@ def _positive(config: Mapping[str, Any], key: str, default: float) -> float:
 
 
 def hessian_frequencies(hess_path: Path) -> List[float]:
-    """The ``$vibrational_frequencies`` of an ORCA .hess file; imaginary ones are negative."""
+    """The ``$vibrational_frequencies`` of an ORCA .hess file; imaginary ones are negative.
+
+    Routes through :func:`delfin.orca_read.read_hess`
+    (Quantity.VIBRATIONAL_FREQUENCIES); the original body below is the
+    text fallback / registered text reader. The .hess has no OPI
+    counterpart, so the value is the old parser's.
+    """
+    from delfin import orca_read
+
+    try:
+        reading = orca_read.read_hess(Path(hess_path),
+                                      orca_read.Quantity.VIBRATIONAL_FREQUENCIES)
+    except Exception:
+        reading = None
+    if reading is not None and reading.value is not None:
+        return list(reading.value)
+    return _hessian_frequencies_text(hess_path)
+
+
+def _hessian_frequencies_text(hess_path: Path) -> List[float]:
+    """The established text parser; registered as orca_read's text reader."""
     lines = Path(hess_path).read_text(encoding="utf-8", errors="ignore").splitlines()
     for i, line in enumerate(lines):
         if line.strip().lower() == "$vibrational_frequencies":
@@ -164,7 +184,27 @@ def saddle_reason(label: str, hess_path: Path, config: Mapping[str, Any]) -> Opt
 
 
 def collect_imaginary_modes(log_file: str) -> List[Tuple[int, float]]:
-    """(mode index, frequency) of the imaginary modes an ORCA output prints, most negative first."""
+    """(mode index, frequency) of the imaginary modes an ORCA output prints, most negative first.
+
+    Routes through :func:`delfin.orca_read.read` (Quantity.IMAGINARY_MODES);
+    the original body below is the text fallback / registered text reader,
+    so ``orca.reader=text`` and failed/missing runs behave exactly as before.
+    """
+    from delfin import orca_read
+
+    try:
+        reading = orca_read.read(str(Path(log_file).parent),
+                                 Path(log_file).stem,
+                                 orca_read.Quantity.IMAGINARY_MODES)
+    except Exception:
+        reading = None
+    if reading is not None and reading.value is not None:
+        return list(reading.value)
+    return _collect_imaginary_modes_text(str(log_file))
+
+
+def _collect_imaginary_modes_text(log_file: str) -> List[Tuple[int, float]]:
+    """The established text parser; registered as orca_read's text reader."""
     modes: List[Tuple[int, float]] = []
     try:
         with open(log_file, "r", errors="ignore") as fh:
