@@ -259,8 +259,16 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
 
     chat = _classed(widgets.HTML(""), "delfin-agent-chat-host")
     approval_box = widgets.VBox([])
+    # "change the command" (key c): the asked command, to edit and run once.
+    change_input = widgets.Text(layout=widgets.Layout(width="100%"))
+    change_run = widgets.Button(description="Run this instead", button_style="warning",
+                                layout=widgets.Layout(width="auto"))
+    change_cancel = widgets.Button(description="Cancel", layout=widgets.Layout(width="auto"))
+    change_box = _classed(widgets.HBox([change_input, change_run, change_cancel],
+                                       layout=widgets.Layout(display="none")), "delfin-live-asked")
     wait_html = _classed(widgets.HTML(""), "delfin-live-where")
-    frame = _classed(widgets.VBox([chat, approval_box, wait_html]), "delfin-agent-chat-frame")
+    frame = _classed(widgets.VBox([chat, approval_box, change_box, wait_html]),
+                     "delfin-agent-chat-frame")
 
     input_box = _classed(widgets.Textarea(placeholder=(
         "Message this session. Enter sends; while it works the message waits "
@@ -382,18 +390,42 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
         for option in asked.get("options") or []:
             key = str(option.get("key") or "")
             label = str(option.get("label") or key)
+            if key == "c" and not asked.get("command"):
+                # Nothing to edit (the command holds a secret the preview
+                # masks): the key is not offered here.
+                continue
             b = widgets.Button(description=label[:48], tooltip=f"{key}: {option.get('detail') or label}")
 
             def on_click(_b, _key=key, _btn=b, _label=label):
+                if _key == "c":
+                    # The command to change, in the edit box under the cards;
+                    # "Run this instead" sends it (approved once, as edited).
+                    view["change_rid"] = rid
+                    change_input.value = str(asked.get("command") or "")
+                    change_box.layout.display = ""
+                    return
                 lasting = _key in ("A", "k")
                 if lasting:
                     armed = view["armed"].get((rid, _key), 0.0)
-                    if time.monotonic() - armed > CONFIRM_S:
+                    window = CONFIRM_S
+                    if time.monotonic() - armed > window:
                         view["armed"][(rid, _key)] = time.monotonic()
                         _btn.description = "Click again: save this rule"
+
+                        def disarm(_btn=_btn, _label=_label, _k=(rid, _key)):
+                            # Past its window it says again what it does.
+                            if time.monotonic() - view["armed"].get(_k, 0.0) >= window:
+                                view["armed"].pop(_k, None)
+                                _btn.description = _label[:48]
+                        timer = threading.Timer(window, disarm)
+                        timer.daemon = True
+                        timer.start()
                         return
-                call(lambda: client.reply(sid, rid, choice=_key, persist=lasting or None),
-                     "Not answered")
+                    view["armed"].pop((rid, _key), None)
+                got = call(lambda: client.reply(sid, rid, choice=_key, persist=lasting or None),
+                           "Not answered")
+                if got and not got.get("applied") and got.get("message"):
+                    say(str(got["message"]))        # e.g. "?": what each key does
             b.on_click(on_click)
             buttons.append(b)
         return _classed(widgets.VBox([text, widgets.HBox(buttons)]), "delfin-live-asked")
@@ -405,6 +437,9 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
         if keys == view["asked_keys"]:
             return
         view["asked_keys"] = keys
+        if view.get("change_rid") not in keys:
+            view["change_rid"] = ""
+            change_box.layout.display = "none"
         approval_box.children = tuple(_asked_widget(a) for a in pending)
 
     def render_now() -> None:
@@ -508,6 +543,22 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 say(f"/{word} {value} waits for the running turn to end")
         return on_change_
 
+    def on_change_run(_b=None) -> None:
+        rid = str(view.get("change_rid") or "")
+        command = str(change_input.value or "").strip()
+        if not rid or not command:
+            return
+        if call(lambda: client.reply(sid, rid, choice="c", command=command),
+                "Not changed") is not None:
+            view["change_rid"] = ""
+            change_box.layout.display = "none"
+
+    def on_change_cancel(_b=None) -> None:
+        view["change_rid"] = ""
+        change_box.layout.display = "none"
+
+    change_run.on_click(on_change_run)
+    change_cancel.on_click(on_change_cancel)
     send_btn.on_click(send)
     steer_btn.on_click(lambda _b: send(how="steer"))
     cancel_btn.on_click(lambda _b: call(lambda: client.cancel(sid), "Not stopped"))
@@ -607,6 +658,8 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             "stop_no": stop_no, "perm": perm_dd, "mode": mode_dd, "model": model_dd,
             "effort": effort_dd, "chat": chat, "notice": notice_html, "close": close,
             "render_now": render_now, "opened": opened, "say": say,
+            "change_box": change_box, "change_input": change_input, "change_run": change_run,
+            "change_cancel": change_cancel,
             "show": attach, "hide": hide, "attached": lambda: bool(view.get("attached")),
             "name": lambda: transcript.name, "busy": lambda: transcript.busy,
             "needs": lambda: transcript.needs_you, "sid": sid}
