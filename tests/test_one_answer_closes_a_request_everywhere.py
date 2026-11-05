@@ -83,6 +83,12 @@ class BrokerService:
 
 @pytest.fixture
 def acct(tmp_path, monkeypatch):
+    return make_account(tmp_path, monkeypatch)
+
+
+def make_account(tmp_path, monkeypatch):
+    """anna's account with one service session s-anna whose questions a
+    real ProtocolBroker asks, enabled for her phone 21 in room #a1."""
     monkeypatch.setenv("DELFIN_MESSENGER_LANG", "en")
     account = Account(tmp_path, monkeypatch)
     anna_home = account.home / "people" / "anna"
