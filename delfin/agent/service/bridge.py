@@ -866,9 +866,11 @@ class Bridge:
                 path = people.pairing_dir(name)
                 if path is None or not path.is_dir():
                     continue
-                for item in pairing.collect(path):
+                # At most POLL_PER_PERSON of each person, oldest first: one
+                # person's flood never hides another person's request.
+                for item in pairing.collect(path)[:pairing.POLL_PER_PERSON]:
                     found.append({**item, "person": name})
-            return {"ok": True, "requests": found[:20]}
+            return {"ok": True, "requests": found}
         name = str(params.get("person") or "")
         path = people.pairing_dir(name) if people.valid(name) else None
         if path is None:

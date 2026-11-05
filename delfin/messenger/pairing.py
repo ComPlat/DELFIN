@@ -63,6 +63,8 @@ MAX_PHONES = 3
 #: Invitations per person per window.
 INVITES_PER_WINDOW = 3
 INVITE_WINDOW_S = 600
+#: Requests of one person the gateway is handed per poll (oldest first).
+POLL_PER_PERSON = 3
 #: The confirmation code the phone receives.
 CODE_DIGITS = 6
 MAX_ATTEMPTS = 3
@@ -685,7 +687,7 @@ def collect(path: Path, *, now: float | None = None) -> list[dict]:
             continue
         requests[rid] = data
     out = []
-    for rid, data in requests.items():
+    for rid, data in sorted(requests.items(), key=lambda kv: float(kv[1]["created"])):
         kind = data["kind"]
         item = {"id": rid, "kind": kind}
         if kind == "pair":
