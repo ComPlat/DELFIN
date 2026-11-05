@@ -121,4 +121,4 @@ def test_a_plain_line_answers_a_question_of_a_session_outside_the_service(acct):
     asyncio.run(one._refresh(acct))
     acct.say("21", "@21", "water")
     th.join(5)
-    assert box["result"]["answers"] == ["water"]
+    assert box.get("result", {}).get("answers") == ["water"], acct.daemon.to("@21")

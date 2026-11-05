@@ -10392,7 +10392,8 @@ def create_tab(ctx):
             ev.wait(timeout=300)
         _close_ask_user_modal(ev)
         if not result["answers"]:
-            return {"answers": [], "timed_out": True}
+            return {"answers": [], "timed_out": True,
+                    "unanswered": "no answer (timed out after 300 s)"}
         return result
 
     @_serialized_gate(state)

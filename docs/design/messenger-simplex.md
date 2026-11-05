@@ -215,6 +215,14 @@ request is never offered through the room. Answered at a window, the phone's
 card is updated in place to "Answered at the computer" (APIUpdateChatItem);
 a late phone reply then maps to nothing.
 
+**A typed line answers the one open question.** While exactly one question
+of a session waits, a plain line in that session's chat (or, for a session
+outside the service, in the direct chat holding its card) is the answer: an
+option number or label, else free text. Approvals are never answered this
+way; they take a reply to their card. A question that ends without an
+answer says why to the model (`unanswered`: stopped, expired, timed out
+after N s, dismissed); the empty answer list is never presented as a choice.
+
 Use SimpleX's **Reply** gesture on the concrete request, then type `yes`/`ja`,
 `no`/`nein`, an offered option key or its full label. For a question, reply with
 your selection or free text. No slash command or code is required. A bare `yes`

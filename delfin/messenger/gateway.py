@@ -618,6 +618,11 @@ class Rooms:
                 return t('Zuerst in der gewünschten TUI-/Dashboard-Sitzung /sync eingeben.')
             await self.ensure_room(rest.strip())
             return t('Einladung zum festen Sitzungs-Chat gesendet. Bitte in SimpleX annehmen.')
+        if (room is None or room['session_id'] is None) and text[:1] not in {'@', '/', '!'} \
+                and (card := self._open_room_question(chat)):
+            # The question of a session outside the service waits in this
+            # chat: the line is its answer (answer_open_question).
+            return await self.room_reply(text, chat, card[0], card[1])
         if room is None:
             return t('Dieser Chat dient nur der Einrichtung. sessions zeigt deine Sitzungen, hol N holt eine aufs Handy, /sync richtet Forum und Einzelchats ein.')
         sid = room['session_id']
@@ -709,6 +714,9 @@ class Rooms:
                 elif command == 'status':
                     reply = await self.session(target_sid, 'status')
                     result = reply.get('error') or '\n'.join(filter(None, [reply.get('state'), reply.get('activity'), reply.get('answer')]))
+                elif (len(targets) == 1 and command not in {'stop', 'update'}
+                      and (answered := await self.answer_open_question(target_sid, text, chat)) is not None):
+                    result = answered
                 else:
                     action = 'stop' if command == 'stop' else 'update' if command == 'update' else 'prompt'
                     task = t(UPDATE) if command == 'update' else text
@@ -1188,6 +1196,36 @@ class Rooms:
             self._reply_targets = {k: v for k, v in self._reply_targets.items() if v['id'] != item['id']}
             return t('Antwort übernommen. Die Anfrage ist auch in TUI/Dashboard erledigt.')
         return reply.get('error') or t('Die Anfrage wurde nicht übernommen.')
+
+    async def answer_open_question(self, sid, text, chat):
+        """A plain line in a session's chat while exactly one question of
+        that session waits is its answer (an option label or number, else
+        free text), not a new prompt: as a prompt it reached the blocked
+        turn only after the question had expired with no answer.
+
+        Output: the reply text, or None when the line is a prompt (no
+        question waits, or more than one). Approvals are never answered
+        this way; they take a reply to their card."""
+        reply = await self.session(sid, 'pending')
+        questions = [i for i in reply.get('items') or [] if i.get('kind') == 'question']
+        if len(questions) != 1:
+            return None
+        item = questions[0]
+        answer = await self.session(sid, 'answer', id=item['id'], text=text.strip())
+        if answer.get('ok'):
+            self._answered_here.add(item['id'])
+            self._reply_targets = {k: v for k, v in self._reply_targets.items() if v.get('id') != item['id']}
+            return t('Antwort übernommen. Die Anfrage ist auch in TUI/Dashboard erledigt.')
+        return answer.get('error') or t('Die Anfrage wurde nicht übernommen.')
+
+    def _open_room_question(self, chat):
+        """The one question card of a session outside the service shown
+        in ``chat`` (a direct chat), or None (none, or several)."""
+        cards = [(mid, item) for (c, mid), item in self._reply_targets.items()
+                 if c == chat and item.get('room') and item.get('kind') == 'question'
+                 and item.get('_person', OWNER) == self._person()
+                 and time.monotonic() - item.get('_sent_at', 0) <= 600]
+        return cards[0] if len(cards) == 1 else None
 
     async def room_reply(self, text, chat, quote_id, item):
         """A reply to a card of a session outside the service: answered

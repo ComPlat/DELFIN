@@ -28728,6 +28728,19 @@ class _DocToolExecutor:
                     "The user typed this answer in the chat instead of "
                     "picking an option; it may lie outside the options "
                     "offered. Take it as their answer and continue.")
+        # No answer always says why (``unanswered``): stopped, expired,
+        # timed out, or dismissed. A bare empty list was read as a choice
+        # and the model guessed one (field report, phone session).
+        if not answers:
+            payload["unanswered"] = str(result.get("unanswered") or (
+                "no answer (timed out)" if result.get("timed_out") else
+                "no answer (dismissed without picking an option)"))[:200]
+            if not result.get("timed_out"):
+                payload["note"] = (
+                    f"The question ended with {payload['unanswered']}. The "
+                    "empty answer list is not a choice; do not pick one for "
+                    "the user. Continue only where no answer is needed, or "
+                    "end the turn and say what is waiting.")
         # Surface the UI's timeout flag: empty answers because the user is
         # AWAY must not read like the user actively chose nothing (weak
         # models re-ask the identical question in a loop otherwise).
