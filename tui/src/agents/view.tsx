@@ -11,7 +11,7 @@
  *   space        peek at it (and reply to it, without opening it)
  *   ctrl+x       stop it (twice); an ended one leaves the list; an item
  *                is dismissed (what waits or failed: twice)
- *   ctrl+r       rename it           ctrl+t      pin it
+ *   ctrl+r / F2  rename it           ctrl+t      pin it
  *   alt+1…9      open the n-th       esc / ←     back
  *   typing + enter                   a new session, in this window's folder
  *                                    (with an item's peek open: its answer)
@@ -80,11 +80,13 @@ function statusOf(s: SessionState): SessionStatus {
   return "done"
 }
 
-/** What a session is called: its name -- an untitled one by what it was
- *  first asked (a name that does not change with every prompt). */
+/** What a session is called: its name -- the one the service gives every
+ *  window (`name`: its title, else folder and short id); from a service
+ *  before that field, an untitled one by what it was first asked. */
 export function sessionName(s: SessionState): string {
   const summary = (s.summary ?? {}) as Record<string, any>
-  return s.title || String(summary.title || "") || String(summary.firstPrompt || summary.lastPrompt || "").split("\n")[0]
+  return s.title || String(summary.title || "") || String(summary.name || "")
+    || String(summary.firstPrompt || summary.lastPrompt || "").split("\n")[0]
     || s.id.slice(0, 8)
 }
 

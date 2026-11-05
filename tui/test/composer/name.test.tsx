@@ -23,13 +23,16 @@ afterEach(async () => { await open?.close(); open = null })
 
 function service() {
   const calls: Call[] = []
+  // What the fake service runs: what the test announced.
+  const running: Record<string, unknown>[] = []
   return {
     calls,
+    running,
     client: {
       request: async (method: string, params: Record<string, any> = {}) => {
         calls.push({ method, params })
         if (method === "session.setTitle") return { title: params.title }
-        if (method === "sessions.list") return { sessions: [], elsewhere: [] }
+        if (method === "sessions.list") return { sessions: running, elsewhere: [] }
         if (method === "session.replay") return { events: [] }
         if (method === "session.commands") return { commands: [] }
         return { applied: true, message: "", accepted: true }
@@ -108,17 +111,22 @@ describe("F2 in the agent view", () => {
   test("renames the selected session, the name ready to edit", async () => {
     const s = service()
     const w = open = await mountWindow({ client: s.client })
-    w.store.push({ type: "session.summary", session: "d1", ts: 0,
-                   summary: { sessionId: "d1", title: "write the report", name: "write the report",
-                              workspace: "/work/d1", provider: "kit", model: "kit.test", approval: "default",
-                              state: "idle", pending: 0, costUsd: 0, createdAt: 1003,
-                              lastActivity: Date.now() / 1000, pid: 1 } } as never)
+    const base = { workspace: "/work/x", provider: "kit", model: "kit.test", approval: "default",
+                   state: "idle", pending: 0, costUsd: 0, lastActivity: Date.now() / 1000, pid: 1 }
+    for (const summary of [{ ...base, sessionId: "s1", title: "this window", name: "this window", createdAt: 900 },
+                           { ...base, sessionId: "d1", title: "write the report", name: "write the report",
+                             createdAt: 1003 }]) {
+      s.running.push(summary)
+      w.store.push({ type: "session.summary", session: summary.sessionId, ts: 0, summary } as never)
+    }
     await w.settle()
     w.keys.pressArrow("left")
     await w.settle()
-    w.keys.pressArrow("up")
-    await w.settle()
-    w.keys.pressKey("f2")
+    for (let i = 0; i < 4 && !/›\s+\S\s+write the report/.test(w.footer().join("\n")); i++) {
+      w.keys.pressArrow("down")
+      await w.settle()
+    }
+    w.keys.pressKey("F2")
     await w.settle()
     expect(w.footer().join("\n")).toContain("❯ write the report")
     await w.keys.typeText(" v2")
