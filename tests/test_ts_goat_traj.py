@@ -165,6 +165,17 @@ def test_cache_reuse_returns_hessian_frequency(hessian, tmp_path):
     assert result.trajectory.frequency_cm1 == pytest.approx(-21.86)
 
 
+def test_cache_check_runs_without_hashlib_file_digest(
+        hessian, tmp_path, monkeypatch):
+    """hashlib.file_digest is 3.11+; requires-python admits 3.10."""
+    import hashlib
+    monkeypatch.delattr(hashlib, 'file_digest', raising=False)
+    cached = _seed_cache(hessian, tmp_path / 'cache')
+    result = ts_goat_traj.generate_vibration_trajectory(
+        hessian, 6, cache_dir=cached.parent, pltvib='not-needed')
+    assert result.trajectory is not None and result.reused
+
+
 def test_changed_hessian_invalidates_cached_mode(hessian, tmp_path):
     """Same-name Hessian with changed modes must discard old XYZ frames."""
     cached = _seed_cache(hessian, tmp_path / 'cache')

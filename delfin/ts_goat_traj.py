@@ -215,9 +215,14 @@ def generate_vibration_trajectory(
     # Never reuse a trajectory computed from an earlier Hessian with the
     # same filename. Comparing bytes also catches recalculations that keep
     # their old mtime/size and have unchanged optimized coordinates.
+    # hashlib.file_digest exists only from Python 3.11; DELFIN supports
+    # 3.10 (pyproject requires-python), so hash in fixed-size chunks.
     def _digest(path: Path) -> bytes:
+        digest = hashlib.sha256()
         with path.open('rb') as handle:
-            return hashlib.file_digest(handle, 'sha256').digest()
+            for chunk in iter(lambda: handle.read(1 << 20), b''):
+                digest.update(chunk)
+        return digest.digest()
 
     try:
         changed = (
