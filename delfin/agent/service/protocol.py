@@ -160,7 +160,7 @@ EVENTS: dict[str, dict[str, str]] = {
     # seconds; no ages, so it is sent when the set changes, not each
     # second. The window draws the ages.
     "session.updated": {"approval": "string?", "model": "string?",
-                        "effort": "string?", "title": "string?",
+                        "effort": "string?", "mode": "string?", "title": "string?",
                         "tasks": "[object]?", "bypassBlocked": "string?",
                         "bypassConfirmed": "boolean?", "auto": "string?",
                         "background": "[object]?"},

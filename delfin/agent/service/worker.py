@@ -1180,6 +1180,9 @@ class Worker:
                 "model": str(getattr(client, "model", "") or ""),
                 "effort": str(getattr(client, "effort", "")
                               or getattr(self.engine, "effort", "") or ""),
+                # The agent mode: /mode switches the engine, and every
+                # window has to hear it (session.updated.mode).
+                "mode": str(getattr(self.engine, "mode", "") or ""),
                 "tasks": self._task_rows(),
                 # Whether shift+tab may stop on bypass ("" yes, else why
                 # not) and whether its first step was confirmed already.
@@ -1307,7 +1310,7 @@ class Worker:
                 # As session.updated reports it later: a window that starts
                 # from this header must show the effort the session has.
                 "effort": facts["effort"],
-                "mode": str(getattr(self.engine, "mode", "") or ""),
+                "mode": facts["mode"],
                 "approval": facts["approval"],
                 "title": self.title or None,
                 "banner": [l for l in self.banner if l is not None],

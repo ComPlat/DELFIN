@@ -178,6 +178,7 @@ export interface SessionUpdatedEvent {
   "approval"?: string | null
   "model"?: string | null
   "effort"?: string | null
+  "mode"?: string | null
   "title"?: string | null
   "tasks"?: Record<string, unknown>[] | null
   "bypassBlocked"?: string | null

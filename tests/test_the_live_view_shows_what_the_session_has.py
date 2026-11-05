@@ -66,3 +66,24 @@ def test_a_session_started_with_an_effort_shows_that_effort(service, tui, dash):
     assert _until(lambda: refs["effort"].value == "high"), refs["effort"].value
     refs["close"]()
 
+
+
+def test_a_mode_switch_reaches_every_window_and_the_picker_offers_no_dashboard(service, tui, dash):
+    from delfin.dashboard import live_tab
+
+    sid = service.session(tui)
+    tui.request("session.attach", {"sessionId": sid})
+    _widget, refs = live_tab.build_live_tab(dash, sid)
+    assert _until(lambda: refs["mode"].value == "solo")
+    # A service session cannot drive a dashboard's tabs: not offered.
+    assert _until(lambda: "research" in [v for _, v in refs["mode"].options])
+    offered = [v for _, v in refs["mode"].options]
+    assert "research" in offered and "dashboard" not in offered
+    mark = len(tui.events)
+    tui.request("session.prompt", {"sessionId": sid, "text": "/mode research"})
+    # Control: the command ran (its notice), then the posture-like update.
+    tui.wait_for(lambda e: e.get("type") == "notice" and "research" in str(e.get("text")), after=mark)
+    tui.wait_for(lambda e: e.get("type") == "session.updated" and e.get("mode") == "research",
+                 after=mark, timeout=10)
+    assert _until(lambda: refs["mode"].value == "research")
+    refs["close"]()

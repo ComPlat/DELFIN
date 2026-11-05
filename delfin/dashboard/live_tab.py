@@ -38,6 +38,9 @@ from delfin.dashboard import live_sessions as LS
 #: (the in-kernel tab's rate, about 8 per second).
 RENDER_DELAY_S = 0.12
 
+#: Agent modes a service session cannot run: they need this kernel's page.
+_KERNEL_ONLY_MODES = frozenset({"dashboard"})
+
 #: The effort picker's words (the in-kernel tab's labels).
 _EFFORT_LABELS = {"": "Default", "low": "Low", "medium": "Medium", "high": "High",
                   "xhigh": "Extra High"}
@@ -529,6 +532,10 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             options = [(labels.get(str(c.get("value") or ""), str(c.get("value") or "")),
                         str(c.get("value") or "")) for c in got.get("choices") or []
                        if c.get("value") or what == "effort"]
+            if what == "mode":
+                # Dashboard mode drives a dashboard's own tabs, which a
+                # session in the agent service does not have: not offered.
+                options = [o for o in options if o[1] not in _KERNEL_ONLY_MODES]
             # The session's own value first (its info), then what the
             # picker says is current.
             current = str(transcript.info.get(what) or got.get("current") or "")
