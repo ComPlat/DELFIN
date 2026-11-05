@@ -138,6 +138,15 @@ which returns nothing inside an agent session. The model then repeats the
 call with `approval=<id>`. The kernel checks the MAC, the binding, the
 expiry and that the grant is unused, consumes it, and only then writes.
 
+A write of a channel's own **safe value** (a hotplate setpoint back to
+20 °C, a pump to 0 mL/min) is treated as benign. It moves the device toward
+its safe state, so a cool-down never waits for a person. Every other check
+still applies, and the write is audited.
+
+A workflow pauses at a hazardous step (`waiting_approval`, with the request
+id in the run's checkpoint). After the person approves, `resume` repeats
+that step with the grant. Approving a whole plan in one step is phase 5.
+
 ## 5. Dead-man
 
 | Item | Design |
@@ -163,6 +172,7 @@ listed in §11.
 | scopes | global, or one module |
 | triggers | `delfin-agent lab estop [--module M]`, the `lab_estop` tool, `delfin.lab.estop.trigger()` for dashboard/TUI/phone, later a GPIO button on the edge |
 | order | 1. stop flag written (under `flock`; every write is refused from here on) 2. every device in scope driven to its safe state, continuing past failures 3. locks revoked, pending approvals cancelled 4. audit + security event |
+| a write in flight | the kernel checks the flag again after every driver write. If the stop arrived while a write was in flight (the stop's own pass may have run first), the write is undone at once by putting the device in its safe state, and the call reports `estop` |
 | ownership | its own process: the CLI does the stop itself, and `delfin-lab-estop.service` re-asserts the safe state every 2 s while the stop is active, reporting a readback that does not hold. The agent loop is not on this path |
 | reset | `lab estop --clear` by a person (refused inside an agent session). Clearing restarts nothing: devices stay in their safe state (IEC 60204-1 9.2.3.4: a reset "shall not restart the machinery but only permit restarting" [abb-estop]) |
 | two channels | the software stop is channel 2. Channel 1 is a hardware e-stop that cuts power to the devices (category 0 stop [kollmorgen]); a two-channel safety relay is the established design [rs-relay] |
@@ -205,7 +215,7 @@ LabIMotion-shaped payload, and nothing is uploaded yet.
 
 | Item | Pi 5 (Debian arm64) | workstation |
 |---|---|---|
-| e-stop owner | `delfin-lab-estop.service` | `delfin-agent lab daemon --role estop` (foreground, or `lab daemon start` with a pid file) |
+| e-stop owner | `delfin-lab-estop.service` | `delfin-agent lab daemon --role estop` (foreground, or `--detach`: double fork, pid and log file in the lab directory) |
 | dead-man | `delfin-lab-watchdog.service` | `lab daemon --role deadman` |
 | installed by | `scripts/pi/pi_install.sh` as systemd **user** units (agent user, linger enabled by the admin), idempotent, restarted on deploy | by hand |
 | hardening | `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only` + `ReadWritePaths=<lab_dir>`, `PrivateTmp`, `RestrictAddressFamilies=AF_UNIX`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native` | n/a |
@@ -229,8 +239,22 @@ kernel as a separate `delfin-lab` user in the `gpio` group, with the agent
 talking to it over a Unix socket (phase 3). This is a deviation from the
 requested "agent user gets only the gpio group".
 
-People mode. The manifest is per installation (`<account>/.delfin/lab`, not
-per person). Locks and approvals name the person.
+People mode. The manifest is per installation: the lab directory
+resolves to `<account>/.delfin/lab` for a HOME of the form
+`<account>/people/<name>`, never to the person's own HOME. Locks and
+approvals name the person. One person's session never takes another
+person's lock (`locked`, the holder named), and a grant for another
+person's request is refused. On top of that, each person's grant is signed
+with that person's own trust-store key, so it does not verify for someone
+else's request. Test: `test_lab_safety_kernel.py::test_another_person_cannot_take_a_lock_or_approve`.
+
+Failure and resume. A failed step stops the run (`failed`). The run keeps
+its module locks so it can resume, and the record is written anyway,
+because a failure is data. `resume` continues from the failed step and
+never repeats a completed one. A device the edge latched (a readback
+mismatch, a dead-man trip) stays latched until a person runs `lab clear
+<device>`. `Coordinator.abandon(run_id)` releases a run that will not
+resume.
 
 ## 10. Network isolation
 
