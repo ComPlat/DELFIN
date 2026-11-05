@@ -398,6 +398,8 @@ include = ["delfin*"]
 # The ORCA knowledge cards and the keyword catalog of the pinned OPI.
 "delfin.orca_knowledge" = ["*.json", "cards/*.json"]
 "delfin.notebooks" = ["*.ipynb"]
+# The simulated demo lab: the smoke check and the tests load it as data.
+"delfin.lab" = ["examples/*.yaml"]
 "delfin.manta" = ["*.md"]
 "delfin.voila_assets" = ["login_templates/*.html"]
 

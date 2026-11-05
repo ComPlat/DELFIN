@@ -14,11 +14,11 @@ import copy
 import pytest
 import yaml
 
-from delfin.lab import expr, manifest, smoke, units
+from delfin.lab import expr, manifest, units
 
 
 def _doc():
-    return yaml.safe_load(smoke.demo_manifest_text())
+    return yaml.safe_load(manifest.demo_text())
 
 
 def _device(doc, dev_id):
