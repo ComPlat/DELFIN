@@ -73,7 +73,7 @@ _LIVE_CSS = """<style>
 .delfin-live-controls .widget-dropdown { width: auto !important; }
 .delfin-live-controls select { font-size: 12px; }
 .delfin-live-notice { font-size: 12px; color: #b45309; }
-.delfin-live-asked { gap: 4px; padding: 6px 8px; margin: 4px 6px; background: #fff7ed;
+.delfin-live-asked, .delfin-live-change { gap: 4px; padding: 6px 8px; margin: 4px 6px; background: #fff7ed;
     border: 1px solid #fdba74; border-radius: 6px; }
 .delfin-live-asked pre { max-height: 180px; overflow: auto; font-size: 11px; margin: 2px 0;
     white-space: pre; line-height: 1.35; font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
@@ -265,7 +265,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                                 layout=widgets.Layout(width="auto"))
     change_cancel = widgets.Button(description="Cancel", layout=widgets.Layout(width="auto"))
     change_box = _classed(widgets.HBox([change_input, change_run, change_cancel],
-                                       layout=widgets.Layout(display="none")), "delfin-live-asked")
+                                       layout=widgets.Layout(display="none")), "delfin-live-change")
     wait_html = _classed(widgets.HTML(""), "delfin-live-where")
     frame = _classed(widgets.VBox([chat, approval_box, change_box, wait_html]),
                      "delfin-agent-chat-frame")
