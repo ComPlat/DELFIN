@@ -22,7 +22,7 @@ import time
 from collections import deque
 
 from . import audit, pairing, simplex, store
-from .lang import command_word, t
+from .lang import command_word, t, yes_no
 from .render import cut, in_forum, more_hint, status_text
 from .people import OWNER
 from .bridge_client import BridgeClient, BridgeDown, default_socket_path
@@ -222,6 +222,8 @@ class Rooms:
         self._working: dict[str, str] = {}
         #: chat -> the rest of the last answer that was cut (``more``).
         self._more: dict[str, str] = {}
+        #: chat -> (when, code) of each approval card sent (plain_decision).
+        self._cards_sent: dict[str, deque] = {}
 
     # -- who is acting -------------------------------------------------------------
 
@@ -392,6 +394,8 @@ class Rooms:
                     mid = ((wrapped.get('chatItem') or {}).get('meta') or {}).get('itemId')
                     if mid is not None:
                         sent.append(str(mid))
+                    if request and mid is not None and not start and request.get('kind') in {'confirm', 'plan'}:
+                        self._cards_sent.setdefault(chat, deque()).append((time.monotonic(), request.get('id')))
                     if request and mid is not None:
                         self._reply_targets[(chat, str(mid))] = {
                             **request, '_sent_at': time.monotonic(), '_person': self._person()}
@@ -521,8 +525,11 @@ class Rooms:
                 _PERSON.reset(token)
         if quote_id is not None:
             return await self.reply(text, room, chat, quote_id)
-        if text.strip().lower() in {'yes', 'no', 'ja', 'nein', 'y', 'n', 'approve', 'deny'}:
-            return t('Bitte bei der konkreten SimpleX-Anfrage auf Antworten tippen und dort yes/no schreiben. So bleibt die Entscheidung eindeutig.')
+        if text.split()[:1] != ['stop'] and yes_no(text) is not None:
+            plain = await self.plain_decision(text, room, chat)
+            if plain is not None:
+                return plain
+            # No approval card in this chat: the yes is for the agent.
         word, _, rest = text.partition(' ')
         command = word.lower().lstrip('/')
         named = self._short_command(text)
@@ -1173,12 +1180,13 @@ class Rooms:
             reply = await self.session(sid, 'answer', id=item['id'], text=text)
         else:
             normalized = text.strip().lower()
+            verdict = yes_no(text)
             if item.get('confirmChoice'):
-                if normalized in {'no', 'nein', 'n'}:
+                if verdict == 'n':
                     self._reply_targets.pop((chat, str(quote_id)), None)
                     return t('Dauerhafte Freigabe nicht gespeichert. Die ursprüngliche Anfrage bleibt offen.')
-                if normalized not in {'yes', 'ja', 'y'}:
-                    return t('Bitte mit yes/ja oder no/nein auf die Bestätigung antworten.')
+                if verdict != 'y':
+                    return t('Ja oder nein?')
                 choice, persist = item['confirmChoice'], True
             else:
                 options = item.get('options', [])
@@ -1192,15 +1200,15 @@ class Rooms:
                         self._reply_targets = {k: v for k, v in self._reply_targets.items() if v['id'] != item['id']}
                         return t('Befehl geändert. Er läuft einmal, genau so:\n') + changed
                     return reply.get('error') or t('Die Änderung wurde nicht übernommen.')
-                if normalized in {'yes', 'ja'}:
+                # An option key or label first ("n" is both a key and a no).
+                choice = next((o['key'] for o in options if text.strip() == o.get('key') or
+                               normalized == str(o.get('label', '')).lower()), '')
+                if not choice and verdict == 'y':
                     choice = 'y' if 'y' in keys else 'd' if 'd' in keys else 'e'
-                elif normalized in {'no', 'nein'}:
+                elif not choice and verdict == 'n':
                     choice = 'n'
-                else:
-                    choice = next((o['key'] for o in options if text.strip() == o.get('key') or
-                                   normalized == str(o.get('label', '')).lower()), '')
                 if choice not in keys or choice == '?':
-                    return t('Bitte yes/no oder eine der angezeigten Optionen antworten.')
+                    return t('Ja oder nein?')
                 persist = False
             reply = await self.session(sid, 'decide', id=item['id'], choice=choice, persist=persist)
             if reply.get('confirmationRequired'):
@@ -1214,6 +1222,39 @@ class Rooms:
             self._reply_targets = {k: v for k, v in self._reply_targets.items() if v['id'] != item['id']}
             return t('Antwort übernommen. Die Anfrage ist auch in TUI/Dashboard erledigt.')
         return reply.get('error') or t('Die Anfrage wurde nicht übernommen.')
+
+    #: A plain yes/no answers a card only when the card is at least this
+    #: old (seconds): a card that arrived while the person typed is not
+    #: the one they read.
+    PLAIN_MIN_AGE = 2.0
+    #: ... and when it is the only approval card this chat got in this
+    #: window (seconds), answered or not.
+    PLAIN_WINDOW = 600.0
+
+    async def plain_decision(self, text, room, chat):
+        """A yes or no typed without the reply gesture.
+
+        Output: the reply, or None when no approval card is in this chat
+        (the line is then for the agent). It answers the card only when
+        exactly one approval card was sent to this chat in PLAIN_WINDOW,
+        it is still open and at least PLAIN_MIN_AGE old; otherwise it
+        decides nothing and asks for the reply gesture -- a late yes never
+        approves an action the person has not read."""
+        if not room or not room['session_id']:
+            return t('Bitte bei der konkreten SimpleX-Anfrage auf Antworten tippen und dort yes/no schreiben. So bleibt die Entscheidung eindeutig.')
+        now = time.monotonic()
+        sent = [(when, code) for when, code in self._cards_sent.get(chat, ()) if now - when < self.PLAIN_WINDOW]
+        self._cards_sent[chat] = deque(sent)
+        open_cards = [(mid, item) for (c, mid), item in self._reply_targets.items()
+                      if c == chat and item.get('kind') in {'confirm', 'plan'}
+                      and item.get('sessionId') == room['session_id']
+                      and item.get('_person', OWNER) == self._person()]
+        if not open_cards:
+            return None
+        if len(sent) == 1 and len(open_cards) == 1 and open_cards[0][1].get('id') == sent[0][1] \
+                and now - open_cards[0][1].get('_sent_at', now) >= self.PLAIN_MIN_AGE:
+            return await self.reply(text, room, chat, open_cards[0][0])
+        return t('Mehrere Anfragen oder eine gerade erst gesendete: bitte direkt auf die Karte antworten (Antworten-Geste).')
 
     async def answer_open_question(self, sid, text, chat):
         """A plain line in a session's chat while exactly one question of
@@ -1250,14 +1291,13 @@ class Rooms:
         through the session's request room (bridge ``room``)."""
         if time.monotonic() - item.get('_sent_at', 0) > 600:
             return t('Diese Anfrage ist hier nicht mehr zugeordnet. Mit pending die aktuelle Frage anzeigen und darauf antworten.')
-        word = text.strip().lower()
+        verdict = yes_no(text)
         if item.get('kind') == 'question':
             reply = await self.ask({'cmd': 'room', 'action': 'answer', 'id': item['id'], 'text': text.strip()})
-        elif word in {'yes', 'ja', 'y', 'no', 'nein', 'n'}:
-            reply = await self.ask({'cmd': 'room', 'action': 'answer', 'id': item['id'],
-                                    'choice': 'y' if word in {'yes', 'ja', 'y'} else 'n'})
+        elif verdict is not None:
+            reply = await self.ask({'cmd': 'room', 'action': 'answer', 'id': item['id'], 'choice': verdict})
         else:
-            return t('Bitte mit yes/ja oder no/nein auf die Anfrage antworten.')
+            return t('Ja oder nein?')
         if reply.get('ok'):
             self._answered_here.add(item['id'])
             self._reply_targets = {k: v for k, v in self._reply_targets.items() if v.get('id') != item['id']}

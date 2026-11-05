@@ -46,6 +46,42 @@ COMMAND_WORDS = {
 }
 
 
+#: How people write yes and no on a phone, German and English (matchers).
+YES_WORDS = frozenset({
+    'yes', 'y', 'ja', 'j', 'jo', 'jap', 'jep', 'yep', 'yeah', 'yup', 'ok', 'okay', 'okey',
+    'klar', 'sicher', 'gerne', 'gern', 'mach', 'mach das', 'mach es', 'los', 'go', 'do it',
+    'passt', 'genau', 'richtig', 'freigeben', 'approve', 'erlauben', 'allow', 'sure',
+    'of course', 'natürlich', 'natuerlich', 'jawohl', '👍', '✅', '✔', '☑'})
+NO_WORDS = frozenset({
+    'no', 'n', 'nein', 'ne', 'nö', 'noe', 'nee', 'nope', 'nah', 'stop', 'stopp', 'halt',
+    'abbrechen', 'cancel', 'deny', 'ablehnen', 'nicht', 'lieber nicht', 'auf keinen fall',
+    'no way', 'verweigern', 'refuse', "don't", 'dont', '👎', '❌', '✖'})
+_POLITE = frozenset({'bitte', 'please', 'danke', 'thanks', 'thank you'})
+
+
+def yes_no(text: str) -> str | None:
+    """'y', 'n' or None: whether ``text`` is a yes or a no as people write
+    it (YES_WORDS, NO_WORDS; case, punctuation, a "please"/"bitte" and a
+    yes word in front of a yes phrase -- "Jo, mach das!" -- are allowed).
+    Anything with more in it ("ja aber erst morgen", "ja nein") is None:
+    never guessed."""
+    norm = str(text or '').replace('️', '').lower()
+    norm = ' '.join(norm.replace(',', ' ').strip(' .!?;:').split())
+    for polite in _POLITE:
+        if norm.endswith(' ' + polite):
+            norm = norm[:-len(polite) - 1].strip(' .!?;:')
+    if norm in YES_WORDS:
+        return 'y'
+    if norm in NO_WORDS:
+        return 'n'
+    head, _, rest = norm.partition(' ')
+    if head in YES_WORDS and rest in YES_WORDS:
+        return 'y'
+    if head in NO_WORDS and rest in NO_WORDS:
+        return 'n'
+    return None
+
+
 def command_word(word: str) -> str | None:
     """The command a typed word names (COMMAND_WORDS), or None."""
     return COMMAND_WORDS.get(str(word or '').strip().lower().lstrip('/'))
@@ -484,5 +520,8 @@ EN = {
     'Sitzung beendet.': 'Session ended.',
     '⚠️ Der Lauf ist fehlgeschlagen.': '⚠️ The run failed.',
     'Nichts weiter.': 'Nothing more.',
+    'Ja oder nein?': 'Yes or no?',
+    'Mehrere Anfragen oder eine gerade erst gesendete: bitte direkt auf die Karte antworten (Antworten-Geste).':
+    'Several requests, or one that just arrived: reply to the card itself (the reply gesture).',
     '📣 Mitteilung von *{who}*\n\n{content}': '📣 Note from *{who}*\n\n{content}',
 }

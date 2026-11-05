@@ -213,6 +213,14 @@ Forum text addresses enabled participants only, with a delivery result for each.
 
 ## Questions and approvals
 
+A yes or no is read as people write it (`lang.yes_no`: "ok", "jo, mach das",
+"nö", "👍", "no thanks", ... 40+ spellings); anything with more in it ("ja aber
+erst morgen") is asked "Yes or no?" and decides nothing. Without the reply
+gesture a yes/no answers a card only when it is the only approval card the chat
+got in the last ten minutes, still open and at least 2 s old; otherwise the
+phone is asked to reply to the card. With no approval card in the chat, a plain
+"yes" is a message to the agent.
+
 An approval is one card: what (the tool in words; a command names the machine
 it runs on), why (the agent's reason, marked unchecked), the action in a code
 block when it is at most 6 lines (else `show`), extra answers such as a lasting

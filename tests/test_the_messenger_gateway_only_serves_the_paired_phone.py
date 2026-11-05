@@ -287,7 +287,9 @@ def test_unquoted_yes_and_wrong_quote_cannot_approve(rig):
     msg = message(text='yes', mid='2')
     msg['quote_id'] = 'other-message'
     asyncio.run(rooms.handle(msg))
-    assert not bridge.calls
+    # With no approval card in the chat the unquoted yes is a message to
+    # the agent (plain_decision); nothing is decided either way.
+    assert [c['action'] for c in bridge.calls] == ['prompt']
 
 
 def test_plain_question_answer_is_bound_to_its_message(rig):
