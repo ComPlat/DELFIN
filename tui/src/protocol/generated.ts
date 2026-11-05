@@ -50,6 +50,7 @@ export interface PermissionReplyParams {
   "persist"?: boolean | null
   "text"?: string | null
   "command"?: string | null
+  "client"?: string | null
 }
 export interface SessionCommandsParams {}
 export interface SessionCompletePathParams {
@@ -360,6 +361,7 @@ export interface PermissionResolvedEvent {
   "requestId": string
   "decision": string
   "by": string
+  "client"?: string | null
   "type": "permission.resolved"
   "session": string
   "ts": number
@@ -734,6 +736,7 @@ export interface SessionSummary {
   "activity"?: string | null
   "waiting"?: string | null
   "answer"?: string | null
+  "name"?: string | null
 }
 
 export interface AttentionItem {

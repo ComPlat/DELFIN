@@ -1563,7 +1563,8 @@ class Worker:
                 reason=str(params.get("reason") or ""),
                 persist=bool(params.get("persist", False)),
                 text=str(params.get("text") or ""),
-                command=str(params.get("command") or ""))
+                command=str(params.get("command") or ""),
+                client=str(params.get("client") or ""))
         except UnknownRequest as exc:
             raise _Refusal(protocol.UNKNOWN_REQUEST, str(exc)) from None
         except InvalidAnswer as exc:
@@ -1592,10 +1593,10 @@ class Worker:
         """What the session is called: what the store saves it under, what
         its checkpoints carry, what every window shows. Its address -- the
         name it started with, or its id -- stays: mail, approvals and its
-        presence keep reaching it by that."""
+        presence keep reaching it by that. Nothing printable left: the
+        title is cleared and every window shows the default name
+        (protocol.default_name); the store then keeps it as untitled."""
         title = protocol.clean_title(params.get("title"))
-        if not title:
-            raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
         self.title = title
         self.agent.session_title = title
 

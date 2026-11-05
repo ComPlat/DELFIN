@@ -57,7 +57,10 @@ from . import attention_feed, eventlog, protocol, rundir
 #: cut -- a service before it ignores dryRun and would end the session.
 #: 3: attention.list/answer/dismiss and attention.updated (what needs the
 #: user, from every DELFIN process), and session.create's brief.
-SERVICE_VERSION = 3
+#: 4: one name for every window -- summaries carry ``name``, an empty
+#: session.setTitle puts the default back, titles are cut to 50 -- and
+#: permission.resolved names the window that answered (``client``).
+SERVICE_VERSION = 4
 
 #: Requests a window sends to the service itself (the one definition is
 #: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
@@ -461,10 +464,17 @@ class Session:
 
     # -- what windows see ---------------------------------------------------------------
     def summary(self) -> dict:
+        # The worker's title once it said one (a rename to the default is
+        # "" and stays so); before that, what it was started with.
+        if "title" in self.info:
+            title = self.info.get("title") or None
+        else:
+            title = self.settings.get("title") or self.settings.get("name") or None
+        workspace = self.info.get("workspace") or self.settings.get("cwd", "")
         return {"sessionId": self.id,
-                "title": (self.info.get("title") or self.settings.get("title")
-                          or self.settings.get("name") or None),
-                "workspace": self.info.get("workspace") or self.settings.get("cwd", ""),
+                "title": title,
+                "name": protocol.display_name(title, workspace, self.id),
+                "workspace": workspace,
                 "provider": self.info.get("provider", ""),
                 "model": self.info.get("model", ""),
                 "approval": self.info.get("approval", ""),
@@ -494,6 +504,8 @@ class Session:
         for key, info_key in (("title", "title"), ("effort", "effort"), ("mode", "mode")):
             if self.info.get(info_key):
                 out[key] = str(self.info[info_key])
+        if "title" in self.info and not self.info.get("title"):
+            out.pop("title", None)          # renamed back to the default
         approval = str(self.info.get("approval") or "")
         if approval in ("plan", "default", "acceptEdits"):
             out["permissionMode"] = approval
@@ -542,6 +554,16 @@ class Session:
         first = next((e for e, _ in older if e.get("type") == "user.message"), None)
         if first is not None:
             self.first_prompt = _gist(str(first.get("text") or "")) or self.first_prompt
+
+
+def _named(summary: dict) -> dict:
+    """A copy of a summary with its display name (a dormant record a
+    service before SERVICE_VERSION 4 wrote has none)."""
+    out = dict(summary)
+    if not out.get("name"):
+        out["name"] = protocol.display_name(out.get("title"), out.get("workspace"),
+                                            out.get("sessionId"))
+    return out
 
 
 def _elsewhere(ours: set[str]) -> list[dict]:
@@ -906,6 +928,11 @@ class Supervisor:
     async def _forward(self, client: Client, method: str, params: dict) -> Any:
         sid = str(params.get("sessionId") or "")
         rest = {k: v for k, v in params.items() if k != "sessionId"}
+        if method == "permission.reply":
+            # Who answers is what this connection said in its hello, never
+            # what the reply says: permission.resolved names it to every
+            # window.
+            rest["client"] = client.name or "window"
         if sid in self._waking and method == "session.shutdown":
             # Being woken: stop what the wake brings up, not a record.
             try:
@@ -933,11 +960,15 @@ class Supervisor:
             if method == "session.setTitle":
                 # Kept as the worker keeps it (its _m_session_setTitle): the
                 # title changes, the address does not.
+                # Nothing printable left: the default name, as a live one.
                 title = protocol.clean_title(rest.get("title"))
-                if not title:
-                    raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
-                record["summary"]["title"] = title
-                record["settings"]["title"] = title
+                summary = record["summary"]
+                summary["title"] = title or None
+                summary["name"] = protocol.display_name(title, summary.get("workspace"), sid)
+                if title:
+                    record["settings"]["title"] = title
+                else:
+                    record["settings"].pop("title", None)
                 self._make_dormant(record)
                 # Saved under it too: stopped before it wakes, the session
                 # is still resumed by that name later.
@@ -1610,7 +1641,7 @@ class Supervisor:
     # -- dormant sessions -----------------------------------------------------------------
     def _summaries(self) -> list[dict]:
         return ([s.summary() for s in self.sessions.values() if s.id]
-                + [dict(r["summary"]) for r in self.dormant.values()
+                + [_named(r["summary"]) for r in self.dormant.values()
                    if r["summary"]["sessionId"] not in self.sessions])
 
     def _dormant_record(self, session: Session, why: str) -> dict:

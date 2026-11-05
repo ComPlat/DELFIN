@@ -80,7 +80,7 @@ types are generated from that. This page explains what the messages mean.
 | `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
 | `session.choices` | `what`: `model`, `effort`, `mode` or `args`; `command?` (with `args`) | `current`, `choices[]`: `value`, `detail?`, `usage?` | What a picker offers; with `args`, what may follow `command`. |
 | `session.toggleTasks` | | `showTasks` | ctrl+t: the open task list at the end of each turn, on or off, as in the REPL (a notice says which). |
-| `session.setTitle` | `title` | `title` | What the session is called: what it is saved under and every window shows (a `session.updated` follows); one plain line of at most 80 characters (escapes and control characters become spaces). Its address -- the `name` it started with, or its id, by which mail, approvals and its presence record reach it -- does not change. Answered for a sleeping session too, without waking it. |
+| `session.setTitle` | `title` | `title` | What the session is called: what it is saved under and every window shows (a `session.updated` follows); one plain line of at most 50 characters, SimpleX's group-name limit (escapes and control characters become spaces). Nothing printable left (`""`) puts the default name back: the folder name and the id's first eight characters (`scan-a · 0123abcd`). Its address -- the `name` it started with, or its id, by which mail, approvals and its presence record reach it -- does not change. Answered for a sleeping session too, without waking it. |
 
 ### Completion and pickers
 
@@ -213,7 +213,7 @@ carry their final values.
 | `error` | `text` | ✓ |
 | `usage` | `inputTokens`, `outputTokens`, `costUsd`: session totals, sampled during a turn | |
 | `permission.asked` | `requestId`, `kind`, `tool`, `preview`, `options[]`, `flags`, `suggestion?`, `readDir?`; for a question also `question`, `header?`, `choices[]`, `choiceDetails[]`, `multiSelect` | ✓ |
-| `permission.resolved` | `requestId`, `decision`, `by`: `client`, `outside`, `expired` or `abort` | ✓ |
+| `permission.resolved` | `requestId`, `decision`, `by`: `client`, `outside`, `expired` or `abort`; `client?`: with `by` `client`, the hello name of the window whose answer landed | ✓ |
 
 **Field details:**
 
@@ -422,7 +422,7 @@ Events from the service itself, to every window:
 
 | Event | Fields |
 |---|---|
-| `session.summary` | `summary`: `sessionId`, `title?`, `workspace`, `provider`, `model`, `approval`, `state`, `pending` (open questions), `costUsd`, `createdAt`, `lastActivity`, `pid`, and what a row says about it, taken from its events (no model writes them): `lastPrompt?` (the last message sent to it), `activity?` (what it does now: "bash  pytest -q", "writing…"), `waiting?` (the question it waits on), `answer?` (the first line of its last answer). Sent whenever one of them changes: what the agent view draws. |
+| `session.summary` | `summary`: `sessionId`, `title?`, `workspace`, `provider`, `model`, `approval`, `state`, `pending` (open questions), `costUsd`, `createdAt`, `lastActivity`, `pid`, and what a row says about it, taken from its events (no model writes them): `lastPrompt?` (the last message sent to it), `activity?` (what it does now: "bash  pytest -q", "writing…"), `waiting?` (the question it waits on), `answer?` (the first line of its last answer), `name?` (what every window calls it: the title, else the default name; service version 4). Sent whenever one of them changes: what the agent view draws. |
 | `session.removed` | `reason`, `exitCode`: the session's worker ended (shut down, exited, or failed). |
 | `attention.updated` | `items[]`: all of them, as `attention.list` has them; `version`, as there. |
 
@@ -436,7 +436,10 @@ seen end.
 
 **Answers.** An approval may be answered from any window attached to the
 session. The worker takes the first answer; a later one is refused with
--32002, and every window gets `permission.resolved`.
+-32002, and every window gets `permission.resolved`. Its `client` names
+the window that answered: the service sets `permission.reply`'s `client`
+from the hello of the connection the reply came on, so a window cannot
+answer in another's name.
 
 | Code | Meaning |
 |---|---|
