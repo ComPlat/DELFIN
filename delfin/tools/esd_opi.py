@@ -110,7 +110,10 @@ def _normalise_basis_block(body: Sequence[str]) -> dict:
     for s in body:
         m = re.search(r'NewGTO\s+(\S+)\s+"([^"]+)"', s, re.IGNORECASE)
         if m:
-            out[m.group(1).capitalize()] = m.group(2)
+            # element capitalised, basis name lowercased: OPI renders
+            # NewGTO names lower-case, the classic writer keeps CONTROL's
+            # case ("def2-TZVP"); ORCA treats them as the same basis
+            out[m.group(1).capitalize()] = m.group(2).lower()
     return out
 
 
@@ -360,7 +363,35 @@ def _tddft_block_opi(
         block.modify_option("dosoc", str(bool(soc)))
     for key, value in job_lines:
         block.modify_option(key, str(value))
+    for line in settings.additions:
+        block.modify_option(*_parse_addition_line(line))
     return block
+
+
+def _parse_addition_line(line: str) -> Tuple[str, str]:
+    """Split one TDDFT_additions line into (key, value) for modify_option."""
+    parts = str(line).split(None, 1)
+    key = parts[0]
+    value = parts[1] if len(parts) > 1 else "true"
+    return key, value
+
+
+def _elprop_additions_opi(opi, config: Mapping[str, Any]) -> List[Any]:
+    """The S0-job %elprop block and legacy addition_S0 line, verbatim.
+
+    Rendered as ArbitraryStrings from the classic generator's own output
+    so both writers cannot drift (esd_input_generator.generate_elprop_block).
+    """
+    from delfin.esd_input_generator import generate_elprop_block
+
+    out: List[Any] = []
+    elprop = generate_elprop_block(dict(config))
+    if elprop:
+        out.append(opi["ArbitraryString"](elprop))
+    addition_s0 = str(config.get("addition_S0", "")).strip()
+    if addition_s0:
+        out.append(opi["ArbitraryString"](addition_s0))
+    return out
 
 
 def _esd_block_lines(
@@ -434,6 +465,14 @@ def _scf_block_opi(
         config.get("deltaSCF_keepinitialref", "true")).lower() in (
         "true", "1", "yes", "on")
     soscfhessup = str(config.get("deltaSCF_SOSCFHESSUP", "LSR1"))
+    if str(soscfhessup).lower() not in (
+            "lbfgs", "lsr1", "lpowell", "lbofill"):
+        # OPI's BlockScf is a typed pydantic model whose SOSCFHESSUP
+        # literal only accepts these four; anything else would be
+        # silently unusable — refuse like OCCUPIER does for broken_sym.
+        raise ValueError(
+            "OPI BlockScf cannot represent deltaSCF_SOSCFHESSUP="
+            f"{soscfhessup!r}; ORCA accepts lbfgs, lsr1, lpowell, lbofill")
     maxiter = int(config.get("deltaSCF_maxiter", 1000))
     conv = config.get("deltaSCF_SOSCFConvFactor", 500)
     maxstep = config.get("deltaSCF_SOSCFMaxStep", 0.1)
@@ -610,13 +649,16 @@ def write_esd_state_opi_input(
     output_blocks = _output_block_strings(opi, config)
 
     def level(scf_type: str, *, moread: bool = False,
-              with_geom: bool = True) -> List[str]:
+              with_geom: bool = True, with_freq: bool = False) -> List[str]:
         toks = [functional, scf_type, rel_token, main_basis, disp_corr,
                 ri_jkx, aux_jk]
         if solv:
             toks.append(solv)
         if with_geom and geom_token:
             toks.append(geom_token)
+        if with_freq and freq_on:
+            # the classic TDDFT _build_keywords hard-codes numFREQ here
+            toks.append("numFREQ")
         if moread:
             toks.append("MOREAD")
         return [t for t in toks if str(t).strip()]
@@ -639,6 +681,7 @@ def write_esd_state_opi_input(
                 maxcore=maxcore, pal=pal, moinp=None,
                 blocks=[
                     *_new_basis_block(opi, metals, metal_basis),
+                    *_elprop_additions_opi(opi, config),
                     *output_blocks,
                 ],
                 atoms=_inline_atoms(opi, esd_dir, _s0_xyz(esd_dir),
@@ -661,7 +704,7 @@ def write_esd_state_opi_input(
             return str(final)
 
         if state_upper == "T1" and _resolve_esd_t1_opt(config) == "tddft":
-            toks = level("RKS", moread=True)
+            toks = level("RKS", moread=True, with_freq=True)
             blocks = [
                 _tddft_block_opi(opi, config, iroot=1,
                                  irootmult="triplet", triplets=True,
@@ -679,10 +722,35 @@ def write_esd_state_opi_input(
         root_num = int(state_upper[1:]) if len(state_upper) > 1 else 1
         is_triplet = state_upper.startswith("T")
         if is_triplet and state_upper == "T1":
-            raise EsdOpiError(
-                "T1 in TDDFT mode with ESD_T1_opt=uks is a UKS deltaSCF "
-                "shape; reached the TDDFT branch unexpectedly")
-        toks = level("RKS", moread=True)
+            # ESD_T1_opt=uks (classic default): ONE UKS job, multiplicity 3
+            # (inline coordinates), then the classic writer appends a TDDFT
+            # check job ("Transitions from T1") as $new_job — same merge as
+            # the deltaSCF S0/T1 shape.
+            toks = level("UKS", moread=True, with_freq=True)
+            atoms = _inline_atoms(opi, esd_dir, "S0.xyz", metals,
+                                  metal_basis, config)
+            main = _job_in_opi(
+                opi, out_dir=out_dir, base="_T1_main_tmp", tokens=toks,
+                maxcore=maxcore, pal=pal, moinp="S0.gbw",
+                blocks=list(output_blocks), atoms=atoms,
+                charge=charge, multiplicity=3,
+            )
+            check_toks = [functional, "RKS", rel_token, main_basis,
+                          disp_corr, ri_jkx, aux_jk]
+            if solv:
+                check_toks.append(solv)
+            check = _tddft_check_job(
+                opi, esd_dir, out_dir, "T1", charge, metals,
+                metal_basis, config,
+                [t for t in check_toks if str(t).strip()],
+                maxcore, pal, output_blocks, with_output=False)
+            merged = _merge_new_job_files([str(main), check])
+            final = out_dir / "T1.inp"
+            final.write_text(Path(merged).read_text(encoding="utf-8"),
+                             encoding="utf-8")
+            Path(merged).unlink()
+            return str(final)
+        toks = level("RKS", moread=True, with_freq=True)
         blocks = [
             _tddft_block_opi(
                 opi, config, iroot=root_num,
@@ -796,7 +864,10 @@ def write_esd_state_opi_input(
         main = _job_in_opi(
             opi, out_dir=out_dir, base=f"_{state_upper}_main_tmp",
             tokens=toks, maxcore=maxcore, pal=pal, moinp=moinp_gbw,
-            blocks=[scf_block, *output_blocks], atoms=atoms,
+            blocks=[scf_block,
+                    *(_elprop_additions_opi(opi, config)
+                      if state_upper == "S0" else []),
+                    *output_blocks], atoms=atoms,
             charge=charge, multiplicity=multiplicity,
         )
         check_toks = [functional, "RKS", rel_token, main_basis, disp_corr,
@@ -806,7 +877,7 @@ def write_esd_state_opi_input(
         check = _tddft_check_job(
             opi, esd_dir, out_dir, state_upper, charge, metals,
             metal_basis, config, [t for t in check_toks if str(t).strip()],
-            maxcore, pal, output_blocks)
+            maxcore, pal, output_blocks, with_output=False)
         merged = _merge_new_job_files([str(main), check])
         final = out_dir / f"{state_upper}.inp"
         final.write_text(Path(merged).read_text(encoding="utf-8"),
@@ -879,12 +950,14 @@ def write_esd_rate_opi_input(
     if "|" in esd_mode:
         esd_mode = esd_mode.split("|")[0].strip()
 
-    def level(scf_type: str) -> List[str]:
+    def level(scf_type: Optional[str]) -> List[str]:
         toks = [scf_type, functional, rel_token, main_basis, disp_corr,
                 ri_jkx, aux_jk]
         if solv:
             toks.append(solv)
-        return [t for t in toks if str(t).strip()]
+        # drop the empty scf_type slot as well (classic IC/FLUOR/PHOSP
+        # lines carry no RKS/UKS)
+        return [t for t in toks if t is not None and str(t).strip()]
 
     def esd_rate_file(base: str) -> None:
         raise NotImplementedError  # pragma: no cover - placeholder
@@ -910,6 +983,7 @@ def write_esd_rate_opi_input(
                                               esd_mode)
 
         toks = _rate_tokens(level("RKS"))
+        toks.append("ESD(ISC)")  # classic: RKS first, ESD(ISC) after solvation
         s_root = init_root if init_type == "S" else (
             final_root if final_type == "S" else 1)
         t_root = init_root if init_type == "T" else (
@@ -949,7 +1023,8 @@ def write_esd_rate_opi_input(
             else init_root
         nacme = str(config.get("NACME", "TRUE")).upper()
         etf = str(config.get("ETF", "TRUE")).upper()
-        toks = _rate_tokens(level("RKS"))
+        toks = _rate_tokens(level(None))  # classic IC line has no RKS/UKS
+        toks.append("ESD(IC)")
         tddft = _tddft_block_opi(
             opi, config, nroots=nroots, iroot=iroot, dosoc=None,
             job_lines=[("nacme", nacme), ("etf", etf)])
@@ -976,7 +1051,11 @@ def write_esd_rate_opi_input(
         job_name = f"{initial_state}_{final_state}_FLUOR"
         iroot = int(config.get("ESD_FLUOR_IROOT", init_root))
         nroots = tddft_settings.job_nroots(config, "ESD_FLUOR_NROOTS")
-        toks = _rate_tokens(level("RKS"))
+        toks = _rate_tokens(level(None))  # classic FLUOR line has no RKS/UKS
+        fluor_keywords = str(config.get("fluor_keywords", "")).strip()
+        if fluor_keywords:
+            toks.extend(fluor_keywords.split())
+        toks.append("ESD(FLUOR)")
         tddft = _tddft_block_opi(
             opi, config, nroots=nroots, iroot=iroot, dosoc=None)
         header = [("GSHESSIAN", f'"{_resolve_state_filename(final_state, "hess", esd_mode)}"'),
@@ -1006,6 +1085,12 @@ def write_esd_rate_opi_input(
         dele_cm1 = calculate_dele_cm1(str(t1_out), str(s0_out))
         dele_int = int(round(dele_cm1)) if dele_cm1 is not None else None
         nroots = tddft_settings.job_nroots(config, "ESD_PHOSP_NROOTS")
+        toks = level(None)  # classic PHOSP line has no RKS/UKS
+        toks.append("ESD(PHOSP)")
+        phosp_keywords = str(config.get("phosp_keywords", "")).strip()
+        if phosp_keywords:
+            toks.extend(phosp_keywords.split())
+        toks = _rate_tokens(toks)
         phosp_dosoc = tddft_settings.coerce_bool(
             config.get("ESD_PHOSP_DOSOC", "TRUE"), "ESD_PHOSP_DOSOC")
         iroots = _parse_iroot_spec(config.get("phosp_IROOT", None),
@@ -1061,20 +1146,22 @@ def _tddft_check_job(
     metals: Sequence[str], metal_basis: Optional[str],
     config: Mapping[str, Any],
     tokens: Sequence[str], maxcore: int, pal: int,
-    output_blocks: Sequence[Any],
+    output_blocks: Sequence[Any], *, with_output: bool = True,
 ) -> str:
     """The ``{state}_TDDFT`` check job, written to its own file.
 
     The classic writer appends this job to the state's own file with
     ``$new_job``; the caller merges it there after this helper writes it.
     Body per esd_input_generator.py:969-1008: RKS level line, %base,
-    %pal, %maxcore, %output, ``%tddft triplets`` (no FollowIRoot),
-    %basis for metals on an xyzfile geometry, multiplicity 1.
+    %pal, %maxcore, ``%tddft triplets`` (no FollowIRoot), %basis for
+    metals on an xyzfile geometry, multiplicity 1.  The TDDFT-branch
+    check jobs (S0 at :1541, T1 at :1611) carry %output; the deltaSCF
+    ones (:969) do not -- with_output selects that.
     """
     blocks = [
         _tddft_block_opi(opi, config, triplets=True),
         *_new_basis_block(opi, metals, metal_basis),
-        *output_blocks,
+        *(output_blocks if with_output else []),
     ]
     return str(_job_in_opi(
         opi, out_dir=out_dir,

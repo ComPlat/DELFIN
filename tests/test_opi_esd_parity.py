@@ -259,7 +259,7 @@ def _control_matrix():
     ))
     cases.append(dict(
         name="phosp_T1_S0", kind="phosp", pair="T1>S0", charge=0,
-        control_args=lot_benzol, metals=["Ir"],
+        control_args=lot_benzol, metals=["Ir"], initial_state="T1",
         classic_fn=classic.create_phosp_input,
         classic_kwargs={"initial_state": "T1", "final_state": "S0"},
     ))
@@ -306,7 +306,7 @@ def test_esd_opi_file_names_follow_the_classic_ones(tmp_path, esd_env):
         main_basisset="def2-SVP", metal_basisset=None, config=lot,
         trootssl=0,
     )
-    assert Path(p2).name == "S1_T1_ISC_m0.inp"
+    assert Path(p2).name == "S1_T1_ISC_ms0.inp"
 
 
 def test_esd_opi_unknown_scf_option_refused(tmp_path):
@@ -314,15 +314,16 @@ def test_esd_opi_unknown_scf_option_refused(tmp_path):
     silently dropped (a wrong input for a live ORCA run is the cost)."""
     esd_dir = tmp_path / "classic"
     _write_esd_dir(esd_dir)
-    # T1 tddft-opt path exercises BlockScf mapping; a bogus option in the
-    # %scf block must raise.
+    # S1 deltaSCF exercises BlockScf mapping; a bogus option in the
+    # %scf block must raise (T1/S0 carry no %scf block — classic :830).
     with pytest.raises(ValueError):
         write_esd_state_opi_input(
-            esd_dir=esd_dir, out_dir=tmp_path / "opi", state="T1",
+            esd_dir=esd_dir, out_dir=tmp_path / "opi", state="S1",
             charge=0, solvent=None, metals=[],
             main_basisset="def2-SVP", metal_basisset=None,
             config={"functional": "PBE0", "main_basisset": "def2-SVP",
                     "ESD_modus": "deltaSCF",
                     "ESD_T1_opt": "uks",
-                    "ESD_frequency": "no"},
+                    "ESD_frequency": "no",
+                    "deltaSCF_SOSCFHESSUP": "not-a-scheme"},
         )
