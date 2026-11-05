@@ -397,7 +397,7 @@ def _elprop_additions_opi(opi, config: Mapping[str, Any]) -> List[Any]:
 def _esd_block_lines(
     opi,
     config: Mapping[str, Any],
-    header_lines: Sequence[Tuple[str, Any]],
+    header_lines: Sequence[Tuple[str, Any]] = (),
 ) -> Any:
     """The ``%esd ... end`` block as an ArbitraryString.
 
