@@ -38,15 +38,11 @@ DAEMON_WAIT_S = 60.0
 
 
 def _show_qr(invitation: str) -> None:
-    """Draw the invitation for the phone's scanner; the link stays printed."""
-    import shutil
-    import subprocess
-    tool = shutil.which("qrencode")
-    if tool is None:
-        print("(a QR code needs qrencode: apt install qrencode)")
-        return
-    sys.stdout.flush()
-    subprocess.run([tool, "-t", "ansiutf8", invitation], check=False, timeout=10)
+    """Draw the invitation for the phone's scanner (delfin/messenger/qr.py,
+    no tool needed); the link stays printed."""
+    drawn = pairing.qr_text(invitation)
+    if drawn:
+        print(drawn.rstrip("\n"))
 
 
 def _ask_code() -> str | None:
