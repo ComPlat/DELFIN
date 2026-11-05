@@ -136,6 +136,26 @@ def test_orca_reader_text_restores_old_path(tmp_path):
     assert mock_read.call_count == 0
 
 
+def test_orca_reader_text_restores_old_path_recovery(tmp_path):
+    """orca.reader=text on the recovery path too: the original parser
+    answers directly, no orca_read.read call."""
+    _synthetic_run(tmp_path)
+    items = [orca_input.Item(
+        "geometry",
+        ["* xyz 0 1\n", "  H  0.0 0.0 0.0\n", "  O  0.0 0.0 0.97\n",
+         "  H  0.0 0.76 0.58\n", "*\n"], changed=False)]
+    with mock.patch.object(orca_read, "_reader_mode",
+                           return_value="text"), \
+            mock.patch.object(orca_read, "read", side_effect=AssertionError(
+                "orca.reader=text must not route geometry through orca_read"
+            )) as mock_read:
+        orca_recovery.OrcaInputModifier._continue_from_own_geometry(
+            items, tmp_path / "input.xyz")
+    assert [r.split()[0] for r in items[0].lines[1:-1]] == ["H", "O", "H"]
+    assert "0.97000000" in items[0].lines[2]
+    assert mock_read.call_count == 0
+
+
 def test_orca_read_xyz_atoms_unusable_file(tmp_path):
     """A malformed xyz yields None in the resume path, as before."""
     (tmp_path / "input.out").write_text("# SYNTHETIC test fixture\n")
