@@ -1707,11 +1707,41 @@ class Rooms:
 
     # -- the loop ----------------------------------------------------------------------
 
+    #: How often the pairing store is looked at for the first phone.
+    PAIRED_CHECK_S = 30.0
+
+    def watch_pairing(self, *, now, say=None):
+        """Look at the pairing store at most every PAIRED_CHECK_S and say
+        once when its state changes: nobody paired (the gateway serves on --
+        people pair through it -- and waits) or the first phone paired.
+        True when it looked. Never exits, never raises."""
+        say = say or (lambda line: print(line, file=sys.stderr, flush=True))
+        last = getattr(self, '_paired_looked', None)
+        if last is not None and now - last < self.PAIRED_CHECK_S:
+            return False
+        self._paired_looked = now
+        try:
+            paired = bool(store.persons())
+        except Exception:  # noqa: BLE001 - a store read error: nobody is served
+            paired = False
+        before = getattr(self, '_paired_state', None)
+        self._paired_state = paired
+        if before is None and not paired:
+            say('[gateway] no phone paired yet: waiting. Pair one with /pair in a session, '
+                'or as the admin: sudo bash scripts/pi/pi_messenger.sh --pair')
+        elif before is False and paired:
+            say('[gateway] a phone is paired: serving it')
+        elif before is True and not paired:
+            say('[gateway] no phone paired any more: waiting')
+        return True
+
     async def run(self):
         await self.daemon.subscribe()
+        self.watch_pairing(now=asyncio.get_running_loop().time())
         async def notifications():
             last = ''
             while True:
+                self.watch_pairing(now=asyncio.get_running_loop().time())
                 try:
                     await self.pairing_round()
                 except Exception as exc:  # noqa: BLE001

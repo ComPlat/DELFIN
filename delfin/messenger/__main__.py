@@ -189,6 +189,8 @@ def _verify(code: str | None) -> int:
 def _run() -> int:
     async def run() -> int:
         async with simplex.Daemon(wait=DAEMON_WAIT_S) as daemon:
+            # Serves with nobody paired too (people pair through it); the
+            # gateway says so once and waits -- never an exit for that.
             print(f"serving {len(store.persons())} person(s) with a verified phone")
             await Rooms(daemon).run()
         return 0
