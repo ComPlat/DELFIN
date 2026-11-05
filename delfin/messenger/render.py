@@ -143,3 +143,44 @@ def status_text(reply: dict, details: bool = False) -> str:
 def in_forum(title: str, body: str) -> str:
     """A session's post in the forum: its name in bold, then the text."""
     return f'*{title}*\n{body}'
+
+
+def _command(keyword: str, label: str, params: str = '') -> dict:
+    entry = {'type': 'command', 'keyword': keyword, 'label': label}
+    if params:
+        entry['params'] = params
+    return entry
+
+
+#: The bot's command menu (SimpleX ChatBotCommand, bots/README.md): the
+#: keyword is what the phone sends after "/", in the person's language.
+_MENU = {
+    'en': [('sessions', 'Your sessions', ''), ('get', 'Bring a session here', '<N>'),
+           ('new', 'Start a session', '<NAME>'), ('status', 'Status', ''),
+           ('pending', 'Open requests', ''), ('more', 'Rest of the answer', ''),
+           ('language', 'Language', '<en|de|auto>'), ('help', 'Help', '')],
+    'de': [('sitzungen', 'Deine Sitzungen', ''), ('hol', 'Sitzung hierher holen', '<N>'),
+           ('neu', 'Sitzung starten', '<NAME>'), ('status', 'Stand', ''),
+           ('pending', 'Offene Anfragen', ''), ('mehr', 'Rest der Antwort', ''),
+           ('sprache', 'Sprache', '<en|de|auto>'), ('hilfe', 'Hilfe', '')],
+}
+_GROUP_MENU = {
+    'en': [('status', 'Status', ''), ('pending', 'Open requests', ''), ('stop', 'Stop the run', ''),
+           ('details', 'What it is doing', ''), ('more', 'Rest of the answer', ''),
+           ('name', 'Name this session', '<NAME>'), ('off', 'Take it off the phone', ''),
+           ('help', 'Help', '')],
+    'de': [('status', 'Stand', ''), ('pending', 'Offene Anfragen', ''), ('stop', 'Lauf anhalten', ''),
+           ('details', 'Was sie gerade tut', ''), ('mehr', 'Rest der Antwort', ''),
+           ('name', 'Sitzung benennen', '<NAME>'), ('weg', 'Vom Handy nehmen', ''),
+           ('hilfe', 'Hilfe', '')],
+}
+
+
+def menu(lang: str) -> list[dict]:
+    """The command menu of the bot's direct chat, in ``lang``."""
+    return [_command(*row) for row in _MENU['de' if lang == 'de' else 'en']]
+
+
+def group_menu(lang: str) -> list[dict]:
+    """The command menu of a session chat (a group), in ``lang``."""
+    return [_command(*row) for row in _GROUP_MENU['de' if lang == 'de' else 'en']]

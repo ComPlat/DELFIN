@@ -426,6 +426,31 @@ The direct contact remains a setup channel. `revoke` with the same environment
 removes routing authorization immediately; already dispatched commands are not
 undone. `status` lists stored chat bindings.
 
+## SimpleX bot standards
+
+Each behaviour and the official feature it uses (simplex-chat repository:
+`bots/README.md`, `bots/api/COMMANDS.md`, `bots/api/TYPES.md`; bot profiles and
+command menus need app v6.4.3 or later, the pinned daemon is v7.0.3):
+
+| Behaviour | Official feature |
+| --- | --- |
+| The bot is shown as a bot | Profile `peerType: "bot"`, set with APIUpdateProfile (`/_profile <userId> <json>`) at every gateway start; name, picture and other preferences kept |
+| Command menu in the direct chat | Profile `preferences.commands` (ChatBotCommand), per contact in its language with APISetContactPrefs (`/_set prefs @<contactId> <json>`) on pairing and on a language change |
+| Command menu in a session chat | GroupProfile `groupPreferences.commands`, sent with APINewGroup and every APIUpdateGroupProfile (a rename keeps the menu) |
+| A reply quotes the message it answers | ComposedMessage `quotedItemId` in APISendMessages |
+| Questions and approvals are answered by reply | the phone's reply carries `quotedItem.itemId`, matched to the card the bot sent |
+| An answered card says so | APIUpdateChatItem (`/_update item`) |
+| Files | ComposedMessage `fileSource` (XFTP for large files), ReceiveFile |
+| Formatting | SimpleX markdown (`*bold*`, `_italic_`, `` `code` ``, ```` ``` ```` blocks) |
+| The person cannot add others | APIAddMember with role `member` (only admins and owners add members); the bot creates and owns the group |
+
+Not in the bot API reference, used best effort (a refusal is logged by its
+type and changes nothing else): delivery receipts (`/_set receipts
+contacts|groups <userId> on`, from the chat core's command parser), the
+security code (`/_get code`), deleting a contact or a pending connection,
+leaving a group. Menu keywords are only words the gateway parses
+(`Rooms.understands`, pinned by a test for both languages).
+
 ## The event log
 
 The gateway's journal gets one content-free line per message handled

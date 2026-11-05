@@ -114,6 +114,25 @@ _EVENT_COMMANDS = {
 }
 
 
+def _takes(fn, name):
+    """Whether ``fn`` accepts the keyword ``name`` (a daemon without the
+    bot features -- an older build, a test double -- is used without)."""
+    import inspect
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+async def _best_effort(what, call):
+    """A bot feature the daemon may not offer: a refusal is logged once
+    by its type, never raised."""
+    try:
+        await call
+    except Exception as exc:  # noqa: BLE001
+        print(f'[gateway] {what}: {type(exc).__name__}', file=sys.stderr, flush=True)
+
+
 def _outcome(result):
     """Record what became of the message being handled (eventlog)."""
     box = _OUTCOME.get()
@@ -370,15 +389,58 @@ class Rooms:
             name = group_name(title, sid, person)
             if existing and existing[1].get('ready'):
                 if sid is not None and existing[1]['title'] != title:
-                    await self.daemon.rename_group(existing[0], name)
+                    await self._rename_group(existing[0], name)
                     store.put_room(existing[0], sid, title, person=person, ready=True)
                 await self._invite_all(existing[0])
                 return existing[0]
-            chat = existing[0] if existing else await self.daemon.create_group(name)
+            chat = existing[0] if existing else await self._create_group(name)
             store.put_room(chat, sid, title, person=person)
             await self._invite_all(chat)
             store.put_room(chat, sid, title, person=person, ready=True)
             return chat
+
+    def _group_commands(self):
+        from .render import group_menu
+        return group_menu(language.of_person(self._person()))
+
+    async def _create_group(self, name):
+        """A session chat or forum, with its command menu where the daemon
+        takes one (groupPreferences.commands)."""
+        if _takes(self.daemon.create_group, 'commands'):
+            return await self.daemon.create_group(name, commands=self._group_commands())
+        return await self.daemon.create_group(name)
+
+    async def _rename_group(self, chat, name):
+        if _takes(self.daemon.rename_group, 'commands'):
+            return await self.daemon.rename_group(chat, name, commands=self._group_commands())
+        return await self.daemon.rename_group(chat, name)
+
+    async def bot_setup(self):
+        """The bot as SimpleX defines one (bots/README.md): peerType "bot"
+        with its command menu, and delivery receipts; best effort, so an
+        older daemon still serves."""
+        from .render import menu
+        if hasattr(self.daemon, 'set_bot_profile'):
+            await _best_effort('bot profile', self.daemon.set_bot_profile(menu(language.default())))
+        if hasattr(self.daemon, 'enable_receipts'):
+            await _best_effort('receipts', self.daemon.enable_receipts())
+
+    async def contact_menu(self, cid, lang):
+        """Contact ``cid``'s command menu in ``lang`` (APISetContactPrefs)."""
+        from .render import menu
+        if hasattr(self.daemon, 'set_contact_menu'):
+            await _best_effort('contact menu', self.daemon.set_contact_menu(cid, menu(lang)))
+
+    @staticmethod
+    def understands(text):
+        """Whether ``text`` is a phone command the gateway parses (the menu
+        offers only those)."""
+        text = str(text or '').strip()
+        if language.explicit(text) is not None:
+            return True
+        word = text.lstrip('/').split(' ', 1)[0].lower()
+        return (command_word(word) is not None or word in _EVENT_COMMANDS
+                or word in {'neu', 'new', 'hol', 'get', 'weg', 'off'})
 
     async def active_sessions(self):
         reply = await self.ask({'cmd': 'sessions'})
@@ -409,10 +471,11 @@ class Rooms:
         room = store.rooms().get(chat, {})
         return bool(room.get('ready')) and room.get('person', OWNER) == person
 
-    async def send(self, chat, text, *, request=None):
+    async def send(self, chat, text, *, request=None, quote=None):
         """Send ``text`` to ``chat`` as it is (no prefix), in parts of at
-        most 2000 characters. Output: the item ids sent ([] when nothing
-        was sent); with ``request``, each id becomes a reply target."""
+        most 2000 characters; ``quote``: the item id the first part answers
+        (shown as a reply). Output: the item ids sent ([] when nothing was
+        sent); with ``request``, each id becomes a reply target."""
         if not self.paired() or not self._may_send(chat):
             return []
         room = store.rooms().get(chat)
@@ -428,7 +491,10 @@ class Rooms:
         for start in range(0, len(text), 2000):
             if self.paired():
                 try:
-                    result = await self.daemon.send_chat(chat, text[start:start + 2000])
+                    if quote is not None and not start and _takes(self.daemon.send_chat, 'quote'):
+                        result = await self.daemon.send_chat(chat, text[start:start + 2000], quote=quote)
+                    else:
+                        result = await self.daemon.send_chat(chat, text[start:start + 2000])
                 except Exception as exc:
                     eventlog.emit('out', kind, person=self._person(), room=chat, session=sid,
                                   result='failed:' + type(exc).__name__, ms=1000 * (time.monotonic() - began))
@@ -483,12 +549,15 @@ class Rooms:
             return
         text = str(message.get('text') or '')
         setting = language.explicit(text)
+        before = language.of_contact(sender)
         if setting is not None:
             spoken = language.choose(sender, setting)
         elif text and not message.get('file'):
             spoken = language.observe(sender, text)
         else:
-            spoken = language.of_contact(sender)
+            spoken = before
+        if spoken != before or setting is not None:
+            await self.contact_menu(sender, spoken)
         person_token, sender_token = _PERSON.set(person), _SENDER.set(sender)
         lang_token = _lang.CURRENT.set(spoken)
         box = {'result': 'delivered'}
@@ -593,7 +662,7 @@ class Rooms:
             _outcome('failed:' + type(exc).__name__)
             # No raw service exceptions or credentials in phone error messages.
             result = failure_text(exc)
-        await self.send(chat, result)
+        await self.send(chat, result, quote=message.get('id'))
 
     async def _retry(self, message, room, *, every=0.5, within=60.0):
         """Once the person's service answers, dispatch the message again (it
@@ -645,7 +714,7 @@ class Rooms:
             return await self.approval_command(text)
         if named == 'help':
             return t(HELP)
-        if named == 'more' and self._more.get(chat):
+        if named == 'more' and (self._more.get(chat) or text.startswith('/')):
             head, left = cut(self._more.pop(chat, '') or '', 1500)
             if left:
                 self._more[chat] = left
@@ -677,7 +746,7 @@ class Rooms:
                 if not reply.get('ok'):
                     return reply.get('error') or t('The name could not be changed.')
                 title = reply.get('title') or title
-            await self.daemon.rename_group(chat, group_name(title, room['session_id'], self._person()))
+            await self._rename_group(chat, group_name(title, room['session_id'], self._person()))
             store.put_room(chat, room['session_id'], title, person=self._person(), ready=True)
             return t('Name changed: {title}. The chat stays bound to the same session.').format(title=title)
         if command in {'austausch', 'exchange'} and room and room['session_id'] is None:
@@ -1966,6 +2035,7 @@ class Rooms:
         phones and session told -- a hijack would be visible."""
         token = _PERSON.set(person)
         try:
+            await self.contact_menu(cid, language.of_contact(cid))
             await self.daemon.send_chat('@' + cid, t(
                 'Connected to {bot} ✓ ({who}). This phone reaches your sessions only.\n'
                 'Try: sessions – your running sessions · get N – bring one here · new NAME – start '
@@ -2077,6 +2147,7 @@ class Rooms:
 
     async def run(self):
         await self.daemon.subscribe()
+        await self.bot_setup()
         self.watch_pairing(now=asyncio.get_running_loop().time())
         async def notifications():
             last = ''
