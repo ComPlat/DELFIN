@@ -357,8 +357,15 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
         kind = str(asked.get("kind") or "confirm")
         head_bits = []
         if kind == "ask":
+            question = str(asked.get("question") or "")
+            with transcript.lock:
+                said = next((e["text"] for e in reversed(transcript.entries)
+                             if e["role"] == "agent"), "")
+            if LS.ends_with_question(said, question):
+                # The session's last answer ends with it: not said twice.
+                question = "the question above"
             head_bits.append(f"<b>{html.escape(str(asked.get('header') or 'Question'))}</b>: "
-                             f"{html.escape(str(asked.get('question') or ''))}")
+                             f"{html.escape(question)}")
         else:
             what = "The plan" if kind == "plan" else f"{asked.get('tool') or 'A tool'} asks to run"
             head_bits.append(f"<b>{html.escape(what)}</b>")

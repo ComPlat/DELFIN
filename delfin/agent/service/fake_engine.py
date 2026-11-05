@@ -318,6 +318,10 @@ class FakeEngine:
             # (api_client._execute_ask_user_question, normalised).
             cb = self.kit_permissions.ask_user_callback
             multi = "multi" in words
+            if "aloud" in words:
+                # As a model often does: its answer ends with the question
+                # it then asks through the tool.
+                say("I looked at the inputs.\n\nWhich solvent model?")
             reply = cb({
                 "question": ("Which properties should be computed?" if multi
                              else "Which solvent model?"),

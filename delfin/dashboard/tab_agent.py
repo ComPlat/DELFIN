@@ -12747,12 +12747,38 @@ def create_tab(ctx):
     def _on_inspector_next(button):
         _on_advance_role(button)
 
+    def _question_gate(role_id, last_out) -> bool:
+        """The QUESTION: protocol: the card that asks the person, and the
+        wait for the answer. False when the reply carries no question."""
+        import re as _re_q
+        _q_match = _re_q.search(r"QUESTION:\s*(.+?)(?:\n\n|\Z)", last_out, _re_q.DOTALL)
+        if not _q_match:
+            return False
+        _q_text = _q_match.group(1).strip()
+        _role_label = _format_role_label(role_id)
+        from delfin.dashboard.live_sessions import ends_with_question
+        if ends_with_question(last_out, _q_text):
+            # The reply ends with the question: the chat shows it already.
+            _title, _detail = f"{_role_label} is asking you the question above.", ""
+        else:
+            _title, _detail = f"{_role_label} is asking you:", _q_text
+        _append_gate_message(
+            "question",
+            role_id,
+            _title,
+            _detail,
+            f"Reply to the {_role_label}.",
+        )
+        state["_awaiting_agent_question"] = role_id
+        _update_status()
+        return True
+
     def _append_gate_message(gate_type, role, title, detail="", hint=""):
         _set_active_gate(gate_type, role, title, detail)
         _record_cycle_event(gate_type or "gate", title, detail, role)
+        # The hint is the card's own line (gate_hint); in the body as well it
+        # was drawn twice.
         body = detail.strip()
-        if hint:
-            body = f"{body}\n\n{hint}".strip()
         _append_chat_message(
             "gate",
             body,
@@ -12913,10 +12939,14 @@ def create_tab(ctx):
                 f'</div>'
             )
         elif role == "gate":
-            content = _md_to_html(msg["content"])
+            gate_hint = msg.get("gate_hint", "")
+            raw = str(msg.get("content") or "")
+            if gate_hint and raw.rstrip().endswith(gate_hint):
+                # A card saved before the hint stayed out of its body.
+                raw = raw.rstrip()[:-len(gate_hint)].rstrip()
+            content = _md_to_html(raw) if raw.strip() else ""
             gate_type = msg.get("gate_type", "")
             gate_title = msg.get("gate_title", _gate_label(gate_type))
-            gate_hint = msg.get("gate_hint", "")
             gate_role = msg.get("role_label", "")
             card_cls = f"delfin-chat-msg delfin-gate-card delfin-gate-{_html.escape(gate_type or 'review')}"
             badge = _gate_label(gate_type)
@@ -22653,25 +22683,9 @@ def create_tab(ctx):
                         continue
 
                     # --- QUESTION: Protocol — any agent can ask the user ---
-                    if "QUESTION:" in last_out:
-                        import re as _re_q
-                        _q_match = _re_q.search(
-                            r"QUESTION:\s*(.+?)(?:\n\n|\Z)", last_out, _re_q.DOTALL
-                        )
-                        if _q_match:
-                            _q_text = _q_match.group(1).strip()
-                            _role_label = _format_role_label(prev_role_id)
-                            _append_gate_message(
-                                "question",
-                                prev_role_id,
-                                f"{_role_label} is asking you:",
-                                _q_text,
-                                f"Reply to the {_role_label}.",
-                            )
-                            state["_awaiting_agent_question"] = prev_role_id
-                            _update_status()
-                            _update_pipeline_display(engine)
-                            break
+                    if "QUESTION:" in last_out and _question_gate(prev_role_id, last_out):
+                        _update_pipeline_display(engine)
+                        break
 
                     # --- Confidence Gate — pause on low confidence ---
                     if "**confidence:** low" in last_out.lower():
@@ -24742,6 +24756,8 @@ def create_tab(ctx):
         "auto_after_turn": _auto_after_turn,
         "fold_title": _fold_title,
         "refresh_chat": _refresh_chat_html,
+        "chat_html": chat_html,
+        "question_gate": _question_gate,
     }
 
 

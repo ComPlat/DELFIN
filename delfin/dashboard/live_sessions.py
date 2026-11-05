@@ -252,6 +252,22 @@ def client_words(client: str, by: str = "client") -> str:
             "abort": "the session's end"}.get(by, by or "someone")
 
 
+def normalised_text(text: Any) -> str:
+    """Text as compared for repeats: markdown marks and a QUESTION: tag
+    dropped, case and whitespace ignored."""
+    import re as _re
+    plain = _re.sub(r"[*_`#>]+", " ", str(text or ""))
+    plain = _re.sub(r"(?i)\bquestion:\s*", " ", plain)
+    return " ".join(plain.lower().split())
+
+
+def ends_with_question(message: Any, question: Any) -> bool:
+    """Whether ``message`` already ends with ``question`` (normalised): a
+    card asking it would only say it a second time."""
+    q = normalised_text(question)
+    return bool(q) and normalised_text(message).endswith(q)
+
+
 def _folder(workspace: str) -> str:
     return Path(str(workspace or "")).name or str(workspace or "")
 
