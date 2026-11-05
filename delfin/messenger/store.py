@@ -312,7 +312,7 @@ def save(contact_id: str, *, person: str = OWNER, label: str = "") -> None:
         old = data["contacts"].get(cid)
         if old and old.get("person") != person:
             raise PairingRefused("bound")
-        data["contacts"][cid] = {"person": person, "state": "verified", "label": label,
+        data["contacts"][cid] = {"person": person, "state": "verified", "label": _clean_label(label),
                                  "since": time.time(), "verified": time.time(),
                                  "request": "direct"}
 
@@ -325,6 +325,13 @@ def revoke() -> bool:
             return True
         except FileNotFoundError:
             return False
+
+
+def _clean_label(label) -> str:
+    """A phone's label as shown anywhere: printable, no escape or control
+    character, at most 50 characters (activation.clean_name)."""
+    from .activation import clean_name
+    return clean_name(label)
 
 
 def _bump_issued(data: dict, person: str, now: float) -> None:
@@ -419,7 +426,7 @@ def bind(cid: str, *, person: str, label: str, request: str, code: str,
         owned = [c for c, r in data["contacts"].items() if r.get("person") == person]
         if len(owned) >= pairing.MAX_PHONES:
             raise PairingRefused("limit")
-        rec = {"person": person, "state": "unverified", "label": str(label)[:40],
+        rec = {"person": person, "state": "unverified", "label": _clean_label(label),
                "since": now, "verified": None, "request": str(request),
                "code": salt + ":" + hashlib.sha256((salt + pairing.digits(code)).encode()).hexdigest(),
                "attempts": 0}

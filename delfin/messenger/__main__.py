@@ -101,7 +101,8 @@ def _pair() -> int:
                     print(f"invitation {why}; not paired", file=sys.stderr)
                     return 1
                 code = pairing.new_code()
-                name = simplex.contact_name_of(event.get("contact") or {})[:40]
+                from .activation import clean_name
+                name = clean_name(simplex.contact_name_of(event.get("contact") or {}))
                 store.bind(new_id, person=OWNER, label=name or f"phone-{new_id}",
                            request="admin", code=code)
                 audit.event("messenger_phone_connected",

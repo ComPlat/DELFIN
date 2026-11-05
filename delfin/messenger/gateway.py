@@ -1562,7 +1562,9 @@ class Rooms:
             return                                       # another process's, or unknown
         person, rid = inv['person'], inv['request']
         code = pairing.new_code()
-        name = simplex.contact_name_of(contact)[:40]
+        from .activation import clean_name
+        # The phone chooses this name: printable, no escapes, 50 characters.
+        name = clean_name(simplex.contact_name_of(contact))
         try:
             store.bind(cid, person=person, label=name or f'phone-{cid}', request=rid, code=code)
         except store.PairingRefused as exc:
