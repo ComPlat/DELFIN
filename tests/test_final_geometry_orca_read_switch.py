@@ -12,8 +12,10 @@ Behaviour contract, identical pre- and post-switch:
   coordinates the sibling ORCA-written xyz carries;
 - orca_recovery._continue_from_own_geometry injects the same rows into
   the next input (via orca_input.with_coordinates formatting);
-- orca._read_xyz_atoms returns the same raw rows or None.
+- orca._read_xyz_atoms keeps its verbatim direct read (a tuple
+  round-trip would reformat the rows it passes on).
 """
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -28,9 +30,12 @@ def _reading(value):
 
 
 def _geom_rows(xyz_path: Path):
+    """The xyz's atoms as (element, x, y, z) float tuples -- the value shape
+    orca_read's FINAL_GEOMETRY text parser returns."""
     lines = xyz_path.read_text(encoding="utf-8", errors="replace").splitlines()
     count = int(lines[0].split()[0])
-    return [l.split() for l in lines[2:2 + count] if l.strip()]
+    rows = [l.split() for l in lines[2:2 + count] if l.strip()]
+    return [(r[0], float(r[1]), float(r[2]), float(r[3])) for r in rows]
 
 
 def _synthetic_run(tmp_path: Path, base: str = "input") -> Path:
@@ -83,10 +88,10 @@ def test_recovery_continue_from_own_geometry_via_orca_read(tmp_path):
         orca_recovery.OrcaInputModifier._continue_from_own_geometry(
             items, tmp_path / "input.xyz")
     assert mock_read.call_count >= 1
-    rows = items[0].lines[1:-1]
-    assert rows == ["  H    0.00000000    0.00000000    0.00000000\n",
-                    "  O    0.00000000    0.00000000    0.97000000\n",
-                    "  H    0.00000000    0.76000000    0.58000000\n"]
+    # the injected rows use orca_input.with_coordinates' exact format
+    expected = [f"  {el:<3s} {x:14.8f} {y:14.8f} {z:14.8f}\n"
+                for el, x, y, z in _geom_rows(xyz)]
+    assert items[0].lines[1:-1] == expected
 
 
 def test_recovery_text_fallback_value(tmp_path):
@@ -102,14 +107,16 @@ def test_recovery_text_fallback_value(tmp_path):
     assert "0.97000000" in items[0].lines[2]
 
 
-def test_orca_read_xyz_atoms_via_orca_read(tmp_path):
-    """The resume path's _read_xyz_atoms routes through orca_read.read."""
-    xyz = _synthetic_run(tmp_path)
-    with mock.patch.object(orca_read, "read",
-                           side_effect=lambda wd, bn, q, **kw:
-                           _reading(_geom_rows(xyz))) as mock_read:
-        rows = orca._read_xyz_atoms(tmp_path / "input.xyz")
-    assert mock_read.call_count >= 1
+def test_orca_read_xyz_atoms_stays_direct():
+    """The resume path's _read_xyz_atoms deliberately does NOT route
+    through orca_read: it feeds the xyz rows verbatim into the next
+    input; a tuple round-trip would reformat them (behaviour change,
+    see PR.md). Pinned so a later switch cannot happen silently."""
+    xyz = _synthetic_run(Path(tempfile.mkdtemp()))
+    with mock.patch.object(orca_read, "read", side_effect=AssertionError(
+            "_read_xyz_atoms must keep its verbatim direct read")) as mock_read:
+        rows = orca._read_xyz_atoms(xyz)
+    assert mock_read.call_count == 0
     assert rows is not None and len(rows) == 3
 
 
@@ -117,9 +124,8 @@ def test_orca_reader_text_restores_old_path(tmp_path):
     """orca.reader=text bypasses the new routing entirely: the original
     xyz parsing answers, no orca_read.read call for the geometry."""
     xyz = _synthetic_run(tmp_path)
-    settings = {"orca": {"reader": "text"}}
-    with mock.patch("delfin.orca_read.load_settings",
-                    return_value=settings, create=True), \
+    with mock.patch.object(orca_read, "_reader_mode",
+                           return_value="text"), \
             mock.patch.object(orca_read, "read", side_effect=AssertionError(
                 "orca.reader=text must not route geometry through orca_read"
             )) as mock_read:

@@ -35,6 +35,45 @@ _JOB_BANNER = re.compile(r"\${4,}\s+JOB NUMBER\s+(\d+)\s+\$")
 _ERROR_SCAN_TAIL_BYTES = 2 * 1024 * 1024
 
 
+def _own_geometry_atoms(xyz_file: Path):
+    """The run's own geometry, via delfin.orca_read with the old parser as
+    the text fallback.
+
+    Pre-switch semantics kept exactly: rows of ``<base>.xyz`` as
+    (element, x, y, z) tuples; ``None`` (keep the input's coordinates)
+    when the file is missing, unreadable or not a well-formed xyz of
+    this job. Under ``orca.reader=text`` the old parser answers directly.
+    """
+    from delfin import orca_read
+
+    if orca_read._reader_mode() == "text":
+        return _own_geometry_atoms_direct(xyz_file)
+    try:
+        reading = orca_read.read(xyz_file.parent, xyz_file.stem,
+                                 orca_read.Quantity.FINAL_GEOMETRY)
+    except Exception:
+        return _own_geometry_atoms_direct(xyz_file)
+    if reading.value is None:
+        return _own_geometry_atoms_direct(xyz_file)
+    return [tuple(a) for a in reading.value]
+
+
+def _own_geometry_atoms_direct(xyz_file: Path):
+    """The pre-switch parser: rows of the ORCA-written xyz, or None."""
+    try:
+        rows = xyz_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        n_atoms = int(rows[0].split()[0])
+        atoms = []
+        for row in rows[2:2 + n_atoms]:
+            parts = row.split()
+            atoms.append((parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
+        if len(atoms) != n_atoms:
+            raise ValueError("fewer atoms than announced")
+        return atoms
+    except (ValueError, IndexError, OSError):
+        return None
+
+
 class OrcaErrorType(Enum):
     """Classification of ORCA error types."""
 
@@ -1480,15 +1519,11 @@ class OrcaInputModifier:
     def _continue_from_own_geometry(items, xyz_file: Path) -> None:
         if not xyz_file.exists():
             return
+        atoms = _own_geometry_atoms(xyz_file)
+        if atoms is None:
+            logger.info("Keeping the input's coordinates; %s is not this job's geometry", xyz_file.name)
+            return
         try:
-            rows = xyz_file.read_text(encoding="utf-8", errors="replace").splitlines()
-            n_atoms = int(rows[0].split()[0])
-            atoms = []
-            for row in rows[2:2 + n_atoms]:
-                parts = row.split()
-                atoms.append((parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
-            if len(atoms) != n_atoms:
-                raise ValueError("fewer atoms than announced")
             orca_input.with_coordinates(items, atoms)
         except (ValueError, IndexError, orca_input.OrcaInputError) as exc:
             logger.info("Keeping the input's coordinates; %s is not this job's geometry (%s)", xyz_file.name, exc)
