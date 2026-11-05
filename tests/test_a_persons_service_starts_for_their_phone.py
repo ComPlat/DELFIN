@@ -50,7 +50,7 @@ def acct(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sub, "_connect_service", connect)
 
-    def start(name):
+    def start(name, **_):
         account.starts.append(name)
         account.up = True
         return True

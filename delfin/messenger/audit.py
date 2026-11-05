@@ -33,6 +33,8 @@ KINDS = {
     "messenger_store_refused": "Messenger: pairing store failed its integrity check",
     "messenger_session_attached": "Messenger: session brought to the phone",
     "messenger_session_detached": "Messenger: session taken off the phone",
+    "messenger_service_started": "Messenger: a person's agent service started for their phone",
+    "messenger_service_start_refused": "Messenger: start of a person's agent service refused",
 }
 
 

@@ -99,6 +99,18 @@ service (`/sync NAME`, `name NAME` on the phone, the TUI's rename): one field,
 at most 50 characters; the chat follows it. Every message in a session's chat
 starts with `[name]`.
 
+A person's agent service exits when idle. When their phone needs it and it is
+down, the bridge starts it the way the person's own windows do: the launcher's
+command (`python -m delfin.agent.service.launcher`) with the person's HOME,
+`DELFIN_PERSON`, runtime directory and the account's settings as defaults,
+after the account's `agent.env`, as the same Unix user. On a provisioned host
+the bridge (no network, its own sandbox) only leaves
+`/run/delfin-person-start/start-<name>`; the path unit `delfin-person-start`
+runs the start as the service user with NoNewPrivileges. One start per person
+per minute; every start and every refused one is audited
+(`messenger_service_started`, `messenger_service_start_refused`); a name that
+is not a real, owned `~/people/<name>` is refused before anything runs.
+
 What a person of people mode cannot do from the phone: schedules and
 workspace freedom profiles stay the account owner's (one store per account).
 

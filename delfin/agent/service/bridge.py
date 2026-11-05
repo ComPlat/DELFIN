@@ -481,11 +481,46 @@ class Bridge:
             except OSError:
                 if not self.person:
                     raise
-                # A person's service runs while their session window is
-                # open (idle exit); the phone is told so, without a path.
-                raise ServiceDown("Der Agent-Dienst dieser Person läuft gerade nicht. "
-                                  "Am Rechner eine Sitzung öffnen.") from None
+                # A person's service exits when idle: started for the phone
+                # the way their windows start it (people.request_start).
+                if not self._start_person_service():
+                    raise ServiceDown("Der Agent-Dienst dieser Person läuft gerade nicht. "
+                                      "Am Rechner eine Sitzung öffnen.") from None
         return self._service
+
+    #: Starts of one person's service per window, and the window.
+    PERSON_STARTS = 1
+    PERSON_START_WINDOW_S = 60.0
+
+    def _start_person_service(self) -> bool:
+        """Start this person's agent service and connect to it. Rate-limited
+        (PERSON_STARTS per PERSON_START_WINDOW_S), each start and each
+        refused one audited. True once connected."""
+        from delfin.messenger import audit, people
+        now = time.monotonic()
+        starts = [t for t in self.__dict__.get("_person_starts", []) if now - t < self.PERSON_START_WINDOW_S]
+        if len(starts) >= self.PERSON_STARTS:
+            self._person_starts = starts
+            audit.event("messenger_service_start_refused",
+                        f"agent service of {self.person}: started less than "
+                        f"{int(self.PERSON_START_WINDOW_S)} s ago", blocked=True)
+            return False
+        self._person_starts = [*starts, now]
+        if not people.request_start(self.person):
+            audit.event("messenger_service_start_refused",
+                        f"agent service of {self.person}: start refused or failed", blocked=True)
+            return False
+        audit.event("messenger_service_started",
+                    f"agent service of {self.person} started for the phone")
+        deadline = time.monotonic() + people.START_WAIT_S
+        while True:
+            try:
+                self._connect_service()
+                return True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.25)
 
     # -- this context's activation records (the owner's: the module's own
     #    defaults, so a test that replaces a function keeps working) -----------

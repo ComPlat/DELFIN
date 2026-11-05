@@ -346,6 +346,41 @@ WantedBy=multi-user.target
 EOF
 }
 
+# A person's agent service (people mode) exits when idle; their phone starts
+# it again. The bridge has no network and runs in its own sandbox, so it only
+# leaves /run/delfin-person-start/start-<name>; this path unit then runs the
+# start as the service user (python -m delfin.messenger.people), the same
+# launcher command the person's own windows run, with NoNewPrivileges.
+person_start_path_unit() {
+  cat <<EOF
+[Unit]
+Description=Start a person's DELFIN agent service for their phone (people mode)
+
+[Path]
+PathExistsGlob=/run/delfin-person-start/start-*
+Unit=delfin-person-start.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+person_start_unit() {
+  cat <<EOF
+[Unit]
+Description=Start the requested persons' DELFIN agent services
+
+[Service]
+Type=oneshot
+User=${SERVICE_USER}
+WorkingDirectory=${SERVICE_HOME}
+NoNewPrivileges=yes
+# The started service outlives this oneshot (the launcher detaches it).
+KillMode=process
+ExecStart=${BRIDGE_PYTHON} -P -m delfin.messenger.people start-requested /run/delfin-person-start
+EOF
+}
+
 phone_env() {
   if [ "${want_phone_sessions}" = 1 ]; then
     printf 'Environment=DELFIN_MESSENGER_WORKSPACES=%s\n' "${PHONE_ROOT}"
@@ -366,12 +401,13 @@ User=${SERVICE_USER}
 # only with uid and gid equal. The socket's directory carries delfin-gw
 # instead (setgid, so the socket inherits it): the gateway reaches the
 # socket, nothing else of this process.
-RuntimeDirectory=delfin-messenger-bridge
+RuntimeDirectory=delfin-messenger-bridge delfin-person-start
 RuntimeDirectoryMode=2750
 ExecStartPre=+/bin/chgrp ${GW_USER} /run/delfin-messenger-bridge
 ExecStartPre=+/bin/chmod 2750 /run/delfin-messenger-bridge
 Environment=DELFIN_MESSENGER_PEER_UID=$(id -u "${GW_USER}")
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
+Environment=DELFIN_MESSENGER_PERSON_STARTS=/run/delfin-person-start
 $(phone_env)
 ExecStart=${BRIDGE_PYTHON} -m delfin.agent.service.bridge
 Restart=on-failure
@@ -413,6 +449,8 @@ install_units() {
     [ -x "${BRIDGE_PYTHON}" ] || die "bridge Python not executable: ${BRIDGE_PYTHON}"
     if [ "${BRIDGE_PYTHON}" = "${USER_PYTHON}" ]; then
       agent_service_unit > "${UNIT_DIR}/delfin-agent-service.service"
+      person_start_unit > "${UNIT_DIR}/delfin-person-start.service"
+      person_start_path_unit > "${UNIT_DIR}/delfin-person-start.path"
     else
       say "no DELFIN venv at ${SERVICE_HOME}/delfin/.venv -- no agent service unit; start the service as ${SERVICE_USER} yourself"
     fi
@@ -435,6 +473,9 @@ install_units() {
     systemctl enable --now delfin-agent-service.service
   fi
   local unit
+  if [ -f "${UNIT_DIR}/delfin-person-start.path" ]; then
+    systemctl enable --now delfin-person-start.path
+  fi
   for unit in simplex-chat-daemon delfin-messenger-bridge delfin-messenger-gateway; do
     if [ -f "${UNIT_DIR}/${unit}.service" ]; then
       systemctl enable "${unit}.service"
@@ -480,6 +521,8 @@ uninstall() {
   rm -f "${UNIT_DIR}/delfin-messenger-bridge.service"
   systemctl disable --now delfin-agent-service.service 2>/dev/null || true
   rm -f "${UNIT_DIR}/delfin-agent-service.service"
+  systemctl disable --now delfin-person-start.path 2>/dev/null || true
+  rm -f "${UNIT_DIR}/delfin-person-start.path" "${UNIT_DIR}/delfin-person-start.service"
   systemctl disable --now simplex-chat-daemon.service 2>/dev/null || true
   rm -f "${UNIT_DIR}/delfin-messenger-gateway.service"
   rm -f "${UNIT_DIR}/simplex-chat-daemon.service"
