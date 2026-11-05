@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from _lab_support import call, lab, sim  # noqa: F401
+from _lab_support import call, lab_fixture, sim  # noqa: F401
 
 REPO = Path(__file__).resolve().parents[1]
 LAB_TOOLS = {"lab_devices", "lab_read", "lab_set", "lab_plan_check",
@@ -45,13 +45,21 @@ def test_a_tool_call_reaches_the_kernel(lab):
 
 
 def test_advertised_only_where_a_manifest_exists(lab, tmp_path, monkeypatch):
-    from delfin.agent.api_client import (ToolSurfaceContext,
+    from delfin.agent.api_client import (ToolSurfaceContext, _lab_configured,
                                          tool_unavailable_reason)
-    assert tool_unavailable_reason("lab_set", ToolSurfaceContext()) is None
+    assert _lab_configured() is True
+    ctx = ToolSurfaceContext(has_lab=_lab_configured())
+    assert tool_unavailable_reason("lab_set", ctx) is None
     monkeypatch.setenv("DELFIN_LAB_DIR", str(tmp_path / "empty"))
-    why = tool_unavailable_reason("lab_set", ToolSurfaceContext())
+    assert _lab_configured() is False
+    ctx = ToolSurfaceContext(has_lab=_lab_configured())
+    why = tool_unavailable_reason("lab_set", ctx)
     assert why and "manifest" in why
-    assert tool_unavailable_reason("read_file", ToolSurfaceContext()) is None
+    assert tool_unavailable_reason("read_file", ctx) is None
+    # the live surface passes the real answer (one stat of one file)
+    import inspect
+    from delfin.agent import api_client as A
+    assert "has_lab=_lab_configured()" in inspect.getsource(A)
     out = call(lab, "lab_set", {"device": "lamp", "channel": "power",
                                 "value": "on"})
     assert "no lab manifest" in out["error"]
@@ -61,7 +69,9 @@ def test_estop_runs_in_plan_mode_and_a_write_does_not(lab):
     out = call(lab, "lab_set", {"device": "lamp", "channel": "power",
                                 "value": "on"}, mode="plan")
     assert not out.get("ok") and sim("lamp").get("power", "off") == "off"
-    assert call(lab, "lab_plan_check", {"steps": []}, mode="plan")["ok"]
+    assert call(lab, "lab_plan_check", {"steps": [
+        {"device": "lamp", "channel": "power", "value": "on"}]},
+        mode="plan")["ok"]
     assert call(lab, "lab_estop", {}, mode="plan")["scope"] == "global"
 
 

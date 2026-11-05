@@ -14,9 +14,8 @@ import copy
 import json
 import time
 
-import pytest
 
-from _lab_support import FakeClock, lab  # noqa: F401
+from _lab_support import FakeClock, lab_fixture  # noqa: F401
 
 
 def _setup(clock):
@@ -108,6 +107,7 @@ def test_two_module_workflow_with_sample_handover(lab):
 
 
 def test_sample_mixup_stops_the_run(lab):
+    from delfin.lab.workflow import run_dir
     clk = FakeClock(time.time())
     manifest, edges, clients = _setup(clk)
     _place_vial(clients, barcode="vial-9")            # the wrong vial arrived
@@ -118,6 +118,11 @@ def test_sample_mixup_stops_the_run(lab):
     assert cp["status"] == "failed" and cp["failed_step"] == "uv"
     assert "mix-up" in cp["deviations"][-1]["reason"]
     assert cp["measurements"] == []
+    # the failed run keeps its module locks (for a resume) until a person
+    # abandons it
+    coord.abandon("run-mix")
+    assert json.loads((run_dir("run-mix") / "checkpoint.json").read_text()
+                      )["status"] == "abandoned"
     # a transfer from the wrong module is refused before anything moves
     wf = copy.deepcopy(WF)
     wf["steps"] = [{"id": "m", "op": "transfer", "sample": "S-001",

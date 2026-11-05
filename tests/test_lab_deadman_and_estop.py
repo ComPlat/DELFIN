@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from _lab_support import (FakeClock, approve_and_set, call, lab,  # noqa: F401
+from _lab_support import (FakeClock, call, lab_fixture,  # noqa: F401
                           prepare_heating, sim)
 
 REPO = Path(__file__).resolve().parents[1]

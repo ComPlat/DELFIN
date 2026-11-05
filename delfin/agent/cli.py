@@ -5400,6 +5400,13 @@ def build_parser() -> argparse.ArgumentParser:
                           "add <slug> <text>")
     kno.set_defaults(func=cmd_knowledge)
 
+    # lab — device control behind the safety kernel (delfin/lab/cli.py)
+    lab_p = sub.add_parser(
+        "lab", help="Lab devices: e-stop, approvals, manifest, daemons "
+                    "(delfin-agent lab --help)", add_help=False)
+    lab_p.add_argument("lab_args", nargs=argparse.REMAINDER)
+    lab_p.set_defaults(func=cmd_lab)
+
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
         "approvals",
@@ -6242,6 +6249,13 @@ def _stop_own_background_shells() -> None:
         _bj.get_registry().stop_running()
     except Exception:
         pass
+
+
+def cmd_lab(args) -> int:
+    """``delfin-agent lab ...``: handed whole to ``delfin.lab.cli``."""
+    from delfin.lab.cli import main as lab_main
+    return int(lab_main(list(getattr(args, "lab_args", None) or ["--help"]))
+               or 0)
 
 
 def main(argv: list[str] | None = None) -> int:

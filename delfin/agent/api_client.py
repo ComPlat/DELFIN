@@ -7825,6 +7825,9 @@ _PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
     # Planning itself
     "task_create", "task_update", "task_adopt", "exit_plan_mode",
     "ask_user_question", "report_verdict", "skill",
+    # Lab: reading, the dry run, and the emergency stop. A stop is never
+    # refused for the mode; it only moves devices toward their safe state.
+    "lab_devices", "lab_read", "lab_plan_check", "lab_estop",
 })
 
 # What plan mode may run THROUGH AN MCP SERVER. The native list above plus
@@ -11357,6 +11360,83 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    # Lab device control (delfin/lab, docs/design/lab-control.md): every
+    # write goes through the safety kernel, which reads limits from the
+    # pinned manifest only. Advertised only where a lab manifest exists
+    # (tool_unavailable_reason), so an installation without one pays
+    # nothing per request.
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_devices",
+            "description": "Lab devices: limits, levels, state.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_read",
+            "description": "Readings of one lab device, with their age.",
+            "parameters": {
+                "type": "object",
+                "properties": {"device": {"type": "string"}},
+                "required": ["device"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_set",
+            "description": (
+                "Set a device channel via the safety kernel; a refusal says "
+                "why. Hazardous: after a person approves, repeat with "
+                "approval=<id>."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string"},
+                    "channel": {"type": "string"},
+                    "value": {},
+                    "unit": {"type": "string"},
+                    "approval": {"type": "string"},
+                },
+                "required": ["device", "channel", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_plan_check",
+            "description": (
+                "Dry-run steps [{device,channel,value,unit}]: limits, "
+                "interlocks; no write."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"steps": {"type": "array",
+                                         "items": {"type": "object"}}},
+                "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_estop",
+            "description": (
+                "E-stop: all devices, or one module, to safe state; a "
+                "person clears it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"module": {"type": "string"}},
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -13626,6 +13706,20 @@ _SUBAGENT_SPAWN_TOOL_NAMES: frozenset[str] = frozenset({
     "subagent", "orchestrate",
 })
 
+# Lab device control (delfin/lab). Executable only where the installation
+# has a lab manifest; the executor answers the same in its own refusal.
+_LAB_TOOL_NAMES: frozenset[str] = frozenset({
+    "lab_devices", "lab_read", "lab_set", "lab_plan_check", "lab_estop",
+})
+
+
+def _lab_configured() -> bool:
+    try:
+        from delfin.lab.store import lab_configured
+        return bool(lab_configured())
+    except Exception:
+        return False
+
 
 def estimate_schema_tokens(obj: Any) -> int:
     """House estimate of the tokens *obj* costs on the wire."""
@@ -13700,6 +13794,9 @@ class ToolSurfaceContext:
     # rather than being a second policy that happens to agree with it today.
     session_allowed: frozenset[str] = frozenset()
     session_denied: frozenset[str] = frozenset()
+    # Whether this installation has a lab manifest (delfin.lab). Default
+    # True like the index flags; the live surface passes the real answer.
+    has_lab: bool = True
 
 
 def tool_unavailable_reason(
@@ -13753,6 +13850,9 @@ def tool_unavailable_reason(
         return "doc index not available"
     if base in _CALC_INDEX_TOOL_NAMES and not ctx.has_calc_index:
         return "calc index not available"
+    if base in _LAB_TOOL_NAMES:
+        if not ctx.has_lab:
+            return "no lab manifest on this installation"
     if base in _OFFICE_TOOL_NAMES:
         needed = _OFFICE_TOOL_BACKENDS.get(base, ())
         available = ctx.office_backends
@@ -18880,6 +18980,13 @@ class _DocToolExecutor:
         # nothing runs, nothing is written, no network.
         if name in ("orca_explain", "orca_check_input", "workflow_candidates"):
             return self._execute_orca_knowledge(name, arguments)
+
+        # Lab device control: delfin.lab.tools hands every call to the
+        # safety kernel. The permission mode is deliberately not passed on.
+        if name in ("lab_devices", "lab_read", "lab_set", "lab_plan_check",
+                    "lab_estop"):
+            from delfin.lab import tools as _lab_tools
+            return _lab_tools.execute(name, arguments, permissions)
 
         if name == "remember_permission":
             if permissions is None:
@@ -33148,6 +33255,7 @@ class OpenAIClient(_BaseClient):
             has_calc_index=bool(has_calc_tools),
             has_office_libs=_office_backends_available(),
             office_backends=_office_backend_set(),
+            has_lab=_lab_configured(),
             # Read off the SAME object the executor gate reads, so the two
             # cannot disagree: a tool this session excluded is dropped from
             # the surface because it would be refused, not instead of it.

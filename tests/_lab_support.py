@@ -25,8 +25,8 @@ class FakeClock:
         self.t += float(s)
 
 
-@pytest.fixture
-def lab(tmp_path, monkeypatch):
+@pytest.fixture(name="lab")
+def lab_fixture(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -36,11 +36,11 @@ def lab(tmp_path, monkeypatch):
     monkeypatch.delenv("DELFIN_LAB_MANIFEST", raising=False)
     from delfin.agent import trust_store
     trust_store.forget_cached_keys()
-    from delfin.lab import manifest, smoke, store
+    from delfin.lab import manifest, store
     from delfin.lab.safety import pin
     path = store.manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(smoke.demo_manifest_text(), encoding="utf-8")
+    path.write_text(manifest.demo_text(), encoding="utf-8")
     pin(manifest.load(path), by="alice")
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -55,7 +55,12 @@ def call(ws: Path, tool: str, args: dict, *, mode: str = "bypassPermissions",
     perms.confirm_callback = lambda *a, **k: True
     perms.task_session_id = session
     executor = A._DocToolExecutor.__new__(A._DocToolExecutor)
-    return json.loads(executor.execute(tool, args, perms))
+    raw = executor.execute(tool, args, perms)
+    try:
+        out = json.loads(raw)
+    except ValueError:              # read_file and bash answer in text
+        return {"text": raw}
+    return out if isinstance(out, dict) else {"value": out}
 
 
 def sim(device: str) -> dict:

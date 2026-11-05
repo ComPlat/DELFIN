@@ -14,7 +14,7 @@ import threading
 
 import pytest
 
-from _lab_support import approve_and_set, call, lab, prepare_heating, sim  # noqa: F401
+from _lab_support import approve_and_set, call, lab_fixture, prepare_heating, sim  # noqa: F401
 
 
 # -- T1 range / step ----------------------------------------------------------
@@ -347,3 +347,25 @@ def test_every_write_leaves_intent_result_and_readback(lab):
     assert events[i:i + 3] == ["intent", "result", "readback"]
     recs = audit.read_all()
     assert all("prev" in r for r in recs)           # the hash chain
+
+
+def test_a_module_floor_raises_every_write_in_it(lab):
+    """Approvals per module: analysis with min_level hazardous asks a person
+    even for the lamp, which is benign on its own."""
+    from delfin.lab import manifest, store
+    from delfin.lab.safety import pin
+    path = store.manifest_path()
+    text = path.read_text()
+    assert call(lab, "lab_set", {"device": "lamp", "channel": "power",
+                                 "value": "on"})["ok"]          # control
+    raised = text.replace("    node: edge_analysis\n    min_level: benign",
+                          "    node: edge_analysis\n    min_level: hazardous")
+    assert raised != text
+    path.write_text(raised)
+    pin(manifest.load(path), by="alice")          # the person reviews + pins
+    out = call(lab, "lab_set", {"device": "lamp", "channel": "power",
+                                "value": "on"})
+    assert out["code"] == "approval_required"
+    # toward the safe value (off) needs no person
+    assert call(lab, "lab_set", {"device": "lamp", "channel": "power",
+                                 "value": "off"})["ok"]
