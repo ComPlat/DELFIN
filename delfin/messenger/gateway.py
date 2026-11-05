@@ -1174,7 +1174,7 @@ class Rooms:
             if current.get('generation') != item.get('generation'):
                 return t('Sprachnachricht abgelaufen; bitte erneut senden.')
             self._reply_targets.pop((chat, str(quote_id)), None)
-            result = await self.session(sid, 'prompt', text=t('Sprachnachricht des Nutzers (Transkript):\n') + item['text'])
+            result = await self.session(sid, 'prompt', text=self.VOICE_PROMPT + item['text'])
             return result.get('error') or t('Sprachnachricht als Text übergeben.')
         if item.get('kind') == 'question':
             reply = await self.session(sid, 'answer', id=item['id'], text=text)
@@ -1370,10 +1370,6 @@ class Rooms:
                     '(Autokorrektur?). ') + t(cls._CHANGE_HINT),)
         return command
 
-    #: Spoken words that decide an approval, after _spoken() normalised them.
-    _SPOKEN_DECISIONS = {'ja': 'ja', 'yes': 'yes', 'jawohl': 'ja',
-                         'nein': 'nein', 'no': 'no'}
-
     @staticmethod
     def _spoken(transcript):
         """A transcript as one decision candidate: lower case, outer
@@ -1383,45 +1379,54 @@ class Rooms:
         text = re.sub(r'\s+', ' ', str(transcript or '')).strip().lower()
         return text.strip(' .,!?;:\u2026"\'\u201e\u201c')
 
-    async def voice(self, transcript, room, chat, quote_id=None):
-        """What a transcribed voice message does: what the same words typed
-        would do, never more.
+    #: How a transcript is marked for the model (not translated: the
+    #: model reads it, not the phone).
+    VOICE_PROMPT = 'Voice message from the user (transcript):\n'
 
-        Without a reply reference it is the session's next prompt. As a
-        reply to a question it is the answer. As a reply to an approval
-        only a transcript that is exactly a decision word or an offered
-        option's label answers it, through the same path as the typed
-        word; a lasting rule is never confirmed by voice. Anything else
-        frees nothing and says what was understood.
+    async def voice(self, transcript, room, chat, quote_id=None):
+        """What a transcribed voice message does: a prompt or an answer,
+        never an approval.
+
+        Output: the phone's reply, its first line echoing the transcript
+        ("🎙 understood: ..."). Without a reply reference it is the answer
+        to the one question that waits in the session, else the session's
+        next prompt, marked as transcribed. As a reply to a question it is
+        the answer. As a reply to an approval a spoken no denies (the safe
+        direction); a spoken yes, an option's label or anything else
+        approves nothing and says to type it. A lasting rule is never
+        confirmed by voice.
         """
-        text = str(transcript or '').strip()
+        text = ' '.join(str(transcript or '').split())
+        echo = t('🎙 verstanden: {text}').format(text=text) if text else t('🎙 Nichts verstanden.')
         sid = room.get('session_id') if room else None
         if quote_id is None:
             if not sid or not text:
-                return t('🎤 Nichts verstanden; nichts übergeben.')
-            result = await self.session(
-                sid, 'prompt', text=t('Sprachnachricht des Nutzers (Transkript):\n') + text)
-            return result.get('error') or t('🎤 An die Sitzung übergeben:\n\n') + text
+                return echo + '\n' + t('Nichts übergeben.')
+            answered = await self.answer_open_question(sid, text, chat)
+            if answered is not None:
+                return echo + '\n' + answered
+            result = await self.session(sid, 'prompt', text=self.VOICE_PROMPT + text)
+            return echo + ('\n' + result['error'] if result.get('error') else '')
         item = self._reply_targets.get((chat, str(quote_id)))
         if item and item.get('_person', OWNER) != self._person():
             item = None
         if item and item.get('kind') == 'question':
             if not text:
-                return t('🎤 Nichts verstanden; die Frage bleibt offen.')
-            return '🎤 ' + await self.reply(text, room, chat, quote_id)
+                return echo + '\n' + t('Die Frage bleibt offen.')
+            return echo + '\n' + await self.reply(text, room, chat, quote_id)
         if item and item.get('confirmChoice'):
-            return (t('🎤 Dauerhafte Regeln werden nur per Text bestätigt; '
-                    'bitte yes oder no tippen. Nichts freigegeben.'))
-        word = self._spoken(text)
-        labels = {str(o.get('label', '')).lower() for o in (item or {}).get('options', [])}
-        if item and (word in self._SPOKEN_DECISIONS or (word and word in labels)):
-            typed = self._SPOKEN_DECISIONS.get(word, word)
-            return (t('🎤 Als „{typed}“ verstanden → ').format(typed=typed)
-                    + await self.reply(typed, room, chat, quote_id))
+            return echo + '\n' + t('Dauerhafte Regeln werden nur per Text bestätigt; '
+                                    'bitte yes oder no tippen. Nichts freigegeben.')
         if not item:
-            return await self.reply(text or '?', room, chat, quote_id)
-        return t('🎤 Verstanden: „{text}“ – keine eindeutige Antwort, nichts freigegeben. '
-                 'Bitte nur „ja“ oder „nein“ sagen (oder tippen).').format(text=text)
+            return echo + '\n' + await self.reply(text or '?', room, chat, quote_id)
+        word = self._spoken(text)
+        labels = {str(o.get('label', '')).lower() for o in item.get('options', [])
+                  if o.get('key') != 'n'}
+        if word and yes_no(word) == 'n' and word not in labels:
+            return echo + '\n' + await self.reply('n', room, chat, quote_id)
+        if word and (yes_no(word) == 'y' or word in labels):
+            return echo + '\n' + t('Ja bitte tippen; per Sprache wird nichts freigegeben.')
+        return echo + '\n' + t('Keine eindeutige Antwort, nichts freigegeben. Zum Freigeben „ja“ tippen.')
 
     async def handle_file(self, message, room):
         from .media import MAX_FILE, CHUNK, filename, transcribe

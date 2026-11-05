@@ -361,7 +361,7 @@ def test_voice_transcript_is_reviewed_and_never_answers_a_permission(rig):
         await rooms.handle({**message(text='yes', mid='voice-yes'), 'quote_id': mid})
         assert bridge.calls == []
         await rooms.handle({**message(text='senden', mid='voice-send'), 'quote_id': mid})
-        assert bridge.calls == [{'cmd': 'session', 'session': 's1', 'action': 'prompt', 'text': 'Sprachnachricht des Nutzers (Transkript):\nyes'}]
+        assert bridge.calls == [{'cmd': 'session', 'session': 's1', 'action': 'prompt', 'text': 'Voice message from the user (transcript):\nyes'}]
     asyncio.run(run())
 
 

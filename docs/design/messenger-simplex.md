@@ -259,8 +259,8 @@ after N s, dismissed); the empty answer list is never presented as a choice.
 Use SimpleX's **Reply** gesture on the concrete request, then type `yes`/`ja`,
 `no`/`nein`, an offered option key or its full label. For a question, reply with
 your selection or free text. No slash command or code is required. A bare `yes`
-without a reply reference never approves anything. Images are not approvals; a
-spoken decision word in reply counts like the typed one (see below).
+without a reply reference approves only under the single-card rule above.
+Images and voice messages are never approvals (see below).
 
 The message shows the session, action/plan/question and the actual local options.
 A yes selects the normal approval (for TUI plans, default mode); alternative modes
@@ -321,14 +321,14 @@ SHA-256, under `/opt/delfin-messenger/models`. The gateway unit then carries
 speech API is invoked at run time; a separate isolated process (`python -I`) has a
 120-second deadline.
 
-A voice message does what the same words typed would do, and no more:
-- without a reply reference it is the session's next prompt, and the phone is shown
-  the transcript;
+A voice message is a prompt or an answer, never an approval. Every reply starts
+with one line echoing the transcript ("🎙 understood: ..."):
+- without a reply reference it answers the one question that waits in the
+  session, else it is the session's next prompt, marked as transcribed;
 - as a reply to a question, the transcript is the answer;
-- as a reply to an approval, only a transcript that is exactly a decision word
-  (`ja`, `nein`, `yes`, `no`) or an offered option's label decides it, through the
-  same path as the typed word; anything else (a sentence, "ja aber nicht jetzt")
-  frees nothing and says what was understood;
+- as a reply to an approval, a spoken no denies (the safe direction); a spoken
+  yes or an option's label approves nothing and the phone says to type it;
+  anything else frees nothing;
 - a lasting rule is never confirmed by voice.
 Without working transcription, the recording is delivered as an audio attachment
 with an explanation; the agent is not assumed to understand audio automatically.
