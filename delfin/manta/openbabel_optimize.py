@@ -291,6 +291,46 @@ def _apply_template_bond_orders(ob_mol, mol_template) -> int:
         return 0
 
 
+def _ob_full_setup_enabled() -> bool:
+    """DELFIN_OB_FULL_SETUP (default off -> Open Babel's setup shortcut, byte-identical)."""
+    return os.environ.get("DELFIN_OB_FULL_SETUP", "0") == "1"
+
+
+def _forget_previous_setup(ff) -> None:
+    """Make the next ``ff.Setup(mol)`` a full setup, whatever this process minimised before.
+
+    ``FindForceField`` hands every caller the ONE process-wide UFF instance, and its
+    ``Setup`` takes a shortcut: when the new molecule has the same atoms and bonds as the
+    previous one (``IsSetupNeeded`` is false), it keeps the previous setup and only takes
+    over the coordinates.  Resetting the constraints does not undo that.  So two frames of
+    one complex that differ only in their coordinates minimise differently depending on
+    which frame this process minimised before: on the 46 batch-UFF inputs of
+    [Pt](Cl)(Cl)(N)N, 5 of 46 differ between forward and reverse order in one process, and
+    2 of 46 differ between forward order and one fresh process per input (input 25 after
+    input 24, the same trans complex with its N-H hydrogens turned).  The batch UFF pool
+    (topo_isomers) gives its inputs to min(n, cpu_count, 64) worker processes, so with
+    fewer cores than inputs (a 4-core CI runner) which input follows which in a worker is
+    up to the scheduler, and two builds of one SMILES differ: 9 different manifolds in 24
+    builds with DELFIN_MAX_PROCESS_WORKERS=4.
+
+    Setting the instance up on a one-atom molecule first makes ``IsSetupNeeded`` true for
+    every real molecule, so each call gets the setup of its own input -- the same result as
+    the first minimisation of a fresh process.  (``MakeNewInstance`` would give a private
+    instance, but its ``Setup`` segfaults on these Pt complexes in Open Babel 3.1.1.)
+    """
+    if not _ob_full_setup_enabled() or ff is None:
+        return
+    try:
+        _blank = pybel.ob.OBMol()
+        _atom = _blank.NewAtom()
+        _atom.SetAtomicNum(18)
+        _atom.SetVector(0.0, 0.0, 0.0)
+        ff.SetConstraints(pybel.ob.OBFFConstraints())
+        ff.Setup(_blank)
+    except Exception as exc:                   # pragma: no cover - OB internals
+        logger.debug("Open Babel setup reset failed: %s", exc)
+
+
 def _optimize_xyz_openbabel(
     xyz_delfin: str,
     steps: int = 500,
@@ -414,6 +454,7 @@ def _optimize_xyz_openbabel(
             ff = None
         if ff is None:
             ff = pybel._forcefields["uff"]
+        _forget_previous_setup(ff)
         try:
             ff.SetConstraints(pybel.ob.OBFFConstraints())
         except Exception:

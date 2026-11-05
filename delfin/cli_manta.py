@@ -423,6 +423,11 @@ _CHAMPION_EXTRA_ENV = {
     "DELFIN_MIRROR_STEREO_GATE": "1",
     "DELFIN_STEREOCENTER_SKIP_MIRROR": "1",
     "DELFIN_OB_DETERMINISTIC_RNG": "1",
+    # Every Open Babel minimisation gets the full setup of its own input instead of the
+    # previous call's setup of the same atoms and bonds (openbabel_optimize
+    # _forget_previous_setup), so a batch-UFF result no longer depends on which input the
+    # pool scheduled before it in the same worker process (fewer cores than inputs).
+    "DELFIN_OB_FULL_SETUP": "1",
     # LANDING 9 (2026-11-03, AB:s6k_gf2): valued settings of the bond-valence targets and the
     # realism ranking (see the LANDING 9 note in _CHAMPION_FLAGS).
     "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE": "lengths",
