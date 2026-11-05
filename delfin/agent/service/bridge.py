@@ -152,17 +152,18 @@ SCHEDULE_FOLDER = "zeitplaene"
 #: Why a schedule was refused, in the phone's words (schedules.ScheduleError
 #: codes); the phone translates these whole.
 SCHEDULE_ERRORS = {
-    "when": "Zeit nicht verstanden. Beispiele: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5",
-    "time": "Uhrzeit fehlt oder ist ungültig. Beispiele: täglich 07:30 · mo-fr 18:00 · alle 2h · 30 7 * * 1-5",
-    "interval": "Der kürzeste Abstand ist 5 Minuten.",
-    "zone": "Unbekannte Zeitzone, z. B. tz=Europe/Berlin.",
-    "never": "Dieser Zeitplan würde nie laufen.",
-    "task": "Nach der Zeit fehlt die Aufgabe.",
-    "workspace": "Der Ordner fehlt.",
-    "unknown": "Zeitplan nicht gefunden. pläne zeigt die aktuellen.",
-    "budget": "Ungültige Grenzen.",
-    "command": "Ein Watcher führt nur lesende Befehle aus: squeue, sacct, sinfo, ls, tail, head, wc, grep, du, df und ähnliche.",
-    "path": "Pfade müssen im Ordner des Zeitplans liegen.",
+    "when": 'Time not understood. Examples: daily 07:30 · mon-fri 18:00 · every 2h · 30 7 * * 1-5',
+    "time": 'The time of day is missing or invalid. Examples: daily 07:30 · mon-fri 18:00 · every 2h · 30 7 * * 1-5',
+    "interval": 'The shortest interval is 5 minutes.',
+    "zone": 'Unknown time zone; e.g. tz=Europe/Berlin.',
+    "never": 'This schedule would never run.',
+    "task": 'The task is missing after the time.',
+    "workspace": 'The folder is missing.',
+    "unknown": 'Schedule not found. list shows the current ones.',
+    "budget": 'Invalid limits.',
+    "command": 'A watcher runs only reading commands: squeue, sacct, sinfo, ls, tail, head, wc, grep, du, df '
+               'and the like.',
+    "path": "Paths must lie inside the schedule's folder.",
 }
 
 
@@ -455,13 +456,13 @@ class Bridge:
             if person not in (None, ""):
                 # Another person's context: their service and records only.
                 if self.person:
-                    return {"error": "Person bereits gewählt."}
+                    return {"error": 'Person already chosen.'}
                 sub = self._person_bridge(person)
                 if sub is None:
-                    return {"error": "Unbekannte Person. Nichts ausgeführt."}
+                    return {"error": 'Unknown person. Nothing done.'}
                 return await sub._run_one(request)
         if self.person and cmd in OWNER_ONLY | {"pairing"}:
-            return {"error": "Für diese Person vom Handy nicht verfügbar."}
+            return {"error": 'Not available from the phone for this person.'}
         params = {k: v for k, v in request.items() if k != "cmd"}
         try:
             handler = getattr(self, "_cmd_" + cmd, None)
@@ -479,7 +480,7 @@ class Bridge:
         except Exception as exc:  # noqa: BLE001
             if self.person:
                 # A person's paths stay off the phone.
-                return {"error": f"Nicht ausgeführt ({type(exc).__name__})."}
+                return {"error": f"Not done ({type(exc).__name__})."}
             return {"error": f"{type(exc).__name__}: {exc}"}
 
     @staticmethod
@@ -515,12 +516,11 @@ class Bridge:
                 # the way their windows start it (people.request_start), in
                 # a thread of its own -- never on the bridge's event loop.
                 if _NO_WAKE.get():
-                    raise ServiceDown("Der Agent-Dienst dieser Person läuft gerade nicht.") from None
+                    raise ServiceDown("This person's agent service is not running.") from None
                 if not self._kick_person_start():
-                    raise ServiceDown("Der Agent-Dienst dieser Person läuft gerade nicht. "
-                                      "Am Rechner eine Sitzung öffnen.") from None
-                raise ServiceStarting("Der Agent-Dienst dieser Person wird gestartet; "
-                                      "die Antwort folgt gleich.") from None
+                    raise ServiceDown("This person's agent service is not running. Open a session at the "
+                                      'computer.') from None
+                raise ServiceStarting("This person's agent service is starting; the answer follows shortly.") from None
         return self._service
 
     def _kick_person_start(self) -> bool:
@@ -665,15 +665,15 @@ class Bridge:
         """Room commands require an exact, local session ID; never fall back."""
         sid = params["session"]
         if not self._enabled(sid):
-            return {"error": "SimpleX ist für diese Sitzung ausgeschaltet. In TUI/Dashboard mit /sync aktivieren."}
+            return {"error": 'SimpleX is off for this session. Enable it in the TUI/dashboard with /sync.'}
         generation = self._record(sid).get("generation")
         listing = await self._request("sessions.list")
         if not self._enabled(sid) or self._record(sid).get("generation") != generation:
-            return {"error": "SimpleX-Aktivierung wurde geändert. Anfrage nicht ausgeführt."}
+            return {"error": 'The SimpleX activation changed. The request was not carried out.'}
         row = next((r for r in listing.get("sessions", [])
                     if str(r.get("sessionId") or r.get("id") or "") == sid), None)
         if row is None:
-            return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+            return {"error": 'This session is not available. No other agent was addressed.'}
         action = params["action"]
         if action in {'files', 'announcement'} or action.startswith(('upload.', 'download.')):
             from delfin.messenger.media import Exchange
@@ -735,7 +735,7 @@ class Bridge:
             # minutes, so it asks the service directly, not through a turn.
             ws = str(row.get("workspace") or "")
             if not ws:
-                return {"error": "Diese Sitzung hat keinen Arbeitsordner."}
+                return {"error": 'This session has no working folder.'}
             sub = str(params.get("sub") or "")
             request = {"workspace": ws}
             if sub in {"list", "pull", "test", "cleanup"}:
@@ -767,12 +767,12 @@ class Bridge:
             code = str(params.get("id") or "")
             issued = self._issued.get(code)
             if issued is None or issued[0] != sid or time.monotonic() - issued[3] >= 600:
-                return {"error": "Anfrage abgelaufen oder gehört zu einer anderen Sitzung. pending erneut aufrufen."}
+                return {"error": 'Request expired or belongs to another session. Call pending again.'}
             live = await self._request("session.pending", {"sessionId": sid})
             req = next((r for r in live.get("pending", []) if r.get("requestId") == issued[1]), None)
             if req is None or json.dumps([self._record(sid).get("generation"), req], sort_keys=True) != issued[2]:
                 self._issued.pop(code, None)
-                return {"error": "Anfrage nicht mehr offen oder geändert."}
+                return {"error": 'The request is no longer open or has changed.'}
             kind = req.get("kind")
             reply_params = {"sessionId": sid, "requestId": issued[1]}
             if action == "answer" and kind == "ask":
@@ -782,23 +782,23 @@ class Bridge:
             elif action in {"approve", "deny", "decide"} and kind in {"confirm", "plan"}:
                 choice = params.get("choice", "") if action == "decide" else "n" if action == "deny" else "d" if kind == "plan" else "y"
                 if choice not in {o.get("key") for o in req.get("options", [])}:
-                    return {"error": "Diese Entscheidung ist für die Anfrage nicht verfügbar."}
+                    return {"error": 'This decision is not available for the request.'}
                 preview = self._redactor().text(str(req.get("preview") or ""))
                 if choice != "n" and len(preview) > 1400:
-                    return {"error": "Aktion zu lang für die Handyansicht. Bitte am Dashboard freigeben."}
+                    return {"error": 'The action is too long for the phone. Please approve it on the dashboard.'}
                 if choice == "?":
-                    return {"error": "Bitte eine der angezeigten Optionen auswählen."}
+                    return {"error": 'Please choose one of the options shown.'}
                 # Lasting rules need an explicit second reply to a new message.
                 if choice in {"A", "k", "p"} and not params.get("persist"):
                     return {"ok": False, "confirmationRequired": True, "id": code, "choice": choice}
                 # A changed command goes with choice c only, and c only with one.
                 command = str(params.get("command") or "")
                 if (choice == "c") != bool(command.strip()):
-                    return {"error": "Befehl ändern: mit „ändern: NEUER BEFEHL“ antworten."}
+                    return {"error": 'Change the command: reply "change: NEW COMMAND".'}
                 reply_params.update(choice=choice, persist=bool(params.get("persist", False)),
                                     **({"command": command} if choice == "c" else {}))
             else:
-                return {"error": "Antwort und Freigabe dürfen nicht verwechselt werden."}
+                return {"error": 'An answer and an approval must not be confused.'}
             # Consume before awaiting: concurrent replies cannot apply this code twice.
             if time.monotonic() - issued[3] >= 600 or self._issued.pop(code, None) != issued:
                 return {"error": "Anfrage bereits beantwortet."}
@@ -828,7 +828,7 @@ class Bridge:
             # The one display name: the service's session title, 50 characters.
             title = clean_title(params.get("text"))[:activation.NAME_MAX].strip()
             if not title:
-                return {"error": "Bitte einen Namen angeben."}
+                return {"error": 'Please give a name.'}
             reply = await self._request("session.setTitle", {"sessionId": sid, "title": title})
             return {"ok": not reply.get("error"), **reply}
         if action == "detach":
@@ -855,16 +855,16 @@ class Bridge:
         sid = str(params.get("session") or "")
         label = str(params.get("label") or "")[:40]
         if not activation.pull_allowed(**self._where()):
-            return {"error": "Holen vom Handy ist für dich ausgeschaltet. Am Rechner: /sync policy pull on."}
+            return {"error": 'Pulling from the phone is switched off for you. At the computer: /sync policy pull on.'}
         if self._switched_off(sid):
-            return {"error": "In der Sitzung mit /sync off ausgeschaltet. Dort mit /sync wieder einschalten."}
+            return {"error": 'Switched off in the session with /sync off. Switch it on there again with /sync.'}
         listing = await self._request("sessions.list")
         row = next((r for r in listing.get("sessions", [])
                     if str(r.get("sessionId") or r.get("id") or "") == sid), None)
         if row is None or not sid:
-            return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+            return {"error": 'This session is not available. No other agent was addressed.'}
         if not self._in_own_tree(str(row.get("workspace") or "")):
-            return {"error": "Diese Sitzung arbeitet nicht in deinem eigenen Ordner; vom Handy nicht holbar."}
+            return {"error": 'This session does not work in your own folder; it cannot be pulled from the phone.'}
         already = self._enabled(sid)
         if not already:
             self._configure(sid, "on", by="phone", phone=label)
@@ -988,11 +988,11 @@ class Bridge:
                            and self._room_fingerprint(r) == entry[1]), None)
             if record is None:
                 issued.pop(code, None)
-                return {"error": "Anfrage nicht mehr offen oder geändert."}
+                return {"error": 'The request is no longer open or has changed.'}
             rid = entry[0]
             secret = self._room_code(rid)
             if not secret:
-                return {"error": "Diese Anfrage kann nur am Rechner beantwortet werden."}
+                return {"error": 'This request can only be answered at the computer.'}
             if record.get("kind") == tc.ASK:
                 text = str(params.get("text") or "").strip()
                 problem = AA.range_problem(text, record.get("payload") or {})
@@ -1001,20 +1001,20 @@ class Bridge:
                 try:
                     picks = AA.resolve_choice(record, text)
                 except AA.ChoiceError:
-                    return {"error": "Bitte mit der Nummer einer Option antworten; "
-                                     "eigener Text geht für diese Sitzung nur am Rechner."}
+                    return {"error": 'Please reply with the number of an option; your own text works for '
+                                     'this session only at the computer.'}
                 issued.pop(code, None)
                 AA.write_choice_answer(record, picks, room=self._room_dir(), by="phone", code=secret)
                 return {"ok": True}
             if record.get("protected"):
-                return {"error": "Diese Anfrage ist immer ausdrücklich: bitte am Rechner freigeben."}
+                return {"error": 'This request is always explicit: please approve it at the computer.'}
             choice = str(params.get("choice") or "")
             if choice not in {"y", "n"}:
-                return {"error": "Bitte mit ja oder nein antworten."}
+                return {"error": 'Please answer with yes or no.'}
             issued.pop(code, None)
             ok = file_confirm.answer(rid, choice == "y", room=self._room_dir(), by="phone", code=secret)
             return {"ok": bool(ok)}
-        return {"error": "Unbekannte Aktion."}
+        return {"error": 'Unknown action.'}
 
     async def _cmd_pairing(self, params: dict) -> dict:
         """The pairing requests of every person, and the gateway's answers
@@ -1036,14 +1036,14 @@ class Bridge:
         name = str(params.get("person") or "")
         path = people.pairing_dir(name) if people.valid(name) else None
         if path is None:
-            return {"error": "Unbekannte Person."}
+            return {"error": 'Unknown person.'}
         if action == "answer":
             return pairing.answer(path, str(params.get("id") or ""), dict(params.get("result") or {}),
                                   door_root=people.door_root(name))
         if action == "note":
             pairing.note(path, str(params.get("text") or ""))
             return {"ok": True}
-        return {"error": "Unbekannte Pairing-Aktion."}
+        return {"error": 'Unknown pairing action.'}
 
     async def _cmd_status(self, _params: dict) -> dict:
         reply = await self._request("service.status")
@@ -1199,23 +1199,23 @@ class Bridge:
         n, ok, check = params.get("n"), params.get("ok"), params.get("check")
         if n is not None or check is not None or ok is not None:
             if not isinstance(n, int) or not isinstance(ok, bool) or not isinstance(check, str) or not check:
-                return {"error": "Antwortform: ok <nummer> / nein <nummer>, mit der beigelegten Prüfung der Anfrage."}
+                return {"error": 'Answer as: ok <number> / no <number>, with the check that came with the request.'}
             approvals = await self._cmd_approvals({})
             items = approvals.get("items", [])
             item = next((i for i in items if i["n"] == n), None)
             if item is None:
                 return {"error": f"Keine offene Anfrage mit der Nummer {n}. Mit approvals die offenen ansehen."}
             if not self._approvals_check_ok(items, check):
-                return {"error": "Prüfung stimmt nicht oder die Anfrage hat sich geändert. Erst approvals, dann antworten."}
+                return {"error": 'The check does not match or the request has changed. First approvals, then answer.'}
             if not item["approvable"]:
-                return {"error": "Diese Anfrage ist immer ausdrücklich: bitte am Dashboard freigeben."}
+                return {"error": 'This request is always explicit: please approve it at the dashboard.'}
             key = (item["sessionId"], item["requestId"])
             shown = self._approvals_raw.get(key)
             live = await self._request("session.pending", {"sessionId": item["sessionId"]})
             req = next((r for r in live.get("pending", [])
                         if r.get("requestId") == item["requestId"]), None)
             if req is None or shown is None or json.dumps(req, sort_keys=True) != json.dumps(shown, sort_keys=True):
-                return {"error": "Anfrage nicht mehr offen oder geändert. Mit approvals die offenen ansehen."}
+                return {"error": 'The request is no longer open or has changed. approvals lists the open ones.'}
             # Consume before awaiting: concurrent replies cannot approve twice;
             # the service applies a requestId once regardless.
             self._approvals_raw.pop(key, None)
@@ -1253,11 +1253,11 @@ class Bridge:
         from .protocol import clean_title
         root = self._workspaces_root()
         if not root:
-            return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
+            return {"error": 'New sessions from the phone are not set up on this computer.'}
         now = time.monotonic()
         self._created = [t for t in self._created if now - t < CREATE_WINDOW_S]
         if len(self._created) >= CREATE_LIMIT:
-            return {"error": "Höchstens drei neue Sitzungen in zehn Minuten. Bitte später erneut."}
+            return {"error": 'At most three new sessions in ten minutes. Please try again later.'}
         title = clean_title(params.get("name")) or ""
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip("-.")[:40].strip("-.")
         if not slug:
@@ -1274,7 +1274,7 @@ class Bridge:
             "attach": False})
         sid = str(reply.get("sessionId") or "")
         if not sid:
-            return {"error": "Sitzung wurde nicht gestartet."}
+            return {"error": 'The session was not started.'}
         self._configure(sid)
         return {"ok": True, "sessionId": sid, "title": title or slug, "folder": slug}
 
@@ -1324,17 +1324,14 @@ class Bridge:
         workspace = str(params.get("workspace") or "")
         if not workspace and sid:
             if not self._enabled(sid):
-                return {"error": "SimpleX ist für diese Sitzung "
-                                 "ausgeschaltet. In TUI/Dashboard mit "
-                                 "/sync aktivieren."}
+                return {"error": 'SimpleX is off for this session. Enable it in the TUI/dashboard with /sync.'}
             listing = await self._request("sessions.list")
             row = next((r for r in listing.get("sessions", [])
                         if str(r.get("sessionId") or r.get("id") or "") == sid),
                        None)
             workspace = str((row or {}).get("workspace") or "")
             if not workspace:
-                return {"error": "Diese Sitzung ist nicht verfügbar. "
-                                 "Kein anderer Agent wurde angesprochen."}
+                return {"error": 'This session is not available. No other agent was addressed.'}
         if not workspace:
             return {"error": "profil <sitzung|ordner> frei|standard"}
         try:
@@ -1408,11 +1405,11 @@ class Bridge:
                 return {"ok": True, "id": entry["id"]}
             if action == "run":
                 if entry.get("host") != rundir.hostname():
-                    return {"error": "Dieser Zeitplan gehört zu einem anderen Rechner und läuft nur dort."}
+                    return {"error": 'This schedule belongs to another host and runs only there.'}
                 if not entry["confirmed"]:
-                    return {"error": "Noch nicht bestätigt: zuerst ok mit seiner Nummer senden."}
+                    return {"error": 'Not confirmed yet: send ok with its number first.'}
                 return {"ok": True, **self._schedule_view(schedules.request_run(entry["id"]))}
-            return {"error": "Unbekannter Zeitplan-Befehl."}
+            return {"error": 'Unknown schedule command.'}
         except schedules.ScheduleError as exc:
             return {"error": SCHEDULE_ERRORS.get(exc.code, SCHEDULE_ERRORS["when"]),
                     "code": exc.code}
@@ -1422,28 +1419,28 @@ class Bridge:
         sid = str(params.get("session") or "")
         if sid:
             if not self._enabled(sid):
-                return {"error": "SimpleX ist für diese Sitzung ausgeschaltet. In TUI/Dashboard mit /sync aktivieren."}
+                return {"error": 'SimpleX is off for this session. Enable it in the TUI/dashboard with /sync.'}
             listing = await self._request("sessions.list")
             row = next((r for r in listing.get("sessions", [])
                         if str(r.get("sessionId") or r.get("id") or "") == sid), None)
             folder = str((row or {}).get("workspace") or "")
             if not folder:
-                return {"error": "Diese Sitzung ist nicht verfügbar. Kein anderer Agent wurde angesprochen."}
+                return {"error": 'This session is not available. No other agent was addressed.'}
         else:
             root = os.environ.get(WORKSPACES_ENV, "").strip()
             if not root or not os.path.isabs(root) or not os.path.isdir(root):
-                return {"error": "Zeitpläne aus diesem Chat brauchen einen Handy-Ordner auf dem Rechner. "
-                                 "Im Sitzungs-Chat mit plan ZEIT AUFGABE anlegen oder in der TUI mit /schedule add."}
+                return {"error": 'Schedules from this chat need a phone folder on the host. Make one in a '
+                                 'session chat with schedule WHEN TASK, or in the TUI with /schedule add.'}
             folder = os.path.join(root, SCHEDULE_FOLDER)
             if os.path.lexists(folder):
                 if os.path.islink(folder) or not os.path.isdir(folder):
-                    return {"error": "Der Ordner für Zeitpläne ist kein normaler Ordner."}
+                    return {"error": 'The folder for schedules is not a plain folder.'}
             else:
                 os.mkdir(folder, 0o700)
         now = time.monotonic()
         made = [t for t in getattr(self, "_schedules_made", []) if now - t < CREATE_WINDOW_S]
         if len(made) >= SCHEDULE_LIMIT:
-            return {"error": "Höchstens fünf neue Zeitpläne in zehn Minuten. Bitte später erneut."}
+            return {"error": 'At most five new schedules in ten minutes. Please try again later.'}
         entry = schedules.add(str(params.get("text") or ""), workspace=folder,
                               created_by="phone", confirm=False)
         self._schedules_made = [*made, now]

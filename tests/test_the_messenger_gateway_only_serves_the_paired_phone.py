@@ -4,6 +4,7 @@ import asyncio
 import pytest
 
 from delfin.messenger import store
+from delfin.messenger.lang import t
 from delfin.messenger.gateway import Rooms, UPDATE
 
 
@@ -111,7 +112,7 @@ def test_status_and_update_stay_in_the_room(rig):
     asyncio.run(rooms.handle(message(text='/status')))
     asyncio.run(rooms.handle(message(text='/update', mid='2')))
     assert bridge.calls == [
-        {'cmd': 'session', 'session': 's1', 'action': 'update', 'text': UPDATE}]
+        {'cmd': 'session', 'session': 's1', 'action': 'update', 'text': t(UPDATE)}]
 
 
 def test_forum_update_and_stop_only_target_connected_sessions(rig):

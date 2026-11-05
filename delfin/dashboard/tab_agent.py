@@ -3159,7 +3159,7 @@ def _md_to_html(text: str) -> str:
 # - has_args: True means the command takes arguments — palette adds a trailing
 #   space so the user starts typing immediately
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
-    ("Session", "/sync", "SimpleX für diese Sitzung on|off|status", True),
+    ("Session", "/sync", "SimpleX for this session on|off|status", True),
     # Session
     ("Session", "/help", "Show this help", False),
     ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),

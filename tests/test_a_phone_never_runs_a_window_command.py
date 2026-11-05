@@ -119,7 +119,7 @@ def test_the_read_only_status_from_the_bridge_is_shown(tmp_path, monkeypatch):
     worker, host, notices = _worker(tmp_path, monkeypatch)
     activation.configure("s7")
     assert worker.Worker._m_session_prompt(host, {"text": "/sync status", "via": "messenger"}) == {"accepted": True}
-    assert "aktiviert" in notices[-1] and activation.enabled("s7")
+    assert "on" in notices[-1] and activation.enabled("s7")
 
 
 def test_the_same_lines_from_a_window_work_control(tmp_path, monkeypatch):

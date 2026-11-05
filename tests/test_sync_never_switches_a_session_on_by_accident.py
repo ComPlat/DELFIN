@@ -39,7 +39,7 @@ def test_the_on_words_switch_on(word):
 @pytest.mark.parametrize("args", ["xyz", "Butan", "aus bitte", "on off", "name"])
 def test_anything_else_changes_nothing(args):
     out = activation.configure("s1", args)
-    assert "Verwendung" in out
+    assert "Usage" in out
     assert activation.record("s1") == {}
     assert activation.parse_sync(args)[0] == "usage"
 
@@ -69,6 +69,6 @@ def test_the_worker_names_only_by_name():
     worker.Worker._m_session_prompt(host, {"text": "/sync aus"})
     assert not activation.enabled("s5") and titles == []
     worker.Worker._m_session_prompt(host, {"text": "/sync Butan"})
-    assert not activation.enabled("s5") and titles == [] and "Verwendung" in notices[-1]
+    assert not activation.enabled("s5") and titles == [] and "Usage" in notices[-1]
     worker.Worker._m_session_prompt(host, {"text": "/sync name Butan"})
     assert activation.enabled("s5") and titles == ["Butan"]

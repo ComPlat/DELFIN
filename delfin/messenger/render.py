@@ -17,11 +17,10 @@ def hint(n: int, multi: bool) -> str:
     """The answer line of a question of ``n`` options, in the phone's language."""
     if english():
         return answer_hint(n, multi)
-    numbers = answer_range(n, joiner=t('oder'))
+    numbers = answer_range(n, joiner=t('or'))
     if multi:
-        return t('Antworte mit einer oder mehreren von {range}, durch Kommas getrennt '
-                 '(z. B. 1,3), oder mit eigenem Text.').format(range=numbers)
-    return t('Antworte mit {range} oder mit eigenem Text.').format(range=numbers)
+        return t('Reply one or more of {range}, separated by commas (e.g. 1,3), or type your own answer.').format(range=numbers)
+    return t('Reply {range}, or type your own answer.').format(range=numbers)
 
 
 def question_card(item: dict) -> str:
@@ -37,19 +36,19 @@ def question_card(item: dict) -> str:
     out = [f'❓ *{question}*' if question else '❓']
     out += [f'{i}. {c}' for i, c in enumerate(choices, 1)]
     out.append(hint(len(choices), bool(item.get('multiSelect'))) if choices
-               else t('Bitte mit deiner Antwort antworten.'))
+               else t('Please reply with your answer.'))
     return '\n'.join(out)
 
 
 #: The tool of an approval, in words (the card's first line).
 _WHAT = {
-    'bash': 'einen Befehl ausführen', 'write_file': 'eine Datei schreiben',
-    'edit_file': 'eine Datei ändern', 'multi_edit': 'eine Datei ändern',
-    'apply_patch': 'einen Patch anwenden', 'read_file': 'eine Datei lesen',
-    'notebook_edit': 'ein Notebook ändern',
+    'bash': 'run a command', 'write_file': 'write a file',
+    'edit_file': 'edit a file', 'multi_edit': 'edit a file',
+    'apply_patch': 'apply a patch', 'read_file': 'read a file',
+    'notebook_edit': 'edit a notebook',
 }
-_WHAT_BY_ACTION = {'shell': 'einen Befehl ausführen', 'write': 'eine Datei ändern',
-                   'read': 'eine Datei außerhalb des Arbeitsordners lesen'}
+_WHAT_BY_ACTION = {'shell': 'run a command', 'write': 'edit a file',
+                   'read': 'read a file outside the workspace'}
 
 #: A preview of at most this many lines is shown on the card, in a code
 #: block; a longer one on ``show``.
@@ -70,32 +69,33 @@ def approval_card(item: dict, machine: str = '') -> str:
     lines = preview.splitlines()
     tool = str(item.get('tool') or '')
     if item.get('kind') == 'plan':
-        what = 'einen Plan freigeben'
+        what = 'approve a plan'
     else:
         what = _WHAT.get(tool) or _WHAT_BY_ACTION.get(item.get('action') or '') or ''
     head = '🔐 *' + (t(what) if what else f'`{tool or "?"}`') + '*'
     if machine and item.get('action') == 'shell':
-        head += t(' auf {machine}').format(machine=machine)
+        head += t(' on {machine}').format(machine=machine)
     if lines and not preview.startswith('$') and len(lines) > SHORT_PREVIEW:
-        head += ': ' + lines[0][:80] + t(' ({n} Zeilen)').format(n=len(lines) - 1)
+        head += ': ' + lines[0][:80] + t(' ({n} lines)').format(n=len(lines) - 1)
     out = [head]
     if item.get('purpose'):
-        out.append(t('Grund laut Agent (ungeprüft): {purpose}').format(purpose=item['purpose']))
+        out.append(t('Why, as the agent says (unchecked): {purpose}').format(purpose=item['purpose']))
     if lines and len(lines) <= SHORT_PREVIEW:
         out.append(_code(preview))
     elif lines:
-        out.append(t('Ganze Aktion: mit `show` antworten.'))
+        out.append(t('Whole action: reply `show`.'))
     extra = [o for o in item.get('options') or [] if o.get('key') not in {'y', 'n', 'd', 'e', '?', 'c'}]
     if any(o.get('key') == 'c' for o in item.get('options') or []):
-        out.append(t('\nBefehl ändern: mit „ändern: NEUER BEFEHL“ antworten (getippt). '
-                     'Dein Befehl läuft dann einmal, genau so.').strip())
+        out.append(t('\n'
+                     'Change the command: reply "change: NEW COMMAND" (typed). Your command then runs once, '
+                     'exactly so.').strip())
     if extra:
-        out.append(t('Weitere Antworten: ') + ' · '.join(
+        out.append(t('Other answers: ') + ' · '.join(
             f"`{o['key']}` {o.get('label', '')}".strip() for o in extra))
     if not item.get('phoneApproval'):
-        out.append(t('Nur am Rechner freizugeben.'))
+        out.append(t('Approve this at the computer; not from the phone.'))
     else:
-        out.append(t('Antworte mit *ja* oder *nein*.'))
+        out.append(t('Reply *yes* or *no*.'))
     return '\n'.join(out)
 
 
@@ -120,12 +120,12 @@ def cut(text: str, limit: int = ANSWER_CUT) -> tuple[str, str]:
 
 
 def more_hint() -> str:
-    return '\n\n… ' + t('ganze Antwort: `more`')
+    return '\n\n… ' + t('full answer: `more`')
 
 
 #: A session's state, in words (status).
-_STATE = {'idle': 'Bereit.', 'running': '⏳ Arbeitet …', 'needs_input': 'Wartet auf eine Antwort.',
-          'ended': 'Sitzung beendet.'}
+_STATE = {'idle': 'Ready.', 'running': '⏳ Working …', 'needs_input': 'Waiting for an answer.',
+          'ended': 'Session ended.'}
 
 
 def status_text(reply: dict, details: bool = False) -> str:

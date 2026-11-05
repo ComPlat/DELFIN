@@ -101,8 +101,8 @@ def clean_name(text):
 #: What /sync understands (German matchers for what the user types).
 SYNC_ON = frozenset({'', 'on', 'an', 'ein', 'enable'})
 SYNC_OFF = frozenset({'off', 'aus', 'ausschalten', 'disable', 'stop'})
-SYNC_USAGE = ('Verwendung: /sync [on|off|status] oder /sync name NAME; '
-              '/sync policy pull on|off für das Holen vom Handy. Anderes ändert nichts.')
+SYNC_USAGE = ('Usage: /sync [on|off|status] or /sync name NAME; '
+              '/sync policy pull on|off for pulling from the phone. Anything else changes nothing.')
 
 
 def parse_sync(args):
@@ -134,19 +134,20 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
     service worker sets its title). ``by``/``phone``: who switched (the
     bridge passes ``phone`` and the phone's label for ``hol`` and ``weg``)."""
     if not sid:
-        return 'Noch keine Sitzung. Zuerst eine Sitzung starten.'
+        return 'No session yet. Start a session first.'
     args, _name = parse_sync(args)
     if args == 'usage':
         return SYNC_USAGE
     if args == 'policy':
         on = _name == 'pull on'
         set_pull(on, directory=directory)
-        return 'Sitzungen vom Handy holen (hol): ' + ('an.' if on else 'aus. /sync policy pull on erlaubt es wieder.')
+        return 'Pulling sessions from the phone (get): ' + ('on.' if on else 'off. /sync policy pull on allows it '
+                                                                             'again.')
     if args == 'status':
         old = record(sid, directory=directory)
-        text = 'SimpleX für diese Sitzung: ' + ('aktiviert' if old.get('enabled') is True else 'ausgeschaltet')
+        text = 'SimpleX for this session: ' + ('on' if old.get('enabled') is True else 'off')
         if old.get('by') == 'phone' and old.get('phone'):
-            text += ' (vom Handy ' + str(old['phone'])[:40] + ')'
+            text += ' (from the phone ' + str(old['phone'])[:40] + ')'
         return text + '.'
     from delfin.agent.state_paths import write_text_atomic
     old = record(sid, directory=directory)
@@ -163,8 +164,8 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
         value['endpoint'] = old['endpoint']
     write_text_atomic(_path(sid, directory), json.dumps(value))
     if not on:
-        return 'SimpleX für diese Sitzung ausgeschaltet. Keine Nachrichten oder Handyfreigaben mehr.'
-    return 'SimpleX für diese Sitzung aktiviert. Der eingerichtete Messenger lädt dich in ihren Chat ein.'
+        return 'SimpleX switched off for this session. No more messages or phone approvals.'
+    return 'SimpleX switched on for this session. The messenger invites you to its chat.'
 
 
 #: A session's deliberate notes to the phone (push_notification): at most
@@ -235,7 +236,7 @@ class LocalSession:
                 try:
                     command = json.loads(line)
                     if not enabled(sid) or command.get('sessionId') != sid:
-                        reply = {'error': 'SimpleX ist für diese Sitzung ausgeschaltet.'}
+                        reply = {'error': 'SimpleX is switched off for this session.'}
                     else:
                         reply = callback(command)
                     self.wfile.write((json.dumps(reply) + '\n').encode())

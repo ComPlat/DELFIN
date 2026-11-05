@@ -51,7 +51,7 @@ def test_a_session_outside_the_persons_tree_is_not_pulled(acct, tmp_path):
 
 def test_the_person_can_switch_pulling_off_and_on_at_a_window(acct):
     out = activation.configure("s-anna", "policy pull off", directory=acct.activation_dir("anna"))
-    assert "aus" in out and not activation.pull_allowed(directory=acct.activation_dir("anna"))
+    assert "off" in out and not activation.pull_allowed(directory=acct.activation_dir("anna"))
     acct.say("21", "@21", "hol Butan")
     assert not _on(acct, "s-anna")
     activation.configure("s-anna", "policy pull on", directory=acct.activation_dir("anna"))

@@ -113,7 +113,8 @@ def test_without_a_phone_folder_the_schedules_chat_cannot_make_one(bridge, monke
 def test_a_wrong_time_is_answered_in_words(bridge):
     b, _, _ = bridge
     reply = _cmd(b, action="new", text="irgendwann x")
-    assert "täglich 07:30" in reply["error"]
+    # The bridge answers in English; the gateway translates (lang.DE).
+    assert "daily 07:30" in reply["error"]
 
 
 def test_pause_resume_run_delete_by_number(bridge):
@@ -292,10 +293,10 @@ def test_each_run_is_reported_once_as_its_schedule_says(phone):
     assert len(daemon.sent) == count
 
 
-def test_every_schedule_text_the_phone_can_get_has_an_english_entry():
+def test_every_schedule_text_the_phone_can_get_has_a_german_entry():
     from delfin.agent.service import bridge as bridge_mod
     from delfin.messenger import gateway, lang
     texts = [gateway.SCHEDULE_HELP, *bridge_mod.SCHEDULE_ERRORS.values(),
              *(word for _, word in gateway._RUN_WORDS.values()),
              *gateway._STATE_WORDS.values()]
-    assert [x[:50] for x in texts if x not in lang.EN] == []
+    assert [x[:50] for x in texts if x not in lang.DE] == []

@@ -2153,7 +2153,7 @@ BUILTINS: dict[str, ReplCommand] = {
                     _keys),
         ReplCommand("/editor", "session", "Write the next prompt in "
                     "$VISUAL or $EDITOR", _editor, True),
-        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status|name NAME", _sync, True),
+        ReplCommand("/sync", "session", "SimpleX for this session on|off|status|name NAME", _sync, True),
         ReplCommand("/pair", "session", "Connect your phone (SimpleX): /pair, then /pair CODE",
                     _pair, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),

@@ -86,7 +86,7 @@ def test_sync_name_in_the_dashboard_sets_the_session_title(monkeypatch):
     ns["input_textarea"] = SimpleNamespace(value="")
     exec(_nested("_messenger_command"), ns)
     out = ns["_messenger_command"]("name Butan Konformere")
-    assert "aktiviert" in out and activation.enabled("d1")
+    assert "switched on" in out and activation.enabled("d1")
     assert ns["state"]["_messenger_titles"]["d1"] == "Butan Konformere"
     assert saves
     ns["_messenger_command"]("off")

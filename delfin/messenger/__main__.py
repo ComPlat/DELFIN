@@ -116,8 +116,8 @@ def _pair() -> int:
                     print("security code: compare it on the phone (the contact > "
                           "Verify security code); this daemon did not report it")
                 await daemon.send_text(new_id, t(
-                    'DELFIN-Kopplung: Code {code}. Am Rechner eingeben, wo die Kopplung gestartet wurde '
-                    '(in der Sitzung: /pair {code}). Gilt 10 Minuten; bis dahin wird hier nichts ausgeführt.').format(code=code))
+                    'DELFIN pairing: code {code}. Type it at the computer where the pairing was started (in '
+                    'the session: /pair {code}). Valid 10 minutes; until then nothing is done here.').format(code=code))
                 for _ in range(pairing.MAX_ATTEMPTS):
                     typed = _ask_code()
                     if typed is None:
@@ -150,7 +150,7 @@ async def _quiet(awaitable):
 async def _welcome_owner(daemon, cid: str) -> int:
     audit.event("messenger_phone_verified", f"contact {cid} verified for the owner (admin path)")
     print(f"paired: contact {cid}")
-    await daemon.send_text(cid, t("Verbunden mit {bot} ✓").format(bot=bot_name()))
+    await daemon.send_text(cid, t('Connected to {bot} ✓').format(bot=bot_name()))
     # The forum for all agents from the start, through the gateway's own
     # path: only the owner's verified phones are invited.
     token = _PERSON.set(OWNER)

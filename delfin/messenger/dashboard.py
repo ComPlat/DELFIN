@@ -52,11 +52,11 @@ class DashboardSession:
                     continue
                 pattern, kind, _ = broker.persistence_for(req)
                 once = 'Grant permanently' if req.preview.startswith('⚠') else 'Allow (once)'
-                options = [{'key': 'y', 'label': once, 'detail': 'Diese konkrete Aktion ausführen.'},
+                options = [{'key': 'y', 'label': once, 'detail': 'Run this one action.'},
                            {'key': 'n', 'label': 'Deny', 'detail': 'Aktion ablehnen.'}]
                 if pattern and broker._persist_callback is not None:
                     options.append({'key': 'p', 'label': 'Allow + Permanent',
-                                    'detail': f'{kind}: {pattern}; gilt auch für spätere Sitzungen.'})
+                                    'detail': f'{kind}: {pattern}; also for later sessions.'})
                 current.append((req, {'kind': 'confirm', 'tool': req.tool_name,
                                       'preview': req.preview, 'options': options}))
         ev = self.state.get('_ask_user_event')
@@ -77,7 +77,7 @@ class DashboardSession:
                 and time.monotonic() < self.state.get('_plan_approval_deadline', float('inf'))):
             current.append((ev, {'kind': 'plan', 'preview': self.state.get('_pending_plan_body', ''),
                                  'options': [{'key': 'e', 'label': 'Accept plan & execute',
-                                              'detail': 'Plan ausführen; Accept Edits aktivieren.'},
+                                              'detail': 'Run the plan; switch to Accept Edits.'},
                                              {'key': 'n', 'label': 'Reject', 'detail': 'Plan ablehnen.'}]}))
         self._requests = {key: value for key, value in self._requests.items()
                           if any(value[0] is obj for obj, _ in current)}
@@ -96,14 +96,14 @@ class DashboardSession:
 
     def _dispatch(self, command):
         if self.state.get('_closed') or self._current() != self.sid:
-            return {'error': 'Diese Dashboard-Sitzung ist nicht mehr geöffnet.'}
+            return {'error': 'This dashboard session is no longer open.'}
         method = command['method']
         if method == 'session.setTitle':
             from delfin.agent.service.protocol import clean_title
             from delfin.agent.session_store import rename_session
             title = clean_title(command.get('title'))
             if not title:
-                return {'error': 'Bitte einen Namen angeben.'}
+                return {'error': 'Please give a name.'}
             rename_session(self.sid, title)
             self.state.setdefault('_messenger_titles', {})[self.sid] = title
             return {'title': title}
@@ -121,9 +121,10 @@ class DashboardSession:
             text = str(command.get('text', ''))
             if text.lstrip()[:1] in {'/', '!'}:
                 # A phone's line is never a dashboard command or shell line.
-                return {'accepted': False, 'error': 'Ein Befehl vom Handy wird hier nicht ausgeführt.'}
+                return {'accepted': False, 'error': 'A command from the phone is not run here.'}
             accepted = self.send(text)
-            return {'accepted': bool(accepted), **({} if accepted else {'error': 'Dashboard hat eine Eingabe offen; Nachricht nicht gesendet.'})}
+            return {'accepted': bool(accepted), **({} if accepted else {'error': 'The dashboard has an input open; '
+                                                                                 'message not sent.'})}
         if method == 'permission.reply':
             self.pending()
             entry = self._requests.get(command.get('requestId'))

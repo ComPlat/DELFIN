@@ -39,11 +39,11 @@ def test_a_fired_watcher_is_listed_as_done(tmp_path, monkeypatch):
     assert "done" in schedule_commands.listing(host=entry["host"])
 
 
-def test_the_new_phone_texts_have_english_entries():
+def test_the_new_phone_texts_have_german_entries():
     texts = [gateway.SCHEDULE_HELP, gateway._RUN_WORDS["triggered"][1],
              gateway._STATE_WORDS["done"]]
-    assert [x[:50] for x in texts if x not in lang.EN] == []
-    assert "wenn" in gateway.SCHEDULE_HELP and "when" in lang.EN[gateway.SCHEDULE_HELP]
+    assert [x[:50] for x in texts if x not in lang.DE] == []
+    assert "when" in gateway.SCHEDULE_HELP and "wenn" in lang.DE[gateway.SCHEDULE_HELP]
 
 
 def test_a_watcher_is_made_from_the_phone_like_a_schedule(tmp_path, monkeypatch):
@@ -58,4 +58,4 @@ def test_a_watcher_is_made_from_the_phone_like_a_schedule(tmp_path, monkeypatch)
     refused = asyncio.run(b._run_command({"cmd": "schedule", "action": "new",
                                           "text": 'wenn ausgabe "rm -rf x" sich ändert'}))
     assert refused.get("error") and refused["code"] == "command"
-    assert refused["error"] in lang.EN
+    assert refused["error"] in lang.DE
