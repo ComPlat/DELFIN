@@ -1055,3 +1055,76 @@ def test_missing_input_requires_charge_and_multiplicity_before_submit(tmp_path):
     job = backend.calls[0]
     rendered = (job['job_dir'] / job['inp_file']).read_text(encoding='utf-8')
     assert '* xyz 1 2' in rendered
+
+
+def _open_with_missing_ts_file(tmp_path, *, no_xyz=False,
+                               mismatched_xyz=False, no_hess=False):
+    """Exercise the same panel entry point used by the browser."""
+    from delfin.dashboard.ts_goat_panel import open_ts_goat_dialog
+
+    out = _write_ts_fixture(tmp_path)
+    xyz = tmp_path / 'ts_run.xyz'
+    if no_xyz:
+        xyz.unlink()
+    elif mismatched_xyz:
+        xyz.write_text(
+            '3\nunrelated optimization\n'
+            'O 1.0 0.0 0.0\nH 1.96 0.0 0.0\n'
+            'H 2.55 1.10 0.0\n',
+            encoding='utf-8',
+        )
+    if no_hess:
+        (tmp_path / 'ts_run.hess').unlink()
+    return open_ts_goat_dialog(
+        out,
+        callbacks={
+            'backend': _FakeBackend(),
+            'reset_dropdown': lambda: None,
+            'render_viewer': lambda *args, **kwargs: None,
+            'scroll_top': lambda: None,
+        },
+    )
+
+
+def test_missing_xyz_uses_matching_hessian_geometry(tmp_path):
+    """A real OptTS Hessian's $atoms is sufficient for the TS geometry."""
+    from delfin.ts_goat import _hessian_reference_atoms
+
+    result = _open_with_missing_ts_file(tmp_path, no_xyz=True)
+    assert result['error'] is None, result['error']
+    state = result['registry']['state']
+    assert state['geometry_source'] == 'hessian'
+    assert state['ts_atoms'] == _hessian_reference_atoms(
+        tmp_path / 'ts_run.hess'
+    )
+    assert state['files'].xyz_path is None
+    assert state['files'].hess_path == tmp_path / 'ts_run.hess'
+    # The user must know the coordinates came from Hessian, not a .xyz.
+    from ipywidgets import HTML
+    labels = [w.value for w in _iter_widgets(result['panel'])
+              if isinstance(w, HTML)]
+    assert any('Using' in label and 'Hessian' in label for label in labels)
+
+
+def test_wrong_xyz_falls_back_to_hessian_not_unrelated_geometry(tmp_path):
+    """Reject bad XYZ coordinates without stopping a valid Hessian workflow."""
+    from delfin.ts_goat import _hessian_reference_atoms
+
+    result = _open_with_missing_ts_file(tmp_path, mismatched_xyz=True)
+    assert result['error'] is None, result['error']
+    state = result['registry']['state']
+    assert state['geometry_source'] == 'hessian'
+    assert state['files'].xyz_path is None
+    assert state['ts_atoms'] == _hessian_reference_atoms(
+        tmp_path / 'ts_run.hess'
+    )
+
+
+def test_missing_xyz_and_hessian_reports_real_blocker(tmp_path):
+    """Do not hide a missing Hessian behind the generic XYZ message."""
+    result = _open_with_missing_ts_file(
+        tmp_path, no_xyz=True, no_hess=True
+    )
+    assert result['error_kind'] == 'no_hess'
+    assert 'No Hessian' in result['error']
+    assert 'Select the geometry manually' not in result['error']
