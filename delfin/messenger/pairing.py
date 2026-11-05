@@ -23,12 +23,20 @@ Flow (each arrow one poll of the gateway, about 5 s):
    checks the code (3 attempts, then the contact is removed).
 
 Until step 3 the contact is told only to verify first. The link and the
-SimpleX security code are never written in a readable form: the bridge
-seals them (:func:`seal`) to the Diffie-Hellman public value the pair
-request carries (RFC 3526 group 14, 2048 bits; the secret exponent stays in
-the memory of the asking process), so the 0600 answer file holds only the
-other public value, the ciphertext and its HMAC. Only the asking process
-opens it (:func:`read`); a log line gets the 12-character tag.
+SimpleX security code are never written to a file. The asking process
+opens a pairing door (:class:`Door`): a 0600 Unix socket in its own private
+runtime directory (0700; the agent service's socket lives there too), named
+in the pair request. The bridge hands those two fields to that door only --
+after checking that it lies in the person's own runtime directory and that
+the listening process runs as this uid -- and the door accepts them only
+from a peer of this uid that is not an agent process, only for its own
+request id. They stay in the asking process's memory (:func:`read`); the
+answer file carries the state alone, a log line the 12-character tag.
+
+Why a socket and not the agent service's protocol: the asking process is
+not always a service session (the terminal REPL, the dashboard kernel,
+``delfin-agent messenger pair``), and the bridge must reach it directly
+rather than through a durable session event log.
 """
 from __future__ import annotations
 
@@ -38,6 +46,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import stat
 import threading
 import time
@@ -66,20 +75,11 @@ _DIR = Path.home() / ".delfin" / "messenger_pairing"
 _ID = re.compile(r"[0-9a-f]{32}")
 _HEX = re.compile(r"[0-9a-f]{64}")
 
-#: requester -> (pair request id, nonce, DH secret): kept only in this process.
-_OPEN: dict[str, tuple[str, str, int]] = {}
+#: requester -> (pair request id, nonce, door): kept only in this process.
+_OPEN: dict[str, tuple] = {}
 
-#: RFC 3526 group 14 (2048-bit MODP, a safe prime), generator 2.
-_MODP = int(
-    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A0879"
-    "8E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B"
-    "0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA4836"
-    "1C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804"
-    "F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6"
-    "955817183995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF", 16)
-_GEN = 2
-#: The answer fields that are sealed, never written as they are.
-SEALED_FIELDS = ("link", "securityCode")
+#: The answer fields handed to the asking process's door, never written.
+DOOR_FIELDS = ("link", "securityCode")
 _OPEN_LOCK = threading.Lock()
 
 
@@ -108,82 +108,141 @@ def mask(text: object) -> str:
     return text
 
 
-def _secret() -> int:
-    return secrets.randbits(320) | (1 << 319)
+def _door_dir(directory: Path | None = None) -> Path:
+    """Where this process's pairing door goes: its private runtime
+    directory (the one its agent service socket is in)."""
+    from delfin.agent.service import rundir
+    return rundir.ensure_runtime_dir()
 
 
-def _public(secret: int) -> str:
-    return format(pow(_GEN, secret, _MODP), "x")
+def _peer_is_agent(sock) -> bool:
+    """Whether the peer of ``sock`` may be an agent's process (the agent
+    service's own check: a descendant of this process's agents, the agent
+    marker in its environment, or an environment that cannot be read).
+    Never this process itself, which is no agent."""
+    from types import SimpleNamespace
+    from delfin.agent.service.supervisor import Supervisor, _peer_pid
+    pid = _peer_pid(sock)
+    if pid == os.getpid():
+        return False
+    identity = SimpleNamespace(sessions={}, starting=[SimpleNamespace(proc=SimpleNamespace(pid=os.getpid()))])
+    return Supervisor._from_an_agent(identity, pid)
 
 
-def _keys(shared: int) -> tuple[bytes, bytes]:
-    base = hashlib.sha256(b"delfin-pairing-v1" + shared.to_bytes(256, "big")).digest()
-    return (hmac.new(base, b"enc", hashlib.sha256).digest(),
-            hmac.new(base, b"mac", hashlib.sha256).digest())
+def _peer_uid(sock):
+    from delfin.agent.service import rundir
+    return rundir.peer_uid(sock)
 
 
-def _stream(key: bytes, n: int) -> bytes:
-    return b"".join(hmac.new(key, i.to_bytes(4, "big"), hashlib.sha256).digest()
-                    for i in range((n + 31) // 32))[:n]
+class Door:
+    """The asking process's end of the hand-over: a 0600 Unix socket at
+    ``<runtime dir>/pair-<random>.sock`` that takes one JSON line per
+    connection -- ``{"id": <request id>, "link"?, "securityCode"?}`` -- from
+    a peer of this uid that is not an agent, for this request only, and
+    keeps the fields in memory. Answers ``{"ok": true|false}``."""
+
+    def __init__(self, rid: str, where: Path):
+        self.rid = rid
+        self.values: dict = {}
+        self.path = str(Path(where) / f"pair-{secrets.token_hex(8)}.sock")
+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o177)
+        try:
+            self._sock.bind(self.path)
+        finally:
+            os.umask(old)
+        os.chmod(self.path, 0o600)
+        self._sock.listen(4)
+        self._sock.settimeout(0.5)
+        self._closed = False
+        self._thread = threading.Thread(target=self._serve, name="messenger-pair-door", daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while not self._closed:
+            try:
+                conn, _ = self._sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            with conn:
+                ok = False
+                try:
+                    conn.settimeout(5)
+                    if _peer_uid(conn) == os.getuid() and not _peer_is_agent(conn):
+                        line = conn.makefile("rb").readline(MAX_FILE_BYTES + 1)
+                        data = json.loads(line) if len(line) <= MAX_FILE_BYTES else None
+                        if isinstance(data, dict) and hmac.compare_digest(str(data.get("id") or ""), self.rid):
+                            self.values.update({k: str(v) for k, v in data.items() if k in DOOR_FIELDS})
+                            ok = True
+                    conn.sendall(b'{"ok": true}\n' if ok else b'{"ok": false}\n')
+                except (OSError, ValueError):
+                    pass
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._sock.close()
+        finally:
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
 
 
-def seal(public_hex: str, fields: dict) -> dict | None:
-    """``fields`` sealed to the requester's public value, or None when it is
-    not a valid group element (then nothing may be written)."""
-    import base64
+def deliver(door: str, root: Path | None, rid: str, fields: dict) -> bool:
+    """The bridge's side: hand ``fields`` to the door ``door`` of request
+    ``rid``. Only a socket inside ``root`` (the person's own runtime
+    directory), owned by and listened on by this uid. True when the door
+    took them."""
+    if root is None or not door:
+        return False
     try:
-        peer = int(str(public_hex), 16)
-    except ValueError:
-        return None
-    if not 1 < peer < _MODP - 1:
-        return None
-    mine = _secret()
-    enc, mac = _keys(pow(peer, mine, _MODP))
-    data = json.dumps(fields).encode()
-    ct = bytes(a ^ b for a, b in zip(data, _stream(enc, len(data))))
-    own = _public(mine)
-    tag = hmac.new(mac, own.encode() + b"." + ct, hashlib.sha256).hexdigest()
-    return {"B": own, "ct": base64.b64encode(ct).decode(), "tag": tag}
-
-
-def unseal_with(secret: int, sealed: dict) -> dict | None:
-    """The sealed fields, or None when the HMAC does not match."""
-    import base64
+        real = Path(door).resolve()
+        real.relative_to(Path(root).resolve())
+        info = os.lstat(door)
+    except (OSError, ValueError):
+        return False
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or real.parent != Path(root).resolve():
+        return False
     try:
-        peer = int(str(sealed["B"]), 16)
-        ct = base64.b64decode(str(sealed["ct"]), validate=True)
-    except (KeyError, ValueError, TypeError):
-        return None
-    if not 1 < peer < _MODP - 1:
-        return None
-    enc, mac = _keys(pow(peer, secret, _MODP))
-    want = hmac.new(mac, str(sealed["B"]).encode() + b"." + ct, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(want, str(sealed.get("tag") or "")):
-        return None
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(5)
+            sock.connect(str(real))
+            if _peer_uid(sock) != os.getuid():
+                return False
+            sock.sendall((json.dumps({"id": rid, **fields}) + "\n").encode())
+            reply = sock.makefile("rb").readline(100)
+    except OSError:
+        return False
     try:
-        value = json.loads(bytes(a ^ b for a, b in zip(ct, _stream(enc, len(ct)))))
-    except ValueError:
-        return None
-    return value if isinstance(value, dict) else None
+        return json.loads(reply).get("ok") is True
+    except (ValueError, AttributeError):
+        return False
 
 
 def opened(res: dict | None, requester: str) -> dict | None:
-    """An answer with its sealed fields opened, when ``requester`` is the
-    process that asked for this pairing; otherwise without them."""
+    """An answer with what the door received, when ``requester`` is the
+    process that asked for this pairing; otherwise the answer alone."""
     if res is None:
         return None
-    out = {k: v for k, v in res.items() if k != "sealed"}
+    out = dict(res)
     with _OPEN_LOCK:
         entry = _OPEN.get(str(requester))
-    if res.get("sealed") and entry is not None:
-        out.update({k: v for k, v in (unseal_with(entry[2], res["sealed"]) or {}).items()
-                    if k in SEALED_FIELDS})
+    if entry is not None and entry[2] is not None:
+        out.update(entry[2].values)
     return out
 
 
 def read(rid: str, requester: str, *, directory: Path | None = None) -> dict | None:
-    """The answer to request ``rid`` as ``requester`` sees it (opened)."""
-    return opened(result(rid, directory=directory), requester)
+    """The answer to request ``rid`` as ``requester`` sees it."""
+    res = result(rid, directory=directory)
+    with _OPEN_LOCK:
+        entry = _OPEN.get(str(requester))
+    if entry is None or entry[0] != rid:
+        return res
+    return opened(res, requester)
 
 
 def link_tag(link: str) -> str:
@@ -240,10 +299,11 @@ def _read(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def submit(kind: str, fields: dict | None = None, *, directory: Path | None = None) -> str:
+def submit(kind: str, fields: dict | None = None, *, directory: Path | None = None,
+           rid: str | None = None) -> str:
     if kind not in KINDS:
         raise ValueError("unknown pairing request")
-    rid = secrets.token_hex(16)
+    rid = rid or secrets.token_hex(16)
     _write((directory or _DIR) / f"req-{rid}.json",
            {"id": rid, "kind": kind, "created": time.time(), **(fields or {})})
     return rid
@@ -273,11 +333,13 @@ def wait(rid: str, done, *, timeout: float, directory: Path | None = None,
 def begin(requester: str, *, directory: Path | None = None) -> str:
     """A pair request bound to ``requester`` (a session id or a process tag)."""
     nonce = secrets.token_hex(16)
-    secret = _secret()
-    rid = submit("pair", {"requester": str(requester)[:80], "nonce_sha": _sha(nonce),
-                          "public": _public(secret)}, directory=directory)
+    rid = secrets.token_hex(16)
+    forget(requester)
+    door = Door(rid, _door_dir(directory))
+    submit("pair", {"requester": str(requester)[:80], "nonce_sha": _sha(nonce),
+                    "door": door.path}, directory=directory, rid=rid)
     with _OPEN_LOCK:
-        _OPEN[str(requester)] = (rid, nonce, secret)
+        _OPEN[str(requester)] = (rid, nonce, door)
     return rid
 
 
@@ -300,8 +362,11 @@ def confirm(requester: str, code: str, *, directory: Path | None = None) -> str 
 
 
 def forget(requester: str) -> None:
+    """Drop this process's pairing for ``requester`` and close its door."""
     with _OPEN_LOCK:
-        _OPEN.pop(str(requester), None)
+        entry = _OPEN.pop(str(requester), None)
+    if entry is not None and entry[2] is not None:
+        entry[2].close()
 
 
 def qr_text(link: str) -> str | None:
@@ -447,11 +512,14 @@ def session_command(args: str, *, requester: str, show, spawn=_spawn,
                               timeout=timeout, directory=directory), requester)
         if offered is None or offered.get("state") != "offered" or not offered.get("link"):
             show(state_text(offered))
+            forget(requester)
             return
         show(offer_text(offered))
         connected = opened(wait(rid, lambda r: r.get("state") != "offered",
                                 timeout=INVITATION_TTL_S + 30, directory=directory), requester)
         show(state_text(connected))
+        if connected is None or connected.get("state") in FINAL_STATES:
+            forget(requester)
     spawn(after_pair)
     return "Asking the messenger gateway for a one-time invitation ..."
 
@@ -507,6 +575,13 @@ def cli_main(argv: list[str], *, ask=input, out=print, timeout: float = 30.0) ->
         out(state_text(res))
         return 0 if res and res.get("revoked") else 1
     requester = f"cli:{os.getpid()}:{secrets.token_hex(4)}"
+    try:
+        return _cli_pair(requester, ask=ask, out=out, timeout=timeout)
+    finally:
+        forget(requester)
+
+
+def _cli_pair(requester: str, *, ask, out, timeout: float) -> int:
     rid = begin(requester)
     out("Asking the messenger gateway for a one-time invitation ...")
     res = opened(wait(rid, lambda r: r.get("state") in FINAL_STATES | {"offered"},
@@ -534,7 +609,6 @@ def cli_main(argv: list[str], *, ask=input, out=print, timeout: float = 30.0) ->
                        timeout=timeout) if vid else None
         out(state_text(answer_))
         if answer_ and answer_.get("state") == "verified":
-            forget(requester)
             return 0
         if not answer_ or answer_.get("state") != "wrong":
             return 1
@@ -586,7 +660,7 @@ def collect(path: Path, *, now: float | None = None) -> list[dict]:
         kind = data["kind"]
         item = {"id": rid, "kind": kind}
         if kind == "pair":
-            if not _HEX.fullmatch(str(data.get("nonce_sha") or "")):
+            if not _HEX.fullmatch(str(data.get("nonce_sha") or "")) or not data.get("door"):
                 continue
             if result(rid, directory=path) and result(rid, directory=path).get("state") in FINAL_STATES:
                 continue
@@ -607,27 +681,31 @@ def collect(path: Path, *, now: float | None = None) -> list[dict]:
     return out
 
 
-def answer(path: Path, rid: str, value: dict) -> bool:
+def answer(path: Path, rid: str, value: dict, *, door_root: Path | None = None) -> dict:
     """Write the gateway's answer for request ``rid``; a final answer of a
-    pair request, and any answer of the other kinds, removes the request."""
+    pair request, and any answer of the other kinds, removes the request.
+    The link and the security code are handed to the request's door (inside
+    ``door_root``, the person's runtime directory) and never written; an
+    invitation whose door does not take it is answered ``refused``.
+    Returns {"ok": written, "delivered": True | False | None (nothing to hand)}."""
     if not _ID.fullmatch(str(rid or "")):
-        return False
+        return {"ok": False, "delivered": None}
     req = path / f"req-{rid}.json"
     data = _read(req)
     if data is None:
-        return False
+        return {"ok": False, "delivered": None}
     value = {k: v for k, v in dict(value).items() if k in {
         "kind", "state", "reason", "link", "expires", "label", "securityCode", "left",
         "phones", "revoked"}}
     value["kind"] = data["kind"]
-    # The link and the security code only sealed to the asking process.
-    secret = {k: value.pop(k) for k in SEALED_FIELDS if k in value}
-    if secret:
-        sealed = seal(str(data.get("public") or ""), secret) if data["kind"] == "pair" else None
-        if sealed is None:
-            value.update(state="refused", reason="no key to seal the invitation to")
-        else:
-            value["sealed"] = sealed
+    # The link and the security code go to the asking process's door only.
+    private = {k: str(value.pop(k)) for k in DOOR_FIELDS if k in value}
+    delivered = None
+    if private:
+        delivered = data["kind"] == "pair" and deliver(
+            str(data.get("door") or ""), door_root, rid, private)
+        if not delivered and "link" in private:
+            value.update(state="refused", reason="the asking window is gone")
     _write(path / f"res-{rid}.json", value)
     final = data["kind"] != "pair" or value.get("state") in FINAL_STATES
     if final:
@@ -645,7 +723,7 @@ def answer(path: Path, rid: str, value: dict) -> bool:
                             (path / other).unlink()
                         except OSError:
                             pass
-    return True
+    return {"ok": True, "delivered": delivered}
 
 
 def note(path: Path, text: str) -> None:

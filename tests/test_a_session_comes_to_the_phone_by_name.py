@@ -44,6 +44,18 @@ def acct(tmp_path, monkeypatch):
     security_events.clear()
 
 
+def _short_door_dir(monkeypatch):
+    """The pairing door in a short private directory of the test's own, not
+    the user's runtime directory (Unix socket path limit)."""
+    import shutil
+    import tempfile
+    path = tempfile.mkdtemp(prefix="dpair-", dir="/tmp")
+    monkeypatch.setattr(pairing, "_door_dir", lambda directory=None: path)
+    monkeypatch.setattr(pairing, "_OPEN", {})
+    import atexit
+    atexit.register(shutil.rmtree, path, True)
+
+
 def _act(acct, person, sid):
     return activation.record(sid, directory=acct.activation_dir(person))
 
@@ -167,6 +179,7 @@ def test_sync_name_in_a_service_session_sets_its_title(tmp_path, monkeypatch):
 def test_pair_in_a_service_session_goes_to_a_live_notice(tmp_path, monkeypatch):
     from delfin.agent.service import worker
     monkeypatch.setattr(pairing, "_DIR", tmp_path / "pairing")
+    _short_door_dir(monkeypatch)
     monkeypatch.setattr(pairing, "_spawn", lambda fn: None)
     durable, live = [], []
     host = type("W", (), {})()
@@ -182,6 +195,7 @@ def test_pair_in_a_service_session_goes_to_a_live_notice(tmp_path, monkeypatch):
 def test_an_agent_process_cannot_pair(monkeypatch, tmp_path):
     from delfin.agent.approval_guard import ENV_MARKER
     monkeypatch.setattr(pairing, "_DIR", tmp_path / "pairing")
+    _short_door_dir(monkeypatch)
     said = []
     monkeypatch.setenv(ENV_MARKER, "1")
     assert pairing.cli_main(["pair"], out=said.append, timeout=0) == 2

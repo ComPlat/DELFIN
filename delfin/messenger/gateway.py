@@ -1378,8 +1378,8 @@ class Rooms:
         await self.pairing_clock()
 
     async def _answer(self, person, rid, result):
-        await asyncio.to_thread(self.bridge.ask, {'cmd': 'pairing', 'action': 'answer',
-                                                  'person': person, 'id': rid, 'result': result})
+        return await asyncio.to_thread(self.bridge.ask, {'cmd': 'pairing', 'action': 'answer',
+                                                         'person': person, 'id': rid, 'result': result})
 
     async def _note(self, person, text):
         try:
@@ -1453,7 +1453,14 @@ class Rooms:
         audit.event('messenger_invitation_issued',
                     f'{person_name(person)}: invitation {inv["tag"]} for request {rid[:8]}, '
                     f'valid {pairing.INVITATION_TTL_S // 60} min')
-        await self._answer(person, rid, {'state': 'offered', 'link': link, 'expires': inv['expires']})
+        reply = await self._answer(person, rid, {'state': 'offered', 'link': link, 'expires': inv['expires']})
+        if not (reply or {}).get('delivered'):
+            # The asking process's door did not take it: nobody may use it.
+            store.cancel_invitations(person, request=rid)
+            await self._drop_pending(conn)
+            audit.event('messenger_invitation_refused',
+                        f'{person_name(person)}: invitation {inv["tag"]} withdrawn, '
+                        'the asking process did not take it', blocked=True)
 
     async def _new_invitation(self):
         maker = getattr(self.daemon, 'new_invitation', None)

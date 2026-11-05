@@ -90,6 +90,16 @@ def runtime_dir(name: str, account: Path | None = None) -> Path | None:
     return None if sock is None else sock.parent
 
 
+def door_root(name: str, account: Path | None = None) -> Path | None:
+    """The private runtime directory a person's pairing door must lie in:
+    the owner's is this process's own (the bridge runs with the owner's
+    runtime directory), a person's ``<home>/.run/delfin-<uid>``."""
+    if name == OWNER:
+        from delfin.agent.service import rundir
+        return rundir.runtime_dir()
+    return runtime_dir(name, account)
+
+
 def activation_dir(name: str, account: Path | None = None) -> Path | None:
     base = home(name, account)
     return None if base is None else base / ".delfin" / "messenger_sessions"

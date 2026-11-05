@@ -137,7 +137,8 @@ def test_a_forged_delivery_to_a_door_is_ignored(acct):
         sock.connect(door.path)
         sock.sendall((json.dumps({"id": "f" * 32, "link": "simplex:/forged"}) + "\n").encode())
         assert b'"ok": false' in sock.recv(100)
-    assert pairing.read(rid, "session:p1", directory=acct.pairing_dir("anna")).get("link") is None
+    assert door.values == {}
+    assert (pairing.read(rid, "session:p1", directory=acct.pairing_dir("anna")) or {}).get("link") is None
 
 
 def test_a_door_refuses_an_agent_process(acct, monkeypatch):

@@ -827,8 +827,8 @@ class Bridge:
         if path is None:
             return {"error": "Unbekannte Person."}
         if action == "answer":
-            ok = pairing.answer(path, str(params.get("id") or ""), dict(params.get("result") or {}))
-            return {"ok": ok}
+            return pairing.answer(path, str(params.get("id") or ""), dict(params.get("result") or {}),
+                                  door_root=people.door_root(name))
         if action == "note":
             pairing.note(path, str(params.get("text") or ""))
             return {"ok": True}

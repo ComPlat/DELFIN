@@ -36,15 +36,19 @@ How a pairing works:
   person is the directory a request was found in. The gateway asks the daemon
   for a one-time invitation (`/_connect`, random connection keys), records it
   bound to the person and the request (10 minutes, single use), and the bridge
-  answers into the person's 0600 answer file -- the link and the SimpleX
-  security code only sealed: the pair request carries a Diffie-Hellman public
-  value (RFC 3526 group 14) whose secret stays in the memory of the asking
-  process, and the bridge encrypts to it (HMAC-SHA256 keystream and tag). No
-  file holds the link in a readable form. The TUI shows it as a live notice
-  that is not written to the session's event log; the dashboard in a pairing
-  panel above the input, outside the chat transcript and the saved session,
-  removed on success, expiry and `/pair cancel`; the audit log gets a
-  12-character hash of the link only.
+  state into the person's 0600 answer file. The link and the SimpleX security
+  code never reach a file: `/pair` opens a pairing door, a 0600 Unix socket in
+  the asking process's private runtime directory (where its agent service
+  socket lives), and names it in the request. The bridge hands the two fields
+  to that door only -- inside the person's own runtime directory, a socket of
+  this uid, the listener running as this uid -- and the door takes them only
+  from a peer of this uid that is not an agent process, for its own request
+  id; they stay in that process's memory. A door that does not take the link
+  withdraws the invitation. No cryptography of DELFIN's own is involved. The
+  TUI shows the link as a live notice that is not written to the session's
+  event log; the dashboard in a pairing panel above the input, outside the
+  chat transcript and the saved session, removed on success, expiry and
+  `/pair cancel`; the audit log gets a 12-character hash of the link only.
 - A phone that connects through it is bound to that person, **unverified**,
   and receives a 6-digit code. Until the code is typed in the session that
   started `/pair` (the verify request must carry the nonce), the phone hears
