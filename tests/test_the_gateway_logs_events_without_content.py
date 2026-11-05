@@ -28,6 +28,8 @@ LINK = "simplex:/invitation#/?v=2&smp=SECRETKEYMATERIAL0001"
 
 @pytest.fixture
 def acct(tmp_path, monkeypatch):
+    from delfin.messenger import eventlog
+    monkeypatch.setattr(eventlog, "_last", {})       # no collapsing across tests
     monkeypatch.delenv("DELFIN_MESSENGER_EVENTS", raising=False)
     account = Account(tmp_path, monkeypatch)
     store.save("21", person="anna", label="anna phone")
@@ -45,7 +47,7 @@ def test_a_prompt_is_logged_without_its_text(acct, capsys):
     err = capsys.readouterr().err
     lines = events(err)
     assert lines, err
-    line = lines[0]
+    line = next(x for x in lines if x.startswith("[gateway] event in "))
     assert " in " in line and "kind=prompt" in line and "person=anna" in line
     assert "result=delivered" in line and re.search(r"ms=\d+", line)
     assert re.search(r"room=r[0-9a-f]{4}\b", line) and re.search(r"session=s[0-9a-f]{4}\b", line)

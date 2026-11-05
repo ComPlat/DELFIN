@@ -21,7 +21,7 @@ import sys
 import time
 from collections import deque
 
-from . import audit, language, pairing, simplex, store
+from . import audit, eventlog, language, pairing, simplex, store
 from . import lang as _lang
 from .lang import command_word, t, yes_no
 from .render import cut, in_forum, more_hint, status_text
@@ -96,6 +96,29 @@ def _person_language():
 #: unset only in a direct call (tests), see Rooms._person.
 _PERSON: contextvars.ContextVar = contextvars.ContextVar('messenger_person', default=None)
 _lang.set_resolver(_person_language)
+#: What became of the message being handled (eventlog): set where a path
+#: decides it, read once the message is done.
+_OUTCOME: contextvars.ContextVar = contextvars.ContextVar('messenger_outcome', default=None)
+
+#: The phone commands an event line names (any spelling -> one name).
+_EVENT_COMMANDS = {
+    'status': 'status', 'pending': 'pending', 'stop': 'stop', 'update': 'update',
+    'details': 'details', 'more': 'more', 'mehr': 'more', 'name': 'name', 'rename': 'name',
+    'neu': 'new', 'new': 'new', 'forum': 'forum', 'meldungen': 'notify', 'notify': 'notify',
+    'dateien': 'files', 'files': 'files', 'datei': 'file_get', 'file': 'file_get',
+    'austausch': 'exchange', 'exchange': 'exchange', 'profil': 'profile', 'profile': 'profile',
+    'plan': 'schedule', 'zeitpläne': 'schedules', 'zeitplaene': 'schedules', 'pläne': 'schedules',
+    'plaene': 'schedules', 'schedules': 'schedules', 'ok': 'approval_number', 'nein': 'approval_number',
+    'zeige': 'show', 'show': 'show', 'sync': 'sync', 'approvals': 'approvals', 'chat': 'chat',
+    'language': 'language', 'sprache': 'language', 'lang': 'language', 'branch': 'branch',
+}
+
+
+def _outcome(result):
+    """Record what became of the message being handled (eventlog)."""
+    box = _OUTCOME.get()
+    if box is not None:
+        box['result'] = result
 _SENDER: contextvars.ContextVar = contextvars.ContextVar('messenger_sender', default=None)
 #: Set for the notification rounds: they never start a person's service.
 _BACKGROUND: contextvars.ContextVar = contextvars.ContextVar('messenger_background', default=False)
@@ -399,9 +422,19 @@ class Rooms:
                 return []
         # Split at message boundaries; never truncate an approval preview silently.
         sent = []
+        began = time.monotonic()
+        kind = {'question': 'question', 'confirm': 'card', 'plan': 'card'}.get((request or {}).get('kind'), 'text')
+        sid = (room or {}).get('session_id')
         for start in range(0, len(text), 2000):
             if self.paired():
-                result = await self.daemon.send_chat(chat, text[start:start + 2000])
+                try:
+                    result = await self.daemon.send_chat(chat, text[start:start + 2000])
+                except Exception as exc:
+                    eventlog.emit('out', kind, person=self._person(), room=chat, session=sid,
+                                  result='failed:' + type(exc).__name__, ms=1000 * (time.monotonic() - began))
+                    raise
+                eventlog.emit('out', kind, person=self._person(), room=chat, session=sid,
+                              ms=1000 * (time.monotonic() - began))
                 for wrapped in (result or {}).get('chatItems', []):
                     mid = ((wrapped.get('chatItem') or {}).get('meta') or {}).get('itemId')
                     if mid is not None:
@@ -420,13 +453,19 @@ class Rooms:
         phone and the chat is that phone's own direct chat or a ready room
         of the same person. Then dispatched in that person's context."""
         sender, chat = message['sender'], message['chat']
+        started = time.monotonic()
+        room_of = store.rooms().get(chat) or {}
         if store.refused():
+            eventlog.emit('in', 'message', room=chat, result='refused:store')
             return
         rec = store.contact(sender)
         if rec is None:
+            eventlog.emit('in', 'message', room=chat, session=room_of.get('session_id'),
+                          result='refused:unknown')
             return
         person = rec['person']
         if rec.get('state') != 'verified':
+            eventlog.emit('in', 'message', person=person, room=chat, result='refused:unverified')
             await self._verify_first(sender, chat)
             return
         room = store.rooms().get(chat)
@@ -440,6 +479,7 @@ class Rooms:
             audit.event('messenger_cross_person_refused',
                         f'contact {sender} of {person_name(person)} wrote in a chat of '
                         f'{person_name(room.get("person", OWNER))}', blocked=True)
+            eventlog.emit('in', 'message', person=person, room=chat, result='refused:cross_person')
             return
         text = str(message.get('text') or '')
         setting = language.explicit(text)
@@ -451,15 +491,40 @@ class Rooms:
             spoken = language.of_contact(sender)
         person_token, sender_token = _PERSON.set(person), _SENDER.set(sender)
         lang_token = _lang.CURRENT.set(spoken)
+        box = {'result': 'delivered'}
+        outcome_token = _OUTCOME.set(box)
+        kind = 'language' if setting is not None else self._event_kind(message, chat)
         try:
             if setting is not None:
                 await self.send(chat, self.language_text(setting, spoken))
                 return
             await self._handle(message, room)
+        except Exception as exc:
+            box['result'] = 'failed:' + type(exc).__name__
+            raise
         finally:
+            _OUTCOME.reset(outcome_token)
+            eventlog.emit('in', kind, person=person, room=chat, session=(room or {}).get('session_id'),
+                          result=box['result'], ms=1000 * (time.monotonic() - started))
             _lang.CURRENT.reset(lang_token)
             _SENDER.reset(sender_token)
             _PERSON.reset(person_token)
+
+    def _event_kind(self, message, chat):
+        """The kind of a received message for its event line: from its
+        shape and its first word, never from what it says."""
+        if message.get('file'):
+            return 'voice' if message.get('media_kind') == 'voice' else 'file'
+        if message.get('quote_id') is not None:
+            item = self._reply_targets.get((chat, str(message['quote_id']))) or {}
+            return {'question': 'question_answer', 'voice': 'voice_send'}.get(item.get('kind'), 'approval_answer')
+        text = str(message.get('text') or '').strip()
+        if yes_no(text) is not None:
+            return 'yes_no'
+        word = text.split(' ', 1)[0].lower().lstrip('/') if text else ''
+        if text.startswith('@'):
+            return 'forum_prompt'
+        return command_word(word) or _EVENT_COMMANDS.get(word) or 'prompt'
 
     @staticmethod
     def language_text(setting, spoken):
@@ -485,6 +550,7 @@ class Rooms:
         direct = chat == '@' + message['sender']
         timed = chat == store.schedules_room() and self._person() == OWNER
         if not direct and not timed and (not room or not room.get('ready')):
+            _outcome('refused:no_room')
             return
         if message.get('file'):
             await self.handle_file(message, room)
@@ -495,9 +561,11 @@ class Rooms:
         while rate and now - rate[0] > 60:
             rate.popleft()
         if len(rate) >= 15 or len(text) > 4096 or not text:
+            _outcome('refused:rate' if len(rate) >= 15 else 'refused:too_long' if text else 'refused:empty')
             return
         rate.append(now)
         if not store.claim_message(chat, message['id']):
+            _outcome('refused:replay')
             return
         try:
             if timed:
@@ -505,6 +573,7 @@ class Rooms:
                 return
             await self.active_sessions()
             if room and room['session_id'] and room['session_id'] not in self._active:
+                _outcome('refused:session_off')
                 # A session taken off the phone: only a bare hol / get here.
                 if len(text.split()) == 1 and command_word(text) == 'get':
                     result = await self.get_session(room['session_id'], chat=chat)
@@ -512,6 +581,7 @@ class Rooms:
                 return
             result = await self.dispatch(text, room, quote_id=message.get('quote_id'), chat=chat)
         except Starting as exc:
+            _outcome('starting')
             # Straight to the chat this phone wrote in (checked above): the
             # session's status, which send() asks, is what is starting.
             await self.daemon.send_chat(chat, str(exc))
@@ -520,6 +590,7 @@ class Rooms:
             task.add_done_callback(self._retries.discard)
             return
         except Exception as exc:
+            _outcome('failed:' + type(exc).__name__)
             # No raw service exceptions or credentials in phone error messages.
             result = failure_text(exc)
         await self.send(chat, result)
@@ -749,6 +820,7 @@ class Rooms:
                                           and r.get('forum', True)
                                           and r.get('person', OWNER) == self._person()]
         if not targets:
+            _outcome('no_session')
             return t('No sessions connected. /sync connects the current sessions.')
         results = []
         for target in targets:

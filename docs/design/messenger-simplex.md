@@ -426,6 +426,24 @@ The direct contact remains a setup channel. `revoke` with the same environment
 removes routing authorization immediately; already dispatched commands are not
 undone. `status` lists stored chat bindings.
 
+## The event log
+
+The gateway's journal gets one content-free line per message handled
+(delfin/messenger/eventlog.py), for field debugging:
+
+```
+[gateway] event in kind=prompt person=anna room=r3f2a session=s7c1e result=delivered ms=42
+```
+
+Direction, kind (prompt, the command's name, approval_answer, question_answer,
+yes_no, file, voice; out: text, card, question), the person, the room and the
+session as four-hex-digit tags of a hash (never their ids), the result
+(delivered, refused:REASON, no_session, starting, failed:TYPE) and the latency.
+Never a text, link, code, file name or title; every field comes from a fixed
+alphabet. On by default; `DELFIN_MESSENGER_EVENTS=off` in the gateway unit
+switches it off. The same line within 30 s is counted, and the next one says
+`repeated=N`.
+
 ## Security and validation
 
 Only verified phones' received messages are accepted, including inside groups,
