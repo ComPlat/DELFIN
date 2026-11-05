@@ -134,14 +134,11 @@ def resolve_mode(cwd: Path, permission_mode: str = "") -> tuple[str, str]:
     """(mode, where it came from). An explicit mode is taken as given --
     including bypassPermissions, which an interactive ``chat`` reaches
     only with ``--unattended`` beside it; without one, the persisted
-    default as ``chat`` would read it, else plan."""
-    from . import launch_guard
-    from .cli import _persisted_default_mode
-    persisted, source = _persisted_default_mode(Path(cwd))
-    return launch_guard.resolve_posture(
-        flag_mode=permission_mode or "", persisted_mode=persisted,
-        unattended_opt_in=True,
-        settings_path=source or "~/.delfin/settings.json")
+    default as ``chat`` would read it, else the stored dashboard profile
+    (cli._start_posture, the function ``chat`` starts from), else
+    default."""
+    from .cli import _start_posture
+    return _start_posture(Path(cwd), permission_mode or "", True)
 
 
 def session_permissions(

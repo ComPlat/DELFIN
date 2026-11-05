@@ -104,5 +104,5 @@ def test_a_refusal_shows_the_folder_name_as_text(tmp_path):
     _click(refs, 'ts.out')
     refs['calc_options_dropdown'].value = 'TS → GOAT'
     shown = refs['calc_ts_goat_panel'].children[0].value
-    assert 'No matching TS geometry' in shown
+    assert 'No Hessian' in shown
     assert '<img' not in shown and '&lt;img' in shown
