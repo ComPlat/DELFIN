@@ -13831,6 +13831,14 @@ def create_tab(ctx):
         adapters = state.setdefault("_messenger_adapters", {})
         if args.strip().lower() in {"off", "status"}:
             return activation.configure(sid, args)
+        if args.strip().lower() not in {"", "on"} and activation.clean_name(args):
+            # /sync NAME: the session's title too -- what the save writes
+            # as title and the messenger adapter answers as the name.
+            state.setdefault("_messenger_titles", {})[sid] = activation.clean_name(args)
+            try:
+                _auto_save_session()
+            except Exception:
+                pass
         # "", "on" and "/sync NAME" all switch on, with the live adapter.
         if sid not in adapters:
             def answer_detected_question(text):

@@ -39,6 +39,7 @@ class CommandResult:
     quit: bool = False
     handled: bool = True
     clear: bool = False       # start a fresh conversation
+    title: str = ""           # the session's new title (/sync NAME)
 
 
 @dataclass(frozen=True)
@@ -139,9 +140,12 @@ def expand_at_references(text: str, workspace: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def _sync(ctx, args: str) -> CommandResult:
-    from delfin.messenger.activation import configure
+    from delfin.messenger.activation import clean_name, configure
     sid = str(ctx.session_id or getattr(ctx.engine, "session_id", "") or "")
-    return CommandResult(output=configure(sid, args, endpoint=""))
+    output = configure(sid, args, endpoint="")
+    # /sync NAME: also the session's title, the one display name.
+    name = clean_name(args) if sid and args.strip().lower() not in {"", "on", "off", "status"} else ""
+    return CommandResult(output=output + (f" Name: {name}." if name else ""), title=name)
 
 
 def _pair(ctx, args: str) -> CommandResult:

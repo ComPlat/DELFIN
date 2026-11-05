@@ -2029,6 +2029,9 @@ class TerminalAgent:
             self._start_fresh()
         if result.quit:
             self._quit = True
+        if result.title:
+            # The title the saves carry (the worker's setTitle sets the same).
+            self.session_title = result.title
         return result.prompt
 
     def _ctx(self):
@@ -3339,7 +3342,8 @@ class TerminalAgent:
             if engine is None:
                 return
             from .cli import _save_session
-            _save_session(engine, Path(self.opts.cwd))
+            _save_session(engine, Path(self.opts.cwd),
+                          title=str(getattr(self, "session_title", "") or ""))
         except Exception:
             pass
 
