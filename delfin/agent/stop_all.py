@@ -396,20 +396,40 @@ def _outlived_their_start() -> list[dict]:
                        .replace(b"\0", b" ").decode(errors="replace").strip())
         except OSError:
             continue
-        why = ""
-        root = env.get(ENV_PID, "")
-        if root.isdigit() and int(root) != pid:
-            raw_ticks = env.get(ENV_TICKS, "")
-            ticks = int(raw_ticks) if raw_ticks.isdigit() else None
-            if not _lifeline_alive(int(root), ticks):
-                why = f"its lifeline {root} is gone"
-        server = env.get("JPY_PARENT_PID", "")
-        if (not why and "DELFIN_VOILA_PORT" in env and server.isdigit()
-                and int(server) != pid and not os.path.exists(f"/proc/{server}")):
-            why = f"its dashboard server {server} is gone"
+        why = _why_outlived(pid, env)
         if why:
             out.append({"pid": pid, "why": why, "command": cmdline[:160]})
     return out
+
+
+def _why_outlived(pid: int, env: dict[str, str]) -> str:
+    """Why process ``pid`` with environment ``env`` works on its own though
+    it should not: its lifeline or its dashboard server is gone; "" when
+    neither (a process started without them -- the agent service is one --
+    is not judged here)."""
+    from .lifeline import ENV_PID, ENV_TICKS, _alive as _lifeline_alive
+
+    root = env.get(ENV_PID, "")
+    if root.isdigit() and int(root) != pid:
+        raw_ticks = env.get(ENV_TICKS, "")
+        ticks = int(raw_ticks) if raw_ticks.isdigit() else None
+        if not _lifeline_alive(int(root), ticks):
+            return f"its lifeline {root} is gone"
+    server = env.get("JPY_PARENT_PID", "")
+    if ("DELFIN_VOILA_PORT" in env and server.isdigit()
+            and int(server) != pid and not _pid_exists(int(server))):
+        return f"its dashboard server {server} is gone"
+    return ""
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 # A dashboard session sends a heartbeat every minute; one silent for longer

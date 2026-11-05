@@ -8,82 +8,83 @@ service's. Taken along, ``stop_all.status()`` read the service as a kernel
 whose dashboard had died ("its dashboard server ... is gone") the moment
 the page closed -- while running on is what the service is for.
 
-Real path: the launcher starts the supervisor in a private home with such
-an environment; /proc/<pid>/environ and a status() run beside it are read.
-Control: a plain child with the same environment is reported by status()
-as outlived -- the check would fire on that environment.
+Every machine: the launcher's own start is driven with the process start
+recorded (subprocess.Popen stood in for), and stop_all's own judgement
+(_why_outlived) is asked about the environment the service gets. Control:
+the same judgement on the kernel's environment says the dashboard is gone.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
-import sys
-import tempfile
-import time
-from pathlib import Path
-
-import pytest
 
 from conftest import child_env
 
-REPO = Path(__file__).resolve().parents[1]
 KERNEL_ONLY = ("JUPYTER_TOKEN", "JPY_PARENT_PID", "JPY_SESSION_NAME", "DELFIN_VOILA_PORT",
                "BROWSER", "VSCODE_IPC_HOOK_CLI", "DELFIN_LIFELINE_PID", "KERNEL_ID",
                "DELFIN_PREVIEW_PROXY")
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
-def test_the_service_drops_the_kernel_s_environment_and_status_says_what_it_is(tmp_path, gone_pid):
-    runtime = Path(tempfile.mkdtemp(prefix="dsk", dir="/tmp"))
+def _kernel_env(tmp_path, gone_pid) -> dict:
     env = child_env(tmp_path)
-    env.update(DELFIN_RUNTIME_DIR=str(runtime), PYTHONPATH=str(REPO),
+    (tmp_path / "rt").mkdir(exist_ok=True)
+    env.update(DELFIN_RUNTIME_DIR=str(tmp_path / "rt"), PYTHONPATH="/somewhere/delfin",
                JUPYTER_TOKEN="t0k", JPY_PARENT_PID=str(gone_pid), JPY_SESSION_NAME="x",
                DELFIN_VOILA_PORT="8866", BROWSER="none", VSCODE_IPC_HOOK_CLI="/x",
-               KERNEL_ID="k", DELFIN_PREVIEW_PROXY="/p")
-    env.pop("DELFIN_LIFELINE_PID", None)
-    start = ("import sys, time\n"
-             "from delfin.agent.service import launcher, rundir\n"
-             "p = launcher.start_service(idle_exit_s=60)\n"
-             "for _ in range(200):\n"
-             "    if rundir.service_pid(): break\n"
-             "    time.sleep(0.1)\n"
-             "print(rundir.service_pid())\n")
-    out = subprocess.run([sys.executable, "-c", start], env=env, capture_output=True,
-                         text=True, timeout=60, cwd=str(tmp_path))
-    pid = int(out.stdout.strip().splitlines()[-1])
-    control = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], env=env)
-    try:
-        assert pid > 0, out.stderr
-        environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-        names = {e.split(b"=", 1)[0].decode() for e in environ if b"=" in e}
-        assert not names & set(KERNEL_ONLY), names & set(KERNEL_ONLY)
-        assert "PYTHONPATH" in names and "HOME" in names          # what it needs stays
-        status = subprocess.run(
-            [sys.executable, "-c", "import json; from delfin.agent import stop_all; "
-                                   "print(json.dumps(stop_all.status()))"],
-            env=env, capture_output=True, text=True, timeout=60, cwd=str(tmp_path))
-        report = json.loads(status.stdout.strip().splitlines()[-1])
-        outlived = {r["pid"]: r["why"] for r in report["outlived_their_start_here"]}
-        # Control: the plain child with the kernel's environment is read as
-        # one whose dashboard is gone.
-        assert "dashboard server" in outlived.get(control.pid, ""), outlived
-        assert pid not in outlived, outlived
-        assert report["agent_service"]["pid"] == pid
-        assert report["agent_service"]["runs_on_its_own"] is True
-    finally:
-        control.kill()
-        control.wait(timeout=10)
-        stop = ("from delfin.agent.service.client import ServiceClient\n"
-                "with ServiceClient(timeout=5) as c: c.request('service.shutdown', timeout=10)\n")
-        subprocess.run([sys.executable, "-c", stop], env=env, capture_output=True, timeout=60,
-                       cwd=str(tmp_path))
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline and os.path.exists(f"/proc/{pid}"):
-            time.sleep(0.1)
-        import shutil
-        shutil.rmtree(runtime, ignore_errors=True)
+               DELFIN_LIFELINE_PID=str(gone_pid), KERNEL_ID="k", DELFIN_PREVIEW_PROXY="/p")
+    return env
+
+
+def test_the_service_drops_the_kernel_s_environment_and_is_not_read_as_orphaned(
+        tmp_path, gone_pid, monkeypatch):
+    from delfin.agent import stop_all
+    from delfin.agent.service import launcher
+
+    kernel = _kernel_env(tmp_path, gone_pid)
+    for name in list(os.environ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in kernel.items():
+        monkeypatch.setenv(name, value)
+    started = []
+
+    class _Popen:
+        def __init__(self, cmd, **kw):
+            started.append({"cmd": cmd, "env": dict(kw.get("env") or {})})
+            self.pid = 4242
+
+    monkeypatch.setattr(subprocess, "Popen", _Popen)
+    launcher.start_service(idle_exit_s=60)
+    (run,) = started
+    assert "delfin.agent.service.supervisor" in " ".join(run["cmd"])
+    env = run["env"]
+    assert not set(env) & set(KERNEL_ONLY), set(env) & set(KERNEL_ONLY)
+    assert env["PYTHONPATH"] == "/somewhere/delfin" and env["HOME"] == kernel["HOME"]
+    # Control: the kernel's own environment is judged orphaned ...
+    assert stop_all._why_outlived(4243, kernel)
+    # ... the service's is not.
+    assert stop_all._why_outlived(4242, env) == ""
+
+
+def test_status_names_the_service_as_running_on_its_own(tmp_path, monkeypatch):
+    import json
+
+    from delfin.agent import stop_all
+    from delfin.agent.service import rundir
+
+    roster = tmp_path / "h.roster"
+    roster.write_text(json.dumps({"sessions": [{"sessionId": "a"}, {"sessionId": "b"}],
+                                  "dormant": [{"summary": {"sessionId": "c"}}]}))
+    monkeypatch.setattr(rundir, "service_pid", lambda: 4242)
+    monkeypatch.setattr(rundir, "read_run_file", lambda host=None: {
+        "pid": 4242, "socket": "/run/x/agent.sock", "startedAt": 1.0})
+    monkeypatch.setattr(rundir, "roster_file", lambda host=None: roster)
+    got = stop_all._agent_service_here()
+    assert got == {"pid": 4242, "socket": "/run/x/agent.sock", "started_at": 1.0,
+                   "sessions": 2, "asleep": 1, "runs_on_its_own": True}
+    # Control: no service, nothing named.
+    monkeypatch.setattr(rundir, "service_pid", lambda: 0)
+    assert stop_all._agent_service_here() is None
 
 
 def test_the_dropped_names_are_the_preview_server_s_less_what_the_service_needs():
