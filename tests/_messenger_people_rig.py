@@ -166,8 +166,11 @@ class Account:
         redactor._known = []
         redactor._loaded = float("inf")
         self.bridge = Bridge(allowed_uid=os.getuid() + 1, redactor=redactor)
-        def ws(name):
-            path = tmp_path / "work" / name
+        def ws(name, person=""):
+            # A session's folder in its person's own tree (hol reaches
+            # only those): the account's for the owner, ~/people/<p> else.
+            base = self.home if not person else self.home / "people" / person
+            path = base / "work" / name
             path.mkdir(parents=True, exist_ok=True)
             return str(path)
 
@@ -175,10 +178,10 @@ class Account:
             "": FakeService("", [{"sessionId": "s-own", "title": "Eigene", "workspace": ws("own"),
                                   "state": "idle"}]),
             "anna": FakeService("anna", [
-                {"sessionId": "s-anna", "title": "Butan", "workspace": ws("butan"), "state": "idle"},
-                {"sessionId": "s-anna2", "title": "Ethan", "workspace": ws("ethan"), "state": "idle"}]),
+                {"sessionId": "s-anna", "title": "Butan", "workspace": ws("butan", "anna"), "state": "idle"},
+                {"sessionId": "s-anna2", "title": "Ethan", "workspace": ws("ethan", "anna"), "state": "idle"}]),
             "ben": FakeService("ben", [{"sessionId": "s-ben", "title": "Benzol",
-                                        "workspace": ws("benzol"), "state": "idle"}]),
+                                        "workspace": ws("benzol", "ben"), "state": "idle"}]),
         }
         self.bridge._service = self.services[""]
         for name in ("anna", "ben"):
