@@ -1208,7 +1208,10 @@ class RunningPanel:
         self.confirm_no: dict[str, widgets.Button] = {}
         self._rows: dict[str, dict] = {}
         self._timer: Optional[threading.Timer] = None
-        self._lock = threading.Lock()
+        #: Held for a whole render, and for the timer: the event timer and
+        #: the 3 s tick both render, and two at once built two rows for one
+        #: new session (re-entrant: render clears the timer under it).
+        self._lock = threading.RLock()
         self._shown = -1
         self._unsubscribe: Optional[Callable[[], None]] = None
         heading = widgets.HTML("Running sessions")
@@ -1351,6 +1354,9 @@ class RunningPanel:
         order change."""
         with self._lock:
             self._timer = None
+            self._render()
+
+    def _render(self) -> None:
         rows = self.running.rows()
         children = []
         needs = 0
