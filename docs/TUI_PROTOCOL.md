@@ -437,9 +437,12 @@ seen end.
 **Answers.** An approval may be answered from any window attached to the
 session. The worker takes the first answer; a later one is refused with
 -32002, and every window gets `permission.resolved`. Its `client` names
-the window that answered: the service sets `permission.reply`'s `client`
-from the hello of the connection the reply came on, so a window cannot
-answer in another's name.
+the window that answered, as that window named itself: the service sets
+`permission.reply`'s `client` from the hello of the connection the reply
+came on (one plain line, at most 64 characters), so a reply cannot claim
+another name than its own connection's. The hello's name itself is not
+proven -- any process of the user may give any -- and windows show the
+known ones by role and any other as given, marked.
 
 | Code | Meaning |
 |---|---|

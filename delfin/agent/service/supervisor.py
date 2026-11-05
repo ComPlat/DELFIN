@@ -1027,7 +1027,11 @@ class Supervisor:
                            f"the service speaks protocol {protocol.PROTOCOL_VERSION},"
                            f" this window {version}")
         client.greeted = True
-        client.name = str(params.get("client") or "")[:64]
+        # What it says it is, as one plain line: it is shown to every window
+        # (permission.resolved.client). Said, not proven -- any process of
+        # the user may say any name; windows show the known ones by role
+        # and anything else as given, marked (live_sessions.client_words).
+        client.name = protocol.clean_line(params.get("client"), 64)
         return {"protocolVersion": protocol.PROTOCOL_VERSION,
                 "serviceVersion": SERVICE_VERSION, "release": _release(), "pid": os.getpid(),
                 "host": rundir.hostname(), "mayAct": client.may_act,

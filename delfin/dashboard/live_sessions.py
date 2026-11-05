@@ -218,7 +218,12 @@ _CLIENT_WORDS = {"delfin-dashboard": "the dashboard", "delfin-tui": "the termina
 def client_words(client: str, by: str = "client") -> str:
     """Who answered, in words: a window by its hello name, else how it ended."""
     if by == "client":
-        return _CLIENT_WORDS.get(client, client or "another window")
+        if client in _CLIENT_WORDS:
+            return _CLIENT_WORDS[client]
+        # Not one of DELFIN's windows: what it called itself, marked as
+        # such (the service passes the hello's name, cleaned, unchecked).
+        shown = protocol.clean_line(client, 64)
+        return f'a window calling itself "{shown}"' if shown else "an unnamed window"
     return {"outside": "outside the session", "expired": "the time limit",
             "abort": "the session's end"}.get(by, by or "someone")
 

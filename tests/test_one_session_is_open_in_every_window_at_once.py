@@ -162,6 +162,32 @@ def test_the_first_answer_wins_and_every_window_hears_who_gave_it(service):
             ("approved", "client", "delfin-dashboard")
 
 
+def test_a_window_s_name_is_one_plain_line_and_an_unknown_one_is_marked(service):
+    from delfin.dashboard import live_sessions as LS
+
+    odd = ServiceClient(service.socket, client="evil\x1b]0;x\x07\nname‮" + "z" * 80)
+    tui = ServiceClient(service.socket, client="delfin-tui")
+    service.clients += [odd, tui]
+    for c, reply in ((tui, "y"), (odd, "y")):
+        sid = service.session(c, permissionMode="default")
+        mark = len(c.events)
+        c.request("session.prompt", {"sessionId": sid, "text": "edit it"})
+        asked, _ = c.wait_for("permission.asked", after=mark)
+        c.request("permission.reply", {"sessionId": sid, "requestId": asked["requestId"],
+                                       "choice": reply})
+        resolved, _ = c.wait_for("permission.resolved", after=mark)
+        if c is tui:
+            # Control: a known window, named as such.
+            assert resolved["client"] == "delfin-tui"
+            assert LS.client_words(resolved["client"]) == "the terminal"
+            continue
+        name = resolved["client"]
+        assert name == protocol.clean_line("evil\x1b]0;x\x07\nname‮" + "z" * 80, 64)
+        assert "\x1b" not in name and "\n" not in name and len(name) <= 64
+        words = LS.client_words(name)
+        assert words.startswith("a window calling itself") and name in words
+
+
 def test_a_late_reply_never_answers_the_next_question(service):
     a, b = service.client(), service.client()
     sid = service.session(a, permissionMode="default")
