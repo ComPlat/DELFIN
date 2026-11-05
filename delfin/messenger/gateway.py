@@ -214,6 +214,11 @@ class Rooms:
         self._pairing_now: set = set()
         #: Messages asked again once their person's service is up.
         self._retries: set = set()
+        #: Request codes answered from the phone (their cards need no
+        #: "answered at the computer").
+        self._answered_here: set = set()
+        #: person -> codes of room requests whose card was sent.
+        self._room_shown: dict[str, set] = {}
 
     # -- who is acting -------------------------------------------------------------
 
@@ -344,7 +349,7 @@ class Rooms:
         self._active = {r['id'] for r in rows if r.get('id')}
         self._reply_targets = {key: value for key, value in self._reply_targets.items()
                                if value.get('_person', OWNER) != self._person()
-                               or value['sessionId'] in self._active}
+                               or value.get('room') or value['sessionId'] in self._active}
         return rows
 
     async def sync(self):
@@ -1013,6 +1018,7 @@ class Rooms:
         reports the rest: the ones that today wait for their timeout."""
         if not self.paired():
             return
+        await self.room_news()
         reply = await self.ask({'cmd': 'approvals'})
         if reply.get('error'):
             return
@@ -1116,6 +1122,9 @@ class Rooms:
         await self.send(chat, f'[{label(room)}]\n' + self.pending_text([item]), request=item)
 
     async def reply(self, text, room, chat, quote_id):
+        target = self._reply_targets.get((chat, str(quote_id)))
+        if target and target.get('room') and target.get('_person', OWNER) == self._person():
+            return await self.room_reply(text, chat, quote_id, target)
         if not room or not room['session_id']:
             return t('Bitte im zugehörigen Sitzungs-Chat auf die Anfrage antworten.')
         item = self._reply_targets.get((chat, str(quote_id)))
@@ -1175,9 +1184,66 @@ class Rooms:
                                 t('\nBitte auf diese Bestätigung mit yes oder no antworten.'), request=confirmation)
                 return t('Die dauerhafte Regel ist noch nicht gespeichert.')
         if reply.get('ok'):
+            self._answered_here.add(item['id'])
             self._reply_targets = {k: v for k, v in self._reply_targets.items() if v['id'] != item['id']}
             return t('Antwort übernommen. Die Anfrage ist auch in TUI/Dashboard erledigt.')
         return reply.get('error') or t('Die Anfrage wurde nicht übernommen.')
+
+    async def room_reply(self, text, chat, quote_id, item):
+        """A reply to a card of a session outside the service: answered
+        through the session's request room (bridge ``room``)."""
+        if time.monotonic() - item.get('_sent_at', 0) > 600:
+            return t('Diese Anfrage ist hier nicht mehr zugeordnet. Mit pending die aktuelle Frage anzeigen und darauf antworten.')
+        word = text.strip().lower()
+        if item.get('kind') == 'question':
+            reply = await self.ask({'cmd': 'room', 'action': 'answer', 'id': item['id'], 'text': text.strip()})
+        elif word in {'yes', 'ja', 'y', 'no', 'nein', 'n'}:
+            reply = await self.ask({'cmd': 'room', 'action': 'answer', 'id': item['id'],
+                                    'choice': 'y' if word in {'yes', 'ja', 'y'} else 'n'})
+        else:
+            return t('Bitte mit yes/ja oder no/nein auf die Anfrage antworten.')
+        if reply.get('ok'):
+            self._answered_here.add(item['id'])
+            self._reply_targets = {k: v for k, v in self._reply_targets.items() if v.get('id') != item['id']}
+            return t('Antwort übernommen. Die Anfrage ist auch in TUI/Dashboard erledigt.')
+        return reply.get('error') or t('Die Anfrage wurde nicht übernommen.')
+
+    async def answered_elsewhere(self, gone):
+        """The cards of requests that ended without a phone answer: each
+        is updated in place to say so (APIUpdateChatItem), or followed by
+        a short note where the daemon cannot update."""
+        for (chat, mid), item in list(self._reply_targets.items()):
+            if item.get('id') not in gone or item.get('kind') == 'voice':
+                continue
+            self._reply_targets.pop((chat, mid), None)
+            if item.get('id') in self._answered_here:
+                continue
+            note = t('Am Rechner beantwortet.')
+            try:
+                await self.daemon.update_message(chat, mid, note)
+            except Exception:
+                await self.send(chat, note)
+
+    async def room_news(self):
+        """Questions and approvals of the person's sessions outside the
+        service: one card each to the person's phones (their direct chats),
+        and the cards of the ones answered elsewhere updated."""
+        reply = await self.ask({'cmd': 'room', 'action': 'pending'})
+        if reply.get('error'):
+            return
+        items = reply.get('items') or []
+        live = {i['id'] for i in items}
+        shown = self._room_shown.setdefault(self._person(), set())
+        gone = {code for code in shown if code not in live}
+        if gone:
+            await self.answered_elsewhere(gone)
+            shown -= gone
+        for item in items:
+            if item['id'] in shown:
+                continue
+            shown.add(item['id'])
+            for cid in self._phones():
+                await self.send('@' + cid, self.pending_text([item]), request=item)
 
     #: What autocorrect makes of shell quotes and dashes; a changed command
     #: carrying one is refused rather than run with the wrong characters.
@@ -1408,8 +1474,11 @@ class Rooms:
                 pending = await self.session(sid, 'pending')
                 items = pending.get('items', [])
                 live_ids = {item['id'] for item in items}
-                self._reply_targets = {key: value for key, value in self._reply_targets.items()
-                    if value.get('sessionId') != sid or value.get('kind') == 'voice' or value.get('id') in live_ids}
+                # Answered at a window (or ended otherwise): the phone's
+                # cards say so; then they map to nothing.
+                await self.answered_elsewhere({v.get('id') for v in self._reply_targets.values()
+                                               if v.get('sessionId') == sid and v.get('kind') != 'voice'
+                                               and not v.get('room') and v.get('id') not in live_ids})
                 if items and self._shown.get((chat, 'pending')) != items:
                     for item in items:
                         await self.send_request(chat, room, item)

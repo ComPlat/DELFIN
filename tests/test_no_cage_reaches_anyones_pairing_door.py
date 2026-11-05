@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from _messenger_people_rig import Account
-from conftest import requires_a_working_sandbox
+from conftest import child_env, requires_a_working_sandbox
 from delfin.agent import api_client as A
 from delfin.agent import sandbox, security_events
 from delfin.messenger import pairing, store
@@ -139,7 +139,7 @@ def acct(tmp_path, monkeypatch):
 def _forged_door(acct, person="anna", marker=True):
     from delfin.agent.approval_guard import ENV_MARKER
     path = os.path.join(str(acct.runtime[person]), "pair-evil.sock")
-    env = dict(os.environ)
+    env = child_env(Path(str(acct.runtime[person])).parent)
     if marker:
         env[ENV_MARKER] = "1"
     proc = subprocess.Popen([sys.executable, "-c", _LISTENER, path], env=env,

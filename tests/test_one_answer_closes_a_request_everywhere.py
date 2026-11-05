@@ -83,11 +83,12 @@ class BrokerService:
 
 @pytest.fixture
 def acct(tmp_path, monkeypatch):
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "en")
     account = Account(tmp_path, monkeypatch)
     anna_home = account.home / "people" / "anna"
     # Every broker of this test is anna's process: its room and codes are hers.
     monkeypatch.setattr(tc, "_PENDING_DIR", anna_home / ".delfin" / "terminal_confirmations")
-    monkeypatch.setattr(approval_code, "home_codes_dir", lambda: anna_home / ".delfin" / "approval_codes")
+    monkeypatch.setattr(approval_code, "codes_dir", lambda: anna_home / ".delfin" / "approval_codes")
     service = BrokerService(account.services["anna"].sessions[0]["workspace"])
     account.services["anna"] = service
     account.bridge._person_bridge("anna")._service = service

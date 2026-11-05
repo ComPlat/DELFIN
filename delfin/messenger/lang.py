@@ -447,4 +447,14 @@ EN = {
     'Antworte mit einer oder mehreren von {range}, durch Kommas getrennt (z. B. 1,3), oder mit eigenem Text.':
     'Reply one or more of {range}, separated by commas (e.g. 1,3), or type your own answer.',
     'Bitte mit deiner Antwort antworten.': 'Please reply with your answer.',
+    # One answer closes a request everywhere (room door, answered elsewhere).
+    'Am Rechner beantwortet.': 'Answered at the computer.',
+    'Bitte mit yes/ja oder no/nein auf die Anfrage antworten.': 'Please answer the request with yes or no.',
+    'Diese Anfrage kann nur am Rechner beantwortet werden.': 'This request can only be answered at the computer.',
+    'Bitte mit der Nummer einer Option antworten; eigener Text geht für diese Sitzung nur am Rechner.':
+    'Please reply with the number of an option; your own text works for this session only at the computer.',
+    'Diese Anfrage ist immer ausdrücklich: bitte am Rechner freigeben.':
+    'This request is always explicit: please approve it at the computer.',
+    'Bitte mit ja oder nein antworten.': 'Please answer with yes or no.',
+    'Unbekannte Aktion.': 'Unknown action.',
 }

@@ -117,6 +117,14 @@ COMMANDS = {
     # People mode: bring a running session of the person to the phone
     # (``hol``). Refused for a session switched off in the session itself.
     "attach": {"session": "string", "label": "string?"},
+    # The request room of sessions OUTSIDE the agent service (the terminal
+    # REPL, a dashboard tab with its own engine) that are enabled for the
+    # messenger: pending -> their open questions and approvals; answer ->
+    # one of them, with the session's one-time code (the asking broker
+    # reads it with its own checked reader). A service session's request
+    # is never offered here: its door is permission.reply.
+    "room": {"action": "string", "id": "string?", "text": "string?",
+             "choice": "string?"},
     # The pairing requests of every person (delfin.messenger.pairing):
     # poll -> the open requests; answer -> the gateway's answer to one;
     # note -> a line for the person (a new phone, a revocation).
@@ -880,6 +888,128 @@ class Bridge:
         except (OSError, ValueError):
             return False
         return True
+
+    # -- the request room (sessions outside the service) -------------------------
+
+    def _room_dir(self) -> Path:
+        from delfin.agent import terminal_confirm as tc
+        from delfin.messenger import people
+        if not self.person:
+            return Path(tc._PENDING_DIR)
+        return people.home(self.person) / ".delfin" / "terminal_confirmations"
+
+    def _room_code(self, rid: str) -> str:
+        """The one-time code of a request in this context's room: the
+        approval_codes file of its person (0600, this uid, masked from
+        agents), read with approval_code's checks."""
+        from delfin.agent import approval_code
+        from delfin.messenger import people
+        if not self.person:
+            return approval_code.read_code_file(rid)
+        import stat as _stat
+        path = people.home(self.person) / ".delfin" / "approval_codes" / f"{rid}.code"
+        try:
+            info = path.lstat()
+            if (not _stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077):
+                return ""
+            return approval_code.normalize(path.read_text(encoding="ascii", errors="ignore"))
+        except OSError:
+            return ""
+
+    async def _room_records(self) -> list:
+        """Open room requests of this context's sessions that are enabled
+        for the messenger and NOT sessions of the service."""
+        from delfin.agent import file_confirm, terminal_confirm as tc
+        try:
+            listing = await self._request("sessions.list")
+            service = {str(r.get("sessionId") or r.get("id") or "")
+                       for r in listing.get("sessions") or []}
+        except ServiceDown:
+            service = set()
+        out = []
+        for record in file_confirm.pending(self._room_dir()):
+            sid = str(record.get("session_id") or "")
+            if (not sid or sid in service or not self._enabled(sid)
+                    or str(record.get("kind")) not in {tc.CONFIRM, tc.ASK}
+                    or tc._asker_is_gone(record)):
+                continue
+            out.append(record)
+        return out
+
+    @staticmethod
+    def _room_fingerprint(record: dict) -> str:
+        body = {k: v for k, v in record.items() if not str(k).startswith("_")}
+        return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+    async def _cmd_room(self, params: dict) -> dict:
+        from delfin.agent import approval_answers as AA
+        from delfin.agent import file_confirm, terminal_confirm as tc
+        action = str(params.get("action") or "")
+        issued = self.__dict__.setdefault("_room_issued", {})
+        records = await self._room_records()
+        if action == "pending":
+            items = []
+            for record in records:
+                rid = str(record.get("id") or "")
+                fp = self._room_fingerprint(record)
+                code = next((c for c, v in issued.items() if v == (rid, fp)), None)
+                if code is None:
+                    code = secrets.token_hex(4)
+                    issued[code] = (rid, fp)
+                ask = record.get("kind") == tc.ASK
+                payload = record.get("payload") or {}
+                red = self._redactor()
+                items.append({
+                    "id": code, "room": True,
+                    "kind": "question" if ask else "confirm",
+                    "sessionId": str(record.get("session_id") or ""),
+                    "tool": str(record.get("tool") or ""),
+                    "question": _truncate(red.text(str(payload.get("question") or "")), 1000) if ask else "",
+                    "choices": AA.option_labels(payload.get("options")) if ask else [],
+                    "multiSelect": bool(payload.get("multiSelect")),
+                    "text": _truncate(red.text(str(record.get("preview") or "")), 1400),
+                    "options": [] if ask else [{"key": "y", "label": "yes"}, {"key": "n", "label": "no"}],
+                    "phoneApproval": not ask and not record.get("protected"),
+                })
+            live = {self._room_fingerprint(r) for r in records}
+            for code in [c for c, v in issued.items() if v[1] not in live]:
+                issued.pop(code, None)
+            return {"ok": True, "items": items}
+        if action == "answer":
+            code = str(params.get("id") or "")
+            entry = issued.get(code)
+            record = next((r for r in records if entry and str(r.get("id")) == entry[0]
+                           and self._room_fingerprint(r) == entry[1]), None)
+            if record is None:
+                issued.pop(code, None)
+                return {"error": "Anfrage nicht mehr offen oder geändert."}
+            rid = entry[0]
+            secret = self._room_code(rid)
+            if not secret:
+                return {"error": "Diese Anfrage kann nur am Rechner beantwortet werden."}
+            if record.get("kind") == tc.ASK:
+                text = str(params.get("text") or "").strip()
+                problem = AA.range_problem(text, record.get("payload") or {})
+                if problem:
+                    return {"error": problem}
+                try:
+                    picks = AA.resolve_choice(record, text)
+                except AA.ChoiceError:
+                    return {"error": "Bitte mit der Nummer einer Option antworten; "
+                                     "eigener Text geht für diese Sitzung nur am Rechner."}
+                issued.pop(code, None)
+                AA.write_choice_answer(record, picks, room=self._room_dir(), by="phone", code=secret)
+                return {"ok": True}
+            if record.get("protected"):
+                return {"error": "Diese Anfrage ist immer ausdrücklich: bitte am Rechner freigeben."}
+            choice = str(params.get("choice") or "")
+            if choice not in {"y", "n"}:
+                return {"error": "Bitte mit ja oder nein antworten."}
+            issued.pop(code, None)
+            ok = file_confirm.answer(rid, choice == "y", room=self._room_dir(), by="phone", code=secret)
+            return {"ok": bool(ok)}
+        return {"error": "Unbekannte Aktion."}
 
     async def _cmd_pairing(self, params: dict) -> dict:
         """The pairing requests of every person, and the gateway's answers

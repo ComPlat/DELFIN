@@ -202,6 +202,19 @@ Forum text addresses enabled participants only, with a delivery result for each.
 
 ## Questions and approvals
 
+**One authority per request.** The request belongs to the broker of the
+process that asked (`TerminalConfirmBroker`; in the agent service its
+`ProtocolBroker`). It has two doors and the first answer through either wins:
+a session in the agent service is answered with `permission.reply` (the
+broker then announces `permission.resolved` with the same id to every window:
+TUI, dashboard live view); a session outside the service (the terminal REPL,
+a dashboard tab with its own engine) is answered through its request room
+`~/.delfin/terminal_confirmations`, by the bridge with the session's one-time
+code, read by the waiting broker's own checked reader. A service session's
+request is never offered through the room. Answered at a window, the phone's
+card is updated in place to "Answered at the computer" (APIUpdateChatItem);
+a late phone reply then maps to nothing.
+
 Use SimpleX's **Reply** gesture on the concrete request, then type `yes`/`ja`,
 `no`/`nein`, an offered option key or its full label. For a question, reply with
 your selection or free text. No slash command or code is required. A bare `yes`

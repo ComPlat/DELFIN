@@ -253,6 +253,14 @@ class Daemon:
             raise SimplexError("memberNotFound")
         await self.command(f"/_remove #{group} {','.join(str(int(i)) for i in ids)}")
 
+    async def update_message(self, chat: str, item_id, text: str) -> None:
+        """Edit a message the bot sent (APIUpdateChatItem, ``/_update item``)."""
+        if chat[:1] not in {"@", "#"} or not chat[1:].isdigit():
+            raise ValueError("invalid chat reference")
+        body = {"msgContent": {"type": "text", "text": text}, "mentions": {}}
+        await self.command(f"/_update item {chat} {int(item_id)} json "
+                           + json.dumps(body, ensure_ascii=False))
+
     async def leave_group(self, chat: str) -> None:
         await self.command(f"/_leave #{int(chat[1:])}")
 
