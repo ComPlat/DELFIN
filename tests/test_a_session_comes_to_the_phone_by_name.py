@@ -170,7 +170,7 @@ def test_sync_name_in_a_service_session_sets_its_title(tmp_path, monkeypatch):
     host.emitter = type("E", (), {"session_id": "s5",
                                   "emit": lambda self, kind, text=None, **k: notices.append(text)})()
     host._m_session_setTitle = lambda params: titles.append(params["title"]) or {"title": params["title"]}
-    reply = worker.Worker._m_session_prompt(host, {"text": "/sync Butan Konformere"})
+    reply = worker.Worker._m_session_prompt(host, {"text": "/sync name Butan Konformere"})
     assert reply == {"accepted": True}
     assert activation.enabled("s5") and titles == ["Butan Konformere"]
     assert "Butan Konformere" in notices[-1]

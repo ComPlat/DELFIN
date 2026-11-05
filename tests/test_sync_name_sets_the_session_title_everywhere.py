@@ -45,7 +45,7 @@ def _agent(tmp_path, sid="s1"):
 
 def test_sync_name_in_the_repl_sets_the_session_title(tmp_path, monkeypatch):
     agent, shown = _agent(tmp_path)
-    assert agent._handle_line("/sync Butan Konformere") == ""
+    assert agent._handle_line("/sync name Butan Konformere") == ""
     assert activation.enabled("s1")
     assert agent.session_title == "Butan Konformere"
     saved = {}
@@ -85,7 +85,7 @@ def test_sync_name_in_the_dashboard_sets_the_session_title(monkeypatch):
         ns[name] = lambda *a, **k: None
     ns["input_textarea"] = SimpleNamespace(value="")
     exec(_nested("_messenger_command"), ns)
-    out = ns["_messenger_command"]("Butan Konformere")
+    out = ns["_messenger_command"]("name Butan Konformere")
     assert "aktiviert" in out and activation.enabled("d1")
     assert ns["state"]["_messenger_titles"]["d1"] == "Butan Konformere"
     assert saves
