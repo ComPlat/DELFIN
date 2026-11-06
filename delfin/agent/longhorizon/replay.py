@@ -35,18 +35,20 @@ from typing import Any, Dict, List
 from delfin.agent.longhorizon import metrics
 
 
-def _writer_kwargs(writer, ev: Dict[str, Any], key_map: Dict[str, str]) -> Dict[str, Any]:
-    """Forward only the kwargs the writer's ``record`` signature accepts,
-    after renaming transcript keys via ``key_map``. A field a real writer
-    keeps (e.g. ``round`` on tool_trace.record) survives; a key the writer
-    does not have is dropped here AND reported as a skipped event, so a
-    transcript that names a field the writer never records is diagnosable
-    instead of silently lost."""
+def _writer_kwargs(writer, ev: Dict[str, Any], key_map: Dict[str, str]):
+    """Split a transcript event into the kwargs the writer's ``record``
+    signature accepts (after renaming via ``key_map``) and the keys it does
+    NOT have. A field the real writer keeps (``round`` on tool_trace.record)
+    survives because it is in the signature; a key the writer has no
+    parameter for is returned in the second element so the CALLER can skip
+    the whole event — an event that names a field the writer never records
+    is a malformed event, reported and not guessed (reviewer finding 1)."""
     try:
         params = inspect.signature(writer).parameters
     except (TypeError, ValueError):
         params = {}
     out: Dict[str, Any] = {}
+    unknown: List[str] = []
     for key, value in ev.items():
         if key in key_map:
             key = key_map[key]
@@ -54,33 +56,41 @@ def _writer_kwargs(writer, ev: Dict[str, Any], key_map: Dict[str, str]) -> Dict[
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 inspect.Parameter.KEYWORD_ONLY):
             out[key] = value
-    return out
+        else:
+            unknown.append(key)
+    return out, unknown
 
 
 def _emit(kind: str, ev: Dict[str, Any]):
     """Write ONE event through its real writer; return None on success or a
     short reason string when the event cannot be recorded."""
+    ev = dict(ev)
+    ev.pop("kind", None)          # the dispatch key is consumed here
+    sess = ev.pop("session", "") or "replay"   # captured ONCE; branch pops
+                                              # must not read the key again.
     if kind == "turn":
         from delfin.agent import turn_metrics
-        sess = ev.pop("session", "") or "replay"
-        kw = _writer_kwargs(turn_metrics.record, ev, {})
-        turn_metrics.record(sess, **kw)
+        kw, unknown = _writer_kwargs(turn_metrics.record, ev, {})
     elif kind == "tool":
         from delfin.agent import tool_trace
-        sess = ev.pop("session", "") or "replay"
-        kw = _writer_kwargs(tool_trace.record, ev, {"input": "tool_input"})
-        tool_trace.record(sess, **kw)
+        kw, unknown = _writer_kwargs(tool_trace.record, ev, {"input": "tool_input"})
     elif kind == "compaction":
         from delfin.agent import compaction_log
-        sess = ev.pop("session", "") or "replay"
         # the compaction KIND is a distinct transcript key so it does not
         # collide with the event-dispatch ``kind``.
         ck = ev.pop("compaction_kind", "auto")
         ev["kind"] = ck
-        kw = _writer_kwargs(compaction_log.record_compaction, ev, {})
-        compaction_log.record_compaction(sess, **kw)
+        kw, unknown = _writer_kwargs(compaction_log.record_compaction, ev, {})
     else:
         return f"unrecognised kind {kind!r}"
+    if unknown:
+        return f"unknown field(s): {', '.join(sorted(unknown))}"
+    if kind == "turn":
+        turn_metrics.record(sess, **kw)
+    elif kind == "tool":
+        tool_trace.record(sess, **kw)
+    elif kind == "compaction":
+        compaction_log.record_compaction(sess, **kw)
     return None
 
 
@@ -126,6 +136,9 @@ def replay(
         "records": {"turns": turns, "tools": tools,
                     "compactions": compactions},
         "skipped_events": skipped,
+        # the count every dropped event contributes to, so a typo'd kind or
+        # a malformed event is never a silent zero (reviewer finding 3).
+        "unrecognized_events": len(skipped),
     }
 
 
