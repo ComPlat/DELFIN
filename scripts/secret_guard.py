@@ -43,6 +43,17 @@ import sys
 from pathlib import Path
 
 ALLOW_COMMENT = "secret-guard: allow"
+# The documented marker requires a (reason); a bare marker is itself a
+# finding, so a secret cannot be hidden behind a thoughtless copy-paste.
+ALLOW_RE = re.compile(r"secret-guard:\s*allow\s*\(\s*([^)]+?)\s*\)")
+
+
+def _has_valid_marker(line: str) -> bool:
+    return bool(ALLOW_RE.search(line))
+
+
+def _has_bare_marker(line: str) -> bool:
+    return ALLOW_COMMENT in line and not ALLOW_RE.search(line)
 
 # The guard's own files quote the forbidden patterns; nothing else is exempt.
 SELF_EXEMPT = frozenset({
@@ -206,9 +217,13 @@ def _is_test(relpath: str) -> bool:
 
 
 def scan_line(relpath: str, lineno: int, line: str) -> list[tuple[str, str]]:
-    """One text line -> [(rule, matched-literal)]. Allow marker honoured."""
-    if ALLOW_COMMENT in line:
+    """One text line -> [(rule, matched-literal)]. A valid allow marker
+    (with a non-empty reason) silences the line; a bare marker is itself
+    reported, so a secret cannot hide behind an empty allow."""
+    if _has_valid_marker(line):
         return []
+    if _has_bare_marker(line):
+        return [("bad_marker", "secret-guard: allow without a reason")]
     out: list[tuple[str, str]] = []
     for name, scope, literal, pattern, _what in RULES:
         if scope == "config" and not _is_config(relpath):
@@ -239,7 +254,11 @@ def scan_text(relpath: str, text: str) -> list[tuple[int, str, str]]:
             findings.append((lineno, name, sample))
     if not _is_test(relpath):
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if ALLOW_COMMENT in line:
+            if _has_valid_marker(line):
+                continue
+            if _has_bare_marker(line):
+                findings.append((lineno, "bad_marker",
+                                 "secret-guard: allow without a reason"))
                 continue
             # integrity hashes (sha256:, sha384:, sha512: prefixes) are
             # content fingerprints, not credentials: pip --hash=... in
@@ -257,7 +276,11 @@ def scan_text(relpath: str, text: str) -> list[tuple[int, str, str]]:
                     findings.append((lineno, "high_entropy", tok[:40]))
     if _in_private_net_scope(relpath):
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if ALLOW_COMMENT in line:
+            if _has_valid_marker(line):
+                continue
+            if _has_bare_marker(line):
+                findings.append((lineno, "bad_marker",
+                                 "secret-guard: allow without a reason"))
                 continue
             # CIDR notation (a/b) is a network definition (firewall rules,
             # nftables sets), not a site address.
@@ -270,7 +293,7 @@ def scan_text(relpath: str, text: str) -> list[tuple[int, str, str]]:
 
 def check_path(relpath: str) -> list[tuple[int, str, str]]:
     """Tracked file NAMES that are key/credential material by convention."""
-    if relpath in SELF_EXEMPT or relpath.startswith("tests/fixtures/"):
+    if relpath in SELF_EXEMPT:
         return []
     if _SECRET_PATH_RE.search(relpath):
         return [(0, "secret_path", relpath)]

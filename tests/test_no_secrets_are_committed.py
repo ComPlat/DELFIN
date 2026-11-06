@@ -150,6 +150,37 @@ def test_allow_marker_exempts_its_line_only(tmp_path):
     assert all("docs/synthetic.md:1" not in v for v in found)
 
 
+def test_fixtures_are_not_a_whole_directory_exemption(tmp_path):
+    # A real-shaped secret in tests/fixtures/x.txt without the inline
+    # marker IS reported: the tests/fixtures/ path must not silently pass.
+    token = "Zk9mP2qX7rT4bN8cW1dV5yH3jL6fQ"
+    _plant(tmp_path, "tests/fixtures/x.txt",
+           "OPENAI_API_KEY=" + "sk-proj-" + token[:24] + "-plant\n")
+    found = secret_guard.run_tree(tmp_path)
+    assert any("api_key_shape" in v for v in found), found
+    # the same line carrying the documented inline marker is allowed
+    _plant(tmp_path, "tests/fixtures/x.txt",
+           "OPENAI_API_KEY=" + "sk-proj-" + token[:24] + "-plant"
+           "  # secret-guard: allow (synthetic fixture)\n")
+    found = secret_guard.run_tree(tmp_path)
+    assert not [v for v in found if "tests/fixtures/x.txt" in v], found
+
+
+def test_a_bare_allow_marker_is_itself_a_finding(tmp_path):
+    token = "Zk9mP2qX7rT4bN8cW1dV5yH3jL6fQ"
+    # bare marker (no reason): still a finding, even though it tries to allow
+    _plant(tmp_path, "docs/synthetic.md",
+           f"shape: sk-{token[:20]}  # secret-guard: allow\n")
+    found = secret_guard.run_tree(tmp_path)
+    assert any("bad_marker" in v for v in found), found
+    # empty reason is also a bad marker
+    _plant(tmp_path, "docs/synthetic.md",
+           f"shape: sk-{token[:20]}  # secret-guard: allow ()\n")
+    found = secret_guard.run_tree(tmp_path)
+    assert any("bad_marker" in v for v in found), found
+
+
+
 # -- 3. the tracked tree is clean -------------------------------------------
 
 def _tracked() -> list[str]:
