@@ -10,6 +10,8 @@
  * crashed) is started again (`startService`); one that says it stops on
  * purpose (`service.stopping`) is let go: the connection closes for good.
  */
+import { lstatSync } from "node:fs"
+import { dirname } from "node:path"
 import type { AnyEvent, Requests, Results } from "../protocol/generated"
 import { ERRORS, PROTOCOL_VERSION } from "../protocol/generated"
 
@@ -17,6 +19,29 @@ export class RpcError extends Error {
   constructor(readonly code: number, message: string) {
     super(message)
   }
+}
+
+/**
+ * Refuse a socket whose directory is a symlink, not a directory, not this
+ * uid's, or open to others -- the rule the Python client applies
+ * (client.check_socket_dir): a socket there may have been planted. Bun
+ * cannot ask a Unix socket for its peer's credentials, so the peer-uid
+ * check the Python client adds after connecting is missing here; the
+ * directory check is what stands (only this uid or root can create a
+ * socket in a 0700 directory of this uid).
+ */
+export function checkSocketDir(path: string): void {
+  const dir = dirname(path)
+  let st
+  try {
+    st = lstatSync(dir)
+  } catch {
+    return                                // nothing there: connect fails with its own error
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : -1
+  if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} is not a plain directory; not connecting`)
+  if (uid >= 0 && st.uid !== uid) throw new Error(`${dir} belongs to uid ${st.uid}, not to you; not connecting`)
+  if ((st.mode & 0o077) !== 0) throw new Error(`${dir} is open to others (${(st.mode & 0o777).toString(8)}); not connecting`)
 }
 
 /** The connection to the service is gone (not a session's worker). */
@@ -208,6 +233,7 @@ export class ServiceConnection {
   }
 
   private async open(): Promise<void> {
+    checkSocketDir(this.path)
     const rpc = this.rpc
     const encoder = new TextEncoder()
     // Bytes the socket did not take yet; written on drain, in order.

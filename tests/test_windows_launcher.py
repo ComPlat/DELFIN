@@ -5,8 +5,6 @@ from pathlib import Path
 import socket
 from urllib.parse import parse_qs, urlsplit
 
-import gzip
-
 import pytest
 
 from delfin import cli_voila
@@ -18,6 +16,18 @@ spec = importlib.util.spec_from_file_location(
 )
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
+
+_ROOT = Path(__file__).resolve().parents[1] / 'tools/windows-launcher'
+
+
+def _launcher_file(tmp_path, code):
+    """A stand-in for the copied remote_launcher.py: the bootstrap gets its
+    path as $4 and runs it as a plain script file."""
+    folder = tmp_path / 'copied scripts'
+    folder.mkdir(exist_ok=True)
+    path = folder / 'remote_launcher.py'
+    path.write_text(code)
+    return str(path)
 
 
 @pytest.mark.parametrize('browser_port', [8866, 58249])
@@ -145,7 +155,6 @@ def test_remote_port_zero_uses_os_assignment():
 @pytest.mark.parametrize('compatible', [False, True])
 @pytest.mark.parametrize('source', ['repo-env', 'active-env', 'path', 'explicit-python', 'explicit-repo', 'home-software-dotvenv', 'home-software-venv'])
 def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_path, source, compatible):
-    import base64
     import os
     import subprocess
     import sys
@@ -184,8 +193,8 @@ def test_bootstrap_discovers_environment_without_fixed_installation_path(tmp_pat
         hint = str(python)
     elif source == 'explicit-repo':
         hint = str(repo)
-    payload = base64.b64encode(gzip.compress(b'import os,sys; print("CHOSEN=" + sys.executable); print("ACTIVATED=" + os.environ.get("VIRTUAL_ENV", ""))')).decode()
-    script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
+    payload = _launcher_file(tmp_path, 'import os,sys; print("CHOSEN=" + sys.executable); print("ACTIVATED=" + os.environ.get("VIRTUAL_ENV", ""))')
+    script = _ROOT / 'remote_bootstrap.sh'
     result = subprocess.run(['bash', str(script), '0', '' if automatic else str(repo), hint, payload, 'dashboard'],
                             env=env, text=True, capture_output=True, timeout=15)
     if not compatible:
@@ -335,10 +344,9 @@ def _installed_like_an_editable_finder(tmp_path):
 
 
 def _run_bootstrap(env, home, payload_code, *, person=''):
-    import base64
     import subprocess
-    payload = base64.b64encode(gzip.compress(payload_code.encode())).decode()
-    script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
+    payload = _launcher_file(home.parent, payload_code)
+    script = _ROOT / 'remote_bootstrap.sh'
     return subprocess.run(['bash', str(script), '0', '', '', payload, 'dashboard', '', '0', '0', person],
                           env=env, text=True, capture_output=True, timeout=30, cwd=str(home))
 
@@ -554,10 +562,9 @@ def test_the_account_without_people_mode_gets_no_settings_layer(tmp_path):
 
 
 def _run_bootstrap_with_key(env, home, payload_code, key):
-    import base64
     import subprocess
-    payload = base64.b64encode(gzip.compress(payload_code.encode())).decode()
-    script = Path(__file__).resolve().parents[1] / 'tools/windows-launcher/remote_bootstrap.sh'
+    payload = _launcher_file(home.parent, payload_code)
+    script = _ROOT / 'remote_bootstrap.sh'
     return subprocess.run(['bash', str(script), '0', '', '', payload, 'dashboard', '', '0', '0', '', key],
                           env=env, text=True, capture_output=True, timeout=30, cwd=str(home))
 
@@ -616,14 +623,176 @@ def test_the_app_and_the_server_agree_on_the_login_key_argument():
     assert 'RememberLogin=$rememberToggle.Checked' in app and 'RememberLogin=$true' in app
 
 
-def test_the_shipped_command_fits_the_windows_command_line():
-    import base64
-    # CreateProcess takes at most 32767 characters. Both scripts travel
-    # gzip-compressed inside the SSH command; keep well under the limit.
-    root = Path(__file__).resolve().parents[1] / 'tools/windows-launcher'
-    size = sum(len(base64.b64encode(gzip.compress((root / n).read_bytes())))
-               for n in ('remote_bootstrap.sh', 'remote_launcher.py'))
-    assert size < 24000, size
-    app = (root / 'DELFIN.ps1').read_text(encoding='utf-8')
-    assert "| base64 -d | gzip -dc)" in app and 'ConvertTo-GzipBase64' in app
-    assert 'gzip.decompress(base64.b64decode(' in (root / 'remote_bootstrap.sh').read_text()
+def _check_script():
+    """The server-side check DELFIN.ps1 sends (Get-ScriptCheckCommand), as
+    bash receives it: the PowerShell literal with '' read as '."""
+    import re
+    app = (_ROOT / 'DELFIN.ps1').read_text(encoding='utf-8')
+    found = re.findall(r"^\s*\$checkScript = '((?:[^']|'')*)'$", app, re.M)
+    assert len(found) == 1
+    return found[0].replace("''", "'")
+
+
+def _digest(path):
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_the_check_reports_a_missing_or_changed_copy_and_accepts_an_exact_one(tmp_path):
+    # Exit 10 makes the app copy the two files (scp); exit 0 skips the copy.
+    import shutil
+    import stat
+    import subprocess
+    home = tmp_path / 'account home'
+    home.mkdir()
+    hb, hl = _digest(_ROOT / 'remote_bootstrap.sh'), _digest(_ROOT / 'remote_launcher.py')
+    folder = '.cache/delfin-launcher/' + hb[:16] + hl[:16]
+    def check():
+        return subprocess.run(['bash', '-c', _check_script(), 'delfin', folder, hb, hl],
+                              env={'PATH': '/usr/bin:/bin', 'HOME': str(home)},
+                              capture_output=True, text=True, timeout=15).returncode
+    assert check() == 10
+    copy = home / folder
+    assert copy.is_dir() and stat.S_IMODE(copy.stat().st_mode) == 0o700
+    for name in ('remote_bootstrap.sh', 'remote_launcher.py'):
+        shutil.copyfile(_ROOT / name, copy / name)
+    assert check() == 0
+    # An interrupted copy is not mistaken for a complete one.
+    (copy / 'remote_launcher.py').write_bytes((_ROOT / 'remote_launcher.py').read_bytes()[:100])
+    assert check() == 10
+
+
+def test_the_login_shell_sources_the_copied_bootstrap_with_its_arguments(tmp_path):
+    # What Get-RemoteCommand sends: bash -ilc '. ~/<folder>/remote_bootstrap.sh'
+    # delfin ARGS, with $4 = '~/<folder>/remote_launcher.py'. -i and -l are
+    # left out here so this machine's startup files stay out of the test.
+    import shutil
+    import subprocess
+    home = tmp_path / 'home'
+    home.mkdir()
+    env, python = _bootstrap_env(tmp_path, home)
+    folder = '.cache/delfin-launcher/' + 'a' * 32
+    (home / folder).mkdir(parents=True)
+    shutil.copyfile(_ROOT / 'remote_bootstrap.sh', home / folder / 'remote_bootstrap.sh')
+    (home / folder / 'remote_launcher.py').write_text(
+        'import sys; print("CHOSEN=" + sys.executable); print("ARGS=" + "|".join(sys.argv[1:]))')
+    result = subprocess.run(['bash', '-c', '. ~/' + folder + '/remote_bootstrap.sh', 'delfin',
+                             '0', '', '', '~/' + folder + '/remote_launcher.py', 'dashboard', '', '1', '0'],
+                            env=env, cwd=str(home), capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert 'CHOSEN=' + str(python) in result.stdout
+    assert f'ARGS=0|{home}|{python}||1|0' in result.stdout
+
+
+def test_the_bootstrap_refuses_a_missing_launcher_file(tmp_path):
+    home = tmp_path / 'home'
+    home.mkdir()
+    env, _ = _bootstrap_env(tmp_path, home)
+    import subprocess
+    result = subprocess.run(['bash', str(_ROOT / 'remote_bootstrap.sh'), '0', '', '',
+                             str(tmp_path / 'absent.py'), 'dashboard'],
+                            env=env, cwd=str(home), capture_output=True, text=True, timeout=30)
+    assert result.returncode == 1
+    assert 'launcher script is missing' in result.stderr
+
+
+def test_the_app_builds_the_remote_command_from_plain_file_paths():
+    import re
+    app = (_ROOT / 'DELFIN.ps1').read_text(encoding='utf-8')
+    body = re.search(r'^function Get-RemoteCommand\b.*?^\}', app, re.M | re.S).group(0)
+    assert "$bootstrap = '. ~/' + $version.Folder + '/remote_bootstrap.sh'" in body
+    assert "$launcher = '~/' + $version.Folder + '/remote_launcher.py'" in body
+    assert "'bash -ilc ' + (Shell-Quote $bootstrap)" in body
+    assert "(Shell-Quote $launcher)" in body
+    for word in ('base64', 'Base64', 'gzip', 'GZip', 'eval', 'exec', 'ReadAllBytes'):
+        assert word not in body, word
+    # The two scripts reach the server as files (scp) after a short check.
+    sync = re.search(r'^function Sync-ServerScripts\b.*?^\}', app, re.M | re.S).group(0)
+    assert "'System32\\OpenSSH\\scp.exe'" in sync
+    assert "@('remote_bootstrap.sh','remote_launcher.py',($target + ':' + $version.Folder + '/'))" in sync
+    assert 'Get-ScriptCheckCommand $version' in sync
+    # Both connections carry the same OpenSSH protections and the login key.
+    assert "(Get-SSHOptions 'Check') + $identity" in sync and "(Get-SSHOptions 'Copy') + $identity" in sync
+    server = (_ROOT / 'remote_bootstrap.sh').read_text()
+    assert 'exec "$python" "$launcher_script"' in server
+    assert 'base64' not in server and 'eval ' not in server
+
+
+def _package_names():
+    import importlib.util as util
+    spec = util.spec_from_file_location('windows_launcher_build', _ROOT / 'build_package.py')
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.NAMES
+
+
+def test_the_package_holds_no_compiled_encoded_or_hidden_code():
+    import re
+    names = _package_names()
+    assert not [n for n in names if n.endswith(('.cs', '.exe', '.dll', '.vbs', '.js'))]
+    assert not [p.name for p in _ROOT.iterdir() if p.suffix in ('.cs', '.exe', '.dll')]
+    forbidden = [
+        (r'Add-Type\s+(-TypeDefinition|-MemberDefinition|-Path|-Language)', 'Add-Type with C# source'),
+        (r'DllImport|GetDelegateForFunctionPointer|Reflection\.Emit|\[Reflection\.Assembly\]::Load', 'Win32 calls or loaded code'),
+        (r'-EncodedCommand|-enc\b|-ec\b', 'encoded command'),
+        (r'(?i)-WindowStyle\s+Hidden|-w\s+hidden', 'hidden window'),
+        (r'(?i)csc\.exe|Invoke-Expression|\biex\b', 'compiler or expression evaluation'),
+        (r'GZipStream|DeflateStream', 'packed data'),
+        (r'(?i)DownloadString|DownloadFile|Invoke-WebRequest\s+-Uri\s+["\']?https?://(?!127\.0\.0\.1)', 'download'),
+        (r'(?i)CurrentVersion\\Run\b|\\Startup\b|Set-MpPreference|ExecutionPolicy\s+(Unrestricted|Bypass)|Set-ExecutionPolicy', 'persistence or security change'),
+    ]
+    for name in names:
+        if not name.endswith(('.ps1', '.cmd')):
+            continue
+        text = (_ROOT / name).read_text(encoding='utf-8')
+        for pattern, what in forbidden:
+            assert not re.search(pattern, text), f'{name}: {what}'
+        # Base64 appears only for the browser URL the server reports
+        # (Get-BrowserUrl decodes it) and the test URLs Test-Launcher encodes.
+        if name != 'Test-Launcher.ps1':
+            assert 'ToBase64String' not in text, name
+    for name in ('remote_bootstrap.sh', 'remote_launcher.py'):
+        text = (_ROOT / name).read_text()
+        assert 'b64decode' not in text and 'exec(' not in text and 'eval ' not in text, name
+
+
+def test_every_shipped_text_file_is_plain_text():
+    for name in _package_names():
+        if name.endswith(('.png', '.ico')):
+            continue
+        data = (_ROOT / name).read_bytes()
+        text = data.decode('utf-8')
+        assert '\x00' not in text, name
+        # No long run of base64-like characters: nothing packed in a script.
+        import re
+        assert not re.search(r'[A-Za-z0-9+/=]{200,}', text), name
+
+
+def test_install_creates_standard_shortcuts_to_windows_powershell():
+    install = (_ROOT / 'Install.ps1').read_text(encoding='utf-8')
+    assert '$shell = New-Object -ComObject WScript.Shell' in install
+    assert "$shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'DELFIN.lnk'))" in install
+    assert '$shortcut.TargetPath = "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"' in install
+    assert "$shortcut.Arguments = '-NoProfile -ExecutionPolicy RemoteSigned -File \"' + $app + '\"'" in install
+    assert '$shortcut.WindowStyle = 7' in install
+    assert "$shortcut.IconLocation = (Join-Path $destination 'DELFIN.ico') + ',0'" in install
+    assert '$shortcut.Save()' in install
+    assert "Join-Path $programs 'DELFIN.lnk'" in install
+    copied = install.split('# Files of earlier versions')[0]
+    assert 'Build-Starter' not in copied and 'Starter.cs' not in copied and 'Taskbar.cs' not in copied
+    assert '& (Join-Path' not in install and 'DELFIN.exe' not in install.replace("@('DELFIN.exe',", '')
+    # An update removes the starter program an earlier version compiled.
+    assert "foreach ($old in @('DELFIN.exe','Starter.cs','Build-Starter.ps1','Taskbar.cs'))" in install
+    # The app starts its dashboard console as a plain Windows PowerShell.
+    app = (_ROOT / 'DELFIN.ps1').read_text(encoding='utf-8')
+    assert "@('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',$PSCommandPath,'-Mode','Dashboard'" in app
+    assert 'Start-Process -FilePath $powershell -ArgumentList $arguments' in app
+
+
+def test_the_checksums_match_the_shipped_files():
+    import hashlib
+    rows = (_ROOT / 'SHA256SUMS.txt').read_text(encoding='ascii').splitlines()
+    listed = dict(reversed(row.split('  ', 1)) for row in rows)
+    assert sorted(listed) == sorted(_package_names())
+    for name, digest in listed.items():
+        assert hashlib.sha256((_ROOT / name).read_bytes()).hexdigest() == digest, name

@@ -4,7 +4,9 @@
  * `/rename [name]` names the session -- the prompt box, the agent view and
  * the terminal's title show the name, and the session store saves it
  * (the session keeps the address it started with: docs/TUI_PROTOCOL.md).
- * Without a name it is named after what it was first asked.
+ * Without a name it is named after what it was first asked. `/name [name]`
+ * does the same, and without a name puts the default back (folder name and
+ * short id, as the service's summary names it).
  *
  * `/resume [id]` opens another session in this window: bare, the picker;
  * with an id (the argument menu offers the sessions), that session.
@@ -23,7 +25,9 @@ export function shellLead(text: string): number {
 
 /** As session.commands lists the session's: what completion offers. */
 export const WINDOW_COMMANDS = [
-  { name: "/rename", summary: "name this session (no name: after its first prompt)",
+  // /name is read too (nameOf) but takes no row of its own: the menu shows
+  // seven rows, and the session's commands come after these.
+  { name: "/rename", summary: "name this session (no name: after its first prompt; /name: back to the default)",
     category: "session", takesArgs: true, source: "window" },
   { name: "/resume", summary: "open another session in this window (running here or saved)",
     category: "session", takesArgs: true, source: "window" },
@@ -44,6 +48,14 @@ export function resumeOf(text: string): string | null {
  *  or null when the line is not a `/rename`. */
 export function renameOf(text: string): string | null {
   const m = /^\/rename(?:\s+([\s\S]*))?$/.exec(text.trim())
+  return m ? (m[1] ?? "").replace(/\s+/g, " ").trim() : null
+}
+
+/** The name a `/name` line gives ("" for the default: the service's
+ *  folder name and short id), or null when the line is not a `/name`.
+ *  The same name every window shows: the service keeps it. */
+export function nameOf(text: string): string | null {
+  const m = /^\/name(?:\s+([\s\S]*))?$/.exec(text.trim())
   return m ? (m[1] ?? "").replace(/\s+/g, " ").trim() : null
 }
 

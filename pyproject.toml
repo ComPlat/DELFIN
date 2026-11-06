@@ -398,7 +398,7 @@ include = ["delfin*"]
 # The ORCA knowledge cards and the keyword catalog of the pinned OPI.
 "delfin.orca_knowledge" = ["*.json", "cards/*.json"]
 "delfin.notebooks" = ["*.ipynb"]
-"delfin.manta" = ["*.md"]
+"delfin.manta" = ["*.md", "data/*.tsv", "data/*.json"]
 "delfin.voila_assets" = ["login_templates/*.html"]
 
 # Whatever an installer left in the source tree stays out of the wheel even

@@ -6,6 +6,7 @@ statement is the original text, only the imports below are new.
 from __future__ import annotations
 
 import math
+import os
 from typing import Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
@@ -19,8 +20,67 @@ from delfin.manta.ml_tables import (
     _METAL_SET,
     _get_ml_bond_length,
 )
+from delfin.manta.interpenetration import BONDI_VDW as _ORIENT_BONDI_VDW
+from delfin.manta._ring_snap_length import (
+    ride_hydrogens as _rs_ride,
+    ring_scale_restoring_lengths as _rs_scale,
+    ring_snap_keep_length_enabled,
+)
 
 logger = get_logger("delfin.smiles_converter")
+
+# DELFIN_FFFREE_ORIENT_CHELATE_PLANE: largest admissible fold (deg) of a bidentate about its D...D axis.
+_CHELATE_PLANE_TOL_DEG = 20.0
+
+_CHELATE_FOLD_TABLE_CACHE: Dict[str, Dict[Tuple[int, int], float]] = {}
+
+
+def _load_chelate_fold_table() -> Dict[Tuple[int, int], float]:
+    """DELFIN_FFFREE_ORIENT_CHELATE_PLANE=3: {(ring_size, conjugated): fold window deg} from the local
+    table named by DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE (crystal-derived, therefore never shipped:
+    the values come from the user's licensed structure database).  Missing / unreadable -> {}."""
+    path = os.environ.get("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE", "") or ""
+    if not path:
+        return {}
+    if path in _CHELATE_FOLD_TABLE_CACHE:
+        return _CHELATE_FOLD_TABLE_CACHE[path]
+    tab: Dict[Tuple[int, int], float] = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 3 or ln.lstrip().startswith("#"):
+                    continue
+                tab[(int(p[0]), int(p[1]))] = float(p[2])
+    except (OSError, ValueError):
+        tab = {}
+    _CHELATE_FOLD_TABLE_CACHE[path] = tab
+    return tab
+
+
+_SWING_TABLE_CACHE: Dict[str, Dict[int, float]] = {}
+
+
+def _load_swing_table() -> Dict[int, float]:
+    """DELFIN_FFFREE_ORIENT_SWING: {CN: per-donor bending window deg (p90 column)} from the local crystal
+    table DELFIN_FFFREE_ORIENT_SWING_TABLE (rows "cn p90 p95 n"; licensed-database derived, never shipped)."""
+    path = os.environ.get("DELFIN_FFFREE_ORIENT_SWING_TABLE", "") or ""
+    if not path:
+        return {}
+    if path in _SWING_TABLE_CACHE:
+        return _SWING_TABLE_CACHE[path]
+    tab: Dict[int, float] = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                p = ln.split()
+                if len(p) < 2 or ln.lstrip().startswith("#"):
+                    continue
+                tab[int(p[0])] = float(p[1])
+    except (OSError, ValueError):
+        tab = {}
+    _SWING_TABLE_CACHE[path] = tab
+    return tab
 
 
 def _build_multimetal_scaffold(
@@ -215,6 +275,30 @@ def _snap_fused_aromatic_groups_to_plane(
             offsets = cp @ normal
             rms = float(np.sqrt(float((offsets * offsets).mean())))
             if rms < rms_threshold:
+                continue
+            if ring_snap_keep_length_enabled():
+                # DELFIN_FFFREE_RING_SNAP_KEEP_LENGTH (see _ring_snap_length): projection,
+                # in-plane scale restoring the group's bond lengths, ring hydrogens ride.
+                _pos_of = {a: k for k, a in enumerate(idxs)}
+                _gb = [(_pos_of[b.GetBeginAtomIdx()], _pos_of[b.GetEndAtomIdx()])
+                       for b in mol.GetBonds()
+                       if b.GetBeginAtomIdx() in _pos_of and b.GetEndAtomIdx() in _pos_of]
+                _md = [k for k, a in enumerate(idxs) if any(
+                    nb.GetSymbol() in _METAL_SET for nb in mol.GetAtomWithIdx(int(a)).GetNeighbors())]
+                _proj = pts - offsets[:, None] * normal[None, :]
+                _proj = _rs_scale(pts, _proj, _gb, _md[0] if len(_md) == 1 else None,
+                                  skip=len(_md) > 1)
+                _hof = {int(a): [n.GetIdx() for n in mol.GetAtomWithIdx(int(a)).GetNeighbors()
+                                 if n.GetAtomicNum() == 1] for a in idxs}
+                _disp = {int(a): _proj[k] - pts[k] for k, a in enumerate(idxs)}
+                for _h, _d in _rs_ride(_disp, _hof).items():
+                    _hp = conf.GetAtomPosition(int(_h))
+                    conf.SetAtomPosition(int(_h), (float(_hp.x + _d[0]), float(_hp.y + _d[1]),
+                                                   float(_hp.z + _d[2])))
+                for idx, aidx in enumerate(idxs):
+                    conf.SetAtomPosition(int(aidx), (float(_proj[idx][0]), float(_proj[idx][1]),
+                                                     float(_proj[idx][2])))
+                changed = True
                 continue
             # Project atoms onto plane (minimal movement).
             for idx, aidx in enumerate(idxs):
@@ -648,6 +732,7 @@ def _snap_aromatic_rings_to_plane(
             return False
 
         changed = False
+        _keep_len = ring_snap_keep_length_enabled()
         for ring in ri.AtomRings():
             if len(ring) < 5 or len(ring) > 7:
                 continue
@@ -702,14 +787,36 @@ def _snap_aromatic_rings_to_plane(
             _ideal_xh = {"C": 1.08, "N": 1.01, "O": 0.96, "S": 1.34}
             ring_did_snap = False
             if rms >= rms_threshold:
-                # Minimal-movement projection: subtract normal-component
-                # from each ring atom.  Substituent heavy atoms unchanged.
-                for idx, atom_idx in enumerate(ring):
-                    new_p = pts[idx] - offsets[idx] * normal
-                    conf.SetAtomPosition(
-                        int(atom_idx),
-                        (float(new_p[0]), float(new_p[1]), float(new_p[2])),
-                    )
+                if _keep_len:
+                    # DELFIN_FFFREE_RING_SNAP_KEEP_LENGTH: projection, then the
+                    # in-plane scale that restores the ring's bond lengths, and the
+                    # ring hydrogens ride with their parent (see _ring_snap_length).
+                    _proj = pts - offsets[:, None] * normal[None, :]
+                    _md = [k for k, a in enumerate(ring) if any(
+                        nb.GetSymbol() in _METAL_SET
+                        for nb in mol.GetAtomWithIdx(int(a)).GetNeighbors())]
+                    _rb = [(k, (k + 1) % len(ring)) for k in range(len(ring))]
+                    _proj = _rs_scale(pts, _proj, _rb, _md[0] if len(_md) == 1 else None,
+                                      skip=len(_md) > 1)
+                    _hof = {int(a): [n.GetIdx() for n in mol.GetAtomWithIdx(int(a)).GetNeighbors()
+                                     if n.GetAtomicNum() == 1] for a in ring}
+                    _disp = {int(a): _proj[k] - pts[k] for k, a in enumerate(ring)}
+                    for _h, _d in _rs_ride(_disp, _hof).items():
+                        _hp = conf.GetAtomPosition(int(_h))
+                        conf.SetAtomPosition(int(_h), (float(_hp.x + _d[0]), float(_hp.y + _d[1]),
+                                                       float(_hp.z + _d[2])))
+                    for idx, atom_idx in enumerate(ring):
+                        conf.SetAtomPosition(int(atom_idx), (float(_proj[idx][0]), float(_proj[idx][1]),
+                                                             float(_proj[idx][2])))
+                else:
+                    # Minimal-movement projection: subtract normal-component
+                    # from each ring atom.  Substituent heavy atoms unchanged.
+                    for idx, atom_idx in enumerate(ring):
+                        new_p = pts[idx] - offsets[idx] * normal
+                        conf.SetAtomPosition(
+                            int(atom_idx),
+                            (float(new_p[0]), float(new_p[1]), float(new_p[2])),
+                        )
                 ring_did_snap = True
                 changed = True
 
@@ -1464,6 +1571,135 @@ def _align_and_orient_ligands(
                 fragments.append(frag)
 
         donor_set = set(donor_atom_indices)
+        # ===== THE HYDROGENS RIDE WITH THEIR FRAGMENT (DELFIN_FFFREE_ORIENT_CARRY_H, default OFF) =====
+        #
+        # THE DEFECT.  The fragments above are built from HEAVY atoms only, and the spin / tilt below
+        # moves only the fragment's non-donor HEAVY atoms.  Every hydrogen stays where it was.  A spin
+        # by 30-330 degrees therefore tears each C-H / N-H / O-H of the rotated ligand apart -- measured
+        # on the legacy topology frames of QISKEK (trace DELFIN_LEGCONF_TRACE, 22.10.2026): the ETKDG
+        # template has X-H <= 1.15 A, the placed frame handed to Open Babel has 17-18 hydrogens at
+        # 4.5-15.7 A from their parent.  Open Babel then perceives connectivity FROM THAT GEOMETRY:
+        # the stray H bonds to whatever is near, the stripped carbons are typed as unsaturated, and UFF
+        # relaxes the wrong molecule -- the collapsed C-C (1.19-1.27 A), the stretched X-H (1.21-1.34 A)
+        # and the torn rings of the legacy conformer branch.  The graph gate after UFF checks only
+        # "bond < 2.2 A", so the relaxed wrong molecule passes.
+        #
+        # THE FIX.  A rotation of a rigid fragment is a rigid motion of ALL its atoms: the hydrogens of
+        # the fragment (H whose non-metal neighbour is a fragment atom) receive the same rotation.  The
+        # donors lie on the rotation axis / at the tilt pivot and stay fixed as before.  The SCORE that
+        # chooses the angle is unchanged (heavy atoms only), so the switch changes no choice -- it only
+        # stops leaving the hydrogens behind.  Off -> byte-identical (moving set = heavy non-donors).
+        _carry_h = _delfin_env_int("DELFIN_FFFREE_ORIENT_CARRY_H", 0) == 1
+        # ===== THE SCORE SEES THE HYDROGENS IT MOVES (DELFIN_FFFREE_ORIENT_SCORE_H, default OFF) =====
+        #
+        # THE DEFECT (Ursache 5, 27.10.2026).  Under ORIENT_CARRY_H the spin / tilt moves the hydrogens
+        # with their fragment, but the score that picks the angle still reads the heavy non-donors
+        # against the heavy atoms of the other fragments only (C...C allowed down to 1.3 x rcov sum =
+        # 1.98 A).  The chosen orientation therefore parks methyl / isopropyl / aryl H of one ligand on
+        # the H of the next: traced on the legacy batch of 7 dev300 systems (DELFIN_U5_TRACE), 126 of
+        # 635 emitted frames carry an inter-ligand contact below 0.55 x vdW sum (H...H 0.61-1.32 A) or
+        # a crushed bond, and 107 of them are the UNRELAXED placement itself -- the UFF step is a no-op
+        # for unparameterised metals (energy marker > 1e9, CG skipped for determinism, DIZQIM Mo) or is
+        # reverted because it broke the topology gate (AGOXIE).  Nothing after the placement repairs
+        # the clash; the frame is born with it.  Without CARRY_H these frames died at the gate (their
+        # H were torn off), so the fix that rightly keeps the molecule whole made the blind score visible.
+        #
+        # THE FIX.  When the hydrogens ride with the fragment, the score counts them: every moving atom
+        # (heavy non-donor and carried H) against every non-metal atom of the other fragments (heavy and
+        # H).  Heavy-heavy pairs keep their old threshold; a pair with an H is penalised below 0.75 x the
+        # Bondi vdW sum (H...H 1.80 A, C...H 2.18 A; the crystal floor of H...H is about 1.7-1.8 A).  Same
+        # rotation grid, same tilts, same passes -- only the angle choice now sees the whole fragment.
+        # Off (or CARRY_H off) -> byte-identical (the heavy-only score).
+        _score_h = _carry_h and _delfin_env_int("DELFIN_FFFREE_ORIENT_SCORE_H", 0) == 1
+        # ===== A CHELATE SPIN MUST NOT TURN THE DONOR LONE PAIRS OFF THE METAL (DELFIN_FFFREE_ORIENT_CHELATE_LP) =====
+        #
+        # THE DEFECT (27.10.2026, after ORIENT_SCORE_H).  A bidentate is spun about its donor-donor axis
+        # to the angle of least clash.  Both donors stay on their vertices, but every angle other than 0
+        # tilts the chelate plane against the metal: the lone pair of each sp2 / sp3 donor (anti-bisector
+        # of its non-metal neighbours) no longer points at M, and the eye reads the donor as pyramidal
+        # (pyramidal_sp2 on the coordinated N, Walsh 18 deg; SUNLOE imine N, CACDER, XUVQAI, LATFEU).
+        # Measured on the 15 systems with the largest pyramidal_sp2 rise: frames with a pyramidal donor
+        # of a BIDENTATE ligand 94 / 1 006 (9.3 %) in mlt8_lenU -> 428 / 2 325 (18.4 %) with the four
+        # fixes + SCORE_H, tri- and higher dentates 11.6 % -> 16.0 %.  Without ORIENT_CARRY_H the spun
+        # frames died at the gate (their H were torn off); now they live and carry the tilt.
+        #
+        # THE FIX.  excess = max over the two donors (with >= 2 non-metal neighbours, so the lone pair is
+        # defined) of (angle(LP, D->M) - 15 deg)+.
+        #   =1: a spin is admissible only if its excess is not above the unspun placement's (15 systems:
+        #       pyramidal_sp2 frames 1 150 -> 880, hard 1 639 -> 1 465; but the unspun placement is
+        #       itself arbitrary, see =2).
+        #   =2: two donors fix a chelate only up to the spin about their axis and the Procrustes fit
+        #       leaves that spin to the template; the lone pairs are what fix it.  Admissible are the
+        #       spins with the smallest excess on a 5 deg grid (all inside the 15 deg cone when it is
+        #       reachable); among those the clash score chooses.
+        # Off -> byte-identical.
+        _chelate_lp_mode = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_LP", 0)
+        _chelate_lp = _chelate_lp_mode == 1
+        # ===== THE CHELATE RING HOLDS THE METAL (DELFIN_FFFREE_ORIENT_CHELATE_PLANE, default OFF) =====
+        #
+        # THE DEFECT.  Two donors fix a bidentate only up to its spin about the donor-donor axis, and the
+        # two-point Procrustes fit leaves that spin to the SVD, i.e. arbitrary; the flip test then only
+        # compares theta with theta+180, and the clash spin is free on the full circle.  Every spin other
+        # than the planar one folds the chelate ring about the D...D axis: the donors' lone pairs leave the
+        # metal (pyramidal_sp2 on the donor N) and the ring atoms swing towards it (probe E_extraX: bank
+        # TETBUP pyridine-2-selenolate C 2.45-2.52 A from Mo, MIMMAY nitrate N 2.27-2.32 A from Cd, KANRID
+        # salicylaldimine C 2.27 A from Cu; E_extraX 865 -> 1 528 frames bank, 402 -> 812 dev300 -- on
+        # the frames ORIENT_CARRY_H made survivable, TETBUP 1/69 -> 63/196).
+        #
+        # THE FIX.  fold = 180 deg minus the angle, seen down the D...D axis, between the metal and the
+        # mean of the donors' heavy non-metal neighbours (0 = metal in the ring plane, backbone opposite).
+        # A spin changes the fold one to one, so the planar spin always exists.  Admissible are the spins
+        # (5 deg grid) with fold <= 20 deg (crystal envelope folds of 5/6-ring chelates); among those the
+        # clash score chooses.  Replaces the CHELATE_LP modes for bidentates when on.  Off -> byte-identical.
+        # DELFIN_FFFREE_ORIENT_SWING: rigid fragment rotations about the metal (see the block after the passes).
+        _swing_on = _delfin_env_int("DELFIN_FFFREE_ORIENT_SWING", 0) == 1
+        _chelate_plane_mode = _delfin_env_int("DELFIN_FFFREE_ORIENT_CHELATE_PLANE", 0)
+        _chelate_plane = _chelate_plane_mode in (1, 3)
+        # =4: table window as =3, but the spin is chosen lexicographically -- first no non-donor heavy atom
+        # inside the verifier metal shell (1.05 x (rcov_M + rcov_X), the same test _verify_topology_from_graph
+        # rejects), then fold inside the crystal window (excess beyond it as tie order), then clash.
+        _chelate_plane_lex = _chelate_plane_mode == 4
+        # =3: the fold window per chelate-ring class (ring size incl. M, conjugated) is read from a local
+        # crystal table (DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TABLE, rows "ring_size conj tol_deg [n]"; the
+        # window is the p95 of the crystal fold of that class).  No table or class -> no constraint.
+        _chelate_fold_table = _load_chelate_fold_table() if _chelate_plane_mode in (3, 4) else {}
+        # =2: the fold is a cost (weight DELFIN_FFFREE_ORIENT_CHELATE_PLANE_W, A^2 per rad^2, default 5)
+        # instead of a wall -- a crowded sphere may still fold a chelate when the clash is worse.
+        _chelate_plane_soft = _chelate_plane_mode == 2
+        try:
+            _chelate_plane_w = float(os.environ.get("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_W", "5") or 5.0)
+        except ValueError:
+            _chelate_plane_w = 5.0
+        # Planar (conjugated) chelate rings only: every interior ring atom aromatic or carrying a double
+        # bond.  An sp3 backbone (en, CH(Me)-NMe2 metallacycles) puckers as an envelope -- not constrained.
+        try:
+            _chelate_plane_tol = float(os.environ.get("DELFIN_FFFREE_ORIENT_CHELATE_PLANE_TOL", "") or _CHELATE_PLANE_TOL_DEG)
+        except ValueError:
+            _chelate_plane_tol = _CHELATE_PLANE_TOL_DEG
+
+        def _sp2_graph_atom(k):
+            a = mol.GetAtomWithIdx(k)
+            if a.GetIsAromatic():
+                return True
+            return any(b.GetBondTypeAsDouble() >= 1.5 for b in a.GetBonds()
+                       if b.GetOtherAtom(a).GetSymbol() not in _METAL_SET)
+        # ===== THE LONE-PAIR TERM WAS NEVER ON (DELFIN_FFFREE_ORIENT_LP_WEIGHT=<w>, default 0 = off) =====
+        #
+        # The score below has a lone-pair term for monodentate donors (_lp_penalty_for_frag: angle
+        # between the donor's anti-bisector lone pair and D->M, 15 deg dead band, quadratic), and the
+        # spin search already offers the 50 % / 90 % lone-pair tilts -- but its weight ``lp_weight`` is
+        # 0.0 at every call site (topo_isomers x2, chelate_templates), so a tilt is only ever taken when
+        # it happens to relieve clash.  The eye reads the result as a linear M-D-X at sp3 donors
+        # (donor_local_geom_linear: FOJVIL methanol O 391 of 453 frames) and as pyramidal sp2 donors.
+        # With the switch the term counts with weight w (dimension A^2 per rad^2, same scale as the
+        # clash overlaps; with w = 5 a 30 deg excess over the dead band costs 1.4 A^2).
+        # Off (unset / 0) -> byte-identical.
+        _lp_two_nb_only = lp_weight == 0.0   # env-weighted term: anti-bisector donors only (see below)
+        if lp_weight == 0.0:
+            try:
+                lp_weight = max(0.0, float(os.environ.get("DELFIN_FFFREE_ORIENT_LP_WEIGHT", "0") or 0.0))
+            except ValueError:
+                lp_weight = 0.0
         # Per-fragment heavy atom list + donor list.
         frag_info: List[dict] = []
         for frag in fragments:
@@ -1474,9 +1710,17 @@ def _align_and_orient_ligands(
             frag_donors = [i for i in frag_heavy if i in donor_set]
             if len(frag_heavy) <= len(frag_donors):
                 continue  # nothing to rotate
+            _fh_set = set(frag_heavy)
+            frag_hyd = sorted(
+                a.GetIdx() for a in mol.GetAtoms()
+                if a.GetAtomicNum() == 1 and any(
+                    nb.GetIdx() in _fh_set for nb in a.GetNeighbors()
+                    if nb.GetSymbol() not in _METAL_SET)
+            ) if _carry_h else []
             frag_info.append({
                 "heavy": frag_heavy,
                 "donors": frag_donors,
+                "hyd": frag_hyd,
             })
 
         m_pos = pts[metal_idx]
@@ -1547,6 +1791,157 @@ def _align_and_orient_ligands(
                             score += (thr - d) ** 2
             return score
 
+        # DELFIN_FFFREE_ORIENT_SCORE_H: H-inclusive clash score (see the block at _score_h).
+        _all_nm = [i for i in range(n_atoms)
+                   if mol.GetAtomWithIdx(i).GetSymbol() not in _METAL_SET] if _score_h else []
+        _is_h = {i: mol.GetAtomWithIdx(i).GetAtomicNum() == 1 for i in _all_nm}
+        _vdw = {i: _ORIENT_BONDI_VDW.get(mol.GetAtomWithIdx(i).GetSymbol(), 1.80) for i in _all_nm}
+
+        def _clash_for_frag_h(own, frag_pts):
+            """Penalty of this fragment's moving atoms (heavy non-donors + carried H) against every
+            non-metal atom of the other fragments (heavy + H) and the metal.  Heavy-heavy pairs keep the
+            old 1.3 x rcov threshold, pairs with an H use 0.75 x the Bondi vdW sum."""
+            score = 0.0
+            other = [j for j in _all_nm if j not in own]
+            if other:
+                o_pts = pts[other]
+                o_h = _np.array([_is_h[j] for j in other])
+                o_rc = _np.array([r_cov[j] for j in other])
+                o_vdw = _np.array([_vdw[j] for j in other])
+            m_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+            for i in sorted(frag_pts):
+                p = _np.asarray(frag_pts[i], dtype=float)
+                d = float(_np.linalg.norm(p - m_pos))
+                try:
+                    ml_ref = float(_get_ml_bond_length(m_sym, mol.GetAtomWithIdx(i).GetSymbol()))
+                except Exception:
+                    ml_ref = 2.2
+                thr_m = max(1.20, 0.80 * ml_ref)
+                if d < thr_m:
+                    score += 5.0 * (thr_m - d) ** 2
+                if not other:
+                    continue
+                dist = _np.linalg.norm(o_pts - p, axis=1)
+                if _is_h[i]:
+                    thr = 0.75 * (_vdw[i] + o_vdw)
+                else:
+                    thr = _np.where(o_h, 0.75 * (_vdw[i] + o_vdw), 1.3 * (r_cov[i] + o_rc))
+                ov = thr - dist
+                ov = ov[ov > 0.0]
+                if ov.size:
+                    score += float(_np.sum(ov * ov))
+            return score
+
+        def _chelate_lp_excess(donors, frag_pts, tol_deg=15.0):
+            """DELFIN_FFFREE_ORIENT_CHELATE_LP: the largest lone-pair misalignment beyond tol_deg (deg) over
+            the donors with >= 2 non-metal neighbours; LP = anti-bisector of the unit vectors D->neighbour
+            (positions from frag_pts when the neighbour moves, else pts)."""
+            worst = 0.0
+            for d_idx in donors:
+                nbrs = [nb.GetIdx() for nb in mol.GetAtomWithIdx(d_idx).GetNeighbors()
+                        if nb.GetSymbol() not in _METAL_SET]
+                if len(nbrs) < 2:
+                    continue
+                d_pos = pts[d_idx]
+                lp = _np.zeros(3)
+                for nb_idx in nbrs:
+                    p = _np.asarray(frag_pts[nb_idx]) if nb_idx in frag_pts else pts[nb_idx]
+                    v = p - d_pos
+                    vn = float(_np.linalg.norm(v))
+                    if vn > 1e-8:
+                        lp += v / vn
+                ln = float(_np.linalg.norm(lp))
+                dm = m_pos - d_pos
+                dn = float(_np.linalg.norm(dm))
+                if ln < 1e-6 or dn < 1e-6:
+                    continue
+                c = max(-1.0, min(1.0, float(_np.dot(-lp / ln, dm / dn))))
+                worst = max(worst, math.degrees(math.acos(c)) - tol_deg)
+            return worst
+
+        _ring_nb_cache: Dict[tuple, list] = {}
+        _ring_tol_cache: Dict[tuple, Optional[float]] = {}
+
+        def _chelate_ring_neighbours(donors):
+            """The chelate-ring atoms next to the two donors: second and second-to-last atom of the
+            shortest non-metal heavy-atom path D1 -> D2 (one shared atom for a 4-ring chelate).  Exocyclic
+            substituents (N-methyls, aryl on an imine N) are not part of the ring plane."""
+            key = tuple(donors)
+            if key in _ring_nb_cache:
+                return _ring_nb_cache[key]
+            a, b = donors
+            prev = {a: None}
+            queue = [a]
+            while queue and b not in prev:
+                nxt = []
+                for x in queue:
+                    for nb in mol.GetAtomWithIdx(x).GetNeighbors():
+                        j = nb.GetIdx()
+                        if j in prev or nb.GetSymbol() in _METAL_SET or nb.GetAtomicNum() <= 1:
+                            continue
+                        prev[j] = x
+                        nxt.append(j)
+                queue = nxt
+            out = []
+            _tol = None
+            if b in prev:
+                path = [b]
+                while prev[path[-1]] is not None:
+                    path.append(prev[path[-1]])
+                if len(path) >= 3:
+                    _conj = all(_sp2_graph_atom(k) for k in path[1:-1])
+                    if _chelate_plane_mode in (3, 4):
+                        # DELFIN_FFFREE_ORIENT_CHELATE_PLANE=3: crystal fold window per ring class
+                        _tol = _chelate_fold_table.get((len(path) + 1, int(_conj)))
+                        if _tol is not None:
+                            out = sorted({path[1], path[-2]})
+                    elif _conj:
+                        out = sorted({path[1], path[-2]})
+                        _tol = _chelate_plane_tol
+            _ring_nb_cache[key] = out
+            _ring_tol_cache[key] = _tol
+            return out
+
+        def _metal_shell_intruders(frag_pts):
+            """DELFIN_FFFREE_ORIENT_CHELATE_PLANE=4: moving atoms (non-donors, H included) closer to the
+            metal than 1.05 x (rcov_M + rcov_X) -- the phantom-bond test of _verify_topology_from_graph."""
+            m_rc = _COVALENT_RADII.get(mol.GetAtomWithIdx(metal_idx).GetSymbol())
+            if m_rc is None:
+                return 0
+            n = 0
+            for i, p in frag_pts.items():
+                if i in donor_set:
+                    continue
+                if float(_np.linalg.norm(_np.asarray(p) - m_pos)) < 1.05 * (m_rc + r_cov[i]):
+                    n += 1
+            return n
+
+        def _chelate_fold(donors, frag_pts):
+            """DELFIN_FFFREE_ORIENT_CHELATE_PLANE: fold (deg) of a bidentate about its donor-donor axis --
+            180 minus the angle, seen down the axis, between the metal and the mean of the donors' heavy
+            non-metal neighbours.  0 = metal in the chelate plane on the side opposite the backbone.
+            A spin about the axis changes the fold one to one.  None when degenerate."""
+            d1, d2 = pts[donors[0]], pts[donors[1]]
+            u = d2 - d1
+            un = float(_np.linalg.norm(u))
+            if un < 1e-8:
+                return None
+            u = u / un
+            mid = 0.5 * (d1 + d2)
+            ring_nb = _chelate_ring_neighbours(donors)
+            if not ring_nb:
+                return None
+            xs = [_np.asarray(frag_pts[j]) if j in frag_pts else pts[j] for j in ring_nb]
+            xv = _np.mean(xs, axis=0) - mid
+            mv = m_pos - mid
+            xv = xv - float(_np.dot(xv, u)) * u
+            mv = mv - float(_np.dot(mv, u)) * u
+            xn, mn = float(_np.linalg.norm(xv)), float(_np.linalg.norm(mv))
+            if xn < 1e-6 or mn < 1e-6:
+                return None
+            c = max(-1.0, min(1.0, float(_np.dot(xv, mv)) / (xn * mn)))
+            return 180.0 - math.degrees(math.acos(c))
+
         def _lp_penalty_for_frag(donors, frag_pts):
             """LP-M misalignment penalty for a monodentate donor.
 
@@ -1566,6 +1961,11 @@ def _align_and_orient_ligands(
             nbrs = [nb.GetIdx() for nb in d_atom.GetNeighbors()
                     if nb.GetSymbol() not in _METAL_SET]
             if not nbrs:
+                return 0.0
+            if len(nbrs) < 2 and lp_weight > 0.0 and _lp_two_nb_only:
+                # DELFIN_FFFREE_ORIENT_LP_WEIGHT: a single-neighbour donor (carboxylate / phenolate O,
+                # thiolate S) has no anti-bisector lone pair -- the term would drive M-O-C to 180 deg
+                # (measured: VOYWUD carboxylates pushed into each other, the TPR frame lost).
                 return 0.0
             d_pos = pts[d_idx]
             lp = _np.zeros(3)
@@ -1650,8 +2050,26 @@ def _align_and_orient_ligands(
                 else:
                     continue
 
-                atom_pts = {i: tuple(pts[i]) for i in non_donor}
-                best_score = _frag_score(heavy, donors, atom_pts)
+                # moving set: the heavy non-donors (as always) plus, under
+                # DELFIN_FFFREE_ORIENT_CARRY_H, the fragment's hydrogens; the
+                # score reads the heavy non-donors only (_hv), so the chosen
+                # angle is the same with and without the switch.
+                moving = non_donor + info["hyd"] if info["hyd"] else non_donor
+                if info["hyd"]:
+                    def _hv(_p, _keep=frozenset(non_donor)):
+                        return {i: v for i, v in _p.items() if i in _keep}
+                else:
+                    def _hv(_p):
+                        return _p
+                if _score_h:
+                    # DELFIN_FFFREE_ORIENT_SCORE_H: score every moving atom, H included.
+                    def _sc(_p, _own=frozenset(heavy) | frozenset(info["hyd"]), _d=donors):
+                        return _clash_for_frag_h(_own, _p) + _lp_penalty_for_frag(_d, _p)
+                else:
+                    def _sc(_p, _h=heavy, _d=donors):
+                        return _frag_score(_h, _d, _hv(_p))
+                atom_pts = {i: tuple(pts[i]) for i in moving}
+                best_score = _sc(atom_pts)
                 best_pts = atom_pts
                 # Multi-level tilt: 50% + 90% of the ideal LP->M correction.
                 # Combined with the no-tilt base gives three starting points
@@ -1665,19 +2083,110 @@ def _align_and_orient_ligands(
                             R_tilt @ (_np.asarray(atom_pts[i]) - tilt_pivot)
                             + tilt_pivot
                         )
-                        for i in non_donor
+                        for i in moving
                     }
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
+                _fold_ok = None
+                if _chelate_plane_lex and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_PLANE=4: (metal-shell intruders, fold excess, clash).
+                    _cands = [(0.0, atom_pts)] + [
+                        (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
+                    _best_key = None
+                    for _a, c in _cands:
+                        f = _chelate_fold(donors, c)
+                        if f is None:
+                            _best_key = None
+                            break
+                        _tl = _ring_tol_cache.get(tuple(donors))
+                        _ex = max(0.0, f - _tl) if _tl is not None else 0.0
+                        _key = (_metal_shell_intruders(c), round(_ex, 6), _sc(c))
+                        if _best_key is None or _key < _best_key:
+                            _best_key = _key
+                            best_pts = c
+                    if _best_key is not None:
+                        best_score = _best_key[2]
+                        base_sets = []
+                        _fold_ok = []
+                    else:
+                        best_pts = atom_pts
+                if _chelate_plane_soft and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_PLANE=2: the fold is a cost, not a wall --
+                    # clash + W x ((fold - 20 deg)+ in rad)^2 over the full 5 deg spin grid.
+                    _cands = [(0.0, atom_pts)] + [
+                        (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
+                    _scored = []
+                    for _a, c in _cands:
+                        f = _chelate_fold(donors, c)
+                        if f is None:
+                            _scored = []
+                            break
+                        ex = math.radians(max(0.0, f - (_ring_tol_cache.get(tuple(donors)) or _chelate_plane_tol)))
+                        _scored.append((_sc(c) + _chelate_plane_w * ex * ex, c))
+                    if _scored:
+                        best_score = float("inf")
+                        for s, candidate in _scored:
+                            if s < best_score - 1e-6:
+                                best_score = s
+                                best_pts = candidate
+                        base_sets = []
+                        _fold_ok = []
+                if _chelate_plane and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_PLANE: the chelate ring holds the metal.
+                    _cands = [(0.0, atom_pts)] + [
+                        (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
+                    _folds = [_chelate_fold(donors, c) for _a, c in _cands]
+                    _fold_ok = [c for (_a, c), f in zip(_cands, _folds)
+                                if f is not None and f <= (_ring_tol_cache.get(tuple(donors)) or _chelate_plane_tol)]
+                if _fold_ok:
+                    best_score = float("inf")
+                    for candidate in _fold_ok:
+                        s = _sc(candidate)
+                        if s < best_score - 1e-6:
+                            best_score = s
+                            best_pts = candidate
+                    base_sets = []
+                elif _chelate_lp_mode == 2 and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_LP=2: the lone pairs fix the chelate spin.
+                    # Two donors fix a chelate up to a spin about their axis; the Procrustes fit leaves
+                    # that spin to the template.  Admissible are the spins with the smallest excess on a
+                    # 5 deg grid (all inside the 15 deg cone when it is reachable); among those the
+                    # clash score chooses.
+                    _cands = [(0.0, atom_pts)] + [
+                        (float(a), _rotate_about(axis, pivot, float(a), atom_pts)) for a in range(5, 360, 5)]
+                    _exs = [_chelate_lp_excess(donors, c) for _a, c in _cands]
+                    _exmin = min(_exs)
+                    best_score = float("inf")
+                    for (_a, candidate), _ex in zip(_cands, _exs):
+                        if _ex > _exmin + 1e-9:
+                            continue
+                        s = _sc(candidate)
+                        if s < best_score - 1e-6:
+                            best_score = s
+                            best_pts = candidate
+                    base_sets = []
+                elif _chelate_lp and len(donors) == 2:
+                    # DELFIN_FFFREE_ORIENT_CHELATE_LP=1: only spins not worse than the unspun cone.
+                    _ex0 = _chelate_lp_excess(donors, atom_pts)
+                    _angles = [step * k for k in range(1, n_rot)] + [10.0, -10.0, 20.0, -20.0]
+                    for angle in _angles:
+                        candidate = _rotate_about(axis, pivot, angle, atom_pts)
+                        if _chelate_lp_excess(donors, candidate) > _ex0 + 1e-9:
+                            continue
+                        s = _sc(candidate)
+                        if s < best_score - 1e-6:
+                            best_score = s
+                            best_pts = candidate
+                    base_sets = []
                 for base in base_sets:
-                    s0 = _frag_score(heavy, donors, base)
+                    s0 = _sc(base)
                     if s0 < best_score - 1e-6:
                         best_score = s0
                         best_pts = base
                     for k in range(1, n_rot):
                         angle = step * k
                         candidate = _rotate_about(axis, pivot, angle, base)
-                        s = _frag_score(heavy, donors, candidate)
+                        s = _sc(candidate)
                         if s < best_score - 1e-6:
                             best_score = s
                             best_pts = candidate
@@ -1687,6 +2196,112 @@ def _align_and_orient_ligands(
                     changed = True
             if not changed:
                 break
+
+        # ===== THE POLYHEDRON MAY BEND (DELFIN_FFFREE_ORIENT_SWING, default OFF) =====
+        #
+        # THE MISSING FREEDOM.  The donors sit exactly on the ideal vertices and the only moves above are
+        # spins about axes THROUGH a donor; when the fragments still overlap there is no move left except
+        # folding a chelate (which the chelate-plane window now forbids, as the crystal does).  A real
+        # crystal bends the polyhedron instead.  A rigid rotation of a WHOLE fragment (donors, backbone,
+        # its hydrogens) about an axis through the METAL keeps every M-D length, the chelate fold and the
+        # donor lone-pair alignment exactly and changes only the donor directions.  Admissible while every
+        # donor stays within the crystal bending window of its CN (per-donor angle to the aligned ideal
+        # vertex, p90 of the local crystal table DELFIN_FFFREE_ORIENT_SWING_TABLE, rows "cn p90 p95 n";
+        # no table / CN -> no swing).  Accepted only if the clash score falls.  Off -> byte-identical.
+        if _swing_on and frag_info:
+            _sw_bound = _load_swing_table().get(len(donor_atom_indices))
+            if _sw_bound:
+                _v0 = {}
+                for d_idx in donor_atom_indices:
+                    v = pts[d_idx] - m_pos
+                    vn = float(_np.linalg.norm(v))
+                    if vn > 1e-8:
+                        _v0[d_idx] = v / vn
+                _axes = [_np.array(a, dtype=float) for a in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+                for _pass in range(3):
+                    _moved = False
+                    order = range(frag_count) if _pass % 2 == 0 else range(frag_count - 1, -1, -1)
+                    for idx in order:
+                        info = frag_info[idx]
+                        donors = info["donors"]
+                        if not donors or any(d not in _v0 for d in donors):
+                            continue
+                        allm = list(info["heavy"]) + list(info["hyd"])
+                        cur = {i: tuple(pts[i]) for i in allm}
+                        _own = frozenset(allm)
+                        best_s = _clash_for_frag_h(_own, cur) if _score_h else _clash_for_frag(
+                            info["heavy"], {i: cur[i] for i in info["heavy"]})
+                        best_c = None
+                        for ax in _axes:
+                            for ang in (2.5, -2.5, 5.0, -5.0):
+                                cand = _rotate_about(ax, m_pos, ang, cur)
+                                ok = True
+                                for d in donors:
+                                    v = _np.asarray(cand[d]) - m_pos
+                                    c = float(_np.dot(v / float(_np.linalg.norm(v)), _v0[d]))
+                                    if math.degrees(math.acos(max(-1.0, min(1.0, c)))) > _sw_bound:
+                                        ok = False
+                                        break
+                                if not ok:
+                                    continue
+                                s = _clash_for_frag_h(_own, cand) if _score_h else _clash_for_frag(
+                                    info["heavy"], {i: cand[i] for i in info["heavy"]})
+                                if s < best_s - 1e-6:
+                                    best_s, best_c = s, cand
+                        if best_c is not None:
+                            for i, p in best_c.items():
+                                pts[i] = _np.array(p, dtype=float)
+                            _moved = True
+                    if not _moved:
+                        break
+
+        # ===== A DONOR'S HYDROGENS FACE AWAY FROM THE METAL (DELFIN_FFFREE_ORIENT_DONOR_H, default OFF) =====
+        #
+        # THE DEFECT.  A donor with hydrogens and ONE heavy neighbour (NH2-R, OH-R, SH-R) keeps the torsion
+        # of its H about the R-D bond from the metal-free (isolated or whole-template) conformer; nothing
+        # turns its lone pair to the metal.  The eye reads h_axis_H_proximal_via_donor (an H of the donor
+        # closer to M than the donor itself: dev300 270 -> 649 frames, HIDNUH methyl-carbazate NH2 alone
+        # 159 frames) and donor_local_geom_linear.  The fix rotates only that donor's H about the R-D axis
+        # (10 deg grid) to the angle whose lone pair (anti-bisector of all D neighbours) points best at M;
+        # no heavy atom moves.  Needs ORIENT_CARRY_H (the H positions must be real).  Off -> byte-identical.
+        if _carry_h and _delfin_env_int("DELFIN_FFFREE_ORIENT_DONOR_H", 0) == 1:
+            for d_idx in donor_atom_indices:
+                d_atom = mol.GetAtomWithIdx(d_idx)
+                if d_atom.GetSymbol() not in ("N", "O", "S", "P", "Se", "As"):
+                    continue
+                hs = [nb.GetIdx() for nb in d_atom.GetNeighbors() if nb.GetAtomicNum() == 1]
+                hv = [nb.GetIdx() for nb in d_atom.GetNeighbors()
+                      if nb.GetAtomicNum() > 1 and nb.GetSymbol() not in _METAL_SET]
+                if not hs or len(hv) != 1:
+                    continue
+                dpos = pts[d_idx]
+                dm = m_pos - dpos
+                dmn = float(_np.linalg.norm(dm))
+                if dmn < 1e-6:
+                    continue
+                dm = dm / dmn
+                ax = dpos - pts[hv[0]]
+                cur = {h: tuple(pts[h]) for h in hs}
+
+                def _lp_cos(hp, _hv=hv[0], _dpos=dpos, _dm=dm):
+                    lp = _np.zeros(3)
+                    for p in [pts[_hv]] + [_np.asarray(v) for v in hp.values()]:
+                        v = _np.asarray(p) - _dpos
+                        vn = float(_np.linalg.norm(v))
+                        if vn > 1e-8:
+                            lp -= v / vn
+                    ln = float(_np.linalg.norm(lp))
+                    return float(_np.dot(lp / ln, _dm)) if ln > 1e-8 else -1.0
+
+                best_c, best_p = _lp_cos(cur), None
+                for k in range(1, 36):
+                    cand = _rotate_about(ax, dpos, 10.0 * k, cur)
+                    c = _lp_cos(cand)
+                    if c > best_c + 1e-9:
+                        best_c, best_p = c, cand
+                if best_p is not None:
+                    for h, p in best_p.items():
+                        pts[h] = _np.array(p, dtype=float)
 
         # Write back.
         if is_list:

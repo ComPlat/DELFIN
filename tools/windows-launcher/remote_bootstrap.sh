@@ -1,9 +1,13 @@
-# Runs inside the user's interactive login shell. Arguments are data, never eval'ed.
+# Runs inside the user's interactive login shell, sourced from the copy the app
+# keeps in ~/.cache/delfin-launcher/<version>/ (DELFIN.ps1, Sync-ServerScripts):
+#   bash -ilc '. ~/.cache/delfin-launcher/<version>/remote_bootstrap.sh' delfin ARGS
+# Sourcing (not a child bash) keeps what the login shell set up, as before.
+# Arguments are data, never eval'ed. $4 is the path of remote_launcher.py.
 set -e
 preferred=$1
 directory=$2
 hint=$3
-payload=$4
+launcher_script=$4
 role=$5
 tunnel_path=${6:-}
 keep=${7:-0}
@@ -47,6 +51,12 @@ expand_path() {
 }
 directory=$(expand_path "$directory")
 hint=$(expand_path "$hint")
+# Before people mode below changes HOME: the copy lives in the account's home.
+launcher_script=$(expand_path "$launcher_script")
+if [ ! -f "$launcher_script" ]; then
+    printf '%s\n' 'DELFIN: The launcher script is missing on the server. Start the connection again from the app.' >&2
+    exit 1
+fi
 if [ -n "$directory" ]; then cd -- "$directory"; else cd -- "$HOME"; fi
 case "$hint" in ''|/*) ;; *) hint="$PWD/$hint" ;; esac
 python=''
@@ -223,4 +233,5 @@ case "$dashboard_help" in
     *--strict-port*) ;;
     *) printf '%s\n' 'DELFIN: Server DELFIN is too old for this launcher (--strict-port is missing). Update the server installation to the Windows-launcher release; updating the Windows app alone is not enough.' >&2; exit 1 ;;
 esac
-exec "$python" -c "$no_cwd"';import base64,gzip;exec(gzip.decompress(base64.b64decode(sys.argv.pop(1))))' "$payload" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working"
+# A script file puts its own folder first on sys.path, not the current one.
+exec "$python" "$launcher_script" "$preferred" "$PWD" "$python" "$tunnel_path" "$keep" "$working"
