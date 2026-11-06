@@ -8,4 +8,9 @@ MEASURES compaction and long sessions; compaction itself lives elsewhere
 """
 from delfin.agent.longhorizon.metrics import LongHorizonResult, measure, to_json, to_text
 
+# NOTE: the ``replay`` SUBMODULE is deliberately not re-exported under its
+# own name here — ``replay.replay`` is the module, and re-exporting the
+# function as ``replay`` would shadow the module for ``from
+# delfin.agent.longhorizon import replay``.
+
 __all__ = ["LongHorizonResult", "measure", "to_json", "to_text"]
