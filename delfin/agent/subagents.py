@@ -1760,7 +1760,9 @@ def _known_preset_tool_names() -> frozenset[str]:
     channel a preset already ships with (subagent_message). Read-only
     catalogue names (explore's measured surface) are included via the
     preset definitions themselves — a NEW preset listing a tool an
-    existing preset lists must not be refused for it.
+    existing preset lists must not be refused for it. The ops server's own
+    structure/geometry tools are derived from the server module (see below),
+    never from a hand list.
     """
     names: set[str] = set()
     try:
@@ -1776,6 +1778,20 @@ def _known_preset_tool_names() -> frozenset[str]:
                     or "")
             if n:
                 names.add(n)
+    except Exception:
+        pass
+    # The ops server's structure/geometry tools: a preset may list them
+    # bare (geometry_renumber) or namespaced (mcp__delfin-ops__
+    # geometry_renumber). Derive from the server module so a NEW
+    # tool_geometry_* the server registers stays known automatically —
+    # never a hand list, and a made-up name is still refused below.
+    try:
+        from delfin.ops_server import server as _ops_server
+        for _n in dir(_ops_server):
+            if _n.startswith("tool_geometry_"):
+                _base = _n[len("tool_"):]
+                names.add(_base)
+                names.add(f"mcp__delfin-ops__{_base}")
     except Exception:
         pass
     # The union of tools every shipped preset actually lists: these are
