@@ -72,13 +72,17 @@ class DSMLReplayPolicy:
         """
         if not dominates:
             return False
+        if self._used >= self._max:
+            # Budget spent -- covers max_per_turn <= 0 too, where the budget
+            # is exhausted before any re-request.  Must agree with exhausted.
+            return False
         if self._used == 0:
             # The first re-request of the turn: allowed exactly as before,
             # no progress required.
             return True
         # A later re-request needs real progress since the last one AND room
         # in the per-turn budget.
-        return self._used < self._max and self._real_since > 0
+        return self._real_since > 0
 
     def spend(self) -> None:
         """Consume one re-request (the caller is about to re-request)."""

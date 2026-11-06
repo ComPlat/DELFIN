@@ -116,3 +116,17 @@ def test_note_real_tool_call_alone_grants_nothing_on_the_first():
     p = DSMLReplayPolicy()
     p.note_real_tool_call()
     assert p.allowed_for(dominates=False) is False
+
+
+def test_zero_budget_grants_nothing():
+    """max_per_turn=0 is exhausted from the start: allowed_for must agree
+    with exhausted (reviewer nacht-s11 finding F1)."""
+    p = DSMLReplayPolicy(max_per_turn=0)
+    assert p.exhausted is True
+    assert p.allowed_for(dominates=True) is False
+
+
+def test_negative_budget_grants_nothing():
+    p = DSMLReplayPolicy(max_per_turn=-1)
+    assert p.exhausted is True
+    assert p.allowed_for(dominates=True) is False
