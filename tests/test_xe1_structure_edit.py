@@ -180,3 +180,21 @@ def test_geometry_tools_write_nothing_to_disk(tmp_path):
     server_mod.tool_geometry_diff(STRUCT_DIFF_A, STRUCT_DIFF_B)
     after = set(os.listdir(tmp_path))
     assert after == before  # no file created anywhere under tmp_path
+
+
+def test_geometry_tools_refuse_an_output_path_argument(tmp_path):
+    """Adversarial (reviewer + operator): the tools take NO output/output_path
+    parameter — an attempt to pass one is refused (the parameter does not
+    exist) and NOTHING is written. A tool writing a file would bypass the
+    write-scope gate."""
+    with pytest.raises(TypeError):
+        server_mod.tool_geometry_renumber(
+            PRODUCT_CH4_PERMUTED, EDUCT_CH4, output_path=str(tmp_path / "o.xyz")
+        )
+    with pytest.raises(TypeError):
+        server_mod.tool_geometry_fix_hydrogens(
+            METAL_NO_H, output="anything.xyz"
+        )
+    import os
+
+    assert os.listdir(tmp_path) == []  # nothing written
