@@ -135,6 +135,21 @@ def test_fix_hydrogens_does_not_hydroxylate_co2():
     assert out["n_added"] == 0, out["added_rows"]
 
 
+def test_fix_hydrogens_adds_missing_hs_to_a_bare_carbon():
+    """Positive direction (mirror of the CO2 case): a single isolated sp3
+    carbon (heavy-bond order 0, target valence 4) MUST get four hydrogens
+    added -- methane, not a bare C. Fires when it should."""
+    bare_c = "1\nsingle carbon\nC 0.000000 0.000000 0.000000\n"
+    out = se.fix_hydrogens(bare_c)
+    assert out["error"] is None
+    added_symbols = _symbols(out["xyz"])
+    assert added_symbols == ["C", "H", "H", "H", "H"], added_symbols
+    assert out["n_added"] == 4, out["added_rows"]
+    # Every added H is bonded to the carbon (already placed, not stray).
+    bonded_to = {r["bonded_to"] for r in out["added_rows"]}
+    assert bonded_to == {0}, bonded_to
+
+
 # ---------------------------------------------------------------------------
 # robustness: None / empty inputs refuse cleanly, never crash deep
 # ---------------------------------------------------------------------------
