@@ -41,10 +41,16 @@ def test_the_bridge_runs_with_the_service_users_own_group(tmp_path):
     bridge = _lines(_run(tmp_path)["delfin-messenger-bridge.service"])
     assert "Group=delfin-gw" not in bridge
     assert not any(line.startswith("Group=") and line != "Group=" for line in bridge)
-    assert "RuntimeDirectoryMode=2750" in bridge
+    # Not a RuntimeDirectory=: systemd chowns one to User=/Group= again when
+    # it sets up ExecStart, after any ExecStartPre=+ chgrp. On the Pi the
+    # directory came back as delfin:delfin and the gateway could not reach
+    # the socket. Created root-side with the gateway's group instead.
+    assert not any(line.startswith("RuntimeDirectory") for line in bridge)
     pre = [line for line in bridge if line.startswith("ExecStartPre=+")]
-    assert any("chgrp delfin-gw /run/delfin-messenger-bridge" in line for line in pre)
-    assert any("chmod 2750 /run/delfin-messenger-bridge" in line for line in pre)
+    assert any("install -d -m 2750" in line and "-g delfin-gw" in line
+               and line.endswith("/run/delfin-messenger-bridge") for line in pre)
+    assert any(line.startswith("ExecStopPost=+") and "/run/delfin-messenger-bridge" in line
+               for line in bridge)
 
 
 def test_the_port_rule_is_stored_and_loaded_before_every_daemon_start(tmp_path):
