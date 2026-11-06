@@ -29,10 +29,10 @@ _REAL_ROW = {
 }
 
 _REAL_FEED = [
-    {"at": "2026-06-01T10:00:10", "kind": "refusal",
-     "text": "write_file delfin/x.py └─ outside scope"},
     {"at": "2026-06-01T10:00:05", "kind": "tool",
      "text": "run_tests tests/t.py"},
+    {"at": "2026-06-01T10:00:10", "kind": "refusal",
+     "text": "write_file delfin/x.py └─ outside scope"},
 ]
 
 
