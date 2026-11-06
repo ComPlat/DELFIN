@@ -4,12 +4,14 @@ How to run a GOAT conformer search driven by an MLIP through ORCA's
 ExtOpt interface on a GPU SLURM cluster, using DELFIN's own submit path
 and its end-to-end checker, and what is known to limit it right now.
 
-> Measurement honesty: the exact run here is a **dry run** through
-> DELFIN's own path (`plan_extopt_job(submit=False)`) -- the rendered
-> input and sbatch script are shown and checked below.  The **live GPU
-> run and its wall times are not yet measured**; they are blocked on the
-> orca-mlips install action described in "Prerequisites" and will be
-> appended to this file once the first real job lands on a GPU node.
+> Measurement honesty, as of this writing: the verified path here is a
+> **dry run** through DELFIN's own path (`plan_extopt_job(submit=False)`)
+> -- the rendered input and sbatch script are shown and checked below.
+> Three **live ethanol jobs were submitted** on a GPU node (A100 visible);
+> all three stopped early on the blockers in "Known limits" (D1-D4), so
+> **no usable ensemble wall time is measured yet**.  The page records
+> exactly what was observed and what blocks a full run; wall times will be
+> appended once a job survives to a finished ensemble.
 
 ## What this runs
 
@@ -93,6 +95,11 @@ checks, from the run directory alone:
 - the global minimum `<base>.globalminimum.xyz` is present;
 - `<base>.out` terminated cleanly (the ORCA termination marker, no
   SCF/geometry failure line);
+- **the job logs are free of the known failure shapes** (Open MPI "not
+  enough slots", an `Error (ORCA_MAIN)/ProgExt not found` abort, an
+  `Error (ORCA/EXT): external program failed` MLIP exit): when one is
+  present the checker names it as the reason the run stopped rather than
+  only reporting the missing termination marker;
 - the ensemble energies are finite and sorted (GOAT writes the lowest
   conformer first);
 - whether the MLIP server ran on the GPU (a CUDA/GPU line in any
@@ -115,7 +122,27 @@ exactly that.
   job shows it (worker outputs, GPU memory, server processes).
 - **Weight licences** restrict the usable backends (see Prerequisites).
 - **No local CPU fallback** for GOAT: a GPU partition is required.
-- **Live wall times** are pending the first GPU run (the orca-mlips
-  install action).  This page will record the measured wall time, GPU
-  hours and the CPU-efficiency line of the job alongside the procedure
-  once the run has happened.
+- **Live runs so far stopped on the four blockers below** (three ethanol
+  jobs on a GPU node, A100 visible; no usable ensemble yet).  Wall times
+  and the job's CPU-efficiency line will be recorded here once a job
+  survives to a finished ensemble.
+  - **D1 -- walltime vs partition.** A short GPU partition cap (30 min
+    here) rejects a long `time_limit`; pick the limit for the chosen
+    partition or `submit` returns "Requested time limit is invalid".
+  - **D2 -- MPI slots.** The script's `--ntasks=1` with `%pal 8` made
+    Open MPI abort with "not enough slots"; oversubscribe or a matching
+    `pal`/task count is required.
+  - **D3 -- ProgExt executable not found.** The bare ProgExt name is not
+    on the compute node's `PATH`; an `Error (ORCA_MAIN)` / "File ...
+    not found" abort follows (worked around with a symlink).
+  - **D4 -- MLIP CLI argument rejected.** `--backend orb` was not
+    recognised by `orca-mlips-orb` (the option set differs).  Not
+    workable from DELFIN's config; needs a fix in the orca-mlips
+    integration before a live chemistry run.
+- **Open-shell metal complex.** The practice system `[Cu(NH3)4]2+` is an
+  open-shell doublet with a +2 charge.  Whether ORB (and AIMNet2) support
+  a charged, open-shell input at all was not established by these runs --
+  until it is, that job exercises the *plumbing* (submit, GPU, check),
+  not the *chemistry*.  Use a closed-shell neutral organic for a real
+  energy/geometry result until the backend's charge/spin handling is
+  known.
