@@ -54,10 +54,10 @@ def _model(*, model_id="Systran/faster-whisper-large-v3-turbo",
 def _req(tmp_path, *, model=None, gpu=True, partition=None, **kw) -> mj.ModelJobRequest:
     model = model if model is not None else _model()
     audio = tmp_path / "in"
-    audio.mkdir()
+    audio.mkdir(exist_ok=True)
     (audio / "a.mp3").write_text("x")
     (audio / "b.mp3").write_text("x")
-    return mj.ModelJobRequest(
+    defaults = dict(
         model=model,
         kind="transcribe",
         inputs=[audio / "a.mp3", audio / "b.mp3"],
@@ -65,12 +65,10 @@ def _req(tmp_path, *, model=None, gpu=True, partition=None, **kw) -> mj.ModelJob
         gpu=gpu,
         partition=partition,
         out_dir=tmp_path / "out",
-        requirements=(
-            "faster-whisper==1.2.1\n"
-            "ctranslate2==4.5.0\n"
-        ),
-        **kw,
+        requirements="faster-whisper==1.2.1\nctranslate2==4.5.0\n",
     )
+    defaults.update(kw)
+    return mj.ModelJobRequest(**defaults)
 
 
 # ---------------------------------------------------------- partition choice
@@ -130,7 +128,7 @@ def test_offline_mode_and_pinned_model_path(tmp_path):
     assert "HF_HUB_OFFLINE=1" in script
     assert "TRANSFORMERS_OFFLINE=1" in script
     assert "HF_ENDPOINT=" in script  # the third-party mirror is overridden away
-    assert model["revision"] in script and model["local_path"] in script
+    assert model.revision in script and str(model.local_path) in script
 
 
 def test_venv_name_hashed_from_requirements(tmp_path):
