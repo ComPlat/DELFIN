@@ -48,8 +48,8 @@ _H2 = (0.0, -0.7572, -0.4692)
 ELEMENTS = ["O", "H", "H"]
 COORDS = [_O, _H1, _H2]
 
-#: three atoms -> valid 1-based mode indices are 1 (O), 2 (H), 3 (H)
-_HYPERFINE_H = NucleusSelection(element="H", indices=(2, 3), aiso=True, adip=True)
+#: hyperfine selection over all H (the supported ``all <element>`` mode)
+_HYPERFINE_H = NucleusSelection(element="H", aiso=True, adip=True)
 
 
 class TestValidate:
@@ -72,16 +72,31 @@ class TestValidate:
     def test_hyperfine_refused_on_closed_shell_singlet(self):
         errors, _ = validate_eprnmr(
             gtensor=False, mult=1, elements=ELEMENTS,
-            nuclei=NucleusSelection(element="H", indices=(2,), aiso=True),
+            nuclei=NucleusSelection(element="H", aiso=True),
         )
-        assert errors  # a hyperfine request is an EPR property
+        assert any("closed" in e.lower() or "singlet" in e.lower() for e in errors)
 
     def test_nucleus_index_outside_molecule_refused(self):
+        """An explicit index list is refused; an out-of-range index gets the
+        precise 'outside the molecule' reason."""
         errors, _ = validate_eprnmr(
             gtensor=False, mult=2, elements=ELEMENTS,
             nuclei=NucleusSelection(element="H", indices=(9,), aiso=True),
         )
-        assert any("index" in e.lower() and "9" in e for e in errors)
+        assert any("outside the molecule" in e and "9" in e for e in errors)
+
+    def test_in_range_index_list_refused_as_opi_cannot_type_it(self):
+        """A 1-based index list is refused even when in range: OPI's typed
+        Nuclei writes the element on the line, which ORCA rejects for index
+        lists (manual Table 5.14, epr.txt 5.22.2.4) -- so DELFIN supports
+        ``all <element>`` and refuses the index form with that reason."""
+        errors, _ = validate_eprnmr(
+            gtensor=False, mult=2, elements=ELEMENTS,
+            nuclei=NucleusSelection(element="H", indices=(2,), aiso=True),
+        )
+        assert errors, "an explicit index list must be refused"
+        assert any("index list" in e for e in errors)
+        assert any("all" in e for e in errors)
 
     def test_nuclide_element_not_in_molecule_accepted_as_all(self):
         """'all N' on a molecule without nitrogen is a valid 'zero nuclei'
@@ -108,7 +123,8 @@ class TestValidate:
             nuclei=NucleusSelection(element="H", aiso=True, adip=True),
         )
         assert errors == []
-        assert any("hyperfine" in w.lower() and "basis" in w.lower() for w in warnings)
+        texts = " ".join(str(w.get("statement", w)) for w in warnings)
+        assert "hyperfine" in texts.lower() and "basis" in texts.lower()
 
     def test_basis_advice_for_shielding(self):
         errors, warnings = validate_eprnmr(
@@ -117,7 +133,8 @@ class TestValidate:
             nuclei=NucleusSelection(element="H", shift=True),
         )
         assert errors == []
-        assert any("shielding" in w.lower() and "basis" in w.lower() for w in warnings)
+        texts = " ".join(str(w.get("statement", w)) for w in warnings)
+        assert "shielding" in texts.lower() and "basis" in texts.lower()
 
 
 class TestBuildInput:
@@ -156,7 +173,7 @@ class TestBuildInput:
             gtensor=False,
             shielding=True,
             j_coupling=True,
-            nuclei=NucleusSelection(element="H", indices=(2, 3), shift=True,
+            nuclei=NucleusSelection(element="H", shift=True,
                                     j_coupling=True, isotope=1),
             base_name="eprnmr",
         )
@@ -232,6 +249,13 @@ SUMMARY OF ISOTROPIC COUPLING CONSTANTS J (Hz)
         1 H        2 H
    1 H   0.000      7.636
    2 H   7.636      0.000
+
+SCF CONVERGED AFTER  8 ITERATIONS
+
+ORBITAL ENERGIES
+
+FINAL SINGLE POINT ENERGY       -76.432386371456
+ORCA TERMINATED NORMALLY
 """
 
 
@@ -254,7 +278,7 @@ class TestRead:
         res = read_eprnmr_output(tmp_path, "eprnmr", elements=ELEMENTS)
         assert res.a_tensors
         a0 = res.a_tensors[0]
-        assert a0.atom_index == 0  # the first nucleus with a printed A block
+        assert a0.atom_index == 1  # ORCA prints a 1-based nucleus number
         assert a0.element == "O"
         assert a0.iso_MHz == pytest.approx(-25.9993)
         assert a0.principal_MHz == pytest.approx((13.2095, -45.6036, -45.6036))
@@ -307,7 +331,7 @@ class TestProbe:
             functional="PBE0",
             basis="def2-SVP",
             gtensor=True,
-            nuclei=NucleusSelection(element="H", indices=(2, 3), aiso=True),
+            nuclei=NucleusSelection(element="H", aiso=True),
             base_name="eprnmr",
         )
         verdict = probe_input(inp.read_text())
