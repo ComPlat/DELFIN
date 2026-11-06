@@ -68,7 +68,10 @@ def check_single_level_of_theory(levels: dict) -> CheckResult:
     Returns CheckResult; problems name every stage that differs from the
     first stage that carried a method.
     """
-    named = sorted((s for s, m in (levels or {}).items() if m), key=list(levels))
+    if not isinstance(levels, dict) or not levels:
+        return CheckResult(
+            False, ["no level of theory provided for any stage"])
+    named = sorted(s for s, m in levels.items() if m)
     if not named:
         return CheckResult(False, ["no level of theory provided for any stage"])
     reference = named[0]
@@ -185,13 +188,19 @@ def check_irc_ends_are_minima(imag_counts_per_end: dict) -> CheckResult:
     mechanism must not be claimed.
     """
     problems: list[str] = []
-    for end, count in (imag_counts_per_end or {}).items():
+    if not isinstance(imag_counts_per_end, dict):
+        problems.append("IRC end frequency results are not provided as "
+                        "an end->imaginary-mode-count map")
+        counts: dict = {}
+    else:
+        counts = imag_counts_per_end
+    for end, count in counts.items():
         if count is None:
             problems.append(f"{end} IRC end: no frequency run to judge")
         elif count != 0:
             problems.append(
                 f"{end} IRC end: {count} imaginary mode(s) -- not a minimum")
-    if not imag_counts_per_end:
+    if not counts:
         problems.append("no IRC end frequency runs provided")
     return CheckResult(not problems, problems)
 
@@ -295,10 +304,11 @@ def check_imaginary_mode_connects_bonds(
                 f"{change * 1000:.1f} mA (< {_DISTANCE_RESPONSE_THRESHOLD_ANGSTROM * 1000:.0f} mA) "
                 "-- the imaginary mode does not act on this bond")
     if not problems:
-        problems.append(
-            f"mode {mode_index} acts on all {len(expected_pairs)} "
-            "expected bond-forming/breaking pair(s)")
-    return CheckResult(not problems, problems)
+        # all expected pairs responded -- this IS a reactive mode. The
+        # success message must not live in `problems`, else a correct mode
+        # would report ok=False (a verified TS could never be stated).
+        return CheckResult(True, [])
+    return CheckResult(False, problems)
 
 
 def summarize_ts_verdict(found: bool, mode_ok: bool, irc_ok: bool) -> str:
