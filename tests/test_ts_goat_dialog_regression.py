@@ -1067,10 +1067,19 @@ def _open_with_missing_ts_file(tmp_path, *, no_xyz=False,
     if no_xyz:
         xyz.unlink()
     elif mismatched_xyz:
+        # Distort a single atom rather than translating all atoms.
+        # Pure origin shifts are valid and now deliberately accepted.
+        from delfin.ts_goat import read_xyz
+        atoms = read_xyz(xyz)
+        assert atoms
+        element, x, y, z = atoms[1]
+        atoms[1] = (element, x + 1.0, y, z)
         xyz.write_text(
-            '3\nunrelated optimization\n'
-            'O 1.0 0.0 0.0\nH 1.96 0.0 0.0\n'
-            'H 2.55 1.10 0.0\n',
+            str(len(atoms)) + '\nmodified one atom\n'
+            + ''.join(
+                f'{el} {ax:.10f} {ay:.10f} {az:.10f}\n'
+                for el, ax, ay, az in atoms
+            ),
             encoding='utf-8',
         )
     if no_hess:
