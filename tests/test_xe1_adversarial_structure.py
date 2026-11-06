@@ -146,3 +146,28 @@ def test_tools_refuse_none_and_empty_inputs_cleanly():
         server_mod.tool_geometry_fix_hydrogens("")
     with pytest.raises((ValueError, TypeError)):
         server_mod.tool_geometry_diff("", CO2)
+
+
+# ---------------------------------------------------------------------------
+# security contract (operator ruling, binding): the tools never write files;
+# an output/output_path attempt is refused; ".." / overwrite are impossible
+# because no tool accepts a path argument at all.
+# ---------------------------------------------------------------------------
+
+def test_geometry_tools_never_accept_an_output_path():
+    """(e) The tools take no path/output parameter (their schema is
+    xyz-text-in only): passing one is a TypeError. There is therefore no
+    ``..`` traversal and no input/overwrite possible -- a tool can never
+    write a file, which would bypass the preset's write-scope gate."""
+    import os
+
+    tmp = os.getcwd()  # real cwd inside the gate; nothing must appear here
+    before = set(os.listdir(tmp))
+    with pytest.raises(TypeError):
+        server_mod.tool_geometry_renumber(CO2, CO2, output_path="new.xyz")
+    with pytest.raises(TypeError):
+        server_mod.tool_geometry_fix_hydrogens(CO2, output="new.xyz")
+    with pytest.raises(TypeError):
+        server_mod.tool_geometry_diff(CO2, CO2, out_path="../esc.xyz")
+    after = set(os.listdir(tmp))
+    assert after == before  # no file, no directory, nothing written
