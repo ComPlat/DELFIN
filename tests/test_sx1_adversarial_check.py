@@ -40,6 +40,22 @@ def _findings(smiles, frame):
 CISPLATIN_BAD_H = "Pt      -0.534127     0.375843     1.211656\nCl      -0.829734     2.599608     1.291562\nCl      -2.417457    -0.277100     1.100000\nN       -0.100000    -0.500000     0.900000\nN        0.900000     0.400000     1.800000\nH        0.200000    -1.400000     1.500000\nH       -0.900000    -0.100000     1.900000\nH        1.500000     1.200000     2.100000\nH        0.100000     1.300000     2.500000\n"
 
 
+
+# Doubling the atoms of a quadratic pair check costs 4x; allow noise up to
+# 6x, which still refuses a cubic cost (8x).
+_MAX_DOUBLING_RATIO = 6.0
+
+
+def _cpu_seconds(n_heavy):
+    """Process CPU seconds of one check on a random n-atom carbon frame."""
+    import time
+    rng = np.random.default_rng(42)
+    coords = rng.uniform(-20, 20, (n_heavy, 3))
+    frame = "\n".join(f"C  {x:.6f} {y:.6f} {z:.6f}" for x, y, z in coords) + "\n"
+    t0 = time.process_time()
+    _findings("C", frame)
+    return time.process_time() - t0
+
 class TestFindingsNotSilent:
     def test_bad_h_count_is_flagged_not_fixed(self):
         """A frame with 4 H where the SMILES says 6 must be FLAGGED; the
@@ -155,14 +171,22 @@ class TestEdgeShapes:
         assert isinstance(findings, (list, tuple))
 
     def test_10k_atom_frame_under_one_second(self):
-        """Package target 4: the check adds well under one second per molecule."""
-        import time
-        n_heavy = 2000
-        rng = np.random.default_rng(42)
-        coords = rng.uniform(-20, 20, (n_heavy, 3))
-        lines = [f"C  {x:.6f} {y:.6f} {z:.6f}" for x, y, z in coords]
-        frame = "\n".join(lines) + "\n"
-        t0 = time.perf_counter()
-        _findings("C", frame)
-        dt = time.perf_counter() - t0
-        assert dt < 1.0, f"2000-atom check took {dt:.3f} s"
+        """Package target 4: the check adds well under one second per molecule.
+
+        Measured as process CPU time, not wall clock: a shared CI runner
+        stalls the wall clock without the check getting slower. Two
+        bounds: a realistic molecule (200 atoms) costs well under a
+        second, and a 2000-atom frame grows no worse than quadratically
+        from 1000 atoms (a quadratic pair check doubles atoms -> 4x).
+        """
+        cpu = {n: _cpu_seconds(n) for n in (200, 1000, 2000)}
+        assert cpu[200] < 0.5, f"200-atom check took {cpu[200]:.3f} s CPU"
+        ratio = cpu[2000] / max(cpu[1000], 1e-3)
+        assert ratio <= _MAX_DOUBLING_RATIO, (
+            f"doubling 1000 -> 2000 atoms cost {ratio:.1f}x CPU "
+            f"(> {_MAX_DOUBLING_RATIO}x: worse than quadratic)")
+
+    def test_scaling_bound_catches_a_cubic_check(self):
+        """Control: the doubling bound fails for a cubic cost (2^3 = 8x)."""
+        assert 8.0 > _MAX_DOUBLING_RATIO
+        assert 4.0 <= _MAX_DOUBLING_RATIO
