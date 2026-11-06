@@ -160,9 +160,10 @@ def check_goat_e2e(
     if stale:
         findings.append(_finding(
             "warn",
-            f"live-run marker(s) present: {sorted(stale)}. A previously "
-            "submitted job may still be running or was killed without "
-            "cleanup; check the scheduler before trusting this result",
+            f"live-run marker file(s) still present: {sorted(stale)}. A "
+            "previously submitted job may still be running or was killed "
+            "without removing its marker; check the scheduler before "
+            "trusting this result",
         ))
 
     hard = [f for f in findings if f.get("level") == "error"]

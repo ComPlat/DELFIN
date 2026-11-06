@@ -111,3 +111,18 @@ def test_aborted_run_is_not_ok_and_names_termination(tmp_path):
     report = check_goat_e2e(tmp_path, base_name="extopt")
     assert report["ok"] is False
     assert not report["terminated_normally"]
+
+
+def test_stale_run_marker_warns_to_check_the_scheduler(good_run_dir):
+    # a finished-looking run that still carries a live-run .pid lock
+    (good_run_dir / "extopt.pid").write_text("4242\n")
+    report = check_goat_e2e(good_run_dir, base_name="extopt")
+    assert report["ok"] is True  # a stale marker is a warning, not a failure
+    assert any("marker" in f.get("message", "")
+               for f in report["findings"])
+
+
+def test_clean_run_has_no_live_run_marker_finding(good_run_dir):
+    report = check_goat_e2e(good_run_dir, base_name="extopt")
+    assert not any("marker" in f.get("message", "")
+                   for f in report["findings"])
