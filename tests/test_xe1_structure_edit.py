@@ -56,13 +56,26 @@ H 0.000000 0.000000 1.089000
 H -0.513836 0.889795 -0.363000
 """
 
-# Metal complex missing a coordinating hydrogen (a common xyz defect): the
-# ammine/metal-donor H that DELFIN's H logic pins.
+# Metal complex missing coordinating hydrogens (a common xyz defect): a
+# zinc amido where the amido N has lost its H. Zn-N single bond at the
+# realistic 2.0 Angstrom (a short 1.5 A bond would read as a multiple-bond-
+# like distance). fix_hydrogens must re-place the missing amido H (N valence
+# 3 - 1 heavy bond = 2 H) and never touch the metal.
 METAL_NO_H = """3
-metal ammine missing donor H
+zinc amido missing donor H
 Zn 0.000000 0.000000 0.000000
-N  1.500000 0.000000 0.000000
-H  1.500000 0.000000 0.000000
+N  2.000000 0.000000 0.000000
+H  1.000000 -0.800000 0.000000
+"""
+
+# CO2: both oxygens are double-bonded (short 1.16 A C=O). fix_hydrogens must
+# NOT add any H -- a plain valence-count would hydroxylate them (O valence 2
+# vs heavy degree 1). The bond-order/distance rule must see the double bond.
+CO2 = """3
+carbon dioxide
+C 0.000000 0.000000 0.000000
+O 1.160000 0.000000 0.000000
+O -1.160000 0.000000 0.000000
 """
 
 # Two structures differing by an element swap on one atom for structure_diff.
@@ -138,6 +151,27 @@ def test_fix_hydrogens_tool_str_roundtrip():
     result = server_mod.tool_geometry_fix_hydrogens(METAL_NO_H)
     payload = json.loads(result)
     assert payload["n_added"] >= 1
+
+
+def test_fix_hydrogens_does_not_hydroxylate_co2():
+    """F1 (reviewer): CO2's oxygens are double-bonded; fix_hydrogens must not
+    add H to them (a plain valence vs heavy-degree count would hydroxylate a
+    terminal double-bonded O). The corrected structure keeps exactly C,O,O."""
+    out = se.fix_hydrogens(CO2)
+    assert out["error"] is None
+    assert _symbols_order(out["xyz"]) == ["C", "O", "O"]
+    assert out["n_added"] == 0
+
+
+def test_tools_refuse_none_and_empty_inputs_cleanly():
+    """F5 (reviewer): None / empty input must fail with a clean ValueError,
+    not an AttributeError deep in parse_xyz."""
+    with pytest.raises(ValueError):
+        se.renumber_to_reference(None, EDUCT_CH4)
+    with pytest.raises(ValueError):
+        se.fix_hydrogens("")
+    with pytest.raises(ValueError):
+        se.structure_diff(None, STRUCT_DIFF_A)
 
 
 # ---------------------------------------------------------------------------

@@ -64,6 +64,11 @@ _VALENCE: dict[str, int] = {
 
 
 def _parse(text: str, what: str = "structure") -> Geom:
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(
+            f"{what}: expected non-empty xyz text, got "
+            + ("empty text" if isinstance(text, str) else type(text).__name__)
+        )
     try:
         return parse_xyz(text)
     except GeometryError as exc:
@@ -170,14 +175,48 @@ def _place_one_h(
     return tuple(g.coords[atom][k] + d[k] * bond_len for k in range(3))
 
 
+# Distance ratio (actual bond / covalent-radii single-bond reference) below
+# which a bond is treated as a multiple bond with no free valence for H.
+_MULTIPLE_BOND_RATIO = 0.90
+# Distance up to which a contact is still a single bond needing no H-free
+# valence beyond its own (roughly covalent-radii sum * this factor).
+_SINGLE_BOND_FACTOR = 1.12
+
+
+def _heavy_bond_order(
+    g: Geom, i: int, j: int, radii: list[float]
+) -> int:
+    """Estimated bond order (0..3) between two heavy atoms from distance.
+
+    Uses the covalent-radii sum as the single-bond reference (DELFIN's own
+    radii). A bond clearly shorter than that reference is a multiple bond
+    (double/triple) and leaves no free valence for an added hydrogen; a
+    bond near or above the reference is a single bond. Returns 0 when the
+    atoms are not in contact. This is what keeps fix_hydrogens from
+    hydroxylating a double-bonded oxygen (CO2) or triple-bonded nitrogen.
+    """
+    d = _dist(g.coords[i], g.coords[j])
+    rsum = radii[i] + radii[j]
+    if d > rsum * _SINGLE_BOND_FACTOR:
+        return 0
+    ratio = d / rsum if rsum else 1.0
+    if ratio <= 0.72:
+        return 3
+    if ratio <= _MULTIPLE_BOND_RATIO:
+        return 2
+    return 1
+
+
 def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
     """Add missing hydrogens to a structure; never removes an atom.
 
-    A non-metal atom whose heavy-atom degree is below its standard valence
-    gets the missing hydrogen(s) placed at DELFIN's covalent-radius bond
-    length, pushed away from its heavy neighbours. Metals are never given
-    guessed hydrogens (their coordination H is a donor convention, not a
-    valence count).
+    A non-metal atom whose heavy-bond order sum is below its standard
+    valence gets the missing hydrogen(s) placed at DELFIN's covalent-radius
+    bond length, pushed away from its heavy neighbours. Heavy-bond order is
+    estimated from the covalent radii and the interatomic distance, so a
+    multiple bond (CO2's C=O, a nitrile C#N) saturates the atom and no H is
+    guessed. Metals are never given guessed hydrogens (their coordination H
+    is a donor convention, not a valence count).
     """
     g = _parse(xyz_text, "structure")
     radii = _covalent_radii(g)
@@ -191,10 +230,12 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
         need = _VALENCE.get(sym)
         if not need:
             continue  # metal or unknown -> no guessed H
-        heavy_deg = sum(
-            1 for j in nbrs.get(i, ()) if g.symbols[j] != "H"
+        heavy_order = sum(
+            _heavy_bond_order(g, i, j, radii)
+            for j in nbrs.get(i, ())
+            if g.symbols[j] != "H"
         )
-        missing = need - heavy_deg
+        missing = need - heavy_order
         if missing <= 0:
             continue
         away = _heavy_neighbour_directions(g, i, nbrs)
