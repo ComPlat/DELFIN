@@ -20,7 +20,11 @@ import delfin.agent.swarm.policy as policy
 
 
 class FakeHome:
-    """A real-ish home for the runtime derivation (no files touched)."""
+    """A real-ish home for the runtime derivation (no files touched).
+
+    ``os.PathLike`` so ``Path(home)`` works in the derivation, like any
+    path DELFIN would actually pass.
+    """
 
     def __init__(self, path):
         self._p = Path(path)
@@ -28,6 +32,9 @@ class FakeHome:
     @property
     def name(self):
         return self._p.name
+
+    def __fspath__(self):
+        return str(self._p)
 
     def __str__(self):
         return str(self._p)
