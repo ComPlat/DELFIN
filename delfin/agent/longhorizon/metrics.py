@@ -60,6 +60,20 @@ def _ts(record: Dict[str, Any]) -> Optional[float]:
         return None
 
 
+def _exact_hit(text: Any, value: Any) -> bool:
+    """Exact-token containment. A value is recalled only when it appears as
+    its own whitespace-delimited token (or contiguous token run) in the text
+    — so "28.5" is NOT recalled by an emission of "128.5", and the minus
+    sign of "-37.460" is not eaten by a larger token "1-37.460". Exact
+    numbers count only if EXACT (brief item 2)."""
+    tv = _norm(value).split()
+    if not tv:
+        return False
+    toks = _norm(text).split()
+    width = len(tv)
+    return any(toks[i:i + width] == tv for i in range(len(toks) - width + 1))
+
+
 def _identity(record: Dict[str, Any]) -> str:
     """The redo-work identity: (tool name, normalised input). Two records
     are 'the same call' only when both name the same tool and the same
@@ -118,6 +132,7 @@ def measure(
     *,
     planted_facts: Optional[List[Dict[str, Any]]] = None,
     decisions: Optional[List[Dict[str, Any]]] = None,
+    actions: Optional[List[Dict[str, Any]]] = None,
 ) -> LongHorizonResult:
     """Reduce one session's records to the long-horizon picture. Pure.
 
@@ -126,6 +141,11 @@ def measure(
     ``probe`` (1-based position in ts order). ``decisions``:
     [{"declaration_id", "subject", "probe"}]; honoured late when the
     subject still appears once at position >= ``probe``.
+
+    ``actions``: the caller's per-action goal verdicts [{"ts", "in_goal"}];
+    the reducer never judges ``in_goal`` itself (the stated goal is the
+    caller's knowledge, exactly as in longrun_metric). Drift is the share of
+    judged actions that are out of goal.
     """
     tools = list(tools or [])
     res = LongHorizonResult(turns=len(turns or []),
@@ -139,9 +159,11 @@ def measure(
     res.input_tokens, res.output_tokens, res.cached_tokens = in_tok, out_tok, cach_tok
     res.total_ms = sum(t.get("total_ms") or 0 for t in (turns or []))
     if in_tok > 0:
-        res.cache_hit_rate = cach_tok / in_tok
+      # a hit rate is a fraction in [0,1]; cached>input is unphysical data,
+      # clamp so the rate can never exceed 1.0 (never a misleading >1).
+      res.cache_hit_rate = min(1.0, cach_tok / in_tok)
     else:
-        res.cache_hit_rate = None   # no turns attest a cache -> unmeasurable
+      res.cache_hit_rate = None   # no turns attest a cache -> unmeasurable
 
     # --- wall time: first turn start -> last turn end (both observed).
     tss = [_ts(t) for t in (turns or [])]
@@ -163,10 +185,10 @@ def measure(
         for idx, rec in enumerate(tools, start=1):
             if idx < probe:
                 continue
-            # "exact numbers count only if exact": the exact value token must be
-            # present. "-37.460" is contained in "E = -37.460" (recalled) but
-            # NOT in "E = -37.46" (a rounded emission does not recall it).
-            if value in _norm(rec.get("output")) or value in _norm(rec.get("input")):
+            # "exact numbers count only if exact": the exact value token must
+            # appear as its own token. "-37.460" is recalled by "E = -37.460"
+            # but NOT by "E = -37.46" (rounded), "128.5" or "1-37.460".
+            if _exact_hit(rec.get("output"), value) or _exact_hit(rec.get("input"), value):
                 res.facts_recalled_late += 1
                 break   # one recall per fact
 
@@ -182,32 +204,50 @@ def measure(
         for idx, rec in enumerate(tools, start=1):
             if idx < probe:
                 continue
-            if subject in _norm(rec.get("output")) or subject in _norm(rec.get("input")):
+            if _exact_hit(rec.get("output"), subject) or _exact_hit(rec.get("input"), subject):
                 res.decisions_honoured_late += 1
                 break
 
-    # --- redone work: a tool call that ran BEFORE a compaction boundary and
-    # the same (tool, normalised input) that runs AGAIN after it. The
-    # identity is (tool name, normalised input) — the same arguments on a
-    # different tool are not the same call. The boundary is the compaction
-    # record's ts (the sole marker; reviewer constraint 2). Instance-counting
-    # like longrun_metric: each post-boundary occurrence of an identity that
-    # also occurred pre-boundary counts.
+    # --- goal drift: the KG4 definition, reused on this reducer's inputs
+    # (longrun_metric.py:171-179). The caller judges each action's in_goal;
+    # the reducer only counts the share that drifted. Untested elsewhere:
+    # drift is the share of JUDGED actions (in_goal not None) that are out.
+    judged = [a for a in (actions or [])
+              if a.get("in_goal") is not None]
+    if judged:
+        drift = sum(1 for a in judged if not a.get("in_goal"))
+        res.drift_actions = drift
+        res.drift_fraction = drift / len(judged)
+    else:
+        res.drift_actions = 0
+        res.drift_fraction = None   # no judged action -> unmeasurable
+
+    # --- redone work: a tool call that runs in a LATER compaction epoch than
+    # (strictly after a compaction boundary) and whose identity was already
+    # seen in an EARLIER epoch == work redone. Every boundary counts (a call
+    # first seen between compaction1 and compaction2 and repeated after
+    # compaction2 is rework across the second boundary, not the first). Each
+    # post-boundary occurrence is counted once. Identity = (tool, input).
     comps_ts = sorted(x for x in (_ts(c) for c in (compactions or []))
                       if x is not None)
     if comps_ts:
-        boundary = comps_ts[0]
-        seen_before: set = set()
-        for rec in tools:
-            ts = _ts(rec)
-            if ts is not None and ts < boundary:
-                seen_before.add(_identity(rec))
-        for rec in tools:
-            ts = _ts(rec)
-            if ts is not None and ts > boundary:
-                key = _identity(rec)
-                if key and key in seen_before:
-                    res.redone_work += 1
+        seen_all_prior: set = set()   # identities seen in strictly earlier epochs
+        current_epoch: set = set()    # identities seen in the epoch we are in
+        ci = 0
+        ordered = sorted((_ts(r), i)
+                         for i, r in enumerate(tools)
+                         if _ts(r) is not None)
+        for ts, i in ordered:
+            while ci < len(comps_ts) and comps_ts[ci] < ts:
+                seen_all_prior |= current_epoch
+                current_epoch = set()
+                ci += 1
+            key = _identity(tools[i])
+            if not key:
+                continue
+            if key in seen_all_prior:
+                res.redone_work += 1
+            current_epoch.add(key)
 
     # --- compactions size (messages_compacted) is kept raw.
     for c in (compactions or []):
