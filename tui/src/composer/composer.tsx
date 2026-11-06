@@ -46,10 +46,11 @@ import { SHELL_PREFIX, WINDOW_COMMANDS, shellLead } from "../commands"
 
 /** The prompt grows to this many rows, then scrolls. */
 export const COMPOSER_MAX_ROWS = 8
-/** Completion rows shown at once. The window's own commands grew from 2
- *  to 3 (/swarm, SW2b): a session's 4 common commands would otherwise
- *  lose the 7th row off the visible menu. */
-export const POPUP_ROWS = 7
+/** Completion rows shown at once. The window's own commands are 4
+ *  (/rename, /resume, /merge, /swarm) and a session's 4 common commands
+ *  come after them; the budget grew from 7 (a 3-row window) to 8 so the
+ *  session's commands never lose a row to the window's own. */
+export const POPUP_ROWS = 8
 
 export interface ComposerDeps {
   request(method: string, params?: Record<string, unknown>): Promise<any>

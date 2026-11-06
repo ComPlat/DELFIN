@@ -382,6 +382,25 @@ _CHAMPION_FLAGS = (
                           # yield on this pool is small, and that belongs next to the flag.
                           # Env DELFIN_FFFREE_PUCKER_SYMM / DELFIN_FFFREE_PUCKER_SYMM_ADD;
                           # impl delfin/manta/_ring_pucker.py (orbit reduction and the add guard).
+    # LANDING 9 (2026-11-03, AB:s6k_gf2 vs s6k_base): bond-valence metal-donor targets and the
+    # geometry-root fixes.  The metal-donor lengths come from a bond-valence table (shipped COD
+    # table delfin/manta/data/ml_targets_cod.tsv; a licence holder may point
+    # DELFIN_FFFREE_ML_TARGETS_BV_TABLE at a locally derived CSD table), embedded already at
+    # construction; scope and Jahn-Teller handling are set in _CHAMPION_EXTRA_ENV.  The fixes:
+    # the chelate embed keeps the ring-closure chemistry (BV_EMBED_GEOM), a cached ligand
+    # conformer comes back in the caller's atom order (CONF_CACHE_ATOM_ORDER), and frames are
+    # emitted best first by a crystal-free realism score (DELFIN_FRAME_REALISM_RANK, a pure
+    # permutation).
+    # 6000-pool A/B, 5226 held-out systems, canonical frame order for both arms: valid 4089 -> 4145
+    # (10 lost / 66 gained), crystal isomer built 3386 -> 3467 (44 / 125), isomers built
+    # 7623 -> 8132, clean distinct frames 23253 -> 24780, systems with >= 1 clean distinct frame
+    # 3689 -> 3830, hard frames at equal frame count 57251 -> 56076, probe-severe frames
+    # 26.0 % -> 18.1 %.  First emitted frame defective (geometry audit): 47.6 % -> 27.1 % of the
+    # systems.  The three fixes off: 5826/5827 byte-identical with the unfixed construction.
+    "ML_TARGETS_BV", "ML_TARGETS_BV_EMBED", "ML_TARGETS_BV_HISTORIC",
+    "CN5_BOTH", "UNION", "AROM_PLANARIZE_CARRY_H", "RING_SNAP_KEEP_LENGTH",
+    "TEMPLATE_COMPRESSED_RESEAT", "TEMPLATE_COMPRESSED_CONJ", "SP3_PYRAMIDAL_SEAT",
+    "BV_EMBED_GEOM", "CONF_CACHE_ATOM_ORDER",
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
@@ -404,6 +423,16 @@ _CHAMPION_EXTRA_ENV = {
     "DELFIN_MIRROR_STEREO_GATE": "1",
     "DELFIN_STEREOCENTER_SKIP_MIRROR": "1",
     "DELFIN_OB_DETERMINISTIC_RNG": "1",
+    # Every Open Babel minimisation gets the full setup of its own input instead of the
+    # previous call's setup of the same atoms and bonds (openbabel_optimize
+    # _forget_previous_setup), so a batch-UFF result no longer depends on which input the
+    # pool scheduled before it in the same worker process (fewer cores than inputs).
+    "DELFIN_OB_FULL_SETUP": "1",
+    # LANDING 9 (2026-11-03, AB:s6k_gf2): valued settings of the bond-valence targets and the
+    # realism ranking (see the LANDING 9 note in _CHAMPION_FLAGS).
+    "DELFIN_FFFREE_ML_TARGETS_BV_SCOPE": "lengths",
+    "DELFIN_FFFREE_ML_TARGETS_BV_JT": "all",
+    "DELFIN_FRAME_REALISM_RANK": "1",
 }
 
 
@@ -470,6 +499,29 @@ def _to_xyz(block: str, comment: str) -> str:
     atoms = _atom_lines(block)
     comment = (comment or "MANTA").replace("\n", " ").strip() or "MANTA"
     return f"{len(atoms)}\n{comment}\n" + "\n".join(atoms) + "\n"
+
+
+def _write_whole(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` so that a reader sees the old file or the new one, never a
+    truncated one: write a temporary file in the same directory, then rename it over the
+    destination.  ``Path.write_text`` truncates the destination first, and a second run into
+    the same output directory (or anything reading it) then finds an empty frame file."""
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        _umask = os.umask(0)
+        os.umask(_umask)
+        os.chmod(tmp, 0o666 & ~_umask)          # the permissions write_text would give
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -620,13 +672,13 @@ def main(argv=None) -> int:
     for i, (xyz, label) in enumerate(isomers):
         fname = _safe_name(label, i)
         comment = f"{label}  |  {args.smiles}" if label else args.smiles
-        (out / fname).write_text(_to_xyz(xyz, comment))
+        _write_whole(out / fname, _to_xyz(xyz, comment))
         natoms = len(_atom_lines(xyz))
         manifest.append({"index": i, "label": label, "file": fname, "natoms": natoms})
         if not args.quiet:
             print(f"  [{i:03d}] {label or '(single)'}  ({natoms} atoms)  -> {fname}")
 
-    (out / "manifest.json").write_text(json.dumps(
+    _write_whole(out / "manifest.json", json.dumps(
         {
             "smiles": args.smiles,
             "count": len(manifest),
