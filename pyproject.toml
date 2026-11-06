@@ -400,7 +400,7 @@ include = ["delfin*"]
 "delfin.notebooks" = ["*.ipynb"]
 # The simulated demo lab: the smoke check and the tests load it as data.
 "delfin.lab" = ["examples/*.yaml"]
-"delfin.manta" = ["*.md"]
+"delfin.manta" = ["*.md", "data/*.tsv", "data/*.json"]
 "delfin.voila_assets" = ["login_templates/*.html"]
 
 # Whatever an installer left in the source tree stays out of the wheel even
