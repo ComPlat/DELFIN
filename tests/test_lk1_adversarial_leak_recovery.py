@@ -229,3 +229,38 @@ class TestEngineNeverLoops:
         assert unknown in out, "leak text must be returned as written"
 
 
+# ------------------------------------------------- fresh-turn budget (wiring)
+
+class TestFreshTurnBudgetContract:
+    """The policy holds a per-TURN budget but has no reset API.  The
+    protected fresh-turn re-arm (engine.py ~:3157) must therefore build a
+    FRESH DSMLReplayPolicy() on every real user turn; reusing one instance
+    across turns silently bleeds _used and eventually starves every turn.
+    These pin that contract."""
+
+    def test_reusing_one_instance_across_turns_bleeds_the_budget(self):
+        """If the wiring reuses an instance (no reset), a later turn's FIRST
+        re-request is wrongly refused after earlier turns spent the budget.
+        max_per_turn=1: turn1 spends 1 -> exhausted; the SAME instance can
+        never again grant a fresh turn's first leak."""
+        from delfin.agent.leak_recovery import DSMLReplayPolicy
+        p = DSMLReplayPolicy(max_per_turn=1)
+        # turn 1: first re-request allowed, spent.
+        assert p.allowed_for(dominates=True) is True
+        p.spend()
+        assert p.exhausted is True
+        # turn 2, SAME reused instance (the wiring mistake): a fresh turn's
+        # first leak must NOT be refused, but a non-reset instance refuses it.
+        assert p.allowed_for(dominates=True) is False, (
+            "a reused instance cannot honour a fresh user turn - the wiring "
+            "must build a new DSMLReplayPolicy() per real user turn")
+
+    def test_fresh_instance_grants_each_turn_first_rerequest(self):
+        """The correct wiring builds a fresh instance per real user turn:
+        every new turn starts with allowed first re-request."""
+        from delfin.agent.leak_recovery import DSMLReplayPolicy
+        for _ in range(3):  # three consecutive fresh turns
+            p = DSMLReplayPolicy()
+            assert p.allowed_for(dominates=True) is True
+            assert p.used == 0
+            p.spend()
