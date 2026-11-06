@@ -46,6 +46,7 @@ import os
 from typing import Any
 
 from delfin import api as delfin_api
+from delfin import structure_edit
 
 
 # ---------------------------------------------------------------------------
@@ -2043,6 +2044,52 @@ def tool_geometry_write_orca_block(xyz: str, charge: int = 0,
                                                        multiplicity))
 
 
+def tool_geometry_renumber(xyz: str, reference_xyz: str,
+                           output_path: str = "") -> str:
+    """Renumber ``xyz`` onto ``reference_xyz`` atom order (atom_mapping).
+
+    Returns the reordered block, the renumbering table and the checks. When
+    ``output_path`` is given the reordered structure is written to a NEW file
+    and an existing target is REFUSED (the input is never overwritten). A
+    formula mismatch surfaces as an error, never silently.
+    """
+    result = structure_edit.renumber_to_reference(xyz, reference_xyz)
+    if result["error"]:
+        return _dumps(result)
+    if output_path:
+        written = structure_edit.write_xyz_new(output_path,
+                                               result["reordered_xyz"])
+        result = dict(result)
+        result["write"] = written
+    return _dumps(result)
+
+
+def tool_geometry_fix_hydrogens(xyz: str, output_path: str = "") -> str:
+    """Add missing coordinating / implicit hydrogens to an xyz structure.
+
+    Only adds hydrogens (never removes); placement uses DELFIN's covalent
+    radii and connectivity. When ``output_path`` is given the corrected
+    structure is written to a NEW file and an existing target is REFUSED.
+    """
+    result = structure_edit.fix_hydrogens(xyz)
+    if result["error"]:
+        return _dumps(result)
+    if output_path:
+        written = structure_edit.write_xyz_new(output_path, result["xyz"])
+        result = dict(result)
+        result["write"] = written
+    return _dumps(result)
+
+
+def tool_geometry_diff(xyz: str, reference_xyz: str) -> str:
+    """Per-atom diff of ``xyz`` against ``reference_xyz`` plus checks.
+
+    Reports changed elements, moved atoms, composition equality and
+    charge/multiplicity consistency.
+    """
+    return _dumps(structure_edit.structure_diff(xyz, reference_xyz))
+
+
 # ---------------------------------------------------------------------------
 # Server bootstrap
 # ---------------------------------------------------------------------------
@@ -2109,6 +2156,10 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="geometry_constraints_block")(_safe("geometry_constraints_block", tool_geometry_constraints_block))
     mcp.tool(name="geometry_build_smiles")(_safe("geometry_build_smiles", tool_geometry_build_smiles))
     mcp.tool(name="geometry_write_orca_block")(_safe("geometry_write_orca_block", tool_geometry_write_orca_block))
+    # XE1 — structure department (renumber / fix H / diff, over structure_edit)
+    mcp.tool(name="geometry_renumber")(_safe("geometry_renumber", tool_geometry_renumber))
+    mcp.tool(name="geometry_fix_hydrogens")(_safe("geometry_fix_hydrogens", tool_geometry_fix_hydrogens))
+    mcp.tool(name="geometry_diff")(_safe("geometry_diff", tool_geometry_diff))
     # Imaginary-frequency + functional-comparison helpers
     mcp.tool(name="extract_imaginary_frequencies")(_safe("extract_imaginary_frequencies", tool_extract_imaginary_frequencies))
     mcp.tool(name="compare_calculations")(_safe("compare_calculations", tool_compare_calculations))
