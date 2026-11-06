@@ -677,6 +677,71 @@ def session_worktree(workspace: str) -> str:
     return _sw.create(workspace)[0]
 
 
+#: The start form's label for the box inside a repository, where an own
+#: worktree costs nothing else. In a plain folder the label says what the
+#: start does there (a local project) -- OWN_WORKTREE_PLAIN_LABEL below.
+OWN_WORKTREE_LABEL_IN_REPO = "Own worktree"
+OWN_WORKTREE_PLAIN_LABEL = ("Own worktree (makes this folder a local project)")
+
+
+def plain_workspace(workspace: str) -> bool:
+    """Whether ``workspace`` is a directory outside any git repository
+    (the case the own-worktree offer needs consent in)."""
+    try:
+        from delfin.agent import session_presence as _presence
+        return bool(workspace) and not bool(
+            _presence.repository_of(workspace)["root"])
+    except Exception:
+        return False
+
+
+def start_session_worktree(workspace: str, *, ask=None) -> dict:
+    """A session worktree in a PLAIN folder: consent first, then the
+    engine's ``session_worktree.start``.
+
+    ``ask`` receives the consent question and returns True to proceed;
+    None (nobody to ask) is a no. The folder is not touched before a yes;
+    a refusal (home, system paths, inside another repository) raises
+    ValueError with the reason. Inside a repository no consent is needed:
+    the worktree costs nothing there, and ``session_worktree`` above
+    applies.
+    """
+    from delfin.agent import session_worktree as _sw
+
+    ws = str(Path(str(workspace).strip() or ".").expanduser())
+    if not plain_workspace(ws):
+        # A repository already: the plain consent path does not apply.
+        return {"path": session_worktree(ws)}
+    from delfin.agent import local_project as _lp
+    if not (callable(ask) and ask(_lp.consent_question(_lp.plan(ws)))):
+        raise PermissionError("no consent: the folder was not changed")
+    try:
+        made = _sw.start(ws, init_project=True)
+    except _sw.NeedsLocalProject as exc:          # pragma: no cover
+        raise PermissionError(exc.question) from None
+    except Exception as exc:
+        raise ValueError(str(exc)) from None
+    # The folder is a repository now: the presence layer's git cache still
+    # says plain for it (a TTL cache), which would send the next start back
+    # through the consent path.
+    try:
+        from delfin.agent import session_presence as _presence
+        _presence._git_cache.pop(ws, None)
+        _presence._git_cache.pop(str(Path(ws).resolve()), None)
+    except Exception:
+        pass
+    return made
+
+
+def merge_session_worktree(workspace: str) -> dict:
+    """Merge the session worktree ``workspace`` is in back into its main
+    checkout: the engine's ``session_worktree.merge``. Returns
+    ``{"status": "ok"|"conflict"|"error", "files", "message", "target"}``;
+    a conflict is reported, the main checkout is left as it was."""
+    from delfin.agent import session_worktree as _sw
+    return _sw.merge(workspace)
+
+
 def read_worktree_sidecar(workspace) -> dict | None:
     """The sidecar for the session worktree ``workspace`` is in, or None.
 
@@ -1445,13 +1510,26 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     cancel_btn = _classed(widgets.Button(description="Cancel"),
                           "delfin-session-cancel")
     own_worktree_box = widgets.Checkbox(
-        value=False, description="Own worktree", indent=False,
+        value=False, description=OWN_WORKTREE_LABEL_IN_REPO, indent=False,
         tooltip="Work on a branch of its own in a separate checkout",
         layout=widgets.Layout(display="none"))
     worktree_hint = _classed(widgets.HTML(""), "delfin-session-hint")
+    # The consent row for an own worktree in a plain folder (hidden until
+    # a start in one asks): the question, Continue and Cancel.
+    consent_box = _classed(widgets.VBox(), "delfin-session-consent")
+    consent_yes = _classed(widgets.Button(description="Continue",
+                                          tooltip=("Make this folder a local "
+                                                   "git project and start in "
+                                                   "a worktree of it")),
+                           "delfin-session-consent-yes")
+    consent_no = _classed(widgets.Button(description="Cancel",
+                                         tooltip="Leave the folder as it is"),
+                          "delfin-session-consent-no")
+    consent_yes.on_click(lambda _b: _on_consent_yes())
+    consent_no.on_click(lambda _b: _hide_consent())
     new_form = _classed(widgets.VBox(
         [_classed(widgets.HTML("Working directory"), "delfin-session-label"),
-         workdir_box, own_worktree_box, worktree_hint,
+         workdir_box, own_worktree_box, worktree_hint, consent_box,
          _classed(widgets.HBox([cancel_btn, start_btn]),
                   "delfin-session-actions")],
         layout=widgets.Layout(display="none")), "delfin-session-form")
@@ -1913,12 +1991,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             "delfin-session-close")
         info = _classed(widgets.HTML(html.escape(_display_path(where))),
                         "delfin-session-path")
+        # A session in its own worktree gets a "Merge back" action: its
+        # committed and uncommitted changes go to the main checkout,
+        # uncommitted, for review. A conflict is said, not overwritten --
+        # the worktree stays so the work is not lost.
+        merge_btn = None
+        if read_worktree_sidecar(where) is not None:
+            merge_btn = _classed(widgets.Button(
+                description="Merge back",
+                tooltip=("Bring this session's changes back to the main "
+                         "checkout, uncommitted, for review; a conflict is "
+                         "shown, nothing overwritten")),
+                "delfin-session-merge")
+            merge_btn.on_click(
+                lambda _b, _where=where: _merge_back(_where))
         row = _classed(widgets.HBox([
             _classed(widgets.VBox([title_btn, info]), "delfin-session-text"),
-            close_btn]), "delfin-session-item")
+            *([merge_btn] if merge_btn else []), close_btn]),
+            "delfin-session-item")
         rec = {"key": key, "workspace": where, "tab": tab, "refs": refs or {},
                "ctx": session_ctx, "title_btn": title_btn, "info": info,
-               "row": row}
+               "row": row, "merge_btn": merge_btn}
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
         session_ctx.agent_status_html.observe(
@@ -1930,6 +2023,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         refresh()
         _persist()
         return rec
+
+    def _merge_back(where: str) -> None:
+        """Merge the session worktree ``where`` is in back into its main
+        checkout: said in the notice, conflicts included; a conflict leaves
+        the main checkout as it was and keeps the worktree."""
+        try:
+            out = merge_session_worktree(where)
+        except Exception as exc:
+            _say(f"Merge back failed: {exc}")
+            return
+        if out["status"] == "ok":
+            files = ", ".join(out.get("files") or []) or "no file changes"
+            _say(f"Merged back to {out.get('target')}: {files}. "
+                 "Uncommitted, for review.")
+        elif out["status"] == "conflict":
+            files = ", ".join(out.get("files") or []) or "the changed files"
+            _say(f"Conflict, nothing overwritten: {files}. "
+                 f"{out.get('message') or ''} The worktree is kept; "
+                 "resolve it there and merge again.")
+        else:
+            _say(f"Merge back did not apply: {out.get('message') or 'error'}")
 
     def close_session(key: str) -> None:
         """Close a session: it is saved, stops, and leaves the list."""
@@ -2128,8 +2242,10 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             busy = _presence.in_same_repository(where) if in_repo else []
         except Exception:
             in_repo, busy = False, []
-        own_worktree_box.layout.display = "" if in_repo else "none"
+        own_worktree_box.layout.display = "" if (in_repo or where) else "none"
         own_worktree_box.value = bool(busy)
+        own_worktree_box.description = (OWN_WORKTREE_LABEL_IN_REPO if in_repo
+                                        else OWN_WORKTREE_PLAIN_LABEL)
         if busy:
             names = ", ".join(
                 session_label(r.get("title"), r.get("session_id"))
@@ -2157,6 +2273,9 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             _say(f"Not a directory: {where}")
             return
         target = str(Path(where).expanduser()) if where else ""
+        plain = plain_workspace(target or default_workspace(ctx)) \
+            if (own_worktree_box.value
+                and own_worktree_box.layout.display != "none") else False
         # A directory another LIVE session is working in is refused, not
         # silently shared. The picker is a plain filesystem listing, so a
         # worktree belonging to a running session was offered and typeable;
@@ -2178,6 +2297,22 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                      f"pick another directory.")
                 return
         if own_worktree_box.value and own_worktree_box.layout.display != "none":
+            if plain:
+                # A plain folder: making it a repository needs consent.
+                # ipywidgets has no blocking dialog, so the start stops at
+                # a visible confirm row in the form (question, Continue,
+                # Cancel); the Start continues only after the yes, so
+                # nothing is done before the consent -- the same question
+                # the engine's own window asks, asked once per start.
+                _say("")
+                from delfin.agent import local_project as _LP
+                consent_box.children = (widgets.HTML(
+                    "<div style='font-size:11px'>"
+                    f"{html.escape(_LP.consent_question(_LP.plan(target)))}"
+                    "</div>"), consent_yes, consent_no)
+                consent_box.layout.display = ""
+                start_btn.layout.display = "none"
+                return
             try:
                 target = session_worktree(target or default_workspace(ctx))
             except Exception as exc:
@@ -2185,6 +2320,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 return
         _on_cancel()
         open_session(target)
+
+    def _on_consent_yes(_btn=None) -> None:
+        """Continue after the consent row: hide it, make the folder a
+        local project and start in a worktree of it."""
+        _hide_consent()
+        where = str(workdir_box.value or "").strip()
+        target = str(Path(where).expanduser()) if where \
+            else default_workspace(ctx)
+        try:
+            made = start_session_worktree(target, ask=lambda _q: True)
+            target = made["path"]
+        except Exception as exc:
+            _say(f"No worktree was created: {exc}")
+            return
+        _on_cancel()
+        open_session(target)
+
+    def _hide_consent(_btn=None) -> None:
+        consent_box.children = ()
+        consent_box.layout.display = "none"
+        start_btn.layout.display = ""
 
     def _on_resume(change) -> None:
         sid = str(change.get("new") or "")
@@ -2328,7 +2484,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         "refresh": refresh,
         "stop_refresh": stop_refresh,
         "form": {"new": new_btn, "workdir": workdir_box,
-                 "own_worktree": own_worktree_box, "start": start_btn},
+                 "own_worktree": own_worktree_box, "start": start_btn,
+                 "consent_yes": consent_yes, "consent_no": consent_no},
         # Exported so the reclamation can be driven in a test; a pass that
         # removes directories should not be reachable only at startup.
         "reclaim_worktrees": reclaim_orphaned_worktrees,
