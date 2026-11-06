@@ -31,13 +31,15 @@ from delfin.agent.longhorizon import metrics as m
 
 
 def _real_turns(tmp_path, monkeypatch, session, entries):
-    """Real writer turn_metrics.record -> read back via root=."""
+    """Real writer turn_metrics.record -> read back (turn_metrics.read has
+    no root=; the monkeypatched _DIR holds the redirected store, which is
+    how the search_docs gate and the KG4 suite drive it too)."""
     from delfin.agent import turn_metrics as tm
     store = tmp_path / "turn_metrics"
     monkeypatch.setattr(tm, "_DIR", store)
     for e in entries:
         tm.record(session, **e)
-    return tm.read(session, root=str(store))
+    return tm.read(session)
 
 
 def _real_tools(tmp_path, monkeypatch, session, calls):
