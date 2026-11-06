@@ -33,6 +33,7 @@ device that is offline is unknown).
 from __future__ import annotations
 
 import inspect
+import time
 
 import pytest
 import yaml
@@ -154,15 +155,18 @@ def test_read_returns_the_devices_retained_state_with_its_timestamp():
     fake = FakeBroker(clock)
     # the device reported it is on at t0 and has not changed since
     fake.publish("lab/relay1/cmd/power", "on")
-    clock.advance(2)
+    clock.advance(2)                       # we ask two seconds later
     drv = mqtt.MqttDriver(clock=clock, transport=fake)
     got = drv.read(_relay1())
-    assert got["power"] == Reading("on", None, 1002.0)
+    # the Reading carries WHEN THE DEVICE produced the value (t0), not when
+    # it was asked -- so a cached/frozen device shows as stale in the kernel
+    assert got["power"] == Reading("on", None, 1000.0)
 
 
 def test_subscribes_to_every_state_topic_and_availability_on_connect():
     clock = _Clock()
     fake = FakeBroker(clock)
+    fake.publish("lab/relay1/cmd/power", "off")
     drv = mqtt.MqttDriver(clock=clock, transport=fake)
     drv.read(_relay1())
     for want in ("lab/relay1/state/power", "lab/relay1/availability"):
@@ -252,7 +256,7 @@ def test_credentials_resolved_by_reference_only(monkeypatch):
     fake = FakeBroker(clock)
     seen = []
     monkeypatch.setattr(
-        mqtt.credentials, "load_credential",
+        mqtt, "credentials",
         lambda name: seen.append(name) or
         '{"username": "edge", "password": "s3cr3t"}')
     drv = mqtt.MqttDriver(clock=clock, transport=fake)
@@ -278,7 +282,7 @@ def test_transport_error_on_a_write_makes_the_kernel_go_safe(lab, monkeypatch):
     from delfin.lab import safety, store
     from _lab_support import call
 
-    fake = FakeBroker(_Clock())
+    fake = FakeBroker(lambda: time.time())
     monkeypatch.setattr(mqtt, "broker_factory",
                         lambda device, **kw: fake)
     fake.publish("lab/relay1/cmd/power", "off")
