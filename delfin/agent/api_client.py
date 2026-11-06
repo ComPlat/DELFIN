@@ -3801,8 +3801,12 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*seq\b",
     # Asking a chemistry tool about itself. Anchored to the exact asking
     # forms: `xtb input.xyz` (a real calculation) is not matched, and the
-    # flags are end-anchored so nothing rides after --help.
-    r"^\s*(?:xtb|orca_2mkl|crest)\s+(?:--version|--help|-h)\s*$",
+    # flags are end-anchored so nothing rides after --help. xtb, CREST,
+    # ORCA, sbatch and delfin are not here: calc_policy.information_call
+    # admits their asking forms, and only when the bare name runs the
+    # installed program (a pattern cannot tell `xtb` on PATH from a script
+    # in the workspace named xtb).
+    r"^\s*orca_2mkl\s+(?:--version|--help|-h)\s*$",
     # cd <literal-path>: harmless on its own (it executes nothing, and each
     # bash call is a fresh subprocess) and the common prefix in
     # `cd /path && <cmd>`. Auto-allowed ONLY for a literal path — the char class
@@ -7825,6 +7829,9 @@ _PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
     # Planning itself
     "task_create", "task_update", "task_adopt", "exit_plan_mode",
     "ask_user_question", "report_verdict", "skill",
+    # Lab: reading, the dry run, and the emergency stop. A stop is never
+    # refused for the mode; it only moves devices toward their safe state.
+    "lab_devices", "lab_read", "lab_plan_check", "lab_estop",
 })
 
 # What plan mode may run THROUGH AN MCP SERVER. The native list above plus
@@ -7995,6 +8002,29 @@ def _artifact_path_inside(base: str, perms) -> str:
         return ""
 
 
+def _installed_program_test(perms, cwd: Path):
+    """The test calc_policy.information_call applies to a bare program
+    name: it runs a file found on the PATH this session's shell gets
+    (_scrubbed_bash_env) outside the session's roots, its working
+    directory and its scratch dir (calc_policy.trusted_program)."""
+    from . import calc_policy
+    path = _scrubbed_bash_env().get("PATH", "")
+    untrusted = [str(cwd)]
+    try:
+        untrusted += [str(r) for r in perms.all_workspace_roots()]
+    except Exception:
+        untrusted.append(str(getattr(perms, "workspace", ".")))
+    try:
+        untrusted.append(_session_scratch_dir())
+    except Exception:
+        pass
+
+    def _test(name: str) -> bool:
+        return calc_policy.trusted_program(
+            name, path=path, untrusted=untrusted) is not None
+    return _test
+
+
 def _calculation_verdict(perms, cmd: str, args: dict,
                          wall_limit_s: Optional[float]):
     """calc_policy's verdict for a bash command, or None on any failure.
@@ -8013,7 +8043,8 @@ def _calculation_verdict(perms, cmd: str, args: dict,
             cwd = ws / cwd
         return calc_policy.judge_command(
             _split_shell_segments(cmd), cwd, perms._segment_auto_allowed,
-            tool_wall_s=wall_limit_s)
+            tool_wall_s=wall_limit_s,
+            program_trusted=_installed_program_test(perms, cwd))
     except Exception:
         return None
 
@@ -10407,8 +10438,16 @@ class KitToolPermissions:
         # the full gate with the forms a session's classifier missed).
         if _reader_writes_or_runs(cmd):
             return False
+        # A leading assignment is not the command: matched case-blind with
+        # a word boundary, `^\s*(?:...|env|...)\b` took `ENV=x python3
+        # evil.py` (and `ls=1 sh x.sh`, `Cat=1 ...`) for `env`/`ls`/`cat`
+        # and ran it unasked. A pattern admits such a segment only when its
+        # match reaches past the assignment's `=` (a rule written for that
+        # assignment).
+        _assign = re.match(r"\s*[A-Za-z_][A-Za-z0-9_]*=", cmd)
         for pat in self.bash_auto_allow_patterns:
-            if re.search(pat, cmd, re.IGNORECASE):
+            _m = re.search(pat, cmd, re.IGNORECASE)
+            if _m and (_assign is None or _m.end() >= _assign.end()):
                 return True
         # Workspace-local virtualenv tool invocations are safe to
         # auto-allow in default mode because sandboxing still confines
@@ -11354,6 +11393,83 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                                   "items": {"type": "string"}},
                 },
                 "required": ["task_text"],
+            },
+        },
+    },
+    # Lab device control (delfin/lab, docs/design/lab-control.md): every
+    # write goes through the safety kernel, which reads limits from the
+    # pinned manifest only. Advertised only where a lab manifest exists
+    # (tool_unavailable_reason), so an installation without one pays
+    # nothing per request.
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_devices",
+            "description": "Lab devices: limits, levels, state.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_read",
+            "description": "Readings of one lab device, with their age.",
+            "parameters": {
+                "type": "object",
+                "properties": {"device": {"type": "string"}},
+                "required": ["device"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_set",
+            "description": (
+                "Set a device channel via the safety kernel; a refusal says "
+                "why. Hazardous: after a person approves, repeat with "
+                "approval=<id>."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string"},
+                    "channel": {"type": "string"},
+                    "value": {},
+                    "unit": {"type": "string"},
+                    "approval": {"type": "string"},
+                },
+                "required": ["device", "channel", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_plan_check",
+            "description": (
+                "Dry-run steps [{device,channel,value,unit}]: limits, "
+                "interlocks; no write."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"steps": {"type": "array",
+                                         "items": {"type": "object"}}},
+                "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_estop",
+            "description": (
+                "E-stop: all devices, or one module, to safe state; a "
+                "person clears it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"module": {"type": "string"}},
             },
         },
     },
@@ -13626,6 +13742,20 @@ _SUBAGENT_SPAWN_TOOL_NAMES: frozenset[str] = frozenset({
     "subagent", "orchestrate",
 })
 
+# Lab device control (delfin/lab). Executable only where the installation
+# has a lab manifest; the executor answers the same in its own refusal.
+_LAB_TOOL_NAMES: frozenset[str] = frozenset({
+    "lab_devices", "lab_read", "lab_set", "lab_plan_check", "lab_estop",
+})
+
+
+def _lab_configured() -> bool:
+    try:
+        from delfin.lab.store import lab_configured
+        return bool(lab_configured())
+    except Exception:
+        return False
+
 
 def estimate_schema_tokens(obj: Any) -> int:
     """House estimate of the tokens *obj* costs on the wire."""
@@ -13700,6 +13830,9 @@ class ToolSurfaceContext:
     # rather than being a second policy that happens to agree with it today.
     session_allowed: frozenset[str] = frozenset()
     session_denied: frozenset[str] = frozenset()
+    # Whether this installation has a lab manifest (delfin.lab). Default
+    # True like the index flags; the live surface passes the real answer.
+    has_lab: bool = True
 
 
 def tool_unavailable_reason(
@@ -13753,6 +13886,9 @@ def tool_unavailable_reason(
         return "doc index not available"
     if base in _CALC_INDEX_TOOL_NAMES and not ctx.has_calc_index:
         return "calc index not available"
+    if base in _LAB_TOOL_NAMES:
+        if not ctx.has_lab:
+            return "no lab manifest on this installation"
     if base in _OFFICE_TOOL_NAMES:
         needed = _OFFICE_TOOL_BACKENDS.get(base, ())
         available = ctx.office_backends
@@ -18881,6 +19017,13 @@ class _DocToolExecutor:
         if name in ("orca_explain", "orca_check_input", "workflow_candidates"):
             return self._execute_orca_knowledge(name, arguments)
 
+        # Lab device control: delfin.lab.tools hands every call to the
+        # safety kernel. The permission mode is deliberately not passed on.
+        if name in ("lab_devices", "lab_read", "lab_set", "lab_plan_check",
+                    "lab_estop"):
+            from delfin.lab import tools as _lab_tools
+            return _lab_tools.execute(name, arguments, permissions)
+
         if name == "remember_permission":
             if permissions is None:
                 return json.dumps({"error": (
@@ -23473,6 +23616,24 @@ class _DocToolExecutor:
             # upload the egress scan flagged is never admitted here.
             _calc = _calculation_verdict(perms, cmd, args, wall_limit_s)
             _calc_reason = ""
+            # An information call (`xtb --version 2>&1 | head -3`, `command
+            # -v crest`) starts nothing: admitted here when every other
+            # segment is auto-allowed, within the managed only_allow, with
+            # no rule of the user's on it; never named as a calculation.
+            if (_calc is not None and getattr(_calc, "information", False)
+                    and _calc.admit and egress is None
+                    and not _approved_here
+                    and _managed_only_allow_admits(perms, cmd)):
+                _info_rule = _permission_rule_hit(perms, "bash",
+                                                  {"command": cmd})
+                if _info_rule is not None and _info_rule[0] == "deny":
+                    return _refuse_by_rule("bash", _info_rule[1])
+                if _info_rule is None:
+                    _record_security_event(
+                        "information_call", "bash", _calc.summary[:200],
+                        blocked=False)
+                    return self._classifier_second_opinion(
+                        perms, name, args, mode)
             if _calc is not None and _calc.calculation:
                 _calc_rule = _permission_rule_hit(perms, "bash",
                                                   {"command": cmd})
@@ -30219,14 +30380,18 @@ def _scrubbed_bash_env() -> dict:
     # program started without it takes every core the host has (measured:
     # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
     # on a cluster login node are everyone's cores. Inside a Slurm
-    # allocation the cap is the allocation, on a login node the local limit
-    # calc_policy admits (2), elsewhere at most four. A job
-    # submitted from here inherits it unless its script sets its own.
+    # allocation the cap is the allocation, elsewhere the local limit
+    # calc_policy admits unasked (2 on a login node, half the available
+    # CPUs and at most four on a workstation): calc_policy.default_threads
+    # is the one source, so the gate judges the number this shell sets. A
+    # job submitted from here inherits it unless its script sets its own.
+    # If that check cannot be consulted, one thread: never more than any
+    # host's unasked limit (no second copy of the rule here).
     try:
         from . import calc_policy as _cp
         _cap = str(_cp.default_threads(_cp.host_kind(env), env))
     except Exception:
-        _cap = str(max(1, min(4, os.cpu_count() or 1)))
+        _cap = "1"
     for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
                   "OPENBLAS_NUM_THREADS"):
         env.setdefault(_name, _cap)
@@ -33148,6 +33313,7 @@ class OpenAIClient(_BaseClient):
             has_calc_index=bool(has_calc_tools),
             has_office_libs=_office_backends_available(),
             office_backends=_office_backend_set(),
+            has_lab=_lab_configured(),
             # Read off the SAME object the executor gate reads, so the two
             # cannot disagree: a tool this session excluded is dropped from
             # the surface because it would be refused, not instead of it.
