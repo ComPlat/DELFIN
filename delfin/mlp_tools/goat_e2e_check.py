@@ -32,6 +32,23 @@ _TERMINATED_MARK = "****ORCA TERMINATED NORMALLY****"
 
 _DEFAULT_BASE = "extopt"
 
+#: Recognised job-failure shapes observed on live GOAT runs (operator,
+#: ethanol jobs 8372365/8372398/8372530, tails under .gate/a4_job/live_runs/).
+#: Each is ``(substring, category)``.  A substring found in any job-log file
+#: (job stderr ``*.err`` or the ORCA ``.out``) makes the checker report the
+#: run as failed and NAME which failure it was, instead of only saying the
+#: run did not end with the termination marker.
+_JOB_FAILURES = (
+    ("There are not enough slots",        "mpi"),
+    ("not enough slots available",        "mpi"),      # Open MPI slot exhaustion
+    ('Error (ORCA_MAIN):',                "orca_main"),
+    ('ERROR: File "orca-mlips-',          "progext"),  # ProgExt executable not found
+    ("ORCA finished by error termination", "orca_util"),
+    ("aborting the run",                  "abort"),
+    ("Error (ORCA/EXT): external program failed", "external_exit"),  # MLIP prog non-zero exit
+    ("error: unrecognized arguments",     "external_exit"),
+)
+
 
 def check_goat_e2e(
     run_dir: Path | str,
@@ -112,6 +129,26 @@ def check_goat_e2e(
         findings.append(_finding(
             "error", f"{files['output']} is missing; no ORCA output at all"))
     goat["terminated_normally"] = terminated
+
+    # --- job-log failures: name WHICH failure ended the run (D2-D4) --------
+    # A run can end without the termination marker for a specific reason
+    # (Open MPI slot exhaustion, an ORCA_MAIN input-check abort, an external
+    # MLIP program not found / rejected, ...).  Surface that reason rather
+    # than only "does not end with the termination marker".
+    job_log = "".join(
+        p.read_text(errors="replace") for p in sorted(run_dir.glob("*.err"))
+    )
+    if out_path.is_file():
+        job_log += out_path.read_text(errors="replace")
+    for needle, category in _JOB_FAILURES:
+        if needle in job_log and not any(
+            needle in f.get("message", "") for f in findings
+        ):
+            findings.append(_finding(
+                "error",
+                f"job log shows a {category} failure: {needle!r} -- the run "
+                "did not finish a usable GOAT ensemble",
+            ))
 
     # --- the ensemble exists and is non-empty ------------------------------
     n_conf = goat["n_conformers"]
