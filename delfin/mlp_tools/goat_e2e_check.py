@@ -130,6 +130,31 @@ def check_goat_e2e(
             "value",
         ))
 
+    # --- energies sorted (GOAT writes the lowest conformer first) -----------
+    sorted_eh = _is_sorted(eh)
+    goat["energies_sorted"] = sorted_eh
+    if len(eh) > 1 and not sorted_eh:
+        findings.append(_finding(
+            "warn",
+            "ensemble energies are not sorted (the lowest conformer must "
+            "come first); the ensemble order does not reflect GOAT's energy "
+            "ranking",
+        ))
+
+    # --- the MLIP server ran on the GPU (log evidence, not assumption) -----
+    gpu_hint = _gpu_evidence(run_dir)
+    goat["gpu_evidence"] = gpu_hint
+    if gpu_hint is None:
+        findings.append(_finding(
+            "warn",
+            "no GPU evidence (CUDA/device line) in any log of the job "
+            "directory; the MLIP server's use of a GPU is not shown by the "
+            "logs -- check the scheduler's sstat for the job",
+        ))
+
+    # --- wall time recorded from the ORCA .out timing line ------------------
+    goat["walltime_s"] = _parse_walltime(out_path)
+
     # --- no stale ORCA/MLIP process marker in the job directory ------------
     stale = _stale_run_markers(run_dir)
     if stale:
@@ -152,6 +177,59 @@ def check_goat_e2e(
 
 def _finding(level: str, message: str) -> dict:
     return {"level": level, "message": message}
+
+
+def _is_sorted(values: tuple[float, ...]) -> bool:
+    """True when every adjacent pair is non-decreasing; a single energy
+    value or an empty ensemble is vacuously sorted."""
+    return all(a <= b for a, b in zip(values, values[1:]))
+
+
+_GPU_MARKERS = ("cuda", "a100", "a6000", "titan", "rtx", "nvidia-smi")
+
+
+def _gpu_evidence(run_dir: Path) -> Optional[str]:
+    """The first log line in the job directory that shows a GPU device.
+
+    Scans every ``*.log`` and ``*.out`` file for a line carrying a
+    CUDA/GPU marker (device=cuda, an NVIDIA card name, or an nvidia-smi
+    call).  Absence is NOT proof the MLIP ran on CPU (the server may log
+    elsewhere); it is reported as a warning, never as an error -- the
+    GPU verdict for the job is the scheduler's sstat, not this heuristic.
+    """
+    if not run_dir.is_dir():
+        return None
+    for p in sorted(run_dir.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in (".log", ".out"):
+            continue
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            ll = line.lower()
+            if any(m in ll for m in _GPU_MARKERS):
+                return line.strip()
+    return None
+
+
+def _parse_walltime(out_path: Path) -> Optional[float]:
+    """Wall-clock seconds from ORCA's final 'Total Job Time (sec): N' line.
+
+    ORCA prints this in the timing block at the end of a run.  ``None``
+    when the .out is absent or carries no such line.
+    """
+    if not out_path.is_file():
+        return None
+    for line in out_path.read_text(errors="replace").splitlines():
+        if "total job time" in line.lower():
+            rest = line.split("sec", 1)[-1]
+            digits = "".join(c for c in rest if c.isdigit() or c == ".")
+            try:
+                return float(digits)
+            except ValueError:
+                return None
+    return None
 
 
 def _frame_size(structures) -> Optional[int]:

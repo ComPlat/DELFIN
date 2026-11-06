@@ -42,10 +42,10 @@ H 0.757000 0.586000 0.200000
 H -0.757000 0.586000 0.200000
 """
 
-# Same three frames but the middle energy is HIGHER than the first: not
-# sorted (GOAT writes lowest first).
+# Same three frames but the middle energy is HIGHER than both neighbours,
+# breaking GOAT's lowest-first order.
 UNSORTED_ENSEMBLE = GOOD_ENSEMBLE.replace(
-    "-76.3990000000 converged=true", "-76.3995000000 converged=true"
+    "-76.3990000000 converged=true", "-76.3975000000 converged=true"
 )
 
 # A frame whose energy is NaN.
