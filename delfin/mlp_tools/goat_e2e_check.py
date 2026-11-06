@@ -61,9 +61,32 @@ def check_goat_e2e(
     out_path = run_dir / files["output"]
 
     # --- ensemble + global minimum through the real reader ----------------
-    goat = read_mlips_goat(run_dir, base_name)
+    # F1/F2 (reviewer s13): read_goat_ensemble raises ValueError when a
+    # frame comment carries no energy or the ensemble mixes the '<E>
+    # converged=true' and 'Energy <x>' forms.  The checker must not crash
+    # on such a run -- it exists to flag it -- so fall back to the empty
+    # ensemble shape read_goat_ensemble returns for an absent ensemble and
+    # surface the parser's message as an error finding.
+    try:
+        goat = read_mlips_goat(run_dir, base_name)
+    except ValueError as exc:
+        goat = {
+            "energies_eh": (), "energies_kcal_mol": (), "structures": (),
+            "ensemble_file": None, "global_minimum_file": None,
+            "n_conformers": 0,
+        }
+        goat["parse_error"] = str(exc)
     goat["ok"] = False  # filled below
     findings: list[dict] = []
+
+    # A malformed ensemble (no-energy frame / mixed comment forms) is not a
+    # usable ensemble: surface the parser's ValueError as an error finding.
+    if "parse_error" in goat:
+        findings.append(_finding(
+            "error",
+            "the final ensemble could not be read: "
+            f"{goat['parse_error']}",
+        ))
 
     # --- termination: the .out ended cleanly -------------------------------
     terminated: Optional[bool] = None

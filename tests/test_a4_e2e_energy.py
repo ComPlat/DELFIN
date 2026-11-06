@@ -53,6 +53,23 @@ NAN_ENSEMBLE = GOOD_ENSEMBLE.replace(
     "-76.3990000000 converged=true", "nan converged=true"
 )
 
+# F1 (reviewer s13): a frame whose comment line carries no parseable
+# energy.  read_goat_ensemble (orca_goat_opi.py:314-318) raises ValueError
+# ("... comment line ... carries no energy"); check_goat_e2e must return
+# ok=False with an error finding instead of crashing.
+NO_ENERGY_ENSEMBLE = GOOD_ENSEMBLE.replace(
+    "-76.3990000000 converged=true", "converged=true"
+)
+
+# F2 (reviewer s13): the ensemble mixes the '<E> converged=true' (eh) and
+# 'Energy <x>' (kcal) comment forms.  read_goat_ensemble
+# (orca_goat_opi.py:319-323) raises ValueError ("mixes the ... forms");
+# check_goat_e2e must return ok=False with an error finding instead of
+# crashing.
+MIXED_ENSEMBLE = GOOD_ENSEMBLE.replace(
+    "-76.3990000000 converged=true", "Energy -76.39"
+)
+
 GOOD_GLOBAL_MINIMUM = """\
 # SYNTHETIC test fixture written for DELFIN -- not ORCA output
 3
@@ -140,3 +157,24 @@ def test_wall_time_is_read_from_the_out(tmp_path):
     _write_base(tmp_path, ensemble=GOOD_ENSEMBLE, out=OUT_WITH_TIMING)
     report = check_goat_e2e(tmp_path, base_name="extopt")
     assert report["walltime_s"] == pytest.approx(1234.56)
+
+
+def test_no_energy_frame_returns_finding_not_raise(tmp_path):
+    # F1 (reviewer s13): a broken ensemble frame whose comment lacks an
+    # energy must not crash the checker -- it is exactly the run the
+    # checker exists to flag.
+    _write_base(tmp_path, ensemble=NO_ENERGY_ENSEMBLE)
+    report = check_goat_e2e(tmp_path, base_name="extopt")
+    assert report["ok"] is False
+    assert any("energy" in f.get("message", "").lower()
+               for f in report["findings"])
+
+
+def test_mixed_energy_forms_return_finding_not_raise(tmp_path):
+    # F2 (reviewer s13): mixing '<E> converged=true' and 'Energy <x>'
+    # comment forms must be reported as a broken ensemble, not crash.
+    _write_base(tmp_path, ensemble=MIXED_ENSEMBLE)
+    report = check_goat_e2e(tmp_path, base_name="extopt")
+    assert report["ok"] is False
+    assert any("mix" in f.get("message", "").lower()
+               for f in report["findings"])
