@@ -2044,41 +2044,26 @@ def tool_geometry_write_orca_block(xyz: str, charge: int = 0,
                                                        multiplicity))
 
 
-def tool_geometry_renumber(xyz: str, reference_xyz: str,
-                           output_path: str = "") -> str:
+def tool_geometry_renumber(xyz: str, reference_xyz: str) -> str:
     """Renumber ``xyz`` onto ``reference_xyz`` atom order (atom_mapping).
 
-    Returns the reordered block, the renumbering table and the checks. When
-    ``output_path`` is given the reordered structure is written to a NEW file
-    and an existing target is REFUSED (the input is never overwritten). A
-    formula mismatch surfaces as an error, never silently.
+    Returns the reordered xyz block, the renumbering table and checks. The
+    tool writes nothing to disk: the caller (the structure expert) writes the
+    NEW file with ``write_file``, whose gate refuses overwriting. A formula
+    mismatch surfaces as an error, never silently.
     """
-    result = structure_edit.renumber_to_reference(xyz, reference_xyz)
-    if result["error"]:
-        return _dumps(result)
-    if output_path:
-        written = structure_edit.write_xyz_new(output_path,
-                                               result["reordered_xyz"])
-        result = dict(result)
-        result["write"] = written
-    return _dumps(result)
+    return _dumps(structure_edit.renumber_to_reference(xyz, reference_xyz))
 
 
-def tool_geometry_fix_hydrogens(xyz: str, output_path: str = "") -> str:
+def tool_geometry_fix_hydrogens(xyz: str) -> str:
     """Add missing coordinating / implicit hydrogens to an xyz structure.
 
     Only adds hydrogens (never removes); placement uses DELFIN's covalent
-    radii and connectivity. When ``output_path`` is given the corrected
-    structure is written to a NEW file and an existing target is REFUSED.
+    radii and connectivity. Returns the corrected xyz block and a diff; the
+    tool writes nothing to disk (the expert writes the NEW file via
+    ``write_file``, whose gate refuses overwriting).
     """
-    result = structure_edit.fix_hydrogens(xyz)
-    if result["error"]:
-        return _dumps(result)
-    if output_path:
-        written = structure_edit.write_xyz_new(output_path, result["xyz"])
-        result = dict(result)
-        result["write"] = written
-    return _dumps(result)
+    return _dumps(structure_edit.fix_hydrogens(xyz))
 
 
 def tool_geometry_diff(xyz: str, reference_xyz: str) -> str:

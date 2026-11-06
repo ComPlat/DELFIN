@@ -15,8 +15,10 @@ re-implemented:
   ``delfin.atom_mapping.map_atoms`` (a second mapper would be a defect).
 
 Design rules the package target fixes:
-- Every mutation returns a NEW structure; no input is ever overwritten.
-  ``write_xyz_new`` REFUSES a path that already exists.
+- Every mutation returns a NEW structure; no tool writes a file. The
+  structure expert writes the new file with the gate-checked ``write_file``
+  (which refuses overwriting); an MCP tool writing a file would bypass the
+  write-scope gate, so nothing here touches disk.
 - A formula mismatch in a renumber is surfaced (ValueError), never hidden.
 - ``fix_hydrogens`` only ever ADDS hydrogens, never removes an atom.
 """
@@ -24,8 +26,7 @@ Design rules the package target fixes:
 from __future__ import annotations
 
 from collections import Counter
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from delfin.tools.geometry_edit import (
     Geom,
@@ -285,25 +286,3 @@ def structure_diff(xyz_a_text: str, xyz_b_text: str) -> dict[str, Any]:
         ],
         "error": None,
     }
-
-
-# ---------------------------------------------------------------------------
-# new-file-only writer (never overwrites)
-# ---------------------------------------------------------------------------
-
-def write_xyz_new(path: str, xyz_text: str) -> dict[str, Any]:
-    """Write ``xyz_text`` to ``path`` ONLY if the file does not exist.
-
-    Refuses to overwrite an existing target (the ``refuse to overwrite the
-    input`` benchmark task). Parent directories are created; the refusal is
-    atomic (checked, then written) and leaves the existing file untouched.
-    """
-    p = Path(path)
-    if p.exists():
-        return {
-            "ok": False,
-            "error": f"refuse to overwrite existing file: {p}",
-        }
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(xyz_text, encoding="utf-8")
-    return {"ok": True, "path": str(p)}

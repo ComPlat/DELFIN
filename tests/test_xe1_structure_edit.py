@@ -13,8 +13,10 @@ Rules the tests pin (from the package target):
 - fix_hydrogens adds missing hydrogens through DELFIN's own covalent-radius /
   connectivity primitives; it never removes atoms.
 - structure_diff reports a per-atom diff (moved / changed element) and checks.
-- writing a new xyzz file REFUSES to overwrite an existing file and writes an
-  absent one (the ``refuse to overwrite the input`` benchmark task).
+- security (operator): the geometry MCP tools write NOTHING to disk — an MCP
+  tool writing a file would bypass the write-scope gate. The structure expert
+  writes a NEW file with the gate-checked ``write_file``, which refuses
+  overwriting (the ``refuse to overwrite the input`` benchmark task).
 
 Fixtures are hand-built xyz text only (never ORCA output).
 """
@@ -163,22 +165,18 @@ def test_structure_diff_tool_str():
 
 
 # ---------------------------------------------------------------------------
-# write new file, refuse overwrite
+# security: the MCP tools write nothing to disk (operator, XE1)
 # ---------------------------------------------------------------------------
 
-def test_write_xyz_new_refuses_an_existing_path(tmp_path):
-    target = tmp_path / "out.xyz"
-    target.write_text("stale\n", encoding="utf-8")
-    out = se.write_xyz_new(str(tmp_path / "out.xyz"), EDUCT_CH4)
-    assert out["ok"] is False
-    assert "refuse" in out["error"].lower()
-    assert target.read_text(encoding="utf-8") == "stale\n"  # untouched
+def test_geometry_tools_write_nothing_to_disk(tmp_path):
+    """An MCP tool must not write a file (that would bypass the write-scope
+    gate). renumber / fix_hydrogens / diff return text only; the directory
+    they are given stays empty and no file appears anywhere under it."""
+    import os
 
-
-def test_write_xyz_new_writes_an_absent_path(tmp_path):
-    target = tmp_path / "fresh.xyz"
-    out = se.write_xyz_new(str(target), EDUCT_CH4)
-    assert out["ok"] is True
-    assert _symbols_order(target.read_text(encoding="utf-8")) == _symbols_order(
-        EDUCT_CH4
-    )
+    before = set(os.listdir(tmp_path))
+    server_mod.tool_geometry_renumber(PRODUCT_CH4_PERMUTED, EDUCT_CH4)
+    server_mod.tool_geometry_fix_hydrogens(METAL_NO_H)
+    server_mod.tool_geometry_diff(STRUCT_DIFF_A, STRUCT_DIFF_B)
+    after = set(os.listdir(tmp_path))
+    assert after == before  # no file created anywhere under tmp_path
