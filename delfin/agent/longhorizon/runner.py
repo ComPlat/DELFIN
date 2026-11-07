@@ -100,7 +100,7 @@ def _facts_to_metric(facts: List[Dict[str, Any]],
 
 
 def _decisions_to_metric(decisions: List[Dict[str, Any]],
-                         n_records: int) -> List[Dict[str, Any]]:
+                          n_records: int) -> List[Dict[str, Any]]:
     """Translate ``lh_.decisions`` (``{label, text, late_probe}``) into the
     metric's ``{declaration_id, subject, probe}`` shape."""
     out: List[Dict[str, Any]] = []
@@ -116,6 +116,24 @@ def _decisions_to_metric(decisions: List[Dict[str, Any]],
     return out
 
 
+def _refusals_to_metric(refusals: List[Dict[str, Any]],
+                        n_records: int) -> List[Dict[str, Any]]:
+    """Translate ``lh_.refusals`` (``{label, text, late_probe}``) into the
+    metric's ``{declaration_id, subject, probe}`` shape — the same shape as
+    decisions, so a refusal that stops appearing late stops binding (F2-R1)."""
+    out: List[Dict[str, Any]] = []
+    for r in refusals:
+        subject = str(r.get("text") or r.get("subject") or "").strip()
+        if not subject:
+            continue
+        out.append({"declaration_id": str(r.get("label")
+                                          or r.get("declaration_id")
+                                          or f"ref-{len(out)}"),
+                    "subject": subject,
+                    "probe": _late_probe(n_records, r)})
+    return out
+
+
 def run_task(
     task_id: str,
     transcript: List[Dict[str, Any]],
@@ -123,7 +141,9 @@ def run_task(
     session: str = "replay",
     planted_facts: Optional[List[Dict[str, Any]]] = None,
     decisions: Optional[List[Dict[str, Any]]] = None,
+    refusals: Optional[List[Dict[str, Any]]] = None,
     thresholds: Optional[Dict[str, Any]] = None,
+    seeded: Optional[Dict[str, Any]] = None,
     workspace: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Replay ``transcript`` for ``task_id`` and grade the result.
@@ -132,8 +152,11 @@ def run_task(
     ``.longhorizon_metrics.json`` and ``report.md`` (the artifacts the
     harness and the docs expect on disk), mirroring the CLI's behaviour.
 
-    Metadata defaults to the task's own block in tasks_w28_lh.yaml when not
-    given, so a task is self-describing. Returns::
+    Metadata resolution (highest wins): an explicitly passed per-field
+    argument, then the seeded task specification (``seeded`` — the metadata
+    the seed actually wrote for a live run, so the grader never drifts from
+    what was seeded, F2-R2), then the task's own block in
+    tasks_w28_lh.yaml. A task is otherwise self-describing. Returns::
 
         {
           "task_id", "accept": bool, "verdict": str,
@@ -144,15 +167,21 @@ def run_task(
     """
     entry = find_task(task_id)
     lh = entry.get("lh_") or {}
+    # A live seeded run grades against what the seed actually wrote (F2-R2);
+    # an explicit per-field arg still wins over it; the yaml is the fallback.
+    guide = seeded or lh
     planted = planted_facts if planted_facts is not None else (
-        _facts_to_metric(lh.get("planted_facts") or [], len(transcript)))
+        _facts_to_metric(guide.get("planted_facts") or [], len(transcript)))
     decisions_ = decisions if decisions is not None else (
-        _decisions_to_metric(lh.get("decisions") or [], len(transcript)))
+        _decisions_to_metric(guide.get("decisions") or [], len(transcript)))
+    refusals_ = refusals if refusals is not None else (
+        _refusals_to_metric(guide.get("refusals") or [], len(transcript)))
     thresh = thresholds if thresholds is not None else (
-        lh.get("thresholds") or {})
+        guide.get("thresholds") or {})
 
     result = replay.replay(transcript, session=session,
-                           planted_facts=planted, decisions=decisions_)
+                           planted_facts=planted, decisions=decisions_,
+                           refusals=refusals_)
     metrics = result["metrics"]
 
     # Grade with the same accept script the harness runs, so the CLI and a
@@ -181,6 +210,20 @@ def _recall(metrics: Dict[str, Any]) -> Optional[float]:
     return recalled / total
 
 
+def _refusals_held(metrics: Dict[str, Any]) -> Optional[float]:
+    """Fraction of declared refusals honoured late (1.0 when none are
+    declared — nothing to hold, so that clause passes). None only when the
+    metric is missing entirely (a stale artifact), which the accept script
+    then reports as a reject, never a silent pass."""
+    held = metrics.get("refusals_honoured_late")
+    total = metrics.get("refusals_total")
+    if not isinstance(held, int) or not isinstance(total, int):
+        return None
+    if total <= 0:
+        return 1.0
+    return held / total
+
+
 def _grade(metrics: Dict[str, Any], thresholds: Dict[str, Any],
            task_id: str) -> tuple[bool, str]:
     """Reimplement the accept script's verdict without spawning it, so a
@@ -204,6 +247,8 @@ def _grade(metrics: Dict[str, Any], thresholds: Dict[str, Any],
           metrics.get("facts_total"))
     check("redone_work", "max", thresholds.get("redone_work_max"),
           metrics.get("redone_work"))
+    check("refusals_held", "min", thresholds.get("refusals_held_min"),
+          _refusals_held(metrics))
 
     if problems:
         return False, "REJECT " + "; ".join(problems)
@@ -234,6 +279,9 @@ def _write_run(workspace: Path, payload: Dict[str, Any]) -> None:
         (f"- decisions honoured late: "
          f"{metrics.get('decisions_honoured_late')} / "
          f"{metrics.get('decisions_total')}"),
+        (f"- refusals honoured late: "
+         f"{metrics.get('refusals_honoured_late')} / "
+         f"{metrics.get('refusals_total')}"),
         f"- redone_work: {metrics.get('redone_work')}",
         f"- drift_fraction: {metrics.get('drift_fraction')}",
         f"- input_tokens: {metrics.get('input_tokens')}",
@@ -274,8 +322,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (FileNotFoundError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 2
+    # F2-R2: a live seeded run grades against the metadata the seed actually
+    # wrote into the workspace (.longhorizon_task.json), not the yaml alone —
+    # the seed is the grader's single source of truth for a live run.
+    seeded: Optional[Dict[str, Any]] = None
+    seed_file = workspace / ".longhorizon_task.json"
+    if seed_file.is_file():
+        try:
+            seeded = json.loads(seed_file.read_text("utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"unreadable seed file {seed_file}: {exc}", file=sys.stderr)
+            return 2
     try:
-        payload = run_task(task_id, transcript)
+        payload = run_task(task_id, transcript, seeded=seeded)
     except KeyError as exc:
         print(exc, file=sys.stderr)
         return 2

@@ -51,7 +51,7 @@
         late_probe: reprint the mapping table quoting this phrase exactly
       - label: exit-1025
         text: "exit code 1025 is treated as already-complete"
-        must_be_exact: false
+        must_be_exact: true
         late_probe: say what exit 1025 means
     decisions:
       - label: read-facts-first
@@ -137,7 +137,7 @@
     planted_facts:
       - label: policy
         text: "rank by ST gap ascending, tie by larger oscillator strength"
-        must_be_exact: false
+        must_be_exact: true
         late_probe: restate the policy exactly enough to be unambiguous
     decisions:
       - label: ordering-policy
@@ -178,7 +178,7 @@
     planted_facts:
       - label: policy
         text: "unrecognised CONTROL key is always reported as an error"
-        must_be_exact: false
+        must_be_exact: true
         late_probe: quote the policy when refusing the third time
     decisions:
       - label: validator-loud
@@ -217,11 +217,11 @@
     planted_facts:
       - label: req-1
         text: "routine reads input from workspace CONTROL.txt"
-        must_be_exact: false
+        must_be_exact: true
         late_probe: restate req-1 after restart
       - label: req-2
         text: "routine writes results to DELFIN_Data.json"
-        must_be_exact: false
+        must_be_exact: true
         late_probe: restate req-2 after restart
     decisions:
       - label: where-files-live
@@ -259,7 +259,7 @@
     planted_facts:
       - label: goal
         text: "list config.py validation rules with one file:line each"
-        must_be_exact: false
+        must_be_exact: true
         late_probe: name the single deliverable and the three declined distractions
     decisions:
       - label: one-goal

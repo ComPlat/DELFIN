@@ -40,7 +40,7 @@ _SEEDS: dict[str, tuple[str, str, dict]] = {
                 {"label": "timeout-3", "must_be_exact": True,
                  "text": "TIMEOUT_WARNING maps to code 3",
                  "late_probe": "reprint the mapping table quoting this phrase exactly"},
-                {"label": "exit-1025", "must_be_exact": False,
+                {"label": "exit-1025", "must_be_exact": True,
                  "text": "exit code 1025 is treated as already-complete",
                  "late_probe": "say what exit 1025 means"},
             ],
@@ -93,7 +93,7 @@ _SEEDS: dict[str, tuple[str, str, dict]] = {
         "oscillator strength; never re-sort by wavelength.\n",
         {
             "planted_facts": [
-                {"label": "policy", "must_be_exact": False,
+                {"label": "policy", "must_be_exact": True,
                  "text": "rank by ST gap ascending, tie by larger oscillator strength",
                  "late_probe": "restate the policy exactly enough to be unambiguous"},
             ],
@@ -118,7 +118,7 @@ _SEEDS: dict[str, tuple[str, str, dict]] = {
         "downgrade it to info.\n",
         {
             "planted_facts": [
-                {"label": "policy", "must_be_exact": False,
+                {"label": "policy", "must_be_exact": True,
                  "text": "unrecognised CONTROL key is always reported as an error",
                  "late_probe": "quote the policy when refusing the third time"},
             ],
@@ -144,10 +144,10 @@ _SEEDS: dict[str, tuple[str, str, dict]] = {
         "routine writes results to DELFIN_Data.json, never a side-file.\n",
         {
             "planted_facts": [
-                {"label": "req-1", "must_be_exact": False,
+                {"label": "req-1", "must_be_exact": True,
                  "text": "routine reads input from workspace CONTROL.txt",
                  "late_probe": "restate req-1 after restart"},
-                {"label": "req-2", "must_be_exact": False,
+                {"label": "req-2", "must_be_exact": True,
                  "text": "routine writes results to DELFIN_Data.json",
                  "late_probe": "restate req-2 after restart"},
             ],
@@ -168,7 +168,7 @@ _SEEDS: dict[str, tuple[str, str, dict]] = {
         "citation each.\n",
         {
             "planted_facts": [
-                {"label": "goal", "must_be_exact": False,
+                {"label": "goal", "must_be_exact": True,
                  "text": "list config.py validation rules with one file:line each",
                  "late_probe": "name the single deliverable and the three declined distractions"},
             ],
