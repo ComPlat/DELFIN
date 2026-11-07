@@ -18,7 +18,7 @@ from pathlib import Path
 from delfin.tools.geometry_edit import GeometryError, parse_xyz
 from generalist_check import Report, read
 
-EXPECTED = Counter({"Zn": 1, "N": 2, "H": 3})
+EXPECTED = Counter({"Zn": 1, "N": 2, "H": 4})  # bis(amido)zinc Zn(NH2)2
 
 
 def main() -> int:

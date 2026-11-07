@@ -264,7 +264,10 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
             for j in nbrs.get(i, ())
             if g.symbols[j] != "H"
         )
-        missing = need - heavy_order
+        existing_h = sum(
+            1 for j in nbrs.get(i, ()) if g.symbols[j] == "H"
+        )
+        missing = need - heavy_order - existing_h
         if missing <= 0:
             continue
         away = _heavy_neighbour_directions(g, i, nbrs)
