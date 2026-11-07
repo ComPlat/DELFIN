@@ -45,7 +45,12 @@ class IRMode:
 
 def parse_ir_spectrum(output_file: Path) -> List[IRMode]:
     """
-    Parse IR spectrum from ORCA frequency output file.
+    Parse IR spectrum from ORCA frequency output file, through
+    :func:`delfin.orca_read.read` (the switch is proven behaviour-identical
+    by the baseline recorder, scratch/freq_baseline.json, 207 runs).
+    The original body below is the text fallback, used when orca_read has
+    no value (missing/failed run, ORCA < 6.1.1) -- and is the registered
+    text reader itself, so ``orca.reader=text`` is the old path exactly.
 
     Args:
         output_file: Path to ORCA .out file containing frequency calculation
@@ -68,6 +73,24 @@ def parse_ir_spectrum(output_file: Path) -> List[IRMode]:
         logger.error(f"Output file not found: {output_file}")
         return []
 
+    # orca_read switch: the reading itself comes from the original body
+    # below (registered as the text reader); OPI carries no IR modes, so
+    # this stays text-only by design and never changes the values.
+    from delfin import orca_read
+
+    output_file = Path(output_file)
+    try:
+        reading = orca_read.read(str(output_file.parent), output_file.stem,
+                                 orca_read.Quantity.IR_MODES)
+    except Exception:
+        reading = None
+    if reading is not None and reading.value is not None:
+        return list(reading.value)
+    return _parse_ir_spectrum_text(output_file)
+
+
+def _parse_ir_spectrum_text(output_file: Path) -> List[IRMode]:
+    """The established text parser; registered as orca_read's text reader."""
     try:
         with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()

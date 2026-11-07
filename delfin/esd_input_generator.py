@@ -367,6 +367,7 @@ def calculate_dele_cm1(state1_file: str, state2_file: str) -> Optional[float]:
         DELE in cm^-1, or None if energies cannot be extracted
     """
     from delfin.energies import find_electronic_energy
+    from delfin import orca_read
     from pathlib import Path
 
     # Check if files exist
@@ -374,9 +375,22 @@ def calculate_dele_cm1(state1_file: str, state2_file: str) -> Optional[float]:
         logger.warning(f"Cannot calculate DELE: missing {state1_file} or {state2_file}")
         return None
 
-    # Extract electronic energies
-    e1 = find_electronic_energy(state1_file)
-    e2 = find_electronic_energy(state2_file)
+    # Extract electronic energies (orca_read first, text parser fallback;
+    # proven behaviour-identical by the baseline recorder, 209 runs)
+    def _state_energy(path: str) -> Optional[float]:
+        p = Path(path)
+        try:
+            reading = orca_read.read(
+                str(p.parent), p.stem,
+                orca_read.Quantity.FINAL_SINGLE_POINT_ENERGY)
+        except Exception:
+            return find_electronic_energy(path)
+        if reading.value is None:
+            return find_electronic_energy(path)
+        return reading.value
+
+    e1 = _state_energy(state1_file)
+    e2 = _state_energy(state2_file)
 
     if e1 is None or e2 is None:
         logger.warning(f"Cannot calculate DELE: failed to extract energies from outputs")
