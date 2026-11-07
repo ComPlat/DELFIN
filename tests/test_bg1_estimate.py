@@ -68,8 +68,10 @@ class _FakeClient:
 
 def _client_throttled():
     c = SchedulerClient(runner=_FakeClient(THROTTLED))
-    # Force the per-kind throttle to be closed so query() returns THROTTLED.
-    c._last_kind = {"sbatch": 0.0}  # type: ignore[attr-defined]
+    # Close the per-kind gate at the current time so query() returns
+    # THROTTLED for an argv that has nothing cached, and never runs the
+    # (asserting) runner.
+    c._kind_last_run["sbatch"] = c._now()  # type: ignore[attr-defined]
     return c
 
 
@@ -156,9 +158,9 @@ def test_budget_record_tracks_spent_core_hours():
 # --------------------------------------------------------------------------
 
 def test_estimate_single_call_asks_the_scheduler_once():
-    client = _client_partitions({"cpu_short": "ok"})
+    client = _client_partitions({"cpu_short": "started-after-60s"})
     est = calc_budget.estimate(_small_job(), client=client)
     assert est.wait_s is not None
     # the estimate path must produce exactly one scheduler ask (the
     # --test-only for its chosen partition), throttled through the client.
-    assert len(client._cached) <= 1  # type: ignore[attr-defined]
+    assert len(client._cache) == 1  # type: ignore[attr-defined]
