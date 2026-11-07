@@ -34475,11 +34475,14 @@ class OpenAIClient(_BaseClient):
                         _dsml_leaked = None
                     if _dsml_leaked:
                         self._dsml_rerequest = True
+                        # Sourced wording (LK1): the notice text lives in
+                        # leak_recovery.dsml_leak_notice, the one place both
+                        # this per-request notice and the engine's exhaustion
+                        # caveat read it from.
+                        from delfin.agent.leak_recovery import dsml_leak_notice
                         yield StreamEvent(
                             type="notice",
-                            text=(f"\n\n⚠️ a call to {_dsml_leaked[0]} "
-                                  f"was written as text instead of calling "
-                                  f"the tool; it did not run.\n"),
+                            text=dsml_leak_notice(_dsml_leaked[0]),
                         )
 
             # If model made tool calls, execute them locally and loop
