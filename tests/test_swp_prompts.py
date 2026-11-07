@@ -77,3 +77,27 @@ def test_every_template_stays_short_and_leaves_no_unfilled_placeholder():
 
 def test_templates_are_a_dict_with_exactly_three_roles():
     assert set(TEMPLATES) == {"builder", "reviewer", "qs"}
+
+
+def test_no_role_template_tells_any_member_to_push_or_open_a_pr():
+    """Shared practice point 2 (QS ruling): agents never push/merge; the
+    operator pushes the head the member names. So no template may tell a
+    member to open a PR themselves or ask another member to open it.
+    RED on head 4: builder rule 7 said 'open your own PR' and line 34
+    'you only open the PR'; reviewer rule 6 said 'the builder opens the
+    PR'."""
+    for role in ("builder", "reviewer", "qs"):
+        low = _render(role).lower()
+        assert "open your own pr" not in low, role
+        assert "you only open the pr" not in low, role
+        assert "the builder opens the pr" not in low, role
+
+
+def test_each_role_names_the_operator_push_route():
+    """Where a template speaks of getting the change into main, it names
+    the operator-push route ('the operator pushes'), never a self-push or
+    a request for another member to push. RED on head 4: 'operator'
+    appears nowhere in prompts.py."""
+    for role in ("builder", "reviewer", "qs"):
+        low = _render(role).lower()
+        assert "the operator pushes" in low or "operator to push" in low, role
