@@ -90,3 +90,23 @@ class DSMLReplayPolicy:
         # Progress is counted "since the last re-request": after a re-request
         # the next one needs NEW progress.
         self._real_since = 0
+
+
+def dsml_leak_notice(name: str, *, limit_reached: bool = False) -> str:
+    """The user-visible notice for a leaked DSML tool call written as text.
+
+    One source of truth for both consumers: the api_client notice (emitted
+    per leaking request) and the engine's exhaustion caveat (LK1 target 5:
+    the notice says when the per-turn re-request bound was reached, not a
+    bare "did not run" that implies a re-request is still coming).
+
+    ``name`` is the tool the model wrote as ``<invoke name=...>`` text.
+    ``limit_reached``: the per-turn re-request budget is spent, so no
+    re-request will happen this turn — the notice names the bound.
+    """
+    base = (f"\n\n⚠️ a call to {name} was written as text instead of "
+            f"calling the tool; it did not run")
+    if limit_reached:
+        return base + ("; the re-request limit for this turn is reached; "
+                       "the call was not run again.\n")
+    return base + ".\n"
