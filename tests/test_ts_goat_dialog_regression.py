@@ -1067,10 +1067,19 @@ def _open_with_missing_ts_file(tmp_path, *, no_xyz=False,
     if no_xyz:
         xyz.unlink()
     elif mismatched_xyz:
+        # Distort a single atom rather than translating all atoms.
+        # Pure origin shifts are valid and now deliberately accepted.
+        from delfin.ts_goat import read_xyz
+        atoms = read_xyz(xyz)
+        assert atoms
+        element, x, y, z = atoms[1]
+        atoms[1] = (element, x + 1.0, y, z)
         xyz.write_text(
-            '3\nunrelated optimization\n'
-            'O 1.0 0.0 0.0\nH 1.96 0.0 0.0\n'
-            'H 2.55 1.10 0.0\n',
+            str(len(atoms)) + '\nmodified one atom\n'
+            + ''.join(
+                f'{el} {ax:.10f} {ay:.10f} {az:.10f}\n'
+                for el, ax, ay, az in atoms
+            ),
             encoding='utf-8',
         )
     if no_hess:
@@ -1128,3 +1137,38 @@ def test_missing_xyz_and_hessian_reports_real_blocker(tmp_path):
     assert result['error_kind'] == 'no_hess'
     assert 'No Hessian' in result['error']
     assert 'Select the geometry manually' not in result['error']
+
+
+def test_translated_xyz_does_not_trigger_hessian_geometry_fallback(tmp_path):
+    """The real TS→GOAT panel keeps a translated yet equivalent XYZ."""
+    from delfin.dashboard.ts_goat_panel import open_ts_goat_dialog
+    from delfin.ts_goat import read_xyz
+
+    out = _write_ts_fixture(tmp_path)
+    xyz = tmp_path / 'ts_run.xyz'
+    atoms = read_xyz(xyz)
+    assert atoms
+    xyz.write_text(
+        str(len(atoms)) + '\n'
+        'Coordinates from ORCA-job with shifted origin\n'
+        + ''.join(
+            f'{el} {x + 0.585226:.10f} {y - 0.247354:.10f} '
+            f'{z - 0.252777:.10f}\n'
+            for el, x, y, z in atoms
+        ),
+        encoding='utf-8',
+    )
+    result = open_ts_goat_dialog(
+        out,
+        callbacks={
+            'backend': _FakeBackend(),
+            'reset_dropdown': lambda: None,
+            'render_viewer': lambda *args, **kwargs: None,
+            'scroll_top': lambda: None,
+        },
+    )
+    assert result['error'] is None, result['error']
+    state = result['registry']['state']
+    assert state['geometry_source'] == 'xyz'
+    assert state['files'].xyz_path == xyz
+    assert state['ts_atoms'] == read_xyz(xyz)
