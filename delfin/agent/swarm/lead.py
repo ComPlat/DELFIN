@@ -20,12 +20,14 @@ The contract (swarm/__init__.py:19-23):
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Callable
 
 from . import launch as _launch
 from . import status as _status
 from . import triage as _triage
+from .spec import SpecError
 
 #: Read-only lead tools: safe in the lead session's default mode.
 READ_ONLY_TOOLS: frozenset[str] = frozenset({
@@ -76,7 +78,14 @@ def request_swarm_start(spec: dict[str, Any], *,
     a truthy string is an invalid attempt, not a yes).
     """
     if confirmed is not True:
-        plan = _launch.plan_launch(spec)
+        try:
+            plan = _launch.plan_launch(spec)
+        except (SpecError, _launch.LaunchError) as exc:
+            # A bad spec or a plan failure is a structured refusal, never
+            # a crash: the unconfirmed path is the "present the plan and
+            # ask the user" branch and must never raise.
+            return {"action": "refused", "started": [],
+                    "refused": f"cannot plan the swarm: {exc}"}
         return {
             "action": "ask_user",
             "dry_run": True,
@@ -88,7 +97,7 @@ def request_swarm_start(spec: dict[str, Any], *,
         }
     try:
         return _launch.start_members(spec, execute=True)
-    except _launch.LaunchError as exc:
+    except (SpecError, _launch.LaunchError) as exc:
         return {"action": "refused", "started": [],
                 "refused": str(exc)}
 
@@ -127,11 +136,19 @@ def request_triage_answer(item: dict[str, Any], *, answer: str,
     SW1's triage_answer re-derives the verdict from the item and fails
     closed on an escalation, so nothing here can widen it. The lead
     still asks the user first for every answer it gives on their behalf.
+    An escalation is returned as a structured refusal -- the item goes
+    to the user, never answered by the lead and never raised out of the
+    tool.
     """
     if confirmed is not True:
         return {"action": "ask_user", "answered": False,
                 "refused": "answering for the user is the user's decision"}
-    return _triage.triage_answer(item, {}, answer=answer)
+    try:
+        return _triage.triage_answer(item, {}, answer=answer)
+    except _triage.TriageError as exc:
+        return {"action": "escalate", "answered": False,
+                "refused": f"this item goes to the user, not to an "
+                           f"auto-answer: {exc}"}
 
 
 def request_prcheck(pr_number: int, *, confirmed: bool = False) -> dict:
@@ -175,11 +192,33 @@ def format_member_message(message: dict[str, Any]) -> str:
         f"acts on it because the member asks] {text}")
 
 
+def _event_identity(event: dict[str, Any]) -> tuple:
+    """The factual identity of an event: who/what plus its payload.
+
+    The dedup must catch a retry of the SAME event (byte-identical
+    payload) without collapsing a DISTINCT fact of the same kind for the
+    same member -- a second ``phase_change`` (new phase), a second
+    ``approval_waiting`` (new approval id), a second ``ci_red`` (a
+    different PR). Folding the serialised payload into the key does
+    exactly that: a retry is structurally identical and dedups, any
+    distinct fact differs and still delivers.
+    """
+    kind = event.get("kind", "")
+    package = event.get("package", "")
+    member = event.get("member", "")
+    rest = {k: v for k, v in event.items()
+            if k not in ("kind", "package", "member")}
+    payload = json.dumps(rest, sort_keys=True, default=str)
+    return (kind, package, member, payload)
+
+
 class LeadEventFeed:
     """The lead's event feed: swarm events -> wake-up messages.
 
-    - Deduplicates: the same event (same kind/package/member) delivered
-      once, even when the emitter retries.
+    - Deduplicates: the same event (same kind/package/member AND payload)
+      delivered once, even when the emitter retries; a DISTINCT event of
+      the same kind (a second phase, a second approval, a second PR's CI)
+      is not collapsed.
     - Throttles: at most ``max_per_window`` deliveries per ``window_s``
       (clock injected for tests; default time.monotonic).
     - Delivery is the ``on_deliver`` callable; the lead session binds
@@ -208,8 +247,7 @@ class LeadEventFeed:
             self._off()
 
     def _on_event(self, event: dict[str, Any]) -> None:
-        key = (event.get("kind", ""), event.get("package", ""),
-               event.get("member", ""))
+        key = _event_identity(event)
         if key in self._seen:
             return
         self._seen.add(key)
