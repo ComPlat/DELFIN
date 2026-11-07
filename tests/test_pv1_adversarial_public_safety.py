@@ -24,8 +24,9 @@ def synthetic_run(tmp_path):
     """A minimal finished run: one result file + its inputs, under tmp_path."""
     run = tmp_path / "run_demo"
     run.mkdir()
-    (run / "result.xyz").write_text("1\n\nH 0 0 0\n")
-    (run / "input.inp").write_text("! B3LYP def2-SVP\n")
+    (run / "CONTROL.txt").write_text("method=orca\nsmiles=O\n")
+    (run / "input.inp").write_text("! B3LYP def2-SVP\n* xyz 0 1\nO 0 0 0\n*\n")
+    (run / "output.out").write_text("* O   R   C   A *\nProgram Version 6.1.1\n")
     return run
 
 
@@ -41,14 +42,14 @@ def _text_values(record: dict, _path: str = ""):
 
 
 def test_record_json_has_schema_version(synthetic_run):
-    record = pr.write_record(result_dir=str(synthetic_run))
+    record = pr.build_record(result_dir=str(synthetic_run))
     assert isinstance(record, dict)
     assert "schema_version" in record, "record must carry a JSON schema version"
 
 
 def test_record_contains_no_absolute_home_or_account_path(synthetic_run):
     home = str(Path.home())
-    record = pr.write_record(result_dir=str(synthetic_run))
+    record = pr.build_record(result_dir=str(synthetic_run))
     for keypath, value in _text_values(record):
         # Absolute path under a home directory (any user's), or that contains the
         # current user's home path verbatim, is a PR-public violation.
@@ -59,7 +60,7 @@ def test_record_contains_no_absolute_home_or_account_path(synthetic_run):
 
 
 def test_record_input_files_are_hashing_and_relative(synthetic_run):
-    record = pr.write_record(result_dir=str(synthetic_run))
+    record = pr.build_record(result_dir=str(synthetic_run))
     inputs = record.get("input_files")
     assert inputs, "record must list input files (hash + path relative to the run)"
     for entry in inputs:
