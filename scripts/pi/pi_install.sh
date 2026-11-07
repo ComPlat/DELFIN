@@ -444,6 +444,50 @@ restart_dashboard() {
     fi
 }
 
+# Lab control (docs/design/lab-control.md): the e-stop owner and the
+# dead-man as systemd USER units of this account. Idempotent: a unit file is
+# replaced only when its text changed; enabled once; a running unit is
+# restarted so it runs the deployed code. No root: lingering (so the units
+# run without a login) is the admin's step, named when it is missing. With
+# no user manager the fallback is `delfin-agent lab daemon --detach`.
+install_lab_units() {
+    local unit_dir="$HOME/.config/systemd/user" src="$ROOT/src/scripts/pi/lab" unit changed=0
+    [[ -d "$src" ]] || return 0
+    mkdir -p "$unit_dir" "$HOME/.delfin/lab"
+    chmod 700 "$HOME/.delfin/lab"
+    for unit in delfin-lab-estop.service delfin-lab-watchdog.service; do
+        if ! cmp -s "$src/$unit" "$unit_dir/$unit"; then
+            install -m 0644 "$src/$unit" "$unit_dir/$unit.new"
+            mv "$unit_dir/$unit.new" "$unit_dir/$unit"
+            changed=1
+        fi
+    done
+    if ! systemctl --user show-environment >/dev/null 2>&1; then
+        echo "warning: no systemd user manager for $(id -un): lab units installed, not started" >&2
+        echo "         once, as an admin: sudo loginctl enable-linger $(id -un)" >&2
+        echo "         meanwhile: $VENV_PY -m delfin.agent.cli lab daemon --role both --detach" >&2
+        return 0
+    fi
+    if [[ "$changed" == "1" ]]; then
+        systemctl --user daemon-reload
+    fi
+    for unit in delfin-lab-estop delfin-lab-watchdog; do
+        if ! systemctl --user is-enabled --quiet "$unit" 2>/dev/null; then
+            systemctl --user enable --now "$unit" && echo "==> $unit enabled"
+        elif systemctl --user is-active --quiet "$unit"; then
+            systemctl --user restart "$unit" && echo "==> $unit restarted"
+        else
+            echo "==> $unit not running: left stopped"
+        fi
+    done
+}
+
+smoke_lab() {
+    # The simulator lab, one short plan end to end, in a scratch directory:
+    # set, interlock, readback, e-stop, clear. Prints "smoke lab ok".
+    "$VENV_PY" -m delfin.lab.smoke || echo "warning: lab smoke check failed" >&2
+}
+
 smoke() {
     "$VENV_PY" -c "import delfin, delfin.agent.engine, rdkit; print('import ok')"
     cat "$ROOT/src/DEPLOYED_VERSION"
@@ -477,6 +521,8 @@ install)
     smoke_optional
     set_up_extras
     restart_dashboard
+    install_lab_units
+    smoke_lab
     if [[ "$run_tests" == "--test" ]]; then
         echo "==> pytest (not slow)"
         # Activate: code under test shells out to a bare `python`.
@@ -497,6 +543,8 @@ rollback)
     smoke_optional
     set_up_extras
     restart_dashboard
+    install_lab_units
+    smoke_lab
     ;;
 status)
     cat "$ROOT/src/DEPLOYED_VERSION" 2>/dev/null || echo "nothing deployed"
