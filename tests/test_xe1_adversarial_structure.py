@@ -186,3 +186,37 @@ def test_geometry_tools_never_accept_an_output_path():
         server_mod.tool_geometry_diff(CO2, CO2, out_path="../esc.xyz")
     after = set(os.listdir(tmp))
     assert after == before  # no file, no directory, nothing written
+
+
+# ---------------------------------------------------------------------------
+# physical realism (package target #1): the diff must report whether the
+# structure has two heavy atoms closer than a stated distance (a clash).
+# A clashing pair must surface a red no_clash_below check -- today's
+# structure_diff returns only two string checks and evaluates no clash.
+# ---------------------------------------------------------------------------
+
+def test_structure_diff_surfaces_a_clash_check():
+    """A diff of two identical-composition structures where one heavy-atom
+    pair sits 0.5 A apart (far below any covalent-radii sum) must evaluate a
+    no-clash check to False. Composition equal and charge/mult equal are
+    NOT enough: the pair is chemically impossible and must be flagged."""
+    clash_a = (
+        "2\nclash\nC 0.000000 0.000000 0.000000\n"
+        "C 0.500000 0.000000 0.000000\n"
+    )
+    clash_b = (
+        "2\nclash\nC 0.000000 0.000000 0.000000\n"
+        "C 0.500000 0.000000 0.000000\n"
+    )
+    out = se.structure_diff(clash_a, clash_b)
+    assert out["error"] is None
+    assert out["composition_equal"] is True
+    assert out["charge_mult_match"] is True
+    # The package target requires a "no clashes below a stated distance"
+    # check: a clashing pair must surface it. The builder's fix exposes
+    # clash_detected (structure_edit.py:368) evaluated against
+    # _CLASH_ANGSTROM = 1.0 A (structure_edit.py:55). My 0.5 A pair is
+    # far below that, so it MUST be flagged -- a chemically impossible
+    # structure reported as a clean diff is the defect this catches.
+    assert out["clash_detected"] is True
+    assert out["min_distance"] < out["clash_angstrom"]
