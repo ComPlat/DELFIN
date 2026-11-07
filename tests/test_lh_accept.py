@@ -32,7 +32,7 @@ def _workspace_with_metrics(tmp_path: Path, metrics: dict, thresholds: dict):
     ``facts_recalled_late``/``facts_total`` when it is absent, so a cached
     stale artifact without it still grades."""
     ws = tmp_path / "ws"
-    ws.mkdir()
+    ws.mkdir(exist_ok=True)
     payload = {"task_id": "lh-code-change-fact",
                "metrics": metrics,
                "thresholds": thresholds}

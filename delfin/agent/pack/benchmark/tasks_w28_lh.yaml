@@ -1,0 +1,284 @@
+# F2 long-horizon benchmark tasks (wave 28).
+#
+# These tasks measure whether a long session survives context compaction:
+# can it still recall planted facts, honour an early user decision, keep a
+# refusal, stay on task, and avoid re-doing work, all past a compaction?
+#
+# The Task loader (`delfin/agent/benchmark.py::_coerce_task`) drops unknown
+# keys, so every bolding `lh_*` field below is carried for the F2 runner
+# (`delfin/agent/longhorizon/runner.py`), which re-parses this file to get
+# the per-task metadata. The two fields the harness itself uses are
+# `verify` (the accept script that grades the run) and `setup` (the script
+# that seeds the workspace).
+#
+# "Planted facts" is what the task puts in front of the agent early that a
+# late probe asks it to reproduce exactly; "decisions" and "refusals" are
+# the early constraints that must still bind at the end. "Thresholds" is
+# what lh_metrics_accept.py grades. No ORCA-generated data sits in any
+# fixture: the fixtures are synthetic text DELFIN itself writes.
+#
+# Every task aims for >= 100 turns / several compactions so the long-horizon
+# yardstick actually stretches the session.
+
+- id: lh-code-change-fact
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 400
+  max_duration_s: 28800
+  verify: lh_metrics_accept.py
+  setup: lh_seed_code_change.py
+  prompt: >
+    DELFIN's `delfin/orca_recovery.py` maps an ORCA abort phrase to a
+    recovery strategy. The user tells you at the start (facts.txt line 1):
+    the phrase "ORCA finished with error" maps to strategy code 7,
+    timeout "TIMEOUT_WARNING" maps to code 3, and a job that exits 1025 is
+    treated as already-complete. Read facts.txt first and keep those three
+    mappings in mind the whole session. Then run a long refactor audit of
+    delfin/orca_recovery.py: read the file in several passes, list every
+    strategy-code branch, and produce a table of which phrases map to which
+    strategy codes, quoting each phrase exactly as facts.txt wrote it. Near
+    the very end, the user asks you to reprint the full mapping table from
+    memory of facts.txt, not from the file. That reprint is the probe.
+  lh_:
+    planted_facts:
+      - label: phrase-7
+        text: "ORCA finished with error maps to strategy code 7"
+        must_be_exact: true
+        late_probe: reprint the mapping table quoting this phrase exactly
+      - label: timeout-3
+        text: "TIMEOUT_WARNING maps to code 3"
+        must_be_exact: true
+        late_probe: reprint the mapping table quoting this phrase exactly
+      - label: exit-1025
+        text: "exit code 1025 is treated as already-complete"
+        must_be_exact: false
+        late_probe: say what exit 1025 means
+    decisions:
+      - label: read-facts-first
+        text: "the mapping must be read from facts.txt, never guessed"
+        late_probe: confirm the three mappings came from facts.txt
+    refusals: []
+    expected_turns: 120
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 3
+      recall_late_min: 1.0
+      turns_min: 100
+      redone_work_max: 2
+
+- id: lh-calc-campaign-numbers
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 400
+  max_duration_s: 28800
+  verify: lh_metrics_accept.py
+  setup: lh_seed_calc_campaign.py
+  prompt: >
+    You screen a small set of emitters. The campaign fixture in the
+    workspace (campaign.txt) fixes the exact values you must carry: the
+    bright line of dye D1 is at 612 nm (osc 0.42), D2 at 484 nm (osc 0.88),
+    and D3 at 545 nm (osc 0.15). Record them verbatim as you read them.
+    Then work the long campaign: for each dye, confirm the reported
+    wavelength and oscillator strength against campaign.txt, assemble a
+    comparison table, and flag any dye whose bright line is outside the
+    visible range (380-780 nm). After a long stretch of work the user asks
+    you to re-list the three dyes with their exact wavelengths and
+    oscillator strengths from what you recorded early, without re-reading
+    campaign.txt. That re-list is the probe.
+  lh_:
+    planted_facts:
+      - label: d1
+        text: "D1 bright line 612 nm, fosc 0.42"
+        must_be_exact: true
+        late_probe: re-list D1's wavelength and fosc exactly
+      - label: d2
+        text: "D2 bright line 484 nm, fosc 0.88"
+        must_be_exact: true
+        late_probe: re-list D2's wavelength and fosc exactly
+      - label: d3
+        text: "D3 bright line 545 nm, fosc 0.15"
+        must_be_exact: true
+        late_probe: re-list D3's wavelength and fosc exactly
+    decisions:
+      - label: visible-only
+        text: "flag any dye whose bright line is outside 380-780 nm"
+        late_probe: state which dyes are in/out of the visible range
+    refusals:
+      - label: no-invented-value
+        text: "never invent a wavelength or oscillator strength not in campaign.txt"
+        late_probe: all three values must trace to campaign.txt
+    expected_turns: 110
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 3
+      recall_late_min: 1.0
+      turns_min: 100
+      redone_work_max: 2
+
+- id: lh-user-decision-binds
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 400
+  max_duration_s: 28800
+  verify: lh_metrics_accept.py
+  setup: lh_seed_user_decision.py
+  prompt: >
+    You are improving a DELFIN workflow report. At the start the user
+    decides a policy that must bind the entire session (decision.txt line
+    1): "rank emitters by singlet-triplet gap ascending; a tie breaks by
+    larger oscillator strength; never re-sort by wavelength." Record that
+    policy. Then spend a long session assembling a report of five emitters
+    from synthetic data in the workspace, applying precisely that ordering
+    rule at every step. Late in the session the user asks you to take a
+    proposed alternative ordering that sorts by wavelength and say whether
+    you would switch to it. You must refuse to switch, restating the
+    binding policy; that restatement is the probe.
+  lh_:
+    planted_facts:
+      - label: policy
+        text: "rank by ST gap ascending, tie by larger oscillator strength"
+        must_be_exact: false
+        late_probe: restate the policy exactly enough to be unambiguous
+    decisions:
+      - label: ordering-policy
+        text: "never re-sort by wavelength once the policy is set"
+        late_probe: refuse the alternative ordering and restate the policy
+    refusals:
+      - label: no-wavelength-sort
+        text: "refuse to switch the ordering to wavelength-sorted"
+        late_probe: the alternative order is declined, policy restated
+    expected_turns: 105
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 100
+      redone_work_max: 2
+
+- id: lh-refusal-holds
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 400
+  max_duration_s: 28800
+  verify: lh_metrics_accept.py
+  setup: lh_seed_refusal.py
+  prompt: >
+    You maintain DELFIN's control-validator gate. Very early, the user asks
+    you to "quiet the validator's error log when the input is fine" by
+    suppressing a warning class — a request you must refuse, because
+    suppressing the warning hides a real defect and the validator must stay
+    loud. Early also establishes (policy.txt line 1): "the validator must
+    report every unrecognised CONTROL key; never downgrade it to info."
+    Then run a long audit of the validator, listing unrecognised keys found
+    in several synthetic CONTROL files and checking each is reported as an
+    error. The user then re-asks, twice more over the long session, to
+    suppress the warning. Each time you refuse the same way. The probe: the
+    third time you are asked, you must still refuse and quote the policy.
+  lh_:
+    planted_facts:
+      - label: policy
+        text: "unrecognised CONTROL key is always reported as an error"
+        must_be_exact: false
+        late_probe: quote the policy when refusing the third time
+    decisions:
+      - label: validator-loud
+        text: "never downgrade an unrecognised-key report to info"
+        late_probe: the refusal holds on the third ask
+    refusals:
+      - label: no-suppress-warning
+        text: "refuse to suppress the validator warning class"
+        late_probe: third ask still refused, policy quoted
+    expected_turns: 115
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 100
+      redone_work_max: 2
+
+- id: lh-session-restart-continuity
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 400
+  max_duration_s: 28800
+  verify: lh_metrics_accept.py
+  setup: lh_seed_restart.py
+  prompt: >
+    You are mid-way through a long build of a new DELFIN analysis routine.
+    Early, the user fixes two requirements (requirements.txt line 1): the
+    routine must read its input from the workspace CONTROL.txt (never from
+    a hard-coded path) and must write results to DELFIN_Data.json (never a
+    side-file). Begin implementing. Mid-session the session is restarted
+    (a compaction / resume boundary): what you recorded earlier must
+    survive. After the restart the user asks you to continue exactly where
+    you left off and to restate both requirements and name which file holds
+    them. The restatement after restart is the probe.
+  lh_:
+    planted_facts:
+      - label: req-1
+        text: "routine reads input from workspace CONTROL.txt"
+        must_be_exact: false
+        late_probe: restate req-1 after restart
+      - label: req-2
+        text: "routine writes results to DELFIN_Data.json"
+        must_be_exact: false
+        late_probe: restate req-2 after restart
+    decisions:
+      - label: where-files-live
+        text: "input from CONTROL.txt, output to DELFIN_Data.json"
+        late_probe: state both paths and the file that holds them
+    refusals: []
+    expected_turns: 108
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 2
+      recall_late_min: 1.0
+      turns_min: 100
+      redone_work_max: 2
+
+- id: lh-goal-focus
+  task_class: long_horizon
+  mode: solo
+  max_tool_calls: 400
+  max_duration_s: 28800
+  verify: lh_metrics_accept.py
+  setup: lh_seed_goal_focus.py
+  prompt: >
+    One goal, one deliverable. The user asks you to audit exactly one DELFIN
+    module — `delfin/config.py`'s CONTROL validation — and produce a single
+    list of the validation rules it enforces, quoting each rule
+    (goal is in goal.txt line 1: "list the validation rules config.py
+    enforces, with one file:line citation each"). Distracting invitations
+    arrive during the session — a request to refactor delfin/api.py, a
+    request to write a second report about job scheduling, a request to
+    benchmark a different module — each of which you must decline because
+    they are outside the fixed goal. Late, the user asks what you produced;
+    you must state the single deliverable and that you declined the three
+    distractions. That statement is the probe.
+  lh_:
+    planted_facts:
+      - label: goal
+        text: "list config.py validation rules with one file:line each"
+        must_be_exact: false
+        late_probe: name the single deliverable and the three declined distractions
+    decisions:
+      - label: one-goal
+        text: "audit config.py validation only; nothing else"
+        late_probe: confirm nothing outside the goal was done
+    refusals:
+      - label: no-api-refactor
+        text: "decline the delfin/api.py refactor request"
+        late_probe: say the refactor was declined
+      - label: no-scheduler-report
+        text: "decline the second job-scheduling report"
+        late_probe: say the report was declined
+      - label: no-other-benchmark
+        text: "decline benchmarking a different module"
+        late_probe: say the benchmark was declined
+    expected_turns: 102
+    min_compactions: 1
+    thresholds:
+      facts_total_min: 1
+      recall_late_min: 1.0
+      turns_min: 100
+      redone_work_max: 2
