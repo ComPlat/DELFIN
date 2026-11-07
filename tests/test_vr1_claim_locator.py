@@ -86,18 +86,26 @@ def test_verified_frequency(calc_folder: Path) -> None:
     assert rec.parsed_unit == "cm-1"
 
 
-def test_verified_distance_coordinate(calc_folder: Path) -> None:
-    # The H atom z-coordinate 0.861000 is a distance value on a geometry line.
-    rec = verify_claim(0.861, "Angstrom", calc_folder)
+def test_true_interatomic_distance_is_verified(calc_folder: Path) -> None:
+    # The true O-H separation: H z(0.861000) - O z(0.121000) = 0.740000 A.
+    # A distance needs TWO atoms; this is the only interatomic distance.
+    rec = verify_claim(0.740, "Angstrom", calc_folder)
     assert rec.verdict == "verified"
     assert rec.quantity == "distance"
-    assert rec.line == 15
-    assert rec.parsed_value == pytest.approx(0.861)
+    assert rec.parsed_value == pytest.approx(0.740)
+
+
+def test_single_coordinate_is_not_a_distance(calc_folder: Path) -> None:
+    # A coordinate (z of O or H) is NOT an interatomic distance. A planted
+    # wrong number must be caught, so these must be mismatch, never verified.
+    for coord in (0.121, 0.861):
+        rec = verify_claim(coord, "Angstrom", calc_folder)
+        assert rec.verdict == "mismatch", f"{coord} A is a coordinate, not a bond"
 
 
 def test_verified_distance_in_bohr_converts(calc_folder: Path) -> None:
-    # 0.861 Angstrom expressed in bohr.
-    expected_bohr = 0.861 / 0.529177
+    # The true O-H separation 0.740 Angstrom expressed in bohr.
+    expected_bohr = 0.740 / 0.529177
     rec = verify_claim(expected_bohr, "bohr", calc_folder)
     assert rec.verdict == "verified"
     assert rec.quantity == "distance"

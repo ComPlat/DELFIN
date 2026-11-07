@@ -30,6 +30,7 @@ Verdicts
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -173,18 +174,90 @@ def _block_values(out: Path, marker: re.Pattern, unit: str) -> list[tuple[float,
     return values
 
 
+_ATOM_LINE = re.compile(
+    r"^\s*([A-Z][a-z]?)\s+"
+    r"([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)\s+"
+    r"([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)\s+"
+    r"([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)\s*$"
+)
+
+
+def _geometry_atoms(out: Path) -> list[tuple[str, float, float, float]]:
+    """Per-atom ``(element, x, y, z)`` from the CARTESIAN COORDINATES block.
+
+    Coordinates are in Angstrom (the ``(ANGSTROEM)`` header).  A line that is
+    not a clean ``ELEM  x  y  z`` atom row is skipped; the block ends at the
+    first blank line, the same boundary ``_block_values`` uses.
+    """
+    marker = _ANCHORS["distance"]
+    lines = out.read_text(errors="replace").splitlines()
+    atoms: list[tuple[str, float, float, float]] = []
+    in_block = False
+    for line in lines:
+        if marker.search(line):
+            in_block = True
+            continue
+        if in_block and line.strip() == "":
+            break
+        if not in_block:
+            continue
+        m = _ATOM_LINE.match(line)
+        if m:
+            atoms.append(
+                (m.group(1), float(m.group(2)), float(m.group(3)), float(m.group(4)))
+            )
+    return atoms
+
+
+def _interatomic_distances(out: Path) -> list[tuple[float, int]]:
+    """All unique pairwise interatomic distances in Angstrom, in block order.
+
+    A distance needs TWO atoms: the candidates are the Euclidean separations
+    between every pair of atoms read from the coordinate block.  A single
+    atom's coordinate (x, y or z) is a position, never a distance (VR1-1).
+    The line reported is the first of the two atom rows.
+    """
+    atoms = _geometry_atoms(out)
+    distances: list[tuple[float, int]] = []
+    for a, (_, ax, ay, az) in enumerate(atoms):
+        line_i = _geometry_atom_line(out, a)
+        for b in range(a + 1, len(atoms)):
+            _, bx, by, bz = atoms[b]
+            d = math.sqrt((ax - bx) ** 2 + (ay - by) ** 2 + (az - bz) ** 2)
+            distances.append((d, line_i))
+    return distances
+
+
+def _geometry_atom_line(out: Path, index: int) -> int:
+    """1-based line of the ``index``-th atom row in the coordinate block."""
+    marker = _ANCHORS["distance"]
+    lines = out.read_text(errors="replace").splitlines()
+    in_block = False
+    seen = 0
+    for i, line in enumerate(lines, start=1):
+        if marker.search(line):
+            in_block = True
+            continue
+        if in_block and line.strip() == "":
+            break
+        if in_block and _ATOM_LINE.match(line):
+            if seen == index:
+                return i
+            seen += 1
+    return 0
+
+
 def _candidate_values(out: Path, quantity: str) -> list[tuple[float, int, str]]:
     """Output's candidate (value, line, canonical_unit) for a quantity."""
     if quantity == "energy":
         return [(v, ln, unit) for v, _label, ln, unit in _energy_candidates(out)]
     canonical = QUANTITY_TOLERANCE[quantity][0]
-    marker = _ANCHORS[quantity]
-    # distance: every absolute coordinate on a geometry line is a candidate;
-    # a claimed distance equal to a coordinate is verified at that line.
-    raw = _block_values(out, marker, canonical)
     if quantity == "distance":
-        # _block_values already returns (token, line) per coordinate.
-        pass
+        # Interatomic distances are computed from the coordinate block (two
+        # atoms each).  A bare coordinate is never a distance (VR1-1).
+        return [(d, ln, canonical) for d, ln in _interatomic_distances(out)]
+    marker = _ANCHORS[quantity]
+    raw = _block_values(out, marker, canonical)
     return [(v, ln, canonical) for v, ln in raw]
 
 
