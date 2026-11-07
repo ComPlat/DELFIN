@@ -68,6 +68,19 @@ N  2.000000 0.000000 0.000000
 H  1.000000 -0.800000 0.000000
 """
 
+# Zn(NH2)2: N1 carries only ONE hydrogen (deficient), N2 the spectator NH2
+# carries BOTH. Correct fix adds exactly one H to N1 -> Zn1 N2 H4. A valence
+# count that ignores existing H would hydroxylate both N's (H7).
+ZN_DIAMIDO = """6
+zinc amide, N1 missing one H
+Zn    0.000    0.000    0.000
+N    -1.950    0.000    0.000
+H    -2.430    0.700    0.000
+N     1.950    0.000    0.000
+H     2.430    0.700    0.000
+H     2.430   -0.700    0.000
+"""
+
 # CO2: both oxygens are double-bonded (short 1.16 A C=O). fix_hydrogens must
 # NOT add any H -- a plain valence-count would hydroxylate them (O valence 2
 # vs heavy degree 1). The bond-order/distance rule must see the double bond.
@@ -145,6 +158,25 @@ def test_fix_hydrogens_adds_missing_h_and_never_removes():
     # H were added beyond the original count.
     assert len(after) > len(before)
     assert out["n_added"] == len(after) - len(before)
+
+
+def test_fix_hydrogens_counts_existing_h_on_nonmetal():
+    """A saturated spectator amido N must NOT gain hydrogens, and a deficient
+    amido N must gain exactly the missing number (not a valence count of its
+    heavy bonds). Regression: fix_hydrogens added H to every non-metal by
+    ``_VALENCE - heavy_order``, ignoring H already bonded, so this Zn(NH2)2
+    (input H3: N1 has 1 H, N2 the spectator has 2 H) came out as H7 instead
+    of the correct H4."""
+    out = se.fix_hydrogens(ZN_DIAMIDO)
+    assert out["error"] is None
+    # composition is the invariant (the added H lands by append order, not
+    # next to its parent): Zn1 N2 H4
+    from collections import Counter
+
+    assert Counter(_symbols_order(out["xyz"])) == Counter(
+        ["Zn", "N", "N", "H", "H", "H", "H"]
+    )
+    assert out["n_added"] == 1  # only the single missing H on N1
 
 
 def test_fix_hydrogens_tool_str_roundtrip():

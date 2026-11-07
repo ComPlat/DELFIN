@@ -53,3 +53,38 @@ def test_no_overwrite_verify_refuses_a_modified_input(tmp_path):
     _write(tmp_path, "struc/water.xyz", water.replace("water", "ethanol"))
     ok3, out3 = run_acceptance("xe1_no_overwrite_verify.py", tmp_path, root=_REPO)
     assert not ok3, out3
+
+
+def test_fix_h_setup_and_verify_grade_the_written_file(tmp_path):
+    ok, out = run_setup("xe1_fix_h_seed.py", tmp_path, root=_REPO)
+    assert ok, out
+    # Correct action: add the missing amido H (fix_hydrogens) -> Zn1 N2 H3,
+    # written to a NEW file.
+    from delfin.structure_edit import fix_hydrogens
+
+    complex_ = _read(tmp_path, "struc/complex.xyz")
+    fixed = fix_hydrogens(complex_)
+    _write(tmp_path, "struc/complex_fixed.xyz", fixed["xyz"])
+    ok2, out2 = run_acceptance("xe1_fix_h_verify.py", tmp_path, root=_REPO)
+    assert ok2, out2
+
+
+def test_split_verify_grades_the_written_fragments(tmp_path):
+    ok, out = run_setup("xe1_split_seed.py", tmp_path, root=_REPO)
+    assert ok, out
+    # Correct: each CO molecule becomes its own NEW file.
+    frag_a = """2
+CO fragment A
+C    -3.500    0.000    0.000
+O    -4.630    0.000    0.000
+"""
+    frag_b = """2
+CO fragment B
+C     3.500    0.000    0.000
+O     4.630    0.000    0.000
+"""
+    _write(tmp_path, "struc/fragment_a.xyz", frag_a)
+    _write(tmp_path, "struc/fragment_b.xyz", frag_b)
+    ok2, out2 = run_acceptance("xe1_split_verify.py", tmp_path, root=_REPO)
+    assert ok2, out2
+
