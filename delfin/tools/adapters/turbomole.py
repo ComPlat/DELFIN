@@ -205,6 +205,34 @@ def _extract_energy_tm(work_dir: Path) -> Optional[float]:
     return None
 
 
+def _count_imaginary_tm(aoforce_text: str) -> int:
+    """Count imaginary modes in aoforce output (DELFIN IMAG logic).
+
+    aoforce prints an imaginary mode either as a bare negative frequency or
+    with an explicit ``i``/``i*`` suffix. Any second token (the frequency
+    column of the mode table) that parses as a float and is negative or
+    i-suffixed counts as one imaginary mode. The rule matches the workflow's
+    ``_count_imaginary`` so a count of 0 reliably marks a verified minimum;
+    over-counting keeps a minimum UNVERIFIED -- fail-safe, never silently
+    green (target 3: "aoforce imaginary modes via DELFIN's IMAG logic").
+    """
+    count = 0
+    for line in aoforce_text.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        token = parts[1].lower()
+        has_i_suffix = token.endswith("i") or token.endswith("i*")
+        bare = token.rstrip("*i")
+        try:
+            value = float(bare)
+        except ValueError:
+            continue
+        if has_i_suffix or value < 0:
+            count += 1
+    return count
+
+
 def _coord_to_xyz(work_dir: Path) -> Optional[Path]:
     """Convert Turbomole coord back to XYZ."""
     coord_path = work_dir / "coord"
@@ -392,7 +420,9 @@ class TurbomoleFreqAdapter(StepAdapter):
     consumes = ("geometry",)
     produces = ("qc_output", "hessian")
     data_keys = _TM_DATA + (DataKeySpec("hessian", "file", "path",
-                                        "aoforce Hessian file"),)
+                                        "aoforce Hessian file"),
+                            DataKeySpec("imaginary_frequencies", "int", "count",
+                                        "imaginary vibrational modes"),)
     requires_binaries = _TM_BINARIES
 
     def validate_params(self, **kwargs: Any) -> None:
@@ -426,9 +456,26 @@ class TurbomoleFreqAdapter(StepAdapter):
         # run — never a SUCCESS with empty data.
         success = proc.returncode == 0 and energy is not None
 
+        # Target 3: persist aoforce's output so DELFIN's IMAG logic can read
+        # it. The adapter must leave aoforce.out on disk, not swallow it into
+        # a CompletedProcess (defect TM2-T3-A: the workflow's _count_imaginary
+        # read a file that was never written, so imaginary modes were never
+        # surfaced).
+        aoforce_out = work_dir / "aoforce.out"
+        if proc.stdout:
+            aoforce_out.write_text(proc.stdout)
+
         data = {}
         if energy is not None:
             data["energy_Eh"] = energy
+
+        # Surface the imaginary-mode count: a count > 0 means this structure
+        # is NOT a verified minimum and the caller must report that (ORCA
+        # parity: extract_imaginary_frequencies). The count is a datum, not
+        # an error -- the workflow decides whether to warn.
+        if aoforce_out.is_file():
+            data["imaginary_frequencies"] = _count_imaginary_tm(
+                aoforce_out.read_text(errors="replace"))
 
         # The adapter declares "hessian" as a product: surface the file
         # aoforce wrote, or fail honestly — a declared product that is
