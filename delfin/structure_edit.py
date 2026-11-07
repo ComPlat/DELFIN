@@ -25,6 +25,7 @@ Design rules the package target fixes:
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import Any
 
@@ -33,6 +34,7 @@ from delfin.tools.geometry_edit import (
     GeometryError,
     _bond_graph,
     _covalent_radii,
+    parse_orca_block,
     parse_xyz,
     to_xyz,
 )
@@ -45,6 +47,12 @@ except Exception:  # pragma: no cover - import-time guard, exercised in CI
 
 # Distance (A) above which two positions count as "moved" in a diff.
 _MOVED_ANGSTROM = 0.1
+
+# Distance (A) below which a pair of atoms counts as a steric clash in a diff.
+# 1.0 A is well below any real covalent single bond and above the sum of two
+# hydrogens sitting on top of each other, so it only fires on physically
+# impossible overlaps.
+_CLASH_ANGSTROM = 1.0
 
 # Standard maximal valence for common main-group elements. A non-metal atom
 # whose heavy-atom degree is below this needs hydrogen(s) placed.
@@ -69,14 +77,35 @@ def _parse(text: str, what: str = "structure") -> Geom:
             f"{what}: expected non-empty xyz text, got "
             + ("empty text" if isinstance(text, str) else type(text).__name__)
         )
+    # An ORCA coordinate block carries a real charge/multiplicity in its
+    # "* xyz {charge} {mult}" header line. Route those to parse_orca_block so
+    # the diff's charge/multiplicity check reads real values instead of the
+    # parse_xyz defaults (0, 1). Plain xyz text (no "* xyz" header) still
+    # parses identically through parse_xyz.
+    first_line = text.lstrip().splitlines()[0].strip()
+    is_orca_block = bool(re.match(r"^\*\s*(?:xyz|xyzfile|int|frac)\b", first_line))
+    parser = parse_orca_block if is_orca_block else parse_xyz
     try:
-        return parse_xyz(text)
+        return parser(text)
     except GeometryError as exc:
         raise ValueError(f"{what} is not a valid xyz block: {exc}") from exc
 
 
 def _dist(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
     return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+
+def _min_pair_distance(coords: list[tuple[float, float, float]]) -> float | None:
+    """Smallest distance between any two atoms of a structure, or None for <2
+    atoms. The clash check compares this against ``_CLASH_ANGSTROM``."""
+    best: float | None = None
+    n = len(coords)
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = _dist(coords[i], coords[j])
+            if best is None or d < best:
+                best = d
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -286,9 +315,12 @@ def structure_diff(xyz_a_text: str, xyz_b_text: str) -> dict[str, Any]:
     """A per-atom diff of ``xyz_a`` against ``xyz_b`` plus checks.
 
     Reports changed element and moved atoms (position change above
-    ``_MOVED_ANGSTROM``), the composition equality and the charge /
-    multiplicity consistency. Atom positions compared positionally (same
-    index); a renumbering is a separate operation (``renumber_to_reference``).
+    ``_MOVED_ANGSTROM``), the composition equality, the charge /
+    multiplicity consistency (read from an ORCA ``* xyz`` header when the
+    input is an ORCA block; plain xyz defaults to 0/1) and a steric-clash
+    check: a pair closer than ``_CLASH_ANGSTROM`` A is reported. Atom
+    positions compared positionally (same index); a renumbering is a
+    separate operation (``renumber_to_reference``).
     """
     a = _parse(xyz_a_text, "structure A")
     b = _parse(xyz_b_text, "structure B")
@@ -315,15 +347,31 @@ def structure_diff(xyz_a_text: str, xyz_b_text: str) -> dict[str, Any]:
             "index": i, "from_symbol": None, "to_symbol": b.symbols[i],
             "element_changed": True, "moved": True, "distance": None,
         })
+    min_da = _min_pair_distance(a.coords)
+    min_db = _min_pair_distance(b.coords)
+    both = [d for d in (min_da, min_db) if d is not None]
+    min_distance = min(both) if both else None
+    clash_detected = min_distance is not None and min_distance < _CLASH_ANGSTROM
     return {
         "rows": rows,
         "composition_equal": Counter(a.symbols) == Counter(b.symbols),
         "charge_mult_match": (
             a.charge == b.charge and a.multiplicity == b.multiplicity
         ),
+        "charge_a": a.charge,
+        "multiplicity_a": a.multiplicity,
+        "charge_b": b.charge,
+        "multiplicity_b": b.multiplicity,
+        "min_distance": min_distance,
+        "min_distance_a": min_da,
+        "min_distance_b": min_db,
+        "clash_detected": clash_detected,
+        "clash_angstrom": _CLASH_ANGSTROM,
         "checks": [
             "composition compared by element count",
-            "charge/multiplicity compared (0-based default)",
+            "charge/multiplicity compared (0/1 default for plain xyz, "
+            "real values from an ORCA * xyz header)",
+            f"clash check: no pair under {_CLASH_ANGSTROM} Angstrom",
         ],
         "error": None,
     }
