@@ -420,8 +420,10 @@ def test_the_counts_still_match_what_was_measured():
     # science 54 -> 55 on 2026-11-03 (BT1, wave 28, swarm/wave20/bt1): the
     # tasks_w28_bt1.yaml butane rotation-profile task (scan + TS + movie,
     # graded on the artifact tree).
+    # science 55 -> 59 on 2026-11-07 (XE1, wave 28, agent/s5-xe1b): the four
+    # tasks_w28_xe1.yaml xyz-editor tasks (task_class science_analysis).
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 55, "chemistry": 32, "generalist": 26,
+                      "science": 59, "chemistry": 32, "generalist": 26,
                       "other": 90}, counts
 
 
