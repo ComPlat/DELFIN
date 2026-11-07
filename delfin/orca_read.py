@@ -794,3 +794,175 @@ def ensure_property_json(work_dir: Union[str, Path], base_name: str) -> Optional
     runner = Runner(working_dir=work_dir)
     runner.create_property_json(base_name)
     return target if target.is_file() else None
+
+
+# ---------------------------------------------------------------------------
+# thermochemistry reading from an existing frequency .out (text only)
+# ---------------------------------------------------------------------------
+
+#: 1 Eh in kcal/mol (CODATA 2018; DELFIN's standard constant, see pka.py).
+_HARTREE_TO_KCAL = 627.5094740631
+
+#: The temperature is carried in the block header that ORCA prints over each
+#: thermochemistry section (manual, section 4.7). A ``%freq Temp`` list run
+#: (manual, section 4.6.1) prints one such block per temperature.
+_THERMO_BLOCK_RE = re.compile(r"THERMOCHEMISTRY AT\s+(-?\d+(?:\.\d+)?)\s*K\b",
+                              re.IGNORECASE)
+_THERMO_QUANTITY_RE = re.compile(
+    r"{label}\s+\.\.\.\s+(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s*{unit}",
+    re.IGNORECASE)
+#: ``<label> ... <eh> Eh  <kcal> kcal/mol`` -- ORCA prints ZPE and the
+#: entropy term in both units on one line (manual, section 4.7).
+_THERMO_BOTH_RE = re.compile(
+    r"{label}\s+\.\.\.\s+(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s*Eh\s+"
+    r"(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s*kcal/mol",
+    re.IGNORECASE)
+#: The line ORCA prints when the entropy is evaluated with the quasi-RRHO
+#: treatment of S. Grimme (manual, section 4.7). When this exact line is
+#: absent but a vibrational-entropy line is present, plain RRHO is used.
+_QUASI_RRHO_LINE = "QRRHO of S. Grimme"
+
+
+@dataclass(frozen=True)
+class ThermoReading:
+    """The thermochemistry of one temperature block of a frequency .out.
+
+    All energy quantities carry both hartree and kcal/mol. ORCA prints the
+    electronic energy, the total enthalpy and the Gibbs free energy only in
+    hartree (manual, section 4.7); their kcal/mol values are computed here
+    with :data:`_HARTREE_TO_KCAL`. ``zpe`` and ``ts`` are the values ORCA
+    itself prints in both units.
+
+    ``quasirrho`` is ``True`` when ORCA used the quasi-RRHO entropy
+    treatment (manual 4.7, ``%freq QuasiRRHO`` default true), ``False`` for
+    plain RRHO, ``None`` when no vibrational-entropy line was found.
+    """
+
+    #: temperature of this block, K
+    temperature_K: Optional[float]
+    #: pressure of this block, atm
+    pressure_atm: Optional[float]
+    #: electronic (single-point) energy, Eh and kcal/mol
+    e_el_Eh: Optional[float]
+    e_el_kcal: Optional[float]
+    #: zero-point energy correction, Eh and kcal/mol
+    zpe_Eh: Optional[float]
+    zpe_kcal: Optional[float]
+    #: total enthalpy H, Eh and kcal/mol
+    h_Eh: Optional[float]
+    h_kcal: Optional[float]
+    #: entropy term as ORCA prints it: T*S, Eh and kcal/mol
+    ts_Eh: Optional[float]
+    ts_kcal: Optional[float]
+    #: Gibbs free energy G, Eh and kcal/mol
+    g_Eh: Optional[float]
+    g_kcal: Optional[float]
+    #: True for quasi-RRHO, False for RRHO, None when undetermined
+    quasirrho: Optional[bool]
+    #: reading source ("text" always here)
+    source: str = "text"
+    #: human note (empty on success)
+    note: str = ""
+
+    @property
+    def e_el(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) electronic energy."""
+        return (self.e_el_Eh, self.e_el_kcal)
+
+    @property
+    def zpe(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) zero-point energy."""
+        return (self.zpe_Eh, self.zpe_kcal)
+
+    @property
+    def enthalpy(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) total enthalpy H."""
+        return (self.h_Eh, self.h_kcal)
+
+    @property
+    def ts(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) entropy term T*S."""
+        return (self.ts_Eh, self.ts_kcal)
+
+    @property
+    def gibbs(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) Gibbs free energy G."""
+        return (self.g_Eh, self.g_kcal)
+
+
+def _thermo_quantity(block: str, label: str, unit: str) -> Optional[float]:
+    """First ``<label> ... <value> <unit>`` on one line within *block*."""
+    pattern = _THERMO_QUANTITY_RE.pattern.format(label=re.escape(label),
+                                                 unit=re.escape(unit))
+    m = re.search(pattern, block)
+    if m is None:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _thermo_both(block: str, label: str) -> tuple[Optional[float], Optional[float]]:
+    """``(Eh, kcal/mol)`` of the ``<label> ... <eh> Eh <kcal> kcal/mol`` line."""
+    pattern = _THERMO_BOTH_RE.pattern.format(label=re.escape(label))
+    m = re.search(pattern, block)
+    if m is None:
+        return (None, None)
+    try:
+        return (float(m.group(1)), float(m.group(2)))
+    except ValueError:
+        return (None, None)
+
+
+def read_thermochemistry(out_path: Union[str, Path]) -> list[ThermoReading]:
+    """Read every thermochemistry block of a frequency run's ``.out``.
+
+    ORCA prints one ``THERMOCHEMISTRY AT <T>K`` block per temperature
+    (manual, section 4.7). A run requested at several temperatures with
+    ``%freq Temp 290,295,...`` (section 4.6.1) carries one block per
+    temperature; this returns one :class:`ThermoReading` per block, in file
+    order. This is a pure text reader and never needs OPI.
+
+    A missing file (or a file with no thermochemistry block) yields an empty
+    list. It never raises for a missing or unparseable output.
+    """
+    try:
+        text = Path(out_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    starts = [(m.start(), float(m.group(1)))
+              for m in _THERMO_BLOCK_RE.finditer(text)]
+    readings: list[ThermoReading] = []
+    for i, (start, temp) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else len(text)
+        block = text[start:end]
+
+        e_el = _thermo_quantity(block, "Electronic energy", "Eh")
+        zpe_eh, zpe_kcal = _thermo_both(block, "Zero point energy")
+        h = _thermo_quantity(block, "Total Enthalpy", "Eh")
+        ts_eh, ts_kcal = _thermo_both(block, "Final entropy term")
+        g = _thermo_quantity(block, "Final Gibbs free energy", "Eh")
+        pressure = _thermo_quantity(block, "Pressure", "atm")
+
+        if "QRRHO of S. Grimme" in block:
+            quasirrho = True
+        elif "RRHO" in block:
+            quasirrho = False
+        else:
+            quasirrho = None
+
+        def _kcal(eh: Optional[float]) -> Optional[float]:
+            return None if eh is None else eh * _HARTREE_TO_KCAL
+
+        readings.append(ThermoReading(
+            temperature_K=temp,
+            pressure_atm=pressure,
+            e_el_Eh=e_el, e_el_kcal=_kcal(e_el),
+            zpe_Eh=zpe_eh, zpe_kcal=zpe_kcal,
+            h_Eh=h, h_kcal=_kcal(h),
+            ts_Eh=ts_eh, ts_kcal=ts_kcal,
+            g_Eh=g, g_kcal=_kcal(g),
+            quasirrho=quasirrho,
+        ))
+    return readings
