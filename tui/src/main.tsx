@@ -19,6 +19,7 @@ import { Pins } from "./agents/pins"
 import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
+import { worktreeRetryOf } from "./commands"
 import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
@@ -398,6 +399,9 @@ interface NewOptions {
   divider?: string
   /** What went wrong is the caller's to say. */
   quiet?: boolean
+  /** Set by the NEEDS_LOCAL_PROJECT retry: the user consented to making
+   *  the cwd a local project; session.create gets initProject. */
+  retry?: boolean
 }
 
 /** A new session asked for: its id (null when it did not start, and
@@ -432,6 +436,7 @@ async function startSession(options: NewOptions = {}): Promise<Started> {
   try {
     await withReplay(store,
       () => connection.rpc.request("session.create", { ...settings, ...brief, ...named,
+                                                       ...(options.retry ? { initProject: true } : {}),
                                                        cwd: options.cwd || String(start.cwd ?? process.cwd()) }),
       (answer) => {
         id = answer.sessionId as string
@@ -453,6 +458,13 @@ async function startSession(options: NewOptions = {}): Promise<Started> {
     if (!shown && letGo(id)) await leave(id)
     return { id, superseded: !shown, error: "" }
   } catch (error) {
+    // A plain folder: the service asks whether it should become a local
+    // project (NEEDS_LOCAL_PROJECT). With consent the start is retried
+    // with initProject -- the session then runs in its own worktree.
+    const retry = worktreeRetryOf(error as { code?: number })
+    if (retry && !options.retry) {
+      return await startSession({ ...options, retry: true, ...retry })
+    }
     const said = (error as Error).message
     if (!options.quiet) view.note(`the new session could not start: ${said}`)
     return { id: null, superseded: mine !== wanted, error: said || "it did not start" }
