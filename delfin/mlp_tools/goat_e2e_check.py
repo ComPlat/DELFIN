@@ -135,8 +135,17 @@ def check_goat_e2e(
     # (Open MPI slot exhaustion, an ORCA_MAIN input-check abort, an external
     # MLIP program not found / rejected, ...).  Surface that reason rather
     # than only "does not end with the termination marker".
+    #
+    # Scope: only THIS run's own job-log files are read -- the ORCA .out and
+    # the job's stderr (SLURM writes "<jobname>_<jobid>.err", matching the
+    # base name stem).  A co-located foreign *.err (another job, an OCCUPIER
+    # or xTB diagnostic dropped next to a finished GOAT run) is NOT this run's
+    # log, so a bare deny-list word in it must not flip the verdict (H01).
+    own_err = [
+        p for p in sorted(run_dir.glob(f"{base_name}*.err"))
+    ]
     job_log = "".join(
-        p.read_text(errors="replace") for p in sorted(run_dir.glob("*.err"))
+        p.read_text(errors="replace") for p in own_err
     )
     if out_path.is_file():
         job_log += out_path.read_text(errors="replace")

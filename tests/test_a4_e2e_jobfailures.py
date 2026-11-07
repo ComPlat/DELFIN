@@ -80,15 +80,17 @@ def _write_run(tmp_path: Path, base_name: str, job_log: str) -> Path:
     return run
 
 
-@pytest.mark.parametrize("name,tail", [
-    ("D2_mpi_slots", D2),
-    ("D3_progext_not_found", D3),
-    ("D4_external_exit_code", D4),
+@pytest.mark.parametrize("name,tail,category", [
+    ("D2_mpi_slots", D2, "abort"),
+    ("D3_progext_not_found", D3, "progext"),
+    ("D4_external_exit_code", D4, "external_exit"),
 ])
-def test_job_failure_shape_is_named(tmp_path, name, tail):
+def test_job_failure_shape_is_named(tmp_path, name, tail, category):
     run = _write_run(tmp_path, "extopt", tail)
     rep = check_goat_e2e(run, base_name="extopt")
     assert rep["ok"] is False
-    msgs = " ".join(f.get("message", "") for f in rep["findings"])
-    # the finding must name the actual failure, not merely "no termination"
-    assert msgs.lower() != "does not end"
+    msgs = " ".join(f.get("message", "") for f in rep["findings"]).lower()
+    # the finding must NAME the concrete D2/D3/D4 failure category, not
+    # merely "does not end with the termination marker"
+    assert category in msgs, (
+        f"finding does not name the {category} category for {name}: {msgs}")
