@@ -47,16 +47,20 @@ COMMON_DENY_PATTERNS: tuple[str, ...] = (
     r"git\s+fetch\b",
     r"git\s+pull\b",
     # patch application writes files the write-scope check cannot see:
-    # only the dry run (--check) is allowed
-    r"git\s+apply\b(?![^;|&]*--check)",
+    # only the dry run (--check, taken as a whole flag) is allowed
+    r"git\s+apply\b(?![^;|&]*--check(?:\s|$|[;&|]))",
     r"git\s+am\b",
-    r"(?:^|[;|&`(]\s*)patch\s",
-    # tests only through the project's test entry
+    r"(?:^|[;&`(>\{\}]\s*)patch\s",
+    # tests only through the project's test entry; a bare `pytest` is a
+    # command only when it stands on its own (not inside `pytest.ini` or
+    # `pytest-results.txt`)
     r"python\s+-m\s+pytest\b",
     r"python3\s+-m\s+pytest\b",
-    r"(?:^|[;|&`(]\s*)(?:python3?\s+-m\s+)?pytest\b",
-    # no "||" chains
+    r"(?:^|[;&`(>\s])pytest(?=\s|$|[;&|])",
+    # no "||" chains, and no unicode / whitespace look-alikes that fake a
+    # separator (FULLWIDTH SEMICOLON, NBSP, ZERO WIDTH SPACE, ...)
     r"\|\|",
+    r"[\u00a0\u200b\u202f\uFF1B\uFD3E\uFD3F\u2212\u2011]",
     # cluster control is DELFIN's job list, never the raw commands
     r"(?:^|[;|&`(]\s*|\bxargs\s+|\bexec\s+)(?:squeue|sbatch|scancel|scontrol)\b",
     # secret env reads
@@ -136,6 +140,11 @@ def home_deny_patterns(home: Path | str | None = None) -> list[str]:
         # tilde / $HOME forms toward the member's own .delfin are refused,
         # like the absolute form below (the user's own state is off-limits)
         r"(?:~|\$HOME|\$\{HOME\})/\.delfin\b",
+        # walking OUT of the member's own home via '..' lands in another
+        # user's territory by definition -- refuse it.  This never blocks a
+        # legitimate command: a member's own files live *inside* ~, and any
+        # '../' past the home root is someone else's.
+        r"(?:~|\$HOME|\$\{HOME\})/(?:\.\./)+",
         # the member's own home .delfin, derived (no literal user/path)
         re.escape(str(resolved)) + r"/\.delfin\b",
         # absolute other-user homes: /home/<OTHER>/... and
