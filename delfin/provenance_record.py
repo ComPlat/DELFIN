@@ -22,6 +22,7 @@ version pattern from ``delfin.orca_read``.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -191,7 +192,60 @@ def _prune_absolute_paths(value):
     return value
 
 
-def build_record(result_dir: str | Path) -> dict:
+def compute_step_id(record: dict) -> str:
+    """A stable, content-derived id for a record (target 3, chain linkage).
+
+    The id depends only on what the record was *made of*, never on when it was
+    built or what else it links to: the sorted input files, the program
+    version, the structure origin and the result type.  Rebuilding the same
+    run yields the same id, which is what lets a downstream result (a plot)
+    name its ancestor calculations.  Signed with a ``pv1:`` prefix so a reader
+    can tell provenance-record ids from other uuids.
+    """
+    stable = {
+        "input_files": sorted(
+            (f.get("path"), f.get("sha256")) for f in record.get("input_files", [])
+        ),
+        "program_version": record.get("program_version"),
+        "structure_origin": record.get("structure_origin"),
+        "result_type": (record.get("result") or {}).get("type"),
+    }
+    digest = hashlib.sha256(
+        json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"pv1:{digest[:16]}"
+
+
+def _chain_ids(current_id: str, parents) -> list[str]:
+    """The chain of ancestor step ids for ``current_id``, transitive + deduped.
+
+    Each parent is a record dict; its own ``step_id`` plus (transitively) the
+    ids it already links are collected in order.  The id of the record being
+    built is never part of its own chain, and a shared ancestor (e.g. the same
+    structure feeding two steps) appears once.
+    """
+    seen: list[str] = []
+
+    def add(parent: dict):
+        pid = parent.get("step_id")
+        if pid and pid != current_id and pid not in seen:
+            seen.append(pid)
+        for grandparent in parent.get("chain") or []:
+            if grandparent != current_id and grandparent not in seen:
+                seen.append(grandparent)
+
+    for parent in parents or []:
+        if isinstance(parent, dict):
+            add(parent)
+    return seen
+
+
+def build_record(
+    result_dir: str | Path,
+    *,
+    parents: list[dict] | None = None,
+    result_type: str = "calculation",
+) -> dict:
     """Build a complete provenance record dict for ``result_dir`` (a run folder)."""
     run_root = Path(result_dir).resolve()
     delfin_data = _read_delfin_data(run_root)
@@ -209,10 +263,10 @@ def build_record(result_dir: str | Path) -> dict:
     if not isinstance(python_packages, dict):
         python_packages = {"error": "provenance_unavailable"}
 
-    return {
+    record = {
         "schema_version": SCHEMA_VERSION,
         "result": {
-            "type": "calculation",
+            "type": result_type,
             "created": _iso_now(),
         },
         "input_files": _input_files(run_root),
@@ -234,6 +288,10 @@ def build_record(result_dir: str | Path) -> dict:
             ),
         },
     }
+    step_id = compute_step_id(record)
+    record["step_id"] = step_id
+    record["chain"] = _chain_ids(step_id, parents)
+    return record
 
 
 def write_record(record: dict, result_dir: str | Path) -> Path:
