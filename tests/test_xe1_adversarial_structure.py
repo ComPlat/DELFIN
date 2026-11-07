@@ -220,3 +220,61 @@ def test_structure_diff_surfaces_a_clash_check():
     # structure reported as a clean diff is the defect this catches.
     assert out["clash_detected"] is True
     assert out["min_distance"] < out["clash_angstrom"]
+
+
+# ---------------------------------------------------------------------------
+# fix_hydrogens counts ALREADY-BONDED H on organic fragments too (regression
+# for builder commit da367b2b2): the missing count is need - heavy_order -
+# existing_h, NOT need - heavy_order. The builder's test covers the metal
+# complex Zn(NH2)2; these cover a plain organic amido/alkyl fragment, where
+# the OLD code over-added on BOTH the deficient N and the C (which already
+# carries three H).
+# ---------------------------------------------------------------------------
+
+# Methylamine with N carrying only ONE H (deficient; should become NH2).
+METHYLAMINE_NH1 = """6
+CH3-NH, N missing one H
+C     0.000    0.000    0.000
+N     1.470    0.000    0.000
+H    -0.650    0.870    0.000
+H    -0.650   -0.440    0.760
+H    -0.650   -0.440   -0.760
+H     2.180    0.710    0.000
+"""
+
+# Fully saturated methylamine: nothing may be added.
+METHYLAMINE_NH2 = """7
+CH3-NH2 saturated
+C     0.000    0.000    0.000
+N     1.470    0.000    0.000
+H    -0.650    0.870    0.000
+H    -0.650   -0.440    0.760
+H    -0.650   -0.440   -0.760
+H     2.180    0.710    0.000
+H     2.180   -0.710    0.000
+"""
+
+
+def test_fix_hydrogens_organic_deficient_n_adds_exactly_the_missing_h():
+    """A deficient amido N (CH3-NH) must gain EXACTLY one H, not a valence
+    count of its heavy bonds. C must keep its three existing H. The old code
+    (need - heavy_order) over-added: C gained 3 and N gained 2 -> total H 9
+    instead of the correct 5. New code: total H 5, n_added 1."""
+    out = se.fix_hydrogens(METHYLAMINE_NH1)
+    assert out["error"] is None
+    syms = _symbols(out["xyz"])
+    assert syms.count("H") == 5, syms  # 3 on C unchanged + 2 on N (1 + 1 added)
+    assert out["n_added"] == 1, out["added_rows"]
+    # The added H is bonded to the nitrogen.
+    assert out["added_rows"][0]["bonded_to"] == 1, out["added_rows"]
+
+
+def test_fix_hydrogens_saturated_organic_fragment_adds_none():
+    """A fully saturated amine (CH3-NH2) must get ZERO hydrogens -- the
+    existing_h subtraction must make `missing` exactly 0 on both C and N,
+    never over-correct or remove."""
+    out = se.fix_hydrogens(METHYLAMINE_NH2)
+    assert out["error"] is None
+    syms = _symbols(out["xyz"])
+    assert syms.count("H") == 5, syms  # unchanged: 3 on C, 2 on N
+    assert out["n_added"] == 0, out["added_rows"]
