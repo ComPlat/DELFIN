@@ -40,6 +40,24 @@ PROFILE_GPU_PARTITIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+def scontrol_uneliner() -> str:
+    """``scontrol show partition --oneliner`` as text ('' when unreachable).
+
+    The one sanctioned place a module asks scontrol for the site's real
+    partition list.  Returns '' on any failure rather than raising, so
+    callers treat "unreachable" the same way ``discover_gpu_partitions``
+    does (no partitions to choose from).
+    """
+    try:
+        done = subprocess.run(['scontrol', 'show', 'partition', '--oneliner'],
+                              capture_output=True, text=True, timeout=20)
+    except Exception:
+        return ''
+    if done.returncode != 0:
+        return ''
+    return done.stdout or ''
+
+
 def discover_gpu_partitions(scontrol_output: Optional[str] = None) -> tuple:
     """Partitions that are up and have GPUs, from ``scontrol show partition``.
 
@@ -48,14 +66,7 @@ def discover_gpu_partitions(scontrol_output: Optional[str] = None) -> tuple:
     TRES (``gres/gpu=48``). Partitions named dev_* are for testing and left out.
     """
     if scontrol_output is None:
-        try:
-            done = subprocess.run(['scontrol', 'show', 'partition', '--oneliner'],
-                                  capture_output=True, text=True, timeout=20)
-        except Exception:
-            return ()
-        if done.returncode != 0:
-            return ()
-        scontrol_output = done.stdout or ''
+        scontrol_output = scontrol_uneliner()
     found: list[str] = []
     for line in scontrol_output.splitlines():
         fields = dict(part.split('=', 1) for part in line.split() if '=' in part)
