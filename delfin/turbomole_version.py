@@ -167,15 +167,16 @@ def mcp_target_version(
 ) -> tuple[Optional[str], bool]:
     """The version to ask the MCP for, given the installed version.
 
-    The MCP speaks 8.0/8.1 only. When the installed version is on the 7.x
-    line we still ask the MCP for the oldest version it speaks (8.0) and say
-    so explicitly -- the second element of the tuple is True when the MCP
-    target differs from the installed version. For an *unknown* installed
-    version the target is the conservative 8.0 and ``differs`` is True (we
+    The MCP speaks 8.0/8.1 only. When the installed version is below the
+    8.x line (7.x, or any earlier line) we still ask the MCP for the oldest
+    version it speaks (8.0) and say so explicitly -- the second element of
+    the tuple is True when the MCP target differs from the installed
+    version. For an *unknown* installed version the target is the
+    conservative 8.0 and ``differs`` is True (we
     cannot prove compatibility, so we flag it). For 8.x we ask for the exact
     installed version and ``differs`` is False.
     """
-    if installed is None or installed.is_7x_line:
+    if installed is None or installed.major < 8:
         return "8.0", True
     return str(installed), False
 
@@ -292,7 +293,7 @@ def _directives_of(
     visible and can be refused by the caller.
     """
     known_desc = tuple(sorted(known_directives, key=len, reverse=True))
-    for line in control_text.splitlines():
+    for line in (control_text or "").splitlines():
         stripped = line.strip()
         if not stripped.startswith("$"):
             continue
