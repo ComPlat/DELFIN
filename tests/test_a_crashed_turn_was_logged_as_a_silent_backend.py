@@ -161,7 +161,7 @@ def test_a_retried_turn_no_longer_reads_like_a_quiet_one(home):
 
 def test_the_recorded_error_does_not_carry_a_credential_to_the_disk(home):
     """The first free-form field in this log; a bug report bundles it."""
-    secret = "sk-ant-api03-THISLOOKSLIKEAKEY0123456789abcdefghijklmnop"
+    secret = "sk-ant-api03-THISLOOKSLIKEAKEY0123456789abcdefghijklmnop"  # secret-guard: allow (synthetic DELFIN test sample)
     tm.record("s", model="m", total_ms=100,
               error=f"AuthenticationError: api_key={secret} rejected")
     entry = tm.read("s")[0]

@@ -357,6 +357,9 @@ def test_the_slot_is_free_during_a_retry_backoff(monkeypatch, tmp_path):
     """A round that waits out a backoff before its retry holds no slot while
     it sleeps: another session may use the endpoint in that time. The
     congestion is reported once, not again by the round's finally."""
+    # The suite scales retry waits to 0 (conftest); this test needs the real
+    # (>= 1 s) backoff call to observe the slot during it. time.sleep is faked.
+    monkeypatch.setenv("DELFIN_STREAM_RETRY_DELAY_SCALE", "1")
     A, client, gate_root = _make_client(monkeypatch, tmp_path)
     held_during_sleep = []
     # Only the backoff before the retry (>= 1 s, _STREAM_RETRY delay) is

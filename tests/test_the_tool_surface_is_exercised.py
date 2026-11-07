@@ -73,6 +73,14 @@ _NOT_EXERCISED_HERE = {
     "orca_explain": "tests/test_w04_orca_knowledge_tools.py",
     "orca_check_input": "tests/test_w04_orca_knowledge_tools.py",
     "workflow_candidates": "tests/test_w04_workflow_candidates.py",
+    # Lab device control: driven through this same executor against the
+    # simulator, each threat with a control, in their own files -- they
+    # need a pinned lab manifest and a simulated world in a scratch lab dir.
+    "lab_devices": "tests/test_lab_tools_registered.py — needs a lab manifest",
+    "lab_read": "tests/test_lab_tools_registered.py",
+    "lab_set": "tests/test_lab_safety_kernel.py — needs the simulated lab",
+    "lab_plan_check": "tests/test_lab_safety_kernel.py",
+    "lab_estop": "tests/test_lab_deadman_and_estop.py",
     # Cluster resources this machine does not have.
     "watch_job": "needs SLURM",
     "session_message": "tests/test_sessions_can_write_to_each_other.py — "

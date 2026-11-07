@@ -478,6 +478,172 @@ def create_tab(ctx: Any):
                         "flow_status": flow_status, "state": state}
 
 
+# ---------------------------------------------------------------------------
+# SWV watch pane (read-only): observe a swarm and one member session.
+# Pure, HTML-able formatters over delfin.agent.swarm.observe — the SAME data
+# API the TUI and an SW3 lead call. The widgets half is create_watch_tab,
+# registered as its own tab so the SW2a manage flow above stays untouched.
+# ---------------------------------------------------------------------------
+
+from delfin.agent.swarm.observe import member_feed as watch_feed
+from delfin.agent.swarm.observe import swarm_overview as watch_overview
+
+
+def watched_rows_html(rows: list[dict[str, Any]]) -> list[str]:
+    """One HTML string per member of an ``swarm_overview`` result.
+
+    Pure and write-free: every field is HTML-escaped so hostile input stays
+    inert, a member awaiting approval is visually flagged, and the rendered
+    HTML carries no control (no approve button, no input) — observing a
+    member never acts on it.
+    """
+    out: list[str] = []
+    for row in rows or []:
+        name = _html.escape(str(row.get("name") or ""))
+        package = _html.escape(str(row.get("package") or ""))
+        role = _html.escape(str(row.get("role") or ""))
+        model = _html.escape(str(row.get("model") or ""))
+        state = _html.escape(str(row.get("state") or ""))
+        last = row.get("last_tool_call") or {}
+        last_tool = _html.escape(
+            f"{last.get('tool') or ''} {last.get('arg') or ''}".strip())
+        n_commits = int(row.get("commits_on_branch") or 0)
+        n_approvals = int(row.get("pending_approvals_count") or 0)
+        row_cls = (" color:#b91c1c;" if state == "NEEDS APPROVAL"
+                   else "")
+        cells = [
+            f"<b>{name}</b>", package, role, model,
+            f"<span style='{row_cls}'>{state}</span>",
+            _html.escape(last_tool)[:120],
+            f"{n_commits} commit(s)",
+            (f"{n_approvals} approval(s)" if n_approvals else "no approvals"),
+        ]
+        out.append("<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
+    return out
+
+
+def watched_feed_html(feed: list[dict[str, Any]]) -> list[str]:
+    """One HTML string per ``member_feed`` entry, newest last.
+
+    Refusals are visually flagged; the feed renders what happened, it never
+    offers to act on it (no approve/answer/input control).
+    """
+    out: list[str] = []
+    for entry in feed or []:
+        kind = str(entry.get("kind") or "tool")
+        text = _html.escape(str(entry.get("text") or ""))
+        at = _html.escape(str(entry.get("at") or ""))
+        if kind == "refusal":
+            line = (f"<span style='color:#b91c1c'>[refusal]</span> "
+                    f"{at} — {text}")
+        elif kind == "commit":
+            line = f"[commit] {text}"
+        else:
+            line = f"[tool] {at} — {text}"
+        out.append(line)
+    return out
+
+
+def create_watch_tab(ctx: Any):
+    """The Swarm Watch tab: the overview table with live refresh (bounded
+    rate) and a click-to-view member feed, read-only.
+
+    Mirrors create_tab's throttled timer (one refresh per interval,
+    cooperative stop, no second scheduler loop). Observing never changes a
+    member session: everything rendered comes from observe's read-only API
+    and there is no script/approve/input control anywhere.
+    """
+    if not HAS_WIDGETS:
+        raise ImportError("ipywidgets is required for the Swarm Watch tab.")
+
+    state: dict[str, Any] = {"_timer": None, "_stopped": False}
+
+    table_html = widgets.HTML("")
+    detail_html = widgets.HTML("")
+    status_html = widgets.HTML("")
+    feed_box = widgets.VBox([])
+
+    def _source() -> Any:
+        spec_path = getattr(ctx, "swarm_spec_path", None)
+        if spec_path and str(spec_path):
+            return {"spec_packages": []}  # resolved per refresh below
+        roster = getattr(ctx, "roster_path", None)
+        return str(roster) if roster else None
+
+    def _rows_html() -> list[str]:
+        # A roster file path is handed straight to the observe API; a spec
+        # path is loaded once and its packages dict passed through.
+        roster = _source()
+        if isinstance(roster, str) and roster:
+            return watched_rows_html(watch_overview(roster))
+        spec_path = getattr(ctx, "swarm_spec_path", None)
+        if spec_path and Path(spec_path).exists():
+            try:
+                spec = load_spec(Path(spec_path))
+            except Exception:
+                return []
+            return watched_rows_html(watch_overview(spec))
+        return []
+
+    def _refresh() -> None:
+        try:
+            rows = _rows_html()
+            if rows:
+                header = ("<tr><td><b>member</b></td><td>pkg</td>"
+                          "<td>role</td><td>model</td><td>state</td>"
+                          "<td>last tool</td><td>commits</td>"
+                          "<td>approvals</td></tr>")
+                table_html.value = ("<table>" + header +
+                                    "".join(rows) + "</table>")
+            else:
+                table_html.value = ("<em>No swarm to watch. Set a swarm spec "
+                                    "or roster path on the session.</em>")
+            status_html.value = ""
+        except Exception as exc:  # a broken source must not kill the tab
+            table_html.value = ""
+            status_html.value = (
+                f"<span style='color:#b91c1c'>{_html.escape(str(exc))}</span>")
+
+    def _show_member(name_obj) -> None:
+        # Click a member -> its live feed (read-only). The feed data comes
+        # from observe (the same API cmd_watch reads); no approve control.
+        name = str(getattr(name_obj, "description", name_obj))
+        feed = watch_feed(name, since=0)
+        entries = watched_feed_html(feed)
+        if not entries:
+            detail_html.value = f"<em>No recent steps for {_html.escape(name)}.</em>"
+            feed_box.children = ()
+            return
+        detail_html.value = f"<b>{_html.escape(name)}</b> — recent steps:"
+        feed_box.children = tuple(widgets.HTML(e) for e in entries)
+
+    def _tick() -> None:
+        if state["_stopped"]:
+            return
+        _refresh()
+        timer = threading.Timer(5.0, _tick)
+        timer.daemon = True
+        state["_timer"] = timer
+        timer.start()
+
+    refresh_btn = widgets.Button(description="Refresh", icon="refresh",
+                                 button_style="info")
+    refresh_btn.on_click(lambda _b: _refresh())
+
+    click_row = widgets.HTML(
+        "<em>Click a member in the table to open its live feed "
+        "(read-only; like <tt>delfin-agent watch</tt>).</em>")
+
+    return widgets.VBox([
+        widgets.HTML("<h3>Swarm Watch</h3>"),
+        widgets.HBox([refresh_btn, status_html]),
+        table_html,
+        click_row,
+        detail_html,
+        feed_box,
+    ])
+
+
 # Self-register AFTER create_tab is defined (module end, the tab_review.py
 # pattern, tab_review.py:1393-1397). An earlier attempt registered at line 56,
 # before create_tab existed: the NameError was swallowed by the except and the
@@ -487,4 +653,10 @@ try:  # pragma: no cover - import-side effect
     from delfin.dashboard.tab_registry import register_tab
     register_tab("swarm", "Swarm", create_tab, order=57)
 except Exception:  # registration must never break the import
+    pass
+
+try:  # pragma: no cover - import-side effect
+    from delfin.dashboard.tab_registry import register_tab
+    register_tab("swarm-watch", "Swarm Watch", create_watch_tab, order=58)
+except Exception:  # a watch-tab problem must never hide the manage tab
     pass
