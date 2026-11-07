@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from delfin.tools._base import StepAdapter
-from delfin.tools._types import StepResult, StepStatus
+from delfin.tools._types import ErrorKind, StepResult, StepStatus
 from delfin.tools._registry import register
 from delfin.tools._spec import DataKeySpec, ParamSpec
 
@@ -271,18 +271,33 @@ class TurbomoleSpAdapter(StepAdapter):
         argv = ["ridft"] if kwargs.get("ri", True) else ["dscf"]
         proc = _run_tm_command(argv, work_dir, cores, timeout=timeout)
 
-        success = proc.returncode == 0
         energy = _extract_energy_tm(work_dir)
+        # TM2-1: exit 0 without a converged energy file is an unconverged
+        # run — never a SUCCESS with empty data.
+        success = proc.returncode == 0 and energy is not None
         data = {}
         if energy is not None:
             data["energy_Eh"] = energy
+
+        if success:
+            err: Optional[str] = None
+            err_kind = ErrorKind.NONE
+        elif proc.returncode == 0:
+            err = (f"Turbomole {argv[0]} exited 0 but produced no energy "
+                   "file — the SCF did not converge; it is NOT reported "
+                   "as a result")
+            err_kind = ErrorKind.CONVERGENCE
+        else:
+            err = f"Turbomole {argv[0]} failed: {proc.stderr[:500]}"
+            err_kind = ErrorKind.TOOL_FAILED
 
         return self._make_result(
             self.name,
             StepStatus.SUCCESS if success else StepStatus.FAILED,
             work_dir, start,
             data=data,
-            error=None if success else f"Turbomole {argv[0]} failed: {proc.stderr[:500]}",
+            error=err,
+            error_kind=err_kind,
         )
 
 
@@ -332,13 +347,30 @@ class TurbomoleOptAdapter(StepAdapter):
         argv = ["jobex", "-ri", "-c", str(max_cycles)]
         proc = _run_tm_command(argv, work_dir, cores, timeout=timeout)
 
-        success = proc.returncode == 0
         energy = _extract_energy_tm(work_dir)
         geom_out = _coord_to_xyz(work_dir)
+
+        # TM2-1: exit 0 is NOT success. A jobex that returns 0 without a
+        # converged result (energy file) is an UNCONVERGED run and must be
+        # reported as such — never as a SUCCESS with empty data (target 3:
+        # "an unconverged run is never reported as a result").
+        success = proc.returncode == 0 and energy is not None
 
         data = {}
         if energy is not None:
             data["energy_Eh"] = energy
+
+        if success:
+            err: Optional[str] = None
+            err_kind = ErrorKind.NONE
+        elif proc.returncode == 0:
+            err = ("Turbomole jobex exited 0 but produced no converged "
+                   "energy file — the optimization did not converge; it is "
+                   "NOT reported as a result")
+            err_kind = ErrorKind.CONVERGENCE
+        else:
+            err = f"Turbomole jobex failed: {proc.stderr[:500]}"
+            err_kind = ErrorKind.TOOL_FAILED
 
         return self._make_result(
             self.name,
@@ -346,7 +378,8 @@ class TurbomoleOptAdapter(StepAdapter):
             work_dir, start,
             geometry=geom_out,
             data=data,
-            error=None if success else f"Turbomole jobex failed: {proc.stderr[:500]}",
+            error=err,
+            error_kind=err_kind,
         )
 
 
@@ -388,8 +421,10 @@ class TurbomoleFreqAdapter(StepAdapter):
         _run_tm_command(["ridft"], work_dir, cores, timeout=timeout)
         proc = _run_tm_command(["aoforce"], work_dir, cores, timeout=timeout)
 
-        success = proc.returncode == 0
         energy = _extract_energy_tm(work_dir)
+        # TM2-1: exit 0 without a converged energy file is an unconverged
+        # run — never a SUCCESS with empty data.
+        success = proc.returncode == 0 and energy is not None
 
         data = {}
         if energy is not None:
@@ -404,15 +439,27 @@ class TurbomoleFreqAdapter(StepAdapter):
         elif success:
             success = False
 
+        if success:
+            err: Optional[str] = None
+            err_kind = ErrorKind.NONE
+        elif proc.returncode == 0 and energy is None:
+            err = ("Turbomole aoforce exited 0 but produced no energy file "
+                   "— the SCF did not converge; it is NOT reported as a result")
+            err_kind = ErrorKind.CONVERGENCE
+        elif proc.returncode == 0:
+            err = "aoforce exited 0 but wrote no hessian file"
+            err_kind = ErrorKind.PARSE
+        else:
+            err = f"Turbomole aoforce failed: {proc.stderr[:500]}"
+            err_kind = ErrorKind.TOOL_FAILED
+
         return self._make_result(
             self.name,
             StepStatus.SUCCESS if success else StepStatus.FAILED,
             work_dir, start,
             data=data,
-            error=None if success else (
-                "aoforce exited 0 but wrote no hessian file"
-                if proc.returncode == 0 else
-                f"Turbomole aoforce failed: {proc.stderr[:500]}"),
+            error=err,
+            error_kind=err_kind,
         )
 
 
