@@ -79,8 +79,9 @@ class RecoveryPlan:
     """What a restart should do with one session's in-flight turn."""
 
     session: str
-    #: The turn number to resume (from the checkpoint when present, else the
-    #: highest turn the journal knows). 0 when the session was idle.
+    #: The turn number to resume: at least the highest turn the journal knows
+    #: (a stale checkpoint never drags it backwards below completed work).
+    #: 0 when the session was idle.
     resume_turn: int
     #: True when the session died mid-turn (checkpoint or open step present).
     in_flight: bool
@@ -105,20 +106,23 @@ class RecoveryPlan:
         """May the tool loop NOT re-dispatch this call after a crash?
 
         True for every step that must not run again automatically: any
-        finished step, and any OPEN step that is not a read-only step.
-        (Read-only OPEN steps may be re-run; they change nothing.)
+        finished step, and any OPEN step that is not a verified read-only
+        step (read-only OPEN steps may be re-run; they change nothing). An
+        unknown step -- not in the journal -- runs normally.
         """
         if session != self.session:
             return False
-        dec = self.decision_for_open_step(step=step, turn=turn)
-        if dec is None:
-            # Not a journaled step of this turn: normal execution. (A finished
-            # step of an earlier turn carries no open decision.)
+        candidate: StepDecision | None = None
+        for d in self.decisions:
+            if d.step == step and (turn is None or d.turn == turn):
+                candidate = d
+                break
+        if candidate is None:
+            # Not a journaled step of this turn: normal execution.
             return False
-        # Only a read-only OPEN step may be re-drawn after a crash. Every
-        # side-effecting OPEN step -- verified done OR must-ask -- is blocked
-        # from an automatic re-run.
-        return dec.verdict is not RecoveryVerdict.RE_RUN_OK
+        # Any registered decision with a side effect or a finish is blocked.
+        # Only a read-only OPEN step (RE_RUN_OK) may be re-drawn.
+        return candidate.verdict is not RecoveryVerdict.RE_RUN_OK
 
 
 def _step_finished(session: str, *, root: "str | Path | None",
@@ -163,15 +167,27 @@ def decide_recovery(session: str, *, root: "str | Path | None" = None,
         if isinstance(t, int):
             journal_turn = max(journal_turn, t)
 
-    resume_turn = cp_turn if cp_turn is not None else (journal_turn or 0)
+    # A stale checkpoint must never drag the resume point below completed
+    # work: the journal's highest turn is authoritative, the checkpoint
+    # can only lift it up (a checkpoint is written during the in-flight
+    # turn and cleared at normal turn end).
+    resume_turn = max(cp_turn or 0, journal_turn)
     in_flight = checkpoint is not None or bool(open_steps)
 
     decisions: list[StepDecision] = []
     for st in open_steps:
         tool = str(st.get("tool") or "")
-        side_effecting = bool(st.get("side_effect", step_journal.side_effecting(tool)))
+        # The side-effect authority is the classifier, never the stored flag:
+        # a corrupted record with side_effect=False must not unlock an
+        # automatic re-run of a tool the classifier calls side-effecting.
+        side_effecting = step_journal.side_effecting(tool)
         checker = checkers.get(tool) or checkers.get("*") or _default_checker
-        result = checker(st) if side_effecting else "absent"
+        try:
+            result = checker(st) if side_effecting else "absent"
+        except Exception:
+            # A broken side-effect check degrades to "unknown", never to
+            # "present": the restart asks rather than betting on a re-run.
+            result = "unknown"
         if not side_effecting:
             verdict = RecoveryVerdict.RE_RUN_OK  # read-only: safe to re-run
             auto = True

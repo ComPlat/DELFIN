@@ -147,6 +147,12 @@ def test_finished_step_never_repeated(store_root, tmp_path):
     for d in plan.decisions:
         if d.step == rec["step"] and d.turn == rec["turn"]:
             assert d.verdict is durable.RecoveryVerdict.FINISHED
+    # a finished step is NEVER re-dispatched: would_block_rerun is True even
+    # though decision_for_open_step is None (it is not open, so no recovery
+    # decision; but the guard must still refuse to run it again). Review
+    # finding D: the phase-1 guard answered False here.
+    assert plan.would_block_rerun(session, tool="bash",
+                                  step=rec["step"], turn=rec["turn"]) is True
 
 
 def test_real_sigkill_mid_turn_recovers_via_checkpoint(store_root):
@@ -185,3 +191,71 @@ def test_read_only_open_step_may_rerun(store_root, tmp_path):
     decision = plan.decision_for_open_step(step=1, turn=5)
     assert decision is not None and decision.side_effecting is False
     assert plan.would_block_rerun(session, tool="read_file", step=1, turn=5) is False
+
+
+# --- Phase 2 hardening (F1, agent/s1-f1b) -----------------------------------
+# Each test was written to be RED on the phase-1 code (6d1789304) and is only
+# green with the phase-2 hardening in delfin/agent/durable.py.
+
+def test_stale_checkpoint_never_drags_resume_turn_backwards(store_root):
+    """A stale checkpoint (turn 1) cannot pull the resume point below the
+    journal's highest completed turn (3)."""
+    session = "sess-stale-cp"
+    step_journal.start_step(session, turn=3, step=1, tool="read_file",
+                            arguments={"path": "x"}, turn_key="t3")
+    step_journal.finish_step(session, turn=3, step=1, tool="read_file", ok=True)
+    # a stale checkpoint left behind from an earlier crash says turn 1
+    session_store.save_turn_checkpoint(session, {"task": "old", "turn": 1})
+
+    plan = durable.decide_recovery(session, root=store_root)
+    assert plan.resume_turn == 3  # not 1
+
+
+def test_corrupted_side_effect_flag_never_unlocks_rerun(store_root, tmp_path):
+    """A journal record lying about side_effect=False must not unlock an
+    automatic re-run of a tool the classifier calls side-effecting."""
+    session = "sess-lie"
+    out_file = tmp_path / "f1-lied-sentinel"
+    # Fabricate a CORRUPTED start record: the STORED flag says side_effect
+    # False, but the tool is "bash", which the side-effect classifier calls
+    # side-effecting. The stored flag is not the authority -- the classifier
+    # is -- so this must still read as side-effecting and be blocked.
+    rec = {
+        "kind": "start",
+        "ts": 0.0,
+        "turn": 2,
+        "step": 1,
+        "tool": "bash",
+        "side_effect": False,  # the lie
+        "args_digest": f"touch {out_file}",
+    }
+    journal = step_journal.journal_path(session, root=store_root)
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    with journal.open("a") as fh:
+        fh.write(json.dumps(rec, sort_keys=True) + "\n")
+    session_store.save_turn_checkpoint(session, {"task": "x", "turn": 2})
+
+    plan = durable.decide_recovery(session, root=store_root)
+    decision = plan.decision_for_open_step(step=1, turn=2)
+    assert decision is not None
+    assert decision.side_effecting is True  # classifier wins over the lie
+    assert plan.would_block_rerun(session, tool="bash", step=1, turn=2) is True
+
+
+def test_broken_checker_degrades_to_unknown_not_present(store_root):
+    """A side-effect checker that raises degrades to 'unknown' (MUST_ASK),
+    never to 'absent' (which would unlock a re-run)."""
+    session = "sess-broken"
+    step_journal.start_step(session, turn=4, step=1, tool="bash",
+                            arguments="git commit -am x", turn_key="t4")
+    session_store.save_turn_checkpoint(session, {"task": "x", "turn": 4})
+
+    def broken(step):
+        raise RuntimeError("corrupt side-effect index")
+
+    plan = durable.decide_recovery(session, root=store_root,
+                                   checkers={"bash": broken})
+    decision = plan.decision_for_open_step(step=1, turn=4)
+    assert decision is not None
+    assert decision.verdict is durable.RecoveryVerdict.MUST_ASK
+    assert decision.auto_rerun is False
