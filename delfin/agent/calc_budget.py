@@ -17,10 +17,15 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence
 
-from delfin.scheduler_client import SchedulerClient, THROTTLED
+from delfin.scheduler_client import (
+    SchedulerClient,
+    THROTTLED,
+    default_client,
+)
 
 #: Sentinel for a wait we could not learn from the scheduler's own answer.
 UNKNOWN = "unknown"
@@ -28,9 +33,11 @@ UNKNOWN = "unknown"
 #: The sbatch command the estimate asks through the scheduler client.
 SBATCH = "sbatch"
 
-#: Form of the queue-wait answer DELFIN's own ``--test-only`` caller emits;
-#: the estimate parses a ``started-after-<n>s`` delay out of it.
-_WAIT_RE = re.compile(r"started-after-(\d+)s")
+#: Real ``sbatch --test-only`` answers with ``to start at <datetime>`` (the
+#: marker slurm_submit.partition_accepts keys on).  The estimate turns that
+#: start time into a seconds-until-start wait, and reports "unknown" when the
+#: answer does not state one -- never an invented number.
+_START_AT_RE = re.compile(r"to\s+start\s+at\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})")
 
 #: Wall-time base in wall seconds for one unit of SCF work at one core.
 _WALLTIME_BASE_S = 30.0
@@ -104,9 +111,13 @@ class Estimate:
 
 
 def _confirm_client(client: Optional[SchedulerClient]) -> SchedulerClient:
-    if client is not None:
-        return client
-    return SchedulerClient()
+    """A caller-supplied client, else the process-wide throttled singleton.
+
+    Routing through :data:`scheduler_client.default_client` is what every
+    other DELFIN module does, so back-to-back estimates share ONE throttle
+    window and cache -- the "no per-loop / per-widget scheduler ask" rule.
+    """
+    return client if client is not None else default_client
 
 
 def _queue_wait(client: SchedulerClient, partition: str, pal: int) -> object:
@@ -121,10 +132,28 @@ def _queue_wait(client: SchedulerClient, partition: str, pal: int) -> object:
     answer = client.query("sbatch", list(argv))
     if answer is THROTTLED or answer is None:
         return UNKNOWN
-    match = _WAIT_RE.search(str(answer))
+    return _start_seconds_from(answer)
+
+
+def _start_seconds_from(answer) -> object:
+    """Seconds-until-start from a real ``sbatch --test-only`` answer.
+
+    Real SLURM accepts print ``to start at <ISO or space-separated datetime>``
+    (the marker ``slurm_submit.partition_accepts`` keys on).  Returns the
+    whole seconds until that start (rounded, so sub-second clock drift does
+    not break a caller), ``UNKNOWN`` when no start datetime is stated or it
+    already passed.  A throttled/absent answer is handled by the caller.
+    """
+    match = _START_AT_RE.search(str(answer or ""))
     if not match:
         return UNKNOWN
-    return int(match.group(1))
+    raw = match.group(1).replace(" ", "T")
+    try:
+        start = datetime.fromisoformat(raw)
+    except ValueError:
+        return UNKNOWN
+    wait = round((start - datetime.now()).total_seconds())
+    return wait if wait >= 0 else UNKNOWN
 
 
 def estimate(job: Dict, *, client: Optional[SchedulerClient] = None,

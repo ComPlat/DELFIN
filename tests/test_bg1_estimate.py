@@ -14,6 +14,7 @@ exist, so every test here is red (ImportError) until BG1 lands.
 """
 
 import pytest
+from datetime import datetime, timedelta
 
 from delfin.agent import calc_budget
 from delfin.scheduler_client import THROTTLED, SchedulerClient
@@ -79,6 +80,22 @@ def _client_partitions(answers):
     return SchedulerClient(runner=_FakeClient(answers))
 
 
+def test_default_path_shares_the_process_wide_throttle():
+    # F2 (reviewer): the default path must NOT hand out a fresh client per
+    # call -- that would open a new throttle window/cache each estimate and
+    # let a loop ask the scheduler repeatedly.  _confirm_client routes a
+    # missing client to the process-wide singleton instead.
+    from delfin.scheduler_client import default_client
+    assert calc_budget._confirm_client(None) is default_client
+
+
+def _test_only_answer(delay_s):
+    """A real ``sbatch --test-only`` answer: ``... to start at <datetime>``,
+    ``delay_s`` seconds in the future (the marker DELFIN keys on)."""
+    t = datetime.now() + timedelta(seconds=delay_s)
+    return f"sbatch: Job 123 to start at {t.strftime('%Y-%m-%dT%H:%M:%S')}"
+
+
 # --------------------------------------------------------------------------
 # 1. estimate(job): core-hours / memory / wall time from size + method.
 # --------------------------------------------------------------------------
@@ -110,8 +127,12 @@ def test_throttled_scheduler_gives_unknown_wait_not_zero():
 
 def test_scheduler_wait_is_reported_when_answered():
     # A fitting partition answers; the estimate carries its start delay.
-    est = calc_budget.estimate(_small_job(), client=_client_partitions({"cpu_short": "started-after-120s"}))
-    assert est.wait_s == 120
+    est = calc_budget.estimate(_small_job(),
+                               client=_client_partitions({"cpu_short": _test_only_answer(120)}))
+    # A wall-clock "seconds until start" is inherently approximate (the fake
+    # and the parser each read the clock): assert the advertised delay within
+    # sub-second-to-a-second drift, not an exact equality.
+    assert 115 <= est.wait_s <= 125
 
 
 # --------------------------------------------------------------------------
