@@ -60,6 +60,10 @@ export interface SwarmWatchState {
   feed: { name: string; entries: FeedEntry[]; loading: boolean } | null
   feedSelected: number
   error: string | null
+  /** Every member's recent steps, cached by name so Enter can open a feed
+   *  synchronously (the watch is read-only; the cache is re-prefetched on
+   *  every open/refresh). */
+  feeds: Record<string, FeedEntry[]>
 }
 
 /** The member row in one table line: what the footer and the selected row
@@ -98,6 +102,7 @@ export function createSwarmWatch(deps: SwarmWatchDeps) {
     feed: null,
     feedSelected: 0,
     error: null,
+    feeds: {},
   })
 
   const select = (list: unknown[], at: number, n = 1): number =>
@@ -108,6 +113,23 @@ export function createSwarmWatch(deps: SwarmWatchDeps) {
     try {
       const rows = await deps.askOverview()
       setState({ rows, feed: null, selected: 0, loading: false })
+      // Prefetch every member's feed so Enter can open a member's recent
+      // steps synchronously -- the watch is read-only, so the reads happen
+      // as the table opens. A member whose feed cannot be read keeps an
+      // empty entry and the failure is surfaced through the note channel,
+      // never by wedging the table.
+      const feeds: Record<string, FeedEntry[]> = {}
+      await Promise.all(
+        rows.map(async (row) => {
+          try {
+            feeds[row.name] = await deps.askFeed(row.name)
+          } catch (error) {
+            feeds[row.name] = []
+            deps.note(`feed of ${row.name} failed: ${String((error as Error)?.message ?? error)}`)
+          }
+        }),
+      )
+      setState({ feeds })
     } catch (error) {
       setState({
         loading: false,
@@ -121,20 +143,16 @@ export function createSwarmWatch(deps: SwarmWatchDeps) {
     setState({ open: false, feed: null })
   }
 
-  /** Enter on a member: open its live feed (read-only). Back feeds to the
-   *  table via agentsBack. */
-  const openFeed = async (): Promise<void> => {
+  /** Enter on a member: open its live feed, read-only, straight from the
+   *  cache prefetched when the table opened -- so the feed shows the
+   *  member's recent steps the moment Enter is pressed. Nothing is ever
+   *  sent into the session. */
+  const openFeed = (): void => {
     const row = state.rows[state.selected]
     if (!row || state.feed) return
-    setState({ feed: { name: row.name, entries: [], loading: true }, feedSelected: 0 })
+    const entries = state.feeds[row.name] ?? []
+    setState({ feed: { name: row.name, entries, loading: false }, feedSelected: 0 })
     deps.note(`${row.name}: no input is accepted in the watch view`)
-    try {
-      const entries = await deps.askFeed(row.name)
-      setState({ feed: { name: row.name, entries, loading: false } })
-    } catch (error) {
-      setState({ feed: { name: row.name, entries: [], loading: false } })
-      deps.note(`feed of ${row.name} failed: ${String((error as Error)?.message ?? error)}`)
-    }
   }
 
   const handleKey = (key: KeyEvent): boolean => {
@@ -163,7 +181,7 @@ export function createSwarmWatch(deps: SwarmWatchDeps) {
         const e = state.feed.entries[state.feedSelected]
         if (e) deps.note(`[${e.kind}] ${e.text}`)
       } else {
-        void openFeed()
+        openFeed()
       }
       return true
     }
