@@ -1862,6 +1862,14 @@ def validate_preset(path_or_text: str) -> list[str]:
         try:
             pack_ids = {p.stem.replace("_subagent", "") for p in
                         pack_dir.glob("*_subagent.md")}
+            # A preset validated by path is the file being introduced; its
+            # own stem is not an "existing pack preset" it overrides.
+            if not source.strip().startswith("---"):
+                try:
+                    own = Path(source).stem.replace("_subagent", "")
+                    pack_ids.discard(own)
+                except Exception:
+                    pass
             pack_ids |= {n for n in SUBAGENT_PRESETS
                          if n not in _BUILTIN_PRESETS
                          and n not in pack_ids}
@@ -1926,7 +1934,8 @@ def validate_preset(path_or_text: str) -> list[str]:
             for prop, spec in props.items():
                 t = spec.get("type") if isinstance(spec, dict) else None
                 sample[prop] = {"string": "x", "integer": 1,
-                                "number": 1.0, "boolean": True}.get(
+                                "number": 1.0, "boolean": True,
+                                "array": [], "object": {}}.get(
                     t if isinstance(t, str) else "", "x")
         errs = validate_json_schema(sample, schema)
         if errs:
