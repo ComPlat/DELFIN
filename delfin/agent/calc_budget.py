@@ -66,6 +66,15 @@ _METHOD_SCALE: Dict[str, float] = {
     "cris": 45.0,
 }
 
+#: Recorded actual/estimate core-hour ratios per method family, from EF1's
+#: finished jobs.  ``record_outcome`` appends here; ``estimate`` folds the mean
+#: in.  In-memory per session (the budget itself is per session).
+_LEARNED: Dict[str, list[float]] = {}
+
+#: How far a learned factor may move an estimate, so a single outlier record
+#: cannot swing it wildly.  A factor out of this band is clamped to the edge.
+_SCALE_CLAMP = (0.25, 4.0)
+
 
 def _method_family(method: str) -> str:
     """A stable cost family for a method string (case- and punctuation-free).
@@ -86,6 +95,35 @@ def _method_family(method: str) -> str:
     if "cris" in m:
         return "cris"
     return "dft"
+
+
+def learned_scale(family: str) -> Optional[float]:
+    """Mean recorded actual/estimate ratio for ``family``, clamped.
+
+    ``None`` when no EF1 record exists for the family yet -- the estimate is
+    the plain size-based model.  The mean is clamped to :data:`_SCALE_CLAMP`
+    so one runaway record cannot silently triple or quarter every future job.
+    """
+    ratios = _LEARNED.get(family)
+    if not ratios:
+        return None
+    mean = sum(ratios) / len(ratios)
+    return min(max(mean, _SCALE_CLAMP[0]), _SCALE_CLAMP[1])
+
+
+def record_outcome(job_report: Dict, est: Estimate) -> None:
+    """Record estimate vs actual (EF1) after a job so the model learns.
+
+    ``job_report`` is one record from :meth:`cluster_efficiency.account` (the
+    real writer), carrying ``core_hours_used``.  An unmeasured, zero or
+    negative actual is skipped -- never treated as zero -- and a family with
+    no known methods maps to the DFT model, exactly as ``estimate`` does.
+    """
+    actual = job_report.get("core_hours_used")
+    if not actual or actual <= 0 or est.core_hours <= 0:
+        return
+    family = _method_family(est.method)
+    _LEARNED.setdefault(family, []).append(actual / est.core_hours)
 
 
 @dataclass
@@ -186,17 +224,30 @@ def estimate(job: Dict, *, client: Optional[SchedulerClient] = None,
     )
     core_hours = walltime_s * pal / 3600.0
 
+    # Fold in the EF1-learned factor for this method family, where one has
+    # been recorded; ``source`` states it so the number is traceable.
+    learned = learned_scale(family)
+    if learned is not None:
+        core_hours = core_hours * learned
+
     memory_mb = int(round(max(maxcore_mb, basis * _MEMORY_MB_PER_BF)))
 
     client = _confirm_client(client)
     wait_s = _queue_wait(client, partition, pal)
+
+    if learned is None:
+        source = f"size-based model, family={family}"
+    else:
+        n_rec = len(_LEARNED.get(family, []))
+        source = (f"size-based model, family={family}, "
+                  f"learned x{learned:.2f} from {n_rec} EF1 record(s)")
 
     return Estimate(
         core_hours=core_hours,
         memory_mb=memory_mb,
         walltime_s=walltime_s,
         wait_s=wait_s,
-        source=f"size-based model, family={family}",
+        source=source,
         method=method,
         n_atoms=n_atoms,
         basis_functions=basis,
