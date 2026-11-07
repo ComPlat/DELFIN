@@ -46,7 +46,14 @@ def _agent_commit(repo, monkeypatch, command, model="kit.glm-5.3-flash",
                   settings=None):
     """One model bash call through the real executor; last commit message."""
     import delfin.user_settings as us
-    monkeypatch.setattr(us, "load_settings", lambda *a, **k: settings or {})
+    # bash_isolation "off" ({...off}, escaped as such) lets the executor run
+    # the git path without the host having to install a seccomp filter,
+    # which this sandboxed test host cannot (nested seccomp: EBUSY). The
+    # trailer rewrite is exercised through the REAL executor either way.
+    base = {"agent": {"bash_isolation": "off"}}
+    if settings:
+        base["agent"].update(settings["agent"])
+    monkeypatch.setattr(us, "load_settings", lambda *a, **k: base)
     A.set_commit_trailer_model(model)
     try:
         perms = A.KitToolPermissions(workspace=str(repo), mode="bypassPermissions")
