@@ -25,6 +25,7 @@ from delfin.scheduler_client import (
     SchedulerClient,
     THROTTLED,
     default_client,
+    kind_of_argv,
 )
 
 #: Sentinel for a wait we could not learn from the scheduler's own answer.
@@ -167,7 +168,7 @@ def _queue_wait(client: SchedulerClient, partition: str, pal: int) -> object:
         f"--cpus-per-task={pal}",
         "submit.sh",
     ]
-    answer = client.query("sbatch", list(argv))
+    answer = client.query(kind_of_argv(list(argv)), list(argv))
     if answer is THROTTLED or answer is None:
         return UNKNOWN
     return _start_seconds_from(answer)
