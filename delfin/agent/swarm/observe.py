@@ -326,10 +326,13 @@ def member_feed(session: str,
         commits = (commits_fn or _default_commits)(session)
     except Exception:
         commits = {}
-    for subject in commits.get(session) or []:
-        entries.append({"at": "", "kind": "commit", "text": str(subject)})
-
-    # Newest first as given (steps/commits are already newest-first); the
-    # contract is newest last, so reverse for the callers that read top-down.
-    entries.reverse()
+    # Commits from git log are newest-first; the feed contract is newest
+    # last, so invert ONLY the commits. The steps above were left in
+    # audit_log.steps_since order (oldest-first, i.e. newest-last) and must
+    # NOT be blanket-reversed -- a blanket entries.reverse() over both runs
+    # the steps back to newest-first and jumbles the feed (F1).
+    entries.extend(
+        {"at": "", "kind": "commit", "text": str(subject)}
+        for subject in (commits.get(session) or [])[::-1]
+    )
     return entries

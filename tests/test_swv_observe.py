@@ -218,9 +218,16 @@ def test_feed_steps_newest_last_with_result_status(audit_log):
     feed = _observe.member_feed("swv-builder", since=0,
                                 records=[_health_record("swv-builder")],
                                 steps_fn=_al.steps_since, log_path=path)
-    # newest last
-    kinds = [e["kind"] for e in feed]
-    assert kinds[-1] in ("tool", "refusal")
+    # newest last -- pin the REAL order, not a vacuous kind check. The
+    # steps are written into the log oldest-first (bash, write_file,
+    # run_tests) and steps_since returns them the same way, so the newest
+    # step (run_tests) must be the LAST feed entry. The old check
+    # `kinds[-1] in ("tool", "refusal")` was always true and never caught
+    # the blanket entries.reverse() that flipped the steps to newest-first
+    # (F1), mixing them with the commits.
+    step_texts = [e["text"] for e in feed if e["kind"] in ("tool", "refusal")]
+    assert step_texts[0] == "git status"    # oldest step first
+    assert step_texts[-1] == "tests/t.py"   # newest step last
     assert all(e["kind"] in ("tool", "refusal", "commit") for e in feed)
     # the denial is present and marked as a refusal
     denied = [e for e in feed if e["kind"] == "refusal"]
