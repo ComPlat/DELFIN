@@ -126,3 +126,34 @@ def test_energy_file_is_written_by_ridft(monkeypatch, tmp_path):
     result = _run("turbomole_sp", work_dir, charge=0)
     assert result.status.name == "SUCCESS", result.error
     assert result.data["energy_Eh"] == -1.0
+
+
+def test_multicore_run_sets_para_arch(monkeypatch, tmp_path):
+    """A cores>1 run through the adapter path must set PARA_ARCH, not just
+    PARNODES.  The w21 workflow calls the adapters directly (bypassing the
+    dashboard submit path that exports TM_PARA_ARCH), so without PARA_ARCH
+    here a multicore jobex/ridft never tells Turbomole's runtime to
+    parallelise — the T2 target's \"PARA_ARCH, PARNODES\" is met only if the
+    adapter itself provides the parallel-architecture variable.
+    """
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
+    env_dump = tmp_path / "env.dump"
+    # The fake records the parallel env the child actually inherits (double
+    # quotes so $VAR expands to the child's real value at runtime).
+    _make_bin(bin_dir, "ridft",
+              f"#!/bin/sh\nprintf 'PARA_ARCH=%s\\nPARNODES=%s\\n' \"$PARA_ARCH\" \"$PARNODES\" > {env_dump}\n"
+              "printf '1  -1.0\\n$end\\n' > energy\n")
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    adapter = get("turbomole_sp")
+    assert adapter is not None
+    result = adapter.execute(work_dir, geometry=_xyz(work_dir), cores=2)
+    assert result.status.name == "SUCCESS", result.error
+    dumped = env_dump.read_text()
+    # The first line is PARA_ARCH=$PARA_ARCH; it must not be the empty default.
+    para_arch_line = dumped.splitlines()[0] if dumped.splitlines() else ""
+    assert para_arch_line == "PARA_ARCH=SMP", (
+        f"PARA_ARCH must be set (got {para_arch_line!r}); env was:\n{dumped}")
+    assert "PARNODES=2" in dumped, dumped
