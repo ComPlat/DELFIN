@@ -18,10 +18,10 @@ from delfin.provenance_record import (
 )
 
 
-def _make_run(root: Path, name: str = "run_calc") -> Path:
+def _make_run(root: Path, name: str = "run_calc", smiles: str = "O") -> Path:
     run = Path(root) / name
     run.mkdir(parents=True, exist_ok=True)
-    (run / "CONTROL.txt").write_text("method=orca\nsmiles=O\n")
+    (run / "CONTROL.txt").write_text(f"method=orca\nsmiles={smiles}\n")
     (run / "input.inp").write_text("! B3LYP def2-SVP\n* xyz 0 1\nO 0 0 0\n*\n")
     (run / "mol.xyz").write_text("1\nwater\nO 0 0 0\n")
     (run / "output.out").write_text("* O R C A *\nProgram Version 6.1.1\n")
@@ -56,24 +56,27 @@ class TestStepId:
 
 class TestChain:
     def test_build_with_parents_records_their_step_ids(self, tmp_path):
-        run_a = _make_run(tmp_path, "a")
+        # Two distinct source calculations (different SMILES -> different
+        # structure_origin -> different step_id); a plot names both.
+        run_a = _make_run(tmp_path, "a", smiles="O")
         rec_a = build_record(str(run_a))
-        run_b = _make_run(tmp_path, "b")
+        run_b = _make_run(tmp_path, "b", smiles="CCO")
         rec_b = build_record(str(run_b))
         write_record(rec_a, run_a)
         write_record(rec_b, run_b)
 
-        run_plot = _make_run(tmp_path, "plot")
+        run_plot = _make_run(tmp_path, "plot", smiles="CCN")
         rec_plot = build_record(str(run_plot), parents=[rec_a, rec_b], result_type="plot")
         assert rec_plot["result"]["type"] == "plot"
         assert rec_plot["chain"] == [rec_a["step_id"], rec_b["step_id"]]
 
     def test_chain_is_transitive_and_deduped(self, tmp_path):
-        run_x = _make_run(tmp_path, "x")
+        # Distinct SMILES -> distinct step_ids, so the chain is meaningful.
+        run_x = _make_run(tmp_path, "x", smiles="O")
         rec_x = build_record(str(run_x))
-        run_y = _make_run(tmp_path, "y")
+        run_y = _make_run(tmp_path, "y", smiles="CCO")
         rec_y = build_record(str(run_y), parents=[rec_x])
-        run_z = _make_run(tmp_path, "z")
+        run_z = _make_run(tmp_path, "z", smiles="CCN")
         rec_z = build_record(str(run_z), parents=[rec_y, rec_x])
         chain = rec_z["chain"]
         assert rec_x["step_id"] in chain
