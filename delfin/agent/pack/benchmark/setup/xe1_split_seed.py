@@ -26,6 +26,9 @@ O     4.630    0.000    0.000
 def build(workspace: str) -> Path:
     root = Path(workspace)
     struc = root / "struc"
+    if struc.exists():
+        print(f"refusing to overwrite {struc}", file=sys.stderr)
+        sys.exit(1)
     struc.mkdir(parents=True, exist_ok=True)
     (struc / "dimer.xyz").write_text(DIMER_XYZ, encoding="utf-8")
     from delfin.tools.geometry_edit import parse_xyz
@@ -36,11 +39,7 @@ def build(workspace: str) -> Path:
     return root
 
 
-def main(build_fn=build) -> int:
-    if len(sys.argv) >= 2:
-        build_fn(sys.argv[1])
-    return 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    from generalist_repo import main
+
+    main(build)

@@ -36,6 +36,9 @@ C     0.000   0.000   0.000
 def build(workspace: str) -> Path:
     root = Path(workspace)
     struc = root / "struc"
+    if struc.exists():
+        print(f"refusing to overwrite {struc}", file=sys.stderr)
+        sys.exit(1)
     struc.mkdir(parents=True, exist_ok=True)
     (struc / "educt.xyz").write_text(EDUCT_XYZ, encoding="utf-8")
     (struc / "product.xyz").write_text(PRODUCT_XYZ, encoding="utf-8")
@@ -49,11 +52,7 @@ def build(workspace: str) -> Path:
     return root
 
 
-def main(build_fn=build) -> int:
-    if len(sys.argv) >= 2:
-        build_fn(sys.argv[1])
-    return 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    from generalist_repo import main
+
+    main(build)
