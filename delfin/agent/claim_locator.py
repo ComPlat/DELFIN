@@ -79,6 +79,17 @@ for _factor_map, _q in (
 _FLOAT_RE = r"[-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?"
 _FLOAT = re.compile(_FLOAT_RE)
 
+# A prose number followed (optional single space) by a known unit token.
+# Units are tried longest-first so "kcal/mol" wins over "mol" and "Angstrom"
+# over "A".  The trailing look-ahead rejects a unit that is a prefix of a
+# longer token ("eV" inside "eVs", "A" inside "Angstrom" as the second unit).
+_UNIT_KEYS = sorted(_UNIT_QUANTITY, key=len, reverse=True)
+_CLAIM_TOKEN = re.compile(
+    r"(" + _FLOAT_RE + r")\s*("
+    + "|".join(re.escape(u) for u in _UNIT_KEYS)
+    + r")(?![A-Za-z0-9/])"
+)
+
 _ANCHORS = {
     # quantity -> head-of-block or labelled-line markers, in file order.
     "frequency": re.compile(r"VIBRATIONAL FREQUENCIES"),
@@ -326,3 +337,30 @@ def verify_claim(value: float, unit: str, calc_folder: str | Path) -> Verificati
         parsed_unit=cand_unit,
         tolerance=tolerance,
     )
+
+
+def locate_claims(text: str) -> list[VerificationRecord]:
+    """Every number+unit token in prose text, as a pre-verification record.
+
+    A ``(value, unit)`` pair whose unit maps to a known physical quantity
+    (energy / frequency / distance / dipole) becomes one
+    :class:`VerificationRecord` with verdict ``"located"`` (no file/line yet):
+    the claim to be verified against the real run output by the caller via
+    :func:`verify_claim`.
+
+    Prose numbers without a unit (counts, years, indices, settings) and
+    numbers whose unit maps to no physical quantity are NOT claims and are
+    skipped.  They can therefore never produce a false ``mismatch`` /
+    ``no-source`` alarm -- the "prose that isn't a result" control.
+    """
+    claims: list[VerificationRecord] = []
+    for m in _CLAIM_TOKEN.finditer(text):
+        value = float(m.group(1))
+        raw_unit = m.group(2)
+        map_key = _UNIT_QUANTITY.get(raw_unit)
+        if map_key is None:
+            continue
+        quantity, _factor = map_key
+        claims.append(VerificationRecord("located", value, raw_unit, quantity))
+    return claims
+
