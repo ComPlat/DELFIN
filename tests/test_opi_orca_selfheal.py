@@ -46,6 +46,16 @@ GEOMETRY OPTIMIZATION CYCLE 150
    *** MAXIMUM NUMBER OF OPTIMIZATION CYCLES REACHED ***
 """
 
+# The exact sentence ORCA 6.1.1 prints when a distorted geometry exceeds the
+# optimization budget yet ORCA still exits normally (see REAL-RUN FAIL #597).
+# Isolated on purpose: it must be classified by the gave-up sentence alone, not
+# by a co-present "CONVERGENCE FAILURE" line.
+_GEOM_GAVE_UP_REAL_611 = """\
+GEOMETRY OPTIMIZATION CYCLE 2
+The optimization did not converge but reached the maximum number of optimization cycles.
+****ORCA TERMINATED NORMALLY****
+"""
+
 _FREQ_FAILURE = """\
 FREQUENCY CALCULATION
   ... ORCA frequency calculation aborted in module ORCA_FREQ
@@ -90,6 +100,13 @@ class TestClassifyFailure:
 
     def test_geometry_not_converged(self):
         assert heal.classify_failure(_GEOM_NOT_CONVERGED) is heal.SelfHealFailure.GEOMETRY_NOT_CONVERGED
+
+    def test_geometry_gave_up_real_611_sentence(self):
+        # ORCA 6.1.1 prints "The optimization did not converge but reached the
+        # maximum number of optimization cycles." and still terminates normally;
+        # the recovery module detects this via _OPT_GAVE_UP and so must we.
+        assert heal.classify_failure(_GEOM_GAVE_UP_REAL_611) \
+            is heal.SelfHealFailure.GEOMETRY_NOT_CONVERGED
 
     def test_memory_error_takes_precedence_over_scf(self):
         # SCF text present, but the aborting cause is memory: Memory > SCF.
@@ -143,6 +160,22 @@ class TestPlanEscalation:
             for key, _val in plan.geom_options.items():
                 assert known_block_option("geom", key), \
                     f"%geom {key!r} (step {step}) not in catalog"
+
+    def test_scf_frequency_rungs_pin_identical_thresh(self):
+        # A healed run must reproduce the base energy. Different convergence
+        # levels set different %scf Thresh (manual table 2.9), so every ladder
+        # rung pins the SAME tight DIIS threshold to converge to one energy.
+        seen = set()
+        for failure in (heal.SelfHealFailure.SCF_NOT_CONVERGED,
+                        heal.SelfHealFailure.FREQUENCY_FAILURE):
+            for step in (1, 2, 3):
+                plan = heal.plan_escalation(failure, step, job_kind="SP")
+                assert known_block_option("scf", "thresh")
+                assert "thresh" in plan.scf_options, \
+                    f"rung {failure.value}/{step} missing identical thresh"
+                assert isinstance(plan.scf_options["thresh"], float)
+                seen.add(plan.scf_options["thresh"])
+        assert len(seen) == 1, f"rungs must all pin the same Thresh, got {seen}"
 
     def test_sp_geometry_escalation_is_refused(self):
         # A single-point has no geometry optimization: escalation is refused.
