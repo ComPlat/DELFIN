@@ -162,13 +162,17 @@ def test_single_level_accepts_only_one_matching_line():
 
 def test_mode_stretching_the_pair_is_verified():
     # Mode 0: H and C move in opposite x directions -> stretches H-C (pair
-    # 0-1) strongly; N static. The check must pass for (0,1) and fail for
-    # the pair the mode does not touch (1,2).
+    # 0-1) strongly; N static. The mode moves atom 1 (C), so it acts on
+    # C-N (1,2) as well -- the old "not ok" expectation for (1,2) was
+    # wrong. A pair is genuinely untouched only when its two atoms move
+    # rigidly together; probe that rejection branch with a rigid mode:
+    # H and C both +x leaves the H-C distance constant.
     hess = _hess({0: [0.5, 0, 0, -0.5, 0, 0, 0, 0, 0]})
     r_ok = check_imaginary_mode_connects_bonds(hess, TS_XYZ, [(0, 1)])
     assert r_ok.ok, r_ok
-    r_bad = check_imaginary_mode_connects_bonds(hess, TS_XYZ, [(1, 2)])
-    assert not r_bad.ok, r_bad
+    rigid = _hess({0: [0.5, 0, 0, 0.5, 0, 0, 0, 0, 0]})
+    r_rigid = check_imaginary_mode_connects_bonds(rigid, TS_XYZ, [(0, 1)])
+    assert not r_rigid.ok, r_rigid
 
 
 def test_mode_moving_perpendicular_is_not_verified():
