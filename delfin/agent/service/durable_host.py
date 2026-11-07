@@ -141,20 +141,24 @@ def render_durable_job(
     """
     _require(walltime, _TIME_RE, "walltime")
     if signal_minutes_before < 0 or signal_minutes_before > 60:
-        raise ValueError("signal_minutes_before must be 0..60")
+        raise ValueError("signal_minutes_before must be 0..60 minutes")
     # The signal must fire before the walltime end; parse hh:mm:ss.
     hh, mm, _ss = (int(x) for x in walltime.split(":"))
     total_minutes = hh * 60 + mm
     if total_minutes - signal_minutes_before <= 0:
         raise ValueError("walltime too short for the pre-end signal")
 
-    signal_before = f"{signal_minutes_before}:00" if signal_minutes_before else "0"
+    # SLURM's --signal time is integer seconds, never MM:SS and never 0
+    # (a @0 signal fires at the walltime end, leaving no checkpoint window).
+    # signal_minutes_before is minutes; clamp 0 up to a real 60 s window so
+    # a caller asking for "as late as possible" still gets one.
+    signal_seconds = max(1, signal_minutes_before) * 60
 
     lines = [
         "#!/usr/bin/env bash",
         "#SBATCH --export=ALL",
         f"#SBATCH --time={walltime}",
-        f"#SBATCH --signal=INT@{signal_before}",
+        f"#SBATCH --signal=INT@{signal_seconds}",
         "#SBATCH --job-name=delfin-durable",
         "#SBATCH --output=delfin-durable.%j.out",
         "#SBATCH --error=delfin-durable.%j.err",
