@@ -91,8 +91,9 @@ def _murcko(smiles):
     from rdkit import Chem
     from rdkit.Chem.Scaffolds import MurckoScaffold
 
+    mol = Chem.MolFromSmiles(smiles)
     return MurckoScaffold.MurckoScaffoldSmiles(
-        MurckoScaffold.GetScaffoldForMol(Chem.MolFromSmiles(smiles))
+        mol=MurckoScaffold.GetScaffoldForMol(mol)
     )
 
 
