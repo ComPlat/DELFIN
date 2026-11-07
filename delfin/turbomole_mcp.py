@@ -31,6 +31,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+# The manual MCP describes <= 60 calls/minute. When it still answers 429, back
+# off and retry at most this many times; an answer that is 429 on every retry
+# is surfaced, never dropped and never looped forever.
+_MAX_429_RETRIES = 2
+_429_MARKERS = ("429", "rate limit", "rate-limited")
+
+
+def _is_rate_limited(text: Optional[str]) -> bool:
+    """Is this answer a rate-limit (HTTP 429-style) error?"""
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _429_MARKERS)
+
 
 class McpNotAllowed(RuntimeError):
     """Raised when a structure would be sent but ``turbomole.mcp_allowed`` is OFF."""
@@ -123,6 +135,9 @@ class TurbomoleManualMcp:
         self.allowed = bool(allowed)
         self.min_interval_s = float(min_interval_s)
         self._limiter = _RateLimiter(self.min_interval_s, now_fn=now_fn, sleep_fn=sleep_fn)
+        # Backoff on 429 uses the same injected clock as the limiter, so a
+        # retry never depends on real wall-clock in tests.
+        self._sleep = sleep_fn or time.sleep
 
     def input_choices(self, arguments: Optional[dict] = None) -> str:
         """Ask the MCP for the valid choices for an input (read-only hint)."""
@@ -146,7 +161,17 @@ class TurbomoleManualMcp:
 
     def _call(self, tool_name: str, arguments: dict) -> str:
         self._limiter.wait()
-        return self.client.call_tool(tool_name, arguments)
+        raw = self.client.call_tool(tool_name, arguments)
+        attempts = 0
+        while _is_rate_limited(raw) and attempts < _MAX_429_RETRIES:
+            # The server asked us to slow down: back off one rate window and
+            # try again. A bounded number of 429s is never looped forever, and
+            # the last (rate-limited) answer is surfaced, not dropped.
+            attempts += 1
+            self._sleep(self.min_interval_s)
+            self._limiter.wait()
+            raw = self.client.call_tool(tool_name, arguments)
+        return raw
 
 
 def _split_generated(raw: str) -> GeneratedInput:
