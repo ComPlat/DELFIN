@@ -214,6 +214,7 @@ def check_imaginary_mode_connects_bonds(
     ts_xyz,
     expected_pairs,
     mode_index=None,
+    endpoint_xyz=None,
 ):
     """Does the (selected) imaginary mode act on the bond-forming/breaking
     pairs ``expected_pairs``?
@@ -284,6 +285,29 @@ def check_imaginary_mode_connects_bonds(
     except (ValueError, OSError) as exc:
         return CheckResult(False, [
             f"displacement along mode {mode_index} unavailable: {exc}"])
+
+    if endpoint_xyz is not None:
+        # The reactive pairs the expert gets from connectivity_changes / its
+        # own endpoint numbering may not match the TS atom order; renumber
+        # every endpoint-order index into TS order via map_atoms before any
+        # bond-connectivity verdict, so a wrong mode can never read as
+        # "found and verified" on an index mismatch.
+        ts = _read_xyz_lines(ts_xyz)
+        end = _read_xyz_lines(endpoint_xyz)
+        if ts is None or end is None:
+            return CheckResult(False, ["TS or endpoint block is not parseable xyz"])
+        try:
+            mapping = map_atoms(end[0], end[1], ts[0], ts[1])
+        except (ValueError, RuntimeError) as exc:
+            return CheckResult(False, [f"cannot map endpoint onto TS: {exc}"])
+        order = mapping.get("order")
+        if order is None or any(i >= len(order) or j >= len(order)
+                               for i, j in expected_pairs):
+            return CheckResult(False, [
+                "endpoint pair lies outside the endpoint atom count "
+                f"(n={len(order) if order is not None else '?'}, "
+                f"pairs={expected_pairs!r})"])
+        expected_pairs = [(order[i], order[j]) for i, j in expected_pairs]
 
     problems: list[str] = []
     for i, j in expected_pairs:
