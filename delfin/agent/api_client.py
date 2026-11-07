@@ -31876,7 +31876,29 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # A handful of API/stream failures are TRANSIENT — a shared-proxy hiccup, not a
 # bad request. On long KIT runs in a field report (vLLM behind an Open-WebUI proxy) a
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
-_STREAM_RETRY_MAX = 3
+_STREAM_RETRY_MAX = int(os.environ.get("DELFIN_STREAM_RETRY_MAX", "7") or 7)
+
+
+def _transient_retry_delay(attempt: int) -> float:
+    """Seconds to wait before transient-retry ``attempt`` (1-based).
+
+    The first three stay short (1.5, 3, 6 s: a proxy hiccup); later ones
+    back off to minutes (30, 60, 120, 240 s, then 240) with +-20 % jitter, so
+    a KIT outage of ~8 minutes is ridden out instead of ending the turn.
+    Measured 2026-11-06/07: 504/503 bursts of several minutes ended dozens of
+    unattended sessions after the old 1.5/3/6 s schedule (10.5 s in total).
+    ``DELFIN_STREAM_RETRY_DELAY_SCALE`` scales the wait (the test suite sets 0).
+    """
+    import random
+    base = (1.5, 3.0, 6.0, 30.0, 60.0, 120.0, 240.0)
+    d = base[attempt - 1] if attempt <= len(base) else base[-1]
+    if attempt > 3:
+        d *= random.uniform(0.8, 1.2)
+    try:
+        scale = float(os.environ.get("DELFIN_STREAM_RETRY_DELAY_SCALE", "1"))
+    except ValueError:
+        scale = 1.0
+    return max(0.0, d * scale)
 
 # How many times a single turn may switch to another model because KIT does
 # not serve the one it asked for (either "Model not found" or "…temporarily
@@ -34238,7 +34260,7 @@ class OpenAIClient(_BaseClient):
                         _round_in = 0
                         finish_reason = None
                         _stream_attempt += 1
-                        _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
+                        _delay = _transient_retry_delay(_stream_attempt)
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
