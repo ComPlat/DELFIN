@@ -173,6 +173,14 @@ class TestBuildValidation:
 
 class TestResultReading:
     SYNTH_HEADER = "# SYNTHETIC test fixture written for DELFIN -- not ORCA output"
+    INP = (
+        "! Opt ExtOpt\n"
+        "%method\n"
+        '  ProgExt "orca-mlips-uma"\n'
+        '  Ext_Params "--backend uma --device cpu"\n'
+        "end\n"
+        "* xyzfile 0 1 extopt.xyz\n"
+    )
     CONVERGED_OUT = (
         "FINAL SINGLE POINT ENERGY       -76.026632737078\n"
         "\n"
@@ -189,18 +197,21 @@ class TestResultReading:
         from delfin.tools.adapters.orca_mlip_opt_opi import read_mlip_opt
 
         (tmp_path / "extopt.out").write_text(self.SYNTH_HEADER + "\n" + self.CONVERGED_OUT)
+        (tmp_path / "extopt.inp").write_text(self.SYNTH_HEADER + "\n" + self.INP)
         (tmp_path / "extopt.xyz").write_text(
             "3\nwater\nO 0.0 0.0 0.0\nH 0.757 0.586 0.0\nH -0.757 0.586 0.0\n"
         )
         res = read_mlip_opt(tmp_path)
         assert res["energy_Eh"] == pytest.approx(-76.026632737078)
         assert res["energy_unit"] == "Eh"
+        assert res["geometry"] == tmp_path / "extopt.xyz"
         assert res["geometry_converged"] is True
         assert res["terminated_normally"] is True
 
     def test_reads_unconverged_as_not_converged(self, tmp_path):
         from delfin.tools.adapters.orca_mlip_opt_opi import read_mlip_opt
 
+        (tmp_path / "extopt.inp").write_text(self.SYNTH_HEADER + "\n" + self.INP)
         (tmp_path / "extopt.out").write_text(
             self.SYNTH_HEADER + "\n"
             "FINAL SINGLE POINT ENERGY       -76.0\n"
