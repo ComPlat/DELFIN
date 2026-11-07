@@ -28,6 +28,7 @@ def _corpus_with(pages=(3, 7), section_text="B3LYP is reliable here."):
         "documents": {
             "doc-abc.pdf": {
                 "title": "The ABC Method Paper",
+                "source_type": "pdf",
                 "sections": sections,
             }
         }
