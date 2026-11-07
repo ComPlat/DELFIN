@@ -74,6 +74,13 @@ def _run_tm_command(argv: List[str], work_dir: Path, cores: int,
     """
     import os
     env = os.environ.copy()
+    # Parallelism: the T2 parity requirement is "PARA_ARCH, PARNODES" for a
+    # multicore run. PARNODES alone does not tell Turbomole's runtime which
+    # parallel architecture to use, so default PARA_ARCH to SMP (the same
+    # default the dashboard submit path uses) unless the caller already set
+    # it in the environment. Without this, a cores>1 run through the direct
+    # adapter path (the w21 workflow) silently runs serial.
+    env.setdefault("PARA_ARCH", "SMP")
     env["PARNODES"] = str(cores)
     env["OMP_NUM_THREADS"] = str(cores)
 
