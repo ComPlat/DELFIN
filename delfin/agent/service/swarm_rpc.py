@@ -25,6 +25,7 @@ import json
 from typing import Any
 
 from ..swarm import launch as _launch
+from ..swarm import observe as _observe
 from ..swarm import spec as _spec
 from ..swarm import status as _status
 from ..swarm import triage as _triage
@@ -174,3 +175,39 @@ def swarm_triage_answer(params: dict[str, Any]) -> dict[str, Any]:
         return _triage.triage_answer(item, {}, answer=answer)
     except _triage.TriageError as exc:
         raise SwarmRpcError(str(exc)) from None
+
+
+def swarm_observe_overview(params: dict[str, Any]) -> dict[str, Any]:
+    """swarm.observe.overview: one row per member (read-only watch).
+
+    ``source`` may be an SW1 spec object or a roster-style dict; a
+    ``sourcePath`` names a roster file (name -> {package, role}) so an
+    operator wave with no spec shows too. Pure read from observe.py --
+    nothing here starts, pauses, answers or prompts a session.
+    """
+    source = params.get("source")
+    if source is None and params.get("sourcePath"):
+        source = str(params.get("sourcePath"))
+    if source is None:
+        raise SwarmRpcError("missing source: pass source (spec/roster dict) "
+                            "or sourcePath (roster file path)")
+    if not isinstance(source, (dict, str)):
+        raise SwarmRpcError("source must be a spec/roster dict or a path")
+    return {"rows": _observe.swarm_overview(source)}
+
+
+def swarm_observe_feed(params: dict[str, Any]) -> dict[str, Any]:
+    """swarm.observe.feed: one member's recent steps, newest last.
+
+    Ownership -- a feed is shown only to the user who owns the session --
+    is NOT yet enforced by any layer; it is a follow-up (this wrapper is
+    currently callable by any requestor, pending a supervisor ownership
+    gate). This thin wrapper only reads observe.member_feed and re-labels
+    the list under ``entries``.
+    """
+    session = str(params.get("session") or "")
+    if not session:
+        raise SwarmRpcError("session is required")
+    since = params.get("since")
+    since = int(since) if since is not None else 0
+    return {"entries": _observe.member_feed(session, since)}
