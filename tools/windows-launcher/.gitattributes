@@ -1,1 +1,4 @@
 *.cmd text eol=crlf
+# The server half runs under bash and python on Linux.
+*.sh text eol=lf
+*.py text eol=lf
