@@ -77,16 +77,25 @@ def load_index() -> dict | None:
 def locator_for(doc: dict, section: dict) -> dict | None:
     """The human-checkable locator of one section, or None.
 
-    A PDF section's text carries a ``--- PAGE N ---`` marker; the first one
-    is where the passage starts, and that page is the locator. Any other
-    document type uses the section id + title. When neither is available
-    (no page marker, and the section id and title are both empty) there is
-    nothing a reader can be pointed to, and None says "do not cite this".
+    The kind comes from the document's ``source_type``, never from text
+    content. For a PDF document the section text carries a ``--- PAGE N ---``
+    marker; the first one with a real page (1-based) is the locator. Any
+    other document type (markdown, text) uses the section id + title even
+    when its body quotes a ``--- PAGE N ---`` line, because that line is
+    content, not a page. When neither is available (no page marker on a
+    PDF, and the section id and title are both empty) there is nothing a
+    reader can be pointed to, and None says "do not cite this".
     """
     text = section.get("text") or ""
-    page = _PAGE_MARKER.search(text)
-    if page:
-        return {"kind": "page", "value": int(page.group(1))}
+    # The page marker is a locator only when the document really is a PDF:
+    # a markdown or text body may quote "--- PAGE N ---" as content, and
+    # that is not a page the reader can check. The kind therefore comes
+    # from the document's source_type, never from stored text alone.
+    doc_type = (doc or {}).get("source_type") or ""
+    if doc_type == "pdf":
+        page = _PAGE_MARKER.search(text)
+        if page and int(page.group(1)) >= 1:
+            return {"kind": "page", "value": int(page.group(1))}
     section_id = (section.get("section_id") or "").strip()
     title = (section.get("title") or "").strip()
     if section_id or title:
