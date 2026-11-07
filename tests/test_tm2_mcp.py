@@ -122,7 +122,93 @@ def test_rate_min_interval_between_calls():
 
 
 def test_429_rate_limited_answer_is_surfaced():
+    # A 429 that every retry answers keeps being surfaced (raw_text carries it),
+    # so the caller can see the server asked to slow down -- never dropped and
+    # never obscured. A fake clock keeps the retry off the real wall-clock.
+    now = [1000.0]
+    slept = []
+
+    def tick():
+        return now[0]
+
+    def dosleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+
     fake = _FakeMcp({"generate_input": '{"error": "rate limited: 429"}'})
-    client = turbomole_mcp.TurbomoleManualMcp(fake, allowed=True)
+    client = turbomole_mcp.TurbomoleManualMcp(
+        fake, allowed=True, now_fn=tick, sleep_fn=dosleep,
+    )
     out = client.generate_input({"smiles": "CCO"})
     assert "rate limited" in out.raw_text  # surfaced, never silently dropped
+
+
+def test_429_answer_backs_off_and_retries_then_returns_control():
+    # Target 2: "back off on 429". A wrapped client that answers an HTTP 429
+    # once and then a control must cause _call to back off (sleep a grace
+    # interval) and retry, returning the control -- not surface the 429.
+    now = [1000.0]
+    slept = []
+
+    def tick():
+        return now[0]
+
+    def dosleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+
+    seq = [
+        '{"error": {"message": "http 429: rate limit reached"}}',
+        "$title eth\n$scfconv 7\n$end\n",
+    ]
+
+    class _Flaky:
+        def __init__(self, answers):
+            self.answers = list(answers)
+            self.calls = 0
+
+        def call_tool(self, name, arguments):
+            self.calls += 1
+            return self.answers.pop(0)
+
+    fake = _Flaky(seq)
+    client = turbomole_mcp.TurbomoleManualMcp(
+        fake, allowed=True, now_fn=tick, sleep_fn=dosleep,
+    )
+    out = client.generate_input({"smiles": "CCO"})
+    # The 429 was retried after a backoff and the control came through.
+    assert fake.calls == 2
+    assert "$scfconv 7" in out.control_text
+    assert slept  # a grace-interval sleep separated the retry
+
+
+def test_429_always_rate_limited_stops_after_bounded_retries():
+    # An always-429 server must not loop forever: bounded retries, then the
+    # last answer is surfaced (a "rate limited" text the caller can see).
+    now = [1000.0]
+    slept = []
+
+    def tick():
+        return now[0]
+
+    def dosleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+
+    class _Always429:
+        def __init__(self):
+            self.calls = 0
+
+        def call_tool(self, name, arguments):
+            self.calls += 1
+            return '{"error": {"message": "http 429: rate limit reached"}}'
+
+    fake = _Always429()
+    client = turbomole_mcp.TurbomoleManualMcp(
+        fake, allowed=True, now_fn=tick, sleep_fn=dosleep,
+    )
+    out = client.generate_input({"smiles": "CCO"})
+    assert "429" in out.raw_text  # surfaced, never silently dropped
+    max_retries = getattr(turbomole_mcp, "_MAX_429_RETRIES", 2)
+    # 1 original + up to max retries, then we stop.
+    assert fake.calls <= max_retries + 1
