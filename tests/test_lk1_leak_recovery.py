@@ -27,7 +27,7 @@ Red control: the module does not exist yet, so importing it fails.
 """
 from __future__ import annotations
 
-from delfin.agent.leak_recovery import DSMLReplayPolicy
+from delfin.agent.leak_recovery import DSMLReplayPolicy, dsml_leak_notice
 
 DEFAULT_MAX = 3
 
@@ -130,3 +130,29 @@ def test_negative_budget_grants_nothing():
     p = DSMLReplayPolicy(max_per_turn=-1)
     assert p.exhausted is True
     assert p.allowed_for(dominates=True) is False
+
+
+# --- dsml_leak_notice: one source of truth for the user-visible text -------
+
+
+def test_dsml_leak_notice_basic_names_the_tool_and_says_did_not_run():
+    n = dsml_leak_notice("bash")
+    assert "a call to bash was written as text" in n
+    assert "it did not run" in n
+    # The bound wording is NOT present on the normal path.
+    assert "re-request limit" not in n
+    assert n.endswith("\n")
+
+
+def test_dsml_leak_notice_names_the_bound_when_limit_reached():
+    n = dsml_leak_notice("bash", limit_reached=True)
+    assert "a call to bash was written as text" in n
+    assert "the re-request limit for this turn is reached" in n
+    assert n.endswith("\n")
+
+
+def test_dsml_leak_notice_escapes_the_tool_name_verbatim():
+    # The model's leaked name flows straight into the text; it must not be
+    # mangled or dropped, only shown.
+    n = dsml_leak_notice("write_file")
+    assert "write_file" in n
