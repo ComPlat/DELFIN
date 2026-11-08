@@ -1,4 +1,4 @@
-"""Executed in memory through the authenticated SSH connection; no upload/install."""
+"""Server half of the Windows launcher: a plain file the app copies once per version to ~/.cache/delfin-launcher/<version>/ and remote_bootstrap.sh runs."""
 import base64
 import os
 import re

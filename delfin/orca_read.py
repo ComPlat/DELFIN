@@ -98,6 +98,13 @@ class Quantity(Enum):
     GEOMETRY_CONVERGED = "geometry_converged"
     #: the run's final geometry, [(element, x, y, z), ...] in Angstrom
     FINAL_GEOMETRY = "final_geometry"
+    #: IR modes of the IR SPECTRUM block (list of delfin.ir_spectrum.IRMode)
+    IR_MODES = "ir_modes"
+    #: (mode index, frequency) imaginary modes printed in the .out,
+    #: most negative first
+    IMAGINARY_MODES = "imaginary_modes"
+    #: all $vibrational_frequencies of a .hess file (imaginary = negative)
+    VIBRATIONAL_FREQUENCIES = "vibrational_frequencies"
 
 
 @dataclass(frozen=True)
@@ -312,6 +319,16 @@ def _text_values(out_path: Path, inp_path: Path,
         "enthalpy", "inner_energy", "entropy", "nelectrons",
     }
     values: dict = {}
+    # frequency quantities read by their own leaf parsers, not the tail
+    if {"ir_modes", "imaginary_modes"} & wanted:
+        if "ir_modes" in wanted:
+            from delfin.ir_spectrum import _parse_ir_spectrum_text
+            values["ir_modes"] = _parse_ir_spectrum_text(out_path) or None
+        if "imaginary_modes" in wanted:
+            from delfin.imag import _collect_imaginary_modes_text
+            values["imaginary_modes"] = \
+                _collect_imaginary_modes_text(str(out_path)) or None
+        return values
     if "term" in wanted:
         values["term"] = _terminated_normally_text(out_path)
     if "geometry" in wanted:
@@ -584,6 +601,14 @@ for _q, (_opi_key, _text_key, _unit) in _ENERGY_QUANTITIES.items():
 # GIBBS/ZPE/ENTHALPY/INNER_ENERGY/ENTROPY sit in the thermochemistry block;
 # ENTROPY is not in _ENERGY_QUANTITIES but uses the same tail scan.
 _TEXT_KEYS[Quantity.ENTROPY] = {"entropy"}
+#: The frequency quantities read by their own leaf parsers (not the tail
+#: scan): IR modes and imaginary modes from the .out, vibrational
+#: frequencies from the .hess. Their text readers are the established
+#: parsers delfin.ir_spectrum.parse_ir_spectrum and
+#: delfin.imag.collect_imaginary_modes / hessian_frequencies.
+_TEXT_KEYS[Quantity.IR_MODES] = {"ir_modes"}
+_TEXT_KEYS[Quantity.IMAGINARY_MODES] = {"imaginary_modes"}
+_TEXT_KEYS[Quantity.VIBRATIONAL_FREQUENCIES] = {"vib_freqs"}
 
 #: quantities whose OPI comparison showed identical values AND where OPI
 #: answers the same question -- everything else goes to the text parser.
@@ -738,6 +763,18 @@ def _reading_from_text(quantity: Quantity, text_value, text_values: dict,
             return Reading(None, "", "none",
                            f"text parser found nothing ({note})")
         return Reading(text_value, "Angstrom", "text", note)
+    if quantity is Quantity.IR_MODES:
+        value = text_values.get("ir_modes") if text_value is None else text_value
+        if value is None:
+            return Reading(None, "", "none",
+                           f"text parser found nothing ({note})")
+        return Reading(value, "cm-1/km-mol", "text", note)
+    if quantity is Quantity.IMAGINARY_MODES:
+        value = text_values.get("imaginary_modes") if text_value is None else text_value
+        if value is None:
+            return Reading(None, "", "none",
+                           f"text parser found nothing ({note})")
+        return Reading(value, "cm-1", "text", note)
     if quantity in _ENERGY_QUANTITIES or quantity is Quantity.S2_DEVIATION:
         if text_value is None:
             return Reading(None, "", "none", f"text parser found nothing ({note})")
@@ -775,8 +812,47 @@ def _read_text_only(work_dir: Path, base_name: str, quantity: Quantity,
                     inp_path: Path) -> Reading:
     """Quantities that never route through OPI (see module docstring)."""
     out_path = work_dir / f"{base_name}.out"
+    if quantity is Quantity.VIBRATIONAL_FREQUENCIES:
+        return _reading_vib_freqs(work_dir, base_name, note="")
     text_values = _text_values(out_path, inp_path, _TEXT_KEYS.get(quantity))
     return _reading_from_text(quantity, None, text_values, note="")
+
+
+def _reading_vib_freqs(work_dir: Path, base_name: str, note: str) -> Reading:
+    """$vibrational_frequencies of <base>.hess via imag.hessian_frequencies."""
+    from delfin.imag import _hessian_frequencies_text
+
+    hess_path = work_dir / f"{base_name}.hess"
+    if not hess_path.is_file():
+        return Reading(None, "", "none", f"no {base_name}.hess in the run dir"
+                       + (f" ({note})" if note else ""))
+    freqs = _hessian_frequencies_text(hess_path)
+    if not freqs:
+        return Reading(None, "", "none", f"no $vibrational_frequencies in "
+                       f"{base_name}.hess" + (f" ({note})" if note else ""))
+    return Reading(freqs, "cm-1", "text", note)
+
+
+def read_hess(hess_path: Union[str, Path], quantity: Quantity) -> Reading:
+    """Read one *quantity* from a single .hess file (no run directory).
+
+    Only vibrational-frequencies quantities are defined on a lone .hess;
+    anything else is answered with a ``none`` Reading. Never raises for
+    a missing file. The text reader is delfin.imag.hessian_frequencies
+    -- the established parser; the .hess carries no OPI counterpart.
+    """
+    if quantity is not Quantity.VIBRATIONAL_FREQUENCIES:
+        return Reading(None, "", "none",
+                       f"{quantity.name} is not read from a .hess file")
+    hess_path = Path(hess_path)
+    if not hess_path.is_file():
+        return Reading(None, "", "none", f"{hess_path.name} does not exist")
+    from delfin.imag import _hessian_frequencies_text
+    freqs = _hessian_frequencies_text(hess_path)
+    if not freqs:
+        return Reading(None, "", "none",
+                       f"no $vibrational_frequencies in {hess_path.name}")
+    return Reading(freqs, "cm-1", "text", "")
 
 
 # ---------------------------------------------------------------------------
