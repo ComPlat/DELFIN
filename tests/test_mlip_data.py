@@ -187,3 +187,55 @@ def test_guard_refuses_provenance_naming_a_hold_out():
     assert md.refuses_hold_out("some/train.xyz",
                                provenance="held-out part of pool_6000") is True
     assert md.refuses_hold_out("some/train.xyz", provenance="our own run") is False
+
+
+
+def test_read_orca_run_energy_via_orca_read_force_sign(tmp_path, monkeypatch):
+    """ORCA frame: energy through delfin.orca_read, forces from the engrad.
+
+    ``orca_read.read`` returns Hartree values; the frame must convert to eV
+    and keep the physical F = -grad(E) sign on forces.
+    """
+    from delfin.orca_read import Reading
+
+    run = tmp_path / "orca_run"
+    run.mkdir(parents=True, exist_ok=True)
+    _write_engrad(run / "mol.engrad", 3, -76.0,
+                  np.array([[0.02, 0.0, 0.0], [-0.02, 0.0, 0.0], [0.0, 0.0, 0.0]]))
+    (run / "mol.xyz").write_text(
+        "3\norca run\nC 0.0 0.0 0.0\nH 1.0 0.0 0.0\nH 0.0 1.0 0.0\n",
+        encoding="utf-8",
+    )
+    # orca_read returns the Hartree energy; we reuse it, not the engrad value.
+    monkeypatch.setattr(md.orca_read, "read",
+                        lambda *a, **k: Reading(value=-76.5, unit="Eh", source="test"))
+    frame = md.read_run(run, "mol", program="orca",
+                        method="PBE0", basis="def2-SVP",
+                        source="own", licence="self")
+    assert frame.program == "orca"
+    assert frame.method == "PBE0"
+    assert frame.basis == "def2-SVP"
+    assert frame.energy_eV == pytest.approx(-76.5 * md.EV_PER_HARTREE)
+    # forces = -gradient, converted to eV/A
+    assert frame.forces[0, 0] == pytest.approx(
+        -0.02 * md.EV_PER_ANGSTROM_PER_HARTREE_PER_BOHR)
+
+
+def test_read_orca_energy_falls_back_to_engrad(tmp_path, monkeypatch):
+    from delfin.orca_read import Reading
+
+    run = tmp_path / "orca2"
+    run.mkdir(parents=True, exist_ok=True)
+    _write_engrad(run / "mol.engrad", 3, -76.0,
+                  np.zeros(9))
+    (run / "mol.xyz").write_text(
+        "3\norca run\nC 0.0 0.0 0.0\nH 1.0 0.0 0.0\nH 0.0 1.0 0.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(md.orca_read, "read",
+                        lambda *a, **k: Reading(value=None, unit="Eh"))
+    frame = md.read_run(run, "mol", program="orca",
+                        method="PBE0", basis="def2-SVP",
+                        source="own", licence="self")
+    # no readable ORCA output -> engrad energy (same physical quantity)
+    assert frame.energy_eV == pytest.approx(-76.0 * md.EV_PER_HARTREE)
