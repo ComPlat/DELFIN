@@ -13,17 +13,41 @@ from delfin.agent.cited_retrieval import check_answer_citations
 
 
 def _corpus_with(pages=(3, 7), section_text="B3LYP is reliable here."):
-    """A synthetic corpus in the exact shape `cite()` reads (shared with
-    phase 1's control, so the locator resolution matches what cite() uses).
+    """A synthetic corpus in the exact shape the real indexer produces.
+
+    The real indexer strips the ``--- PAGE N ---`` marker out of stored PDF
+    section text (doc_server/indexer.py:184) and keeps no page field, so a
+    real-shaped PDF corpus carries NO page locator: ``locator_for`` returns a
+    section locator. This is the primary shape ``cite()`` and
+    ``check_answer_citations`` read on real data.
     """
     sections = {f"sec_{p}": {"section_id": f"sec_{p}",
-                             "title": f"Page {p}",
-                             "text": section_text}
+                              "title": f"Page {p}",
+                              "text": section_text}
                 for p in pages}
-    # Embed the real page markers the indexer writes so locator_for
-    # resolves them exactly as on a real PDF.
-    for p in pages:
-        sections[f"sec_{p}"]["text"] = f"--- PAGE {p} ---\n{section_text}"
+    return {
+        "documents": {
+            "doc-abc.pdf": {
+                "title": "The ABC Method Paper",
+                "source_type": "pdf",
+                "sections": sections,
+            }
+        }
+    }
+
+
+def _pagefull_corpus_with(pages=(3, 7), section_text="B3LYP is reliable here."):
+    """A corpus whose PDF sections DO carry page locators.
+
+    Used only for the target-4 control: a page citation can be flagged wrong
+    only against a page the index actually has. Real-shaped corpora carry no
+    page, so the wrong-page control runs against this page-retaining shape
+    (the state an index is in when it keeps page info).
+    """
+    sections = {f"sec_{p}": {"section_id": f"sec_{p}",
+                              "title": f"Page {p}",
+                              "text": f"--- PAGE {p} ---\n{section_text}"}
+                for p in pages}
     return {
         "documents": {
             "doc-abc.pdf": {
@@ -40,11 +64,31 @@ def _claim_codes(claims):
 
 
 def test_planted_wrong_page_is_flagged():
-    """Cite doc-abc.pdf p.9 when the corpus only has pages 3 and 7."""
+    """Cite doc-abc.pdf p.9 when a page-retaining index only has pages 3 and 7.
+
+    Target 4 control: a genuinely wrong page IS flagged -- but only where the
+    index actually carries page info (_pagefull_corpus_with). The real-shaped
+    corpus has no page and therefore cannot contradict a page claim.
+    """
     answer = "The method of choice is B3LYP «doc-abc.pdf p.9»."
-    claims = check_answer_citations(answer, corpus=_corpus_with())
+    claims = check_answer_citations(
+        answer, corpus=_pagefull_corpus_with())
     assert any(c.code == "claim-wrong-locator" and c.level == "error"
                for c in claims), claims
+
+
+def test_f4_correct_page_citation_is_clean_on_real_shape():
+    """F4 regression: a correct page citation on a REAL-shaped index is clean.
+
+    The real indexer strips the page marker (indexer.py:184) and keeps no page
+    field, so a page-less index carries nothing to contradict a page claim.
+    claim-wrong-locator must NOT be reported (one take on F4); the correct
+    page citation resolves as clean the way a real shaped corpus behaves.
+    """
+    answer = "B3LYP «doc-abc.pdf p.7» is reliable."
+    claims = check_answer_citations(answer, corpus=_corpus_with())
+    codes = _claim_codes(claims)
+    assert "claim-wrong-locator" not in codes, claims
 
 
 def test_correct_page_citation_is_clean():
