@@ -743,6 +743,7 @@ def _tools(ctx, args: str) -> CommandResult:
             list(getattr(ac, "_DOC_TOOLS_OPENAI", None) or []),
             ac.ToolSurfaceContext(
                 role=role,
+                has_lab=ac._lab_configured(),
                 session_allowed=frozenset(
                     getattr(perms, "session_allowed_tools", None) or ()),
                 session_denied=frozenset(
