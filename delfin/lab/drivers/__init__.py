@@ -1,4 +1,4 @@
-"""Device drivers. Only the simulator is implemented in this release."""
+"""Device drivers: simulator, Shelly Gen2 RPC and Tasmota are implemented."""
 
 from __future__ import annotations
 
@@ -11,7 +11,10 @@ REGISTRY: dict = {}
 
 def _register_builtin() -> None:
     from .simulator import SimulatorDriver
+    from .shelly_tasmota import ShellyDriver, TasmotaDriver
     REGISTRY.setdefault("simulator", SimulatorDriver)
+    REGISTRY.setdefault("shelly_rpc", ShellyDriver)
+    REGISTRY.setdefault("tasmota", TasmotaDriver)
 
 
 def make(name: str) -> Driver:
@@ -25,8 +28,8 @@ def make(name: str) -> Driver:
 #: What each driver class can do on the device itself (design doc table).
 DEVICE_WATCHDOG_SUPPORT = {
     "simulator": "yes (deadline in the simulated device)",
-    "shelly_rpc": "yes: Switch.Set toggle_after (planned)",
-    "tasmota": "yes: PulseTime (planned)",
+    "shelly_rpc": "yes: Switch.Set toggle_after",
+    "tasmota": "yes: PulseTime",
     "mqtt": "only when the device firmware has a timer (Tasmota yes, "
             "Zigbee plugs mostly no) (planned)",
     "home_assistant": "no: HA automations run on the HA host, not on the "

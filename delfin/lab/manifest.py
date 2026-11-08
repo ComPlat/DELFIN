@@ -64,10 +64,10 @@ _LEVEL_RANK = {"free": 0, "benign": 1, "hazardous": 2, "forbidden": 3}
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _SECRET_KEY = re.compile(r"(pass|secret|token|key|auth|cred)", re.I)
 _SECRET_REF = re.compile(r"^cred:[A-Za-z0-9_.-]{1,64}$")
-DRIVERS_IMPLEMENTED = ("simulator",)
+DRIVERS_IMPLEMENTED = ("simulator", "shelly_rpc", "tasmota")
 #: Named in the interface and the design doc; refused until written.
-DRIVERS_PLANNED = ("mqtt", "home_assistant", "shelly_rpc", "tasmota",
-                   "gpiod", "sila2", "opcua_lads", "serial", "modbus")
+DRIVERS_PLANNED = ("mqtt", "home_assistant", "gpiod", "sila2",
+                   "opcua_lads", "serial", "modbus")
 
 
 def state_str(v: Any) -> str:

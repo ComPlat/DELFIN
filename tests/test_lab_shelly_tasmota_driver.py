@@ -3,10 +3,12 @@
 T4 / T20 of docs/design/lab-control.md: a real driver that talks HTTP to a
 device, learns what the device really did (readback), and fails the kernel
 closed on any transport error -- but never contacts real hardware or the
-internet. The "device" here is an ``http.server`` bound to 127.0.0.1 started
-by the test, speaking just enough Shelly RPC (``/rpc/...``) and Tasmota
-(``/cm?cmnd=...``) to answer the driver, with real HTTP digest/basic
-challenges so the driver's auth-by-reference is exercised end to end.
+internet. The "device" here is an in-process ``FakeTransport`` injected into
+the driver's ``TRANSPORT`` hook: it speaks just enough Shelly RPC
+(``/rpc/...``) and Tasmota (``/cm?cmnd=...``) to answer the driver, with real
+HTTP digest/basic challenges so the driver's auth-by-reference is exercised
+end to end. No socket is ever opened, which is what makes the suite run in a
+sandbox that blocks outbound connections and on CI alike.
 
 Driver tests follow the interface in delfin/lab/drivers/base.py; the shell
 of the writes goes through the real executor path (``_DocToolExecutor``)
@@ -22,7 +24,6 @@ import json
 import threading
 import time
 from collections import deque
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 import pytest
@@ -32,6 +33,8 @@ from delfin.lab import manifest as _manifest
 from delfin.lab import store as _store
 from delfin.lab import safety as _safety
 from delfin.lab.drivers import make as _make_driver
+from delfin.lab.drivers import shelly_tasmota as _st
+from delfin.lab.drivers.base import DriverError as _DriverError
 
 REALM = "delfin-lab"
 NONCE = "deadbeefcafe"
@@ -46,16 +49,16 @@ TASMOTA_PASS = "plug-pass"
 # -- a fake union device: Shelly RPC on /rpc, Tasmota cmnd on /cm -------------
 
 class FakePlug:
-    """State + recorded calls of one fake plug, shared with its handler."""
+    """State + recorded calls of one fake plug, shared with the transport."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.output = False            # Shelly Switch.GetStatus.output
         self.apower = 5.0              # W
         self.last_toggle_after = None  # seconds, Shelly
-        self.last_pulsetime = None     # 0.1 s units, Tasmota
+        self.last_pulsetime = None     # Tasmota
         self.calls = deque()           # (kind, payload)
-        self.fail = False              # drop every connection (transport error)
+        self.fail = False              # drop every call (transport error)
         self.fail_read = False         # read path raises; write path works
 
     def record(self, kind, payload):
@@ -69,100 +72,82 @@ class FakePlug:
             return [c for c in self.calls if c[0] == kind]
 
 
-class FakePlugHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def log_message(self, *args):        # keep pytest output clean
-        pass
-
-    def _drop(self):
-        try:
-            self.connection.close()
-        except OSError:
-            pass
-
-    def _authorized(self, cred_user: str, cred_pass: str) -> bool:
-        auth = self.headers.get("Authorization", "")
-        if auth.startswith("Basic "):
-            want = base64.b64encode(
-                f"{cred_user}:{cred_pass}".encode()).decode()
-            return auth == f"Basic {want}"
-        if auth.startswith("Digest "):
-            return self._digest_ok(auth, cred_user, cred_pass)
+def _authorized(auth, user, pw, method, path):
+    """Validate an Authorization header exactly as a real server would."""
+    if not auth:
         return False
-
-    def _digest_ok(self, auth: str, user: str, pw: str) -> bool:
+    if auth.startswith("Basic "):
+        want = base64.b64encode((user + ":" + pw).encode()).decode()
+        return auth == f"Basic {want}"
+    if auth.startswith("Digest "):
         parts = {}
         for chunk in auth[len("Digest "):].split(","):
             k, _, v = chunk.strip().partition("=")
             parts[k] = v.strip('"')
         ha1 = hashlib.md5(f"{user}:{REALM}:{pw}".encode()).hexdigest()
-        ha2 = hashlib.md5(
-            f"{self.command}:{parts.get('uri','')}".encode()).hexdigest()
+        ha2 = hashlib.md5(f"{method}:{path}".encode()).hexdigest()
         expected = hashlib.md5(
             f"{ha1}:{parts.get('nonce','')}:{parts.get('nc','')}:"
-            f"{parts.get('cnonce','')}:{parts.get('qop','')}:{ha2}"
+            f"{parts.get('cnonce','')}:{parts.get('qop','')}:{ha2}".encode()
         ).hexdigest()
         return (parts.get("response") == expected
                 and parts.get("username") == user)
+    return False
 
-    def _challenge(self, scheme: str):
-        if scheme == "Digest":
-            self.send_response(401)
-            self.send_header("WWW-Authenticate",
-                             f'Digest realm="{REALM}", qop="auth", '
-                             f'nonce="{NONCE}", opaque="{OPAQUE}"')
-        else:
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", f'Basic realm="{REALM}"')
-        self.send_header("Content-Length", "0")
-        self.end_headers()
 
-    def _json(self, code: int, obj: dict):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+def _challenge(scheme):
+    if scheme == "Digest":
+        return {"WWW-Authenticate":
+                f'Digest realm="{REALM}", qop="auth", nonce="{NONCE}", '
+                f'opaque="{OPAQUE}"'}
+    return {"WWW-Authenticate": f'Basic realm="{REALM}"'}
 
-    def _serve(self):
-        plug = self.server.fake
+
+def _json(code, obj):
+    return (code, json.dumps(obj).encode(), {"Content-Type": "application/json"})
+
+
+class FakeTransport:
+    """In-process stand-in for the driver's HTTP TRANSPORT hook (no socket).
+
+    Mirrors the real ``_http_transport`` contract but in-object: it issues a
+    real 401 digest/basic challenge once, then accepts the driver's computed
+    Authorization header, and translates 'connection dropped' into a
+    ``DriverError`` exactly as the real transport would (so the kernel fails
+    closed). Raises on ``fail`` / ``fail_read``.
+    """
+
+    def __init__(self):
+        self.fake = FakePlug()
+
+    def __call__(self, device, method, path, body, headers):
+        plug = self.fake
+        auth = headers.get("Authorization")
+        cred = plug.credential              # (user, pass) or None
         if plug.fail:
-            self._drop()
-            return
-        cred = plug.credential          # (user, pass) or None
-        if cred and not self._authorized(cred[0], cred[1]):
-            plug.record("unauth", {"path": self.path})
-            self._challenge(plug.scheme)
-            return
-        if plug.fail_read and self.path.startswith("/rpc/Switch.GetStatus"):
-            self._drop()
-            return
-        self._route(plug)
-
-    def _route(self, plug):
-        path, _, query = self.path.partition("?")
+            raise _DriverError(f"{device.id}: transport error: dropped")
+        if cred and not _authorized(auth, cred[0], cred[1], method, path):
+            plug.record("unauth", {"path": path})
+            return (401, b"", _challenge(plug.scheme))
+        if plug.fail_read and path.startswith("/rpc/Switch.GetStatus"):
+            raise _DriverError(f"{device.id}: transport error: read dropped")
         if path == "/rpc/Switch.GetStatus":
             plug.record("read", {"path": path})
-            self._json(200, {"id": 1, "src": "delfin",
-                             "result": {"output": plug.output,
-                                        "apower": plug.apower}})
-        elif path == "/rpc/Switch.Set":
-            n = int(self.headers.get("Content-Length", "0"))
-            params = json.loads(self.rfile.read(n))["params"]
+            return _json(200, {"id": 1, "src": "delfin",
+                               "result": {"output": plug.output,
+                                          "apower": plug.apower}})
+        if path == "/rpc/Switch.Set":
+            params = json.loads((body or b"{}").decode())["params"]
             if "on" in params:
                 plug.output = bool(params["on"])
             plug.last_toggle_after = params.get("toggle_after")
             plug.record("write", {"path": path, "params": params})
-            self._json(200, {"id": 2, "src": "delfin", "result": {}})
-        elif path == "/cm":
-            plug.record("cmnd", {"path": path, "query": query})
-            qs = parse_qs(query)
-            cmnd = (qs.get("cmnd") or [""])[0]
-            self._cmnd(plug, cmnd)
-        else:
-            self.send_error(404)
+            return _json(200, {"id": 2, "src": "delfin", "result": {}})
+        if path.startswith("/cm"):
+            cmnd = (parse_qs(path.partition("?")[2]).get("cmnd") or [""])[0]
+            plug.record("cmnd", {"cmnd": cmnd, "path": path})
+            return self._cmnd(plug, cmnd)
+        return (404, b"", {})
 
     def _cmnd(self, plug, cmnd):
         # Tasmota: `Power`, `Power On`, `Power Off`, `PulseTime <t>`
@@ -171,43 +156,26 @@ class FakePlugHandler(BaseHTTPRequestHandler):
         arg = words[1] if len(words) > 1 else None
         if cmd == "Power" and arg is None:
             plug.record("read-power", {"cmnd": cmnd})
-            self._json(200, {"POWER": "ON" if plug.output else "OFF"})
-        elif cmd == "Power":
+            return _json(200, {"POWER": "ON" if plug.output else "OFF"})
+        if cmd == "Power":
             plug.output = (arg.upper() in ("ON", "1", "TOGGLE")
                            and not (arg.upper() == "TOGGLE" and plug.output))
-            self._json(200, {"POWER": "ON" if plug.output else "OFF"})
-        elif cmd == "PulseTime":
+            return _json(200, {"POWER": "ON" if plug.output else "OFF"})
+        if cmd == "PulseTime":
             try:
                 plug.last_pulsetime = int(arg)
             except (TypeError, ValueError):
                 pass
-            self._json(200, {"PulseTime": arg or "0"})
-        else:
-            self.send_error(400)
-
-    def do_GET(self):
-        self._serve()
-
-    def do_POST(self):
-        self._serve()
+            return _json(200, {"PulseTime": arg or "0"})
+        return (400, b"", {})
 
 
-class FakePlugServer:
-    def __init__(self):
-        self.fake = FakePlug()
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakePlugHandler)
-        self.httpd.fake = self.fake
-        self.thread = threading.Thread(target=self.httpd.serve_forever,
-                                       daemon=True)
-        self.thread.start()
+class FakeServer:
+    """Thin shim so the tests read like they talk to one device server."""
 
-    @property
-    def port(self):
-        return self.httpd.server_address[1]
-
-    def close(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+    def __init__(self, fake, port):
+        self.fake = fake
+        self.port = port
 
 
 # -- manifest and fixture ------------------------------------------------------
@@ -215,13 +183,14 @@ class FakePlugServer:
 def manifest_text(port: int, *, shelly=True, tasmota=True,
                   shelly_sec="plug-shelly", tasmota_sec="plug-tasmota",
                   tasmota_scheme="Basic") -> str:
+    del tasmota_scheme
     devs = []
     if shelly:
         devs.append(f"""
         - id: plug_shelly
           driver: shelly_rpc
           model: shelly_plus_plug_s
-          address: {{host: 127.0.0.1, port: {port}, slot: 0,
+          address: {{host: 192.0.2.10, port: {port}, slot: 0,
                      secret_ref: cred:{shelly_sec}}}
           stale_after_s: 5
           deadman_s: 30
@@ -237,7 +206,7 @@ def manifest_text(port: int, *, shelly=True, tasmota=True,
         - id: plug_tasmota
           driver: tasmota
           model: tasmota_plug
-          address: {{host: 127.0.0.1, port: {port},
+          address: {{host: 192.0.2.11, port: {port},
                      secret_ref: cred:{tasmota_sec}}}
           stale_after_s: 5
           deadman_s: 30
@@ -273,7 +242,9 @@ def plug_fixture(tmp_path, monkeypatch):
     monkeypatch.delenv("DELFIN_LAB_MANIFEST", raising=False)
     from delfin.agent import trust_store
     trust_store.forget_cached_keys()
-    server = FakePlugServer()
+    # inject the in-process transport (no real socket)
+    transport = FakeTransport()
+    monkeypatch.setattr(_st, "TRANSPORT", transport)
     try:
         # seed the credential store by reference-name (never in the manifest)
         from delfin.agent import credentials as _cred
@@ -281,14 +252,15 @@ def plug_fixture(tmp_path, monkeypatch):
         _cred.set_credential("plug-tasmota", f"{TASMOTA_USER}:{TASMOTA_PASS}")
         path = _store.manifest_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(manifest_text(server.port), encoding="utf-8")
+        path.write_text(manifest_text(80), encoding="utf-8")
         manifest = _manifest.load(path)
         _safety.pin(manifest, by="alice")
-        server.fake.credential = (SHELLY_USER, SHELLY_PASS)
-        server.fake.scheme = "Digest"
+        transport.fake.credential = (SHELLY_USER, SHELLY_PASS)
+        transport.fake.scheme = "Digest"
+        server = FakeServer(transport.fake, port=80)
         yield server, tmp_path
     finally:
-        server.close()
+        pass
 
 
 def _kernel(clock=None):
@@ -300,6 +272,11 @@ def _device(driver):
     d = _make_driver(driver)
     assert isinstance(d, Driver)
     return d
+
+
+def _driver_error():
+    from delfin.lab.drivers import base as B
+    return B.DriverError
 
 
 # -- registration and manifest -------------------------------------------------
@@ -403,8 +380,6 @@ def test_tasmota_write_read_and_readback(plug):
 
 def test_transport_error_on_write_makes_the_kernel_go_safe(plug):
     server, ws = plug
-    # the fake plugin drops connections: the only realistic closed port
-    # behaviour for a boxing LAN device is the same -- no answer at all
     server.fake.fail = True
     k = _kernel()
     actor = _safety.Actor.here("s1")
@@ -430,11 +405,6 @@ def test_transport_error_makes_arm_watchdog_raise(plug):
     drv.clock = k.clock
     with pytest.raises(_driver_error()):
         drv.arm_watchdog(d, 30)
-
-
-def _driver_error():
-    from delfin.lab.drivers import base as B
-    return B.DriverError
 
 
 # -- safe_state continues past one failed channel ------------------------------
@@ -466,9 +436,11 @@ def test_no_driver_write_without_kernel_set_via_tools(plug, monkeypatch):
     assert "lab_set" in _tools.TOOL_NAMES
     called = []
     orig = _safety.Kernel.set
+
     def patched(self, *a, **kw):
         called.append(True)
         return orig(self, *a, **kw)
+
     monkeypatch.setattr(_safety.Kernel, "set", patched)
     perms = type("P", (), {"task_session_id": "s1"})()
     out = _tools.execute("lab_set", {"device": "plug_shelly",
