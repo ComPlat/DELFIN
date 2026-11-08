@@ -44,6 +44,16 @@ Resources
     :data:`MAX_QUEUED_JOBS` of the user's jobs pending or running with the
     new one.
 
+Information calls
+    ``xtb --version``, ``crest --cite``, ``orca -v``, ``sbatch --usage``,
+    ``command -v xtb`` (:func:`information_call`,
+    :data:`INFORMATION_FLAGS`) start nothing and are not checked as a
+    calculation: the verdict has ``information`` set and admits when the
+    command's other segments are auto-allowed. Only a bare name that the
+    session's PATH resolves outside its roots and temp dirs
+    (:func:`trusted_program`), with no prefix but a numeric thread count
+    and ``time``/``nice``/``timeout`` (:func:`_information_words`).
+
 Rejected: a regular expression per program on the auto-allow list (what
 ``xtb <file>.xyz`` had). It admits ``-P 64`` on a login node and an odd
 electron count as readily as a correct run.
@@ -70,14 +80,38 @@ _DELFIN_RUN_FORMS = ((), ("--recalc",))
 _WRAPPERS = ("time", "nice", "nohup", "setsid", "timeout")
 _GEOMETRY_SUFFIXES = (".xyz", ".coord", ".sdf", ".mol", ".tmol")
 
+# The flags with which each program prints information and exits without
+# reading an input: its version, help, citation or licence. Spelled as the
+# program spells them (measured: xtb 6.7/3.0 `--help`; CREST 3.0.2 `--help`;
+# ORCA 6.1.1 prints its header and stops for each of the four; sbatch and
+# delfin per their argparse/getopt tables). Not here: xtb `-v` and CREST
+# `-v` (xtb's is --verbose and needs an input; CREST's aborts), and any
+# flag a program would read as an input name. CREST without an input reads
+# `coord` from the directory, so an unknown flag there is a run, which is
+# why the sets are exact and every word must be in them.
+INFORMATION_FLAGS = {
+    "xtb": ("--version", "--help", "-h", "--citation", "--license"),
+    "crest": ("--version", "--help", "-h", "--cite"),
+    "orca": ("--version", "-v", "--help", "-h"),
+    "delfin": ("--version", "-V", "--help", "-h"),
+    "sbatch": ("--version", "-V", "--help", "-h", "--usage"),
+}
+# `crest --help <section>` prints that section of the help.
+_CREST_HELP_SECTIONS = ("general", "compare", "conf", "thermo", "qcg",
+                        "other")
+
 
 @dataclass
 class Verdict:
+    """``information``: the command only asks the programs for their
+    version, help or location (information_call) and starts nothing;
+    ``calculation`` is then False."""
     calculation: bool = False
     admit: bool = False
     summary: str = ""
     reason: str = ""
     notes: list = field(default_factory=list)
+    information: bool = False
 
 
 @dataclass
@@ -117,13 +151,27 @@ def local_core_limit(kind: str) -> int:
     return max(1, _available_cpus() // 2)
 
 
+#: The most threads a command that names none gets outside a Slurm job.
+DEFAULT_THREADS_CAP = 4
+
+
 def default_threads(kind: str, env: Optional[dict] = None) -> int:
     """The thread count a program gets when its command names none.
 
-    The same number the agent's shell environment sets
-    (``_scrubbed_bash_env``): a value the user's environment already has,
-    the allocation inside a job, the login-node limit on a login node,
-    else at most four.
+    Input: the host kind and the environment (default ``os.environ``).
+    Output: the user's own ``OMP_NUM_THREADS`` when set (kept, and judged
+    like an explicit count); else ``SLURM_CPUS_PER_TASK``; else the unasked
+    local limit (``local_core_limit``), capped at
+    :data:`DEFAULT_THREADS_CAP` outside a Slurm job.
+
+    The one source of this number: the agent's shell environment sets it
+    (``api_client._scrubbed_bash_env``) and the calculation check assumes
+    it, so the two cannot disagree. It used to be ``min(4, os.cpu_count())``
+    on a workstation, against a limit of half the available CPUs: on a
+    4-core machine every command without ``-P`` asked for 4 cores where 2
+    run unasked, and was refused. Rejected: raising the limit to the
+    default -- the limit is the share of the user's own machine a command
+    may take without asking, the default has to fit inside it.
     """
     env = os.environ if env is None else env
     own = str(env.get("OMP_NUM_THREADS", "")).strip()
@@ -132,9 +180,10 @@ def default_threads(kind: str, env: Optional[dict] = None) -> int:
     cap = str(env.get("SLURM_CPUS_PER_TASK", "")).strip()
     if cap.isdigit() and int(cap) > 0:
         return int(cap)
-    if kind == "login_node":
-        return LOGIN_LOCAL_CORES
-    return max(1, min(4, os.cpu_count() or 1))
+    limit = local_core_limit(kind)
+    if kind == "slurm_job":
+        return max(1, limit)     # the allocation
+    return max(1, min(DEFAULT_THREADS_CAP, limit))
 
 
 def unasked_cpu_set(kind: Optional[str] = None) -> Optional[list]:
@@ -303,8 +352,11 @@ def _duration_s(text: str) -> Optional[float]:
                                 "d": 86400}[m.group(2)]
 
 
-def _parse_run(segment: str) -> Optional[_Run]:
-    """The calculation in one shell segment, or None if it starts none."""
+def _segment_words(segment: str) -> Optional[tuple]:
+    """``(words, env, wall_s, detached)`` of one shell segment: the
+    command's words after its leading assignments and launch wrappers
+    (time, nice, nohup, setsid, timeout), or None when it names no
+    command or does not tokenise."""
     text = segment.strip()
     detached = text.endswith("&") and not text.endswith("&&")
     if detached:
@@ -339,17 +391,14 @@ def _parse_run(segment: str) -> Optional[_Run]:
             wall = _duration_s(words.pop(0))
     if not words:
         return None
-    program = os.path.basename(words[0])
-    if program not in LOCAL_PROGRAMS + ("sbatch",):
-        return None
-    if program == "delfin" and tuple(
-            w for w in words[1:]
-            if not re.fullmatch(r"\d*>>?|\d*>&\d+|&>>?|\S*>\S*", w)
-    ) not in _DELFIN_RUN_FORMS:
-        return None
+    return words, env, wall, detached
+
+
+def _without_redirections(words: list) -> list:
+    """``words`` without the shell's redirections and their targets."""
     argv = []
     skip = False
-    for w in words[1:]:
+    for w in words:
         if skip:
             skip = False
             continue
@@ -359,7 +408,166 @@ def _parse_run(segment: str) -> Optional[_Run]:
         if re.match(r"^(\d*>>?|\d*<|&>>?)\S", w) or re.fullmatch(r"\d*>&\d+", w):
             continue
         argv.append(w)
-    return _Run(program, argv, env, wall, detached)
+    return argv
+
+
+#: The only assignments an information call may carry: a thread count.
+_INFORMATION_ENV = ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                    "OPENBLAS_NUM_THREADS")
+
+
+def _writable_temp_dirs() -> tuple:
+    """The temp dirs any process of the account can write (system and
+    session ``TMPDIR``): a program found there is not an installation."""
+    import tempfile
+    dirs = {tempfile.gettempdir(), "/tmp", "/var/tmp", "/dev/shm"}
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        value = str(os.environ.get(name, "") or "").strip()
+        if value:
+            dirs.add(value)
+    return tuple(dirs)
+
+
+def trusted_program(name: str, *, path: Optional[str] = None,
+                    untrusted=()) -> Optional[str]:
+    """The installed file a bare program name runs, or None.
+
+    Input: ``name`` (no slash), the ``PATH`` the command's shell gets
+    (default ``os.environ``), and directories the agent can write
+    (``untrusted``: the session's roots, its working and scratch dirs).
+    Output: the resolved real path of the first match on ``PATH``, None
+    when the name has a slash, the ``PATH`` has an empty or relative entry
+    (the shell would search the working directory or one below it), no
+    entry holds it, or it lies in ``untrusted`` or a temp dir
+    (:func:`_writable_temp_dirs`): a script the agent wrote and named
+    ``xtb`` is not the program.
+    """
+    if not name or "/" in name:
+        return None
+    path = os.environ.get("PATH", "") if path is None else path
+    entries = path.split(os.pathsep)
+    if not path or any(not e or not os.path.isabs(e) for e in entries):
+        return None
+    found = shutil.which(name, path=path)
+    if not found:
+        return None
+    real = os.path.realpath(found)
+    for d in tuple(untrusted) + _writable_temp_dirs():
+        try:
+            base = os.path.realpath(str(d))
+        except (OSError, ValueError):
+            continue
+        if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
+            return None
+    return real
+
+
+def _information_words(segment: str) -> Optional[list]:
+    """The words of a segment that may be an information call: what is
+    left after the prefixes such a call may carry, or None.
+
+    Allowed in front: assignments of :data:`_INFORMATION_ENV` to a number;
+    ``time`` (``-p``), ``nice`` (``-n N`` / ``-N``) and ``timeout DURATION``
+    with numeric arguments. Refused: any other assignment (``LD_PRELOAD``,
+    ``PATH``, ``PYTHON*``, ``BASH_ENV``, ``ENV``, ``IFS``), any other
+    wrapper (``nohup``, ``setsid``, ``env``, ``exec``), a trailing ``&``,
+    and ``$``, a backtick or a process substitution anywhere, which run
+    something of their own (a redirection target included).
+    """
+    text = segment.strip()
+    if text.endswith("&") or any(c in text for c in ("$", "`", "<(", ">(")):
+        return None
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return None
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        name, value = words.pop(0).split("=", 1)
+        if name not in _INFORMATION_ENV or not value.isdigit():
+            return None
+    while words and words[0] in ("time", "nice", "timeout"):
+        wrapper = words.pop(0)
+        if wrapper == "time":
+            if words and words[0] == "-p":
+                words.pop(0)
+        elif wrapper == "nice":
+            if words and words[0] == "-n":
+                if len(words) < 2 or not re.fullmatch(r"-?\d+", words[1]):
+                    return None
+                del words[:2]
+            elif words and re.fullmatch(r"-\d+", words[0]):
+                words.pop(0)
+        else:
+            if not words or _duration_s(words[0]) is None:
+                return None
+            words.pop(0)
+    return words or None
+
+
+def information_call(segment: str,
+                     trusted: Optional[Callable[[str], bool]] = None,
+                     ) -> Optional[str]:
+    """The program a segment only asks for information, else None.
+
+    Input: one shell segment (no ``;``/``&&``/``|``) and ``trusted``, the
+    test that a bare name runs the installed program (default:
+    :func:`trusted_program` on this process's ``PATH``). Output: the
+    program's name when the segment is ``<program> <information flags>``
+    with every word in :data:`INFORMATION_FLAGS` for that program, the
+    program a bare name that ``trusted`` accepts, and nothing in front but
+    what :func:`_information_words` allows (redirections are left to the
+    write path gate); or ``command -v``/``-V`` naming programs of that
+    table; else None.
+
+    Such a call reads no input and starts no calculation, so the setup
+    check does not apply. It refused ``xtb --version 2>&1 | head -3`` with
+    "no input file named on the command line" before. Anything else
+    stays with the check: a path-qualified program (``./xtb``), one the
+    PATH finds in a root of the session, an information flag next to an
+    input name, a flag outside the set, the bare program.
+    """
+    words = _information_words(segment)
+    if not words:
+        return None
+    program = words[0]
+    if "/" in program:
+        return None
+    argv = _without_redirections(words[1:])
+    if program == "command":
+        # A lookup; the shell runs nothing.
+        if len(argv) >= 2 and argv[0] in ("-v", "-V") and all(
+                w in INFORMATION_FLAGS for w in argv[1:]):
+            return argv[1]
+        return None
+    flags = INFORMATION_FLAGS.get(program)
+    if not flags or not argv:
+        return None
+    if not (program == "crest" and len(argv) == 2 and argv[0] == "--help"
+            and argv[1] in _CREST_HELP_SECTIONS) and not all(
+                w in flags for w in argv):
+        return None
+    if trusted is None:
+        def trusted(name: str) -> bool:
+            return trusted_program(name) is not None
+    return program if trusted(program) else None
+
+
+def _parse_run(segment: str) -> Optional[_Run]:
+    """The calculation in one shell segment, or None if it starts none."""
+    parsed = _segment_words(segment)
+    if parsed is None:
+        return None
+    words, env, wall, detached = parsed
+    program = os.path.basename(words[0])
+    if program not in LOCAL_PROGRAMS + ("sbatch",):
+        return None
+    if program == "delfin" and tuple(
+            w for w in words[1:]
+            if not re.fullmatch(r"\d*>>?|\d*>&\d+|&>>?|\S*>\S*", w)
+    ) not in _DELFIN_RUN_FORMS:
+        return None
+    return _Run(program, _without_redirections(words[1:]), env, wall,
+                detached)
 
 
 def _flag_value(argv: list, *names: str) -> Optional[str]:
@@ -860,19 +1068,32 @@ def judge_command(segments: list, cwd: Path,
                   *, tool_wall_s: Optional[float] = None,
                   kind: Optional[str] = None,
                   limits_of: Optional[Callable] = None,
-                  jobs_now: Optional[Callable] = None) -> Verdict:
+                  jobs_now: Optional[Callable] = None,
+                  program_trusted: Optional[Callable[[str], bool]] = None,
+                  ) -> Verdict:
     """The verdict for a shell command given as its segments.
 
     ``segment_allowed`` is the gate's own auto-allow test for a segment
     that starts no calculation (``cd``, ``mkdir``...); a compound admits
-    only when every other segment passes it.
+    only when every other segment passes it. ``program_trusted`` decides
+    whether a bare program name of an information call runs the installed
+    program (the gate passes the session's PATH and roots); default
+    :func:`trusted_program` on this process's PATH with ``cwd`` untrusted.
     """
     limits_of = limits_of or partition_limits
     jobs_now = jobs_now or queued_jobs
     kind = kind or host_kind()
+    if program_trusted is None:
+        def program_trusted(name: str) -> bool:
+            return trusted_program(name, untrusted=(str(cwd),)) is not None
     here: Optional[Path] = Path(cwd)
     summaries, problems, found = [], [], False
+    asked: list = []
     for seg in segments:
+        program = information_call(seg, program_trusted)
+        if program:
+            asked.append(seg.strip()[:60])
+            continue
         run = _parse_run(seg)
         if run is None:
             m = re.fullmatch(r"\s*cd\s+(\S+)\s*", seg)
@@ -898,6 +1119,12 @@ def judge_command(segments: list, cwd: Path,
         else:
             summaries.append(summary)
     if not found:
+        # Only information calls besides auto-allowed segments: admitted as
+        # such, never named as a calculation that was started. A segment
+        # off the list leaves it to the ordinary gate (Verdict()).
+        if asked and not problems:
+            return Verdict(admit=True, information=True,
+                           summary="information only: " + "; ".join(asked))
         return Verdict()
     if problems:
         return Verdict(True, False, "", "; ".join(problems))

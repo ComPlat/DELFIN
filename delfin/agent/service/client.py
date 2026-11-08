@@ -9,7 +9,9 @@ The TUI (TypeScript) speaks the same protocol over the same socket.
 
 from __future__ import annotations
 
+import os
 import socket
+import stat
 import threading
 import time
 from pathlib import Path
@@ -25,15 +27,57 @@ class ServiceError(Exception):
         self.message = message
 
 
+class UnsafeSocket(OSError):
+    """The socket is not this user's service: its directory is not a plain
+    0700 directory of this uid, or the process listening runs as another
+    uid. Nothing is sent to it."""
+
+
+def check_socket_dir(path: Path) -> None:
+    """Refuse a socket whose directory is a symlink, not a directory, not
+    this uid's, or open to others (tmux's rule, rundir.ensure_runtime_dir's
+    for the service's own side): such a socket may have been planted."""
+    directory = Path(path).parent
+    try:
+        st = os.lstat(directory)
+    except FileNotFoundError:
+        raise
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise UnsafeSocket(f"{directory} is not a plain directory; not connecting")
+    if st.st_uid != os.getuid():
+        raise UnsafeSocket(f"{directory} belongs to uid {st.st_uid}, not to you; not connecting")
+    if stat.S_IMODE(st.st_mode) & 0o077:
+        raise UnsafeSocket(f"{directory} is open to others "
+                           f"({oct(stat.S_IMODE(st.st_mode))}); not connecting")
+
+
+def check_peer(sock: socket.socket, path: Path) -> None:
+    """Refuse a peer that runs as another uid (SO_PEERCRED, getpeereid);
+    where the platform cannot say, the directory check above stands."""
+    uid = rundir.peer_uid(sock)
+    if uid is not None and uid != os.getuid():
+        raise UnsafeSocket(f"the process at {path} runs as uid {uid}, not as you; "
+                           "not talking to it")
+
+
 class ServiceClient:
-    """One connection: requests and their answers, and the events sent."""
+    """One connection: requests and their answers, and the events sent.
+
+    Only to this user's own service: the socket's directory is checked
+    before connecting and the peer's uid after (UnsafeSocket)."""
 
     def __init__(self, path: Path | None = None, *, timeout: float = 10.0,
                  client: str = "python", hello: bool = True):
         self.path = Path(path) if path is not None else rundir.socket_path()
+        check_socket_dir(self.path)
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(timeout)
-        self.sock.connect(str(self.path))
+        try:
+            self.sock.connect(str(self.path))
+            check_peer(self.sock, self.path)
+        except BaseException:
+            self.sock.close()
+            raise
         self.sock.settimeout(None)
         self._file = self.sock.makefile("rb")
         self._lock = threading.Lock()
@@ -144,6 +188,10 @@ def probe(path: Path | None = None, timeout: float = 2.0) -> tuple[dict | None, 
     try:
         with ServiceClient(path, timeout=timeout, client="probe") as svc:
             return dict(svc.hello), ""
+    except UnsafeSocket as exc:
+        # Not ours: never "none" -- a caller must not start a service
+        # beside it, nor talk to it.
+        return None, f"unsafe: {exc}"
     except (FileNotFoundError, ConnectionRefusedError):
         return None, "none"
     except ServiceError as exc:

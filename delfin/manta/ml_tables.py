@@ -857,6 +857,15 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
         _me = _ml_me_band(metal_symbol, donor_symbol)
         if _me is not None:
             return float(_me)
+    # BOND-VALENCE TARGET OF THE COMPLEX BEING BUILT (DELFIN_FFFREE_ML_TARGETS_BV, default OFF
+    # -> byte-identical).  Asked by element only, so it answers only when every donor of this
+    # element in the complex has a target and they agree (see _ml_targets_bv.build_context);
+    # otherwise None and the lookup below as before.
+    if kind == "sigma" and os.environ.get("DELFIN_FFFREE_ML_TARGETS_BV", "0") == "1":
+        from delfin.manta import _ml_targets_bv as _bvt
+        _t = _bvt.target_for_donor(metal_symbol, donor_symbol, source="table")
+        if _t is not None:
+            return float(_t)
     # ===== M-C FROM A MEASURED TABLE INSTEAD OF FROM PLACEHOLDERS (24.08.2026) =========
     # A per-metal comparison of this table's M-C values against crystal structures found
     # it right at its core but wrong for three coherent families, each in one direction:
@@ -1417,3 +1426,33 @@ def _is_metal_nitrogen_complex(smiles: str) -> bool:
     )
 
     return has_metal and has_coord_n
+
+
+def _check_ml_bond_length(metal_symbol: str, donor_symbol: str, kind: str = "sigma") -> float:
+    """The per-element M-D length a topology check or tolerance window compares against.
+
+    Identical to _get_ml_bond_length; it tells the bond-valence targets that this question is a
+    check, so that DELFIN_FFFREE_ML_TARGETS_BV_SCOPE=lengths keeps the historic value here while
+    every length a builder places, pins, snaps or scores against gets the target.
+    """
+    from delfin.manta import _ml_targets_bv as _bvt
+    _bvt._CHECK_DEPTH[0] += 1
+    try:
+        return _get_ml_bond_length(metal_symbol, donor_symbol, kind)
+    finally:
+        _bvt._CHECK_DEPTH[0] -= 1
+
+
+def _pin_ml_bond_length(metal_symbol: str, donor_symbol: str, kind: str = "sigma") -> float:
+    """The length a legacy UFF pin or a pre-UFF snap places a donor at.
+
+    Identical to _get_ml_bond_length; it only tells the bond-valence targets that this question
+    comes from a placement, so that DELFIN_FFFREE_ML_TARGETS_BV_SCOPE=pins answers it while the
+    topology checks and tolerance windows keep their historic per-element value.
+    """
+    from delfin.manta import _ml_targets_bv as _bvt
+    _bvt._PIN_DEPTH[0] += 1
+    try:
+        return _get_ml_bond_length(metal_symbol, donor_symbol, kind)
+    finally:
+        _bvt._PIN_DEPTH[0] -= 1
