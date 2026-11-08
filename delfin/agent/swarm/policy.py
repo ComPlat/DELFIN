@@ -114,8 +114,8 @@ def _home_owner(home: Path) -> str:
     """The first path component after a ``home`` mount, as the owner key.
 
     ``/home/<user>``                 -> ``<user>``
-    ``/home/it/team/one``            -> ``it``   (nested home tree)
-    ``/pfs/data6/home/it/team/one``  -> ``it``
+    ``/home/alice/team/one``          -> ``alice``   (nested home tree)
+    ``/pfs/data6/home/alice/team/one``  -> ``alice``
     When no ``home`` component exists, the final part is the fallback.
     """
     parts = home.parts

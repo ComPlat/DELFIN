@@ -82,8 +82,8 @@ COMMON_REFUSE = [
     "cat credentials.json",
     "cat ~/.ssh/id_ed25519",
     "cat project/.env",
-    "cat /home/bob/report.txt",
-    "cat /pfs/data3/home/carol/data.txt",
+    "cat /home/other_user/report.txt",
+    "cat /pfs/data3/home/someone/data.txt",
     "cat .delfin/settings.json",
 ]
 
@@ -184,7 +184,7 @@ def test_builder_may_stage_its_own_files():
 def test_no_literal_home_or_user_in_the_pattern_source():
     src = Path(policy.__file__).read_text(encoding="utf-8")
     # The class of values the task forbids: a concrete user or host.
-    for banned in ("ka_ibcs", "/home/ka/", "/pfs/data6/home/ka",
+    for banned in ("zzswp_acct", "/home/ka/", "/pfs/data6/home/ka",
                    "@localhost", "hostname"):
         assert banned not in src, f"policy.py must not hard-code {banned!r}"
 
@@ -192,10 +192,10 @@ def test_no_literal_home_or_user_in_the_pattern_source():
 def test_another_home_is_derived_at_runtime_from_the_member_home():
     # The patterns for a different member home must refuse THAT member's
     # other-user homes but allow the member's own.
-    other_home = FakeHome("/home/bob")
+    other_home = FakeHome("/home/other_user")
     pats = policy.deny_patterns_for("builder", home=other_home)
-    assert _refuses(pats, "cat /home/carol/file.txt")
-    assert _allows(pats, "cat /home/bob/project/README.md")
+    assert _refuses(pats, "cat /home/someone/file.txt")
+    assert _allows(pats, "cat /home/other_user/project/README.md")
 
 
 def test_role_policy_is_exposed_as_data():

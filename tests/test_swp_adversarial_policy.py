@@ -112,7 +112,7 @@ def test_adversarial_must_allow(cmd):
 
 # ---------------------------------------------------------------------------
 # No hard-coded identity in the SOURCE beyond the banned literals the
-# builder already tests (ka_ibcs, /home/ka, hostnames): also check the
+# builder already tests (zzswp_acct, /home/ka, hostnames): also check the
 # compiled patterns never contain an absolute home literal.
 # ---------------------------------------------------------------------------
 
