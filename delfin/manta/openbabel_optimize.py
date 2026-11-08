@@ -291,6 +291,77 @@ def _apply_template_bond_orders(ob_mol, mol_template) -> int:
         return 0
 
 
+def _ob_kekule_orders_enabled() -> bool:
+    """DELFIN_FFFREE_OB_KEKULE_ORDERS (default off -> Open Babel perceives the orders, byte-identical)."""
+    return os.environ.get("DELFIN_FFFREE_OB_KEKULE_ORDERS", "0") == "1"
+
+
+def _apply_template_kekule_orders(ob_mol, mol_template) -> int:
+    """Give the Open Babel molecule the bond orders and the aromaticity of the SMILES template.
+
+    WHY.  ``pybel.readstring("xyz", ...)`` makes Open Babel guess the bond orders from the bare
+    coordinates WITH the metal in them.  The metal-donor bond fills the donor's valence, so the
+    guess drops the multiple bond next to every donor: a coordinated imine C=N, carbonyl C=O,
+    sulfoxide S=O or the N=C of an N-bound NCS/NCSe comes out single, and UFF stretches it to
+    single-bond length (C=N 1.28 -> 1.41-1.45, C=O 1.22 -> 1.39, S=O 1.53 -> 1.70 A after a
+    plain minimisation of a dev frame).  A coordinated pyridine loses its aromaticity and is
+    minimised as a Kekule ring with alternating 1.34 / 1.48-1.51 A bonds.  On the same frame
+    without the metal the guess is right, which is the proof that the metal causes it.
+
+    The order is not a geometric quantity: it stands in the template.  Every bond between two
+    non-metal atoms gets the order of the template's Kekule form, and every atom and bond
+    the aromaticity of the template; the aromaticity is then marked as perceived, so Open
+    Babel keeps it instead of perceiving it again from the Kekule orders (writing order 1 plus
+    the aromatic flag, as ``_apply_template_bond_orders`` does, is wiped by that second
+    perception and leaves an aromatic ring of single bonds).  Metal bonds keep the guessed
+    order.
+
+    Strict mapping, as in ``_apply_template_bond_orders``: only when the atom count and the
+    symbol sequence agree exactly; on any deviation, or when the template cannot be
+    kekulised, the molecule is left as Open Babel perceived it.
+
+    Return: number of bonds set (0 = nothing touched).
+    """
+    if mol_template is None or not RDKIT_AVAILABLE:
+        return 0
+    try:
+        n_t = mol_template.GetNumAtoms()
+        if ob_mol.NumAtoms() != n_t:
+            return 0
+        for i in range(n_t):
+            if pybel.ob.GetSymbol(ob_mol.GetAtom(i + 1).GetAtomicNum()) != \
+                    mol_template.GetAtomWithIdx(i).GetSymbol():
+                return 0
+        kek = Chem.Mol(mol_template)
+        Chem.Kekulize(kek, clearAromaticFlags=True)
+        _ORDER = {Chem.BondType.SINGLE: 1, Chem.BondType.DOUBLE: 2, Chem.BondType.TRIPLE: 3}
+        is_metal = [a.GetSymbol() in _METAL_SET for a in mol_template.GetAtoms()]
+        todo = []
+        for b, bk in zip(mol_template.GetBonds(), kek.GetBonds()):
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if is_metal[i] or is_metal[j]:
+                continue
+            o = _ORDER.get(bk.GetBondType())
+            if o is None:
+                return 0
+            ob_b = ob_mol.GetBond(i + 1, j + 1)
+            if ob_b is None:
+                continue
+            todo.append((ob_b, o, bool(b.GetIsAromatic())))
+        if not todo:
+            return 0
+        for ob_b, o, ar in todo:
+            ob_b.SetBondOrder(o)
+            ob_b.SetAromatic(ar)
+        for a in mol_template.GetAtoms():
+            if not is_metal[a.GetIdx()]:
+                ob_mol.GetAtom(a.GetIdx() + 1).SetAromatic(bool(a.GetIsAromatic()))
+        ob_mol.SetAromaticPerceived(True)
+        return len(todo)
+    except Exception:
+        return 0
+
+
 def _ob_full_setup_enabled() -> bool:
     """DELFIN_OB_FULL_SETUP (default off -> Open Babel's setup shortcut, byte-identical)."""
     return os.environ.get("DELFIN_OB_FULL_SETUP", "0") == "1"
@@ -416,7 +487,13 @@ def _optimize_xyz_openbabel(
         # BOND ORDERS FROM THE TEMPLATE INSTEAD OF FROM THE GEOMETRY (2026-08-14).
         # Default OFF -> byte-identical; see _apply_template_bond_orders for the why
         # (C-S at 1.433 A, 249 systems, legacy).
-        if os.environ.get("DELFIN_FFFREE_OB_BOND_ORDERS", "0") == "1":
+        # DELFIN_FFFREE_OB_KEKULE_ORDERS (2026-11-05): Kekule orders + aromaticity of the
+        # template (see _apply_template_kekule_orders); it replaces the older switch when on.
+        if _ob_kekule_orders_enabled():
+            _n_bo = _apply_template_kekule_orders(ob_mol.OBMol, mol_template)
+            if _n_bo:
+                logger.debug("OB Kekule orders taken from template: %d bonds", _n_bo)
+        elif os.environ.get("DELFIN_FFFREE_OB_BOND_ORDERS", "0") == "1":
             _n_bo = _apply_template_bond_orders(ob_mol.OBMol, mol_template)
             if _n_bo:
                 logger.debug("OB bond orders taken from template: %d bonds", _n_bo)
