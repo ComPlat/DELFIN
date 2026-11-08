@@ -4681,7 +4681,79 @@ class AgentEngine:
         except Exception:
             pass
 
+        # VR1 (verify-before-report): trace number+unit claims in the finished
+        # answer to the run's real output before it is returned.  Mismatch /
+        # no-source verdicts append a short "could not be verified" caveat, and
+        # the machine-readable verification record is kept on
+        # ``self.last_claim_verification`` so the caller can show it next to
+        # the answer.  Best-effort: a verification failure never breaks the
+        # turn; a turn with no calc evidence is a no-op (no false alarms).
+        try:
+            full_response = self._append_claim_verification(full_response)
+        except Exception:
+            pass
+
         return full_response + _guard_note
+
+    def _append_claim_verification(self, response_text: str) -> str:
+        """VR1: trace number+unit claims in a finished answer to the run output.
+
+        Scans the answer for ``number+unit`` claims (:func:`delfin.agent.
+        claim_locator.locate_claims`) and verifies each against the real
+        ``*.out`` of the turn's calc folder(s) -- ``_doc_executor.
+        _calc_evidence`` (the live run ledger, Welle 10) -- via
+        :func:`delfin.agent.claim_locator.verify_claim`.  The machine-readable
+        verification record (claim -> file, line, unit, value, tolerance,
+        verdict) is kept on ``self.last_claim_verification`` so the caller can
+        show it next to the answer.  When a claim could not be verified
+        (``mismatch`` / ``no-source``), one short caveat is appended so the
+        answer says it could not be verified; ``estimate`` numbers (counts,
+        years, settings) are never flagged.
+
+        A turn whose calc evidence is empty -- a conversation with no run -- is
+        a no-op: prose numbers are not claims, so no false alarm.
+        """
+        try:
+            from .api_client import _doc_executor
+            from delfin.agent.claim_locator import locate_claims, verify_claim
+        except Exception:
+            return response_text
+        if not response_text:
+            self.last_claim_verification = []
+            return response_text
+        folders = [
+            rec.get("folder") for rec in getattr(_doc_executor, "_calc_evidence", None) or []
+            if rec.get("folder")
+        ]
+        self.last_claim_verification = []
+        if not folders:
+            return response_text
+        records: list[dict] = []
+        unverified: list[dict] = []
+        for claim in locate_claims(response_text):
+            record: dict | None = None
+            for folder in folders:
+                rec = verify_claim(claim.value, claim.unit, folder)
+                record = rec.to_dict()
+                if rec.verdict == "verified":
+                    break
+                if rec.verdict == "estimate":
+                    record = None
+                    break
+            if record is None:
+                continue
+            records.append(record)
+            if record["verdict"] not in ("verified",):
+                unverified.append(record)
+        self.last_claim_verification = records
+        if not unverified:
+            return response_text
+        caveat = "\n\n[verify] " + "; ".join(
+            f"{r['quantity']} value {r['value']} {r['unit']} could not be "
+            f"verified against the run's output ({r['verdict']})"
+            for r in unverified
+        ) + "."
+        return response_text.rstrip() + caveat
 
     def _note_session_language(self, user_message: str) -> None:
         """Set the answer language from the user's latest message that says one.
