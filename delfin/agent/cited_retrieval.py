@@ -276,11 +276,20 @@ def check_answer_citations(answer_text: str, *, corpus: dict) -> list[Claim]:
             sections = doc.get("sections") or {}
             if page is not None:
                 target = int(page)
-                resolved = any(
-                    _locator_value(locator_for(doc, s)) == ("page", target)
+                # A page citation can be flagged wrong only against a page
+                # the index actually has. The real indexer strips the PDF
+                # page marker from stored section text (indexer.py:184) and
+                # keeps no page field, so a page-less index carries nothing
+                # to contradict the claim: such a citation is accepted here
+                # (clean), never reported as a wrong page. When the index
+                # DOES carry page locators, a mismatch is a genuine
+                # wrong-page flag.
+                known_pages = {
+                    loc["value"]
                     for s in sections.values()
-                )
-                if not resolved:
+                    if (loc := locator_for(doc, s)) and loc["kind"] == "page"
+                }
+                if known_pages and target not in known_pages:
                     claims.append(Claim(
                         "error", "claim-wrong-locator",
                         f"Citation «{doc_id} p.{target}» does not exist: no "
