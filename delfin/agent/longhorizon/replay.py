@@ -100,6 +100,7 @@ def replay(
     session: str = "replay",
     planted_facts: List[Dict[str, Any]] | None = None,
     decisions: List[Dict[str, Any]] | None = None,
+    refusals: List[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     """Replay ``transcript`` into records and reduce them to the metric
     payload. Return {"metrics": {...}, "records": {"turns": [...],
@@ -130,7 +131,8 @@ def replay(
     compactions = compaction_log.read_compactions(session)
 
     res = metrics.measure(turns, tools, compactions,
-                          planted_facts=planted_facts, decisions=decisions)
+                          planted_facts=planted_facts, decisions=decisions,
+                          refusals=refusals)
     return {
         "metrics": _parse(metrics.to_json(res)),
         "records": {"turns": turns, "tools": tools,

@@ -214,6 +214,9 @@ _NOT_CARRIED = {
     "_repeated_sequences",
     # U5: per-turn DSML re-request latches, re-armed by every real user turn.
     "_dsml_leak_spent", "_dsml_guard_active",
+    # LK1: the per-turn DSML re-request budget, rebuilt by every real user
+    # turn; a resumed session starts with no turn and no budget behind it.
+    "_dsml_policy",
     # Per turn: the history a fresh start cut in THIS turn, given back only
     # if the same turn ends unanswered; reset at every turn start.
     "_fresh_cut_this_turn",
