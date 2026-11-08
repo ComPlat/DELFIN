@@ -1355,17 +1355,37 @@ def judge_delfin_job(text: str, pal: int, maxcore: int, time_limit: str, *,
 def judge_delfin_submission(folder: Path, pal: int, maxcore: int,
                             time_limit: str, *, kind: Optional[str] = None,
                             limits_of: Optional[Callable] = None,
-                            jobs_now: Optional[Callable] = None) -> Verdict:
-    """The verdict for the ops ``submit_calculation`` in DELFIN mode."""
+                            jobs_now: Optional[Callable] = None,
+                            budget=None, job: Optional[dict] = None,
+                            client=None, run_fn=None) -> Verdict:
+    """The verdict for the ops ``submit_calculation`` in DELFIN mode.
+
+    When ``budget`` (a :class:`delfin.agent.calc_budget.Budget`) and ``job``
+    (a dict carrying ``n_atoms``, ``basis_functions`` and ``method``) are
+    given and the existing setup/resource checks would admit the job, the
+    session budget rides on top: ``estimate(job)`` + ``budget.decision()``
+    flips the verdict to "over budget -> ask the person".  The job is never
+    silently re-sized (PAL/maxcore/wall time stay as requested); an over-
+    budget submission keeps the dialog so a person decides.
+    """
     control = Path(folder) / "CONTROL.txt"
     try:
         text = control.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return Verdict(True, False, "", f"no CONTROL.txt in {folder}")
-    return judge_delfin_job(text, pal, maxcore, time_limit,
-                            base_dir=Path(folder), name="CONTROL.txt",
-                            pal_is_the_request=True, kind=kind,
-                            limits_of=limits_of, jobs_now=jobs_now)
+    verdict = judge_delfin_job(text, pal, maxcore, time_limit,
+                               base_dir=Path(folder), name="CONTROL.txt",
+                               pal_is_the_request=True, kind=kind,
+                               limits_of=limits_of, jobs_now=jobs_now)
+    if budget is not None and job is not None and verdict.admit:
+        from delfin.agent import calc_budget
+        est = calc_budget.estimate(job, client=client, run_fn=run_fn)
+        decide, reason = budget.decision(est)
+        if decide == "ask":
+            verdict = Verdict(
+                True, False, verdict.summary,
+                "over budget -> ask the person: " + reason)
+    return verdict
 
 
 def judge_delfin_run(folder: Path, *, kind: Optional[str] = None) -> Verdict:
