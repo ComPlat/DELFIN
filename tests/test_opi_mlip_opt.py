@@ -48,7 +48,13 @@ class TestBuildValidation:
             coordinates=WATER_COORDS,
         )
         text = path.read_text().lower()
-        assert "! opt extopt" in text
+        # the shared builder writes simple keywords on separate lines when OPI
+        # is available ("!opt"/"!extopt") and on one line in the plain-text
+        # fallback writer ("! opt extopt"); tokenise on '!' and whitespace so
+        # the "opt" and "extopt" run keywords hold for both forms
+        tokens = set(text.replace("!", " ").split())
+        assert "opt" in tokens
+        assert "extopt" in tokens
         assert 'progext "orca-mlips-uma"' in text
         assert "--backend uma --device cpu" in text
         assert "*xyzfile 0 1 extopt.xyz" in text
@@ -97,12 +103,10 @@ class TestBuildValidation:
               coordinates=WATER_COORDS, backend="nonesuch")
 
     def test_refuses_mlip_not_installed_with_hint(
-        self, tmp_path, monkeypatch
+        self, monkeypatch
     ):
         import delfin.mlp_tools.orca_mlips as om
-        from delfin.tools.adapters.orca_mlip_opt_opi import (
-            build_mlip_opt_input as b,
-        )
+        from delfin.tools.adapters.orca_mlip_opt_opi import validate_mlip_opt
 
         monkeypatch.setattr(
             om, "detect_orca_mlips",
@@ -115,9 +119,18 @@ class TestBuildValidation:
                 "xtb_required_for_solvent": True,
             },
         )
-        with pytest.raises(ValueError, match="orca-mlips"):
-            b(tmp_path, run_type="opt", elements=WATER_ELEMENTS,
-              coordinates=WATER_COORDS, backend="uma")
+        # The not-installed refusal belongs at run time (check_installed=True),
+        # never at input-build time: building the .inp needs no MLIP present.
+        errors = validate_mlip_opt(
+            run_type="opt", backend="uma", device="cpu",
+            elements=WATER_ELEMENTS,
+        )
+        assert any("orca-mlips" in e for e in errors), errors
+        assert any("pip install orca-mlips[uma]" in e for e in errors), errors
+        assert validate_mlip_opt(
+            run_type="opt", backend="uma", device="cpu",
+            elements=WATER_ELEMENTS, check_installed=False,
+        ) == []
 
     def test_refuses_element_not_covered(self, tmp_path):
         # aimnet2 is the one orca-mlips backend whose registry element list is
