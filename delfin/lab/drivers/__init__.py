@@ -1,4 +1,4 @@
-"""Device drivers. Only the simulator is implemented in this release."""
+"""Device drivers. Only the simulator and the GPIO driver are implemented."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ REGISTRY: dict = {}
 def _register_builtin() -> None:
     from .simulator import SimulatorDriver
     REGISTRY.setdefault("simulator", SimulatorDriver)
+    from .gpio import GpioDriver
+    REGISTRY.setdefault("gpiod", GpioDriver)
 
 
 def make(name: str) -> Driver:
@@ -32,7 +34,7 @@ DEVICE_WATCHDOG_SUPPORT = {
     "home_assistant": "no: HA automations run on the HA host, not on the "
                       "device (planned)",
     "gpiod": "no: a line keeps its value while the chip is powered; use a "
-             "hardware watchdog relay (planned)",
+             "hardware watchdog relay",
     "sila2": "lock timeout yes; safe state on timeout depends on the "
              "server (planned)",
     "opcua_lads": "server-dependent (planned)",

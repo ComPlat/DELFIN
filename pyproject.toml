@@ -134,6 +134,14 @@ dependencies = [
 
 [project.optional-dependencies]
 messenger = ["websockets"]
+# The Raspberry Pi 5 GPIO relay/input driver (delfin/lab/drivers/gpio.py)
+# talks to the RP1 header through libgpiod v2. gpiod only runs on Linux with
+# a /dev/gpiochip* and can only be exercised there, so it is an extra; without
+# it the driver imports lazily and fails with a message naming this extra.
+# libgpiod is LGPL-2.1-or-later (the C library and the Python bindings).
+lab-gpio = [
+    "gpiod>=2.0",
+]
 # PyMOL renders the ESP, dipole-moment and orbital pictures of the Word and
 # ESD reports (delfin/reporting/esp_report.py, delfin_docx_report.py). Without
 # it those pictures are skipped with a logged notice and every other part of
