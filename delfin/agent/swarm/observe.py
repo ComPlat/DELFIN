@@ -52,6 +52,7 @@ STATE_NEEDS_APPROVAL = "NEEDS APPROVAL"
 STATE_PAUSED = "paused"
 STATE_ENDED = "ended"
 STATE_WAITING_MODEL = "waiting for model"
+STATE_WAITING_MESSAGE = "waiting for a message"
 STATE_WORKING = "working"
 
 #: How long (s) without a model token counts as "waiting for model". We do
@@ -78,6 +79,13 @@ def _state_of(record: Optional[dict]) -> str:
         return STATE_ENDED
     if (record.get("no_token_s") or 0) >= WAIT_ON_MODEL_S:
         return STATE_WAITING_MODEL
+    # A member that is idle and nothing will resume it is blocked on the
+    # person (a message / an answer), not actively working: the health layer
+    # calls this shape waiting_on_person. resume_planned True means something
+    # WILL wake it, so those stay "working". (F2, QS ruling route A -- the
+    # brief's 6th state, after waiting-for-model in loudest-wins priority.)
+    if not record.get("resume_planned") and (record.get("idle_s") or 0) > 0:
+        return STATE_WAITING_MESSAGE
     return STATE_WORKING
 
 

@@ -131,7 +131,7 @@ def test_overview_state_map_all_six_cases(audit_log):
                        last_turn={"stopped": True}),
         _health_record("p-d", open_approvals=["r1"]),                 # NEEDS APPROVAL
         _health_record("p-e", paused=True),                           # paused
-        _health_record("p-f", idle_s=200, resume_planned=False,       # waiting for message?
+        _health_record("p-f", idle_s=200, resume_planned=False,       # waiting for a message
                        last_turn={"stopped": False}),
     ]
     rows = _observe.swarm_overview(source, records=records,
@@ -142,7 +142,7 @@ def test_overview_state_map_all_six_cases(audit_log):
     assert states["c"] == "ended"
     assert states["d"] == "NEEDS APPROVAL"
     assert states["e"] == "paused"
-    assert states["f"] == "working"
+    assert states["f"] == "waiting for a message"
 
 
 def test_overview_last_tool_call_and_activity_age_from_audit_log(audit_log):
