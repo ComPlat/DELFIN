@@ -1,16 +1,23 @@
-"""PV1 protected-hook red controls for the two target-2 hooks (delfin/cli.py).
+"""PV1 protected-hook red control for target-2 hook #1 (delfin/cli.py).
 
-The two hooks live in the protected CLI dispatch and are prepared for the
-operator as ONE .gate/px orig/new pair (orig_cli.py -> new_cli.py):
+The two target-2 hooks live in the protected CLI dispatch and are prepared for
+the operator as ONE .gate/px orig/new pair (orig_cli.py -> new_cli.py, see
+.gate/px/new_cli.py):
   1. ``delfin provenance <result>`` CLI dispatch -> delfin.provenance_record.main
-  2. run-finalize auto-write of PROVENANCE.json at the end-of-run completion block
-     (right after the DELFIN_Data.json write).
+     (new_cli.py:1590-1593) -- covered by the single test method below.
+  2. run-finalize auto-write of PROVENANCE.json at the end-of-run completion
+     block (new_cli.py:2284-2291, inside the ``_finalize`` closure). NOT driven
+     from here: ``_finalize`` is only reachable through the full ``delfin.cli.main``
+     orchestration (global job-manager init + signal handlers), so hook #2 is
+     verified by the operator's build of the pair (build_record + write_record
+     themselves are green-tested in test_pv1_phase1_record.py /
+     test_pv1_adversarial_public_safety.py).
 
-These tests drive the top-level ``delfin.cli.main`` console dispatch -- NOT
+This test drives the top-level ``delfin.cli.main`` console dispatch -- NOT
 ``delfin.provenance_record.main`` directly (the on-demand path is already covered
-by test_pv1_phase1_cli.py). They are RED on the unpatched delfin/cli.py (the
-``provenance`` subcommand is not routed) and turn GREEN once the operator builds
-the pair.
+by test_pv1_phase1_cli.py). It is RED on the unpatched delfin/cli.py (the
+``provenance`` subcommand is not routed, so rc==2 "Unknown argument(s)") and
+turns GREEN once the operator builds the pair.
 """
 
 import tempfile
