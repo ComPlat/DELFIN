@@ -48,6 +48,120 @@ def _log_path() -> Path:
     return _log_dir() / "triage_log.jsonl"
 
 
+# ---------------------------------------------------------------------------
+# Strict `command` allow shape (B's rule set, SWP phase 3). A `command`
+# item is auto-answerable ONLY when it is a worktree edit or a plain test
+# run; everything else escalates. Same ALLOW-list posture as the message
+# kinds -- the lightweight per-member command a member may auto-accept.
+# ---------------------------------------------------------------------------
+
+#: Verbs/words B's strict set refuses outright, whatever their shape.
+_DANGEROUS_WORDS: tuple[str, ...] = (
+    "rm", "unlink", "shred", "sudo", "ssh", "scp",
+    "chmod", "chown", "kill", "curl", "wget", "push",
+)
+_EDIT_WRITE_VERBS: tuple[str, ...] = ("edit_file", "write_file")
+_CHAIN_TOKENS: tuple[str, ...] = (";", "&&", "||", "|", ">", "<", "`")
+#: The project's test entry (a command whose first token this is, alone,
+#: is a test run -- e.g. the gate on DELFIN's own tree).
+_TEST_ENTRY = "gate"
+
+
+def _has_chain(text: str) -> bool:
+    """A chained command (; && | redirect backticks) is never plain."""
+    return any(token in text for token in _CHAIN_TOKENS)
+
+
+def _has_dangerous_word(text: str) -> bool:
+    """Any dangerous verb as a distinct word (never inside a longer path)."""
+    import re
+    return any(
+        re.search(rf"(?<!\S){re.escape(w)}(?!\S)", text)
+        for w in _DANGEROUS_WORDS
+    )
+
+
+def _resolves_inside(path: str, worktree_root: Path) -> bool:
+    """True when ``path`` (relative to the worktree or absolute) resolves
+    to a location inside ``worktree_root``, never out via ``..``/symlink."""
+    try:
+        p = Path(path)
+        if not p.is_absolute():
+            p = worktree_root / p
+        p = p.resolve()
+        p.relative_to(worktree_root)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _under_special(path: str, worktree_root: Path) -> bool:
+    """Refuse a path landing under the worktree's ``.git`` or ``.delfin``
+    -- the policy files a member never edits."""
+    try:
+        p = Path(path)
+        if not p.is_absolute():
+            p = worktree_root / p
+        p = p.resolve()
+        parts = p.parts
+        root_parts = worktree_root.resolve().parts
+        return ".git" in parts[len(root_parts):] or \
+            ".delfin" in parts[len(root_parts):]
+    except (ValueError, OSError):
+        return True
+
+
+def _classify_command(item: dict[str, Any]) -> dict[str, Any]:
+    """The strict `command` allow shape (B's rule set, SWP phase 3)."""
+    member = item.get("member", "")
+    sender = item.get("from", "")
+    text = item.get("text", "")
+    worktree = item.get("worktree", "")
+
+    if not member or not worktree:
+        return {"action": "escalate",
+                "reason": "no member or worktree on a command item"}
+    if sender != member:
+        return {"action": "escalate",
+                "reason": "forged sender: a command comes from its own member"}
+    if not text:
+        return {"action": "escalate", "reason": "empty command"}
+    # A chain is never a plain single action.
+    if _has_chain(text):
+        return {"action": "escalate", "reason": "chained command"}
+    # Dangerous words are refused outright.
+    if _has_dangerous_word(text):
+        return {"action": "escalate", "reason": "refused command word"}
+
+    clauses = text.split()
+    verb = clauses[0]
+
+    # plain test run through the project's test entry, target inside tests/
+    if verb == _TEST_ENTRY:
+        target = clauses[1] if len(clauses) > 1 else ""
+        if not target.startswith("tests/"):
+            return {"action": "escalate",
+                    "reason": "test run must target the tests/ tree"}
+        return {"action": "auto_answer",
+                "reason": "plain test run through the project test entry"}
+
+    # an edit/write inside the member's OWN worktree, not .git/.delfin
+    if verb in _EDIT_WRITE_VERBS and len(clauses) == 2:
+        target = clauses[1]
+        root = Path(worktree).expanduser().resolve()
+        if not _resolves_inside(target, root):
+            return {"action": "escalate",
+                    "reason": "target escapes the member's own worktree"}
+        if _under_special(target, root):
+            return {"action": "escalate",
+                    "reason": "target is a policy file (.git/.delfin)"}
+        return {"action": "auto_answer",
+                "reason": "edit/write inside the member's own worktree"}
+
+    return {"action": "escalate",
+            "reason": "command is not on the strict allow shape"}
+
+
 def classify(item: dict[str, Any]) -> dict[str, Any]:
     """Decide what may happen to one queued item. Read-only.
 
@@ -60,6 +174,12 @@ def classify(item: dict[str, Any]) -> dict[str, Any]:
     kind = item.get("kind", "")
     sender = item.get("from", "")
     member = item.get("member", "")
+
+    # A `command` item is the member's own action about their OWN worktree
+    # (checked via from == member + worktree containment); it is judged by
+    # the strict command shape before the partner-message roster gate.
+    if kind == "command":
+        return _classify_command(item)
 
     def _escalate(reason: str) -> dict[str, Any]:
         return {"action": "escalate", "reason": reason}
