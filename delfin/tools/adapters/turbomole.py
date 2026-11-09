@@ -165,22 +165,26 @@ def _setup_control(work_dir: Path, **kwargs: Any) -> None:
         # prompt and every later answer was out of step, leaving a
         # control with only $title/$actual step/$end).
         define_input = "\n\na coord\n*\nno\n"
-        define_input += f"b all {basis}\n*\neht\ny\n{charge}\ny\n{mult}\n"
-        define_input += f"dft\nfunc {method}\n*\n"
+        define_input += f"b all {basis}\n*\neht\ny\n{charge}\n"
+        if mult == 1:
+            define_input += "y\n"
+        else:
+            # mult >= 2: eht asks for the occupation explicitly — decline
+            # the default occupation with 'n' and give the number of
+            # unpaired electrons (verified working transcript, site 7.9:
+            # .gate/rr608_define_transcript_working.txt).
+            define_input += f"n\nu {mult - 1}\n"
+        # dft submenu: switch it on, set the functional, then LEAVE WITH A
+        # BLANK line — not '*' (site 7.9 verified transcript).
+        define_input += f"dft\non\nfunc {method}\n\n"
         if ri:
             # The RI block only when the caller asked for RI (N1):
             # ri=False must produce a conventional dscf setup, not an
-            # RI one the caller never requested.
-            define_input += f"""ri
-{cores}
-*
-"""
-        if mult > 1:
-            # Only for an open shell (N2): an unpaired 0 for a singlet
-            # is an unnecessary directive and some Turbomole versions
-            # treat it as a (harmless but misleading) RHF/UHF switch.
-            define_input += f"unpaired {mult - 1}\n*\n"
-        define_input += "q\n"
+            # RI one the caller never requested. 'on' switches it on and
+            # a BLANK line leaves the submenu; no cores line is asked
+            # here on 7.9.
+            define_input += "ri\non\n\n"
+        define_input += "*\n"
         result = subprocess.run(
             [define], input=define_input, cwd=work_dir,
             capture_output=True, text=True, timeout=60,

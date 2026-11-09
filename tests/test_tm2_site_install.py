@@ -212,3 +212,61 @@ class TestMissingWorkDirIsFailed:
         monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
         result = get("turbomole_sp").execute(work_dir, geometry=None, cores=1)
         assert result.status.name == "FAILED"
+
+
+class TestDefineSubmenuExitAndOpenShell:
+    """(round 3, operator real-run 09.11., transcript
+    .gate/rr608_define_transcript_working.txt) — on site TURBOMOLE 7.9
+    the dft and ri submenus are LEFT WITH A BLANK line, not '*'; 'on'
+    switches each on; the ri prompt does not ask a cores line; and for
+    mult >= 3 the eht occupation needs 'n' then 'u <n_unpaired>'."""
+
+    def _stdin_lines(self, tmp_path, monkeypatch, **kw):
+        tag = kw.pop("tag")
+        work_dir = tmp_path / ("w_" + tag)
+        work_dir.mkdir()
+        bin_dir = tmp_path / ("b_" + tag)
+        bin_dir.mkdir()
+        _make_bin(bin_dir, "define",
+                  "#!/bin/sh\ncat > stdin.log\n"
+                  "printf '$title\\n$coord\\n  0.0 0.0 0.0 o\\n$end\\n"
+                  "$atoms\\n$basis\\n$basis set\\n$dft\\n  func b3-lyp\\n$rij\\n"
+                  "$closed shells\\n' > control\n")
+        _make_bin(bin_dir, "ridft",
+                  "#!/bin/sh\nprintf '1  -1.0\\n$end\\n' > energy\n")
+        stdin_log = work_dir / "stdin.log"
+        monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep
+                           + os.environ.get("PATH", ""))
+        get("turbomole_sp").execute(work_dir, geometry=_xyz(work_dir),
+                                    cores=2, charge=kw.get("charge", 0),
+                                    mult=kw.get("mult", 1))
+        return stdin_log.read_text().splitlines()
+
+    def test_dft_ri_submenus_left_with_blank_line(self, tmp_path, monkeypatch):
+        lines = self._stdin_lines(tmp_path, monkeypatch, tag="subm")
+        # 'dft' -> 'on' -> 'func <m>' -> BLANK leaves the submenu.
+        i = lines.index("dft")
+        assert lines[i + 1] == "on", lines
+        assert lines[i + 2].startswith("func "), lines
+        assert lines[i + 3] == "", (
+            "the dft submenu is left with a BLANK line on 7.9, got %r"
+            % lines[i + 3])
+        # 'ri' -> 'on' -> BLANK leaves it; no cores line is asked.
+        j = lines.index("ri")
+        assert lines[j + 1] == "on", lines
+        assert lines[j + 2] == "", (
+            "the ri submenu is left with a BLANK line and is NOT asked a "
+            "cores line on 7.9, got %r" % lines[j + 2])
+
+    def test_mult3_eht_occupation_uses_n_then_u(self, tmp_path, monkeypatch):
+        lines = self._stdin_lines(tmp_path, monkeypatch, tag="m3",
+                                  mult=3, charge=1)
+        # eht -> y -> charge -> 'n' -> 'u <n_unpaired>'.
+        k = lines.index("eht")
+        tail = lines[k + 1:]
+        assert tail[0] == "y", lines
+        assert tail[1] == "1", ("the charge from kwargs: " + str(lines))
+        assert tail[2] == "n", (
+            "for mult >= 3 the eht occupation answer is 'n', got %r" % tail[2])
+        assert tail[3] == "u 2", (
+            "mult 3 means 2 unpaired electrons: 'u 2', got %r" % tail[3])
