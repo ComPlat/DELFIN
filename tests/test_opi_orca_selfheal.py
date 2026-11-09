@@ -161,21 +161,20 @@ class TestPlanEscalation:
                 assert known_block_option("geom", key), \
                     f"%geom {key!r} (step {step}) not in catalog"
 
-    def test_scf_frequency_rungs_pin_identical_thresh(self):
-        # A healed run must reproduce the base energy. Different convergence
-        # levels set different %scf Thresh (manual table 2.9), so every ladder
-        # rung pins the SAME tight DIIS threshold to converge to one energy.
-        seen = set()
+    def test_scf_frequency_rungs_pin_identical_convergence_level(self):
+        # A healed run must reproduce the base energy, so every ladder rung
+        # pins the SAME convergence level. Old decision: a "thresh": 1e-10
+        # %scf pin -- but 1e-10 is ORCA's default Thresh, so it pinned nothing
+        # and the real [FeCl4]- rungs spread (REAL-RUN FAIL #603). Now every
+        # rung carries the TightSCF keyword and no bare Thresh override.
         for failure in (heal.SelfHealFailure.SCF_NOT_CONVERGED,
                         heal.SelfHealFailure.FREQUENCY_FAILURE):
             for step in (1, 2, 3):
                 plan = heal.plan_escalation(failure, step, job_kind="SP")
-                assert known_block_option("scf", "thresh")
-                assert "thresh" in plan.scf_options, \
-                    f"rung {failure.value}/{step} missing identical thresh"
-                assert isinstance(plan.scf_options["thresh"], float)
-                seen.add(plan.scf_options["thresh"])
-        assert len(seen) == 1, f"rungs must all pin the same Thresh, got {seen}"
+                assert "TightSCF" in plan.keywords, \
+                    f"rung {failure.value}/{step} missing the TightSCF pin"
+                assert "thresh" not in plan.scf_options, \
+                    f"rung {failure.value}/{step} still sets a bare Thresh"
 
     def test_sp_geometry_escalation_is_refused(self):
         # A single-point has no geometry optimization: escalation is refused.

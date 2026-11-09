@@ -158,24 +158,26 @@ def _scf_ladder(step: int) -> Escalation:
     # %scf option is asserted catalog-known in the tests.
     tables: Dict[int, Dict[str, Any]] = {
         1: {
-            "keywords": ["SlowConv"],
-            "scf": {"thresh": 1e-10, "maxiter": 300},
+            "keywords": ["SlowConv", "TightSCF"],
+            "scf": {"maxiter": 300},
             "why": "SlowConv (manual scf 2.6.2) raises SCF iterations and "
-                   "relaxes the damping; the first, mildest rung.",
+                   "relaxes the damping; TightSCF pins a convergence level "
+                   "tighter than the default so every rung converges to the "
+                   "same energy. The first, mildest rung.",
         },
         2: {
-            "keywords": ["VerySlowConv", "KDIIS"],
-            "scf": {"thresh": 1e-10, "maxiter": 500, "dampfac": 0.9, "damperr": 0.02},
+            "keywords": ["VerySlowConv", "KDIIS", "TightSCF"],
+            "scf": {"maxiter": 500, "dampfac": 0.9, "damperr": 0.02},
             "why": "VerySlowConv + Kolmar DIIS (manual 2.6.5) plus high damping "
                    "(dampfac 0.9, manual 2.6.2) for a stubborn SCF.",
         },
         3: {
-            "keywords": ["VerySlowConv"],
-            "scf": {"thresh": 1e-10, "maxiter": 800, "cnvsoscf": "true",
+            "keywords": ["VerySlowConv", "TightSCF"],
+            "scf": {"maxiter": 800, "cnvsoscf": "true",
                     "dampfac": 0.95, "damperr": 0.001},
             "why": "Second-order SCF via CNVSOSCF (manual 2.6.6) with "
-                   "very high damping (dampfac 0.95, damperr 0.001) — "
-                   "the last SCF rung.",
+                   "very high damping (dampfac 0.95, damperr 0.001) and the "
+                   "same TightSCF convergence pin — the last SCF rung.",
         },
     }
     cfg = tables[step]
@@ -223,23 +225,24 @@ def _frequency_ladder(step: int) -> Escalation:
     # tightening that SCF (mirrors orca_recovery._leanscf_convergence_fixes).
     tables: Dict[int, Dict[str, Any]] = {
         1: {
-            "keywords": ["SlowConv"],
-            "scf": {"thresh": 1e-10, "maxiter": 400},
+            "keywords": ["SlowConv", "TightSCF"],
+            "scf": {"maxiter": 400},
             "why": "Frequency's coupled-perturbed SCF did not converge; "
-                   "tighten it with SlowConv and more iterations.",
+                   "tighten it with SlowConv, TightSCF (convergence level "
+                   "tighter than default, same on every rung) and more iterations.",
         },
         2: {
-            "keywords": ["VerySlowConv", "KDIIS"],
-            "scf": {"thresh": 1e-10, "maxiter": 600, "dampfac": 0.9, "damperr": 0.02},
+            "keywords": ["VerySlowConv", "KDIIS", "TightSCF"],
+            "scf": {"maxiter": 600, "dampfac": 0.9, "damperr": 0.02},
             "why": "VerySlowConv + Kolmar DIIS + high damping for the "
-                   "frequency's SCF.",
+                   "frequency's SCF, with the TightSCF convergence pin.",
         },
         3: {
-            "keywords": ["VerySlowConv"],
-            "scf": {"thresh": 1e-10, "maxiter": 1000, "cnvsoscf": "true",
+            "keywords": ["VerySlowConv", "TightSCF"],
+            "scf": {"maxiter": 1000, "cnvsoscf": "true",
                     "dampfac": 0.95, "damperr": 0.001},
-            "why": "Second-order SCF with very heavy damping; the last "
-                   "frequency SCF rung.",
+            "why": "Second-order SCF with very heavy damping and the "
+                   "TightSCF pin; the last frequency SCF rung.",
         },
     }
     cfg = tables[step]
