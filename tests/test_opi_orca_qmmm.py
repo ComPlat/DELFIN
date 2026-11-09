@@ -311,3 +311,67 @@ def test_orca_parser_accepts_qmmm_input():
     assert any("%qmmm is not allowed in a probe" in m for m in result["messages"]), (
         result["messages"]
     )
+
+
+# ---------------------------------------------------------------------------
+# confirmed-by-probe defects (red first, then fixed below the boundary)
+# ---------------------------------------------------------------------------
+
+def test_execute_follows_stepadapter_contract(tmp_path):
+    """execute() must take the (work_dir, *, geometry, cores, **kwargs)
+    signature every other registered adapter has and return a StepResult, so a
+    pipeline step reaches run_qmmm through run_step (delfin/tools/_runner.py)."""
+    from delfin.tools._types import StepResult
+
+    ff = _make_ff_file(tmp_path)
+    adapter = qm.OrcaQmmmOpiAdapter()
+    res = adapter.execute(
+        tmp_path,
+        geometry=None,
+        cores=1,
+        elements=ELEMS,
+        coordinates=COORDS,
+        charge=0,
+        mult=1,
+        qmatoms=QMATOMS,
+        orcaff_filename=str(ff),
+    )
+    # a missing geometry with nothing in kwargs must be a clean FAILED result,
+    # not a TypeError from an incompatible signature
+    assert isinstance(res, StepResult)
+    assert res.step_name == "orca_qmmm_opi"
+    assert res.error is None or isinstance(res.error, str)
+
+
+@needs_opi
+def test_extra_keywords_reach_the_input(tmp_path):
+    """'extra_keywords' are validated but must also be written into the input;
+    otherwise a user-requested basis/level never runs."""
+    import re as _re
+
+    ff = _make_ff_file(tmp_path)
+    inp = qm.build_qmmm_input(
+        str(tmp_path), base_name="ek", elements=ELEMS, coordinates=COORDS,
+        charge=0, mult=1, qmatoms=QMATOMS, orcaff_filename=str(ff),
+        extra_keywords=("def2-TZVP",),
+    )
+    text = Path(inp).read_text()
+    assert _re.search(r"def2[- ]TZVP\b", text, _re.I), text
+
+
+@needs_opi
+def test_subtractive_writes_qm_method_keyword(tmp_path):
+    """coupling='subtractive' must select the QM/QM2/MM simple keyword
+    (!QM/<method>/MM), not silently run the additive !QMMM path."""
+    import re as _re
+
+    ff = _make_ff_file(tmp_path)
+    inp = qm.build_qmmm_input(
+        str(tmp_path), base_name="sub", elements=ELEMS, coordinates=COORDS,
+        charge=0, mult=1, qmatoms=QMATOMS, orcaff_filename=str(ff),
+        coupling="subtractive", method="XTB",
+    )
+    text = Path(inp).read_text()
+    first = text.splitlines()[0].lower()
+    assert "qm/xtb/mm" in first, text
+    assert not _re.search(r"!\s*qmmm\b", first), text
