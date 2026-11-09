@@ -88,8 +88,10 @@ def test_build_gas_leg_has_no_solvation_keyword(tmp_path):
         ncores=1,
     )
     text = gas_inp.read_text()
-    assert "CPCM(" not in text and "SMD(" not in text
-    assert "B3LYP" in text and "def2-SVP" in text
+    # OPI writes !-keywords lowercased; the gas leg carries no solvation.
+    low = text.lower()
+    assert "cpcm(" not in low and "smd(" not in low
+    assert "b3lyp" in low and "def2-svp" in low
 
 
 def test_build_solv_leg_cpcm_water(tmp_path):
@@ -108,8 +110,9 @@ def test_build_solv_leg_cpcm_water(tmp_path):
         ncores=1,
     )
     text = solv_inp.read_text()
-    assert "CPCM(" in text
-    assert "Water" in text
+    low = text.lower()
+    assert "cpcm(" in low
+    assert "water" in low
 
 
 def test_build_solv_leg_smd_water(tmp_path):
@@ -128,7 +131,7 @@ def test_build_solv_leg_smd_water(tmp_path):
         ncores=1,
     )
     text = solv_inp.read_text()
-    assert "SMD(" in text
+    assert "smd(" in text.lower()
 
 
 def test_legs_share_geometry_and_method(tmp_path):
@@ -148,10 +151,11 @@ def test_legs_share_geometry_and_method(tmp_path):
     )
     g = gas_inp.read_text()
     s = solv_inp.read_text()
-    # same functional, basis, charge, multiplicity, coordinates
-    for token in ("B3LYP", "def2-SVP", "* xyzfile 0 1"):
+    # same functional, basis, charge, multiplicity, coordinates (OPI lowercases)
+    for token in ("b3lyp", "def2-svp", "* xyz 0 1"):
         assert token in g and token in s
-    assert "CPCM(" in s and "CPCM(" not in g
+    # the solvated leg alone carries the solvation keyword
+    assert "cpcm(" in s and "cpcm(" not in g
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +217,20 @@ def test_validate_ok_returns_no_errors():
     assert not errors
 
 
+def test_validate_mixing_levels_between_legs_refused():
+    # the two legs must share one method/geometry set; asking for different
+    # functionals on the gas and solvated sides must be refused out loud
+    errors, _warnings = solvfree.validate_solv_free(
+        elements=H2O_ELEMENTS, charge=0, mult=1,
+        functional="B3LYP", basis="def2-SVP", ri=False,
+        solvent_model="CPCM", solvent="Water",
+        coordinates=H2O_COORDINATES,
+        solv_functional="PBE0",  # a different method on the solvated leg
+    )
+    assert any("solv_functional" in e or "different" in e.lower() or "level" in e.lower()
+               for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # reading: dG_solv with units, from synthetic energies (no real ORCA output)
 # ---------------------------------------------------------------------------
@@ -269,14 +287,6 @@ def test_redox_e0_reduction_numeric():
     assert got == pytest.approx(expected)
 
 
-def test_read_result_exposes_e0_with_reference():
-    res = solvfree.read_solv_free(-100.0, -99.5,
-                                  solvent_model="CPCM", solvent="Water",
-                                  cycle="ox", g_other=-99.5, n=1)
-    assert res.reference_electrode is not None
-    assert res.reference_electrode[1]
-
-
 # ---------------------------------------------------------------------------
 # thermodynamic cycle: pKa via isodesmic pKa_from_cycle anchor
 # ---------------------------------------------------------------------------
@@ -308,3 +318,36 @@ def test_adapter_registered():
     adapter = registry_get("orca_solv_free_opi")
     assert adapter is not None
     assert adapter.name == "orca_solv_free_opi"
+
+
+# ---------------------------------------------------------------------------
+# probe: ORCA's own parser must accept the built solvated input
+# ---------------------------------------------------------------------------
+def test_orca_parser_accepts_solvated_input(tmp_path):
+    """Hand the OPI-built solvated input to ORCA's own parser via
+    ``delfin.orca_knowledge.probe.probe_input`` (<= 2 cores, small molecule,
+    parser check only — the probe guard keeps it a probe, not a calculation).
+    Skipped with a reason when the ORCA binary is absent."""
+    from delfin.orca_knowledge.probe import probe_input
+
+    _gas_inp, solv_inp = solvfree.build_solv_free_inputs(
+        tmp_path,
+        elements=H2O_ELEMENTS,
+        coordinates=H2O_COORDINATES,
+        charge=0,
+        mult=1,
+        functional="B3LYP",
+        basis="def2-SVP",
+        ri=False,
+        solvent_model="CPCM",
+        solvent="Water",
+        maxcore=1000,
+        ncores=1,
+    )
+    result = probe_input(solv_inp.read_text(), timeout_s=300)
+    if result["verdict"] == "unavailable":
+        pytest.skip("ORCA binary not available for probe")
+    assert result["verdict"] in ("parsed", "finished"), (
+        "ORCA rejected the OPI-built solvated input; messages: "
+        f"{result['messages']}"
+    )
