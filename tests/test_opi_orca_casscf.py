@@ -208,18 +208,63 @@ N(occ)=  1.98432 1.96541 1.74203 0.25797 0.03459 0.01568
 CASSCF CONVERGED AFTER  12 ITERATIONS
 """
 
-SYNTHETIC_NEVPT2_OUT = SYNTHETIC_CASSCF_OUT.replace(
-    "***  ORCA TERMINATED NORMALLY  ***",
-    """\
-------------------
-NEVPT2 RESULTS
-------------------
-State 1: E(NEVPT2) = -76.201050 Eh
-State 2: E(NEVPT2) = -76.110320 Eh
+# Real ORCA 6.1 SA-CASSCF transition-energy block, the two formats ORCA
+# prints.  Format 1 (manual CASSCF.txt line 3691) has an IRREP column and a
+# plain LOWEST ROOT; format 2 (manual CASSCF.txt lines 3996/4350) names the
+# lowest root as "LOWEST ROOT (ROOT n ,MULT m)" and drops the IRREP column.
+# In both, the DE/a.u. column of each row is relative to the LOWEST ROOT
+# absolute energy printed on its own line.
+REAL_CASSCF_TRANSITION_WITH_IRREP = """\
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+LOWEST ROOT =    -78.110314788 Eh -2125.490 eV
+
+STATE   ROOT MULT IRREP DE/a.u.    DE/eV    DE/cm**-1
+   1:    0    3  B3u   0.163741     4.456  35937.1
+"""
+
+REAL_CASSCF_TRANSITION_PAREN_NO_IRREP = """\
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+LOWEST ROOT (ROOT 0 ,MULT 1) =  -5066.854889483 Eh -137876.131 eV
+
+STATE   ROOT MULT  DE/a.u.    DE/eV    DE/cm**-1
+   1:    0   11   0.008644     0.235   1897.1
+"""
+
+REAL_CASSCF_TRANSITION_NO_IRREP = """\
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+LOWEST ROOT =    -78.110314788 Eh -2125.490 eV
+
+STATE   ROOT MULT  DE/a.u.    DE/eV    DE/cm**-1
+   1:    0    3   0.163741     4.456  35937.1
+"""
+
+# Real ORCA 6.1 single-root SC-NEVPT2 results block (manual NEVPT2.txt lines
+# 203-228): a per-excitation-class dE listing then the summed line
+# "Total Energy (E0+dE)    : E  = <E>".  There is no "State n: E(NEVPT2)"
+# line in ORCA's output.
+REAL_NEVPT2_OUT = """\
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+ ------------- < NEVPT2  > -----
+ =============================================================
+                      NEVPT2 Results
+ =============================================================
+   *********************
+    MULT 1, ROOT 0
+   *********************
+
+ Class V0_ijab :        dE = -0.017748
+ Class Vm1_iab :        dE = -0.023171
+
+---------------------------------------------------------------
+        Total Energy Correction : dE = -0.15802909
+---------------------------------------------------------------
+        Zero Order Energy       : E0 = -108.98888640
+---------------------------------------------------------------
+        Total Energy (E0+dE)    : E  = -109.14691549
+---------------------------------------------------------------
 
 ***  ORCA TERMINATED NORMALLY  ***
-""",
-)
+"""
 
 
 class TestReadCasscfOutput:
@@ -240,11 +285,34 @@ class TestReadCasscfOutput:
         values = [v for _, v in result.natural_orbital_occupations]
         assert abs(values[0] - 1.98432) < 1e-5
 
-    def test_nevpt2_energies_read_from_synthetic_text(self, tmp_path: Path) -> None:
-        self._write_out(tmp_path, SYNTHETIC_NEVPT2_OUT)
+    def test_nevpt2_energies_read_from_real_format(self, tmp_path: Path) -> None:
+        # ORCA prints the NEVPT2-corrected energy as "Total Energy (E0+dE)"
+        # per root block (NEVPT2.txt); there is no "State n: E(NEVPT2)" line.
+        self._write_out(tmp_path, REAL_NEVPT2_OUT)
         result = read_casscf_output(tmp_path, "calc")
         assert result.nevpt2_energies_Eh
-        assert abs(result.nevpt2_energies_Eh[0] - (-76.201050)) < 1e-6
+        assert abs(result.nevpt2_energies_Eh[0] - (-109.14691549)) < 1e-6
+
+    def test_state_energies_parenthetical_lowest_root_format(self, tmp_path: Path) -> None:
+        # "LOWEST ROOT (ROOT 0 ,MULT 1) = ..." (CASSCF.txt 4350); root 0 is
+        # the high-spin state 0.008644 a.u. above the singlet lowest root.
+        self._write_out(tmp_path, REAL_CASSCF_TRANSITION_PAREN_NO_IRREP)
+        result = read_casscf_output(tmp_path, "calc")
+        assert result.state_energies_Eh, "parenthetical LOWEST ROOT must parse"
+        assert abs(result.state_energies_Eh[0] - (-5066.854889483)) < 1e-6
+        assert any(abs(e - (-5066.854889483 + 0.008644)) < 1e-4
+                   for e in result.state_energies_Eh)
+
+    def test_state_energies_no_irrep_column_reads_de_au(self, tmp_path: Path) -> None:
+        # Without an IRREP column the DE/a.u. column is the 4th field; the
+        # 5th field is DE/eV (4.456 here).  Reading eV as a.u. would give
+        # -78.1103 + 4.456 = -73.6543, wrong by ~4.3 Eh.
+        self._write_out(tmp_path, REAL_CASSCF_TRANSITION_NO_IRREP)
+        result = read_casscf_output(tmp_path, "calc")
+        assert result.state_energies_Eh
+        assert any(abs(e - (-78.110314788 + 0.163741)) < 1e-5
+                   for e in result.state_energies_Eh), \
+            "DE/a.u. column must be added, not the DE/eV column"
 
     def test_terminated_normally_flag_set(self, tmp_path: Path) -> None:
         self._write_out(tmp_path, SYNTHETIC_CASSCF_OUT)
