@@ -519,6 +519,14 @@ export interface SwarmTriageAnswerParams {
   "item": Record<string, unknown>
   "answer": string
 }
+export interface SwarmObserveOverviewParams {
+  "source"?: Record<string, unknown> | null
+  "sourcePath"?: string | null
+}
+export interface SwarmObserveFeedParams {
+  "session": string
+  "since"?: number | null
+}
 export interface ServiceRequests {
   "hello": HelloParams
   "sessions.list": SessionsListParams
@@ -547,6 +555,8 @@ export interface ServiceRequests {
   "swarm.resume": SwarmResumeParams
   "swarm.triage.list": SwarmTriageListParams
   "swarm.triage.answer": SwarmTriageAnswerParams
+  "swarm.observe.overview": SwarmObserveOverviewParams
+  "swarm.observe.feed": SwarmObserveFeedParams
 }
 export interface HelloResult {
   "protocolVersion": number
@@ -663,6 +673,12 @@ export interface SwarmTriageAnswerResult {
   "item_id"?: string | null
   "logged"?: string | null
 }
+export interface SwarmObserveOverviewResult {
+  "rows": Record<string, unknown>[]
+}
+export interface SwarmObserveFeedResult {
+  "entries": Record<string, unknown>[]
+}
 export interface ServiceResults {
   "hello": HelloResult
   "sessions.list": SessionsListResult
@@ -687,6 +703,8 @@ export interface ServiceResults {
   "swarm.resume": SwarmResumeResult
   "swarm.triage.list": SwarmTriageListResult
   "swarm.triage.answer": SwarmTriageAnswerResult
+  "swarm.observe.overview": SwarmObserveOverviewResult
+  "swarm.observe.feed": SwarmObserveFeedResult
 }
 export interface SessionSummaryEvent {
   "summary": Record<string, unknown>
