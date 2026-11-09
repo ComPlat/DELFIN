@@ -1,0 +1,31 @@
+# DELFIN lab dead-man: puts a device in its safe state when its controlling
+# session stops sending heartbeats or its process is gone
+# (delfin/lab/watchdog.py sweep). A systemd USER unit of the agent user,
+# installed and restarted by scripts/pi/pi_install.sh; runs only with
+# lingering enabled (admin, once: loginctl enable-linger <user>).
+[Unit]
+Description=DELFIN lab dead-man watchdog
+ConditionPathExists=%h/delfin/src/pyproject.toml
+
+[Service]
+Type=simple
+Environment=DELFIN_LAB_DIR=%h/.delfin/lab
+ExecStart=%h/delfin/.venv/bin/python -m delfin.agent.cli lab daemon --role deadman --interval 1
+Restart=always
+RestartSec=2
+# Hardening: see delfin-lab-estop.service.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.delfin
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=default.target

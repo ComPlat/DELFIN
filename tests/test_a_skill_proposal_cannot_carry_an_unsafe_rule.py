@@ -50,7 +50,7 @@ UNSAFE_DRAFTS: list[tuple[str, str]] = [
     ("github-token",
      "Use this token for the fetch: ghp_0123456789abcdefghijklmnopqrstuv"),
     ("bearer",
-     "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVC1 payloads "
+     "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVC1 payloads "  # secret-guard: allow (synthetic DELFIN test sample)
      "go in the header."),
     # --- network detours (3) ----------------------------------------------
     ("curl-download",

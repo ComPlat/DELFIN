@@ -736,7 +736,12 @@ def test_reject_different_xyz_coordinates_even_when_elements_match(tmp_path):
     d.mkdir()
     atoms = _water_ts_atoms()
     _write_hess(d / 'TS.hess', atoms, [], [-300.0])
-    wrong = [(el, x + 2.0, y, z) for el, x, y, z in atoms]
+    # Distort ONE atom: moving every atom by +2 A is only a translation,
+    # which must be accepted by the corrected geometry comparator.
+    wrong = [
+        (el, x + (2.0 if i == 0 else 0.0), y, z)
+        for i, (el, x, y, z) in enumerate(atoms)
+    ]
     _write_orca_xyz(d / 'a_decoy.xyz', wrong)
     _write_orca_xyz(d / 'z_actual.xyz', atoms)
     files = collect_ts_files(d, out_path=d / 'TS.out')
@@ -753,7 +758,10 @@ def test_reject_only_xyz_if_geometry_does_not_match(tmp_path):
     d.mkdir()
     atoms = _water_ts_atoms()
     _write_hess(d / 'TS.hess', atoms, [], [-300.0])
-    wrong = [(el, x + 1.0, y, z) for el, x, y, z in atoms]
+    wrong = [
+        (el, x + (1.0 if i == 1 else 0.0), y, z)
+        for i, (el, x, y, z) in enumerate(atoms)
+    ]
     _write_orca_xyz(d / 'TS.xyz', wrong)
     files = collect_ts_files(d, out_path=d / 'TS.out')
     assert files.xyz_path is None
@@ -785,3 +793,45 @@ def test_ts_goat_input_passes_delfins_static_orca_check():
             method=method, basis=basis, ncores=4, maxcore=2000)
         errors = [i for i in check_all(text) if i.severity == "error"]
         assert errors == [], (method, errors)
+
+
+def test_ts_geometry_accepts_shared_translation_but_rejects_distortion():
+    """Regression: real ORCA .xyz/.hess may differ only in their origin."""
+    from delfin.ts_goat import _same_ts_geometry
+
+    atoms = _water_ts_atoms()
+    shift = (0.585225960, -0.247354310, -0.252776951)
+    moved = [
+        (el, x + shift[0], y + shift[1], z + shift[2])
+        for el, x, y, z in atoms
+    ]
+    assert _same_ts_geometry(atoms, moved)
+    assert _same_ts_geometry(moved, atoms)
+    # Coordinates must agree within 0.10 A AFTER the common shift.
+    distorted = list(moved)
+    el, x, y, z = distorted[1]
+    distorted[1] = (el, x + 0.5, y, z)
+    assert not _same_ts_geometry(distorted, atoms)
+    # Neither element order nor coordinate orientation may be silently
+    # changed to match the Hessian.
+    assert not _same_ts_geometry(list(reversed(moved)), atoms)
+
+
+def test_collect_ts_files_accepts_translated_orca_xyz(tmp_path):
+    """A matching XYZ must be selected instead of invoking Hessian fallback."""
+    from delfin.ts_goat import _same_ts_geometry
+
+    d = tmp_path / 'final'
+    d.mkdir()
+    atoms = _water_ts_atoms()
+    _write_hess(d / 'OptTS.hess', atoms, [], [-300.0])
+    translated = [
+        (el, x + 0.585226, y - 0.247354, z - 0.252777)
+        for el, x, y, z in atoms
+    ]
+    _write_orca_xyz(d / 'OptTS.xyz', translated)
+    found = collect_ts_files(d, out_path=d / 'OptTS.out')
+    assert found.xyz_path == d / 'OptTS.xyz'
+    assert found.hess_path == d / 'OptTS.hess'
+    assert _same_ts_geometry(translated, atoms)
+    assert not any('matching TS geometry' in m for m in found.problems)
