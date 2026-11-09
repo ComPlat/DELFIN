@@ -166,10 +166,15 @@ def _setup_control(work_dir: Path, **kwargs: Any) -> None:
         # control with only $title/$actual step/$end).
         define_input = "\n\na coord\n*\nno\n"
         define_input += f"b all {basis}\n*\neht\ny\n{charge}\n"
-        if mult == 1:
+        if mult <= 2:
+            # Singlet AND doublet: the plain 'y' accepts the default
+            # occupation; define sets up UHF itself for an open shell on
+            # 7.9 (verified: CH3 mult=2 got $uhf/$alpha/$beta shells from
+            # the plain dialog). Sending 'n'/'u N' here falls out of step
+            # (real run #608 round 4: CH3 control missing $dft/$rij).
             define_input += "y\n"
         else:
-            # mult >= 2: eht asks for the occupation explicitly — decline
+            # mult >= 3: eht asks for the occupation explicitly — decline
             # the default occupation with 'n' and give the number of
             # unpaired electrons (verified working transcript, site 7.9:
             # .gate/rr608_define_transcript_working.txt).
@@ -244,30 +249,46 @@ def _extract_energy_tm(work_dir: Path) -> Optional[float]:
 
 
 def _count_imaginary_tm(aoforce_text: str) -> int:
-    """Count imaginary modes in aoforce output (DELFIN IMAG logic).
+    """Count imaginary modes from the frequency table only.
 
-    aoforce prints an imaginary mode either as a bare negative frequency or
-    with an explicit ``i``/``i*`` suffix. Any second token (the frequency
-    column of the mode table) that parses as a float and is negative or
-    i-suffixed counts as one imaginary mode. The rule matches the workflow's
-    ``_count_imaginary`` so a count of 0 reliably marks a verified minimum;
-    over-counting keeps a minimum UNVERIFIED -- fail-safe, never silently
-    green (target 3: "aoforce imaginary modes via DELFIN's IMAG logic").
+    Real-run finding #608 round 4: the old whole-text counter hit the
+    coordinate block and normal-mode eigenvector rows (whose numbers are
+    often negative) and reported imaginary modes for a true minimum. The
+    clean source is the frequency table: the ``$vibrational spectrum``
+    block (the vibspectrum file), column 3 = wave number; TURBOMOLE
+    prints imaginary modes there as negative numbers, real ones as
+    positive. Only lines inside that block are read; an i-suffixed wave
+    number also counts (defence for installs that print the suffix).
+
+    A count of 0 reliably marks a verified minimum; over-counting would
+    keep a minimum UNVERIFIED -- fail-safe, never silently green
+    (target 3: "aoforce imaginary modes via DELFIN's IMAG logic").
     """
+    in_spectrum = False
     count = 0
     for line in aoforce_text.splitlines():
-        parts = line.split()
-        if len(parts) < 2:
+        stripped = line.strip()
+        if stripped.startswith("$vibrational spectrum"):
+            in_spectrum = True
             continue
-        token = parts[1].lower()
-        has_i_suffix = token.endswith("i") or token.endswith("i*")
-        bare = token.rstrip("*i")
-        try:
-            value = float(bare)
-        except ValueError:
-            continue
-        if has_i_suffix or value < 0:
-            count += 1
+        if in_spectrum:
+            if stripped.startswith("$"):
+                in_spectrum = False
+                continue
+            if not stripped:
+                continue
+            parts = stripped.split()
+            if len(parts) < 3:
+                continue
+            token = parts[2].lower()
+            has_i_suffix = token.endswith("i") or token.endswith("i*")
+            bare = token.rstrip("*i")
+            try:
+                value = float(bare)
+            except ValueError:
+                continue
+            if has_i_suffix or value < 0:
+                count += 1
     return count
 
 

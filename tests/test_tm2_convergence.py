@@ -157,3 +157,69 @@ def test_multicore_run_sets_para_arch(monkeypatch, tmp_path):
     assert para_arch_line == "PARA_ARCH=SMP", (
         f"PARA_ARCH must be set (got {para_arch_line!r}); env was:\n{dumped}")
     assert "PARNODES=2" in dumped, dumped
+
+
+# ---------------------------------------------------------------------------
+# Round-4 finding (operator real-run, 09.11.): the freq adapter reported
+# imaginary_frequencies=3 for a true minimum (vibspectrum: 6 x 0.00,
+# 1637.76, 3789.09, 3884.13 cm-1). The old counter read the WHOLE aoforce
+# text and counted any line whose 2nd token parsed as a negative float --
+# that hits the coordinate block ('0.00000000 -1.43078088 1.26069347 h')
+# and the normal-mode eigenvector rows ('z -0.07021 ...'). The clean source
+# is the frequency table: the $vibrational spectrum block (the vibspectrum
+# file) whose column 3 is the wave number; TURBOMOLE prints imaginary
+# modes there as negative numbers. Fixtures are hand-written in the
+# parser's format (licence rule: no TURBOMOLE-generated output in the
+# repo).
+# ---------------------------------------------------------------------------
+
+# Hand-written aoforce.out shape: coordinate rows, eigenvector rows with
+# negatives, and a vibspectrum ($vibrational spectrum) table whose
+# wave-number column is all positive -- a true minimum. The old counter
+# reported 3 imaginary modes from the coordinate/eigenvector negatives.
+_AOFORCE_MINIMUM_TEXT = """\
+$hessian
+symmetry    c1
+
+     1       0.00000000      0.00000000      0.00000000  o
+     2       0.00000000      1.43078088      1.26069347  h
+     3       0.00000000     -1.43078088      1.26069347  h
+
+ vibration    1    frequency   1637.76
+  x         0.00000      y        -0.43249      z         0.00000
+  x        -0.07021      y         0.43249      z         0.00000
+
+ vibration    2    frequency   3789.09
+  x         0.00000      y         0.11234      z         0.00000
+
+$vibrational spectrum
+       1        -1     1637.76
+       2        -1     3789.09
+       3        -1     3884.13
+$end
+"""
+
+# Same file, but the vibspectrum table carries one negative wave number --
+# one imaginary mode (TURBOMOLE prints imaginary modes there as negatives).
+_AOFORCE_ONE_IMAGINARY_TEXT = """\
+$vibrational spectrum
+       1        -1      -512.34
+       2        -1      1637.76
+       3        -1      3789.09
+$end
+"""
+
+
+class TestImaginaryCountReadsVibspectrumTable:
+    def test_minimum_with_negative_eigenvectors_counts_zero(self, tmp_path):
+        from delfin.tools.adapters.turbomole import _count_imaginary_tm
+
+        assert _count_imaginary_tm(_AOFORCE_MINIMUM_TEXT) == 0, (
+            "coordinate/eigenvector negatives must NOT be counted; only the "
+            "vibspectrum wave-number column decides")
+
+    def test_one_negative_wave_number_counts_one(self, tmp_path):
+        from delfin.tools.adapters.turbomole import _count_imaginary_tm
+
+        assert _count_imaginary_tm(_AOFORCE_ONE_IMAGINARY_TEXT) == 1
+

@@ -270,3 +270,23 @@ class TestDefineSubmenuExitAndOpenShell:
             "for mult >= 3 the eht occupation answer is 'n', got %r" % tail[2])
         assert tail[3] == "u 2", (
             "mult 3 means 2 unpaired electrons: 'u 2', got %r" % tail[3])
+
+    def test_mult2_plain_dialog_sets_uhf_automatically(self, tmp_path,
+                                                       monkeypatch):
+        """Round 4 (operator real-run, CH3 mult=2): the PLAIN dialog (no
+        occupation step) already sets up UHF on 7.9 — the open-shell
+        branch must fire only for mult >= 3. For mult 2 the dialog keeps
+        the singlet's 'y' (accept the default occupation; define builds
+        the alpha/beta shells itself), producing $uhf in the control —
+        the old code sent 'n'/'u 1' and fell out of step (its control at
+        .gate/rr608_ch3_control_round3.txt held no $dft/$rij)."""
+        lines = self._stdin_lines(tmp_path, monkeypatch, tag="m2", mult=2)
+        k = lines.index("eht")
+        tail = lines[k + 1:]
+        assert tail[0] == "y", lines
+        assert tail[1] == "0", ("the charge from kwargs: " + str(lines))
+        assert tail[2] == "y", (
+            "mult 2 keeps the plain 'y' (define sets UHF itself on 7.9), "
+            "got %r" % tail[2])
+        assert "n" not in tail[:4], (
+            "no occupation-decline 'n' for mult 2: " + str(lines))

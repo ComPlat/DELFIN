@@ -40,9 +40,10 @@ def _env(tmp_path, monkeypatch):
         bin_dir, "aoforce",
         "#!/bin/sh\n"
         "printf '%s\\n' '$title aoforce' \\\n"
-        "  '      1   -123.45i     0.3' \\\n"
-        "  '      2    456.78      ostic' \\\n"
-        "  '      3   1234.56      not(ating)' \\\n"
+        "  '$vibrational spectrum' \\\n"
+        "  '      1    -1  -123.45i' \\\n"
+        "  '      2    -1   456.78' \\\n"
+        "  '      3    -1  1234.56' \\\n"
         "  '$end'\n"
         "printf '1  -1.0\\n$end\\n' > energy\n"
         "printf 'synthetic hessian\\n' > hessian\n",
@@ -83,8 +84,9 @@ def test_freq_zero_imaginary_is_a_clean_minimum(tmp_path, monkeypatch):
     work_dir, aoforce = _env(tmp_path, monkeypatch)
     aoforce.write_text(
         "#!/bin/sh\n"
-        "printf '%s\\n' '      1  120.00      0.1' \\\n"
-        "  '      2  456.78      os' \\\n"
+        "printf '%s\\n' '$vibrational spectrum' \\\n"
+        "  '      1    -1   120.00' \\\n"
+        "  '      2    -1   456.78' \\\n"
         "  '$end'\n"
         "printf '1  -1.0\\n$end\\n' > energy\n"
         "printf 'synthetic hessian\\n' > hessian\n")
