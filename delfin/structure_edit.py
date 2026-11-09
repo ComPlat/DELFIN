@@ -25,6 +25,7 @@ Design rules the package target fixes:
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from typing import Any
@@ -189,19 +190,45 @@ def _heavy_neighbour_directions(
     return out
 
 
-def _place_one_h(
-    g: Geom, atom: int, away: list[tuple[float, float, float]],
-    bond_len: float,
-) -> tuple[float, float, float]:
-    """A candidate H position on ``atom``, pushed away from heavy neighbours."""
-    # Sum of away vectors (may be empty -> fall back to +x hemisphere).
-    s = [sum(v[k] for v in away) for k in range(3)]
+def _h_directions(
+    away: list[tuple[float, float, float]], count: int
+) -> list[tuple[float, float, float]]:
+    """``count`` unit directions on ``atom`` that point AWAY from its heavy
+    neighbours and are mutually separated like tetrahedral hydrogens.
+
+    The base direction is the negated sum of the toward-neighbour vectors
+    (the far side of the atom). A second/third hydrogen completes the
+    tetrahedron: 109.47 deg from the base axis, spread 120 deg apart, so
+    two placed hydrogens are 109.5 deg apart (>= 1.6 bond lengths) and
+    never coincide.
+    """
+    # Sum of toward vectors, negated -> away (may be empty -> +x fallback).
+    s = [-sum(v[k] for v in away) for k in range(3)]
     n = sum(x * x for x in s) ** 0.5
-    if n > 1e-9:
-        d = tuple(x / n for x in s)
-    else:
-        d = (1.0, 0.0, 0.0)
-    return tuple(g.coords[atom][k] + d[k] * bond_len for k in range(3))
+    base = tuple(x / n for x in s) if n > 1e-9 else (1.0, 0.0, 0.0)
+    if count <= 1:
+        return [base]
+    # Orthonormal frame around base.
+    ref = (0.0, 0.0, 1.0) if abs(base[2]) < 0.9 else (1.0, 0.0, 0.0)
+    v = [base[1] * ref[2] - base[2] * ref[1],
+         base[2] * ref[0] - base[0] * ref[2],
+         base[0] * ref[1] - base[1] * ref[0]]
+    vn = sum(x * x for x in v) ** 0.5
+    v = [x / vn for x in v]
+    w = [base[1] * v[2] - base[2] * v[1],
+         base[2] * v[0] - base[0] * v[2],
+         base[0] * v[1] - base[1] * v[0]]
+    ang = math.radians(109.47)  # tetrahedral angle from the base axis
+    sa, ca = math.sin(ang), math.cos(ang)
+    dirs = []
+    for idx in range(count):
+        az = 2.0 * math.pi * idx / count
+        dz, dv = ca, sa
+        cv, sv = math.cos(az), math.sin(az)
+        dirs.append(tuple(
+            dz * base[k] + dv * (cv * v[k] + sv * w[k]) for k in range(3)
+        ))
+    return dirs
 
 
 # Distance ratio (actual bond / covalent-radii single-bond reference) below
@@ -229,11 +256,26 @@ def _heavy_bond_order(
     if d > rsum * _SINGLE_BOND_FACTOR:
         return 0
     ratio = d / rsum if rsum else 1.0
-    if ratio <= 0.72:
+    if ratio <= 0.80:
+        # Real X#Y triple-bond distances sit at ~0.79 of the covalent-radii
+        # sum (C#N 1.16/1.47, C#C 1.20/1.52); the double window starts at
+        # ~0.86 (C=O 1.22/1.42) and singles at ~0.95 (C-C 1.54/1.52).
         return 3
     if ratio <= _MULTIPLE_BOND_RATIO:
         return 2
     return 1
+
+
+# Typical X-H bond lengths (Angstrom) for placing a guessed hydrogen, instead
+# of a covalent-radius sum that over-lengthens C-H (1.39 A vs the real 1.09).
+_XH_BOND_LENGTHS: dict[str, float] = {
+    "C": 1.09,
+    "N": 1.01,
+    "O": 0.96,
+    "S": 1.34,
+    "P": 1.42,
+    "B": 1.19,
+}
 
 
 def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
@@ -271,18 +313,11 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
         if missing <= 0:
             continue
         away = _heavy_neighbour_directions(g, i, nbrs)
-        r_h_i = radii[i] + _COSMETIC_H_RADIUS
-        for _ in range(missing):
-            pos = _place_one_h(g, i, away, r_h_i)
-            # push away from atoms already placed this pass too
-            for existing_h in new_coords[len(g.symbols):]:
-                if _dist(existing_h, pos) < 0.2:
-                    d = tuple((pos[k] - existing_h[k]) for k in range(3))
-                    dn = sum(x * x for x in d) ** 0.5
-                    if dn > 1e-9:
-                        pos = tuple(
-                            pos[k] + (d[k] / dn) * 0.15 for k in range(3)
-                        )
+        r_h_i = _XH_BOND_LENGTHS.get(sym, radii[i] + _COSMETIC_H_RADIUS)
+        for direction in _h_directions(away, missing):
+            pos = tuple(
+                g.coords[i][k] + direction[k] * r_h_i for k in range(3)
+            )
             new_symbols.append("H")
             new_coords.append(pos)
             added.append(
