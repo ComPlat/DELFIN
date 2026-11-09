@@ -28,6 +28,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import quote, unquote
 
 __all__ = [
     "ALLOWED_LICENCES",
@@ -286,15 +287,21 @@ def _as_extxyz_block(record: Record) -> str:
             f"record {record.identifier!r} xyz has unreadable atom count"
         ) from exc
     coord = lines[2 : 2 + natoms]
-    # metadata + targets as comment-line ``key=value`` tokens
+    # metadata + targets as comment-line ``key=value`` tokens; values are
+    # percent-encoded so that any whitespace saves verbatim instead of
+    # splitting the token in two and silently truncating at the first space
+    def _q(v: str) -> str:
+        """Quote a metadata value; empty stays empty (unquoted)."""
+        return quote(str(v), safe="") if v else ""
+
     parts = [
-        f"identifier={record.identifier}",
-        f"smiles={record.smiles or ''}",
-        f"source={record.source}",
-        f"licence={record.licence}",
+        f"identifier={_q(record.identifier)}",
+        f"smiles={_q(record.smiles)}",
+        f"source={_q(record.source)}",
+        f"licence={_q(record.licence)}",
     ]
     for tgt in record.targets:
-        parts.append(f"target.{tgt.name}={_encode_target(tgt)}")
+        parts.append(f"target.{_q(tgt.name)}={_encode_target(tgt)}")
     return f"{natoms}\n{' '.join(parts)}\n" + "\n".join(coord)
 
 
@@ -337,8 +344,9 @@ def _record_from_extxyz(meta: str, coord: List[str]) -> Record:
         k, sep, v = token.partition("=")
         if not sep:
             continue
+        v = unquote(v)  # values were percent-encoded on write (spaces, '%')
         if k.startswith("target."):
-            name = k[len("target."):]
+            name = unquote(k[len("target."):])
             if not name:
                 continue
             value, unit = _decode_target(v)
