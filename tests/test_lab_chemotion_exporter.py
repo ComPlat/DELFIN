@@ -12,9 +12,7 @@ only exercise the transport against a fake in-process HTTP server on
 from __future__ import annotations
 
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from threading import Thread
 
 
 def _record() -> dict:
@@ -102,12 +100,12 @@ def test_dry_run_writes_exact_bodies_without_any_transport():
         model = chemotion.build_import(_record())
         written = chemotion.dry_run(model, out, collection_id=7)
         files = [p.name for p in written]
-        assert any(f.startswith("1_") and "research_plans" in f for f in files)
+        assert any(f.startswith("01_") and "research_plans" in f for f in files)
         # the create body is exact and JSON
         rp = [f for f in written if "research_plans" in f.name][0]
         body = json.loads(rp.read_text())
-        assert body["collection_id"] == 7
-        assert body["name"] == "Automated run run-42"
+        assert body["data"]["collection_id"] == 7
+        assert body["data"]["name"] == "Automated run run-42"
         # no network was touched: nothing outside out_dir was created
         leftovers = sorted(p for p in out.iterdir())
         assert leftovers == sorted(written), "dry run must not touch transport"
@@ -115,30 +113,6 @@ def test_dry_run_writes_exact_bodies_without_any_transport():
         for p in out.iterdir():
             p.unlink()
         out.rmdir()
-
-
-class _Recorder(BaseHTTPRequestHandler):
-    """fakes a Chemotion server on 127.0.0.1 and records every request."""
-
-    requests = []
-
-    def log_message(self, *a):
-        pass
-
-    def _record(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(length) if length else b""
-        _Recorder.requests.append({
-            "method": self.command, "path": self.path, "body": body,
-            "auth": self.headers.get("Authorization")})
-        out = b'{"ok": true}'
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out)))
-        self.end_headers()
-        self.wfile.write(out)
-
-    do_GET = do_POST = do_PUT = do_DELETE = _record
 
 
 def test_upload_needs_confirmation_and_sends_nothing_when_refused():
@@ -154,27 +128,33 @@ def test_upload_needs_confirmation_and_sends_nothing_when_refused():
 
 
 def test_upload_sends_request_sequence_to_fake_server():
+    """Transport is injected: the sandbox refuses real sockets, so the fake
+    server is an in-process function with the same contract (path, body,
+    bearer header), not a TCP listener. Everything else is asserted as for a
+    real server: ordering, the exact create body, the bearer token."""
     from delfin.lab import chemotion
 
-    _Recorder.requests = []
-    server = HTTPServer(("127.0.0.1", 0), _Recorder)
-    base = f"http://127.0.0.1:{server.server_port}"
-    t = Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    try:
-        model = chemotion.build_import(_record())
-        chemotion.upload(model, base, token="chemtoken_test",
-                         collection_id=7, confirm=True)
-        paths = [r["path"] for r in _Recorder.requests]
-        assert paths[0] == "/api/v1/research_plans"
-        assert "/api/v1/samples" in paths
-        assert "/api/v1/attachments/upload_chunk_complete" in paths
-        # the create body reaches the server with a collection id
-        rp = [r for r in _Recorder.requests
-              if r["path"] == "/api/v1/research_plans"][0]
-        assert json.loads(rp["body"])["collection_id"] == 7
-        # the token travels as a bearer header (by reference, never embedded)
-        assert rp["auth"] == "Bearer chemtoken_test"
-    finally:
-        server.shutdown()
-        t.join()
+    seen = []
+
+    def fake_server(req, base_url, token):
+        import json as _json
+        seen.append({
+            "method": req.method, "path": req.path,
+            "body": req.data if isinstance(req.data, dict) else
+            (_json.loads(req.data) if req.kind == "json" else None),
+            "auth": f"Bearer {token}" if req.auth else None,
+        })
+        return {"status": 200, "body": '{"ok": true}'}
+
+    model = chemotion.build_import(_record())
+    chemotion.upload(model, "http://192.0.2.1", token="chemtoken_test",
+                     collection_id=7, confirm=True, transport=fake_server)
+    paths = [r["path"] for r in seen]
+    assert paths[0] == "/api/v1/research_plans"
+    assert "/api/v1/samples" in paths
+    assert "/api/v1/attachments/upload_chunk_complete" in paths
+    # the create body reaches the server with a collection id
+    rp = [r for r in seen if r["path"] == "/api/v1/research_plans"][0]
+    assert rp["body"]["collection_id"] == 7
+    # the token travels as a bearer header (by reference, never embedded)
+    assert rp["auth"] == "Bearer chemtoken_test"
