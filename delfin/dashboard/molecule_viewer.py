@@ -4,7 +4,6 @@ import hashlib
 import json
 from html import escape as html_escape
 
-import py3Dmol
 from IPython.display import HTML, clear_output, display
 
 
@@ -13,6 +12,23 @@ def js_string_literal(value):
     also loaded on its own (outside the package) by tests and tools."""
     from delfin.dashboard.helpers import js_string_literal as _literal
     return _literal(value)
+
+
+_py3dmol_cache: list = []
+
+
+def py3dmol():
+    """Import py3Dmol on first use and return it, with the script-safe
+    rule installed. The module-level import pulled the whole py3Dmol
+    package into every dashboard start, whether or not a viewer was ever
+    opened; drawing it only when a viewer is actually built keeps the
+    cost off the startup path. Tests reach it as ``py3dmol()``.
+    """
+    if _py3dmol_cache:
+        return _py3dmol_cache[0]
+    import py3Dmol
+    _py3dmol_cache.append(py3Dmol)
+    return py3Dmol
 
 
 def _harden_py3dmol():
@@ -26,7 +42,8 @@ def _harden_py3dmol():
     unicode escapes, which the script reads back as the same characters.
     Idempotent; a py3Dmol without ``tostr`` is left alone.
     """
-    original = getattr(py3Dmol, 'tostr', None)
+    module = py3dmol()
+    original = getattr(module, 'tostr', None)
     if original is None or getattr(original, '_delfin_script_safe', False):
         return
 
@@ -37,7 +54,7 @@ def _harden_py3dmol():
                 .replace('&', '\\u0026'))
 
     tostr._delfin_script_safe = True
-    py3Dmol.tostr = tostr
+    module.tostr = tostr
 
 
 _harden_py3dmol()
@@ -6929,7 +6946,7 @@ def render_xyz_in_output(output_widget, xyz_text, width=None, height=None, extra
             return
         eff_width = width if width is not None else profile['width']
         eff_height = height if height is not None else profile['height']
-        view = py3Dmol.view(width=eff_width, height=eff_height)
+        view = py3dmol().view(width=eff_width, height=eff_height)
         view.addModel(xyz_text, 'xyz')
         apply_molecule_view_style(view, zoom=profile['zoom'], style=profile['style'])
         if extra_js:
