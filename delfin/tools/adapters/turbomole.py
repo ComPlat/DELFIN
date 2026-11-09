@@ -121,6 +121,28 @@ def _setup_coord(geometry: Path, work_dir: Path) -> Path:
     return coord_path
 
 
+def _validate_control(work_dir: Path, *, ri: bool, mult: int,
+                      method: str) -> None:
+    """Check the control file define produced contains the sections the
+    calculation needs. define can 'end normally' (exit 0) with a partial
+    control when the dialog answers drift out of step (real run #608:
+    only $title/$actual step/$end); ridft must never run on that."""
+    text = (work_dir / "control").read_text() if (work_dir / "control").is_file() else ""
+    required = ["$coord", "$atoms", "$basis",
+                "$dft"]
+    if ri:
+        required.append("$rij")
+    required.append("$closed shells" if mult == 1 else "$uhf")
+    missing = [key for key in required if key not in text]
+    if "$dft" in text and method and method.lower() not in text.lower():
+        missing.append(f"$dft func {method}")
+    if missing:
+        raise RuntimeError(
+            "Turbomole define produced an incomplete control file "
+            f"(missing: {', '.join(missing)}); not running ridft/dscf on it"
+        )
+
+
 def _setup_control(work_dir: Path, **kwargs: Any) -> None:
     """Generate a Turbomole control file via define or manually.
 
@@ -136,23 +158,15 @@ def _setup_control(work_dir: Path, **kwargs: Any) -> None:
     define = shutil.which("define")
     ri = bool(kwargs.get("ri", True))
     if define:
-        # Use define with input script
-        define_input = f"""
-a coord
-*
-no
-b all {basis}
-*
-eht
-y
-{charge}
-y
-{mult}
-*
-dft
-func {method}
-*
-"""
+        # Use define with input script. The FIRST TWO answers must be
+        # blank: define first asks whether to read default data from an
+        # existing control file, then asks for the title (real run #608:
+        # without the leading blank line 'a coord' was eaten by the title
+        # prompt and every later answer was out of step, leaving a
+        # control with only $title/$actual step/$end).
+        define_input = "\n\na coord\n*\nno\n"
+        define_input += f"b all {basis}\n*\neht\ny\n{charge}\ny\n{mult}\n"
+        define_input += f"dft\nfunc {method}\n*\n"
         if ri:
             # The RI block only when the caller asked for RI (N1):
             # ri=False must produce a conventional dscf setup, not an
@@ -181,6 +195,9 @@ func {method}
                 f"Turbomole define failed (exit {result.returncode}): "
                 f"{(result.stderr or result.stdout or '')[:500].strip()}"
             )
+        # Even a define that exits 0 can leave a partial control file
+        # (out-of-step dialog answers). Validate before anything runs.
+        _validate_control(work_dir, ri=ri, mult=mult, method=method)
     else:
         # Minimal manual control file
         control = f"""$title
@@ -312,9 +329,11 @@ class TurbomoleSpAdapter(StepAdapter):
         try:
             _setup_coord(geometry, work_dir)
             _setup_control(work_dir, cores=cores, **kwargs)
-        except RuntimeError as exc:
-            # A broken define dialog is a setup failure, reported as such —
-            # never carried on to ridft/dscf and misread as an SCF problem.
+        except (RuntimeError, OSError) as exc:
+            # A broken define dialog (or an unwritable/missing work dir,
+            # an OSError from _setup_coord/_setup_control) is a setup
+            # failure, reported as such — never carried on to
+            # ridft/dscf and misread as an SCF problem.
             return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
                                      error=str(exc),
                                      error_kind=ErrorKind.TOOL_FAILED)

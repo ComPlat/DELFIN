@@ -74,7 +74,9 @@ class TestDefineFailureIsSurfaced:
         bin_dir = tmp_path / "fakebin2"
         bin_dir.mkdir()
         _make_bin(bin_dir, "define",
-                  f"#!/bin/sh\nprintf 'x\\n' > {work_dir}/control\n")
+                  f"#!/bin/sh\nprintf '$title\\n$coord\\n  0.0 0.0 0.0 o\\n$end\\n"
+                  f"$atoms\\n$basis\\n$basis set\\n$dft\\n  func b3-lyp\\n$rij\\n"
+                  f"$closed shells\\n' > {work_dir}/control\n")
         _make_bin(bin_dir, "ridft",
                   "#!/bin/sh\nprintf '1  -1.0\\n$end\\n' > energy\n")
         monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
@@ -116,3 +118,97 @@ class TestVersionFromLoadedModules:
         for name in ("TURBODIR", "LOADEDMODULES", "_LMFILES_"):
             monkeypatch.delenv(name, raising=False)
         assert detect_installed_version() is None
+
+
+class TestControlValidatedAfterDefine:
+    """(a) A define that 'ends normally' but leaves a partial control
+    file is a setup failure, never an SCF failure (real run #608: the
+    out-of-step dialog produced a control with only $title / $actual
+    step / $end, ridft ran 0 s and the run was reported as 'SCF did not
+    converge'). The adapter must validate the control file and name the
+    missing sections."""
+
+    def _fake_define(self, bin_dir: Path, work_dir: Path, control_text: str) -> None:
+        _make_bin(bin_dir, "define",
+                  f"#!/bin/sh\nprintf '{control_text}' > {work_dir}/control\n")
+
+    def _adapter(self, tmp_path, monkeypatch, work_dir, bin_dir):
+        monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+        adapter = get("turbomole_sp")
+        return adapter.execute(work_dir, geometry=_xyz(work_dir),
+                               cores=1, charge=0)
+
+    def test_partial_control_is_refused(self, tmp_path, monkeypatch):
+        work_dir = tmp_path / "w_partial"
+        work_dir.mkdir()
+        bin_dir = tmp_path / "b_partial"
+        bin_dir.mkdir()
+        # Exactly what the real run produced: no $coord, no $atoms,
+        # no $basis, no $dft.
+        self._fake_define(bin_dir, work_dir,
+                          "$title\\na coord\\n$actual step      ridft\\n$end\\n")
+        result = self._adapter(tmp_path, monkeypatch, work_dir, bin_dir)
+        assert result.status.name == "FAILED"
+        err = (result.error or "").lower()
+        assert "define" in err, result.error
+        assert "$coord" in err, ("the error must name what is missing: "
+                                 + str(result.error))
+        assert not (work_dir / "energy").is_file(), "ridft ran on a partial control"
+
+    def test_complete_control_passes(self, tmp_path, monkeypatch):
+        work_dir = tmp_path / "w_complete"
+        work_dir.mkdir()
+        bin_dir = tmp_path / "b_complete"
+        bin_dir.mkdir()
+        self._fake_define(
+            bin_dir, work_dir,
+            "$title\\n$coord\\n  0.0 0.0 0.0 o\\n$end\\n$atoms\\n$basis\\n"
+            "b def2-SVP\\n$dft\\n  func b3-lyp\\n$rij\\n$closed shells\\n")
+        _make_bin(bin_dir, "ridft",
+                  "#!/bin/sh\nprintf '1  -1.0\\n$end\\n' > energy\n")
+        result = self._adapter(tmp_path, monkeypatch, work_dir, bin_dir)
+        assert result.status.name == "SUCCESS", result.error
+
+
+class TestDefineDialogAnswerSync:
+    """(b) define's first two prompts (default-data, title) must receive
+    BLANK answers; the old dialog sent them no blank line at all, so
+    'a coord' was eaten by the title prompt and every later answer was
+    out of step (real run #608)."""
+
+    def test_first_two_answers_are_blank(self, tmp_path, monkeypatch):
+        work_dir = tmp_path / "w_sync"
+        work_dir.mkdir()
+        bin_dir = tmp_path / "b_sync"
+        bin_dir.mkdir()
+        # The fake define records every stdin line it received.
+        _make_bin(bin_dir, "define",
+                  "#!/bin/sh\ncat > stdin.log\n"
+                  f"printf '$title\\n' > {work_dir}/control\n")
+        _make_bin(bin_dir, "ridft",
+                  "#!/bin/sh\nprintf '1  -1.0\\n$end\\n' > energy\n")
+        # A control define leaves is not enough for validation, so the
+        # run fails later — the dialog answers are the point here.
+        stdin_log = work_dir / "stdin.log"
+        monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+        get("turbomole_sp").execute(work_dir, geometry=_xyz(work_dir),
+                                    cores=1, charge=0)
+        lines = stdin_log.read_text().splitlines()
+        assert len(lines) >= 3, "the dialog sent too few answers: " + str(lines)
+        assert lines[0] == "", (
+            "answer 1 (default-data prompt) must be BLANK, got %r" % lines[0])
+        assert lines[1] == "", (
+            "answer 2 (title prompt) must be BLANK, got %r " % lines[1]
+            + "-- a non-blank answer here is out of step (real run #608)")
+        assert lines[2].strip() == "a coord", lines[2]
+
+
+class TestMissingWorkDirIsFailed:
+    """(c) execute() on a work directory that does not exist must return
+    FAILED through the public path, not raise FileNotFoundError."""
+
+    def test_missing_work_dir_returns_failed(self, tmp_path, monkeypatch):
+        work_dir = tmp_path / "does_not_exist"
+        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+        result = get("turbomole_sp").execute(work_dir, geometry=None, cores=1)
+        assert result.status.name == "FAILED"
