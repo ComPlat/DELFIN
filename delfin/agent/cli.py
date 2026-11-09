@@ -6299,6 +6299,33 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Lines of the log to show (logs)")
     svc.set_defaults(func=_cmd_service)
 
+    # Durable sessions (package F1): the supervisor as a SLURM job instead
+    # of on the login node. Offline commands only -- rendering and status
+    # touch the shared filesystem, never submit anything; the rendered
+    # script is submitted by the person with sbatch (delfin does not
+    # submit from this path). Handler imported on use, like _cmd_service.
+    def _cmd_durable(args):
+        from delfin.agent.service.durable_host import cmd_durable
+        return cmd_durable(args)
+
+    dur = sub.add_parser(
+        "durable",
+        help="Durable sessions: render the SLURM job that runs the agent "
+             "service on a compute node, and read its supervisor heartbeat",
+    )
+    dur.add_argument("durable_action", nargs="?", default="status",
+                     choices=["render", "status"])
+    dur.add_argument("--walltime", default="12:00:00",
+                     help="render: the job's walltime (hh:mm:ss)")
+    dur.add_argument("--partition", default=None,
+                     help="render: SLURM partition")
+    dur.add_argument("--qos", default=None, help="render: SLURM QOS")
+    dur.add_argument("--signal-minutes", dest="signal_minutes", type=int,
+                     default=5,
+                     help="render: minutes before the walltime end for the "
+                          "checkpoint signal (0..60)")
+    dur.set_defaults(func=_cmd_durable)
+
     return p
 
 
