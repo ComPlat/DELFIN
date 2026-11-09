@@ -127,6 +127,8 @@ class SimpleDataset:
     properties: Sequence[float]           # target values
     source: str = "own-calculation"
     licence: str = "CC0"
+    path: str = ""                        # optional training-data file path
+                                          # (the hold-out guard checks this)
 
     def __len__(self) -> int:
         return len(self.molecules)
@@ -561,10 +563,12 @@ def fit(name: str, dataset, split, **fit_kwargs
     config it would use.
     """
     entry = get_architecture(name)
-    # guard: only allowed data sources, and never a hold-out provenance
+    # guard: only allowed data sources, and never a hold-out provenance.
+    # refuse_holdout matches PATH components (LOCKBOX2/pool_6000/stage1_v2),
+    # so it must receive the dataset's data path, not its licence source label.
     check_licence(getattr(dataset, "source", "own-calculation"),
                   getattr(dataset, "licence", "CC0"))
-    refuse_holdout(getattr(dataset, "source", ""))
+    refuse_holdout(getattr(dataset, "path", ""))
     if entry.lazy_import:
         raise NeedsExtraError(
             f"architecture {name!r} needs the optional framework "
