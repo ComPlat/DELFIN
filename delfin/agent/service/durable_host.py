@@ -211,3 +211,47 @@ opened). The durable run uses the same channels in exactly the same way:
 The login-node CLI stays the same binary; only the host of the supervisor
 moves. No port, no token, no wider permission.
 """
+
+
+# --------------------------------------------------------------------------
+# CLI wiring — the public caller of the render + heartbeat surface
+# --------------------------------------------------------------------------
+
+def cmd_durable(args) -> int:
+    """``delfin-agent durable render|status``.
+
+    Both actions are offline: ``render`` prints a SLURM job script for the
+    PERSON to submit (DELFIN itself never sbatch from this path), and
+    ``status`` reads the supervisor heartbeat from the shared sessions
+    directory. Returns 0 on success, 1 when a value was refused.
+    """
+    action = getattr(args, "durable_action", "") or "status"
+    if action == "render":
+        try:
+            script = render_durable_job(
+                getattr(args, "walltime", "") or "12:00:00",
+                partition=getattr(args, "partition", None),
+                qos=getattr(args, "qos", None),
+                signal_minutes_before=int(
+                    getattr(args, "signal_minutes", 5)),
+            )
+        except ValueError as exc:
+            print(f"delfin-agent durable: refused: {exc}", file=sys.stderr)
+            return 1
+        print(script)
+        return 0
+    # action == "status"
+    record = read_supervisor_heartbeat()
+    if record is None:
+        print("no supervisor heartbeat (no durable supervisor running, "
+              "or none has written yet)")
+        return 0
+    fresh = heartbeat_fresh()
+    age = max(0, time.time() - float(record["ts"]))
+    host = record.get("host") or "unknown"
+    sessions = ", ".join(record.get("sessions") or []) or "(none)"
+    print(f"supervisor heartbeat: {'fresh' if fresh else 'STALE'} "
+          f"({age:.0f} s old), host {host}, pid {record.get('pid')}, "
+          f"sessions: {sessions}")
+    return 0
+
