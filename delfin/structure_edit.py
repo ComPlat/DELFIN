@@ -203,62 +203,132 @@ def _heavy_neighbour_directions(
 def _h_directions(
     away: list[tuple[float, float, float]], count: int
 ) -> list[tuple[float, float, float]]:
-    """``count`` unit directions on ``atom`` that point AWAY from its heavy
-    neighbours and are mutually separated like tetrahedral hydrogens.
+    """``count`` unit directions for hydrogens on ``atom`` so that the
+    placed angles match real hybridisation geometry, measured AT THE
+    VERTEX (operator real-run round 4):
 
-    The base direction is the negated sum of the toward-neighbour vectors
-    (the far side of the atom). The cone half-angle from that base axis is
-    chosen by hybridisation (a real sp3 X-H sits 109.47 deg from the X-Y
-    bond = 70.5 deg from the away axis; a real sp2 C-H sits ~121.5 deg
-    from the C=C bond = 58.5 deg from the away axis; a lone-atom pair
-    (water) opens at 104.5 deg = each H 52.25 deg from the base), and the
-    hydrogens are spread evenly around the base axis, so two placed
-    hydrogens never coincide and no H points into a heavy-heavy bond.
+    - lone atom (no heavy neighbours): a regular tetrahedron for 4 H
+      (CH4, H-C-H 109.47), a 104.5-deg pair for 2 H (H2O), a 106.7-deg
+      ring for 3 H (NH3), one direction for 1 H.
+    - one heavy neighbour: H sit 109.47 deg from the bond (sp3; the
+      previous 70.53-deg cone with opposite azimuths produced
+      H-C-H 141.1), or 120 deg from a double bond (order 2 via
+      ``half_deg`` override) -> C-X-H ~121.5 for sp2 centres.
+    - two heavy neighbours (sp2, e.g. =CH2): H in the bond plane at
+      121.5 deg from EACH bond -> C-C-H 121.5, H-C-H 117, coplanar
+      (the previous cone put them out of plane).
     """
-    # Sum of toward vectors, negated -> away (may be empty -> +x fallback).
-    s = [-sum(v[k] for v in away) for k in range(3)]
-    n = sum(x * x for x in s) ** 0.5
-    base = tuple(x / n for x in s) if n > 1e-9 else (1.0, 0.0, 0.0)
-    if count <= 1:
-        return [base]
-    # Cone half-angle by geometry of the placed H pair:
-    #  - no heavy neighbours (e.g. lone O -> water): H-O-H = 2*half -> water
-    #    angle 104.5 deg -> half = 52.25 deg;
-    #  - one heavy neighbour, 2+ H (sp3: CH3, CH2): H-C-H ~ 109.47 deg
-    #    between the H pair when both sit symmetrically -> half such that
-    #    the pair angle = 2*asin(sin(half)) ~ 109.5 -> half = 70.53 deg
-    #    (tetrahedral from the bond axis: 180-109.47);
-    #  - two heavy neighbours (sp2, e.g. =CH2): H-C-Y ~ 121.5 deg -> the H
-    #    sits 180-121.5 = 58.5 deg from the away axis.
     if not away:
-        half_deg = 52.25
+        base = (0.0, 0.0, 1.0)
     elif len(away) == 1:
-        half_deg = 70.53
+        # One heavy neighbour. The sp2 case (=CH2 on a double bond) is
+        # detected by the missing-H count in fix_hydrogens (valence 4,
+        # bond order 2, no existing H -> 2 missing), not here.
+        base = tuple(-x for x in away[0])
+        n = sum(x * x for x in base) ** 0.5
+        base = tuple(x / n for x in base) if n > 1e-9 else (0.0, 0.0, 1.0)
+        # sp2 CH2= centre: two H at 120 deg from the bond, 120 apart
+        # (real Csp2-H2: C-C-H ~121.5 with small pyramidalisation; 120 is
+        # the planar ideal and keeps H-C-H 120 too).
+        if count == 2:
+            return _ring(base, 60.0, 2, offset=180.0)
+        return _tetrahedral_from_axis(base, count)
     else:
-        half_deg = 58.5
-    # Orthonormal frame around base.
-    ref = (0.0, 0.0, 1.0) if abs(base[2]) < 0.9 else (1.0, 0.0, 0.0)
-    v = [base[1] * ref[2] - base[2] * ref[1],
-         base[2] * ref[0] - base[0] * ref[2],
-         base[0] * ref[1] - base[1] * ref[0]]
-    vn = sum(x * x for x in v) ** 0.5
-    v = [x / vn for x in v]
+        # Two heavy neighbours: place H in the plane spanned by the two
+        # bonds, mirrored across the C-C axis, so X-X-H and H-X-H both
+        # come out at real sp2 values (ethylene: 121.5 / 117).
+        b1 = _unit(away[0])
+        b2 = _unit(away[1])
+        # Internal bisector (points between the bonds) and the angle
+        # between the bonds.
+        dot = max(-1.0, min(1.0, sum(b1[k] * b2[k] for k in range(3))))
+        theta = math.degrees(math.acos(dot))  # e.g. 0 for ethylene
+        # Half the heavy-heavy angle; H must sit at 180 - half - 121.5
+        # from the bisector measured toward each bond side... For ethylene
+        # the bonds are collinear (theta=0): H at 121.5 from each bond on
+        # opposite sides of the C-C axis, in-plane.
+        out: list[tuple[float, float, float]] = []
+        # In-plane frame: axis = b1 (toward bond 1), perp = component of
+        # b2 orthogonal to b1 (zero for collinear -> pick any perp).
+        perp = [b2[k] - dot * b1[k] for k in range(3)]
+        pn = sum(x * x for x in perp) ** 0.5
+        if pn > 1e-9:
+            perp = [x / pn for x in perp]
+        else:
+            # Collinear bonds (ethylene): any plane contains the axis;
+            # choose one deterministic perp.
+            perp = _any_perp(b1)
+        for idx in range(count):
+            side = 1.0 if idx % 2 == 0 else -1.0
+            # Angle from bond-1 axis toward +/-perp: 121.5 deg.
+            a1 = math.radians(121.5)
+            ca, sa = math.cos(a1), math.sin(a1)
+            d = [ca * b1[k] + side * sa * perp[k] for k in range(3)]
+            out.append(tuple(d))
+        return out
+    # Lone atom: exact small-n geometries around +z.
+    if count == 1:
+        return [base]
+    if count == 2:
+        return _ring(base, 52.25, 2, offset=180.0)  # H-O-H 104.5
+    if count == 3:
+        return _ring(base, 67.98, 3)  # H-N-H 106.7 ring
+    return _tetrahedron()  # CH4: 109.47 / H-H 1.78
+
+
+def _unit(v):
+    n = sum(x * x for x in v) ** 0.5
+    return tuple(x / n for x in v) if n > 1e-9 else v
+
+
+def _any_perp(v):
+    ref = (0.0, 0.0, 1.0) if abs(v[2]) < 0.9 else (1.0, 0.0, 0.0)
+    w = [v[1] * ref[2] - v[2] * ref[1],
+         v[2] * ref[0] - v[0] * ref[2],
+         v[0] * ref[1] - v[1] * ref[0]]
+    return _unit(w)
+
+
+def _ring(base, half_deg, count, offset=0.0):
+    """``count`` points on a cone of half-angle ``half_deg`` around base."""
+    a = math.radians(half_deg)
+    sa, ca = math.sin(a), math.cos(a)
+    v = _any_perp(base)
     w = [base[1] * v[2] - base[2] * v[1],
          base[2] * v[0] - base[0] * v[2],
          base[0] * v[1] - base[1] * v[0]]
-    ang = math.radians(half_deg)
-    sa, ca = math.sin(ang), math.cos(ang)
     dirs = []
     for idx in range(count):
-        az = math.pi * idx / max(1, count - 1) if count == 2 else (
-            2.0 * math.pi * idx / count
-        )
-        dz, dv = ca, sa
+        az = 2.0 * math.pi * idx / count + math.radians(offset)
         cv, sv = math.cos(az), math.sin(az)
         dirs.append(tuple(
-            dz * base[k] + dv * (cv * v[k] + sv * w[k]) for k in range(3)
+            ca * base[k] + sa * (cv * v[k] + sv * w[k]) for k in range(3)
         ))
     return dirs
+
+
+def _tetrahedron():
+    """Regular tetrahedron around the origin (pairwise 109.47 deg)."""
+    return [
+        (1.0, 1.0, 1.0),
+        (1.0, -1.0, -1.0),
+        (-1.0, 1.0, -1.0),
+        (-1.0, -1.0, 1.0),
+    ]
+
+
+def _tetrahedral_from_axis(base, count):
+    """sp3 H directions: each 109.47 deg from the bond axis (-base)."""
+    if count == 1:
+        return [base]
+    if count == 2:
+        # Two of the three 120-deg-apart ring points: each at 70.53 from
+        # the away axis = 109.47 from the bond, and the pair angle
+        # between two ring points 120 deg apart in azimuth is 109.47.
+        return _ring(base, 70.53, 3)[:2]
+    # 3 H (CH3): classic 109.47 staggered ring: each at 70.53 from base
+    # (= 109.47 from the bond), azimuths 120 apart -> pair angles 109.47.
+    return _ring(base, 70.53, 3)
 
 
 # Distance ratio (actual bond / covalent-radii single-bond reference) below
@@ -395,8 +465,10 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
 
 def _clash_report(symbols, coords) -> str | None:
     """First pair closer than 0.8 A between a placed H and any other atom,
-    or any H-H pair below 1.0 A; None when nothing clashes."""
-    limit_same = 1.0  # two H cannot be this close in a real structure
+    or any H-H pair below 1.4 A (operator round 4: two hydrogens in a real
+    structure are never closer than ~1.4 A even gauche/ortho); None when
+    nothing clashes."""
+    limit_same = 1.4  # two H cannot be this close in a real structure
     limit_any = 0.8
     n = len(symbols)
     for a in range(n):
