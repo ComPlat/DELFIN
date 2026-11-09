@@ -73,9 +73,9 @@ __all__ = [
 class OrcaCasscfResult:
     """Typed result of one OPI-backed CASSCF / CASSCF+NEVPT2 run.
 
-    Numeric fields are populated only after the run
-    ``terminated_normally()`` and ``mo_converged()`` are both true.  All
-    energies are in Eh; occupations are unitless populations.
+    Numeric fields are populated only after the run terminated normally and
+    the CASSCF (or SCF) converged.  All energies are in Eh; occupations are
+    unitless populations in (0..2).
     """
 
     ok: bool
@@ -321,55 +321,53 @@ def build_casscf_input(
 
 
 def read_casscf_output(work_dir: Path, base_name: str) -> OrcaCasscfResult:
-    """Read a finished CASSCF run with OPI, gating every number on the
-    convergence flags and on the requested active space."""
+    """Read a finished CASSCF run, gating every number on termination and
+    CASSCF convergence.
+
+    Run state comes from OPI's ``Output.terminated_normally()`` when the run
+    is OPI-parsable, otherwise from the ``ORCA TERMINATED NORMALLY`` text
+    marker.  The CASSCF numbers (per-root energies, NEVPT2 corrections,
+    natural occupations) are always read from the ``.out`` text: OPI's
+    ``.property.json`` does not carry them (OPI output models have no
+    ``casscf``/``nevpt2`` keys), so there is no OPI-native number to read,
+    and OPI has no ``mo_converged()``/``get_property()`` methods.
+    """
     from opi.output.core import Output
 
     wdir = Path(work_dir)
     out_path = wdir / f"{base_name}.out"
     text = out_path.read_text(errors="replace") if out_path.is_file() else ""
-    try:
-        out = Output(basename=base_name, working_dir=wdir)
-        out.parse()
-    except Exception as exc:
-        # No OPI-parsable run (e.g. no <base>.property.json): fall back to
-        # reading the material quantities straight from the .out text, gating
-        # "meaningful" on the ORCA text markers.  This keeps a hand-written
-        # synthetic .out testable without committing any real ORCA output.
-        terminated_txt = bool(text) and "TERMINATED NORMALLY" in text
-        converged_txt = bool(text) and ("CASSCF CONVERGED" in text
-                                        or "SCF CONVERGED" in text)
-        meaningful = terminated_txt and converged_txt
-        result = OrcaCasscfResult(
-            ok=meaningful, work_dir=wdir, base_name=base_name,
-            output_file=out_path if out_path.is_file() else None,
-            terminated_normally=terminated_txt, casscf_converged=converged_txt,
-            meaningful=meaningful,
-        )
-        if meaningful:
-            _fill_text_result(result, text, wdir)
-        if not meaningful:
-            result.failure_lines = _failure_lines(out_path)
-            result.error = f"OPI could not parse the run: {exc}"
-        return result
 
-    terminated = out.terminated_normally()
-    mo_ok = out.mo_converged()
-    meaningful = bool(terminated and mo_ok)
+    terminated = False
+    if text:
+        try:
+            out = Output(basename=base_name, working_dir=wdir)
+            out.parse()
+            terminated = bool(out.terminated_normally())
+        except Exception:
+            # No OPI-parsable run (e.g. no <base>.property.json): fall back to
+            # the ORCA text marker.  A hand-written synthetic .out stays
+            # testable without committing any real ORCA output.
+            terminated = "TERMINATED NORMALLY" in text
+
+    converged = bool(text) and (
+        "CASSCF CONVERGED" in text or "SCF CONVERGED" in text
+    )
+    meaningful = terminated and converged
 
     result = OrcaCasscfResult(
         ok=meaningful, work_dir=wdir, base_name=base_name,
         output_file=out_path if out_path.is_file() else None,
-        terminated_normally=terminated, casscf_converged=mo_ok,
+        terminated_normally=terminated, casscf_converged=converged,
         meaningful=meaningful,
     )
 
     if meaningful:
         try:
-            result.state_energies_Eh = _root_energies(out)
-            result.nevpt2_energies_Eh = _nevpt2_energies(out)
-            result.energies_total_Eh = _total_energies(out)
-            result.natural_orbital_occupations = _occupations(out)
+            result.state_energies_Eh = _text_state_energies(text)
+            result.nevpt2_energies_Eh = _text_nevpt2_energies(text)
+            result.energies_total_Eh = _total_energies_text(text)
+            result.natural_orbital_occupations = _text_occupations(text)
         except Exception as exc:
             result.ok = False
             result.meaningful = False
@@ -381,111 +379,110 @@ def read_casscf_output(work_dir: Path, base_name: str) -> OrcaCasscfResult:
 
 
 def _text_nevpt2_energies(text: str) -> tuple:
-    """Parse NEVPT2-corrected energies (Eh) from output text.
+    """Parse NEVPT2-corrected root energies (Eh) from output text.
 
-    ORCA prints one ``State <n>: E(NEVPT2) = <E> Eh`` line per state in the
-    NEVPT2 results section of the CASSCF output (modelchemistries/
-    casscf.txt, NEVPT2 results block).
+    ORCA prints the corrected energy of each NEVPT2 root block as
+    ``Total Energy (E0+dE)    : E  = <E>`` (modelchemistries/NEVPT2.txt,
+    lines ~223-228).  There is no ``State n: E(NEVPT2)`` line in ORCA's
+    output.  Empty tuple when the run did not do NEVPT2.
     """
     if not text:
         return ()
     import re
     return tuple(
-        float(m.group(2))
+        float(m.group(1))
         for m in re.finditer(
-            r"State\s+(\d+):\s+E\(NEVPT2\)\s*=\s*(-?[0-9.eE+\-]+)\s+Eh",
+            r"Total\s+Energy\s+\(E0\+dE\)[^:]*:\s*E\s*=\s*(-?[0-9.eE+\-]+)",
             text,
         )
     )
 
 
-def _fill_text_result(result: "OrcaCasscfResult", text: str, work_dir: Path) -> None:
-    """Fill a result from plain .out text (no OPI property JSON)."""
-    result.state_energies_Eh = _text_state_energies(text)
-    result.nevpt2_energies_Eh = _text_nevpt2_energies(text)
-    if text:
-        from delfin.casscf_active_space import parse_casscf_occupations
-        occ = parse_casscf_occupations(str(work_dir))
-        if occ is not None:
-            result.natural_orbital_occupations = tuple(
-                enumerate(occ))
+def _total_energies_text(text: str) -> tuple:
+    """Per-root CI energies (Eh) from ``CAS-SCF STATES`` ``ROOT n: E=`` lines.
 
-
-def _root_energies(out) -> tuple:
-    """CASSCF energies of the averaged roots, in Eh."""
-    try:
-        vals = out.get_property("casscf", "energies")
-    except Exception:
-        # fall back to text parse of the 'CASSCF STATE' block
-        return _text_energies(out)
-    if not vals:
+    ``CAS-SCF STATES FOR BLOCK  1 MULT= 1 NROOTS= 1`` prints ``ROOT   1:  E=
+    <E> Eh`` per root (manual CASSCF.txt lines 2320-2324).  Empty when the
+    output uses no such block.
+    """
+    if not text:
         return ()
-    return tuple(float(v) for v in vals)
+    import re
+    return tuple(
+        float(m.group(1))
+        for m in re.finditer(
+            r"ROOT\s+\d+:\s+E=\s*(-?[0-9.eE+\-]+)\s+Eh", text
+        )
+    )
 
 
-def _nevpt2_energies(out) -> tuple:
-    """NEVPT2-corrected energies per root, in Eh (empty if no NEVPT2)."""
-    try:
-        return tuple(float(v) for v in out.get_property("nevpt2", "energies"))
-    except Exception:
+def _text_occupations(text: str) -> tuple:
+    """Natural-orbital occupations as ``(index, population)`` pairs.
+
+    Reads the LAST ``N(occ)= ...`` line (the converged iteration), like
+    ``delfin.casscf_active_space.parse_casscf_occupations``, but from the
+    exact ``.out`` text already in hand -- never a re-glob of the directory,
+    which can pick up a different, larger ``.out``.  Each pair is
+    ``(index, value)`` with value in (0..2), matching the original
+    ``_fill_text_result`` contract.
+    """
+    if not text:
         return ()
-
-
-def _total_energies(out) -> tuple:
-    """Selected root energies (''CASSCF STATE MA'/'Total energy' fallback)."""
-    try:
-        return tuple(float(v) for v in out.get_property("total", "energies"))
-    except Exception:
-        return ()
-
-
-def _occupations(out) -> tuple:
-    """Natural-orbital occupations from the .out text (N(occ)= lines)."""
-    from delfin.casscf_active_space import parse_casscf_occupations
-    text = _out_text(out)
-    occ = parse_casscf_occupations(text) if text else ()
-    return tuple(occ)  # parsed occupations (0..2)
-
-
-def _out_text(out) -> str:
-    try:
-        p = out.input_path if hasattr(out, "input_path") else None
-        if p is None:
-            return ""
-        return Path(p).with_suffix(".out").read_text(errors="replace")
-    except Exception:
-        return ""
-
-
-def _text_energies(out) -> tuple:
-    """CASSCF per-root absolute energies (Eh) parsed from the output text."""
-    return _text_state_energies(_out_text(out))
+    occ = None
+    for line in text.splitlines():
+        if "N(occ)=" in line:
+            rest = line.split("N(occ)=", 1)[1].split()
+            occ = [float(x) for x in rest]
+    return tuple(enumerate(occ)) if occ else ()
 
 
 def _text_state_energies(text: str) -> tuple:
     """Parse CASSCF per-root absolute energies (Eh) from output text.
 
     Real ORCA format (manual 3.13.9 / 3.13.11, CASSCF.txt): an
-    ``SA-CASSCF TRANSITION ENERGIES`` block prints ``LOWEST ROOT = <E> Eh``
-    (the absolute energy of the lowest root) and then a
-    ``STATE ROOT MULT IRREP DE/a.u.  DE/eV  DE/cm**-1`` table whose ``DE/a.u.``
-    column is relative to that lowest root.  Absolute[root i] = LOWEST_ROOT + DE.
+    ``SA-CASSCF TRANSITION ENERGIES`` block prints the lowest root's absolute
+    energy as ``LOWEST ROOT = <E> Eh`` or ``LOWEST ROOT (ROOT n ,MULT m) = <E>
+    Eh`` and then a ``STATE ROOT MULT [IRREP] DE/a.u. DE/eV DE/cm**-1`` table
+    whose ``DE/a.u.`` column is relative to that lowest root.  The header's
+    presence/absence of the ``IRREP`` column fixes where ``DE/a.u.`` sits, so
+    the column read is exact rather than fixed-width.  Absolute[root i] =
+    LOWEST_ROOT + DE/i.  Empty when no such block is present.
     """
     if not text:
         return ()
     import re
-    lowest = re.search(r"LOWEST ROOT\s*=\s*(-?[0-9.eE+\-]+)\s+Eh", text)
+    lowest = re.search(
+        r"LOWEST ROOT(?: \(ROOT \d+ ,MULT \d+\))?\s*=\s*(-?[0-9.eE+\-]+)\s+Eh",
+        text,
+    )
     if not lowest:
         return ()
+    header = re.search(
+        r"^STATE\s+ROOT\s+MULT(?:\s+IRREP)?\s+(DE/a\.u\.)\s+DE/eV\s+DE/cm\*\*-1",
+        text, re.MULTILINE,
+    )
+    if not header:
+        # no transition table (unusual): only the lowest root itself
+        return (float(lowest.group(1)),)
+    # column of 'DE/a.u.' among the header fields: 3 without IRREP, 4 with
+    de_col = header.group(0).split().index("DE/a.u.")
     lowest_e = float(lowest.group(1))
     out_energies = []
-    for m in re.finditer(
-        r"^\s*(\d+):\s+\d+\s+\d+\s+\S+\s+([-0-9.eE+]+)", text, re.MULTILINE
-    ):
-        de = float(m.group(2))
+    for line in text.splitlines():
+        m = re.match(r"^\s*\d+:\s+\S+\s+\S+", line)
+        if not m:
+            continue
+        fields = line.split()
+        # fields[0] is the "N:" state label; the DE/a.u. field sits at the
+        # same index in the row as it does in the header (de_col), because
+        # both start with the state label column at index 0.
+        try:
+            de = float(fields[de_col])
+        except (IndexError, ValueError):
+            continue
         out_energies.append(lowest_e + de)
-    # root 0 (the LOWEST ROOT itself) carries DE = 0 and is reported as row 1;
-    # ensure it is present even when it is not the first printed row.
+    # the LOWEST ROOT itself (DE = 0) is not always a printed row; add it so
+    # every averaged state is present.
     if out_energies and min(out_energies) > lowest_e:
         out_energies.append(lowest_e)
     return tuple(sorted(out_energies))
