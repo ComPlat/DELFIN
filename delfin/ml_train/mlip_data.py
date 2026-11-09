@@ -217,6 +217,11 @@ def _parse_engrad_blocks(path: str):
         raise DataSourceError(f"malformed engrad {path}: {exc}") from exc
     if not grad:
         raise DataSourceError(f"engrad has no gradient block: {path}")
+    if len(grad) != 3 * n:
+        raise DataSourceError(
+            f"engrad {path}: gradient block has {len(grad)} components, "
+            f"expected {3 * n} for {n} atoms"
+        )
     return n, energy_eh, grad
 
 
