@@ -80,9 +80,17 @@ rendered script's launcher line and settings against the login-node path.
 ## Limitations (honest list)
 
 - Walltime: the supervisor job runs as long as its walltime; after the
-  `--signal` it checkpoints, then the job ends. The person resubmits the
+  `--signal` it checkpoints, then the job ends. The person requeues the
   same script; sessions continue from the shared store.
-- Whether the compute node reaches the model endpoint, whether bwrap
-  works there, and how long a requeue takes can only be answered by a live
-  SLURM probe (`.gate/f1_probe/` — submitted by the operator, logs kept
-  with the results).
+- Probed 2026-11-09 on a compute node of the HPC cluster the project
+  runs on (three short probe jobs, submitted by the operator):
+  the model endpoint answers from a compute node (HTTP 401 without a
+  key, 13 ms — reachability confirmed, the key stays on the login side),
+  api.github.com answers (200), and bwrap runs there (rc=0, the sandbox
+  cage works on a compute node). A real `scontrol requeue` keeps the job
+  id (SLURM_RESTART_COUNT 0→1); the restart took about 3.5 minutes in
+  this probe, so a requeued durable host can
+  expect minutes of gap, not seconds — sessions wait in the shared store
+  during the gap; the heartbeat goes stale and no second supervisor
+  starts. The probe measured a requeue, not a timeout+resubmit; the
+  walltime-end path above has not been probed live.

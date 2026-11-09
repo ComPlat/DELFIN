@@ -29,6 +29,8 @@ import pytest
 from delfin.agent import session_store, step_journal
 from delfin.agent import durable
 
+from conftest import child_env
+
 
 # A side-effecting bash command whose only observable is a file written
 # OUTSIDE the scratch tree. The resumed session must check the file, never
@@ -54,8 +56,13 @@ def _record_finished_commit(store_root, session):
     return rec
 
 
-def _parked_child(store_root, session):
+def _parked_child(store_root, session, env):
     """A child that writes a real checkpoint+journal then parks for SIGKILL.
+
+    ``env`` comes from the suite's ``child_env`` fixture: the child is a
+    real process and must resolve every ``~/.delfin`` sink of its own
+    outside the real home (CI guard test_a_child_process_writes_into_
+    no_real_home.py).
 
     Returns (proc, checkpoint_payload). The child writes the journal via the
     real step_journal, a checkpoint via the real session_store writer, then
@@ -78,6 +85,7 @@ def _parked_child(store_root, session):
         [sys.executable, "-c", code],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         cwd=str(Path(__file__).resolve().parents[1]),
+        env=env,
     )
     line = proc.stdout.readline().strip()  # type: ignore[union-attr]
     assert line == "parked", f"child did not park, got {line!r}: {proc.stderr.read()}"
@@ -155,10 +163,10 @@ def test_finished_step_never_repeated(store_root, tmp_path):
                                   step=rec["step"], turn=rec["turn"]) is True
 
 
-def test_real_sigkill_mid_turn_recovers_via_checkpoint(store_root):
+def test_real_sigkill_mid_turn_recovers_via_checkpoint(store_root, tmp_path):
     """A REAL SIGKILL of a child mid-turn: the durable plan resumes, asks."""
     session = "sess-kill"
-    proc = _parked_child(store_root, session)
+    proc = _parked_child(store_root, session, child_env(tmp_path))
     # real kill: SIGKILL the child process while it is parked (simulating the
     # moment the worker dies inside an open side-effecting step)
     proc.send_signal(signal.SIGKILL)
