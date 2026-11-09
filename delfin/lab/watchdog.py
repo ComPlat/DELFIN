@@ -52,11 +52,15 @@ def sweep(kernel, *, now: Optional[float] = None) -> list[str]:
                else f"dead-man: no heartbeat from {act.get('person')} "
                     f"(session {act.get('session')}) for {age:.0f} s "
                     f"(limit {d.deadman_s:g} s)")
-        kernel.safe(dev_id, why, latch=True)
+        res = kernel.safe(dev_id, why, latch=True)
         _audit.record("deadman", device=dev_id, reason=why,
                       person=act.get("person"), session=act.get("session"))
-        _audit.alert("lab_deadman", f"{dev_id}: {why}")
-        tripped.append(dev_id)
+        if res.get("ok"):
+            tripped.append(dev_id)
+        else:
+            _audit.alert("lab_deadman", f"{dev_id}: dead-man could not put "
+                         "the device in its safe state; it is latched and "
+                         "needs manual attention")
     with _store.state() as doc:
         for dev_id, lock in list(doc["locks"].items()):
             d = kernel.manifest.devices.get(dev_id)
@@ -83,8 +87,9 @@ def enforce_estop(kernel) -> list[str]:
         if kernel._at_safe(d, kernel._fresh(d)):
             continue
         res = kernel.safe(d.id, "e-stop re-asserted", latch=False)
-        fixed.append(d.id)
-        if not res.get("ok"):
+        if res.get("ok"):
+            fixed.append(d.id)
+        else:
             _audit.alert("lab_estop", f"{d.id}: safe state does not hold "
                          "under the e-stop")
     return fixed
