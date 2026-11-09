@@ -138,11 +138,17 @@ def _first_float(text: str) -> float | None:
 
 
 def _label_line(lines: list[str], label: str) -> int:
-    """1-based line number of the line containing ``label`` and a float."""
+    """1-based line of the LAST line containing ``label`` and a float.
+
+    A geometry optimisation prints ``FINAL SINGLE POINT ENERGY`` once per
+    cycle; the run's result is the LAST one (the converged energy), not the
+    first cycle's (real-run finding, PR #618).
+    """
+    found = 0
     for i, line in enumerate(lines, start=1):
         if label in line and _FLOAT.search(line):
-            return i
-    return 0
+            found = i
+    return found
 
 
 def _energy_candidates(
@@ -161,27 +167,61 @@ def _energy_candidates(
 
 
 def _block_values(out: Path, marker: re.Pattern, unit: str) -> list[tuple[float, int]]:
-    """(value, line) for every real float token after a block marker's lines.
+    """(value, line) for every real float token in a real ORCA output block.
 
-    A token that is a row counter (a float immediately followed by ``:``, e.g.
-    the ``0:`` in ``   0:     3441.3``) is an index, not a value, and is
-    skipped; every other float on a data line is a candidate value.
+    The real block layout after the marker line is: a dashes line, a BLANK
+    line, optional meta lines (e.g. ``Scaling factor for frequencies =
+    0.9553``) separated by blanks, then the data rows.  Leading dashes /
+    blank / meta lines are skipped; the block ENDS at the first blank line
+    that follows a data row, or at a line that is neither data nor meta
+    (a new section heading).  A token that is a row counter (a float
+    immediately followed by ``:``, e.g. the ``0:`` in ``   0:     3441.3``)
+    is an index, not a value, and is skipped.
+
+    Real-run finding, PR #618: ending at the FIRST blank line after the
+    marker returned zero candidates for real ORCA output.
     """
     lines = out.read_text(errors="replace").splitlines()
     values: list[tuple[float, int]] = []
     in_block = False
+    seen_data = False
     for i, line in enumerate(lines, start=1):
         if marker.search(line):
+            # The marker may carry trailing content on its own line; the
+            # dashes line directly after it belongs to the banner.
             in_block = True
             continue
-        if in_block and line.strip() == "":
-            break
-        if in_block:
-            for m in _FLOAT.finditer(line):
-                after = line[m.end():m.end() + 1]
-                if after == ":":
-                    continue  # row counter, not a value
-                values.append((float(m.group()), i))
+        if not in_block:
+            continue
+        stripped = line.strip()
+        if stripped == "":
+            if seen_data:
+                break  # data ended: the blank line after the rows
+            continue  # banner/meta separator before the first data row
+        if set(stripped) <= set("- "):
+            # A dashes banner line (before data, or heading the next section).
+            if seen_data:
+                break
+            continue
+        m = re.match(r"^(\d+)\s*:\s", stripped)
+        if m:
+            seen_data = True
+            # Everything after the ``n:`` row counter, up to the unit token,
+            # is the row's value; trailing "-1" of "cm**-1" is the unit's
+            # exponent, never a candidate.  Slice the STRIPPED line: the row
+            # regex matched there, so offsets are the same.
+            rest = stripped[m.end():]
+            stop = rest.find("cm")
+            if stop != -1:
+                rest = rest[:stop]
+            for fm in _FLOAT.finditer(rest):
+                values.append((float(fm.group()), i))
+            continue
+        # A non-row, non-banner line: meta inside the block (e.g. a scaling
+        # line) is skipped, but any floats on it are NOT candidates.
+        if not seen_data and ("=" in stripped or not _FLOAT.search(stripped)):
+            continue
+        break
     return values
 
 
