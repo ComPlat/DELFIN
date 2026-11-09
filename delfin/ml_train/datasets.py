@@ -360,25 +360,52 @@ def _record_from_extxyz(meta: str, coord: List[str]) -> Record:
 
 
 def _encode_target(t: Target) -> str:
-    """``value`` as compact decimal, then the unit, e.g. ``-6.4eV``."""
-    value = f"{t.value:g}"
+    """``value`` in shortest exact round-trip form, then the unit, e.g. ``-6.4eV``.
+
+    ``repr`` (not ``f"{value:g}"``) keeps every significant digit: ``:g`` at its
+    default 6-significant-digit precision silently rounds, e.g. ``1234567.0 -> 1.23457e+06``,
+    losing the last digits of an absolute energy. ``repr`` always round-trips via
+    the reader, including its exponent form for very small/large magnitudes.
+    """
+    value = repr(t.value)
     return value if not t.unit else f"{value}{t.unit}"
 
 
 def _decode_target(raw: str) -> Tuple[Optional[float], Optional[str]]:
-    """Split ``-6.4eV`` into ``(-6.4, 'eV')``; ``(None, None)`` if not numeric."""
+    """Split ``-6.4eV`` into ``(-6.4, 'eV')``; ``(None, None)`` if not numeric.
+
+    The value is written with ``repr(value)`` (:func:`_encode_target`), the
+    shortest exact round-trip float representation, which uses exponent form
+    for very small/large magnitudes (e.g. ``-5e-05Ha``, ``1.23457e+06eV``).
+    The mantissa scan must therefore consume an exponent (``e``/``E`` with an
+    optional sign and digits) as part of the number, or small absolute energies
+    read back ~6 orders too large. A bare trailing ``e`` is not part of the
+    number (a unit such as ``eV`` starts with ``e``).
+    """
     i = 0
     n = len(raw)
     if i < n and raw[i] in "+-":
         i += 1
-    while i < n and (raw[i].isdigit() or raw[i] == "."):
-        i += 1
-    value_txt = raw[:i]
-    unit_txt = raw[i:]
-    if not value_txt:
+    saw_exp = False
+    while i < n:
+        c = raw[i]
+        if c.isdigit() or c == ".":
+            i += 1
+        elif c in "eE" and not saw_exp:
+            nxt = raw[i + 1] if i + 1 < n else ""
+            if nxt in "+-" or nxt.isdigit() or nxt == ".":
+                saw_exp = True
+                i += 1
+            else:
+                break  # bare 'e': start of a unit like 'eV', not an exponent
+        elif c in "+-" and saw_exp:
+            i += 1
+        else:
+            break
+    if i == 0:
         return None, None
     try:
-        return float(raw[:i]), (unit_txt or None)
+        return float(raw[:i]), (raw[i:] or None)
     except ValueError:
         return None, None
 
