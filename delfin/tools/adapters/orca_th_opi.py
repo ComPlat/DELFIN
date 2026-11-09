@@ -40,10 +40,12 @@ Re-evaluation input (ORCA's own rules):
     The block never runs ORCA; it only writes the input for the caller.
 
     Because the re-evaluated chemistry must stay the source run's chemistry,
-    the written input is nominal (charge 0, singlet, BP86/def2-SVP) and is
-    marked as such in the result data; the caller must set the source level
-    through the Hessian/moread files ORCA reads.  The block itself never
-    redefines the method of the reading path.
+    the written input carries the source molecule's geometry (supplied via
+    ``geometry``): a ``.hess`` file holds no atomic coordinates, so the
+    structure cannot be recovered from it.  The input's method (charge 0,
+    singlet, BP86/def2-SVP) stays nominal and is marked as such in the result
+    data; the caller must set the source level before running.  The block
+    itself never redefines the method of the reading path.
 """
 
 from __future__ import annotations
@@ -128,6 +130,16 @@ class OrcaThOpiAdapter(StepAdapter):
             type="path",
             required=False,
             description="existing .hess the re-evaluation input reuses (inhessname)",
+        ),
+        ParamSpec(
+            name="geometry",
+            type="list",
+            required=False,
+            description=(
+                "source molecule geometry, [(element, x, y, z), ...] in "
+                "Angstrom, written into a Hessian-reusing re-evaluation "
+                "input (a .hess file holds no atomic coordinates)"
+            ),
         ),
         ParamSpec(
             name="input_path",
@@ -283,12 +295,48 @@ class OrcaThOpiAdapter(StepAdapter):
                     ),
                     error_kind=ErrorKind.TOOL_FAILED,
                 )
+            hessian_in = kwargs.get("hessian")
+            geometry_in = kwargs.get("geometry")
+            if hessian_in is not None:
+                hessian_in = Path(hessian_in)
+                if not hessian_in.is_file():
+                    return self._make_result(
+                        self.name,
+                        StepStatus.FAILED,
+                        work_dir,
+                        start,
+                        data=data,
+                        error=(
+                            f"the referenced Hessian {hessian_in} does not "
+                            f"exist; a missing prerequisite cannot be reused"
+                        ),
+                        error_kind=ErrorKind.MISSING_INPUT,
+                    )
+                if not geometry_in:
+                    return self._make_result(
+                        self.name,
+                        StepStatus.FAILED,
+                        work_dir,
+                        start,
+                        data=data,
+                        error=(
+                            "a Hessian-reusing re-evaluation input needs the "
+                            "source molecule's geometry (provide "
+                            "geometry=[(element, x, y, z), ...]): a .hess "
+                            "file carries no atomic coordinates, so the "
+                            "nominal single-He structure would make ORCA "
+                            "compute the wrong molecule (thermochemistry of "
+                            "helium, not the source run)"
+                        ),
+                        error_kind=ErrorKind.MISSING_INPUT,
+                    )
             inp_path = self._make_re_eval_input(
                 work_dir,
                 requested_re,
                 re_eval_pressure,
-                kwargs.get("hessian"),
+                hessian_in,
                 kwargs.get("input_path"),
+                geometry_in,
             )
             if inp_path is None:
                 return self._make_result(
@@ -305,12 +353,14 @@ class OrcaThOpiAdapter(StepAdapter):
             if re_eval_pressure is not None:
                 data["re_eval_pressure_atm"] = float(re_eval_pressure)
             data["re_eval_note"] = (
-                "The %freq re-evaluation input reuses the existing Hessian "
+                "The re-evaluation input reuses the existing Hessian "
                 "(inhessname) so ORCA only repeats the thermochemistry at the "
-                "new temperature/pressure (ORCA manual section 4.6). Its "
-                "nominal level (BP86/def2-SVP, charge 0, singlet) must be "
-                "replaced by the source run's level before running; this "
-                "block never redefines the method itself."
+                "new temperature/pressure (ORCA manual section 4.6), and "
+                "carries the source geometry supplied via `geometry` (a .hess "
+                "file holds no atomic coordinates). Its nominal level "
+                "(BP86/def2-SVP, charge 0, singlet) must be replaced by the "
+                "source run's level before running; this block never "
+                "redefines the method itself."
             )
 
         return self._make_result(
@@ -331,36 +381,40 @@ class OrcaThOpiAdapter(StepAdapter):
         work_dir: Path,
         temperature: float,
         pressure: Optional[float],
-        hessian: Optional[Any],
+        hessian: Optional[Path],
         input_path: Optional[Any],
+        geometry: Optional[Any] = None,
     ) -> Optional[Path]:
         """Build the ``%freq`` re-evaluation input with OPI typed objects.
 
         Uses :func:`delfin.tools.opi_chain.build_orca_input`` (``Task.FREQ``,
-        ``BlockFreq``), mirroring the other OPI blocks.  The structure is
-        nominal (single He at the origin): ORCA reads the real geometry from
-        the reused Hessian, and the caller must set the source level.
+        ``BlockFreq``), mirroring the other OPI blocks.  When a ``hessian`` is
+        reused, the source molecule's ``geometry`` (list of ``(element, x, y,
+        z)``) is written into the ``* xyz`` block: a ``.hess`` file carries no
+        atomic coordinates, so ORCA cannot recover the geometry from it.  Only
+        when no Hessian is reused (grammar-only probe path) is the structure
+        left nominal.  The caller must still set the source level.
         """
         target = Path(input_path) if input_path is not None else work_dir / "reval.inp"
         freq_options: dict[str, Any] = {"temp": float(temperature)}
         if pressure is not None:
             freq_options["pressure"] = float(pressure)
         if hessian is not None:
-            # BlockFreq.inhessname expects a plain pathlib.Path and OPI
-            # validates it must exist: a Hessian that is not on disk is a
-            # missing prerequisite, reported to the caller instead of
-            # silently dropped.
-            hess = Path(hessian)
-            if hess.is_file():
-                freq_options["inhessname"] = str(hess)
+            freq_options["inhessname"] = str(hessian)
+        if geometry:
+            elements = [str(g[0]) for g in geometry]
+            coordinates = [[float(x) for x in g[1:4]] for g in geometry]
+        else:
+            # No Hessian to reuse (probe/grammar path): a nominal single He.
+            elements, coordinates = ["He"], [[0.0, 0.0, 0.0]]
         try:
             from delfin.tools.opi_chain import JOB_FREQ, build_orca_input
 
             built = build_orca_input(
                 work_dir,
                 job_kind=JOB_FREQ,
-                elements=["He"],
-                coordinates=[[0.0, 0.0, 0.0]],
+                elements=elements,
+                coordinates=coordinates,
                 charge=0,
                 mult=1,
                 functional="BP86",

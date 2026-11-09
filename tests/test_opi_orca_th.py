@@ -52,7 +52,7 @@ ENTROPY
 --------------------------------------------------
 Thermal entropy correction           ...       0.00072596 Eh
 {qr_line}
-Total entropy correction             ...       0.02583637 Eh      16.21 kcal/mol
+Total entropy correction             ...      -0.02583637 Eh     -16.21 kcal/mol
 
 --------------------------------------------------
 GIBBS FREE ENERGY
@@ -192,15 +192,24 @@ def test_refuses_missing_output_file(tmp_path):
 def test_builds_re_eval_input_with_orca_own_rules(tmp_path):
     """A new T/p that ORCA did not print is requested: build a %freq rerun that
     reuses the existing Hessian, so ORCA only repeats the thermochemistry
-    (manual 4.6.1 / 4.7)."""
+    (manual 4.6.1 / 4.7). A .hess file carries no atomic coordinates, so the
+    source geometry is supplied and written into the ``* xyz`` block."""
     out = _write_out(tmp_path, _TWO_TEMP_OUT)
+    hess = tmp_path / "freq.hess"
+    hess.write_text("# synthetic Hessian placeholder\n$hessian\n3\n")
     inp = tmp_path / "reval.inp"
+    geo = [
+        ("O", 0.0, 0.0, 0.117),
+        ("H", 0.0, 0.757, -0.469),
+        ("H", 0.0, -0.757, -0.469),
+    ]
     result = _adapter().execute(
         tmp_path,
         output_file=str(out),
         re_eval_temp=500.0,
         re_eval_pressure=2.0,
-        hessian=str(out.parent / "freq.hess"),
+        hessian=str(hess),
+        geometry=geo,
         input_path=inp,
     )
     # The reading still succeeds for the existing block; the re-eval input is
@@ -214,6 +223,10 @@ def test_builds_re_eval_input_with_orca_own_rules(tmp_path):
     assert "temp" in text.lower()
     assert "500" in text
     assert "2" in text
+    # the source geometry, not a nominal single He, is what ORCA will run
+    assert "He" not in text, "nominal single-He structure must not be emitted"
+    assert "O" in text and "H" in text
+    assert "inhessname" in text.lower()
 
 
 # --------------------------------------------------------------------------- #

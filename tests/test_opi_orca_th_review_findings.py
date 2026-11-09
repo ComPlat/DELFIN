@@ -60,9 +60,9 @@ def test_entropy_term_sign_is_stable_across_orca_line_labels(tmp_path):
     out = tmp_path / "freq.out"
     out.write_text(_thermo_body())
     d = read_thermochemistry(out)[0]
-    assert d.ts_eh == pytest.approx(0.02583637), (
+    assert d.ts_Eh == pytest.approx(0.02583637), (
         "fallback must negate the -T·S correction so ts_Eh stays +T·S; "
-        f"got {d.ts_eh}"
+        f"got {d.ts_Eh}"
     )
     assert d.ts_kcal == pytest.approx(16.21)
 

@@ -943,9 +943,15 @@ def read_thermochemistry(out_path: Union[str, Path]) -> list[ThermoReading]:
         h = _thermo_quantity(block, "Total Enthalpy", "Eh")
         ts_eh, ts_kcal = _thermo_both(block, "Final entropy term")
         if ts_eh is None:
-            # ORCA also prints "Total entropy correction" in some blocks
-            # (same T*S value); accept either label.
-            ts_eh, ts_kcal = _thermo_both(block, "Total entropy correction")
+            # ORCA also prints the entropy as "Total entropy correction"
+            # (manual 4.7), but with the opposite sign: -T*S, the term already
+            # applied in G = H - T*S, whereas "Final entropy term" prints +T*S
+            # (verified: h2o_optfreq real output lines 3437 vs 3469). Negate so
+            # the reported entropy term stays +T*S, sign-stable whichever of
+            # the two labels survived a truncated-but-terminated output.
+            corr_eh, corr_kcal = _thermo_both(block, "Total entropy correction")
+            if corr_eh is not None:
+                ts_eh, ts_kcal = -corr_eh, -corr_kcal
         g = _thermo_quantity(block, "Final Gibbs free energy", "Eh")
         pressure = _thermo_quantity(block, "Pressure", "atm")
 
