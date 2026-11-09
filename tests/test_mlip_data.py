@@ -239,3 +239,49 @@ def test_read_orca_energy_falls_back_to_engrad(tmp_path, monkeypatch):
                         source="own", licence="self")
     # no readable ORCA output -> engrad energy (same physical quantity)
     assert frame.energy_eV == pytest.approx(-76.0 * md.EV_PER_HARTREE)
+
+
+def test_read_run_rejects_engrad_gradient_not_matching_atom_count(tmp_path):
+    """A corrupted/truncated .engrad must fail as DataSourceError, not crash.
+
+    Real-run failure class: ORCA or xTB can write an .engrad whose gradient
+    block does not hold exactly 3*n components (truncated write, an extra
+    trailing line, atom-count disagreement with the XYZ).  The parser must
+    refuse with a data-source diagnostic rather than raise a raw numpy
+    ValueError (from reshape) or silently return a mis-shaped force field.
+    """
+    run = tmp_path / "bad_run"
+    run.mkdir(parents=True, exist_ok=True)
+    # engrad says 3 atoms, energy -76.0 Eh, but the gradient block has 5
+    # entries instead of 9 (truncated/mangled); _write_engrad's reshape(-1)
+    # cannot express a ragged block, so write the malformed file verbatim.
+    (run / "mol.engrad").write_text(
+        "#\n# Number of atoms: must match the XYZ\n#\n3\n#\n"
+        "# The current total energy in Eh\n#\n"
+        "-76.000000000000\n#\n"
+        "# The current gradient in Eh/bohr: Atom1X, Atom1Y, Atom1Z ...\n#\n"
+        "0.020000000000\n0.000000000000\n0.000000000000\n"
+        "-0.020000000000\n0.000000000000\n",
+        encoding="utf-8",
+    )
+    (run / "mol.xyz").write_text(
+        "3\nbad run\nC 0.0 0.0 0.0\nH 1.0 0.0 0.0\nH 0.0 1.0 0.0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(md.DataSourceError):
+        md.read_run(run, "mol", program="xtb",
+                    source="own", licence="self")
+
+
+def test_parse_engrad_blocks_rejects_length_mismatch(tmp_path):
+    """Direct unit check: gradient length must be exactly 3 * n_atoms."""
+    engrad = tmp_path / "m.engrad"
+    # 2 atoms declared, but only 5 gradient values (truncated write).
+    engrad.write_text(
+        "#\n2\n#\n-10.000000000000\n#\n"
+        "0.010000000000\n0.000000000000\n0.000000000000\n"
+        "-0.010000000000\n0.000000000000\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(md.DataSourceError):
+        md._parse_engrad_blocks(str(engrad))
