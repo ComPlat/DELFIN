@@ -166,19 +166,26 @@ def _setup_control(work_dir: Path, **kwargs: Any) -> None:
         # control with only $title/$actual step/$end).
         define_input = "\n\na coord\n*\nno\n"
         define_input += f"b all {basis}\n*\neht\ny\n{charge}\n"
-        if mult <= 2:
-            # Singlet AND doublet: the plain 'y' accepts the default
-            # occupation; define sets up UHF itself for an open shell on
-            # 7.9 (verified: CH3 mult=2 got $uhf/$alpha/$beta shells from
-            # the plain dialog). Sending 'n'/'u N' here falls out of step
-            # (real run #608 round 4: CH3 control missing $dft/$rij).
+        if mult == 1:
+            # Closed shell: no occupation prompt, no natural-orbitals
+            # question (verified transcript, site 7.9).
             define_input += "y\n"
         else:
-            # mult >= 3: eht asks for the occupation explicitly — decline
-            # the default occupation with 'n' and give the number of
-            # unpaired electrons (verified working transcript, site 7.9:
-            # .gate/rr608_define_transcript_working.txt).
-            define_input += f"n\nu {mult - 1}\n"
+            # Open shell: eht asks for the occupation. Doublet (mult 2):
+            # the plain 'y' accepts the default occupation; define builds
+            # UHF itself (verified: CH3 got $uhf/$alpha/$beta). mult >= 3:
+            # 'n' at the occupation prompt, 'u <unpaired>', then '*' to
+            # leave the occupation menu (verified triplet transcript:
+            # .gate/rr608_define_triplet_working.txt).
+            if mult == 2:
+                define_input += "y\n"
+            else:
+                define_input += f"n\nu {mult - 1}\n*\n"
+            # For UHF define then asks "DO YOU REALLY WANT TO WRITE OUT
+            # NATURAL ORBITALS? DEFAULT=n" — answer 'n' (verified doublet
+            # transcript: .gate/rr608_define_doublet_working.txt). Closed
+            # shells get no such question.
+            define_input += "n\n"
         # dft submenu: switch it on, set the functional, then LEAVE WITH A
         # BLANK line — not '*' (site 7.9 verified transcript).
         define_input += f"dft\non\nfunc {method}\n\n"

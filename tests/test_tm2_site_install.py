@@ -288,5 +288,12 @@ class TestDefineSubmenuExitAndOpenShell:
         assert tail[2] == "y", (
             "mult 2 keeps the plain 'y' (define sets UHF itself on 7.9), "
             "got %r" % tail[2])
-        assert "n" not in tail[:4], (
-            "no occupation-decline 'n' for mult 2: " + str(lines))
+        # Verified doublet transcript (.gate/rr608_define_doublet_working
+        # .txt): after y/charge/y define asks the NATURAL ORBITALS question
+        # ("DEFAULT=n") — answered with 'n' — then 'dft'.
+        assert tail[3] == "n", (
+            "the natural-orbitals question is answered 'n' for mult 2: "
+            + str(lines))
+        assert tail[4] == "dft", (
+            "the natural-orbitals 'n' eats the next prompt, not 'dft': "
+            + str(lines))
