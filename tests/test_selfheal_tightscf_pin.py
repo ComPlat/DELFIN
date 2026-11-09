@@ -14,12 +14,13 @@ from delfin.orca_knowledge import known_keyword
 import delfin.tools.adapters.orca_selfheal_opi as heal
 
 
-@pytest.mark.parametrize("failure", [
-    heal.SelfHealFailure.SCF_NOT_CONVERGED,
-    heal.SelfHealFailure.FREQUENCY_FAILURE,
-])
+# Parametrised by the enum VALUE and resolved at call time: another test in
+# the same run may reload the module, and an enum member captured at
+# collection time is then no longer a key of the reloaded _LADDERS.
+@pytest.mark.parametrize("failure_value", ["scf_not_converged", "frequency_failure"])
 @pytest.mark.parametrize("step", [1, 2, 3])
-def test_every_scf_rung_pins_tightscf(failure, step):
+def test_every_scf_rung_pins_tightscf(failure_value, step):
+    failure = heal.SelfHealFailure(failure_value)
     plan = heal.plan_escalation(failure, step, job_kind="SP")
     assert "TightSCF" in plan.keywords, (
         f"rung {failure.value}/{step}: keyword surface is "
