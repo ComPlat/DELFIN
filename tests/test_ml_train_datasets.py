@@ -235,6 +235,33 @@ def test_encode_decode_target_exponent_form():
         assert dec_u == unit, f"{v!r} {unit!r} -> {dec_u!r}"
 
 
+def test_extxyz_round_trip_metadata_with_spaces(tmp_path):
+    # metadata goes into one comment line as whitespace-separated key=value
+    # tokens (datasets.py:290-298); a multi-word identifier / source must not
+    # be truncated at the first space on read back
+    xyz = "9\n\nC  -0.0000  0.0000  0.0000\n" + "\n".join(
+        "X  0.0  0.0  0.0" for _ in range(8)
+    )
+    records = [
+        ds.Record(
+            identifier="ethane conformer 1",
+            smiles="CCO",
+            xyz=xyz,
+            source="own-calc batch A",
+            licence="CC0",
+            targets=[ds.Target(name="g", value=-5.5, unit="kcal/mol")],
+        )
+    ]
+    path = tmp_path / "sp.xyz"
+    ds.save_extxyz(records, path)
+    loaded = ds.load_extxyz(path)
+    assert len(loaded) == 1
+    r = loaded[0]
+    assert r.identifier == "ethane conformer 1", r.identifier
+    assert r.source == "own-calc batch A", r.source
+    assert r.targets[0].value == pytest.approx(-5.5)
+
+
 # ---------------------------------------------------------------- dedup by InChIKey
 
 
