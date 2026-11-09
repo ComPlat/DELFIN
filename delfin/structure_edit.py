@@ -240,14 +240,31 @@ def _h_directions(
             # pyramidalisation).
             return _ring(base, 60.0, 2, offset=180.0)
         if heavy_order >= 2 and count == 1:
-            # Imine N (C=N, order 2): its ONE free valence sits in the
-            # plane at 120 deg from the double bond, like any sp2 H.
+            # sp carbon on a triple bond (order 3, e.g. acetylene): its
+            # ONE H continues the bond axis -> X-C-H 180 (sp). The imine
+            # ring at 120 deg trans-bent it instead (operator round 5
+            # rerun). An imine N keeps the 120-deg in-plane H (order 2).
+            if heavy_order == 3:
+                return [base]
             return _ring(base, 60.0, 2, offset=180.0)[:1]
         return _tetrahedral_from_axis(base, count)
     else:
-        # Two heavy neighbours: place H in the plane spanned by the two
-        # bonds, mirrored across the C-C axis, so X-X-H and H-X-H both
-        # come out at real sp2 values (ethylene: 121.5 / 117).
+        # Two heavy neighbours. For ONE H the operator's rule (round 5
+        # rerun) is universal and right: direction = -(sum of unit
+        # vectors to the neighbours), normalised — the H points AWAY
+        # from all of them (formamide's C-H sat 0.265 A from N in the
+        # 121.5-from-bond-1 placement). For TWO H (=CH2-type sp2
+        # centres) the in-plane mirrored 120-deg placement stays.
+        if count == 1:
+            s = [0.0, 0.0, 0.0]
+            for a in away:
+                u = _unit(a)
+                for k in range(3):
+                    s[k] -= u[k]
+            return [_unit(tuple(s))]
+        # =CH2-type sp2: H in the plane spanned by the two bonds,
+        # mirrored across the C-C axis, so X-X-H and H-X-H both come
+        # out at real sp2 values (ethylene: 121.5 / 117).
         b1 = _unit(away[0])
         b2 = _unit(away[1])
         # Internal bisector (points between the bonds) and the angle
