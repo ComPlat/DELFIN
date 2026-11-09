@@ -679,6 +679,46 @@ def score_frames(xyzs: Sequence[str], smiles: Optional[str] = None) -> Optional[
     return out
 
 
+def category_excess_counts(xyz: str, smiles: Optional[str] = None) -> Optional[Dict[str, int]]:
+    """Per geometry class (pi, mpl, dang, hyb, con, bnd) the number of local units beyond the class p99
+    (exceedance e > 1) of one frame, under the reading (automorphism) with the lowest realism score; None
+    when the frame or the SMILES cannot be read or no table is present.  Used by the additive
+    one-substituent-donor siblings (DELFIN_FFFREE_ORIENT_ONE_SUB_LP, topo_isomers) to compare a sibling
+    with its own primary."""
+    smiles = smiles or current_smiles()
+    T = load_table()
+    if not smiles or T is None:
+        return None
+    ch = _fr_chem_cached(smiles)
+    if ch is None:
+        return None
+    try:
+        el, X = _fr_parse_xyz(xyz)
+        mp = _fr_map_frame(ch, el, X, None)
+        if mp is None:
+            return None
+        hp = _fr_hparents(el, X)
+        best = None
+        for sig in _fr_automorphisms(ch):
+            mps = {s: mp[sig[s]] for s in mp}
+            mm = _fr_metal_map(ch["sg"], mps, el, X)
+            if mm is None:
+                continue
+            units = frame_units(ch, el, X, mps, mm, hp)
+            v = frame_score(T, units)
+            if best is None or v < best[0]:
+                best = (v, units)
+        if best is None:
+            return None
+        out = {c: 0 for c in ("pi", "mpl", "dang", "hyb", "con", "bnd")}
+        for q, c, cc, val in best[1]:
+            if _fr_excess(T, q, c, cc, val) > 1.0:
+                out[CAT[q]] += 1
+        return out
+    except Exception:
+        return None
+
+
 _AUTO_CAP = 16
 
 
