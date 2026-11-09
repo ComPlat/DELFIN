@@ -195,6 +195,46 @@ def test_extxyz_round_trip(tmp_path):
     assert loaded[0].targets[0].value == pytest.approx(-6.4)
 
 
+def test_extxyz_round_trip_scientific_notation_target(tmp_path):
+    # targets are written with f"{value:g}" (datasets.py:364), which emits
+    # exponent form for |value| < 1e-4 or magnitude >= 1e6; the reader must
+    # not lose the magnitude (bug: '5e-05Ha' read back as 5.0 with unit
+    # 'e-05Ha'). Real absolute Hartree energies can be this small.
+    small_abs_energy = -0.00005  # Hartree; f"{:g}" -> '-5e-05'
+    xyz = "9\n\nC  -0.0000  0.0000  0.0000\n" + "\n".join(
+        "X  0.0  0.0  0.0" for _ in range(8)
+    )
+    records = [
+        ds.Record(
+            identifier="eth",
+            smiles="CCO",
+            xyz=xyz,
+            source="own-calculation",
+            licence="CC0",
+            targets=[ds.Target(name="e_abs", value=small_abs_energy, unit="Ha")],
+        )
+    ]
+    path = tmp_path / "sci.xyz"
+    ds.save_extxyz(records, path)
+    loaded = ds.load_extxyz(path)
+    assert len(loaded) == 1
+    t = loaded[0].targets[0]
+    assert t.value == pytest.approx(small_abs_energy), (
+        f"{small_abs_energy} round-tripped to {t.value} (unit {t.unit!r})"
+    )
+    assert t.unit == "Ha"
+
+
+def test_encode_decode_target_exponent_form():
+    # low-level pair must survive exponent-form values across the :g boundary
+    for v, unit in [(-5e-05, "Ha"), (-0.000123, "Ha"), (1e20, "au"),
+                    (1234567.0, "kJ/mol"), (3.0e-7, "eV"), (-1234567.0, None)]:
+        raw = ds._encode_target(ds.Target("x", v, unit))
+        dec_v, dec_u = ds._decode_target(raw)
+        assert dec_v == pytest.approx(v), f"{v!r} -> {raw!r} -> {dec_v!r}"
+        assert dec_u == unit, f"{v!r} {unit!r} -> {dec_u!r}"
+
+
 # ---------------------------------------------------------------- dedup by InChIKey
 
 
