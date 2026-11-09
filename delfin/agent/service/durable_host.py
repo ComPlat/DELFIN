@@ -58,6 +58,12 @@ def _heartbeat_path(root: Optional[str]) -> Path:
     return Path(session_store._SESSIONS_DIR) / HEARTBEAT_FILE
 
 
+# Slack for minor clock differences between hosts (heartbeat written on a
+# compute node, read on the login node). Beyond this margin a future ts is
+# clock skew and never counts as alive.
+_FUTURE_SKEW_S = 30.0
+
+
 def read_supervisor_heartbeat(root: Optional[str] = None) -> Optional[dict]:
     """Return the heartbeat record (its clock ``ts``, pid, host, sessions)
     or None when absent/corrupt. Never raises."""
@@ -70,15 +76,21 @@ def read_supervisor_heartbeat(root: Optional[str] = None) -> Optional[dict]:
 
 
 def heartbeat_fresh(root: Optional[str] = None) -> bool:
-    """True while a supervisor heartbeat is fresh (record ts within
-    ``FRESH_WINDOW_S`` of now). Corrupt or absent => not fresh, so a second
-    supervisor may start. The boundary moves only with the record's clock.
+    """True while a supervisor heartbeat is fresh: the record's ``ts`` lies
+    within ``FRESH_WINDOW_S`` BEHIND now. Corrupt or absent => not fresh,
+    so a second supervisor may start. A FUTURE ``ts`` (any margin beyond
+    30 s of slack for minor clock differences) is NOT fresh either: a host
+    with its clock ahead must not wedge the supervisor lock after it dies.
+    The boundary moves only with the record's clock.
     """
     record = read_supervisor_heartbeat(root)
     if record is None:
         return False
     ts = float(record["ts"])
-    return (time.time() - ts) <= FRESH_WINDOW_S
+    delta = time.time() - ts
+    if delta < -_FUTURE_SKEW_S:
+        return False  # clock skew: future stamp, never counts as alive
+    return delta <= FRESH_WINDOW_S
 
 
 def write_supervisor_heartbeat(
@@ -250,7 +262,10 @@ def cmd_durable(args) -> int:
     age = max(0, time.time() - float(record["ts"]))
     host = record.get("host") or "unknown"
     sessions = ", ".join(record.get("sessions") or []) or "(none)"
-    print(f"supervisor heartbeat: {'fresh' if fresh else 'STALE'} "
+    state = "fresh" if fresh else "not fresh"
+    if not fresh and float(record["ts"]) > time.time() + _FUTURE_SKEW_S:
+        state += " (clock skew: future timestamp)"
+    print(f"supervisor heartbeat: {state} "
           f"({age:.0f} s old), host {host}, pid {record.get('pid')}, "
           f"sessions: {sessions}")
     return 0
