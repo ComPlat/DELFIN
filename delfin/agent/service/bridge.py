@@ -31,7 +31,14 @@ Commands (one JSON object per line, both ways):
                                              permission profile "default",
                                              enabled for the messenger
     {"cmd": "schedules", "after"?}        -> the user's schedules and the runs
-                                             recorded after ``after``
+                                            recorded after ``after``
+    {"cmd": "approvals"}                  -> every pending approval of the
+                                            service's sessions, numbered,
+                                            with the check to answer with
+    {"cmd": "answer", "n"?, "ok"?, "check"?, "id"?, "text"?}
+                                          -> the numbered approval (n, ok,
+                                             check) or a session question
+                                             (id, text; scope unchanged)
     {"cmd": "schedule", "action", "id"?, "text"?, "session"?, "check"?}
                                           -> new (a proposal), ok (with the
                                              check it was shown), show, pause,
@@ -45,6 +52,8 @@ Outgoing events (one JSON object per line):
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -81,13 +90,18 @@ COMMANDS = {
     "status": {},
     "sessions": {},
     "pending": {},
-    "answer": {"id": "string", "text": "string"},
+    "approvals": {},
+    "answer": {"n": "integer?", "ok": "boolean?", "check": "string?",
+               "id": "string?", "text": "string?"},
     "prompt": {"session": "string?", "text": "string"},
     "stop": {},
-    "create": {"name": "string?"},
+    "create": {"name": "string?", "worktree": "boolean?"},
+    "merge": {"path": "string"},
     "schedules": {"after": "string?"},
     "schedule": {"action": "string", "id": "string?", "text": "string?",
                  "session": "string?", "check": "string?"},
+    "profile": {"session": "string?", "workspace": "string?",
+                "text": "string"},
 }
 
 #: Schedules made from the phone per window of CREATE_WINDOW_S.
@@ -213,6 +227,9 @@ class Bridge:
         self._service: object | None = None
         self._pump_task: object | None = None
         self._issued: dict[str, tuple] = {}
+        self._approvals_numbered: dict[tuple, int] = {}
+        self._approvals_issued: dict[tuple, float] = {}
+        self._approvals_raw: dict[tuple, dict] = {}
         self._created: list[float] = []
 
     # -- the service side ---------------------------------------------------------------
@@ -380,6 +397,8 @@ class Bridge:
                 return f"missing {key}"
             if kind.startswith("boolean") and not isinstance(value, bool):
                 return f"{key} must be a boolean"
+            if kind.startswith("integer") and not isinstance(value, int):
+                return f"{key} must be an integer"
             if kind.startswith("string") and not isinstance(value, str):
                 return f"{key} must be a string"
         extra = set(params) - {k.split("?")[0] for k in spec}
@@ -392,12 +411,16 @@ class Bridge:
             self._connect_service()
         return self._service
 
-    async def _request(self, method: str, params: dict | None = None) -> dict:
+    async def _request(self, method: str, params: dict | None = None,
+                       timeout: float | None = None) -> dict:
         params = params or {}
         sid = params.get("sessionId")
         if sid and activation.record(sid).get("endpoint"):
             return await asyncio.to_thread(activation.ask_dashboard, sid, method, params)
-        reply = await asyncio.to_thread(self._client().request, method, params)
+        client = self._client()
+        reply = await asyncio.to_thread(
+            client.request, method, params, **({"timeout": timeout}
+                                               if timeout is not None else {}))
         if method == "sessions.list":
             for record in activation.records():
                 if not record.get("endpoint"):
@@ -470,6 +493,41 @@ class Bridge:
                               "options": self._redactor().value(req.get("options", [])),
                               "choices": req.get("choices", [])})
             return {"ok": True, "items": items}
+        if action == "branch":
+            # Branch operations in this session's workspace: the dashboard's
+            # rules (branch_ops), from the phone. A deletion rides
+            # branch.cleanup with confirm=true only; branch.test can run
+            # minutes, so it asks the service directly, not through a turn.
+            ws = str(row.get("workspace") or "")
+            if not ws:
+                return {"error": "Diese Sitzung hat keinen Arbeitsordner."}
+            sub = str(params.get("sub") or "")
+            request = {"workspace": ws}
+            if sub in {"list", "pull", "test", "cleanup"}:
+                pass
+            else:
+                return {"error": "Unbekannter Branch-Befehl."}
+            if sub == "list":
+                request.update(view=str(params.get("view") or "mine"),
+                               text=str(params.get("text") or ""))
+                reply = await self._request("branch.list", request)
+            elif sub == "pull":
+                reply = await self._request("branch.pull", request)
+            elif sub == "test":
+                request.update(ref=str(params.get("ref") or ""))
+                reply = await self._request("branch.test", request,
+                                            timeout=1200.0)
+            else:
+                request.update(delete=params.get("delete") or [],
+                               confirm=bool(params.get("confirm", False)))
+                reply = await self._request("branch.cleanup", request,
+                                            timeout=300.0)
+            if reply.get("error"):
+                return {"error": str(reply["error"])}
+            return {"ok": bool(reply.get("ok")), "text": str(reply.get("text") or ""),
+                    **({"rows": reply["rows"]} if "rows" in reply else {}),
+                    **({"candidates": reply["candidates"]}
+                       if "candidates" in reply else {})}
         if action in {"answer", "approve", "deny", "decide"}:
             code = str(params.get("id") or "")
             issued = self._issued.get(code)
@@ -583,7 +641,142 @@ class Bridge:
             })
         return {"ok": True, "items": items}
 
-    async def _cmd_answer(self, _params: dict) -> dict:
+    async def _cmd_approvals(self, _params: dict) -> dict:
+        """Every pending approval of every session of this service --
+        interactive, scheduled, unattended -- numbered, one short entry per
+        request, with the HMAC check to answer with. Numbers stay stable
+        while a request waits; a request that is gone frees its number."""
+        listing = await self._request("sessions.list")
+        rows = listing.get("sessions") or []
+        items = []
+        seen: dict[str, tuple] = {}
+        for row in rows:
+            sid = str(row.get("sessionId") or row.get("id") or "")
+            title = self._redactor().text(_truncate(str(row.get("title") or "")))
+            live = await self._request("session.pending", {"sessionId": sid})
+            for req in live.get("pending", []):
+                if str(req.get("kind")) not in {"confirm", "plan"}:
+                    continue
+                rid = str(req.get("requestId") or "")
+                flags = req.get("flags") or {}
+                what = ("shell" if flags.get("shell")
+                        else "write" if flags.get("write")
+                        else "read" if flags.get("outsideRead") else "")
+                preview = self._redactor().text(str(req.get("preview") or ""))
+                options = {o.get("key") for o in req.get("options", [])}
+                # Always-explicit stays explicit: a request the approval
+                # screen marks protected, or the existing outward
+                # classifier (auto_guard) marks outward -- git push, gh pr
+                # create/merge, forge API writes, mail, uploads -- is shown
+                # but never phone-approved.
+                outward = self._outward(req)
+                approvable = ("y" in options and len(preview) <= 1400
+                              and not flags.get("protected") and not outward)
+                items.append({
+                    "tool": str(req.get("tool") or ""),
+                    "text": _truncate(preview, 300),
+                    "risk": what,
+                    "session": title,
+                    "sessionId": sid,
+                    "requestId": rid,
+                    "approvable": approvable,
+                    "_req": req,
+                })
+        if not items:
+            return {"ok": True, "items": [], "check": ""}
+        # The numbers: stable while a request waits, freed when it is gone.
+        order = [(i["sessionId"], i["requestId"]) for i in items]
+        now = time.monotonic()
+        self._approvals_numbered = {
+            key: num for key, num in self._approvals_numbered.items()
+            if key in set(order) and now - self._approvals_issued.get(key, now) < 600}
+        start = (max(self._approvals_numbered.values()) + 1
+                 if self._approvals_numbered else 1)
+        for i, key in enumerate(order, start):
+            if key not in self._approvals_numbered:
+                self._approvals_numbered[key] = i
+                self._approvals_issued[key] = now
+        for item in items:
+            key = (item["sessionId"], item["requestId"])
+            item["n"] = self._approvals_numbered[key]
+            # The unchanged request, kept only inside this process: the
+            # answer must apply to the same live request that was shown.
+            self._approvals_raw[key] = item.pop("_req")
+        return {"ok": True, "items": items, "check": self._approvals_check(items)}
+
+    def _outward(self, req: dict) -> bool:
+        """True when the existing classifier (auto_guard) marks this
+        request outward: it publishes or sends something. One classifier,
+        not a second list: the same rules the agent's own guard applies
+        to git push, gh pr create/merge, forge API writes, mail, uploads
+        and the outward MCP tools. Never raises (an error refuses)."""
+        from delfin.agent import auto_guard
+        name = str(req.get("tool") or "")
+        text = str(req.get("preview") or "")
+        # The preview holds the command as the screen shows it ("$ cmd");
+        # auto_guard matches shell commands either way.
+        verdict = auto_guard.classify_call(name, {"command": text})
+        return bool(verdict and verdict.kind in {"outward", "protected"})
+
+    def _approvals_check(self, items: list) -> str:
+        """The code an answer must carry: an HMAC over the whole shown
+        listing, so a message from another chat, a stale listing or a
+        guessed number cannot approve. With no key (tests, headless) a
+        plain fingerprint of the same payload -- never a constant."""
+        from delfin.agent import trust_store
+        payload = json.dumps(
+            [[i["n"], i["sessionId"], i["requestId"], i["text"]] for i in items],
+            sort_keys=True, ensure_ascii=False).encode()
+        tag = trust_store.mac("user_approvals", payload)
+        return tag if tag else "sha:" + hashlib.sha256(payload).hexdigest()
+
+    def _approvals_check_ok(self, items: list, tag: str) -> bool:
+        from delfin.agent import trust_store
+        payload = json.dumps(
+            [[i["n"], i["sessionId"], i["requestId"], i["text"]] for i in items],
+            sort_keys=True, ensure_ascii=False).encode()
+        good = trust_store.check_mac("user_approvals", payload, tag)
+        if good is None:  # no key: only the fingerprint form can match
+            good = hmac.compare_digest(
+                "sha:" + hashlib.sha256(payload).hexdigest(), str(tag or ""))
+        return bool(good)
+
+    async def _cmd_answer(self, params: dict) -> dict:
+        """A numbered approval (n, ok, check) or a session-scoped answer
+        (id, text). The numbered path answers every session of the service,
+        so it is bound to the HMAC check the listing showed."""
+        n, ok, check = params.get("n"), params.get("ok"), params.get("check")
+        if n is not None or check is not None or ok is not None:
+            if not isinstance(n, int) or not isinstance(ok, bool) or not isinstance(check, str) or not check:
+                return {"error": "Antwortform: ok <nummer> / nein <nummer>, mit der beigelegten Prüfung der Anfrage."}
+            approvals = await self._cmd_approvals({})
+            items = approvals.get("items", [])
+            item = next((i for i in items if i["n"] == n), None)
+            if item is None:
+                return {"error": f"Keine offene Anfrage mit der Nummer {n}. Mit approvals die offenen ansehen."}
+            if not self._approvals_check_ok(items, check):
+                return {"error": "Prüfung stimmt nicht oder die Anfrage hat sich geändert. Erst approvals, dann antworten."}
+            if not item["approvable"]:
+                return {"error": "Diese Anfrage ist immer ausdrücklich: bitte am Dashboard freigeben."}
+            key = (item["sessionId"], item["requestId"])
+            shown = self._approvals_raw.get(key)
+            live = await self._request("session.pending", {"sessionId": item["sessionId"]})
+            req = next((r for r in live.get("pending", [])
+                        if r.get("requestId") == item["requestId"]), None)
+            if req is None or shown is None or json.dumps(req, sort_keys=True) != json.dumps(shown, sort_keys=True):
+                return {"error": "Anfrage nicht mehr offen oder geändert. Mit approvals die offenen ansehen."}
+            # Consume before awaiting: concurrent replies cannot approve twice;
+            # the service applies a requestId once regardless.
+            self._approvals_raw.pop(key, None)
+            reply = await self._request("permission.reply", {
+                "sessionId": item["sessionId"], "requestId": item["requestId"],
+                "choice": "y" if ok else "n"})
+            return {"ok": bool(reply.get("applied")),
+                    "error": None if reply.get("applied") else "Anfrage bereits erledigt."}
+        code = str(params.get("id") or "")
+        text = str(params.get("text") or "")
+        if not code or not text:
+            return {"error": "Use a session-scoped question or approval reply."}
         return {"error": "Use a session-scoped question or approval reply."}
 
     async def _cmd_prompt(self, params: dict) -> dict:
@@ -627,12 +820,44 @@ class Bridge:
         self._created.append(now)
         reply = await self._request("session.create", {
             "cwd": folder, "title": title or slug, "permissionMode": "default",
-            "attach": False})
+            "attach": False,
+            # `neu NAME arbeitskopie`: the typed word is the consent -- the
+            # folder may become a local project and the session runs in its
+            # own worktree of it.
+            **({"worktree": True, "initProject": True}
+               if params.get("worktree") else {})})
         sid = str(reply.get("sessionId") or "")
         if not sid:
             return {"error": "Sitzung wurde nicht gestartet."}
         activation.configure(sid)
         return {"ok": True, "sessionId": sid, "title": title or slug, "folder": slug}
+
+    async def _cmd_merge(self, params: dict) -> dict:
+        """`zusammenführen [pfad]`: merge a session worktree back into its
+        main checkout. Without a path, session.worktrees lists the ones of
+        the workspaces root; with one, session.merge does it. A conflict is
+        reported as such -- the main checkout is left as it was and the
+        worktree is kept, so nothing is overwritten. The path must stay
+        inside the workspaces root (DELFIN_MESSENGER_WORKSPACES), like the
+        create folders do."""
+        import os
+        root = os.environ.get(WORKSPACES_ENV, "").strip()
+        path = str(params.get("path") or "").strip()
+        if not path:
+            if not root or not os.path.isabs(root) or not os.path.isdir(root):
+                return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
+            reply = await self._request("session.worktrees", {"cwd": root})
+            worktrees = reply.get("worktrees") or []
+            return {"ok": True, "worktrees": worktrees}
+        if not root or not os.path.isabs(root):
+            return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
+        inside = os.path.realpath(path)
+        if os.path.commonpath([os.path.realpath(root), inside]) != os.path.realpath(root):
+            return {"error": "Der Pfad liegt nicht in den Sitzungsordnern des Telefons."}
+        reply = await self._request("session.merge", {"path": inside})
+        if reply.get("error"):
+            return {"error": reply["error"]}
+        return {"ok": True, **reply}
 
 
     # -- the user's schedules ---------------------------------------------------------
@@ -661,6 +886,45 @@ class Bridge:
                 "confirmed": bool(e["confirmed"]), "check": schedules.fingerprint(e),
                 "runUsd": e.get("budget_run_usd"), "dayUsd": e.get("budget_day_usd"),
                 "minutes": e.get("max_minutes")}
+
+    async def _cmd_profile(self, params: dict) -> dict:
+        """Set a workspace's freedom profile from the phone.
+
+        ``profil <session|ordner> frei|standard`` -- a session's own
+        workspace (exact, enabled ID, like every room command) or a
+        named folder. ``frei`` is refused with the reason where the host
+        cannot hold a shell command in the cage, and the word is
+        validated before anything is stored. The store is the user's,
+        masked like the schedules; the phone is the user.
+        """
+        from delfin.agent import workspace_profiles
+        word = str(params.get("text") or "").strip().lower()
+        if word not in {"frei", "free", "standard", "default"}:
+            return {"error": "profil <sitzung|ordner> frei|standard"}
+        sid = str(params.get("session") or "")
+        workspace = str(params.get("workspace") or "")
+        if not workspace and sid:
+            if not activation.enabled(sid):
+                return {"error": "SimpleX ist für diese Sitzung "
+                                 "ausgeschaltet. In TUI/Dashboard mit "
+                                 "/sync aktivieren."}
+            listing = await self._request("sessions.list")
+            row = next((r for r in listing.get("sessions", [])
+                        if str(r.get("sessionId") or r.get("id") or "") == sid),
+                       None)
+            workspace = str((row or {}).get("workspace") or "")
+            if not workspace:
+                return {"error": "Diese Sitzung ist nicht verfügbar. "
+                                 "Kein anderer Agent wurde angesprochen."}
+        if not workspace:
+            return {"error": "profil <sitzung|ordner> frei|standard"}
+        try:
+            result = workspace_profiles.set_from_word(workspace, word)
+        except PermissionError as exc:
+            return {"error": str(exc)}
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"ok": True, **result}
 
     async def _cmd_schedules(self, params: dict) -> dict:
         """The schedules (cut) and the runs after ``after``, within one line."""

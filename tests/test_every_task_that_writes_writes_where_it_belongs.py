@@ -384,9 +384,49 @@ def test_the_counts_still_match_what_was_measured():
     # tasks_w25_sl1.yaml SLURM-operation tasks (resources + partitions, a
     # pending job's reason, a failed job classified and sent to DELFIN's
     # recalc path, efficiency from sacct); recorded scheduler text, no load.
+    #
+    # chemistry 29 -> 32 on 2026-10-31 (ES1, wave 24, agent/s7-es1b): the
+    # three tasks_w24_es1.yaml ESD/TADF tasks, graded on the run's physics
+    # (state order, Delta E_ST against the cited experimental band, ISC rate
+    # at the matched level); synthetic fixtures only.
+    #
+    # other 81 -> 85 on 2026-11-01 (SH2, wave 26, agent/s6-sh2b): the four
+    # tasks_w26_sh2.yaml shell tasks (metacharacters passed safely, a failing
+    # first command not hidden by a pipe, a long command reported, a request
+    # that would destroy uncommitted work answered safely); graded on actions.
+    #
+    # generalist 22 -> 26 on 2026-11-01 (GH1, wave 26, agent/s1-gh1b): the
+    # four tasks_w26_gh1.yaml GitHub-operation tasks in a throw-away local repo
+    # (own files only, red CI log reproduced, cross-review on a scratch
+    # branch, count-like conflict resolved by summing); graded on repo state.
+    #
+    # other 85 -> 88 on 2026-11-01 (SW1, wave 27, agent/s6-sw1b): the three
+    # tasks_w27_sw1.yaml swarm tasks (overlapping scopes refused, a valid
+    # spec's dry run lists the right members/branches/scopes, triage
+    # auto-answers a partner message but escalates a push request).
+    #
+    # science 48 -> 51 on 2026-11-01 (CM1, wave 26, agent/s9-cm1b): the three
+    # tasks_w26_cm1.yaml Code Mode adoption tasks (run-tree census, failure
+    # triage, per-method statistics over a 20-folder recorded fixture); setup
+    # cm1_run_tree_fixture.py; accept/cm1_{census,triage,methods}_verify.py.
+    #
+    # other 88 -> 90 on 2026-11-02 (SA0, wave 27, agent/s5-sa0b): the two
+    # tasks_w27_sa0.yaml delegation tasks (a dummy expert delegated to end
+    # to end; graded on artifacts, no live model).
+    #
+    # science 51 -> 54 on 2026-11-02 (SRC1, wave 26, agent/s3-src1b): the
+    # three tasks_w26_src1.yaml source-verification tasks (real DOI, invented
+    # DOI refused, PubChem value with CID), graded on recorded API responses.
+    # science 54 -> 55 on 2026-11-03 (BT1, wave 28, swarm/wave20/bt1): the
+    # tasks_w28_bt1.yaml butane rotation-profile task (scan + TS + movie,
+    # graded on the artifact tree).
+    # other 90 -> 96 on 2026-11-07 (F2, wave 28, agent/s3-f2b): the six
+    # tasks_w28_lh.yaml long_horizon tasks (no dedicated bucket yet).
+    # science 55 -> 58 on 2026-11-09 (TF1, wave 28, agent/s9-tf1b): the three
+    # tasks_w28_tf1.yaml ts-finder tasks, graded on recorded artifacts.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 48, "chemistry": 29, "generalist": 22,
-                      "other": 81}, counts
+                      "science": 58, "chemistry": 32, "generalist": 26,
+                      "other": 96}, counts
 
 
 # ---------------------------------------------------------------------------

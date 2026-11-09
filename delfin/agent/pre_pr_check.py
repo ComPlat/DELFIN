@@ -160,7 +160,14 @@ def _guard_tests_for(tree: set[str], worktree: str) -> list[str]:
         if not base.startswith("test_") or not base.endswith(".py"):
             continue
         if "guard" not in base and not _is_invariant_family(base):
-            continue
+            # A guard whose own source shows it scans the WHOLE tracked
+            # tree (ls-files) or a sub-tree it globs behaves like a guard
+            # regardless of its name (the wave-23 identity guards carry
+            # neither *guard* nor an invariant prefix). The source check
+            # costs one file read per non-matching name.
+            rel_area = _guard_area_from_file(worktree, rel)
+            if rel_area is None:
+                continue
         if _guard_covers(rel, path, tree, worktree):
             out.append(rel)
     return sorted(set(out))
@@ -199,6 +206,30 @@ def private_strings(diff_text: str) -> list[str]:
     return [f"{f['detail']}" for f in findings]
 
 
+#: Marker for a guard that scans the WHOLE tracked tree (it enumerates
+#: the tree itself, e.g. via ``git ls-files``): it applies to every
+#: change, in any directory.
+WHOLE_TREE = "*"
+
+
+def _guard_area_from_file(worktree: str, rel: str) -> str | None:
+    """The scan area of a test file that does not carry a guard name.
+
+    Returns the area when the file's source shows it scans a tree area
+    (whole tree, or a sub-tree under its own directory), else None.
+    Used to admit name-less guards into the selection; the area contract
+    is the same one _guard_area documents.
+    """
+    try:
+        with open(f"{worktree}/{rel}", encoding="utf-8",
+                  errors="replace") as fh:
+            source = fh.read()
+    except OSError:
+        return None
+    area = _guard_area(source, rel, rel)
+    return area or None
+
+
 def _guard_covers(rel: str, path: str, tree: set[str], worktree: str) -> bool:
     """Does this guard test apply to the changed files?
 
@@ -227,13 +258,15 @@ def _guard_covers(rel: str, path: str, tree: set[str], worktree: str) -> bool:
     # A guard test that scans a named area of the tree applies to any
     # change there.  The area comes from the guard's own source (the paths
     # it walks / the allow-list keys it keeps), never a hardcoded list.
-    area = _guard_area(source, rel)
+    area = _guard_area(source, rel, rel)
+    if area == WHOLE_TREE:
+        return bool(tree)
     if area and any(changed.startswith(area) for changed in tree):
         return True
     return False
 
 
-def _guard_area(source: str, rel: str) -> str:
+def _guard_area(source: str, rel: str, guard_path: str = "") -> str:
     """The tree area a guard test scans, read from its own source.
 
     A guard that SCANS an area of the tree — it walks or globs it in its
@@ -243,12 +276,30 @@ def _guard_area(source: str, rel: str) -> str:
     not selected for the area (reviewer finding on 73e6aaa6: a guard file
     whose only "delfin/" is a comment over-selected every delfin/ change).
     A fixture whose whole source names nothing covers nothing.
+
+    A guard that enumerates the WHOLE tracked tree (``git ls-files``)
+    scans everything, so it is selected for any change anywhere: the
+    account-name guard (wave-23 CI catch) works exactly this way and is
+    invisible to the path-based patterns below. WHOLE_TREE marks it.
+
+    A guard that globs under its own file's directory
+    (``Path(__file__).parent / ...`` then ``glob``/``rglob``) scans that
+    sub-tree; the second wave-23 CI catch (fixture host identity, a
+    ``FIXTURES.glob(\"*/*.out\")`` scan) works this way. The area is the
+    parent-relative path the expression builds.
     """
+    if re.search(r"[\"']ls-files[\"']", source) and re.search(
+            r"subprocess|run\(", source):
+        return WHOLE_TREE
     if re.search(r"Path\([\"']delfin", source) or re.search(
             r"(glob|rglob|walk|iterdir)\([\"']?delfin", source):
         return "delfin/"
-    if "# guard test" in source:
-        return "delfin/"
+    if guard_path:
+        guard_dir = guard_path.rsplit("/", 1)[0] if "/" in guard_path else ""
+        if guard_dir and re.search(
+                r"__file__\)?\s*\.\s*parent", source) and re.search(
+                r"\.(rglob|glob)\(", source):
+            return guard_dir + "/"
     return ""
 
 

@@ -19,6 +19,18 @@ right.
    environment, out of scope). An honest "untested" beats a claimed
    green.
 
+## Shell
+- Quote values with shell metacharacters (`$ & > | * ^`): an unquoted
+  value is expanded, globbed or redirected — never passed bare.
+- A pipeline's exit status is its LAST command's. A failing first
+  command hides behind `| tail`; read the failure from the output.
+- A command that takes longer than a few seconds runs in the
+  background; report progress and the final result, and wait on the
+  condition instead of polling it.
+- Never discard uncommitted work. `git checkout --`, `git restore`,
+  `git clean` and `rm` throw the user's lines away: commit (a WIP
+  commit), stash, or ask — never delete.
+
 ## Never
 - Report a success you did not see on screen or in output.
 - Let a skipped check look like a passed one.

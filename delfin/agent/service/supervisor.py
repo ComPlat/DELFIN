@@ -57,7 +57,10 @@ from . import attention_feed, eventlog, protocol, rundir
 #: cut -- a service before it ignores dryRun and would end the session.
 #: 3: attention.list/answer/dismiss and attention.updated (what needs the
 #: user, from every DELFIN process), and session.create's brief.
-SERVICE_VERSION = 3
+#: 4: one name for every window -- summaries carry ``name``, an empty
+#: session.setTitle puts the default back, titles are cut to 50 -- and
+#: permission.resolved names the window that answered (``client``).
+SERVICE_VERSION = 4
 
 #: Requests a window sends to the service itself (the one definition is
 #: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
@@ -71,10 +74,18 @@ FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
                        "session.toggleTasks", "session.setTitle"})
 
 #: What a watch-only connection may not do.
-ACTING = frozenset({"session.create", "session.prompt", "session.cancel",
+ACTING = frozenset({"session.create", "session.merge", "session.prompt",
+                    "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
-                    "session.setTitle", "attention.answer", "attention.dismiss"})
+                    "session.setTitle", "attention.answer", "attention.dismiss",
+                    # A swarm is created, started and answered by the
+                    # user, never by an agent session: the same rule that
+                    # keeps an agent from answering its own approvals
+                    # (attention.answer) keeps it from launching a swarm
+                    # or answering the swarm's queue for itself.
+                    "swarm.start", "swarm.pause", "swarm.resume",
+                    "swarm.triage.answer"})
 
 UNKNOWN_SESSION = protocol.UNKNOWN_SESSION
 WORKER_GONE = protocol.WORKER_GONE
@@ -125,7 +136,7 @@ DORMANT_KEEP_S = 7 * 86400.0
 #: the brief went out already.
 RESUME_SETTINGS = ("cwd", "name", "title", "model", "provider", "effort", "mode", "permissionMode",
                    "addDirs", "readDirs", "isolate", "noIsolate", "fake", "fakeDelay", "fakeSave",
-                   "brief", "briefTitle")
+                   "brief", "briefTitle", "untitled")
 
 #: How long a wake waits for the worker of a service that died to finish
 #: saving the session (it ends on its own when its pipe closes).
@@ -286,6 +297,8 @@ class Session:
         # What the agent view's row says (SESSION_SUMMARY's last five).
         self.first_prompt = ""
         self.last_prompt = ""
+        #: When someone last wrote to it (SESSION_SUMMARY.lastInput); 0: never.
+        self.last_input = 0.0
         self.activity = ""
         self.answer = ""
         self.subscribers: dict["Client", int] = {}    # client -> last seq replayed
@@ -399,6 +412,8 @@ class Session:
         if kind == "permission.resolved":
             return self.pending.pop(str(event.get("requestId")), None) is not None
         if kind == "user.message":
+            if str(event.get("source") or "user") in ("user", "queued", "steer"):
+                self.last_input = float(event.get("ts") or time.time())
             self.last_prompt = _gist(str(event.get("text") or ""))
             self.first_prompt = self.first_prompt or self.last_prompt
             return True
@@ -453,10 +468,17 @@ class Session:
 
     # -- what windows see ---------------------------------------------------------------
     def summary(self) -> dict:
+        # The worker's title once it said one (a rename to the default is
+        # "" and stays so); before that, what it was started with.
+        if "title" in self.info:
+            title = self.info.get("title") or None
+        else:
+            title = self.settings.get("title") or self.settings.get("name") or None
+        workspace = self.info.get("workspace") or self.settings.get("cwd", "")
         return {"sessionId": self.id,
-                "title": (self.info.get("title") or self.settings.get("title")
-                          or self.settings.get("name") or None),
-                "workspace": self.info.get("workspace") or self.settings.get("cwd", ""),
+                "title": title,
+                "name": protocol.display_name(title, workspace, self.id),
+                "workspace": workspace,
                 "provider": self.info.get("provider", ""),
                 "model": self.info.get("model", ""),
                 "approval": self.info.get("approval", ""),
@@ -470,7 +492,8 @@ class Session:
                 "lastPrompt": self.last_prompt or None,
                 "activity": self.activity or None,
                 "waiting": _asked_gist(next(iter(self.pending.values()))) if self.pending else None,
-                "answer": self.answer or None}
+                "answer": self.answer or None,
+                "lastInput": round(self.last_input, 3) or None}
 
     def resume_settings(self) -> dict:
         """What resumes this session as it is now: its create settings, with
@@ -486,6 +509,13 @@ class Session:
         for key, info_key in (("title", "title"), ("effort", "effort"), ("mode", "mode")):
             if self.info.get(info_key):
                 out[key] = str(self.info[info_key])
+        if "title" in self.info and not self.info.get("title"):
+            # Renamed back to the default: said explicitly, or a worker
+            # started with -n would take that address as its title again.
+            out.pop("title", None)
+            out["untitled"] = True
+        elif self.info.get("title"):
+            out.pop("untitled", None)
         approval = str(self.info.get("approval") or "")
         if approval in ("plan", "default", "acceptEdits"):
             out["permissionMode"] = approval
@@ -534,6 +564,22 @@ class Session:
         first = next((e for e, _ in older if e.get("type") == "user.message"), None)
         if first is not None:
             self.first_prompt = _gist(str(first.get("text") or "")) or self.first_prompt
+        if not self.last_input:
+            # A woken or resumed session: when it was last written to, from
+            # its log, so a quiet one does not look freshly used.
+            typed = [float(e.get("ts") or 0) for e, _ in older if e.get("type") == "user.message"
+                     and str(e.get("source") or "user") in ("user", "queued", "steer")]
+            self.last_input = max(typed, default=0.0)
+
+
+def _named(summary: dict) -> dict:
+    """A copy of a summary with its display name (a dormant record a
+    service before SERVICE_VERSION 4 wrote has none)."""
+    out = dict(summary)
+    if not out.get("name"):
+        out["name"] = protocol.display_name(out.get("title"), out.get("workspace"),
+                                            out.get("sessionId"))
+    return out
 
 
 def _elsewhere(ours: set[str]) -> list[dict]:
@@ -876,6 +922,16 @@ class Supervisor:
             problem = protocol.params_problem(SERVICE_REQUESTS[method], params)
             if problem:
                 return fail(protocol.INVALID_PARAMS, problem)
+            # Package SW2b: swarm.* methods live in swarm_rpc.py, not
+            # on this class -- dispatch them by module. Their handlers
+            # take only params (no client, no await) and are sync, so
+            # they run in a thread; every state-changing one confirms
+            # inside swarm_rpc itself (swarm.start double gate).
+            if method.startswith("swarm."):
+                import asyncio as _asyncio
+                from . import swarm_rpc as _swarm_rpc
+                fn = getattr(_swarm_rpc, method.replace(".", "_"))
+                return answer(await _asyncio.to_thread(fn, params))
             handler = getattr(self, "_m_" + method.replace(".", "_"))
             return answer(await handler(client, params))
         except WorkerFailed as exc:
@@ -888,6 +944,11 @@ class Supervisor:
     async def _forward(self, client: Client, method: str, params: dict) -> Any:
         sid = str(params.get("sessionId") or "")
         rest = {k: v for k, v in params.items() if k != "sessionId"}
+        if method == "permission.reply":
+            # Who answers is what this connection said in its hello, never
+            # what the reply says: permission.resolved names it to every
+            # window.
+            rest["client"] = client.name or "window"
         if sid in self._waking and method == "session.shutdown":
             # Being woken: stop what the wake brings up, not a record.
             try:
@@ -915,11 +976,17 @@ class Supervisor:
             if method == "session.setTitle":
                 # Kept as the worker keeps it (its _m_session_setTitle): the
                 # title changes, the address does not.
+                # Nothing printable left: the default name, as a live one.
                 title = protocol.clean_title(rest.get("title"))
-                if not title:
-                    raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
-                record["summary"]["title"] = title
-                record["settings"]["title"] = title
+                summary = record["summary"]
+                summary["title"] = title or None
+                summary["name"] = protocol.display_name(title, summary.get("workspace"), sid)
+                if title:
+                    record["settings"]["title"] = title
+                    record["settings"].pop("untitled", None)
+                else:
+                    record["settings"].pop("title", None)
+                    record["settings"]["untitled"] = True
                 self._make_dormant(record)
                 # Saved under it too: stopped before it wakes, the session
                 # is still resumed by that name later.
@@ -960,7 +1027,11 @@ class Supervisor:
                            f"the service speaks protocol {protocol.PROTOCOL_VERSION},"
                            f" this window {version}")
         client.greeted = True
-        client.name = str(params.get("client") or "")[:64]
+        # What it says it is, as one plain line: it is shown to every window
+        # (permission.resolved.client). Said, not proven -- any process of
+        # the user may say any name; windows show the known ones by role
+        # and anything else as given, marked (live_sessions.client_words).
+        client.name = protocol.clean_line(params.get("client"), 64)
         return {"protocolVersion": protocol.PROTOCOL_VERSION,
                 "serviceVersion": SERVICE_VERSION, "release": _release(), "pid": os.getpid(),
                 "host": rundir.hostname(), "mayAct": client.may_act,
@@ -1027,11 +1098,78 @@ class Supervisor:
             # One session, one worker: two would append to the same log.
             raise _Refusal(protocol.NOT_ALLOWED,
                            f"session {resume} runs here already; attach to it")
+        worktree: dict = {}
+        if params.get("worktree") and not resume and not params.get("continue"):
+            # Its own worktree and branch of cwd's repository, so sessions
+            # of one person in one workspace do not edit each other's files
+            # (session_worktree.py). A resumed session keeps its folder.
+            from .. import session_worktree as _sw
+            from .. import worktree as _wt
+            try:
+                worktree = await asyncio.to_thread(
+                    _sw.start, cwd, init_project=bool(params.get("initProject")))
+            except _sw.NeedsLocalProject as exc:
+                raise _Refusal(protocol.NEEDS_LOCAL_PROJECT, exc.question) from None
+            except (_wt.WorktreeError, OSError) as exc:
+                raise _Refusal(protocol.NOT_ALLOWED, str(exc)) from None
+            params = {**params, "cwd": worktree["path"],
+                      "worktreeOf": str(cwd)}
+            cwd = Path(worktree["path"])
         self._creating += 1
         try:
-            return await self._create(client, params, cwd)
+            out = await self._create(client, params, cwd)
+        except BaseException:
+            if worktree:
+                # Nothing ran in it: no session, no tree left behind.
+                from .. import worktree as _wt
+                try:
+                    await asyncio.to_thread(_wt.exit_worktree, _wt.WorktreeInfo(
+                        repo_dir=Path(worktree["repo"]),
+                        path=Path(worktree["worktree"]),
+                        branch=worktree["branch"], base_ref=worktree["base_ref"],
+                        created_at=0.0), keep_if_changed=True)
+                except Exception:
+                    pass
+            raise
         finally:
             self._creating -= 1
+        if worktree:
+            out["worktree"] = worktree
+        return out
+
+    def _sessions_in(self, path: Path) -> list[str]:
+        """Ids of the running, starting and sleeping sessions whose folder
+        is *path* or inside it."""
+        def inside(cwd) -> bool:
+            try:
+                return Path(str(cwd)).resolve().is_relative_to(path)
+            except (OSError, ValueError):
+                return False
+        ids = [sid for sid, s in self.sessions.items()
+               if inside(s.settings.get("cwd"))]
+        ids += ["(starting)" for s in self.starting if inside(s.settings.get("cwd"))]
+        ids += [sid for sid, rec in self.dormant.items()
+                if inside((rec.get("settings") or {}).get("cwd"))]
+        return ids
+
+    async def _m_session_worktrees(self, _client: Client, params: dict) -> dict:
+        from .. import session_worktree as _sw
+        rows = await asyncio.to_thread(_sw.listing, str(params["cwd"]))
+        for row in rows:
+            row["sessions"] = self._sessions_in(Path(row.get("path", "")).resolve())
+        return {"worktrees": rows}
+
+    async def _m_session_merge(self, _client: Client, params: dict) -> dict:
+        from .. import session_worktree as _sw
+        path = Path(str(params["path"])).expanduser()
+        if not path.is_absolute() or not path.is_dir():
+            raise _Refusal(protocol.INVALID_PARAMS, f"no such worktree: {path}")
+        busy = self._sessions_in(path.resolve())
+        if busy:
+            raise _Refusal(protocol.NOT_ALLOWED, (
+                f"session(s) {', '.join(busy)} work in {path}; end them "
+                "first -- a clean merge removes the worktree"))
+        return await asyncio.to_thread(_sw.merge, str(path))
 
     async def _create(self, client: Client, params: dict, cwd: Path) -> dict:
         args = [*self.worker_cmd, "--cwd", str(cwd)]
@@ -1043,7 +1181,7 @@ class Supervisor:
                 args += [flag, str(params[key])]
         for key, flag in (("continue", "--continue"), ("fork", "--fork-session"),
                           ("isolate", "--isolate"), ("noIsolate", "--no-isolate"),
-                          ("fake", "--fake")):
+                          ("fake", "--fake"), ("untitled", "--untitled")):
             if params.get(key):
                 args.append(flag)
         if params.get("unattended"):
@@ -1193,6 +1331,78 @@ class Supervisor:
         self.restart = bool(params.get("restart"))
         asyncio.get_running_loop().call_soon(self.stop, "restart" if self.restart else "stop")
         return {"stopping": True, "sessions": count}
+
+    # -- branches (delfin/agent/branch_ops.py) --------------------------------------------
+    # The dashboard's branch logic, run in a workspace. Nothing here
+    # switches the shared checkout; a deletion goes only through
+    # branch_cleanup.delete (confirm=true), with its rules re-read at
+    # deletion. Every handler runs in a thread: branch.test runs pytest in
+    # a worktree, which takes minutes.
+
+    @staticmethod
+    def _branch_workspace(params: dict) -> dict:
+        """branch_ops' answer for *params*, or the not-a-checkout answer."""
+        workspace = Path(str(params.get("workspace") or "")).expanduser()
+        if not str(params.get("workspace") or "").strip() or not workspace.is_dir():
+            return {"ok": False, "text": f"no such folder: {params.get('workspace')!r}"}
+        return {"workspace": workspace}
+
+    async def _m_branch_list(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"], "rows": []}
+        answer = await asyncio.to_thread(
+            branch_ops.rows, ws["workspace"], str(params.get("view") or "mine"),
+            str(params.get("text") or ""),
+            refresh=bool(params.get("refresh")))
+        if not isinstance(answer, dict) or not answer.get("ok"):
+            # branch_ops.rows answers the refusal dict for a non-checkout;
+            # a service call carries it as its own answer.
+            if isinstance(answer, dict):
+                return answer
+            return {"ok": False, "text": "not a git checkout", "rows": []}
+        return answer
+
+    async def _m_branch_pull(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"]}
+        return await asyncio.to_thread(branch_ops.pull_main, ws["workspace"])
+
+    async def _m_branch_test(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"]}
+        ref = str(params.get("ref") or "").strip()
+        if not ref:
+            return {"ok": False, "text": "no branch named"}
+        return await asyncio.to_thread(
+            branch_ops.test_branch, ws["workspace"], ref,
+            keep=bool(params.get("keep")))
+
+    async def _m_branch_cleanup(self, _client: Client, params: dict) -> dict:
+        from delfin.agent import branch_ops
+        ws = self._branch_workspace(params)
+        if "workspace" not in ws:
+            return {"ok": False, "text": ws["text"], "candidates": []}
+        delete = [str(n) for n in params.get("delete") or []]
+        if not delete:
+            candidates, kept = await asyncio.to_thread(
+                branch_ops.cleanup_candidates, ws["workspace"],
+                include_unmerged=bool(params.get("includeUnmerged")),
+                refresh=bool(params.get("refresh")))
+            if candidates is None:
+                # a non-git workspace: the refusal, not an empty list
+                # (which would read as "nothing to clean up")
+                return {"ok": False, "text": "not a git checkout",
+                        "candidates": [], "kept": []}
+            return {"ok": True, "candidates": candidates, "kept": kept}
+        return await asyncio.to_thread(
+            branch_ops.cleanup_delete, ws["workspace"], delete,
+            confirm=bool(params.get("confirm")))
 
     # -- what needs the user ---------------------------------------------------------------
     async def _m_attention_list(self, _client: Client, _params: dict) -> dict:
@@ -1453,7 +1663,7 @@ class Supervisor:
     # -- dormant sessions -----------------------------------------------------------------
     def _summaries(self) -> list[dict]:
         return ([s.summary() for s in self.sessions.values() if s.id]
-                + [dict(r["summary"]) for r in self.dormant.values()
+                + [_named(r["summary"]) for r in self.dormant.values()
                    if r["summary"]["sessionId"] not in self.sessions])
 
     def _dormant_record(self, session: Session, why: str) -> dict:

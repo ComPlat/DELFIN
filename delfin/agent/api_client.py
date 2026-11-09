@@ -2753,6 +2753,80 @@ def _uncommitted_note(workspace) -> str:
         return ""
 
 
+_HOME_VAR_PREFIX_RE = re.compile(r"^(?:\$HOME|\$\{HOME\})(?=/|$)")
+
+_PYTHON_NAME_RE = re.compile(r"python[0-9.]*")
+
+# Options of venv, virtualenv and `uv venv` that take the next word as
+# their value; that word is not an environment directory. `-p` is
+# virtualenv's and uv's --python.
+_ENV_TOOL_VALUE_OPTS = frozenset({
+    "--prompt", "-p", "--python", "--activators", "--extra-search-dir",
+    "--creator", "--seeder", "--discovery", "--app-data", "--pip",
+    "--setuptools", "--wheel", "-i", "--index-url", "--extra-index-url",
+    "-f", "--find-links", "--cache-dir", "--link-mode", "--index-strategy",
+    "--keyring-provider", "--exclude-newer", "--config-file", "--directory",
+    "--project",
+})
+
+def _env_creation_dirs(name: str, rest: list) -> "list[str] | None":
+    """The directories an environment-creating command writes, or None
+    when *name* / *rest* is not such a command.
+
+    Input: the program's base name and its arguments after quote removal.
+    Output, per form:
+      * ``python* -m venv|virtualenv ARGS``, ``virtualenv ARGS``,
+        ``uv venv ARGS``: every positional of ARGS (venv takes several
+        directories), the values of the options in
+        ``_ENV_TOOL_VALUE_OPTS`` excluded; ``uv venv`` with none is
+        ``.venv``;
+      * ``conda|mamba|micromamba [env] create|install|update|upgrade|
+        remove|uninstall``: the value of ``-p`` / ``--prefix`` /
+        ``--prefix=`` and of ``p`` in a short-option cluster; an empty
+        list for ``-n NAME`` (the environment is under the program's root
+        prefix, which the command text does not name).
+    An empty list means "recognised, no directory named"; the caller then
+    reads no further targets from the segment.
+
+    Rejected: the first positional only (the rule this replaces) --
+    ``python3 -m venv --prompt p /x`` and ``python3 -m venv .venv /x``
+    named their outside directory second; matching on the name
+    ``python``/``python3`` only -- ``python3.11`` and ``/usr/bin/python3.11``
+    were not read at all.
+    """
+    from . import sandbox as _sandbox
+    if _PYTHON_NAME_RE.fullmatch(name):
+        module, args = _sandbox._python_module(rest)
+        if module not in ("venv", "virtualenv"):
+            return None
+    elif name == "virtualenv":
+        args = rest
+    elif name == "uv" and rest[:1] == ["venv"]:
+        args = rest[1:]
+    elif name in _sandbox._CONDA_PROGRAMS:
+        got = _sandbox.conda_env_writes(rest)
+        return None if got is None else list(got[1])
+    else:
+        return None
+    if any(a in ("-h", "--help", "--version") for a in args):
+        return []
+    dirs: list = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in _ENV_TOOL_VALUE_OPTS:
+            skip = True
+            continue
+        if a.startswith("-"):
+            continue
+        dirs.append(a)
+    if not dirs and name == "uv":
+        dirs.append(".venv")
+    return dirs
+
+
 def _bash_write_targets(cmd: str) -> list[str]:
     """Paths a shell command would plausibly WRITE to.
 
@@ -2793,6 +2867,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
                     tok = parts[0]
                 else:
                     tok = tok.strip("'\"")
+            # `$HOME` / `${HOME}` is the one variable whose value the shell
+            # takes from the same place `~` does; skipped like every other
+            # `$` word, `echo x > $HOME/f` and `python3 -m venv $HOME/x`
+            # wrote into the home directory with no target to refuse.
+            # Other variables stay skipped: their value is set by the
+            # command or its environment, and this scanner cannot read it.
+            tok = _HOME_VAR_PREFIX_RE.sub("~", tok, count=1)
             if not tok or tok.startswith("-") or tok.startswith("$"):
                 return
             if any(c in tok for c in "*?[]"):        # globs: not a literal path
@@ -3003,12 +3084,13 @@ def _bash_write_targets(cmd: str) -> list[str]:
                     if a.startswith("of="):
                         _add(a[3:])
                 continue
-            if name in ("python", "python3") and "venv" in rest:
-                # python -m venv <dir>
-                tail = [a for a in rest[rest.index("venv") + 1:]
-                        if not a.startswith("-")]
-                if tail:
-                    _add(tail[0])
+            _env_dirs = _env_creation_dirs(name, rest)
+            if _env_dirs is not None:
+                # The directory an environment is created in: python -m
+                # venv|virtualenv, virtualenv, uv venv, conda|mamba|
+                # micromamba create|install|update|remove -p|--prefix.
+                for a in _env_dirs:
+                    _add(a)
                 continue
             if (name in ("python", "python3") or name.startswith("python3.")) \
                     and "ensurepip" in rest:
@@ -3035,7 +3117,7 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 # prefix, which is either the workspace (fine) or a path
                 # the venv target rule above already covers.
                 continue
-            if name in ("virtualenv", "uv") and rest:
+            if name == "uv" and rest:
                 tail = [a for a in rest if not a.startswith("-")]
                 if tail:
                     _add(tail[-1])
@@ -3485,7 +3567,8 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
 #     stop-all, pause, resume, doctor --repair, where --attach|--write,
 #     jobs watch --on|--off, test-on-slurm.
 #   delfin, read-only: -h/--help, -V/--version, doctor [--json],
-#     qm_check, csp_check, mlp_check, analysis_check.
+#     qm_check, csp_check, mlp_check, analysis_check, mlp_setup
+#     probe|plan|result.
 #   delfin, acting: the bare program (a workflow run), every flag form
 #     (--define, --recalc, --cleanup, --purge, --json ...), cleanup, stop,
 #     co2, run_orca, qm_run, tadf_xtb, hyperpol, cluster, review; and every
@@ -3562,6 +3645,12 @@ _DELFIN_READ_ONLY_SUBCOMMANDS: tuple = (
     ("qm_check", (), (), True),
     ("csp_check", (), (), False),
     ("mlp_check", (), (), False),
+    # mlp_setup: the inventory, the plan and a verify job's result read;
+    # install, configure, verify and remove act and stay asked.
+    ("mlp_setup\\s+probe", ("--json",), (), False),
+    ("mlp_setup\\s+plan", ("--json",),
+     ("--backend", "--partition", "--env-name", "--cuda"), False),
+    ("mlp_setup\\s+result", ("--json",), ("--job-dir",), False),
     ("analysis_check", (), (), False),
 )
 
@@ -3595,7 +3684,7 @@ _DELFIN_ENTRY_MODULE_RE = _inline_payload.DELFIN_ENTRY_MODULE_RE
 # installed copy under site-packages): the program by its path.
 _DELFIN_ENTRY_SCRIPT_BODY = (
     r"delfin/(?:__main__|main|cli|cli_\w+|build_up_complex|"
-    r"cluster_bench/cli|guppy_sampling|guppy_batch|"
+    r"cluster_bench/cli|guppy_sampling|guppy_batch|dev_cli|fixtures_store|"
     r"doc_server/(?:indexer|__main__)|tools/mcp_server|agent/cli|"
     r"ops_server/__main__)\.py")
 _DELFIN_ENTRY_SCRIPT_RE = re.compile(
@@ -3712,8 +3801,12 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*seq\b",
     # Asking a chemistry tool about itself. Anchored to the exact asking
     # forms: `xtb input.xyz` (a real calculation) is not matched, and the
-    # flags are end-anchored so nothing rides after --help.
-    r"^\s*(?:xtb|orca_2mkl|crest)\s+(?:--version|--help|-h)\s*$",
+    # flags are end-anchored so nothing rides after --help. xtb, CREST,
+    # ORCA, sbatch and delfin are not here: calc_policy.information_call
+    # admits their asking forms, and only when the bare name runs the
+    # installed program (a pattern cannot tell `xtb` on PATH from a script
+    # in the workspace named xtb).
+    r"^\s*orca_2mkl\s+(?:--version|--help|-h)\s*$",
     # cd <literal-path>: harmless on its own (it executes nothing, and each
     # bash call is a fresh subprocess) and the common prefix in
     # `cd /path && <cmd>`. Auto-allowed ONLY for a literal path — the char class
@@ -7185,6 +7278,15 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "search_calcs", "get_calc_info", "calc_summary",
     # --- DELFIN ops server: checks ---
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
+    # mlp_list_backends (2026-11-02): reads the backend availability table;
+    # computes and writes nothing.
+    "mlp_list_backends",
+    # mlp_setup_probe / mlp_setup_plan / mlp_setup_verify_result
+    # (2026-11-03): host inventory, a proposal and a verify job's result
+    # file; they run read-only probes and write nothing. The settings write
+    # (mlp_setup_configure) and the verify job writer (mlp_setup_verify)
+    # stay off this list.
+    "mlp_setup_probe", "mlp_setup_plan", "mlp_setup_verify_result",
     # --- DELFIN ops server: output parsing (reads .out files) ---
     # A tool the ops server registers as read-only but that is missing
     # here is refused in default mode with "no approval dialog
@@ -7193,6 +7295,18 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     # holds this list and the server's read-only block together.
     "parse_orca_output", "calc_status", "extract_spectra_table",
     "find_orca_errors", "extract_thermochem",
+    # result_checks reads a finished run; it writes nothing.
+    "result_checks",
+    # geometry_edit: xyz text in, xyz text out; no file write, no run.
+    "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
+    "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
+    "geometry_add_atom", "geometry_remove_atoms",
+    "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
+    "geometry_merge", "geometry_freeze", "geometry_constraints_block",
+    "geometry_build_smiles", "geometry_write_orca_block",
+    # trajectory_xyz (2026-11-03): ORCA output -> multi-frame xyz text;
+    # pure parse, no write.
+    "trajectory_xyz",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",
@@ -7715,6 +7829,9 @@ _PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
     # Planning itself
     "task_create", "task_update", "task_adopt", "exit_plan_mode",
     "ask_user_question", "report_verdict", "skill",
+    # Lab: reading, the dry run, and the emergency stop. A stop is never
+    # refused for the mode; it only moves devices toward their safe state.
+    "lab_devices", "lab_read", "lab_plan_check", "lab_estop",
 })
 
 # What plan mode may run THROUGH AN MCP SERVER. The native list above plus
@@ -7885,6 +8002,29 @@ def _artifact_path_inside(base: str, perms) -> str:
         return ""
 
 
+def _installed_program_test(perms, cwd: Path):
+    """The test calc_policy.information_call applies to a bare program
+    name: it runs a file found on the PATH this session's shell gets
+    (_scrubbed_bash_env) outside the session's roots, its working
+    directory and its scratch dir (calc_policy.trusted_program)."""
+    from . import calc_policy
+    path = _scrubbed_bash_env().get("PATH", "")
+    untrusted = [str(cwd)]
+    try:
+        untrusted += [str(r) for r in perms.all_workspace_roots()]
+    except Exception:
+        untrusted.append(str(getattr(perms, "workspace", ".")))
+    try:
+        untrusted.append(_session_scratch_dir())
+    except Exception:
+        pass
+
+    def _test(name: str) -> bool:
+        return calc_policy.trusted_program(
+            name, path=path, untrusted=untrusted) is not None
+    return _test
+
+
 def _calculation_verdict(perms, cmd: str, args: dict,
                          wall_limit_s: Optional[float]):
     """calc_policy's verdict for a bash command, or None on any failure.
@@ -7903,7 +8043,8 @@ def _calculation_verdict(perms, cmd: str, args: dict,
             cwd = ws / cwd
         return calc_policy.judge_command(
             _split_shell_segments(cmd), cwd, perms._segment_auto_allowed,
-            tool_wall_s=wall_limit_s)
+            tool_wall_s=wall_limit_s,
+            program_trusted=_installed_program_test(perms, cwd))
     except Exception:
         return None
 
@@ -8557,6 +8698,8 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # The user's schedules: written and confirmed by the user only.
     "user_schedules", "user_schedules/**",
     "**/user_schedules", "**/user_schedules/**",
+    "workspace_profiles.json", "workspace_profiles.json/**",
+    "**/workspace_profiles.json", "**/workspace_profiles.json/**",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -9020,7 +9163,7 @@ def _shell_visible(cmd: str) -> str:
     return _blank_quoted(cmd)
 
 
-_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))")
+_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])([\w.-]+)\2|([\w.-]+))")
 
 
 def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
@@ -9165,6 +9308,192 @@ PERSON_OUTPUT_CHARS = 4_000_000
 # still reads max_output_chars: the attribute is never written.
 _PERSON_OUTPUT: "_contextvars.ContextVar[bool]" = (
     _contextvars.ContextVar("delfin_person_output", default=False))
+
+
+#: Model behind this session's commits, for the co-author trailer. A bash
+#: call run by a model turn appends the trailer to every git commit it
+#: carries; a command the USER runs from the prompt (!cmd) stays untouched
+#: because that code path runs inside ``output_for_a_person``. Set by the
+#: executor/engine once per session; empty means no trailer is appended.
+_TRAILER_MODEL: "_contextvars.ContextVar[str]" = (
+    _contextvars.ContextVar("delfin_trailer_model", default=""))
+
+
+def set_commit_trailer_model(model: str = "") -> None:
+    """Record the model that stands behind this session's commits.
+
+    The executor appends ``Co-Authored-By: DELFIN-Agent (<model>) <email>``
+    to every ``git commit`` a model bash call runs, unless
+    ``agent.commit_coauthor`` is false or the call is a user ``!cmd``. Empty
+    model turns the trailer off. Takes effect on this thread only.
+    """
+    _TRAILER_MODEL.set(model or "")
+
+
+def _commit_trailer_enabled() -> bool:
+    """Model set and the setting not switched off and not a user !cmd here."""
+    if _TRAILER_MODEL.get() and not _PERSON_OUTPUT.get():
+        from delfin.user_settings import load_settings
+        agent = (load_settings() or {}).get("agent") or {}
+        return bool(agent.get("commit_coauthor", True))
+    return False
+
+
+def _commit_trailer_value() -> str:
+    """The exact trailer line for the current model/email settings."""
+    model = _TRAILER_MODEL.get()
+    from delfin.user_settings import load_settings
+    from delfin.user_settings import DEFAULT_SETTINGS
+    agent = (load_settings() or {}).get("agent") or {}
+    email = str(agent.get("commit_coauthor_email", "") or "").strip()
+    if not email:
+        email = (
+            (DEFAULT_SETTINGS.get("agent") or {})
+            .get("commit_coauthor_email", "") or "")
+    return f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+
+
+def _commit_trailer_rewrite(cmd: str) -> str:
+    """Append a co-author ``--trailer`` to every git commit a model runs.
+
+    ``_bash_isolation_argv`` is the single choke point every bash command
+    (foreground, background, detach) passes through, so rewriting the command
+    string there covers all of them. Recognises ``git commit`` in each
+    top-level ``&&`` / ``;`` / ``|`` segment -- including the ``-C`` / ``-c
+    key=value`` spellings -- by locating the ``git`` program and its ``commit``
+    subcommand, then inserting ``--trailer '<value>'`` immediately after the
+    subcommand token. git appends the trailer at commit time and deduplicates
+    an identical value on ``--amend``, so an amend that re-applies the same
+    line stays single (the notes confirm this).
+    """
+    if not _commit_trailer_enabled():
+        return cmd
+    trailer = _commit_trailer_value()
+    try:
+        return _rewrite_segments_for_trailer(cmd, trailer)
+    except Exception:
+        # A failure to rewrite must not turn a valid git command into a
+        # refused or mangled one -- leave it exactly as written.
+        return cmd
+
+
+def _rewrite_segments_for_trailer(cmd: str, trailer: str) -> str:
+    """Insert ``--trailer '<value>'`` after each top-level ``git … commit``.
+
+    Walks ``cmd`` once, tracking quotes, backslashes and the chain
+    operators ``&&`` / ``||`` / ``;`` / ``|`` / newline, so a commit inside
+    a compound command (``git add x && git commit -m y``) is caught as
+    cleanly as a bare one. Heredoc bodies are opaque data and are skipped
+    verbatim (never read as words, never rewritten). Every ``commit`` found
+    gets ``--trailer '<value>'`` spliced in immediately after its token; git
+    accepts the option before or after ``-m`` / ``-F`` / ``--amend`` and
+    deduplicates an identical ``Co-Authored-By`` line on ``--amend``, so
+    re-applying the trailer never doubles it. The value is single-quoted
+    (git's ``--trailer`` takes a literal string; an embedded quote is
+    escaped for the shell).
+    """
+    trailer_arg = " --trailer '" + trailer.replace("'", "'\\''") + "'"
+    # insertion byte-offsets into cmd, one per git-commit segment
+    inserts: list[int] = []
+    q: str | None = None
+    i, n = 0, len(cmd)
+    # token start offsets of the current segment (offsets into cmd)
+    seg_words: list[int] = []
+    while i < n:
+        c = cmd[i]
+        if c == "\\" and q != "'" and i + 1 < n:
+            i += 2
+            continue
+        if q is not None:
+            q = None if c == q else q
+            i += 1
+            continue
+        if c in ("'", '"'):
+            q = c
+            i += 1
+            continue
+        if cmd[i:i + 2] == "<<":
+            nr = _consumed_span(cmd, i)
+            if nr is not None:
+                i = nr
+                continue
+        if c in " \t":
+            i += 1
+            continue
+        if c in ("|", ";") or cmd[i:i + 2] in ("&&", "||") or c == "\n":
+            pos = _commit_sub_pos(cmd, seg_words)
+            if pos is not None:
+                inserts.append(pos)
+            seg_words = []
+            i += 2 if cmd[i:i + 2] in ("&&", "||") else 1
+            continue
+        # a word starts; consume until a shell-breaking character
+        start = i
+        while i < n and cmd[i] not in " \t\n;|&'\"\\":
+            i += 1
+        seg_words.append(start)
+    pos = _commit_sub_pos(cmd, seg_words)
+    if pos is not None:
+        inserts.append(pos)
+    if not inserts:
+        return cmd
+    # splice from the end so earlier offsets stay valid
+    out = cmd
+    for off in sorted(inserts, reverse=True):
+        out = out[:off] + trailer_arg + out[off:]
+    return out
+
+
+def _consumed_span(cmd: str, i: int):
+    """Offset just past a here-document body starting at ``i`` (``<<``), or
+    None when the ``<<`` is not a heredoc (a here-string ``<<<`` or a bare
+    redirect ``<<`` into an empty name, which cannot be an operator).
+    Mirrors ``_split_shell_segments``'s heredoc handling.
+    """
+    if cmd[i:i + 3] == "<<<":
+        return None
+    body, end = _consume_heredoc(cmd, i)
+    return end if body is not None else None
+
+
+def _commit_sub_pos(cmd: str, words: list[int]) -> int | None:
+    """Byte offset in ``cmd`` just after a ``commit`` token, if ``words``
+    spell ``git … commit``; else None.
+
+    ``words`` are token start offsets of one shell segment. The leading
+    env assignments (``VAR=x git …``) and ``-C <dir>`` / ``-c key=val``
+    option/value pairs are skipped, so ``git -c user.email=t commit`` and
+    ``git -C /repo -c k=v commit`` both resolve to ``commit``.
+    """
+    if not words:
+        return None
+    n = len(words)
+
+    def _tok(k: int) -> str:
+        e = words[k + 1] if k + 1 < n else len(cmd)
+        return cmd[words[k]:e].strip()
+
+    def _is_env_assignment(k: int) -> bool:
+        t = _tok(k)
+        return "=" in t and not t.startswith("=") and not t.startswith("-")
+
+    def _takes_value(k: int) -> bool:
+        t = _tok(k)
+        return t == "-C" or t == "-c"
+
+    # program: skip leading env assignments
+    p = 0
+    while p < n and _is_env_assignment(p):
+        p += 1
+    if p >= n or _tok(p) != "git":
+        return None
+    # subcommand: skip -C/-c option/value pairs between git and the operand
+    s = p + 1
+    while s < n and _takes_value(s):
+        s += 2 if s + 1 < n else 1
+    if s >= n or _tok(s) != "commit":
+        return None
+    return words[s] + len("commit")
 
 
 @contextlib.contextmanager
@@ -9320,6 +9649,39 @@ def _long_run_probe(perms):
 #: Set by _ask_confirm when it answered "not now" without a dialog; read
 #: by _confirm_timed_out on the same thread right after.
 _APPROVAL_LATCHED = threading.local()
+
+#: One local-project question at a time (_offer_local_project): parallel
+#: sub-agents of one turn must not each ask about the same folder.
+_LOCAL_PROJECT_LOCK = threading.RLock()
+
+
+class _LocalProjectConsent:
+    """The local-project question put through a gate's confirm slot.
+
+    ``ask`` has the confirm-callback signature and answers with the user's
+    answer to the consent question (the gate's own preview appended);
+    ``last_timed_out`` forwards the broker's flag, so a gate reading
+    ``confirm_callback.__self__.last_timed_out`` tells an expired dialog
+    from a no."""
+
+    def __init__(self, callback, question: str, args: dict):
+        self.callback = callback
+        self.question = question
+        self.args = args
+        self.asked = False
+        self.answer = None
+
+    def ask(self, _name, _args, preview) -> bool:
+        self.asked = True
+        self.answer = bool(self.callback(
+            "local_project_init", self.args,
+            f"{self.question}\n\n--- .gitignore ---\n{preview}"))
+        return self.answer
+
+    @property
+    def last_timed_out(self) -> bool:
+        return bool(getattr(getattr(self.callback, "__self__", None),
+                            "last_timed_out", False))
 
 _READ_TOOL_KIND = frozenset({"read_file", "grep_file", "list_files",
                              "glob_files", "notebook_read"})
@@ -10262,8 +10624,16 @@ class KitToolPermissions:
         # the full gate with the forms a session's classifier missed).
         if _reader_writes_or_runs(cmd):
             return False
+        # A leading assignment is not the command: matched case-blind with
+        # a word boundary, `^\s*(?:...|env|...)\b` took `ENV=x python3
+        # evil.py` (and `ls=1 sh x.sh`, `Cat=1 ...`) for `env`/`ls`/`cat`
+        # and ran it unasked. A pattern admits such a segment only when its
+        # match reaches past the assignment's `=` (a rule written for that
+        # assignment).
+        _assign = re.match(r"\s*[A-Za-z_][A-Za-z0-9_]*=", cmd)
         for pat in self.bash_auto_allow_patterns:
-            if re.search(pat, cmd, re.IGNORECASE):
+            _m = re.search(pat, cmd, re.IGNORECASE)
+            if _m and (_assign is None or _m.end() >= _assign.end()):
                 return True
         # Workspace-local virtualenv tool invocations are safe to
         # auto-allow in default mode because sandboxing still confines
@@ -11156,6 +11526,136 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "orca_explain",
+            "description": (
+                "Purpose, requirements and manual section of one ORCA "
+                "keyword; from the shipped dictionary, nothing runs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "word": {"type": "string"},
+                },
+                "required": ["word"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "orca_check_input",
+            "description": (
+                "Check a described ORCA calculation (JSON) against the "
+                "knowledge cards; returns findings with sources."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "calc_description": {"type": "string"},
+                },
+                "required": ["calc_description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "workflow_candidates",
+            "description": (
+                "Rank DELFIN workflows for a calculation request; each "
+                "candidate with reason and the CONTROL keys to set."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_text": {"type": "string"},
+                    "available": {"type": "array",
+                                  "items": {"type": "string"}},
+                },
+                "required": ["task_text"],
+            },
+        },
+    },
+    # Lab device control (delfin/lab, docs/design/lab-control.md): every
+    # write goes through the safety kernel, which reads limits from the
+    # pinned manifest only. Advertised only where a lab manifest exists
+    # (tool_unavailable_reason), so an installation without one pays
+    # nothing per request.
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_devices",
+            "description": "Lab devices: limits, levels, state.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_read",
+            "description": "Readings of one lab device, with their age.",
+            "parameters": {
+                "type": "object",
+                "properties": {"device": {"type": "string"}},
+                "required": ["device"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_set",
+            "description": (
+                "Set a device channel via the safety kernel; a refusal says "
+                "why. Hazardous: after a person approves, repeat with "
+                "approval=<id>."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device": {"type": "string"},
+                    "channel": {"type": "string"},
+                    "value": {},
+                    "unit": {"type": "string"},
+                    "approval": {"type": "string"},
+                },
+                "required": ["device", "channel", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_plan_check",
+            "description": (
+                "Dry-run steps [{device,channel,value,unit}]: limits, "
+                "interlocks; no write."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"steps": {"type": "array",
+                                         "items": {"type": "object"}}},
+                "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lab_estop",
+            "description": (
+                "E-stop: all devices, or one module, to safe state; a "
+                "person clears it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"module": {"type": "string"}},
             },
         },
     },
@@ -12099,6 +12599,37 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_source",
+            "description": (
+                "Check a DOI (Crossref), a compound (PubChem) or find works "
+                "(OpenAlex) via official APIs before citing. not_found: it "
+                "does not exist, do not cite it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["doi", "compound", "works"],
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": (
+                            "DOI, compound name/SMILES/InChIKey, or query."
+                        ),
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "works: hits, 1-20.",
+                    },
+                },
+                "required": ["action", "value"],
             },
         },
     },
@@ -13178,12 +13709,12 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "orchestrate",
             "description": (
-                "Run a declarative multi-stage subagent plan: stages run in "
-                "order with a barrier, calls in a stage fan out in parallel "
-                "(cap 4), later prompts embed earlier results via "
-                "{{stage:NAME}}, and an optional verify step runs skeptic "
-                "votes over the final stage. Limits: 3 stages, 6 calls per "
-                "stage, 3 votes, no nesting inside a sub-agent."
+                "Multi-stage subagent plan: stages run in order with a "
+                "barrier, a stage's calls in parallel (cap 4), later "
+                "prompts embed earlier results via "
+                "{{stage:NAME}}; optional skeptic votes over the final "
+                "stage. Limits: 3 stages, 6 calls per stage, 3 votes, no "
+                "nesting inside a sub-agent."
             ),
             "parameters": {
                 "type": "object",
@@ -13196,7 +13727,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "'prompt': str, 'output_schema'?: object, "
                             "'isolation'?: 'worktree'}]}], 'verify'?: "
                             "{'prompt_template': str containing {{result}}, "
-                            "'votes': int 1-3, 'subagent_type'?: str}}"
+                            "'votes': int 1-3, 'subagent_type'?: str}, "
+                            "'merge'?: true (merge worktrees back)}"
                         ),
                     },
                 },
@@ -13396,6 +13928,20 @@ _SUBAGENT_SPAWN_TOOL_NAMES: frozenset[str] = frozenset({
     "subagent", "orchestrate",
 })
 
+# Lab device control (delfin/lab). Executable only where the installation
+# has a lab manifest; the executor answers the same in its own refusal.
+_LAB_TOOL_NAMES: frozenset[str] = frozenset({
+    "lab_devices", "lab_read", "lab_set", "lab_plan_check", "lab_estop",
+})
+
+
+def _lab_configured() -> bool:
+    try:
+        from delfin.lab.store import lab_configured
+        return bool(lab_configured())
+    except Exception:
+        return False
+
 
 def estimate_schema_tokens(obj: Any) -> int:
     """House estimate of the tokens *obj* costs on the wire."""
@@ -13470,6 +14016,9 @@ class ToolSurfaceContext:
     # rather than being a second policy that happens to agree with it today.
     session_allowed: frozenset[str] = frozenset()
     session_denied: frozenset[str] = frozenset()
+    # Whether this installation has a lab manifest (delfin.lab). Default
+    # True like the index flags; the live surface passes the real answer.
+    has_lab: bool = True
 
 
 def tool_unavailable_reason(
@@ -13523,6 +14072,9 @@ def tool_unavailable_reason(
         return "doc index not available"
     if base in _CALC_INDEX_TOOL_NAMES and not ctx.has_calc_index:
         return "calc index not available"
+    if base in _LAB_TOOL_NAMES:
+        if not ctx.has_lab:
+            return "no lab manifest on this installation"
     if base in _OFFICE_TOOL_NAMES:
         needed = _OFFICE_TOOL_BACKENDS.get(base, ())
         available = ctx.office_backends
@@ -17224,6 +17776,20 @@ class _PayloadHit(str):
         return obj
 
 
+# The note of a successful view_image result. Who sees the image is said
+# per surface because the executor does not know which one runs it: the
+# model always (the image is attached to its next message), the user in
+# the dashboard chat (drawn there as a card from the result's path), and
+# nobody else in the terminal UI or a messenger unless it is sent there.
+# The earlier note said only the first, and a model answered that the
+# image was visible in the chat on a surface where it was not.
+VIEW_IMAGE_NOTE = (
+    "The image is shown to you in the next message — look at it and "
+    "describe / use what you SEE. The user sees it only in the dashboard "
+    "chat, where it appears as a card; in the terminal UI or a messenger "
+    "they do not see it unless you send it there.")
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -18623,6 +19189,26 @@ class _DocToolExecutor:
             if name == "web_search":
                 return self._execute_web_search(arguments)
             return self._execute_web_fetch(arguments)
+
+        # SRC1: official-API source verification (Crossref / PubChem /
+        # OpenAlex) — outbound HTTP like the web tools above, no
+        # filesystem side-effects; the source_apis module enforces the
+        # same web_tools deny-list + a per-host rate limit + cache.
+        if name == "verify_source":
+            return self._execute_verify_source(arguments)
+
+        # w04: ORCA knowledge on demand -- lookups in the shipped stores
+        # (keyword dictionary, knowledge cards, workflow descriptors);
+        # nothing runs, nothing is written, no network.
+        if name in ("orca_explain", "orca_check_input", "workflow_candidates"):
+            return self._execute_orca_knowledge(name, arguments)
+
+        # Lab device control: delfin.lab.tools hands every call to the
+        # safety kernel. The permission mode is deliberately not passed on.
+        if name in ("lab_devices", "lab_read", "lab_set", "lab_plan_check",
+                    "lab_estop"):
+            from delfin.lab import tools as _lab_tools
+            return _lab_tools.execute(name, arguments, permissions)
 
         if name == "remember_permission":
             if permissions is None:
@@ -20103,11 +20689,12 @@ class _DocToolExecutor:
         pend.append(img)
         return json.dumps({
             "status": "ok",
-            "path": str(full),
+            # The resolved path that was read: the dashboard draws its card
+            # from this file and no other.
+            "path": str(img.source_path or full),
             "mime": img.mime,
             "bytes": img.size_bytes(),
-            "note": ("The image is shown to you in the next message — look at "
-                     "it and describe / use what you SEE."),
+            "note": VIEW_IMAGE_NOTE,
         })
 
     def _execute_show_molecule(
@@ -22855,6 +23442,52 @@ class _DocToolExecutor:
                         f"that could not be checked ('{cmd[:120]}'). Do NOT "
                         "retry it or work around it." + self._said_why(perms))
                 _approved_here = True
+            # An environment under a conda / mamba / micromamba root prefix
+            # (`create -n NAME`, `install -n NAME`, `env create -f FILE`,
+            # `-r ROOT`): the directory is the program's configuration, not
+            # the command text, so the write-target gate cannot judge it.
+            # Asked in every mode, Bypass included, for each call; refused
+            # with nobody to ask. The yes is the decision: neither the
+            # classifier nor the cage admission is consulted after it.
+            # Measured before: Bypass ran it unasked whenever the watcher
+            # was off or allowing.
+            from .sandbox import root_prefix_env_command as _env_root_rule
+            _env_root = _env_root_rule(_prose_blanked(cmd))
+            _env_root_approved = False
+            if _env_root:
+                _record_security_event("env_root_prefix", "bash", cmd[:80],
+                                       blocked=perms.confirm_callback is None)
+                if perms.confirm_callback is None:
+                    return (
+                        f"blocked: `{_env_root}` creates or changes an "
+                        "environment under the program's root prefix, "
+                        "outside the workspace, and nobody can be asked "
+                        "here. Tell the user the command and why the "
+                        "environment is needed, or create it in the "
+                        "workspace with -p ./<dir>.")
+                try:
+                    ok = bool(_ask_confirm(perms,
+                        "bash", {"command": cmd},
+                        "[ENVIRONMENT UNDER THE ROOT PREFIX]\n"
+                        f"`{_env_root}` writes an environment under the "
+                        "program's root prefix, outside the workspace.\n\n$ "
+                        + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for this environment TIMED OUT — the "
+                            "user is away, this is not a refusal. Do not run "
+                            "it now.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied `{_env_root}` ('{cmd[:120]}'). Do NOT "
+                        "retry it or work around it." + self._said_why(perms))
+                _approved_here = True
+                _env_root_approved = True
             # A command this session promises to confine (locked scope,
             # forced isolation) on a host where no layer can confine it.
             # _bash_isolation_argv would refuse it at run time; asked here
@@ -23122,6 +23755,10 @@ class _DocToolExecutor:
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
                 # The classifier is the one second look this profile has.
+                # A root-prefix environment the user just approved in its
+                # own dialog runs on that yes.
+                if _env_root_approved:
+                    return None
                 return self._classifier_second_opinion(perms, name, args, mode)
             if perms.matches_bash_auto_allow(cmd):
                 # The list matches the command's spelling, not its purpose.
@@ -23165,6 +23802,24 @@ class _DocToolExecutor:
             # upload the egress scan flagged is never admitted here.
             _calc = _calculation_verdict(perms, cmd, args, wall_limit_s)
             _calc_reason = ""
+            # An information call (`xtb --version 2>&1 | head -3`, `command
+            # -v crest`) starts nothing: admitted here when every other
+            # segment is auto-allowed, within the managed only_allow, with
+            # no rule of the user's on it; never named as a calculation.
+            if (_calc is not None and getattr(_calc, "information", False)
+                    and _calc.admit and egress is None
+                    and not _approved_here
+                    and _managed_only_allow_admits(perms, cmd)):
+                _info_rule = _permission_rule_hit(perms, "bash",
+                                                  {"command": cmd})
+                if _info_rule is not None and _info_rule[0] == "deny":
+                    return _refuse_by_rule("bash", _info_rule[1])
+                if _info_rule is None:
+                    _record_security_event(
+                        "information_call", "bash", _calc.summary[:200],
+                        blocked=False)
+                    return self._classifier_second_opinion(
+                        perms, name, args, mode)
             if _calc is not None and _calc.calculation:
                 _calc_rule = _permission_rule_hit(perms, "bash",
                                                   {"command": cmd})
@@ -24873,10 +25528,16 @@ class _DocToolExecutor:
                 # target outside every writable root and not an ephemeral
                 # sink is refused ONCE with the directory route (the same
                 # grant the write path names), never asked as a read.
+                # Compared as written and as the path it names: the read
+                # scan expands `$HOME/x` where the write scan reads `~/x`.
                 try:
                     _res = path.resolve(strict=False)
+                    _writes = _bash_write_targets(scan)
+                    _write_paths = {
+                        Path(w).expanduser().resolve(strict=False)
+                        for w in _writes if Path(w).expanduser().is_absolute()}
                     _is_dead_write = (
-                        target in set(_bash_write_targets(scan))
+                        (target in set(_writes) or _res in _write_paths)
                         and not _is_ephemeral_sink(
                             _res, getattr(perms, "workspace", None))
                         and perms.find_root_for(_res) is None)
@@ -25466,6 +26127,17 @@ class _DocToolExecutor:
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
         env.setdefault("LANG", "C.UTF-8")
+        # Code Mode hook (CM1): a bash command that runs a Code Mode
+        # program gets the per-invocation RPC socket path in its env, and
+        # the RPC server is started in the agent process. Every tool call
+        # the program makes goes over that socket into
+        # KitToolExecutor.execute -- the single PUBLIC entry a direct call
+        # takes (deny rules, plan-mode, sandbox, role and shape checks are
+        # evaluated inside it); the server-side allow-list is enforced
+        # before the executor. For a plain command this adds nothing: the
+        # env is unchanged and no server starts.
+        _cm_env = _code_mode_child_env(cmd, run_cwd, perms, self)
+        env.update(_cm_env)
 
         # What the command is about to overwrite.
         #
@@ -26769,7 +27441,13 @@ class _DocToolExecutor:
         text = str(arguments.get("message") or "").strip()
         if me:
             return json.dumps(_sa.post_reply(me, text), ensure_ascii=False)
-        running = _sa.read_running() or {}
+        # The session's own delegates. The registry is account-wide, and
+        # unscoped a session listed -- and with to="all" wrote into -- the
+        # delegates another session had started. Without a session id (a
+        # bare executor) the old account-wide answer stays.
+        _own = str(getattr(perms, "task_session_id", "") or "").strip()
+        running = (_sa.read_running(session=_own) if _own
+                   else _sa.read_running()) or {}
         if to.lower() in ("all", "*", "everyone"):
             # One fact to every delegate, in one call. The alternative was
             # a channel BETWEEN siblings, and this is the mandated form of
@@ -26807,6 +27485,15 @@ class _DocToolExecutor:
             }, ensure_ascii=False)
         if not text:
             return json.dumps({"error": "message is required."})
+        if _own and to not in running:
+            # post_note resolves the id account-wide; another session's
+            # delegate is not this session's to direct.
+            return json.dumps({
+                "error": (f"no delegate {to!r} of this session is running; "
+                          "if it finished, its answer is in its report "
+                          "(subagent_result)."),
+                "delegates": sorted(running),
+            }, ensure_ascii=False)
         if _sa.post_note(to, text):
             return json.dumps({"status": "sent", "to": to})
         if to not in running:
@@ -27123,6 +27810,133 @@ class _DocToolExecutor:
             f"remember_permission(kind='extra_dir', ...) first."
         )
 
+    def _offer_local_project(
+        self, folder: Path, perms: Optional["KitToolPermissions"], why: str,
+    ) -> Optional[str]:
+        """Make a plain workspace folder a local git repository, if the
+        user says yes. Called where a worktree is about to be made of a
+        folder git does not know (enter_worktree, a sub-agent or an
+        orchestration with worktrees).
+
+        Input: the folder, the session's permissions, what needs git (for
+        the question). Output: None when *folder* is a repository now (it
+        was one, or the init ran), else the JSON refusal for the tool.
+
+        Asked once per session and folder through ``_ask_confirm`` (the
+        approval path of every surface), in every mode: the question is
+        whether the folder becomes a repository, which no permission mode
+        answers. A no is remembered for the session and answered without
+        a dialog. Refused without a question: no one to ask, plan mode, an
+        armed auto iteration, a sub-agent, a session confined to one folder,
+        a folder outside the workspace roots, and every folder
+        ``local_project.refusal`` names (home, system paths, inside another
+        repository, a mount point). The .gitignore goes through the write
+        gate first (``_gate_write_path``: write scope, deny rules,
+        read-only roots), as every other write into the workspace does.
+        Concurrent callers (the parallel sub-agent fan-out) share one
+        question through a lock."""
+        from . import local_project as _lp
+        from . import worktree as _wt
+        if _wt._is_git_repo(folder):
+            return None
+
+        def _no(text: str) -> str:
+            return json.dumps({"error": (
+                f"{folder} is not a git repository, and {why} needs one. "
+                f"{text}"), "skill_hint": (
+                    "skill('local-project'): how worktrees, branches and "
+                    "parallel writers work in a folder without git")})
+
+        if perms is None:
+            return _no("No workspace is configured to make it one.")
+        if self._worktree_path_refusal("repo_dir", folder, perms):
+            return _no("It is outside the workspace roots.")
+        if str(getattr(perms, "mode", "") or "") == "plan":
+            return _no("Plan mode changes nothing; making it a local "
+                       "repository has to wait until the plan is approved.")
+        if callable(getattr(perms, "auto_veto", None)):
+            return _no("Making a folder a repository is the user's "
+                       "decision; an auto iteration does not make it.")
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return _no("A sub-agent does not make the workspace a "
+                       "repository; the session that started it does.")
+        if getattr(perms, "scope_locked", False):
+            return _no("This session is confined to one folder.")
+        why_not = _lp.refusal(folder)
+        if why_not:
+            return _no(f"It cannot become a local repository: {why_not}.")
+        key = str(folder.resolve())
+        with _LOCAL_PROJECT_LOCK:
+            if _wt._is_git_repo(folder):
+                return None
+            answers = getattr(perms, "local_project_answers", None)
+            if not isinstance(answers, dict):
+                answers = {}
+                try:
+                    perms.local_project_answers = answers
+                except Exception:
+                    pass
+            if answers.get(key) is False:
+                return _no("The user declined making it a local repository "
+                           "earlier in this session; it is not asked again. "
+                           "Work in the folder directly, without a worktree.")
+            if perms.confirm_callback is None:
+                return _no("Making it a local repository needs the user's "
+                           "yes, and nobody can be asked here. The user can "
+                           "run `git init` in the folder themselves.")
+            try:
+                plan = _lp.plan(folder)
+                gitignore_text = _lp._gitignore_text(folder)[0]
+            except _lp.LocalProjectError as exc:
+                return _no(f"It cannot become a local repository: {exc}")
+            question = _lp.consent_question(plan)
+            consent = _LocalProjectConsent(perms.confirm_callback, question,
+                                           {"path": key,
+                                            "files": len(plan.files),
+                                            "kept_out": len(plan.kept_out)})
+            # The write gate for the .gitignore, with its question replaced
+            # by the consent question: in default mode the gate asks before
+            # every write, and two dialogs for one decision is one too many.
+            # Where the gate asks nothing (acceptEdits), the consent is asked
+            # below. Its hard refusals (scope, deny rules, read-only roots)
+            # stand either way.
+            import copy as _copy
+            gate_perms = _copy.copy(perms)
+            gate_perms.confirm_callback = consent.ask
+            refusal = self._gate_write_path(
+                str(folder / ".gitignore"), gate_perms, "write_file",
+                {"path": ".gitignore", "content": gitignore_text})
+            if refusal is not None and not consent.asked:
+                return _no(f"The .gitignore it needs may not be written: "
+                           f"{refusal}")
+            ok = refusal is None and consent.answer is not False
+            if ok and not consent.asked:
+                try:
+                    ok = bool(_ask_confirm(perms, "local_project_init",
+                                           consent.args, question))
+                except Exception as exc:
+                    return _no(f"The question could not be asked: {exc}")
+            if not ok:
+                if not self._confirm_timed_out(perms):
+                    answers[key] = False
+                    _record_security_event(
+                        "denied_by_user", "local_project_init", key[:120])
+                    return _no("The user declined making it a local "
+                               "repository. Work in the folder directly, "
+                               "without a worktree.")
+                return _no("The question went unanswered (the user is "
+                           "away); nothing was changed.")
+            try:
+                done = _lp.init_local_project(folder)
+            except _lp.LocalProjectError as exc:
+                return _no(f"Making it a local repository failed and was "
+                           f"rolled back: {exc}")
+            answers[key] = True
+            _record_security_event(
+                "local_project_init", "local_project_init",
+                f"{key[:100]} {done.commit[:10]}", blocked=False)
+        return None
+
     def _execute_enter_worktree(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -27141,6 +27955,11 @@ class _DocToolExecutor:
         refusal = self._worktree_path_refusal("repo_dir", repo_dir, perms)
         if refusal is not None:
             return json.dumps({"error": refusal})
+        if repo_dir.is_dir() and not _wt._is_git_repo(repo_dir):
+            refusal = self._offer_local_project(
+                repo_dir, perms, "a worktree")
+            if refusal is not None:
+                return refusal
         try:
             info = _wt.enter_worktree(
                 repo_dir, branch_prefix=prefix, base_ref=base_ref)
@@ -27234,8 +28053,14 @@ class _DocToolExecutor:
         return json.dumps(payload)
 
     def _execute_worktree_merge(
-        self, arguments: dict, perms: Optional["KitToolPermissions"]
+        self, arguments: dict, perms: Optional["KitToolPermissions"],
+        *, framework_worktree: bool = False,
     ) -> str:
+        """``framework_worktree=True`` (only from _execute_orchestrate, for
+        a worktree run_subagent created and reported) skips the check that
+        the SOURCE path lies in the workspace roots: the path was not
+        chosen by a model. The target check and the per-file write gate
+        apply unchanged."""
         from . import worktree as _wt
         path_arg = (arguments.get("path") or "").strip()
         base_arg = (arguments.get("base_ref") or "").strip()
@@ -27245,7 +28070,8 @@ class _DocToolExecutor:
         wt_path = Path(path_arg).expanduser()
         if not wt_path.is_dir():
             return json.dumps({"error": f"worktree path missing: {wt_path}"})
-        refusal = self._worktree_path_refusal("path", wt_path, perms)
+        refusal = (None if framework_worktree else
+                   self._worktree_path_refusal("path", wt_path, perms))
         if refusal is not None:
             return json.dumps({"error": refusal})
         try:
@@ -27346,11 +28172,71 @@ class _DocToolExecutor:
                 "orchestration nesting limit reached: a sub-agent may not "
                 "drive an orchestration."
             )})
+        # Worktrees in a plain folder: the user is asked once whether it
+        # becomes a local project. A pinned worktree or a requested merge
+        # cannot run without one (refused on a no); writers that would only
+        # have been auto-isolated run unisolated, as before the question.
+        from . import subagents as _sa_orch
+        merge = spec.get("merge") is True
+        wants_wt, pinned = _sa_orch.orchestration_worktrees(spec)
+        runner_kw: dict = {}
+        ws = getattr(perms, "workspace", None)
+        if (wants_wt or merge) and ws is not None:
+            no_repo = self._offer_local_project(
+                Path(ws), perms, "an orchestration with worktrees")
+            if no_repo is not None:
+                if pinned or merge:
+                    return no_repo
+                runner_kw["auto_worktrees"] = False
         try:
-            out = perms.orchestration_runner(spec)
+            out = (perms.orchestration_runner(spec, **runner_kw)
+                   if runner_kw else perms.orchestration_runner(spec))
         except Exception as exc:
             return json.dumps({"error": f"orchestration runner raised: {exc}"})
+        if merge and isinstance(out, dict) and not out.get("error"):
+            out["merges"] = self._merge_orchestration_worktrees(out, perms)
         return json.dumps(out, ensure_ascii=False)
+
+    def _merge_orchestration_worktrees(
+        self, out: dict, perms: Optional["KitToolPermissions"],
+    ) -> list:
+        """Merge every worktree an orchestration's delegates kept, in stage
+        and call order, into the workspace (``worktree_merge``'s executor:
+        target check, per-file write gate, clean-apply-or-nothing).
+
+        Output: one entry per kept worktree -- ``status`` ``ok`` (applied,
+        or nothing to merge), ``conflict`` (the target untouched, the
+        worktree kept at ``path`` for a manual merge) or ``error``. A
+        conflict never overwrites: the later delegate's change is left in
+        its worktree, the earlier ones stay merged. The merged changes are
+        uncommitted in the workspace, for review."""
+        merges: list = []
+        stages = out.get("stages") if isinstance(out, dict) else None
+        for stage_name, payloads in (stages or {}).items():
+            for payload in payloads or ():
+                wt = (payload or {}).get("worktree") or {}
+                path = str(wt.get("final_path") or "") if isinstance(
+                    wt, dict) else ""
+                if not path:
+                    continue
+                try:
+                    res = json.loads(self._execute_worktree_merge(
+                        {"path": path}, perms, framework_worktree=True))
+                except Exception as exc:
+                    res = {"error": f"merge raised: {exc}"}
+                entry = {
+                    "stage": stage_name,
+                    "description": str(payload.get("description") or ""),
+                    "branch": str(wt.get("branch") or ""),
+                    "path": path,
+                    "status": ("error" if res.get("error")
+                               else str(res.get("status") or "")),
+                    "files": res.get("files") or [],
+                    "message": str(res.get("error") or res.get("message")
+                                   or ""),
+                }
+                merges.append(entry)
+        return merges
 
     def _execute_subagent(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
@@ -27377,6 +28263,30 @@ class _DocToolExecutor:
             return json.dumps({"error": (
                 "prompt must brief the sub-agent thoroughly (>=20 chars)"
             )})
+        # SA0 (wave 27): above depth 0 a sub-agent may spawn only along
+        # its preset's may_delegate_to whitelist. Experts (empty or
+        # absent whitelist) delegate to nobody; a department manager may
+        # spawn only the experts it names. The depth cap below already
+        # caps HOW deep; this decides WHO. depth == 0 (the main session)
+        # is unrestricted — delegation is an option it takes, never a
+        # gate (the "extend, never lose" rule). The refusal names the
+        # target so the parent can re-plan. Sits BEFORE the runner check:
+        # a guard must fire on the call's own merits, not depend on what
+        # infrastructure happens to be attached.
+        _spawner_preset = _sa.SUBAGENT_PRESETS.get(
+            str(getattr(perms, "_preset_name", "") or ""))
+        if perms is not None and getattr(
+                perms, "subagent_depth", 0) > 0 and _spawner_preset:
+            _whitelist = tuple(getattr(_spawner_preset, "may_delegate_to",
+                                       ()) or ())
+            if sa_type not in _whitelist:
+                return json.dumps({
+                    "error": (
+                        f"{sa_type!r} is not in "
+                        f"{_spawner_preset.name!r}'s may_delegate_to "
+                        "whitelist — this sub-agent may only delegate to: "
+                        + (", ".join(_whitelist) or "(nobody; it is an "
+                        "expert and experts do not spawn)"))})
         if perms is None or perms.subagent_runner is None:
             return json.dumps({
                 "error": "subagent runner not attached",
@@ -27407,6 +28317,18 @@ class _DocToolExecutor:
         _out_schema = arguments.get("output_schema")
         if isinstance(_out_schema, dict) and _out_schema:
             _resume_kw["output_schema"] = _out_schema
+        # A worktree the call asked for, in a plain folder: the user is
+        # asked whether the folder becomes a local project; a no refuses
+        # the call (run_subagent would otherwise refuse a writer later,
+        # after the slot and the id were taken). A read-only preset writes
+        # nothing and keeps running unisolated with a warning, as before.
+        if isolation == "worktree" and _sa.is_writer_preset(sa_type):
+            _ws_iso = getattr(perms, "workspace", None)
+            if _ws_iso is not None:
+                _no_repo = self._offer_local_project(
+                    Path(_ws_iso), perms, "a sub-agent in its own worktree")
+                if _no_repo is not None:
+                    return _no_repo
         # Background mode: spawn the subagent on a
         # thread and return immediately — the main agent keeps working.
         # Progress/result are visible in the dashboard subagent panel
@@ -27418,12 +28340,23 @@ class _DocToolExecutor:
             # it — the case auto-isolation exists for, and the one it did not
             # cover: the rule lived in the parallel fan-out, which needs two
             # subagent calls in one turn to fire.
+            _pinned = bool(isolation)
             try:
                 from . import subagents as _sa_bg
                 isolation = _sa_bg.auto_isolation_for(
                     sa_type, isolation, background=True)
             except Exception:
                 pass
+            if isolation == "worktree" and not _pinned:
+                # Chosen here, not by the call: in a plain folder the user
+                # is asked whether it becomes a local project, and a no
+                # keeps the earlier behaviour (no isolation) instead of
+                # refusing work the call never asked to isolate.
+                _ws_bg = getattr(perms, "workspace", None)
+                if _ws_bg is not None and self._offer_local_project(
+                        Path(_ws_bg), perms, "an isolated background "
+                        "sub-agent") is not None:
+                    isolation = ""
             # Bound the number of concurrent background sub-agents so a session
             # can't leak unbounded daemon threads + worktrees. Saturated → tell
             # the model to wait or run in the foreground instead of spawning.
@@ -28633,6 +29566,71 @@ class _DocToolExecutor:
             return json.dumps({"error": f"web_fetch failed: {exc}"})
         return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
 
+    def _execute_verify_source(self, arguments: dict) -> str:
+        """SRC1: DOI / compound / scholarly lookup through official APIs.
+
+        Read-only HTTP like web_search/web_fetch; the record from the
+        API is wrapped untrusted like every other tool result.
+        """
+        action = (arguments.get("action", "") or "").strip().lower()
+        value = (arguments.get("value", "") or "").strip()
+        if not action or not value:
+            return json.dumps({"error": (
+                "verify_source needs a non-empty action and value")})
+        try:
+            from . import source_apis as _sa
+            if action == "doi":
+                payload = _sa.verify_doi(value)
+            elif action == "compound":
+                payload = _sa.lookup_compound(value)
+            elif action == "works":
+                max_results = int(arguments.get("max_results", 5) or 5)
+                max_results = max(1, min(max_results, 20))
+                payload = {"results":
+                           _sa.search_works(value, max_results=max_results)}
+            else:
+                return json.dumps({"error": (
+                    "unknown action: use doi, compound or works")})
+        except Exception as exc:
+            return json.dumps({"error": f"verify_source failed: {exc}"})
+        return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
+
+    def _execute_orca_knowledge(self, name: str, arguments: dict) -> str:
+        """orca_explain / orca_check_input / workflow_candidates.
+
+        Each delegates to its function in ``delfin.api``; the result is
+        JSON from shipped, reviewed stores, so it is not wrapped as
+        untrusted. A missing required argument is refused here.
+        """
+        from delfin import api as _api
+        try:
+            if name == "orca_explain":
+                word = (arguments.get("word", "") or "").strip()
+                if not word:
+                    return json.dumps({"error": "orca_explain needs a word"})
+                payload = _api.orca_explain(word)
+            elif name == "orca_check_input":
+                desc = arguments.get("calc_description", "")
+                if not isinstance(desc, str):
+                    desc = json.dumps(desc)
+                if not desc.strip():
+                    return json.dumps({"error": (
+                        "orca_check_input needs a calc_description (JSON)")})
+                payload = _api.orca_check_input(desc)
+            else:
+                text = (arguments.get("task_text", "") or "").strip()
+                if not text:
+                    return json.dumps({"error": (
+                        "workflow_candidates needs a task_text")})
+                available = arguments.get("available")
+                if available is not None and not isinstance(available, list):
+                    available = None
+                payload = {"candidates":
+                           _api.workflow_candidates(text, available)}
+        except Exception as exc:
+            return json.dumps({"error": f"{name} failed: {exc}"})
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
     def _execute_session_search(self, arguments: dict) -> str:
         """Read-only search over past sessions' archives (Paket 5).
 
@@ -29568,14 +30566,18 @@ def _scrubbed_bash_env() -> dict:
     # program started without it takes every core the host has (measured:
     # a GFN2-xTB scan of butane at 29 264 % CPU on a 384-core host), which
     # on a cluster login node are everyone's cores. Inside a Slurm
-    # allocation the cap is the allocation, on a login node the local limit
-    # calc_policy admits (2), elsewhere at most four. A job
-    # submitted from here inherits it unless its script sets its own.
+    # allocation the cap is the allocation, elsewhere the local limit
+    # calc_policy admits unasked (2 on a login node, half the available
+    # CPUs and at most four on a workstation): calc_policy.default_threads
+    # is the one source, so the gate judges the number this shell sets. A
+    # job submitted from here inherits it unless its script sets its own.
+    # If that check cannot be consulted, one thread: never more than any
+    # host's unasked limit (no second copy of the rule here).
     try:
         from . import calc_policy as _cp
         _cap = str(_cp.default_threads(_cp.host_kind(env), env))
     except Exception:
-        _cap = str(max(1, min(4, os.cpu_count() or 1)))
+        _cap = "1"
     for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
                   "OPENBLAS_NUM_THREADS"):
         env.setdefault(_name, _cap)
@@ -29604,6 +30606,60 @@ def env_spec(raw) -> dict:
     if isinstance(raw, dict):
         return {str(k): "" if v is None else str(v) for k, v in raw.items()}
     return {}
+
+
+def _code_mode_child_env(
+    cmd: str, run_cwd, perms, executor,
+) -> dict:
+    """Env additions for a bash command that runs a Code Mode program.
+
+    Returns ``{}`` for every other command — a plain bash call's
+    environment is unchanged and no RPC server starts. For a Code Mode
+    program the agent process starts ONE ``code_mode.RpcServer`` bound to a
+    fresh per-invocation socket under the workspace and puts only that path
+    in ``DELFIN_CODE_MODE_RPC`` for the caged child. The server hands every
+    request to ``executor.execute`` — the single public entry a direct
+    call takes (deny rules, plan-mode, sandbox, role and shape checks are
+    evaluated inside it) — after the server-side read-only allow-list.
+    The socket exists only for this child's lifetime; nothing listens
+    after the run.
+    """
+    from . import code_mode as _cm
+    program = _cm.runner_program_path(cmd)
+    if program is None:
+        return {}
+    import uuid
+    token = uuid.uuid4().hex
+    socket_path = _cm.rpc_socket_path(str(run_cwd), token)
+    # Public-entry parity: no rule plumbing here at all. The executor's
+    # execute() evaluates permission rules per call itself
+    # (api_client.py:17772 _permission_rule_hit inside _execute_pinned);
+    # anything lower (_dispatch_under_rules) would skip deny rules,
+    # plan-mode and the other preamble checks.
+    server = _cm.RpcServer(executor, permissions=perms)
+    server.bind(socket_path)
+    import threading
+    def _serve():
+        # One request per connection; the program opens a fresh socket per
+        # call. Idle past the window -> the child is gone -> stop; a later
+        # Code Mode invocation starts its own server on its own socket.
+        # Known path, stated: the idle timeout raises out of serve_one
+        # before any per-connection bookkeeping — that is the break
+        # condition, not a swallowed failure; close() then unlinks.
+        while True:
+            try:
+                server.serve_one(idle_timeout_s=_CM_SERVE_IDLE_S)
+            except OSError:
+                break
+        server.close()
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.start()
+    return {"DELFIN_CODE_MODE_RPC": socket_path}
+
+
+#: Idle window for the Code Mode RPC serve loop (the program's wall clock
+#: is capped at 120 s by default; the idle window outlasts it).
+_CM_SERVE_IDLE_S = 300.0
 
 
 def _configured_child_env(spec=None) -> dict:
@@ -30587,6 +31643,7 @@ def _bash_isolation_argv(
     -- with ``_caged_readonly_paths`` bound read-only and without the
     SLURM controller route.
     """
+    cmd = _commit_trailer_rewrite(cmd)
     plain = ["/bin/bash", "-c", cmd]
     _announce_child_network()
     # The --isolate override (set once per process by `delfin-agent
@@ -31006,7 +32063,29 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # A handful of API/stream failures are TRANSIENT — a shared-proxy hiccup, not a
 # bad request. On long KIT runs in a field report (vLLM behind an Open-WebUI proxy) a
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
-_STREAM_RETRY_MAX = 3
+_STREAM_RETRY_MAX = int(os.environ.get("DELFIN_STREAM_RETRY_MAX", "7") or 7)
+
+
+def _transient_retry_delay(attempt: int) -> float:
+    """Seconds to wait before transient-retry ``attempt`` (1-based).
+
+    The first three stay short (1.5, 3, 6 s: a proxy hiccup); later ones
+    back off to minutes (30, 60, 120, 240 s, then 240) with +-20 % jitter, so
+    a KIT outage of ~8 minutes is ridden out instead of ending the turn.
+    Measured 2026-11-06/07: 504/503 bursts of several minutes ended dozens of
+    unattended sessions after the old 1.5/3/6 s schedule (10.5 s in total).
+    ``DELFIN_STREAM_RETRY_DELAY_SCALE`` scales the wait (the test suite sets 0).
+    """
+    import random
+    base = (1.5, 3.0, 6.0, 30.0, 60.0, 120.0, 240.0)
+    d = base[attempt - 1] if attempt <= len(base) else base[-1]
+    if attempt > 3:
+        d *= random.uniform(0.8, 1.2)
+    try:
+        scale = float(os.environ.get("DELFIN_STREAM_RETRY_DELAY_SCALE", "1"))
+    except ValueError:
+        scale = 1.0
+    return max(0.0, d * scale)
 
 # How many times a single turn may switch to another model because KIT does
 # not serve the one it asked for (either "Model not found" or "…temporarily
@@ -31111,6 +32190,13 @@ _INFRA_EXHAUSTION_MARKERS: tuple[str, ...] = (
     "response payload is not completed",
     "transferencodingerror",
     "no deployments available for selected model",
+    # Measured 2026-11-03: the same proxy fault reported with the
+    # completion marker spelled differently ("payload not completed",
+    # no "is") inside a 400 whose body is a bare
+    # litellm.APIConnectionError. The exception name in the body says
+    # the CONNECTION failed; a chat request cannot cause it.
+    "apiconnectionerror",
+    "response payload not completed",
 )
 
 
@@ -31444,6 +32530,7 @@ def _fan_out_subagents(tc_list, permissions):
         thread_name_prefix="subagent-fan",
     )
     futures: dict[str, Any] = {}
+    _auto_iso_ok: Optional[bool] = None
     for tc in tc_list:
         if tc["id"] not in sub_ids:
             continue
@@ -31455,13 +32542,23 @@ def _fan_out_subagents(tc_list, permissions):
         # WRITER (a non-read-only preset, e.g. general-purpose) its OWN git
         # worktree so concurrent edits can't clobber one another on the shared
         # tree. Read-only presets (explore/plan/code-reviewer) need none. An
-        # explicit isolation in the call is respected. Falls back gracefully
-        # when the workspace isn't a git repo.
+        # explicit isolation in the call is respected. In a workspace that
+        # is not a git repository the user is asked once whether it becomes
+        # a local project (_offer_local_project); a no keeps the earlier
+        # behaviour, the writers run without isolation.
         try:
             from . import subagents as _sa_fan
             if (not args.get("isolation")
                     and _sa_fan.is_writer_preset(args.get("subagent_type", ""))):
-                args["isolation"] = "worktree"
+                if _auto_iso_ok is None:
+                    _ws_fan = getattr(permissions, "workspace", None)
+                    _auto_iso_ok = _ws_fan is None or (
+                        _doc_executor._offer_local_project(
+                            Path(_ws_fan), permissions,
+                            "parallel writers in their own worktrees")
+                        is None)
+                if _auto_iso_ok:
+                    args["isolation"] = "worktree"
         except Exception:
             pass
         futures[tc["id"]] = executor.submit(
@@ -31477,12 +32574,22 @@ def _infer_provider_from_base_url(base_url: str) -> str:
     ``provider`` (create_client always passes one). ``localhost:11434`` and
     no-auth local servers → ollama; the KIT host → kit; else openai.
     """
-    u = (base_url or "").lower()
+    u = (base_url or "").strip().lower()
     if not u:
         return "openai"
-    if "11434" in u or "ki-toolbox" not in u and ("localhost" in u or "127.0.0.1" in u):
+    # Decide on the parsed host, never on a substring of the whole URL: a
+    # substring match sent ``https://other.example/?kit.edu`` the KIT key.
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(u if "://" in u else "http://" + u)
+        host = (parts.hostname or "").rstrip(".")
+        port = parts.port
+    except ValueError:
+        return "openai"
+    is_kit = host == "kit.edu" or host.endswith(".kit.edu")
+    if port == 11434 or (not is_kit and host in ("localhost", "127.0.0.1")):
         return "ollama"
-    if "ki-toolbox" in u or "kit.edu" in u:
+    if is_kit:
         return "kit"
     return "openai"
 
@@ -32143,8 +33250,9 @@ class OpenAIClient(_BaseClient):
         try:
             permissions.subagent_runner = _runner
 
-            def _orchestrate(spec: dict) -> dict:
-                return _sa.run_orchestration(spec, self, self._permissions)
+            def _orchestrate(spec: dict, **kw) -> dict:
+                return _sa.run_orchestration(spec, self, self._permissions,
+                                             **kw)
 
             permissions.orchestration_runner = _orchestrate
         except Exception:
@@ -32414,6 +33522,7 @@ class OpenAIClient(_BaseClient):
             has_calc_index=bool(has_calc_tools),
             has_office_libs=_office_backends_available(),
             office_backends=_office_backend_set(),
+            has_lab=_lab_configured(),
             # Read off the SAME object the executor gate reads, so the two
             # cannot disagree: a tool this session excluded is dropped from
             # the surface because it would be refused, not instead of it.
@@ -33338,7 +34447,7 @@ class OpenAIClient(_BaseClient):
                         _round_in = 0
                         finish_reason = None
                         _stream_attempt += 1
-                        _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
+                        _delay = _transient_retry_delay(_stream_attempt)
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
@@ -33683,11 +34792,14 @@ class OpenAIClient(_BaseClient):
                         _dsml_leaked = None
                     if _dsml_leaked:
                         self._dsml_rerequest = True
+                        # Sourced wording (LK1): the notice text lives in
+                        # leak_recovery.dsml_leak_notice, the one place both
+                        # this per-request notice and the engine's exhaustion
+                        # caveat read it from.
+                        from delfin.agent.leak_recovery import dsml_leak_notice
                         yield StreamEvent(
                             type="notice",
-                            text=(f"\n\n⚠️ a call to {_dsml_leaked[0]} "
-                                  f"was written as text instead of calling "
-                                  f"the tool; it did not run.\n"),
+                            text=dsml_leak_notice(_dsml_leaked[0]),
                         )
 
             # If model made tool calls, execute them locally and loop

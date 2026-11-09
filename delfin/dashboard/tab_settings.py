@@ -43,6 +43,8 @@ from delfin.runtime_setup import (
 )
 from delfin.qm_runtime import canonical_tool_name, discover_tool_installations, settings_selectable_tools
 from delfin.user_settings import (
+    carry_runtime_sections,
+    get_settings_defaults_path,
     get_settings_path,
     load_settings,
     normalize_choice_setting,
@@ -1243,7 +1245,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
 
     def _persist_runtime_payload(runtime_payload):
         settings_payload = load_settings()
-        settings_payload['runtime'] = runtime_payload
+        settings_payload['runtime'] = carry_runtime_sections(
+            settings_payload.get('runtime'), runtime_payload)
         settings_payload = save_settings(settings_payload, settings_path)
         _set_runtime_widgets(settings_payload)
         backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
@@ -3852,7 +3855,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         value=(
             f'<div style="color:#455a64;">'
             f'<b>Local settings:</b> <code>{html.escape(str(settings_path))}</code><br>'
-            'This file lives in your HOME, outside the git repo. '
+            + (
+                f'<b>Shared defaults:</b> <code>{html.escape(str(_defaults_path))}</code> '
+                '(read under your own file; your file keeps only what you changed, '
+                'a later change of a default reaches you unless you set it yourself)<br>'
+                if (_defaults_path := get_settings_defaults_path(settings_path)) is not None
+                else ''
+            )
+            + 'This file lives in your HOME, outside the git repo. '
             '<code>git pull</code> will not overwrite it. Missing future settings are '
             'added without replacing your existing values.<br>'
             f'Leave path fields empty to use the defaults '

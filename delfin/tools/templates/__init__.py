@@ -48,6 +48,7 @@ from delfin.tools.templates._redox import redox_potential
 from delfin.tools.templates._screening import conformer_screening, multi_level_opt
 from delfin.tools.templates._occupier import occupier_stages
 from delfin.tools.templates._esd import esd_states
+from delfin.tools.templates._opi_chain import opi_opt_freq_dlpno
 
 __all__ = [
     "classic_opt_freq",
@@ -62,4 +63,5 @@ __all__ = [
     "multi_level_opt",
     "occupier_stages",
     "esd_states",
+    "opi_opt_freq_dlpno",
 ]

@@ -352,6 +352,7 @@ delfin-voila = "delfin.cli_voila:main"
 delfin-step = "delfin.cli_step:main"
 delfin-pipeline = "delfin.cli_pipeline:main"
 delfin-docs-index = "delfin.doc_server.indexer:main"
+delfin-dev = "delfin.dev_cli:main"
 delfin-tools-server = "delfin.tools.mcp_server:main"
 delfin-app = "delfin.cli_app:main"
 delfin-agent = "delfin.agent.cli:main"
@@ -397,7 +398,9 @@ include = ["delfin*"]
 # The ORCA knowledge cards and the keyword catalog of the pinned OPI.
 "delfin.orca_knowledge" = ["*.json", "cards/*.json"]
 "delfin.notebooks" = ["*.ipynb"]
-"delfin.manta" = ["*.md"]
+# The simulated demo lab: the smoke check and the tests load it as data.
+"delfin.lab" = ["examples/*.yaml"]
+"delfin.manta" = ["*.md", "data/*.tsv", "data/*.json"]
 "delfin.voila_assets" = ["login_templates/*.html"]
 
 # Whatever an installer left in the source tree stays out of the wheel even

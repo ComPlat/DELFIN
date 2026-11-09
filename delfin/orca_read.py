@@ -58,6 +58,9 @@ logger = logging.getLogger(__name__)
 #: text's printed precision; the shadow check uses the same.
 SHADOW_TOL = 1e-6
 
+#: Geometry shadow-check tolerance, Angstrom (see _geometries_agree).
+GEOMETRY_SHADOW_TOL = 1e-6
+
 #: Minimum ORCA version OPI supports (its own contract).
 _MIN_ORCA_VERSION = (6, 1, 1)
 
@@ -93,6 +96,15 @@ class Quantity(Enum):
     FAILURE_REASON = "failure_reason"
     #: geometry-optimisation converged; None when the run did not optimise
     GEOMETRY_CONVERGED = "geometry_converged"
+    #: the run's final geometry, [(element, x, y, z), ...] in Angstrom
+    FINAL_GEOMETRY = "final_geometry"
+    #: IR modes of the IR SPECTRUM block (list of delfin.ir_spectrum.IRMode)
+    IR_MODES = "ir_modes"
+    #: (mode index, frequency) imaginary modes printed in the .out,
+    #: most negative first
+    IMAGINARY_MODES = "imaginary_modes"
+    #: all $vibrational_frequencies of a .hess file (imaginary = negative)
+    VIBRATIONAL_FREQUENCIES = "vibrational_frequencies"
 
 
 @dataclass(frozen=True)
@@ -265,6 +277,16 @@ def _opi_values(work_dir: Path, base_name: str) -> dict:
     except Exception:
         s2 = None
     result["s2"] = s2
+
+    result["geometry"] = None
+    try:
+        structure = out.get_structure()
+        if structure is not None and structure.atoms:
+            result["geometry"] = [
+                (a.element, float(a.coordinates.x), float(a.coordinates.y),
+                 float(a.coordinates.z)) for a in structure.atoms]
+    except Exception:
+        pass
     return result
 
 
@@ -297,8 +319,24 @@ def _text_values(out_path: Path, inp_path: Path,
         "enthalpy", "inner_energy", "entropy", "nelectrons",
     }
     values: dict = {}
+    # frequency quantities read by their own leaf parsers, not the tail
+    if {"ir_modes", "imaginary_modes"} & wanted:
+        if "ir_modes" in wanted:
+            from delfin.ir_spectrum import _parse_ir_spectrum_text
+            values["ir_modes"] = _parse_ir_spectrum_text(out_path) or None
+        if "imaginary_modes" in wanted:
+            from delfin.imag import _collect_imaginary_modes_text
+            values["imaginary_modes"] = \
+                _collect_imaginary_modes_text(str(out_path)) or None
+        return values
     if "term" in wanted:
         values["term"] = _terminated_normally_text(out_path)
+    if "geometry" in wanted:
+        # the run's final geometry comes from the ORCA-written xyz next to
+        # the output -- the established chaining-reader semantics, not the
+        # Cartesian blocks of the .out (those never carried the chaining
+        # hand-off). The xyz read is small (a few kB per run).
+        values["geometry"] = _final_geometry_text(out_path)
     if {"scf", "final_energy", "free_energy", "zpe", "enthalpy",
         "inner_energy", "entropy", "geometry_converged",
         "failure_reason", "s2"} & wanted:
@@ -345,16 +383,30 @@ def _fill_out_text_values(values: dict, out_path: Path, tail: str,
         values["failure_reason"] = _failure_reason_text(values, out_path)
 
 
+def _final_energy_text(values: dict, out_path: Path, tail: str) -> None:
+    """The final single point energy with the old reader's job selection.
+
+    On a multi-job output (several ``JOB NUMBER`` sections) the bounded
+    tail can cut across job boundaries and the last energy in the tail
+    belongs to a foreign job (11 of 200 archived runs picked a different
+    job than the whole-file reader).  The energy is therefore always read
+    from the whole file through :func:`find_electronic_energy`, the
+    pre-switch reader, so the job selection is identical by construction;
+    ``tail`` is unused here.
+    """
+    from delfin.energies import find_electronic_energy
+    values["final_energy"] = find_electronic_energy(str(out_path))
+
+
 def _fill_thermo_and_energy(values: dict, out_path: Path, tail: str,
                             wanted: set) -> None:
     """Energy and thermochemistry quantities from the bounded tail."""
-    from delfin.energies import (electronic_energy_in_text,
-                                 gibbs_energy_in_text)
+    from delfin.energies import gibbs_energy_in_text
 
     # energies first: the text functions accept pre-read text, so the
     # bounded tail is reused instead of re-reading the file.
     if "final_energy" in wanted:
-        values["final_energy"] = electronic_energy_in_text(tail, str(out_path))
+        _final_energy_text(values, out_path, tail)
     if "free_energy" in wanted:
         values["free_energy"] = gibbs_energy_in_text(tail, str(out_path))
     if "inner_energy" in wanted:
@@ -416,6 +468,28 @@ def _failure_reason_text(values: dict, out_path: Path) -> Optional[str]:
     from delfin.doc_server.calc_indexer import outcome_of_folder
 
     return outcome_of_folder(out_path.parent) or None
+
+
+def _final_geometry_text(out_path: Path) -> Optional[list]:
+    """The run's final geometry from the ORCA-written ``<base>.xyz``.
+
+    Exact copy of the chaining readers' established semantics
+    (delfin.imag._read_xyz: count line, blank, then ``el x y z`` rows,
+    floats; a malformed count line raises). Returns ``None`` when the xyz
+    is missing; None is a legitimate answer for a run without one.
+    """
+    xyz_path = out_path.with_suffix(".xyz")
+    if not xyz_path.is_file():
+        return None
+    lines = xyz_path.read_text(encoding="utf-8",
+                               errors="ignore").splitlines()
+    count = int(lines[0].split()[0])
+    atoms = []
+    for line in lines[2:2 + count]:
+        parts = line.split()
+        atoms.append((parts[0], float(parts[1]), float(parts[2]),
+                      float(parts[3])))
+    return atoms
 
 
 def _coord_header(inp_path: Path):
@@ -520,16 +594,26 @@ _TEXT_KEYS = {
     Quantity.CHARGE: {"charge", "mult", "nelectrons"},
     Quantity.MULTIPLICITY: {"charge", "mult", "nelectrons"},
     Quantity.NUMBER_OF_ELECTRONS: {"charge", "mult", "nelectrons"},
+    Quantity.FINAL_GEOMETRY: {"geometry"},
 }
 for _q, (_opi_key, _text_key, _unit) in _ENERGY_QUANTITIES.items():
     _TEXT_KEYS[_q] = {_text_key}
 # GIBBS/ZPE/ENTHALPY/INNER_ENERGY/ENTROPY sit in the thermochemistry block;
 # ENTROPY is not in _ENERGY_QUANTITIES but uses the same tail scan.
 _TEXT_KEYS[Quantity.ENTROPY] = {"entropy"}
+#: The frequency quantities read by their own leaf parsers (not the tail
+#: scan): IR modes and imaginary modes from the .out, vibrational
+#: frequencies from the .hess. Their text readers are the established
+#: parsers delfin.ir_spectrum.parse_ir_spectrum and
+#: delfin.imag.collect_imaginary_modes / hessian_frequencies.
+_TEXT_KEYS[Quantity.IR_MODES] = {"ir_modes"}
+_TEXT_KEYS[Quantity.IMAGINARY_MODES] = {"imaginary_modes"}
+_TEXT_KEYS[Quantity.VIBRATIONAL_FREQUENCIES] = {"vib_freqs"}
 
 #: quantities whose OPI comparison showed identical values AND where OPI
 #: answers the same question -- everything else goes to the text parser.
-_OPI_FIRST = set(_ENERGY_QUANTITIES) | {Quantity.S2_DEVIATION}
+_OPI_FIRST = (set(_ENERGY_QUANTITIES) | {Quantity.S2_DEVIATION}
+              | {Quantity.FINAL_GEOMETRY})
 
 
 def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Reading:
@@ -572,8 +656,12 @@ def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Read
     text = _tail_text(out_path)
     text_values = _text_values(out_path, inp_path,
                                _TEXT_KEYS.get(quantity), tail=text)
-    text_value = text_values.get(quantity == Quantity.S2_DEVIATION
-                                 and "s2" or _ENERGY_QUANTITIES[quantity][1])
+    if quantity is Quantity.FINAL_GEOMETRY:
+        text_value = text_values.get("geometry")
+    else:
+        text_value = text_values.get(
+            quantity == Quantity.S2_DEVIATION and "s2"
+            or _ENERGY_QUANTITIES[quantity][1])
 
     if _reader_mode() == "text":
         return _reading_from_text(quantity, text_value, text_values,
@@ -593,6 +681,8 @@ def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Read
         if opi_value is None:
             # closed shell: OPI has no UHF block; the deviation is 0.0
             opi_value = 0.0
+    elif quantity is Quantity.FINAL_GEOMETRY:
+        opi_value = opi_values.get("geometry")
     else:
         opi_value = opi_values.get(_ENERGY_QUANTITIES[quantity][0])
 
@@ -602,9 +692,22 @@ def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Read
 
     # shadow check: both readers answered; the text value is the record
     if text_value is None:
+        if quantity is Quantity.FINAL_GEOMETRY:
+            return Reading(opi_value, "Angstrom", "opi",
+                           "text parser has no value; OPI value unshadowed")
         return Reading(opi_value, _ENERGY_QUANTITIES.get(quantity, (None, None, "Eh"))[2]
                        if quantity in _ENERGY_QUANTITIES else "", "opi",
                        "text parser has no value; OPI value unshadowed")
+    if quantity is Quantity.FINAL_GEOMETRY:
+        if _geometries_agree(text_value, opi_value):
+            return Reading(text_value, "Angstrom", "opi",
+                           "confirmed by text shadow check")
+        logger.warning(
+            "orca_read mismatch for %s on run '%s': OPI geometry differs "
+            "from the output text xyz -- returning the text value",
+            quantity.name, base_name)
+        return Reading(text_value, "Angstrom", "text",
+                       "OPI disagreed; text value returned")
     if _values_agree(text_value, opi_value):
         return Reading(text_value,
                        _ENERGY_QUANTITIES[quantity][2]
@@ -624,6 +727,26 @@ def _values_agree(a: float, b: float) -> bool:
     return abs(float(a) - float(b)) <= SHADOW_TOL
 
 
+def _geometries_agree(text_geom, opi_geom) -> bool:
+    """The xyz-derived and the OPI-derived geometry are the same structure.
+
+    The xyz prints 14 decimals in Angstrom; OPI converts the property
+    JSON's Bohr doubles with AU_TO_ANGST, so the two agree to ~1e-12 A
+    with any rounding of the unit conversion; 1e-6 A leaves that margin
+    while still telling structures apart (any real geometry change moves
+    atoms by far more).
+    """
+    if not text_geom or not opi_geom or len(text_geom) != len(opi_geom):
+        return False
+    for (te, tx, ty, tz), (oe, ox, oy, oz) in zip(text_geom, opi_geom):
+        if str(te).capitalize() != str(oe).capitalize():
+            return False
+        if any(abs(float(a) - float(b)) > GEOMETRY_SHADOW_TOL
+               for a, b in ((tx, ox), (ty, oy), (tz, oz))):
+            return False
+    return True
+
+
 def _opi_s2_deviation(s2) -> Optional[float]:
     """OPI's (expected, ideal) tuple as DELFIN's deviation value."""
     if not s2:
@@ -635,6 +758,23 @@ def _opi_s2_deviation(s2) -> Optional[float]:
 def _reading_from_text(quantity: Quantity, text_value, text_values: dict,
                        note: str) -> Reading:
     """Build the answer from DELFIN's text readers (the established one)."""
+    if quantity is Quantity.FINAL_GEOMETRY:
+        if text_value is None:
+            return Reading(None, "", "none",
+                           f"text parser found nothing ({note})")
+        return Reading(text_value, "Angstrom", "text", note)
+    if quantity is Quantity.IR_MODES:
+        value = text_values.get("ir_modes") if text_value is None else text_value
+        if value is None:
+            return Reading(None, "", "none",
+                           f"text parser found nothing ({note})")
+        return Reading(value, "cm-1/km-mol", "text", note)
+    if quantity is Quantity.IMAGINARY_MODES:
+        value = text_values.get("imaginary_modes") if text_value is None else text_value
+        if value is None:
+            return Reading(None, "", "none",
+                           f"text parser found nothing ({note})")
+        return Reading(value, "cm-1", "text", note)
     if quantity in _ENERGY_QUANTITIES or quantity is Quantity.S2_DEVIATION:
         if text_value is None:
             return Reading(None, "", "none", f"text parser found nothing ({note})")
@@ -672,8 +812,47 @@ def _read_text_only(work_dir: Path, base_name: str, quantity: Quantity,
                     inp_path: Path) -> Reading:
     """Quantities that never route through OPI (see module docstring)."""
     out_path = work_dir / f"{base_name}.out"
+    if quantity is Quantity.VIBRATIONAL_FREQUENCIES:
+        return _reading_vib_freqs(work_dir, base_name, note="")
     text_values = _text_values(out_path, inp_path, _TEXT_KEYS.get(quantity))
     return _reading_from_text(quantity, None, text_values, note="")
+
+
+def _reading_vib_freqs(work_dir: Path, base_name: str, note: str) -> Reading:
+    """$vibrational_frequencies of <base>.hess via imag.hessian_frequencies."""
+    from delfin.imag import _hessian_frequencies_text
+
+    hess_path = work_dir / f"{base_name}.hess"
+    if not hess_path.is_file():
+        return Reading(None, "", "none", f"no {base_name}.hess in the run dir"
+                       + (f" ({note})" if note else ""))
+    freqs = _hessian_frequencies_text(hess_path)
+    if not freqs:
+        return Reading(None, "", "none", f"no $vibrational_frequencies in "
+                       f"{base_name}.hess" + (f" ({note})" if note else ""))
+    return Reading(freqs, "cm-1", "text", note)
+
+
+def read_hess(hess_path: Union[str, Path], quantity: Quantity) -> Reading:
+    """Read one *quantity* from a single .hess file (no run directory).
+
+    Only vibrational-frequencies quantities are defined on a lone .hess;
+    anything else is answered with a ``none`` Reading. Never raises for
+    a missing file. The text reader is delfin.imag.hessian_frequencies
+    -- the established parser; the .hess carries no OPI counterpart.
+    """
+    if quantity is not Quantity.VIBRATIONAL_FREQUENCIES:
+        return Reading(None, "", "none",
+                       f"{quantity.name} is not read from a .hess file")
+    hess_path = Path(hess_path)
+    if not hess_path.is_file():
+        return Reading(None, "", "none", f"{hess_path.name} does not exist")
+    from delfin.imag import _hessian_frequencies_text
+    freqs = _hessian_frequencies_text(hess_path)
+    if not freqs:
+        return Reading(None, "", "none",
+                       f"no $vibrational_frequencies in {hess_path.name}")
+    return Reading(freqs, "cm-1", "text", "")
 
 
 # ---------------------------------------------------------------------------

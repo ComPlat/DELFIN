@@ -27,7 +27,9 @@ HELP = (
     'dateien – bereitgestellte Dateien; datei NAME – herunterladen.\n'
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
     'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
+    'neu NAME arbeitskopie – in einer eigenen Arbeitskopie; zusammenführen [PFAD] – Arbeitskopie zurückführen.\n'
     'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
+    'profil frei|standard – im Sitzungs-Chat für dessen Ordner; sonst: profil <sitzung> frei.\n'
     'sync aktualisiert die aktivierten Sitzungen.'
 )
 
@@ -152,6 +154,13 @@ class Rooms:
         self._announced = deque()
         #: Schedule number -> the check the phone was last shown for it.
         self._checks = {}
+        #: Chat -> a cleanup listing is open there (an ok answers it).
+        self._branch_cleanup_open = {}
+        #: The approval listing's check + the (n, sessionId, requestId) of
+        #: the items the phone was shown, so ok <n> can answer with the
+        #: check without the phone ever copying it.
+        self._approval_check = ''
+        self._approval_shown: set[tuple] = set()
 
     def paired(self):
         return bool(self.owner) and store.paired_contact() == self.owner
@@ -276,6 +285,12 @@ class Rooms:
             return t('Bitte bei der konkreten SimpleX-Anfrage auf Antworten tippen und dort yes/no schreiben. So bleibt die Entscheidung eindeutig.')
         word, _, rest = text.partition(' ')
         command = word.lower().lstrip('/')
+        if command in {'ok', 'nein', 'zeige'} and rest.strip().strip('.').isdigit() \
+                and not (command == 'ok' and self._branch_cleanup_open.get(chat)):
+            # ok <n> is an approval answer — unless a branch cleanup listing
+            # is open in this chat, then the number is a cleanup row and the
+            # approval catch must not shadow it (delfin/agent/branch_commands.py).
+            return await self.approval_command(text)
         if command in {'help', 'hilfe'}:
             return t(HELP)
         if command in {'sessions', 'sitzungen'}:
@@ -318,6 +333,20 @@ class Rooms:
         if command in {'zeitpläne', 'zeitplaene', 'pläne', 'plaene', 'schedules', 'plans'}:
             await self.ensure_schedules_room()
             return t('Einladung zum Chat „Zeitpläne“ liegt in SimpleX. Dort: pläne, neu, ok, pause, jetzt, löschen.')
+        if command in {'profil', 'profile'}:
+            # profil frei|standard: in a session's own chat its workspace,
+            # otherwise the word followed by the session or folder name.
+            word = rest.strip()
+            sid = room['session_id'] if room else ''
+            parts = word.split(None, 1)
+            if not sid and len(parts) == 2:
+                sid, word = parts
+            reply = await self.ask({'cmd': 'profile', 'session': sid,
+                                    'text': word.strip()})
+            return reply.get('error') or t('Profil {ws}: {p}').format(
+                ws=reply.get('workspace') or '?',
+                p=t('frei (Bypass im Käfig)') if reply.get('profile') == 'free'
+                else t('standard'))
         if command in {'plan', 'zeitplan', 'schedule'} and room and room['session_id'] and rest.strip():
             # "plan the next step" is a message for the agent: only a line
             # that starts with a time is a schedule.
@@ -332,6 +361,8 @@ class Rooms:
                 return reply.get('error') or t('Zeitplan wurde nicht angelegt.')
         if command in {'neu', 'new'}:
             return await self.start_session(rest)
+        if command in {'zusammenführen', 'zusammenfuehren', 'merge'}:
+            return await self.merge_back(rest)
         if command == 'chat' and rest.strip():
             if rest.strip() not in self._active:
                 return t('Zuerst in der gewünschten TUI-/Dashboard-Sitzung /sync eingeben.')
@@ -359,6 +390,29 @@ class Rooms:
                 return t('Syntax: /approve CODE, /deny CODE oder /answer CODE Text. /pending zeigt die Codes.')
             reply = await self.session(sid, command, id=code, **({'text': answer} if command == 'answer' else {}))
             return reply.get('error') or (t('Entscheidung übernommen.') if reply.get('ok') else t('Nicht übernommen.'))
+        if command in {'branches', 'branch'} and sid:
+            return await self._branch_word(sid, 'list', rest, chat)
+        if command == 'test' and sid and rest.strip():
+            return await self._branch_word(sid, 'test', rest, chat)
+        if command == 'pull' and sid and not rest.strip():
+            return await self._branch_word(sid, 'pull', '', chat)
+        if command == 'cleanup' and sid:
+            word, _, tail = rest.strip().partition(' ')
+            if word.lower() in {'ok', 'ja', 'yes', 'y'}:
+                return await self._branch_ok(sid, tail.strip())
+            return await self._branch_word(sid, 'cleanup', rest, chat)
+        if command in {'ok', 'ja', 'yes', 'y'} and sid \
+                and self._branch_cleanup_open.get(chat):
+            # The answer to a cleanup listing: ok (everything offered) or
+            # ok <n> (one row). Any other ok is a message for the session.
+            token = rest.strip()
+            answer = await self._branch_ok(sid, token)
+            # The listing stays open while nothing was deleted: a wrong or
+            # refused answer can be corrected without the listing again.
+            if 'Gelöscht' in answer or 'Deleted' in answer or \
+                    'gelöscht' in answer:
+                self._branch_cleanup_open.pop(chat, None)
+            return answer
         if text.startswith('@'):
             return t('Dieser Chat hat feste Empfänger. Bitte den Einzelchat der gewünschten Sitzung öffnen.')
         if text.startswith('/') and command not in {'status', 'pending', 'stop', 'update'}:
@@ -396,6 +450,59 @@ class Rooms:
         return '\n\n'.join(results)
 
     # -- the user's schedules -------------------------------------------------------
+
+    async def _branch_word(self, sid, sub, rest, chat=None):
+        """branches / test <n|name> / pull / cleanup: the session's branch
+        operations (delfin/agent/branch_ops.py, the dashboard's rules).
+        The answer is short lines; a listing is numbered, so an answer can
+        name one (test 2, ok 1)."""
+        word, _, tail = (rest or '').strip().partition(' ')
+        if sub == 'list':
+            view = word if word in {'mine', 'all', 'hidden', 'merged',
+                                    'remote'} else 'mine'
+            reply = await self.session(sid, 'branch', sub='list', view=view,
+                                       text=tail)
+        elif sub == 'test':
+            reply = await self.session(sid, 'branch', sub='test', ref=word)
+        else:
+            reply = await self.session(sid, 'branch', sub=sub)
+        if reply.get('error'):
+            return t('Branchen nicht erreichbar: {e}').format(e=reply['error'])
+        if not reply.get('ok'):
+            return t('{t}').format(t=reply.get('text') or 'Nicht möglich.')
+        if sub == 'cleanup' and not (reply.get('candidates') or []):
+            return t('Nichts aufzuräumen: keine gemergten Branches, keine '
+                     'verwaisten Worktrees.')
+        if sub == 'test':
+            return t('{t}').format(t=reply.get('text') or 'getestet')
+        if sub == 'pull':
+            return t('{t}').format(t=reply.get('text') or 'aktualisiert')
+        # list / cleanup: numbered, one line each
+        rows = reply.get('rows') or reply.get('candidates') or []
+        lines = []
+        for i, row in enumerate(rows, 1):
+            name = row.get('ref') or row.get('name') or ''
+            detail = row.get('ahead') or row.get('reason') or ''
+            lines.append(f"{i}. {name}" + (f" ({detail})" if detail else ""))
+        if sub == 'cleanup':
+            if chat:
+                self._branch_cleanup_open[chat] = True
+            lines.append(t('Bestätigen mit: ok <Nummer>'))
+        return '\n'.join(lines) or t('Keine Branches in dieser Ansicht.')
+
+    async def _branch_ok(self, sid, token):
+        """ok <n|name> after cleanup: the confirmation. The deletion runs
+        in the session's workspace through branch_cleanup.delete, whose
+        rules are re-read at deletion; the listing may be older than the
+        rules."""
+        reply = await self.session(sid, 'branch', sub='cleanup',
+                                   delete=[token] if token else [],
+                                   confirm=True)
+        if reply.get('error'):
+            return t('Aufräumen nicht erreichbar: {e}').format(e=reply['error'])
+        text = reply.get('text') or ('Gelöscht.' if reply.get('ok')
+                                     else 'Nicht gelöscht.')
+        return t('{t}').format(t=text)
 
     async def ensure_schedules_room(self):
         async with self._setup:
@@ -506,11 +613,80 @@ class Rooms:
                 await self.send(chat, self.run_text(run))
             store.set_schedule_seq(int(run['seq']), owner=self.owner)
 
+    async def approvals_news(self):
+        """Pending approvals of EVERY session of the service -- interactive,
+        scheduled, unattended -- one batched message to the paired chat.
+        Sessions with their own room get theirs there (refresh); this step
+        reports the rest: the ones that today wait for their timeout."""
+        if not self.paired():
+            return
+        reply = await self.ask({'cmd': 'approvals'})
+        if reply.get('error'):
+            return
+        items = [i for i in reply.get('items', [])
+                 if (i['sessionId'], i['requestId']) not in self._approval_shown
+                 and not store.rooms().get(store.room_of_session(i['sessionId']), {}).get('ready')]
+        if not items:
+            return
+        self._approval_check = reply.get('check') or ''
+        for i in items:
+            self._approval_shown.add((i['sessionId'], i['requestId']))
+        lines = [t('⏳ Freigaben nötig ({machine}):').format(machine=bot_name())]
+        for i in items:
+            risk = {'shell': '⚠️ Shell-Befehl', 'write': '✏️ Schreiben',
+                    'read': '👁 Lesen'}.get(i.get('risk') or '', '')
+            hint = t('ok {n} · zeige {n} · am Dashboard').format(n=i['n']) \
+                if i.get('approvable') else t('nur am Dashboard')
+            lines.append(t('{n}. {tool}: {text}\n{risk}{sep}{hint}')
+                         .format(n=i['n'], tool=i.get('tool') or '?',
+                                 text=i.get('text') or '',
+                                 risk=risk, sep='\n' if risk else '', hint=hint))
+        lines.append(t('Antworten: ok <n> / nein <n> · zeige <n> für die ganze Anfrage. '
+                       'Erledigte oder geänderte Anfragen können nichts mehr freigeben.'))
+        await self.send('@' + self.owner, '\n\n'.join(lines))
+
+    async def approval_command(self, text):
+        """ok <n> / nein <n> / zeige <n>: the phone answers an approval the
+        batched message showed, with the check the service itself holds."""
+        word, _, rest = text.strip().lower().partition(' ')
+        if word not in {'ok', 'nein', 'zeige'} or not rest.strip().strip('.').isdigit():
+            return t('Form: ok <n> / nein <n> / zeige <n>. Mit approvals die offenen Anfragen ansehen.')
+        n = int(rest.strip().strip('.'))
+        if word == 'zeige':
+            reply = await self.ask({'cmd': 'approvals'})
+            item = next((i for i in reply.get('items', []) if i.get('n') == n), None)
+            if item is None:
+                return t('Keine offene Anfrage mit der Nummer {n}.').format(n=n)
+            self._approval_check = reply.get('check') or self._approval_check
+            self._approval_shown.add((item['sessionId'], item['requestId']))
+            return t('{n}. {tool}: {text}\nSitzung: {session}\nAntwort: ok {n} / nein {n}')\
+                .format(n=n, tool=item.get('tool') or '?', text=item.get('text') or '',
+                        session=item.get('session') or '?')
+        reply = await self.ask({'cmd': 'answer', 'n': n, 'ok': word == 'ok',
+                                'check': self._approval_check})
+        if reply.get('error'):
+            return t('Fehler: {error}').format(error=reply['error'])
+        return t('Anfrage {n}: {result}.').format(
+            n=n, result=t('freigegeben') if word == 'ok' else t('abgelehnt'))
+
     async def start_session(self, rest):
         """`neu NAME[: task]`: a session in a folder of its own, its chat, and
-        the task as its first prompt. The host chooses folder and profile."""
+        the task as its first prompt. The host chooses folder and profile.
+        `neu NAME arbeitskopie` (or `in arbeitskopie`) runs it in its own
+        worktree of the folder; the typed word is the consent to make the
+        folder a local project."""
+        # The worktree word is the matcher's, the only German part: name
+        # [in] arbeitskopie. Everything the phone is shown is translated
+        # whole (lang.t).
+        m = re.match(r"\s*(?P<name>.*?)\s*(?:\bin\s+)?arbeitskopie\s*$",
+                     rest, re.IGNORECASE)
+        worktree = False
+        if m and m.group("name").strip():
+            rest = m.group("name")
+            worktree = True
         name, colon, task = rest.partition(':')
-        reply = await self.ask({'cmd': 'create', 'name': name.strip()})
+        reply = await self.ask({'cmd': 'create', 'name': name.strip(),
+                                **({'worktree': True} if worktree else {})})
         if not reply.get('ok'):
             return reply.get('error') or t('Sitzung wurde nicht gestartet.')
         sid = reply['sessionId']
@@ -522,6 +698,37 @@ class Rooms:
             sent = await self.session(sid, 'prompt', text=task.strip())
             text += '\n' + (sent.get('error') or t('Auftrag übergeben.'))
         return text
+
+    async def merge_back(self, rest):
+        """`zusammenführen [pfad]`: merge a session worktree back into its
+        main checkout. Without a path the worktrees are listed; with one,
+        it is merged. A conflict is said, nothing overwritten."""
+        reply = await self.ask({'cmd': 'merge', 'path': rest.strip()})
+        if reply.get('error'):
+            return t('Fehler: {error}').format(error=reply['error'])
+        if not reply.get('ok'):
+            return t('Zusammenführen ist nicht gelungen.')
+        if not rest.strip():
+            worktrees = reply.get('worktrees') or []
+            if not worktrees:
+                return t('Keine Sitzungs-Arbeitskopien. neu NAME arbeitskopie legt eine an.')
+            lines = [t('Sitzungs-Arbeitskopien:')]
+            lines += [t('{path} — {summary}').format(path=w.get('path') or '?',
+                                                     summary=w.get('summary') or '')
+                      for w in worktrees]
+            lines.append(t('zusammenführen PFAD führt eine zurück.'))
+            return '\n'.join(lines)
+        status = reply.get('status')
+        if status == 'ok':
+            files = ', '.join(reply.get('files') or []) or t('keine Dateiänderungen')
+            return t('Zurückgeführt nach {target}: {files} (uncommitiert, zur Durchsicht).').format(
+                target=reply.get('target') or '', files=files)
+        if status == 'conflict':
+            files = ', '.join(reply.get('files') or []) or t('die geänderten Dateien')
+            return t('Konflikt, nichts überschrieben: {files}. {message} Die Arbeitskopie bleibt: dort lösen, dann erneut zusammenführen.').format(
+                files=files, message=reply.get('message') or '')
+        return t('Zusammenführen nicht angewendet: {message}').format(
+            message=reply.get('message') or t('Fehler'))
 
     @staticmethod
     def pending_text(items):
@@ -889,7 +1096,7 @@ class Rooms:
         async def notifications():
             last = ''
             while self.paired():
-                for step in (self.refresh, self.schedule_news):
+                for step in (self.refresh, self.schedule_news, self.approvals_news):
                     try:
                         await step()
                         last = '' if step == self.refresh else last

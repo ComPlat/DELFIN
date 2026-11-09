@@ -234,6 +234,14 @@ def user_settings_path() -> Path:
     return Path(user_settings.get_settings_path())
 
 
+def defaults_settings_path() -> Optional[Path]:
+    """The defaults file under the user's (the launcher's people mode:
+    the account's file), or None. Its rules are read before the user's."""
+    from delfin import user_settings
+    found = user_settings.get_settings_defaults_path(user_settings_path())
+    return Path(found) if found is not None else None
+
+
 def project_settings_path(workspace: Any) -> Optional[Path]:
     try:
         return Path(workspace).expanduser().resolve() / PROJECT_RELPATH
@@ -494,8 +502,12 @@ def _load_local(workspace: Any = None) -> RuleSet:
     except Exception:
         upath = None
     ppath = project_settings_path(workspace) if workspace is not None else None
+    try:
+        dpath = defaults_settings_path() if upath is not None else None
+    except Exception:
+        dpath = None
     identity = repo_identity(workspace)
-    key = (_stamp(upath), _stamp(ppath), identity)
+    key = (_stamp(upath), _stamp(ppath), identity, _stamp(dpath))
     with _CACHE_LOCK:
         hit = _CACHE.get(key)
     if hit is not None:
@@ -503,7 +515,12 @@ def _load_local(workspace: Any = None) -> RuleSet:
     errors: list = []
     lists = {k: [] for k in LISTS}
     gallow, allow_off, other = None, [], []
-    for path, project in ((upath, False), (ppath, True)):
+    # The defaults file (people mode) is a user-level layer read first: its
+    # rules are added to the user's, and its global_allow holds unless the
+    # user's file sets one. Rejected: the user's permissions block
+    # replacing the defaults' whole, which drops the account's deny rules
+    # for everyone with a block of their own.
+    for path, project in ((dpath, False), (upath, False), (ppath, True)):
         block = _read_block(path, errors)
         if not block:
             continue
@@ -512,13 +529,15 @@ def _load_local(workspace: Any = None) -> RuleSet:
             for k in LISTS:
                 lists[k].extend(got[k])
             continue
-        gallow = block.get("global_allow")
+        if "global_allow" in block or gallow is None:
+            gallow = block.get("global_allow")
         if gallow is not None and not isinstance(gallow, bool):
             errors.append((str(path), "global_allow", repr(gallow),
                            "is neither true nor false; the global allow "
                            "list is off until it is"))
             gallow = False
-        here, other = _repo_lists(block, str(path), identity, errors)
+        here, more = _repo_lists(block, str(path), identity, errors)
+        other = list(other) + list(more)
         # The repository's own rules after the global deny/ask (every
         # deny before any ask either way) and before the global allows,
         # so the scoped rule is the one reported.
@@ -526,7 +545,7 @@ def _load_local(workspace: Any = None) -> RuleSet:
         lists["ask"].extend(got["ask"] + here["ask"])
         lists["allow"].extend(here["allow"])
         if gallow is False:
-            allow_off = got["allow"]
+            allow_off = list(allow_off) + list(got["allow"])
         else:
             lists["allow"].extend(got["allow"])
     rs = RuleSet(tuple(lists["deny"]), tuple(lists["ask"]),
@@ -832,6 +851,16 @@ def _subjects(name: str, args: dict, workspace: Any) -> dict:
         h = url_host(args.get("url"))
         if h:
             hosts.append(h)
+    if bare == "verify_source":
+        # SRC1 (operator decision 2026-11-01): the network policy binds
+        # this tool like web_fetch. Its target host is NOT user-supplied
+        # -- it is the fixed API host of the action, derived in ONE place
+        # (delfin.agent.source_apis.host_for_action), so a new action
+        # cannot silently bypass the rule layer. An unknown action gives
+        # no host, so nothing can talk the rule layer into one.
+        h = _source_api_host(args.get("action"))
+        if h:
+            hosts.append(h)
     return {"bash": cmd, "read": _forms(read), "write": _forms(write),
             "hosts": hosts}
 
@@ -850,16 +879,39 @@ def _hits(rule: Rule, name: str, subj: dict, workspace: Any) -> bool:
     return False
 
 
+def _source_api_host(action) -> Optional[str]:
+    """The fixed API host a verify_source action dials (or None).
+
+    Reads the mapping from delfin.agent.source_apis -- one derivation
+    place; the rule layer never keeps its own host list that could
+    drift from what the tool actually dials.
+    """
+    try:
+        from .source_apis import host_for_action
+        return host_for_action(action)
+    except Exception:
+        # source_apis unavailable -> no host -> the rule layer treats
+        # the call as having no web subject; the tool itself will fail
+        # its own import and the call goes nowhere.
+        return None
+
+
 def _ceiling_rule(rs: RuleSet, name: str, args: dict) -> Optional[Rule]:
     """The managed network ceiling as a deny rule, when ``web_fetch``
-    names a host outside it (``managed_policy.domain_within_max``)."""
+    (or a verify_source action, SRC1 2026-11-01) names a host outside
+    it (``managed_policy.domain_within_max``)."""
     pol = rs.policy
+    bare = bare_tool_name(name)
     if (pol is None or not getattr(pol, "allowed_domains_max", ())
-            or bare_tool_name(name) != "web_fetch"):
+            or bare not in ("web_fetch", "verify_source")):
         return None
     try:
         from . import managed_policy as _mp
-        if _mp.domain_within_max(url_host((args or {}).get("url")), pol):
+        if bare == "verify_source":
+            host = _source_api_host((args or {}).get("action"))
+        else:
+            host = url_host((args or {}).get("url"))
+        if _mp.domain_within_max(host, pol):
             return None
         src = pol.sources[0].path if pol.sources else ""
     except Exception:

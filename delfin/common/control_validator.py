@@ -1063,6 +1063,28 @@ def _as_preopt_mode(value: Any) -> str:
     raise ValueError("must be none/no, xtb, crest, or goat")
 
 
+def _as_mlp_preopt(value: Any) -> str:
+    """The ML potential the start geometry is relaxed with before ORCA.
+
+    ``none`` (default, the shipped behaviour: no MLP runs at all) or the
+    canonical name of one of the backends delfin.mlp_tools.calculators
+    knows; aliases are normalised (``mace`` -> ``mace_off``).
+    """
+    from delfin.mlp_tools.calculators import _BACKEND_ALIASES
+
+    text = str(value or "none").strip().lower()
+    if not text or text in {"no", "false", "off", "0", "none"}:
+        return "none"
+    canon = _BACKEND_ALIASES.get(text)
+    if canon is None:
+        raise ValueError(
+            "mlp_preopt must be none or an MLP backend name ("
+            + ", ".join(sorted(set(_BACKEND_ALIASES.values())))
+            + "; aliases accepted, e.g. 'mace' = 'mace_off'), got "
+            + repr(value))
+    return canon
+
+
 def _as_global_optimizer(value: Any) -> str:
     """GOAT, CREST, or nothing at all.
 
@@ -1079,6 +1101,102 @@ def _as_global_optimizer(value: Any) -> str:
     if upper in {"GOAT", "CREST"}:
         return upper
     raise ValueError("must be GOAT, CREST, or none")
+
+
+#: orca-mlips plugins GOAT can run with (delfin/mlp_tools/orca_mlips.py).
+_GLOBAL_OPT_MLIP_BACKENDS = ("uma", "mace", "orb", "aimnet2")
+_GLOBAL_OPT_METHOD_HINT = (
+    "must be empty (GOAT with the xTB_method), mlip:uma, mlip:mace, mlip:orb "
+    "or mlip:aimnet2 (an orca-mlips MLIP through ORCA's ExtOpt)"
+)
+_MLIP_MODEL_TOKEN = re.compile(r"^[A-Za-z0-9_.+\-]{1,80}$")
+
+
+def _as_global_opt_method(value: Any) -> str:
+    """The method GOAT optimises with: "" (the xTB_method) or mlip:<plugin>.
+
+    Empty, none and xtb all keep the classic xTB GOAT, whose input stays
+    byte-identical.  ``mlip:<plugin>`` names an orca-mlips plugin; the
+    value comes back lower-case without spaces (``MLIP: UMA`` ->
+    ``mlip:uma``).
+    """
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "no", "off", "false", "0", "xtb"}:
+        return ""
+    low = text.lower().replace(" ", "")
+    head, sep, plugin = low.partition(":")
+    if head == "mlip" and sep and plugin in _GLOBAL_OPT_MLIP_BACKENDS:
+        return f"mlip:{plugin}"
+    raise ValueError(_GLOBAL_OPT_METHOD_HINT)
+
+
+def _as_global_opt_mlip_model(value: Any) -> str:
+    """Optional model name for the orca-mlips plugin (``--model``); "" = its default.
+
+    A single token of letters, digits and ``_ . + -`` (it is written into
+    the ORCA input's Ext_Params string, so no spaces or quotes).
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not _MLIP_MODEL_TOKEN.match(text):
+        raise ValueError(
+            "model must be one token of letters, digits, '_', '.', '+', '-' "
+            "(at most 80 characters), e.g. uma-s-1p1"
+        )
+    return text
+
+
+def _as_global_opt_mlip_device(value: Any) -> str:
+    """cuda (default: the node running the workflow has the GPU) or cpu."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return "cuda"
+    if text in {"cuda", "cpu"}:
+        return text
+    raise ValueError("must be cuda or cpu")
+
+
+def _valid_global_opt_mlip(validated: Mapping[str, Any]) -> str:
+    """``mlip:<plugin>`` when the value passed its field check, else ""."""
+    try:
+        method = _as_global_opt_method(validated.get("global_opt_method"))
+    except ValueError:
+        return ""  # the field check reports it
+    return method if method.startswith("mlip:") else ""
+
+
+def _global_opt_method_errors(validated: Mapping[str, Any]) -> list[str]:
+    """Cross-key errors of the GOAT method choice (empty when none applies).
+
+    An MLIP method with CREST is refused: CREST runs xTB only.  An MLIP
+    whose weights are non-commercially licensed is refused when
+    refuse_noncommercial_weights=yes (LICENSE_GUARD.md family 4).
+    """
+    method = _valid_global_opt_mlip(validated)
+    if not method:
+        return []
+    errors: list[str] = []
+    optimizer = str(validated.get("global_optimizer") or "").upper()
+    crest_on = optimizer == "CREST" or (
+        not optimizer and str(validated.get("CREST", "no")).lower() == "yes")
+    if crest_on:
+        errors.append(
+            f"global_opt_method={method} applies to GOAT only: CREST runs "
+            "xTB only -- set global_optimizer=GOAT or clear global_opt_method"
+        )
+    plugin = method.split(":", 1)[1]
+    if str(validated.get("refuse_noncommercial_weights", "no")).lower() == "yes":
+        from delfin.mlp_tools.orca_mlips import mlips_weight_licence
+
+        lic = mlips_weight_licence(plugin)
+        if lic.get("non_commercial"):
+            errors.append(
+                f"global_opt_method={method} uses non-commercial model weights "
+                f"({lic['name']}); refuse_noncommercial_weights=yes refuses them "
+                "-- choose mlip:orb, mlip:aimnet2 or mlip:uma"
+            )
+    return errors
 
 
 def _as_response_engine(value: Any) -> str:
@@ -2198,6 +2316,26 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("XTB_OPT", _as_yes_no, default="no"),
     FieldSpec("XTB_GOAT", _as_yes_no, default="no"),
     FieldSpec("CREST", _as_yes_no, default="no"),
+    # GOAT method choice (opt-in; absent = GOAT with the xTB_method, the
+    # input unchanged). Not in the shipped template, like mlp_preopt.
+    FieldSpec("global_opt_method", _as_global_opt_method, default="",
+              help="Method GOAT optimises with: empty = the xTB_method "
+                   "(default), or mlip:uma | mlip:mace | mlip:orb | "
+                   "mlip:aimnet2 -- an orca-mlips machine-learned potential "
+                   "through ORCA's ExtOpt, run inside the workflow's job (the "
+                   "node needs the GPU for device=cuda). A screen: the "
+                   "ensemble's MLIP energies are not final numbers. CREST "
+                   "stays xTB-only. Weights: UMA gated (own HF login), MACE "
+                   "non-commercial (Academic Software License)."),
+    FieldSpec("global_opt_mlip_model", _as_global_opt_mlip_model, default="",
+              help="Model name passed to the orca-mlips plugin as --model; "
+                   "empty = the plugin's default."),
+    FieldSpec("global_opt_mlip_device", _as_global_opt_mlip_device, default="cuda",
+              help="cuda (default) or cpu. cuda without a visible GPU stops "
+                   "the GOAT step; there is no silent CPU fallback."),
+    FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
+              help="yes refuses an MLIP whose weights are non-commercially "
+                   "licensed (global_opt_method=mlip:mace)."),
     FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default=""),
     FieldSpec("solvent", _as_solvent, default=""),
     FieldSpec("functional", _as_functional, default="PBE0"),
@@ -2280,6 +2418,14 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("logK_exp", _as_str, default=""),
     FieldSpec("thdy_smiles_converter", _as_smiles_converter, default="NORMAL"),
     FieldSpec("thdy_preopt", _as_preopt_mode, default="xtb"),
+    # MLP pre-optimisation (wave19 m4): opt-in. The default keeps the
+    # shipped behaviour -- the ORCA steps run on the geometry as built.
+    FieldSpec("mlp_preopt", _as_mlp_preopt, default="none",
+              help="ML potential the start geometry is relaxed with before "
+                   "the ORCA steps: none (default) or ani2x, aimnet2, "
+                   "mace_off, chgnet, m3gnet. A screening step only: the "
+                   "geometry is a starting guess, every final energy comes "
+                   "from DFT."),
 )
 
 
@@ -2738,6 +2884,19 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             validated["OCCUPIER_compare"] = (
                 "G" if legacy.lower() in ("yes", "true", "1", "on") else "FSPE"
             )
+
+    errors.extend(_global_opt_method_errors(validated))
+    _method = _valid_global_opt_mlip(validated)
+    if _method and not _global_opt_method_errors(validated):
+        from delfin.mlp_tools.orca_mlips import mlips_weight_licence
+
+        _lic = mlips_weight_licence(_method.split(":", 1)[1])
+        if _lic.get("non_commercial") or _lic.get("gated"):
+            logger.warning(
+                "CONTROL global_opt_method=%s: model weights %s (%s)%s",
+                _method, _lic["name"], _lic["url"],
+                " -- non-commercial use only" if _lic.get("non_commercial")
+                else " -- gated: needs the user's own access")
 
     for name, text in explanations:
         logger.warning("CONTROL %s=? -> %s", name, text)

@@ -9,6 +9,7 @@ import pytest
 from delfin.analysis_tools.conformer_shape_classification import (
     analyze_ensemble,
     ez_cip_assignment,
+    custom_torsion,
     load_ensemble,
     shape_descriptors,
 )
@@ -89,6 +90,16 @@ def test_export_preserves_coordinates_and_mapping(tmp_path):
         export_selection(source, [1, 0], "synthetic_selection")
 
 
+def test_coincident_torsion_atoms_report_error_not_nan():
+    # Coincident middle atoms make the torsion undefined; the engine must
+    # say so explicitly instead of reporting NaN with status "ok"
+    # (found by reviewer nacht-s16, adversarial probe on the base commit).
+    coords = np.array([[0., 0., 0.], [1., 0., 0.], [1., 0., 0.], [1., 1., 0.]])
+    status = custom_torsion(coords, 0, 1, 2, 3)
+    assert status.status == "error", status
+    assert status.value is None, status
+
+
 def test_bond_order_failure_is_not_a_stereochemical_guess(monkeypatch):
     from rdkit.Chem import rdDetermineBonds
     def fail(*args, **kwargs):
@@ -101,3 +112,63 @@ def test_bond_order_failure_is_not_a_stereochemical_guess(monkeypatch):
     assert result[0]["status"] == "unknown"
     assert result[0]["stereo"] is None
     assert "not independently validated" in result[0]["kind"]
+
+
+def test_natural_perception_failure_reports_uncertainty_not_a_guess():
+    # Natural (unmocked) cases: a charged species and a metal complex.
+    # The engine must report uncertainty, never a guessed E/Z.
+    nh4 = np.array([[0.0, 0.0, 0.12],
+                    [0.6, 0.6, 0.0], [-0.6, 0.6, 0.0],
+                    [0.6, -0.6, 0.0], [-0.6, -0.6, 0.0]])
+    charged = ez_cip_assignment(["N", "H", "H", "H", "H"], nh4, charge=1)
+    assert all(e["stereo"] is None for e in charged), charged
+
+    fe_co = np.array([[0.0, 0.0, 0.0],
+                      [1.8, 0.0, 0.0], [2.9, 0.0, 0.0],
+                      [-1.8, 0.0, 0.0], [-2.9, 0.0, 0.0],
+                      [0.0, 1.8, 0.0], [0.0, 2.9, 0.0],
+                      [0.0, -1.8, 0.0], [0.0, -2.9, 0.0]])
+    metal = ez_cip_assignment(
+        ["Fe", "C", "O", "C", "O", "C", "O", "C", "O"], fe_co, charge=0)
+    assert all(e["stereo"] is None for e in metal), metal
+    assert all(e["status"] in ("unknown", "not_assigned") for e in metal), metal
+    assert all("not independently validated" in e["kind"] for e in metal), metal
+
+
+def _ensemble_with_double_bond(tmp_path: Path) -> Path:
+    """Synthetic two-frame ensemble of trans-2-butene-like fragments."""
+    lines = []
+    coords = (
+        ((0.0, 0.0, 0.0), (1.34, 0.0, 0.0),  # C=C
+         (2.85, 0.0, 0.9), (2.85, 0.0, -0.9),
+         (-0.85, 0.0, 0.9), (-0.85, 0.0, -0.9)),
+        ((0.0, 0.0, 0.0), (1.34, 0.0, 0.0),
+         (2.85, 0.0, -0.9), (2.85, 0.0, 0.9),
+         (-0.85, 0.0, 0.9), (-0.85, 0.0, -0.9)),
+    )
+    symbols = ("C", "C", "H", "H", "H", "H")
+    for k, frame in enumerate(coords):
+        lines.extend(["6", f"energy: {-1.0 - 0.001 * k}"])
+        lines.extend(f"{s} {x:.4f} {y:.4f} {z:.4f}"
+                     for s, (x, y, z) in zip(symbols, frame))
+    path = tmp_path / "synthetic_butene_crest.xyz"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def test_user_visible_outputs_carry_the_ez_reconstruction_caveat(tmp_path):
+    # The per-assignment caveat lives on every engine record; the
+    # user-visible aggregate outputs must not drop it when ez_cip is
+    # among the requested classes (task target 3).
+    path = _ensemble_with_double_bond(tmp_path)
+    from delfin.analysis_tools.geometry_classification_tools import (
+        combined, describe_conformer, filter_chemical)
+    f = filter_chemical(path=path, classes=[("ez_cip", "E")], use_cache=False)
+    assert any("not independently validated" in c
+               for c in f["caveats"].values()), f["caveats"]
+    d = describe_conformer(0, path=path, use_cache=False)
+    assert any("not independently validated" in c
+               for c in d["caveats"].values()), d["caveats"]
+    c = combined(path=path, filters=[("ez_cip", "E")], use_cache=False)
+    assert any("not independently validated" in c
+               for c in c["caveats"].values()), c["caveats"]

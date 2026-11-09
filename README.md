@@ -11,7 +11,7 @@
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
-**DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
+**DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design, with a focus on enabling small, open-weight AI models to produce scientifically meaningful data. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform. Main Focus is to bring small open weights models to that point that they produce meaninful scientific data.
 
 **DELFIN is operated by AI agents.** They configure and submit calculations, monitor them, interpret the outputs, and modify DELFIN's own code where a workflow has to be extended. Work that stands on its own is delegated to subagents running in parallel, each with its own tools and permissions.
 
@@ -465,6 +465,7 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 * `MANTA_*` — the MANTA builder and its funnel: construction quality, gates, screening, optimisation, refinement, time budget
 * `XTB_preOPT = yes | no` / `global_optimizer = GOAT | CREST`
   * the older spellings `XTB_OPT` / `XTB_GOAT` / `CREST` are still accepted
+  * `global_opt_method = mlip:uma | mlip:mace | mlip:orb | mlip:aimnet2` (optional, GOAT only) runs GOAT with an orca-mlips MLIP on the job's GPU; `global_opt_mlip_model`, `global_opt_mlip_device = cuda | cpu`, `refuse_noncommercial_weights = yes | no`
 * `XTB_SOLVATOR = yes | no`
 
 ### Resource management

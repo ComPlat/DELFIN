@@ -75,6 +75,61 @@ versions) read it via an environment variable and SKIP when the
 variable is absent — they never fail in CI. The variable is set by the
 developer/operator locally, never in CI.
 
+The store is managed with `delfin-dev fixtures` (`delfin/
+fixtures_store.py`): `init <dir>` creates the layout, `add <src> --as
+<rel>` copies a file into a repository-mirroring relative path and
+records sha256, ORCA version and provenance in `manifest.json`,
+`verify` re-checks the hashes and the no-personal-data rule, `where`
+prints the resolved store root. The root comes from the
+`DELFIN_PRIVATE_FIXTURES` environment variable, then from
+`paths.fixtures_dir` in the DELFIN settings file — never a hard-coded
+path. The test helper (`tests/test_lc1_fixtures_helper.py`) refuses a
+file whose sha256 does not match the manifest. Tests that use the
+store carry the `private_fixtures` marker (auto-applied to every
+module importing the helper), so a local run can select them with
+`pytest -m private_fixtures`. See docs/PRIVATE_FIXTURE_STORE.md.
+
+### 4. Third-party ML potentials and model weights (family 4)
+
+The MLIP registry (`delfin/mlp_tools/registry.py`) can call optional
+third-party packages (orca-mlips, fairchem, mace, orb-models,
+aimnetcentral, gpuma, torchani, ...) and load model weights. CODE licence
+and WEIGHT licence are separate things and both are declared per backend
+(`code_licence` / `weight_licence`, enforced by
+`tests/test_mlip_licence_records.py`).
+
+- **No weights or checkpoints in the repo.** Never commit, vendor or
+  download model files into this tree: `*.pt`, `*.pth`, `*.ckpt`,
+  `*.safetensors`, `*.npz`, or any trained-model file. Weights stay in the
+  user's own cache (HF cache, backend download cache); a test blocks
+  tracked weight files.
+- **No tokens.** DELFIN never reads, prints, logs or stores Hugging Face
+  or other access tokens. Gated checkpoints (UMA) are the user's own
+  acceptance + their own login, outside DELFIN.
+- **Gated weights** need the user's own acceptance of the upstream terms.
+  DELFIN's job is to say so, with the URL, not to work around the gate.
+- **Non-commercial weights** (e.g. MACE foundation models under the
+  Academic Software License) are flagged `non_commercial=True`; the
+  option `refuse_noncommercial_weights=True` (on `mlp_preoptimize` and
+  `registry.create_calculator`) makes DELFIN refuse such backends so
+  commercial users cannot trip over them.
+- **Every optional MLIP dependency DELFIN can call must have a cited
+  upstream licence** in the registry; anything not yet verified against
+  the upstream text is marked `verified=False`, never guessed.
+- **What an installer may do:** hint only (`pip install <pkg>` in an
+  install_hint string). DELFIN never installs an MLIP package or weights
+  on its own. The guided set-up (`delfin/mlp_tools/guided_setup.py`,
+  `delfin mlp_setup`) shows the exact commands with the backend's code
+  and weight licence records and runs a command only after the user
+  approved that command (terminal y/N, or the agent's shell gate, which
+  asks for every installer command in every mode). It installs packages
+  into a separate environment; weights are fetched by the backend into
+  the user's own cache on first use (the verify job), never into the
+  repository. For a gated checkpoint the plan tells the user to run
+  `hf auth login` themselves; the token never passes through DELFIN.
+- Every backend's `weight_licence.url` names the model card / licence page
+  the user must check before depending on the checkpoint.
+
 ## Escape hatch
 
 `# license-guard: allow` on the offending line — for a deliberate,
@@ -85,3 +140,22 @@ documented reference. Use sparingly.
 Git history is not rewritten by this package. Files removed here stay
 in older commits; deciding on a history rewrite is the person's
 decision.
+
+## Bring-your-own-licence tools
+
+A small number of scripts under `tools/` exist for users who hold their own CSD licence. They read
+the user's local CSD installation and produce, on the user's machine, a file DELFIN can be pointed
+at. The rules for every such tool:
+
+- It lives in `tools/` only. No module under `delfin/` imports it (checked by
+  `tests/test_byol_tools.py`), and DELFIN runs without it.
+- Its single CSD import carries `# license-guard: allow` and is executed only under the CSD
+  Python API interpreter (`run_csd_python_api`).
+- What it produces stays local. The derived table is never committed to this repository and is
+  not redistributed; shipping it would need the written consent of the CCDC.
+- The shipped default stays open data: the metal-donor target table delivered with MANTA is the
+  COD (CC0) table `delfin/manta/data/ml_targets_cod.tsv`.
+
+Current tools: `tools/export_csd_crystals.py` (exports single-complex crystal coordinates for
+`tools/derive_ml_targets.py`, which derives the bond-valence metal-donor table and is licence-free
+itself).
