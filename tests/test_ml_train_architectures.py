@@ -252,6 +252,21 @@ def test_fit_metadata_contains_hyperparams():
         arch.ARCHITECTURES["random_forest"].hyperparams)
 
 
+def test_fit_refuses_holdout_path():
+    """fit() must refuse training on a dataset loaded from a paper hold-out file.
+
+    The hold-out guard refuses by PATH (LOCKBOX2 / pool_6000 / stage1_v2); fit()
+    is the training entry and must pass the dataset's path, not its licence-source
+    label, so a real run pointed at a hold-out file fails loudly instead of
+    training on held-out data.
+    """
+    ds = _synthetic_dataset()
+    ds.path = "/data/pool_6000/holdout_part.csv"
+    split = _split(len(ds.molecules))
+    with pytest.raises(ValueError):
+        arch.fit("random_forest", ds, split)
+
+
 @pytest.mark.parametrize("model_name", [
     "chemprop_mpnn", "schnet", "dimenet_pp", "painn",
     "nequip", "allegro", "mace", "fairchem_uma",
