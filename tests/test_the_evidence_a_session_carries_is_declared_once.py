@@ -200,6 +200,10 @@ _NOT_CARRIED = {
     # Per turn: what the turn verified (turn_verification), read by the
     # test-claim caveat of the same turn; the next turn starts its own.
     "_last_turn_verification",
+    # Per turn: the VR1 number+unit claim records of the answer just
+    # returned (claim -> file, line, verdict), shown next to that answer;
+    # the next turn verifies its own answer from scratch.
+    "last_claim_verification",
     # The experiment-discipline steering block of the current turn, the
     # same kind of per-message pointer.
     "_experiment_hint",
