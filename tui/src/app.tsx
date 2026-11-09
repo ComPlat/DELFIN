@@ -16,7 +16,7 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, nameOf, renameOf, resumeOf, shellLead } from "./commands"
+import { WINDOW_COMMANDS, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead } from "./commands"
 import { createSwarmView } from "./swarm/view"
 import type { ArgumentChoices } from "./composer/complete"
 import { CLICK_PAUSE_MS } from "./mouse"
@@ -252,6 +252,26 @@ export function App(props: AppProps): JSX.Element {
 
   const picker = createPicker({ clickPauseMs: props.clickPauseMs })
 
+  /** /merge: what session.merge made of a worktree path -- said, never
+   *  overwritten silently. A conflict keeps the worktree so nothing is
+   *  lost; the user resolves it there and merges again. */
+  const mergeWorktreeBack = async (path: string): Promise<boolean> => {
+    const result = await call("session.merge", { path })
+    if (!result) return false                // not asked (the note says why)
+    if (result.status === "ok") {
+      const files = (result.files ?? []).join(", ") || "no file changes"
+      say(`merged back to ${result.target}: ${files} -- uncommitted, for review`)
+      return true
+    }
+    if (result.status === "conflict") {
+      const files = (result.files ?? []).join(", ") || "the changed files"
+      say(`conflict, nothing overwritten: ${files}. ${result.message || ""} the worktree is kept: resolve it there and merge again`)
+      return true
+    }
+    say(`merge did not apply: ${result.message || "error"}`)
+    return false
+  }
+
   // Prompts sent while a session starts (the first one, or a new one from
   // the agent view): they go out to it once it is up.
   const early: { text: string; shown?: string }[] = []
@@ -343,9 +363,24 @@ export function App(props: AppProps): JSX.Element {
       void swarm.open()
       return true
     }
-    // Also with the key that steers: a rename is the window's, never the turn's.
-    const named = naming(text)
-    if (named !== null) return rename(sid(), named.title, named.exact)
+      // Also with the key that steers: a rename is the window's, never the turn's.
+      const named = naming(text)
+      if (named !== null) return rename(sid(), named.title, named.exact)
+      // /merge brings a session worktree back into this checkout. Bare, the
+      // picker lists the worktrees (session.worktrees); with a path, that
+      // one (session.merge). A conflict is said, nothing overwritten.
+      const merged = mergeOf(text)
+      if (merged !== null && !how) {
+        if (merged) return mergeWorktreeBack(merged)
+        const listed = await call("session.worktrees", { cwd: session()?.workspace ?? "" })
+        const rows = ((listed?.worktrees ?? []) as any[]).map((w) => ({
+          value: String(w.path ?? ""), label: String(w.path ?? ""),
+          detail: String(w.summary ?? ""),
+        }))
+        if (!rows.length) { say("no session worktrees here"); return true }
+        picker.open("merge back a session worktree", rows, (c) => void mergeWorktreeBack(c.value))
+        return true
+      }
     // The session strips the text it shows, as a typed line is stripped.
     if (shown) props.sentAs?.set(text.trim(), shown)
     const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })

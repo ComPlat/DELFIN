@@ -27,6 +27,7 @@ HELP = (
     'dateien – bereitgestellte Dateien; datei NAME – herunterladen.\n'
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
     'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
+    'neu NAME arbeitskopie – in einer eigenen Arbeitskopie; zusammenführen [PFAD] – Arbeitskopie zurückführen.\n'
     'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
     'profil frei|standard – im Sitzungs-Chat für dessen Ordner; sonst: profil <sitzung> frei.\n'
     'sync aktualisiert die aktivierten Sitzungen.'
@@ -360,6 +361,8 @@ class Rooms:
                 return reply.get('error') or t('Zeitplan wurde nicht angelegt.')
         if command in {'neu', 'new'}:
             return await self.start_session(rest)
+        if command in {'zusammenführen', 'zusammenfuehren', 'merge'}:
+            return await self.merge_back(rest)
         if command == 'chat' and rest.strip():
             if rest.strip() not in self._active:
                 return t('Zuerst in der gewünschten TUI-/Dashboard-Sitzung /sync eingeben.')
@@ -668,9 +671,22 @@ class Rooms:
 
     async def start_session(self, rest):
         """`neu NAME[: task]`: a session in a folder of its own, its chat, and
-        the task as its first prompt. The host chooses folder and profile."""
+        the task as its first prompt. The host chooses folder and profile.
+        `neu NAME arbeitskopie` (or `in arbeitskopie`) runs it in its own
+        worktree of the folder; the typed word is the consent to make the
+        folder a local project."""
+        # The worktree word is the matcher's, the only German part: name
+        # [in] arbeitskopie. Everything the phone is shown is translated
+        # whole (lang.t).
+        m = re.match(r"\s*(?P<name>.*?)\s*(?:\bin\s+)?arbeitskopie\s*$",
+                     rest, re.IGNORECASE)
+        worktree = False
+        if m and m.group("name").strip():
+            rest = m.group("name")
+            worktree = True
         name, colon, task = rest.partition(':')
-        reply = await self.ask({'cmd': 'create', 'name': name.strip()})
+        reply = await self.ask({'cmd': 'create', 'name': name.strip(),
+                                **({'worktree': True} if worktree else {})})
         if not reply.get('ok'):
             return reply.get('error') or t('Sitzung wurde nicht gestartet.')
         sid = reply['sessionId']
@@ -682,6 +698,37 @@ class Rooms:
             sent = await self.session(sid, 'prompt', text=task.strip())
             text += '\n' + (sent.get('error') or t('Auftrag übergeben.'))
         return text
+
+    async def merge_back(self, rest):
+        """`zusammenführen [pfad]`: merge a session worktree back into its
+        main checkout. Without a path the worktrees are listed; with one,
+        it is merged. A conflict is said, nothing overwritten."""
+        reply = await self.ask({'cmd': 'merge', 'path': rest.strip()})
+        if reply.get('error'):
+            return t('Fehler: {error}').format(error=reply['error'])
+        if not reply.get('ok'):
+            return t('Zusammenführen ist nicht gelungen.')
+        if not rest.strip():
+            worktrees = reply.get('worktrees') or []
+            if not worktrees:
+                return t('Keine Sitzungs-Arbeitskopien. neu NAME arbeitskopie legt eine an.')
+            lines = [t('Sitzungs-Arbeitskopien:')]
+            lines += [t('{path} — {summary}').format(path=w.get('path') or '?',
+                                                     summary=w.get('summary') or '')
+                      for w in worktrees]
+            lines.append(t('zusammenführen PFAD führt eine zurück.'))
+            return '\n'.join(lines)
+        status = reply.get('status')
+        if status == 'ok':
+            files = ', '.join(reply.get('files') or []) or t('keine Dateiänderungen')
+            return t('Zurückgeführt nach {target}: {files} (uncommitiert, zur Durchsicht).').format(
+                target=reply.get('target') or '', files=files)
+        if status == 'conflict':
+            files = ', '.join(reply.get('files') or []) or t('die geänderten Dateien')
+            return t('Konflikt, nichts überschrieben: {files}. {message} Die Arbeitskopie bleibt: dort lösen, dann erneut zusammenführen.').format(
+                files=files, message=reply.get('message') or '')
+        return t('Zusammenführen nicht angewendet: {message}').format(
+            message=reply.get('message') or t('Fehler'))
 
     @staticmethod
     def pending_text(items):

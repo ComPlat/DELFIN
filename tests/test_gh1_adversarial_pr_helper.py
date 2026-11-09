@@ -42,7 +42,7 @@ class TestRedaction:
 
     def test_secret_shaped_string_in_subject(self):
         def loader(ws):
-            return _tasks({"subject": "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcd",
+            return _tasks({"subject": "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcd",  # secret-guard: allow (synthetic DELFIN test sample)
                            "status": "in_progress",
                            "updated_at": "2026-11-01T00:00:00"})
         out = ph.body("ws", "main", task_loader=loader,

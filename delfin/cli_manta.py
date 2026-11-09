@@ -401,6 +401,22 @@ _CHAMPION_FLAGS = (
     "CN5_BOTH", "UNION", "AROM_PLANARIZE_CARRY_H", "RING_SNAP_KEEP_LENGTH",
     "TEMPLATE_COMPRESSED_RESEAT", "TEMPLATE_COMPRESSED_CONJ", "SP3_PYRAMIDAL_SEAT",
     "BV_EMBED_GEOM", "CONF_CACHE_ATOM_ORDER",
+    # LANDING 10 (2026-11-07, AB:l9b_csd vs l10a_csd): bond orders and the one-substituent donor seat.
+    # Open Babel's UFF read the bare xyz with the metal in it and guessed bond orders; the metal-donor
+    # bond filled the donor valence, so the double bond next to a donor was typed single and stretched
+    # (C=N 1.45 instead of 1.27 A, C=O 1.39 instead of 1.22, coordinated pyridines alternating).
+    # OB_KEKULE_ORDERS hands every non-metal bond its template Kekule order and aromaticity
+    # (openbabel_optimize._apply_template_kekule_orders); FLATTEN_P3_PYRAMIDAL keeps a period-3+
+    # atom with three or more sigma partners (sulfoxide S) out of the sp2 flattening.
+    # ORIENT_ONE_SUB_LP adds, next to every legacy frame with a monodentate one-substituent donor, a
+    # sibling seated by the donor's hybridisation instead of M-D-X 180 degrees; a sibling enters only
+    # if it is no worse than its primary in any defect class.
+    # 6000-pool A/B, 5226 held-out systems, canonical frame order for both arms: valid 4157 -> 4230
+    # (18 lost / 91 gained), crystal isomer built 3477 -> 3543 (55 / 121), isomers built
+    # 8159 -> 8328, clean distinct frames 24838 -> 28025, systems with >= 1 clean distinct frame
+    # 3841 -> 3948, hard frames at equal frame count 27630 -> 26790 (raw) and 20078 -> 19353
+    # (distinct), probe-severe frames 18.2 % -> 16.2 %.
+    "OB_KEKULE_ORDERS", "FLATTEN_P3_PYRAMIDAL", "ORIENT_ONE_SUB_LP",
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
