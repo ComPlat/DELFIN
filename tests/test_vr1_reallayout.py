@@ -117,14 +117,14 @@ def test_real_layout_wrong_frequency_is_mismatch_not_no_source(
 
 
 def test_scaling_factor_line_yields_no_candidates(real_folder: Path) -> None:
-    # The scaling/meta line's number must never become a frequency candidate;
-    # a value within tolerance of a real row (0.9553 vs the 0.00 mode) must
-    # verify against THAT row, not against the meta line.
+    # The scaling/meta line's number must never become a frequency candidate.
+    # The 0.00 translation/rotation rows are also dropped (see round 2), so
+    # only the real vibrational modes remain.
     from delfin.agent import claim_locator as cl
 
     out = real_folder / "real.out"
     vals = [v for v, _ in cl._block_values(out, cl._ANCHORS["frequency"], "cm-1")]
-    assert vals == [0.0, 1637.64, 3787.08]
+    assert vals == [1637.64, 3787.08]
 
 
 def test_flat_layout_still_verified(flat_folder: Path) -> None:
@@ -162,3 +162,53 @@ def test_zpe_uses_last_label_line(real_folder: Path) -> None:
     # ZPE is not in the energy labels' FIRST-line convention either; the last
     # 'Zero point energy' match is the real value.
     assert rec.verdict in ("verified", "mismatch")
+
+
+# --- (3) mismatch record carries the closest real candidate -------------------
+
+
+def test_mismatch_record_carries_closest_candidate(real_folder: Path) -> None:
+    # A frequency 20 cm-1 off (3807 vs the real 3787.08) is a mismatch, and
+    # the record must still show WHERE the run's real value sits: the
+    # closest candidate by |claim - candidate| in canonical units, with its
+    # line number (3787.08 at line 31 of the fixture) and parsed unit.
+    rec = verify_claim(3807.0, "cm-1", real_folder)
+    assert rec.verdict == "mismatch"
+    assert rec.line == 31
+    assert rec.parsed_value == pytest.approx(3787.08)
+    assert rec.parsed_unit == "cm-1"
+
+
+def test_mismatch_energy_record_carries_closest_candidate(real_folder: Path) -> None:
+    # Same for energy: -75.9 Eh is off every cycle's value; the closest real
+    # energy is the converged one (-76.3625, final cycle, line 17) -- it is
+    # 0.46 Eh away vs 0.80 for cycle 1's -76.100.
+    rec = verify_claim(-75.9, "Eh", real_folder)
+    assert rec.verdict == "mismatch"
+    assert rec.line == 17
+    assert rec.parsed_value == pytest.approx(-76.362500000000)
+
+
+# --- (4) 0.00 cm-1 translation/rotation rows are not candidates ---------------
+
+
+def test_zero_frequency_rows_are_not_candidates(real_folder: Path) -> None:
+    from delfin.agent import claim_locator as cl
+
+    out = real_folder / "real.out"
+    vals = [v for v, _ in cl._block_values(out, cl._ANCHORS["frequency"], "cm-1")]
+    # The 0.00 cm-1 translation/rotation rows are dropped; only the real
+    # vibrational modes remain.
+    assert vals == [1637.64, 3787.08]
+
+
+def test_negative_frequency_claim_is_not_verified_against_zero_rows(
+    real_folder: Path,
+) -> None:
+    # A -1.0 cm-1 claim must NOT verify against the (dropped) 0.00 rows;
+    # with no candidate within tolerance it is a mismatch, carrying the
+    # closest real mode (1637.64, line 30).
+    rec = verify_claim(-1.0, "cm-1", real_folder)
+    assert rec.verdict == "mismatch"
+    assert rec.line == 30
+    assert rec.parsed_value == pytest.approx(1637.64)

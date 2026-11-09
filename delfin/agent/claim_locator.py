@@ -215,7 +215,15 @@ def _block_values(out: Path, marker: re.Pattern, unit: str) -> list[tuple[float,
             if stop != -1:
                 rest = rest[:stop]
             for fm in _FLOAT.finditer(rest):
-                values.append((float(fm.group()), i))
+                v = float(fm.group())
+                # Real-run finding, PR #618 round 2: the 0.00 cm-1
+                # translation/rotation rows are not vibrational data.  A
+                # claim within 1 cm-1 of zero (e.g. -1.0 cm-1, an imaginary
+                # floppy mode) would "verify" against them.  Drop rows whose
+                # value rounds to 0.00; they can never be a real mode.
+                if abs(v) < 0.005:
+                    continue
+                values.append((v, i))
             continue
         # A non-row, non-banner line: meta inside the block (e.g. a scaling
         # line) is skipped, but any floats on it are NOT candidates.
@@ -356,13 +364,23 @@ def verify_claim(value: float, unit: str, calc_folder: str | Path) -> Verificati
             best = (cand_value, cand_line, cand_unit)
             break
     if best is None:
+        # The output computes the quantity but no candidate is within the
+        # tolerance: a mismatch, and the record still shows WHERE the run's
+        # real value sits -- the closest candidate by |claim - candidate| in
+        # canonical units, with its line number and parsed unit (PR #618
+        # round 2: the caveat then names the value the run actually has).
+        cand_value, cand_line, cand_unit = min(
+            candidates, key=lambda c: abs(claim_canonical - c[0])
+        )
         return VerificationRecord(
             "mismatch",
             value,
             unit,
             quantity,
             file=str(out),
-            parsed_unit=canonical,
+            line=cand_line,
+            parsed_value=cand_value,
+            parsed_unit=cand_unit,
             tolerance=tolerance,
         )
     cand_value, cand_line, cand_unit = best
