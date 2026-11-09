@@ -65,6 +65,13 @@ _DELFIN_DATA = "DELFIN_Data.json"
 _SUBMIT_SUFFIXES = (".sh", ".slurm", ".sbatch", ".job")
 
 
+#: Files ORCA/DELFIN generates during a run; never inputs.
+_GENERATED_OUTPUT_NAMES = ("initial_trj.xyz",)
+_GENERATED_OUTPUT_PREFIXES = ("initial",)
+#: Delimiter sections in a CONTROL.txt file.
+_CONTROL_SECTION_MARK = "-"
+
+
 def _iso_now() -> str:
     """UTC ISO-8601 timestamp for the record."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -97,16 +104,25 @@ def _structure_origin(run_root: Path, delfin_data: dict) -> dict:
     """Where the structure came from: SMILES / file / previous step, else unknown.
 
     Oriented on the shape doc_server/calc_indexer reads from DELFIN_Data.json:
-    ``input.smiles`` names a SMILES origin.
+    ``input.smiles`` names a SMILES origin.  Otherwise the file CONTROL names
+    (``input_file=``) wins; a structure input file in the run only when it is
+    not an ORCA/DELFIN-generated artefact.  The relative path is recorded,
+    never an absolute one.
     """
     inp = delfin_data.get("input") if isinstance(delfin_data.get("input"), dict) else {}
     smiles = inp.get("smiles")
     if isinstance(smiles, str) and smiles.strip():
         return {"kind": "smiles", "smiles": smiles.strip()}
-    # A structure input file in the run (mol.xyz / mol.smi / ...): record the
-    # relative path, never an absolute one.
+    named = _named_input(run_root)
+    if named and (run_root / named).is_file():
+        return {"kind": "file", "path": named}
     for p in sorted(run_root.iterdir()):
-        if p.suffix in (".xyz", ".smi", ".sdf", ".mol") and p.is_file():
+        if (
+            p.is_file()
+            and p.suffix in (".xyz", ".smi", ".sdf", ".mol")
+            and p.name not in _GENERATED_OUTPUT_NAMES
+            and not p.stem.startswith(_GENERATED_OUTPUT_PREFIXES)
+        ):
             return {"kind": "file", "path": _relative(p, run_root)}
     return {"kind": "unknown", "value": UNKNOWN_ORIGIN}
 
@@ -135,23 +151,54 @@ def _largest_output(run_root: Path) -> Path | None:
     return max(outs, key=lambda p: p.stat().st_size) if outs else None
 
 
-def _input_files(run_root: Path) -> list[dict]:
-    """Input files of the run: CONTROL.txt plus structure/calculation inputs.
+def _named_input(run_root: Path) -> str | None:
+    """The structure input file the CONTROL names (``input_file=`` key)."""
+    control = run_root / "CONTROL.txt"
+    if not control.is_file():
+        return None
+    try:
+        for line in control.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("input_file="):
+                name = line.split("=", 1)[1].strip()
+                return name or None
+    except OSError:
+        return None
+    return None
 
-    Each entry: ``{"path": <relative>, "sha256": <hex>}``.  A relative path and
-    a content hash make the record reproducible without ever naming an
-    absolute location.
+
+def _input_files(run_root: Path) -> list[dict]:
+    """Input files of the run, decided by what the CONTROL/workflow reads.
+
+    CONTROL.txt always, plus the file CONTROL names via ``input_file=``; a
+    structure input (.xyz/.smi/...) only when it is NOT an ORCA/DELFIN
+    generated artefact (``initial*`` outputs and trajectories never count).
+    Each entry: ``{"path": <relative>, "sha256": <hex>}``.
     """
     entries: list[dict] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        rel = _relative(path, run_root)
+        if rel in seen or not path.is_file():
+            return
+        seen.add(rel)
+        entries.append({"path": rel, "sha256": cbatch_sha256_file(path)})
+
+    add(run_root / "CONTROL.txt")
+    named = _named_input(run_root)
+    if named:
+        add(run_root / named)
     for p in sorted(run_root.iterdir()):
-        if p.name == _DELFIN_DATA:
+        if p.name == _DELFIN_DATA or p.name == "CONTROL.txt":
             continue
-        if p.suffix in _INPUT_SUFFIXES or p.name == "CONTROL.txt":
-            if p.is_file():
-                entries.append({
-                    "path": _relative(p, run_root),
-                    "sha256": cbatch_sha256_file(p),
-                })
+        if p.is_file() and p.suffix in _INPUT_SUFFIXES:
+            stem = p.stem
+            if p.name in _GENERATED_OUTPUT_NAMES or (
+                any(stem.startswith(pref) for pref in _GENERATED_OUTPUT_PREFIXES)
+            ):
+                continue
+            add(p)
     return entries
 
 
@@ -321,6 +368,48 @@ def read_record(result_dir: str | Path) -> dict:
     return record
 
 
+def _run_verify(record: dict, result_dir: Path) -> int:
+    """Recompute every stored checkable value; report each mismatch, non-zero rc.
+
+    Checks: every ``input_files[].sha256`` against the file on disk, and the
+    program version against the run's current output banner.  A value recorded
+    as ``provenance_missing`` has nothing to contradict and never fails.  Each
+    mismatch is printed with the offending path; exit 0 only when none.
+    """
+    run_root = result_dir if result_dir.is_dir() else result_dir.parent
+    mismatches: list[str] = []
+
+    stored = {f.get("path"): f.get("sha256") for f in record.get("input_files", [])}
+    for rel, sha in sorted(stored.items()):
+        p = run_root / rel
+        if not p.is_file():
+            mismatches.append(f"{rel}: file missing (stored sha256={sha})")
+        else:
+            current = cbatch_sha256_file(p)
+            if current != sha:
+                mismatches.append(
+                    f"{rel}: sha256 mismatch (stored {sha}, now {current})"
+                )
+
+    stored_version = record.get("program_version")
+    if stored_version != MISSING:
+        out = _largest_output(run_root)
+        text = out.read_text(encoding="utf-8", errors="replace") if out else ""
+        current_banner = _program_from_banner(text)
+        if current_banner["version"] != stored_version:
+            mismatches.append(
+                f"program_version: banner now {current_banner['version']!r}, "
+                f"record holds {stored_version!r}"
+            )
+
+    for line in mismatches:
+        print(f"verify MISMATCH: {line}")
+    if mismatches:
+        return 1
+    print("verify OK: all stored sha256 and program version match")
+    return 0
+
+
 def format_for_display(record: dict) -> str:
     """Human-readable, one-line-per-field rendering for ``delfin provenance``."""
     lines = [
@@ -349,12 +438,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("result", help="run folder (or PROVENANCE.json path)")
     parser.add_argument("--json", action="store_true", help="print raw JSON")
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="recompute every stored sha256 and the banner version; report "
+        "each mismatch and exit non-zero when one is found",
+    )
     args = parser.parse_args(argv)
     try:
         record = read_record(args.result)
     except (FileNotFoundError, ValueError) as exc:
         print(f"provenance unavailable: {exc}", file=sys.stderr)
         return 2
+    if args.verify:
+        return _run_verify(record, Path(args.result))
     if args.json:
         print(json.dumps(record, indent=2, sort_keys=True))
     else:
