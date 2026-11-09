@@ -235,7 +235,7 @@ def _h_directions(
         # (real Csp2-H2: C-C-H ~121.5 with small pyramidalisation; 120 is
         # the planar ideal and keeps H-C-H 120 too).
         if heavy_order >= 2 and count == 2:
-            # sp2 =CH2 centre: two H at 120 deg from the double bond,
+            # =CH2-type sp2 centre: two H at 120 deg from the double bond,
             # 120 apart (planar ideal; real C-C-H ~121.5 carries small
             # pyramidalisation).
             return _ring(base, 60.0, 2, offset=180.0)
@@ -374,8 +374,8 @@ _SINGLE_BOND_FACTOR = 1.12
 
 def _heavy_bond_order(
     g: Geom, i: int, j: int, radii: list[float]
-) -> int:
-    """Estimated bond order (0..3) between two heavy atoms from distance.
+) -> float:
+    """Estimated bond order (0..3, or 1.5 for aromatic) between heavy atoms.
 
     Uses the covalent-radii sum as the single-bond reference (DELFIN's own
     radii). A bond clearly shorter than that reference is a multiple bond
@@ -383,6 +383,12 @@ def _heavy_bond_order(
     bond near or above the reference is a single bond. Returns 0 when the
     atoms are not in contact. This is what keeps fix_hydrogens from
     hydroxylating a double-bonded oxygen (CO2) or triple-bonded nitrogen.
+
+    Aromatic bonds (operator round 7): a C-C pair at 0.895-0.945 of the
+    radii sum in which BOTH partners have at least two heavy neighbours
+    (ring context) is order 1.5, so a benzene ring C carries valence
+    1.5+1.5+1 = 4 -> exactly one H, and a pyridine N carries
+    1.5+1.5 = 3 -> no H.
     """
     d = _dist(g.coords[i], g.coords[j])
     rsum = radii[i] + radii[j]
@@ -396,6 +402,29 @@ def _heavy_bond_order(
         return 3
     if ratio <= _MULTIPLE_BOND_RATIO:
         return 2
+    # Aromatic window (operator round 7): benzene C-C 1.39/1.52 = 0.914,
+    # C-N aromatic ~1.34/1.42 = 0.943. Both partners have >= 2 heavy
+    # contacts INCLUDING each other (ring context): a benzene ring C has
+    # exactly its two ring partners in contact. An isolated single C-C
+    # at the same ratio would have its partner + at most substituents —
+    # the distance window is the primary discriminator.
+    if 0.89 <= ratio <= 0.95 and g.symbols[i] in _SP2_ELEMENTS:
+        ring_i = sum(
+            1 for k in range(len(g.symbols))
+            if k != i
+            and g.symbols[k] != "H"
+            and _dist(g.coords[i], g.coords[k]) <= (
+                radii[i] + radii[k]) * _SINGLE_BOND_FACTOR
+        ) >= 2
+        ring_j = sum(
+            1 for k in range(len(g.symbols))
+            if k != j
+            and g.symbols[k] != "H"
+            and _dist(g.coords[j], g.coords[k]) <= (
+                radii[j] + radii[k]) * _SINGLE_BOND_FACTOR
+        ) >= 2
+        if ring_i and ring_j:
+            return 1.5
     return 1
 
 
@@ -409,6 +438,9 @@ _XH_BOND_LENGTHS: dict[str, float] = {
     "P": 1.42,
     "B": 1.19,
 }
+
+# Elements that can take an aromatic (order 1.5) bond in the ring window.
+_SP2_ELEMENTS = {"C", "N"}
 
 
 def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
@@ -461,8 +493,30 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
         if missing <= 0:
             continue
         away = _heavy_neighbour_directions(g, i, nbrs)
+        # Planar amide N (operator round 7): an N whose ONE heavy
+        # neighbour is a carbon that itself carries a double bond
+        # (N-C(=O), e.g. formamide) is planar — its H pair sits at
+        # 120 deg in-plane, not pyramidal 109.5. Implemented as an
+        # sp2 hint for the DIRECTION choice only (missing was already
+        # computed from the real orders).
+        dir_order = heavy_order
+        if (
+            sym == "N"
+            and sum(1 for j in nbrs.get(i, ()) if g.symbols[j] != "H") == 1
+        ):
+            n_carbon = next(
+                (j for j in nbrs.get(i, ()) if g.symbols[j] != "H"), None
+            )
+            if n_carbon is not None and g.symbols[n_carbon] == "C":
+                carbon_order = sum(
+                    _heavy_bond_order(g, n_carbon, k, radii)
+                    for k in nbrs.get(n_carbon, ())
+                    if k != i and g.symbols[k] != "H"
+                )
+                if carbon_order >= 2:
+                    dir_order = 2
         r_h_i = _XH_BOND_LENGTHS.get(sym, radii[i] + _COSMETIC_H_RADIUS)
-        for direction in _h_directions(away, missing, heavy_order):
+        for direction in _h_directions(away, missing, dir_order):
             pos = tuple(
                 g.coords[i][k] + direction[k] * r_h_i for k in range(3)
             )
