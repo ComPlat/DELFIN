@@ -93,6 +93,9 @@ def test_tf1_department_is_off_when_the_switch_is_off(monkeypatch):
             assert name not in SA.SUBAGENT_PRESETS, (
                 f"{name} offered with the department switch OFF")
     finally:
+        # Undo the patched switch first: a reload while it is still patched
+        # leaves the department presets registered for every later test.
+        monkeypatch.undo()
         SA.reload_subagent_presets()
 
 
@@ -106,6 +109,9 @@ def test_tf1_department_registers_when_the_switch_is_on(monkeypatch):
             assert name in SA.SUBAGENT_PRESETS, (
                 f"{name} not registered with the switch ON")
     finally:
+        # Undo the patched switch first: a reload while it is still patched
+        # leaves the department presets registered for every later test.
+        monkeypatch.undo()
         SA.reload_subagent_presets()
 
 

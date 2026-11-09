@@ -5,6 +5,8 @@ statement is the original text, only the imports below are new.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import math
 import os
 from typing import Dict, List, Optional, Tuple
@@ -1418,6 +1420,178 @@ def _snap_bridging_donors_to_compromise(
         return xyz_str
 
 
+# ===== A ONE-SUBSTITUENT DONOR IS SEATED ALONG ITS OWN LONE PAIR (DELFIN_FFFREE_ORIENT_ONE_SUB_LP) =====
+#
+# THE DEFECT.  A monodentate donor D with exactly one substituent X (carbonyl / amide / pyridone O,
+# carboxylate and phenolate O, nitrate / N-oxide O, sulfoxide O, thione / selone S, Se, thiolate S)
+# reaches _align_and_orient_ligands with X pointing straight away from the metal: the template and
+# fragment seatings align the fragment centroid (or the D->X bond) with the outward radial.  The
+# only operations that could bend it are the lone-pair tilts of _compute_lp_tilt_rotations, and they
+# model the lone pair of a one-substituent donor as the anti D->X vector -- which is already on the
+# metal, so no tilt is offered, and the spin about the M-D axis leaves the M-D-X angle untouched.
+# Every such donor is therefore seated at M-D-X = 180 deg; the conformer stage bends some of them
+# back to 110-135 deg, the frames seeded from the seat keep 180 (s04 probe: DUGWAG Cu-O=C seated
+# 180 x 6, conformer 113-133, emitted frames 174-180).
+#
+# THE CHEMISTRY.  The lone pairs of a donor with one substituent are not anti to it:
+#   * sp2 donor of period 2 (D=X double bond, or D-X with a conjugated / aromatic X: carbonyl,
+#     carboxylate, phenolate, nitrate, N-oxide, sulfoxide O; imine / azo N with no H): the lone
+#     pairs lie at 120 deg from D->X, in the plane of X's substituents when X is a planar (period 2
+#     or aromatic) centre -> M-D-X 120, metal in that plane.
+#   * period >= 3 chalcogen (S, Se, Te: thione, selone, phosphine sulfide / selenide, thiolate,
+#     selenolate): little s-p mixing, M-D-X near the tetrahedral 109.47 deg, on the cone about D->X
+#     at six azimuths (the two in-plane ones among them): bulky planar X (N-heterocyclic selones,
+#     KAZJIH) put the metal out of the X plane.
+#   * kept as before (the wide or linear seed is right, or the class is ambiguous): an O on P / As /
+#     Sb / Si (ylidic phosphine and arsine oxides, phosphates, siloxides: M-O-X 140-180), a donor
+#     whose X is sp (nitrile, isocyanide, NCS, azide, CO2), carbon donors (CO, CS, vinylidene), a
+#     nitrosyl N=O, an N without a double bond (imido), an sp3 O without H (alkoxide / ether O:
+#     early metals open it to linear), and any donor carrying H (LONE_PAIR_SPACE's domain).
+# Hybridisation and bond order come from the RDKit graph only; no crystal table.  (Reference only,
+# not used: the shipped COD table delfin/manta/data/frame_realism_cod.json has the medians
+# O=C 122.5, O=N 116.7, O=S 131.5, S=C 107.0, N=C 132.4 deg for monodentate one-substituent donors.)
+#
+# THE FIX.  For such a donor the seating offers, instead of the untilted and the anti-vector tilted
+# poses, the fragment rotated about D so that each candidate lone pair points at the metal (two
+# in-plane candidates, or six cone azimuths), hydrogens included; the spin about the M-D axis then
+# runs on each of them (it keeps the M-D-X angle and the in-plane torsion).  The choice is
+# lexicographic: first the contacts the topology gate rejects, then heavy atoms three or more bonds
+# from the metal parked within 1.5 x the covalent sum of it, then bent before the old seed, then
+# the clash score with the hydrogens.  The old seed stays a candidate, so a crowded sphere
+# keeps its frame (first build without this order: 945 -> 901 frames on 40 affected systems,
+# inter-ligand contacts of the bent ligands' H; WACNAQ lost its frames to torn H).
+# Off (unset / 0) -> byte-identical: no call reaches the new code.
+#
+# ADDITIVE, NEVER A REPLACEMENT (05.11.2026).  The first version bent the seat of every build: on 76
+# dev systems (champion, the CSD-calibrated geometry audit) M-D-X fell from 180 to the crystal values
+# and dang fell 63.6 -> 40.1 % of frames, but 13 systems lost frames, 16 an isomer label, and the frames
+# both builds share got worse in bnd (110 clean -> bad vs 74 back), hyb (63 vs 43), con (11 vs 2) and
+# topo (11 vs 0).  Cause: the stages after the seat -- the template-conformer bond lengths, the UFF
+# whose donor typing leaves a 180 deg M-D-X on a flat maximum, the flattening -- relax a bent ligand
+# differently from a linear one (coordinated DMSO S=O pulled to 1.52 A, porphyrin C-C to 2.0 A under
+# an axial formate).  The bent seat is therefore an ADDITIVE sibling: the switch leaves every ordinary
+# seating call unchanged, and the legacy topology builder (topo_isomers) builds each primary a second
+# time inside one_sub_lp_seating() and appends it after the primaries.  Every old frame stays byte for
+# byte; what the sibling adds cannot take a frame away.
+_ONE_SUB_LP_FLAG = "DELFIN_FFFREE_ORIENT_ONE_SUB_LP"
+_ONE_SUB_LP_ACTIVE = contextvars.ContextVar("delfin_one_sub_lp_seating", default=False)
+
+
+@contextlib.contextmanager
+def one_sub_lp_seating():
+    """Inside this block _align_and_orient_ligands seats every monodentate one-substituent donor on its
+    own lone pair (see _one_sub_lp_directions); outside it the seat is the old one."""
+    token = _ONE_SUB_LP_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _ONE_SUB_LP_ACTIVE.reset(token)
+
+
+def one_sub_lp_enabled() -> bool:
+    """DELFIN_FFFREE_ORIENT_ONE_SUB_LP=1: the builder adds the lone-pair-seated siblings."""
+    return _delfin_env_int(_ONE_SUB_LP_FLAG, 0) == 1
+
+
+_ONE_SUB_WIDE_X_FOR_O = frozenset(("P", "As", "Sb", "Si"))
+_ONE_SUB_PLANAR_X = frozenset(("B", "C", "N"))
+_TET_DEG = math.degrees(math.acos(-1.0 / 3.0))
+
+
+def _one_sub_lp_scope(mol, d_idx: int):
+    """DELFIN_FFFREE_ORIENT_ONE_SUB_LP, graph only: (target M-D-X in deg, X index, X's other
+    neighbours, X's heavy other neighbours, in-plane flag) for a one-substituent donor in scope, else
+    None.  See the block above."""
+    try:
+        a = mol.GetAtomWithIdx(d_idx)
+        sym = a.GetSymbol()
+        if sym not in ("N", "O", "S", "Se", "Te"):
+            return None
+        if sum(1 for nb in a.GetNeighbors() if nb.GetSymbol() in _METAL_SET) >= 2:
+            return None
+        nm = [nb for nb in a.GetNeighbors() if nb.GetSymbol() not in _METAL_SET]
+        # H counted as explicit atoms / explicit-H property: an implicit-H count on a donor with a
+        # dative metal bond is a valence artefact (S=C plus M-S reads one phantom H).
+        if len(nm) != 1 or a.GetNumExplicitHs() != 0:
+            return None
+        x = nm[0]
+        if x.GetAtomicNum() <= 1:
+            return None
+        bond = mol.GetBondBetweenAtoms(d_idx, x.GetIdx())
+        order = bond.GetBondTypeAsDouble() if bond is not None else 1.0
+        if order >= 3.0:
+            return None
+        x_bonds = [b for b in x.GetBonds() if b.GetOtherAtom(x).GetSymbol() not in _METAL_SET]
+        x_orders = [b.GetBondTypeAsDouble() for b in x_bonds]
+        if any(o >= 3.0 for o in x_orders) or sum(1 for o in x_orders if o == 2.0) >= 2:
+            return None                                   # sp substituent: a linear donor
+        if sym == "O" and x.GetSymbol() in _ONE_SUB_WIDE_X_FOR_O:
+            return None
+        if sym == "N" and (order != 2.0 or x.GetSymbol() not in ("C", "N")):
+            return None
+        x_conj = x.GetIsAromatic() or any(
+            (b.GetBondTypeAsDouble() >= 1.5 or b.GetIsAromatic())
+            for b in x_bonds if b.GetOtherAtom(x).GetIdx() != d_idx)
+        double = order >= 1.5 or bond.GetIsAromatic()
+        sp2 = double or x_conj
+        if sym == "O" and not sp2:
+            return None                                   # alkoxide / ether O: old rule
+        period2 = sym in ("N", "O")
+        target = 120.0 if (sp2 and period2) else _TET_DEG
+        others = [nb.GetIdx() for nb in x.GetNeighbors()
+                  if nb.GetIdx() != d_idx and nb.GetSymbol() not in _METAL_SET]
+        heavy_o = [j for j in others if mol.GetAtomWithIdx(j).GetAtomicNum() > 1]
+        planar_x = len(others) == 2 and (
+            x.GetIsAromatic() or (x.GetSymbol() in _ONE_SUB_PLANAR_X and sp2))
+        in_plane = planar_x and period2
+        return target, x.GetIdx(), others, heavy_o, in_plane
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("_one_sub_lp_scope failed: %s", exc)
+        return None
+
+
+def _one_sub_lp_directions(mol, d_idx: int, pts):
+    """DELFIN_FFFREE_ORIENT_ONE_SUB_LP: (target M-D-X in deg, [candidate lone-pair unit vectors
+    from D]) for a monodentate one-substituent donor in scope, else None.  See the block above."""
+    sc = _one_sub_lp_scope(mol, d_idx)
+    if sc is None:
+        return None
+    target, x_idx, others, heavy_o, in_plane = sc
+    try:
+        import numpy as _np
+        from delfin.manta._lone_pair_space import _perp as _lp_perp
+        d_pos = _np.asarray(pts[d_idx], dtype=float)
+        u = _np.asarray(pts[x_idx], dtype=float) - d_pos
+        un = float(_np.linalg.norm(u))
+        if un < 1e-6:
+            return None
+        u = u / un
+        w0 = None
+        for j in (heavy_o or others):
+            v = _np.asarray(pts[j], dtype=float) - _np.asarray(pts[x_idx], dtype=float)
+            v = v - float(_np.dot(v, u)) * u
+            vn = float(_np.linalg.norm(v))
+            if vn > 1e-3:
+                w0 = v / vn
+                break
+        if w0 is None:
+            w0 = _lp_perp(u)
+            if w0 is None:
+                return None
+            in_plane = False
+        w1 = _np.cross(u, w0)
+        ct, st = math.cos(math.radians(target)), math.sin(math.radians(target))
+        phis = (0.0, 180.0) if in_plane else (0.0, 60.0, 120.0, 180.0, 240.0, 300.0)
+        out = []
+        for phi in phis:
+            c, s = math.cos(math.radians(phi)), math.sin(math.radians(phi))
+            out.append(ct * u + st * (c * w0 + s * w1))
+        return target, out
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("_one_sub_lp_directions failed: %s", exc)
+        return None
+
+
 def _compute_lp_tilt_rotations(
     donors: List[int],
     pts,
@@ -1590,6 +1764,9 @@ def _align_and_orient_ligands(
         # chooses the angle is unchanged (heavy atoms only), so the switch changes no choice -- it only
         # stops leaving the hydrogens behind.  Off -> byte-identical (moving set = heavy non-donors).
         _carry_h = _delfin_env_int("DELFIN_FFFREE_ORIENT_CARRY_H", 0) == 1
+        # DELFIN_FFFREE_ORIENT_ONE_SUB_LP: seat a one-substituent donor along its own lone pair
+        # (see the block at _one_sub_lp_directions).
+        _one_sub_lp = bool(_ONE_SUB_LP_ACTIVE.get())
         # ===== THE SCORE SEES THE HYDROGENS IT MOVES (DELFIN_FFFREE_ORIENT_SCORE_H, default OFF) =====
         #
         # THE DEFECT (Ursache 5, 27.10.2026).  Under ORIENT_CARRY_H the spin / tilt moves the hydrogens
@@ -1716,7 +1893,12 @@ def _align_and_orient_ligands(
                 if a.GetAtomicNum() == 1 and any(
                     nb.GetIdx() in _fh_set for nb in a.GetNeighbors()
                     if nb.GetSymbol() not in _METAL_SET)
-            ) if _carry_h else []
+            ) if (_carry_h or (
+                # DELFIN_FFFREE_ORIENT_ONE_SUB_LP: the lone-pair rotation is a rigid motion of the
+                # whole ligand -- its hydrogens ride with it (left behind they read as torn X-H
+                # bonds and the topology gate drops the frame).  The score stays heavy-only (_hv).
+                _one_sub_lp and len(frag_donors) == 1
+                and _one_sub_lp_directions(mol, frag_donors[0], pts) is not None)) else []
             frag_info.append({
                 "heavy": frag_heavy,
                 "donors": frag_donors,
@@ -1793,7 +1975,7 @@ def _align_and_orient_ligands(
 
         # DELFIN_FFFREE_ORIENT_SCORE_H: H-inclusive clash score (see the block at _score_h).
         _all_nm = [i for i in range(n_atoms)
-                   if mol.GetAtomWithIdx(i).GetSymbol() not in _METAL_SET] if _score_h else []
+                   if mol.GetAtomWithIdx(i).GetSymbol() not in _METAL_SET] if (_score_h or _one_sub_lp) else []
         _is_h = {i: mol.GetAtomWithIdx(i).GetAtomicNum() == 1 for i in _all_nm}
         _vdw = {i: _ORIENT_BONDI_VDW.get(mol.GetAtomWithIdx(i).GetSymbol(), 1.80) for i in _all_nm}
 
@@ -1831,6 +2013,57 @@ def _align_and_orient_ligands(
                 if ov.size:
                     score += float(_np.sum(ov * ov))
             return score
+
+        def _osl_hard(own, frag_pts):
+            """DELFIN_FFFREE_ORIENT_ONE_SUB_LP: contacts of the moving atoms that the topology gate
+            (_verify_topology_from_graph) rejects -- a non-metal pair below 1.10 x the covalent sum
+            (0.85 x with an H), a moving atom inside 1.05 x (rcov_M + rcov_X) of the metal."""
+            other = [j for j in _all_nm if j not in own]
+            n = 0
+            m_rc = _COVALENT_RADII.get(mol.GetAtomWithIdx(metal_idx).GetSymbol(), 1.5)
+            o_pts = pts[other] if other else None
+            o_rc = _np.array([r_cov[j] for j in other]) if other else None
+            o_h = _np.array([_is_h[j] for j in other]) if other else None
+            for i in sorted(frag_pts):
+                p = _np.asarray(frag_pts[i], dtype=float)
+                if float(_np.linalg.norm(p - m_pos)) < 1.05 * (m_rc + r_cov[i]):
+                    n += 1
+                if other:
+                    dist = _np.linalg.norm(o_pts - p, axis=1)
+                    frac = _np.where(o_h | _is_h[i], 0.85, 1.10)
+                    n += int(_np.sum(dist < frac * (r_cov[i] + o_rc)))
+            return n
+
+        _osl_far_cache: Dict[int, frozenset] = {}
+
+        def _osl_near_metal(donor, frag_pts):
+            """DELFIN_FFFREE_ORIENT_ONE_SUB_LP: heavy atoms three or more bonds from the metal (beyond
+            the donor's substituent) closer to the metal than 1.5 x (rcov_M + rcov_X).  Bending a
+            donor swings its substituent's own substituents towards the metal; a bent pose that
+            parks them on the metal is worse than the old linear seed."""
+            far = _osl_far_cache.get(donor)
+            if far is None:
+                seen = {donor: 0}
+                queue = [donor]
+                while queue:
+                    a = queue.pop(0)
+                    for nb in mol.GetAtomWithIdx(a).GetNeighbors():
+                        j = nb.GetIdx()
+                        if j in seen or nb.GetSymbol() in _METAL_SET:
+                            continue
+                        seen[j] = seen[a] + 1
+                        queue.append(j)
+                far = frozenset(j for j, t in seen.items()
+                                if t >= 2 and mol.GetAtomWithIdx(j).GetAtomicNum() > 1)
+                _osl_far_cache[donor] = far
+            m_rc = _COVALENT_RADII.get(mol.GetAtomWithIdx(metal_idx).GetSymbol(), 1.5)
+            n = 0
+            for i in far:
+                if i in frag_pts:
+                    p = _np.asarray(frag_pts[i], dtype=float)
+                    if float(_np.linalg.norm(p - m_pos)) < 1.5 * (m_rc + r_cov[i]):
+                        n += 1
+            return n
 
         def _chelate_lp_excess(donors, frag_pts, tol_deg=15.0):
             """DELFIN_FFFREE_ORIENT_CHELATE_LP: the largest lone-pair misalignment beyond tol_deg (deg) over
@@ -2177,6 +2410,41 @@ def _align_and_orient_ligands(
                         if s < best_score - 1e-6:
                             best_score = s
                             best_pts = candidate
+                    base_sets = []
+                _osl = _one_sub_lp_directions(mol, donors[0], pts) if (
+                    _one_sub_lp and len(donors) == 1) else None
+                if _osl is not None:
+                    # DELFIN_FFFREE_ORIENT_ONE_SUB_LP: each candidate lone pair onto D->M (rotation
+                    # about D), then the spin about the M-D axis on each candidate.  The choice is
+                    # lexicographic: (1) contacts the topology gate rejects (_osl_hard), (2) far
+                    # atoms parked on the metal (_osl_near_metal), (3) bent before the old seed,
+                    # (4) the clash score with the carried hydrogens (_clash_for_frag_h).  The old seed and its spins stay candidates, so a
+                    # sphere with no room for the bent ligand keeps its frame.
+                    from delfin.manta._lone_pair_space import _rot_a_to_b as _lp_rot
+                    _d = donors[0]
+                    _dpos = _np.asarray(pts[_d], dtype=float)
+                    _dm = m_pos - _dpos
+                    _x = next(nb.GetIdx() for nb in mol.GetAtomWithIdx(_d).GetNeighbors()
+                              if nb.GetSymbol() not in _METAL_SET)
+                    _dx = _np.asarray(atom_pts[_x], dtype=float) - _dpos
+                    _cur = math.degrees(math.acos(max(-1.0, min(1.0, float(
+                        _np.dot(_dm, _dx) / (_np.linalg.norm(_dm) * _np.linalg.norm(_dx)))))))
+                    _own = frozenset(heavy) | frozenset(info["hyd"])
+                    _seeds = [(0 if abs(_cur - _osl[0]) <= 1.0 else 1, atom_pts)]
+                    for _lp in _osl[1]:
+                        _R = _lp_rot(_np.asarray(_lp, dtype=float), _dm)
+                        _seeds.append((0, {
+                            i: tuple(_R @ (_np.asarray(atom_pts[i]) - _dpos) + _dpos)
+                            for i in moving}))
+                    _best_key = None
+                    for _bent, _base in _seeds:
+                        for k in range(n_rot):
+                            _c = _base if k == 0 else _rotate_about(axis, pivot, step * k, _base)
+                            _key = (_osl_hard(_own, _c), _osl_near_metal(_d, _c), _bent,
+                                    round(_clash_for_frag_h(_own, _c), 9))
+                            if _best_key is None or _key < _best_key:
+                                _best_key = _key
+                                best_pts = _c
                     base_sets = []
                 for base in base_sets:
                     s0 = _sc(base)
