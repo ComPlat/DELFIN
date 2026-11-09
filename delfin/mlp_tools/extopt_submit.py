@@ -141,6 +141,8 @@ def _build_input(req: ExtOptJobRequest, *, ncores: int = 1,
         if _is_goat(req):
             extra = dict(goat_options=goat_options, goat_variant=req.goat_variant,
                          ncores=ncores)
+        else:
+            extra["ncores"] = ncores
         if req.neb_end_coordinates is not None:
             extra["neb_end_coordinates"] = req.neb_end_coordinates
         if req.scan is not None:
@@ -168,15 +170,30 @@ def plan_extopt_job(req: ExtOptJobRequest, *, cfg: MLPClusterConfig) -> ExtOptPl
     """Build the input and decide gpu vs local vs refuse. Submits nothing."""
     if _is_goat(req):
         return _plan_goat_job(req, cfg=cfg)
-    inp = _build_input(req)
+    gpu = cfg.has_gpu_partition()
+    planned_pal = (
+        int(cfg.cpus_per_task) if gpu else
+        min(LOCAL_CPU_LIMITS.cores, max(1, len(req.elements) // 4 + 1))
+    )
+    if planned_pal < 1:
+        raise ValueError("cpus_per_task must be positive")
+    inp = _build_input(req, ncores=planned_pal)
     job_dir = Path(req.work_dir)
-    if cfg.has_gpu_partition():
-        pal = int(cfg.cpus_per_task)
+    if gpu:
+        pal = planned_pal
         script = job_dir / f"{req.job_name}.sbatch"
         script.write_text(render_extopt_job_script(
             req, cfg=cfg, pal=pal, provider_cmd=_provider_cmd(req),
         ))
         return ExtOptPlan(mode="gpu", input=inp, script=script, pal=pal)
+    # Never silently run a requested CUDA calculation on CPU.
+    if str(req.device).lower().startswith("cuda"):
+        return ExtOptPlan(
+            mode="refuse", input=inp,
+            script=job_dir / f"{req.job_name}.sbatch",
+            pal=1,
+            reason="CUDA requested but no GPU partition configured",
+        )
     # no GPU partition: local CPU within the host limits, or refuse
     n_atoms = len(req.elements)
     if not req.allow_local or n_atoms > req.max_local_atoms:
@@ -307,9 +324,10 @@ def render_extopt_job_script(req: ExtOptJobRequest, *, cfg: MLPClusterConfig,
             '"$ORCA_BIN" ' + req.job_name + ".inp > " + req.job_name + ".out",
         ])
     else:
-        lines.append(
-            "orca " + req.job_name + ".inp > " + req.job_name + ".out"
-        )
+        lines.extend([
+            'ORCA_BIN="$(command -v orca)"',
+            '"$ORCA_BIN" ' + req.job_name + ".inp > " + req.job_name + ".out",
+        ])
     if is_mlips:
         lines.append(
             f"# orca-mlips stops its auto-server with the parent ORCA "
@@ -377,7 +395,8 @@ def submit_extopt_job(req: ExtOptJobRequest, *, cfg: MLPClusterConfig,
         or ""
     )
     out["sbatch_output"] = done_out.strip()
-    if not done_out:
+    import re
+    if re.fullmatch(r"Submitted batch job [0-9]+", out["sbatch_output"]) is None:
         raise RuntimeError(f"sbatch failed: {out['sbatch_output'] or 'no output'}")
     out["submitted"] = True
     return out
