@@ -171,6 +171,16 @@ func {method}
             [define], input=define_input, cwd=work_dir,
             capture_output=True, text=True, timeout=60,
         )
+        # A broken define dialog is a SETUP failure, not an SCF failure:
+        # ridft/dscf must never run on a missing or partial control file,
+        # and the error must name define (real run #608: the dialog broke
+        # on the site install and the run was misreported as an SCF
+        # convergence failure).
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Turbomole define failed (exit {result.returncode}): "
+                f"{(result.stderr or result.stdout or '')[:500].strip()}"
+            )
     else:
         # Minimal manual control file
         control = f"""$title
@@ -299,8 +309,15 @@ class TurbomoleSpAdapter(StepAdapter):
                                      error=bad)
         timeout = kwargs.get("timeout")
 
-        _setup_coord(geometry, work_dir)
-        _setup_control(work_dir, cores=cores, **kwargs)
+        try:
+            _setup_coord(geometry, work_dir)
+            _setup_control(work_dir, cores=cores, **kwargs)
+        except RuntimeError as exc:
+            # A broken define dialog is a setup failure, reported as such —
+            # never carried on to ridft/dscf and misread as an SCF problem.
+            return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
+                                     error=str(exc),
+                                     error_kind=ErrorKind.TOOL_FAILED)
 
         # Run ridft (RI-DFT) or dscf (conventional)
         argv = ["ridft"] if kwargs.get("ri", True) else ["dscf"]
@@ -376,8 +393,13 @@ class TurbomoleOptAdapter(StepAdapter):
                                            f"got {max_cycles!r}")
         timeout = kwargs.get("timeout")
 
-        _setup_coord(geometry, work_dir)
-        _setup_control(work_dir, cores=cores, **kwargs)
+        try:
+            _setup_coord(geometry, work_dir)
+            _setup_control(work_dir, cores=cores, **kwargs)
+        except RuntimeError as exc:
+            return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
+                                     error=str(exc),
+                                     error_kind=ErrorKind.TOOL_FAILED)
 
         argv = ["jobex", "-ri", "-c", str(max_cycles)]
         proc = _run_tm_command(argv, work_dir, cores, timeout=timeout)
@@ -451,8 +473,13 @@ class TurbomoleFreqAdapter(StepAdapter):
                                      error=bad)
         timeout = kwargs.get("timeout")
 
-        _setup_coord(geometry, work_dir)
-        _setup_control(work_dir, cores=cores, **kwargs)
+        try:
+            _setup_coord(geometry, work_dir)
+            _setup_control(work_dir, cores=cores, **kwargs)
+        except RuntimeError as exc:
+            return self._make_result(self.name, StepStatus.FAILED, work_dir, start,
+                                     error=str(exc),
+                                     error_kind=ErrorKind.TOOL_FAILED)
 
         # First SP, then aoforce
         _run_tm_command(["ridft"], work_dir, cores, timeout=timeout)

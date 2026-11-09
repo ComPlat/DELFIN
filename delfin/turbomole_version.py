@@ -155,6 +155,16 @@ def detect_installed_version(
         from_env = version_from_turbodir()
         if from_env:
             return from_env
+        # The environment module system leaves the RESOLVED module name
+        # behind (real run #608: the site TURBODIR carries no version
+        # digits, but the loaded module does). Never assume a version --
+        # but never report unknown when this evidence is present.
+        for var in ("LOADEDMODULES", "_LMFILES_"):
+            name = os.environ.get(var)
+            if name:
+                from_lm = version_from_module_name(name)
+                if from_lm:
+                    return from_lm
     return None
 
 
