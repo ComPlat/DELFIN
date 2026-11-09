@@ -201,7 +201,8 @@ def _heavy_neighbour_directions(
 
 
 def _h_directions(
-    away: list[tuple[float, float, float]], count: int
+    away: list[tuple[float, float, float]], count: int,
+    heavy_order: int = 1,
 ) -> list[tuple[float, float, float]]:
     """``count`` unit directions for hydrogens on ``atom`` so that the
     placed angles match real hybridisation geometry, measured AT THE
@@ -221,17 +222,27 @@ def _h_directions(
     if not away:
         base = (0.0, 0.0, 1.0)
     elif len(away) == 1:
-        # One heavy neighbour. The sp2 case (=CH2 on a double bond) is
-        # detected by the missing-H count in fix_hydrogens (valence 4,
-        # bond order 2, no existing H -> 2 missing), not here.
+        # One heavy neighbour. The sp2 case is detected by the heavy
+        # bond ORDER (=CH2 sits on a double bond, order 2), NOT by the
+        # missing-H count: an amine N (valence 3, single bond, 2
+        # missing H) has the same count but is sp3/pyramidal, and the
+        # count-based detection made methylamine's NH2 planar 120/120
+        # (operator real-run round 4 rerun).
         base = tuple(-x for x in away[0])
         n = sum(x * x for x in base) ** 0.5
         base = tuple(x / n for x in base) if n > 1e-9 else (0.0, 0.0, 1.0)
         # sp2 CH2= centre: two H at 120 deg from the bond, 120 apart
         # (real Csp2-H2: C-C-H ~121.5 with small pyramidalisation; 120 is
         # the planar ideal and keeps H-C-H 120 too).
-        if count == 2:
+        if heavy_order >= 2 and count == 2:
+            # sp2 =CH2 centre: two H at 120 deg from the double bond,
+            # 120 apart (planar ideal; real C-C-H ~121.5 carries small
+            # pyramidalisation).
             return _ring(base, 60.0, 2, offset=180.0)
+        if heavy_order >= 2 and count == 1:
+            # Imine N (C=N, order 2): its ONE free valence sits in the
+            # plane at 120 deg from the double bond, like any sp2 H.
+            return _ring(base, 60.0, 2, offset=180.0)[:1]
         return _tetrahedral_from_axis(base, count)
     else:
         # Two heavy neighbours: place H in the plane spanned by the two
@@ -308,13 +319,18 @@ def _ring(base, half_deg, count, offset=0.0):
 
 
 def _tetrahedron():
-    """Regular tetrahedron around the origin (pairwise 109.47 deg)."""
-    return [
+    """Regular tetrahedron around the origin (pairwise 109.47 deg).
+
+    Corners are NORMALISED: raw (+-1,+-1,+-1) corners have magnitude
+    sqrt(3), and the caller multiplies by the X-H bond length, which gave
+    C-H 1.09*sqrt(3) = 1.888 A (operator real-run round 4).
+    """
+    return [tuple(x / math.sqrt(3.0) for x in corner) for corner in (
         (1.0, 1.0, 1.0),
         (1.0, -1.0, -1.0),
         (-1.0, 1.0, -1.0),
         (-1.0, -1.0, 1.0),
-    ]
+    )]
 
 
 def _tetrahedral_from_axis(base, count):
@@ -429,7 +445,7 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
             continue
         away = _heavy_neighbour_directions(g, i, nbrs)
         r_h_i = _XH_BOND_LENGTHS.get(sym, radii[i] + _COSMETIC_H_RADIUS)
-        for direction in _h_directions(away, missing):
+        for direction in _h_directions(away, missing, heavy_order):
             pos = tuple(
                 g.coords[i][k] + direction[k] * r_h_i for k in range(3)
             )
