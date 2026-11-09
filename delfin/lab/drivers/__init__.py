@@ -10,8 +10,10 @@ REGISTRY: dict = {}
 
 
 def _register_builtin() -> None:
+    from .opcua_lads import OpcUaLadsDriver
     from .simulator import SimulatorDriver
     REGISTRY.setdefault("simulator", SimulatorDriver)
+    REGISTRY.setdefault("opcua_lads", OpcUaLadsDriver)
 
 
 def make(name: str) -> Driver:
@@ -35,5 +37,5 @@ DEVICE_WATCHDOG_SUPPORT = {
              "hardware watchdog relay (planned)",
     "sila2": "lock timeout yes; safe state on timeout depends on the "
              "server (planned)",
-    "opcua_lads": "server-dependent (planned)",
+    "opcua_lads": "yes (watches a server-side lock timeout; supported by LADS)",
 }

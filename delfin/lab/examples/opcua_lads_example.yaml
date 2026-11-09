@@ -1,0 +1,29 @@
+---
+# Example device manifest for an OPC UA LADS instrument.
+# No credentials are stored here; addresses use the standard example domains.
+
+module:
+  product: "OPCUA LADS Device"
+  scope: per-process
+
+functions:
+  - id: opcua_lads_demo
+    driver: opcua_lads
+    model: "pump"
+    address:
+      endpoint: opc.tcp://192.0.2.10:4840
+      security: SignAndEncrypt
+      timeout_s: 3.0
+      # Provide your credential reference here:
+      # secret_ref: "cred:opcua_lads_cert"
+    stale_after_s: 5
+    deadman_s: 30
+    device_watchdog: true
+    reads:
+      flow: {unit: mL/min}
+    writes:
+      flow: {unit: mL/min, min: 0, max: 10, max_step: 5, level: hazardous, tolerance: 0.01}
+      power: {states: [on, off], level: benign}
+    safe_state:
+      flow: 0
+      power: off
