@@ -7334,6 +7334,12 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
 _DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
     "search_calcs", "get_calc_info", "calc_summary",
     "search_docs", "read_section", "list_docs", "list_sections",
+    # --- SW3 lead session tools (delfin/agent/swarm/lead.py) ---
+    # Read-only lead tools (safe in default mode):
+    "swarm_status", "swarm_plan", "swarm_message", "swarm_triage_list",
+    # State-changing lead tools (the lead session always asks the user):
+    "swarm_start", "swarm_pause", "swarm_resume", "swarm_triage_answer",
+    "swarm_prcheck",
 })
 
 # Refusal returned when a task tool would START execution while in plan mode.
