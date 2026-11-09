@@ -39,6 +39,16 @@ from delfin.tools.geometry_edit import (
     parse_xyz,
     to_xyz,
 )
+from delfin.xyz_io import _elem_from_label
+
+
+def _xyz_coord_like(text: str) -> bool:
+    """True when ``text`` parses as a float (an xyz coordinate field)."""
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
 
 try:  # atom_mapping imports numpy at module scope
     from delfin.atom_mapping import map_atoms
@@ -197,10 +207,13 @@ def _h_directions(
     neighbours and are mutually separated like tetrahedral hydrogens.
 
     The base direction is the negated sum of the toward-neighbour vectors
-    (the far side of the atom). A second/third hydrogen completes the
-    tetrahedron: 109.47 deg from the base axis, spread 120 deg apart, so
-    two placed hydrogens are 109.5 deg apart (>= 1.6 bond lengths) and
-    never coincide.
+    (the far side of the atom). The cone half-angle from that base axis is
+    chosen by hybridisation (a real sp3 X-H sits 109.47 deg from the X-Y
+    bond = 70.5 deg from the away axis; a real sp2 C-H sits ~121.5 deg
+    from the C=C bond = 58.5 deg from the away axis; a lone-atom pair
+    (water) opens at 104.5 deg = each H 52.25 deg from the base), and the
+    hydrogens are spread evenly around the base axis, so two placed
+    hydrogens never coincide and no H points into a heavy-heavy bond.
     """
     # Sum of toward vectors, negated -> away (may be empty -> +x fallback).
     s = [-sum(v[k] for v in away) for k in range(3)]
@@ -208,6 +221,21 @@ def _h_directions(
     base = tuple(x / n for x in s) if n > 1e-9 else (1.0, 0.0, 0.0)
     if count <= 1:
         return [base]
+    # Cone half-angle by geometry of the placed H pair:
+    #  - no heavy neighbours (e.g. lone O -> water): H-O-H = 2*half -> water
+    #    angle 104.5 deg -> half = 52.25 deg;
+    #  - one heavy neighbour, 2+ H (sp3: CH3, CH2): H-C-H ~ 109.47 deg
+    #    between the H pair when both sit symmetrically -> half such that
+    #    the pair angle = 2*asin(sin(half)) ~ 109.5 -> half = 70.53 deg
+    #    (tetrahedral from the bond axis: 180-109.47);
+    #  - two heavy neighbours (sp2, e.g. =CH2): H-C-Y ~ 121.5 deg -> the H
+    #    sits 180-121.5 = 58.5 deg from the away axis.
+    if not away:
+        half_deg = 52.25
+    elif len(away) == 1:
+        half_deg = 70.53
+    else:
+        half_deg = 58.5
     # Orthonormal frame around base.
     ref = (0.0, 0.0, 1.0) if abs(base[2]) < 0.9 else (1.0, 0.0, 0.0)
     v = [base[1] * ref[2] - base[2] * ref[1],
@@ -218,11 +246,13 @@ def _h_directions(
     w = [base[1] * v[2] - base[2] * v[1],
          base[2] * v[0] - base[0] * v[2],
          base[0] * v[1] - base[1] * v[0]]
-    ang = math.radians(109.47)  # tetrahedral angle from the base axis
+    ang = math.radians(half_deg)
     sa, ca = math.sin(ang), math.cos(ang)
     dirs = []
     for idx in range(count):
-        az = 2.0 * math.pi * idx / count
+        az = math.pi * idx / max(1, count - 1) if count == 2 else (
+            2.0 * math.pi * idx / count
+        )
         dz, dv = ca, sa
         cv, sv = math.cos(az), math.sin(az)
         dirs.append(tuple(
@@ -290,6 +320,21 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
     is a donor convention, not a valence count).
     """
     g = _parse(xyz_text, "structure")
+    # parse_xyz strips blank lines BEFORE reading the comment header, so a
+    # blank comment line makes it read the first atom line as the comment
+    # and the written block repeats the atom line as its header (operator
+    # real-run round 3). Contained here: an empty comment, or one whose
+    # first word parses as an element followed by coordinates (an atom
+    # line), is replaced by a neutral header. Real text comments survive.
+    parts = (g.comment or "").split()
+    atom_like = bool(
+        parts
+        and len(parts) >= 4
+        and _elem_from_label(parts[0]) is not None
+        and all(_xyz_coord_like(p) for p in parts[1:4])
+    )
+    if not (g.comment or "").strip() or atom_like:
+        g.comment = "hydrogens fixed"
     radii = _covalent_radii(g)
     nbrs = _bond_graph(g)
     added: list[dict[str, Any]] = []
@@ -330,16 +375,44 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
         multiplicity=g.multiplicity,
         comment=g.comment or "hydrogens fixed",
     )
+    checks = [
+        f"added {len(added)} hydrogen(s), removed none",
+        "H placed at real X-H bond lengths (C-H 1.09, N-H 1.01, O-H 0.96 A)",
+    ]
+    # Self-check: flag (do not silently ship) placed H that clash with
+    # anything already in the structure (min interatomic pair distance).
+    clash = _clash_report(new_symbols, new_coords)
+    if clash:
+        checks.append("WARNING: " + clash)
     return {
         "xyz": to_xyz(out),
         "n_added": len(added),
         "added_rows": added,
-        "checks": [
-            f"added {len(added)} hydrogen(s), removed none",
-            "H placed at DELFIN covalent-radius bond length",
-        ],
+        "checks": checks,
         "error": None,
     }
+
+
+def _clash_report(symbols, coords) -> str | None:
+    """First pair closer than 0.8 A between a placed H and any other atom,
+    or any H-H pair below 1.0 A; None when nothing clashes."""
+    limit_same = 1.0  # two H cannot be this close in a real structure
+    limit_any = 0.8
+    n = len(symbols)
+    for a in range(n):
+        for b in range(a + 1, n):
+            d = math.dist(coords[a], coords[b])
+            if symbols[a] == "H" and symbols[b] == "H" and d < limit_same:
+                return (
+                    f"H-H clash {d:.3f} A (< {limit_same} A) between "
+                    f"atoms {a} and {b}"
+                )
+            if d < limit_any:
+                return (
+                    f"clash {d:.3f} A (< {limit_any} A) between atoms "
+                    f"{a} ({symbols[a]}) and {b} ({symbols[b]})"
+                )
+    return None
 
 
 _COSMETIC_H_RADIUS = 0.63  # DELFIN's fallback covalent radius for H
