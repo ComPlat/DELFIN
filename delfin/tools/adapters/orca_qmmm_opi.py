@@ -74,9 +74,10 @@ elements + coordinates), returned on the result.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from delfin.orca_read import Quantity, _scf_converged_text, _terminated_normally_text, read
 
@@ -90,6 +91,7 @@ VALID_COUPLINGS = ("additive", "subtractive")
 
 from delfin.tools._base import StepAdapter
 from delfin.tools._registry import register
+from delfin.tools._types import ErrorKind, StepResult, StepStatus
 from delfin.orca import run_orca
 
 _TOTAL_ENERGY_PATTERN = re.compile(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)")
@@ -307,6 +309,8 @@ def build_qmmm_input(
     orcaff_filename: str,
     embedding: str = DEFAULT_EMBEDDING,
     coupling: str = "additive",
+    method: str = "",
+    extra_keywords: Sequence[str] = (),
     qmmm_options: Optional[Dict[str, object]] = None,
     ncores: int = 1,
 ) -> str:
@@ -337,7 +341,16 @@ def build_qmmm_input(
     from opi.input.structures import Atom, Structure
 
     inp = Input()
-    inp.add_simple_keywords("QMMM")
+    if coupling == "subtractive":
+        # subtractive QM/QM2/MM is selected by the method simple keyword
+        # (!QM/<method>/MM, manual 6.2.2.1); additive by !QMMM (manual 6.2.1).
+        low = (method or "XTB").strip() or "XTB"
+        inp.add_simple_keywords(f"QM/{low}/MM")
+    else:
+        inp.add_simple_keywords("QMMM")
+    for kw in extra_keywords or ():
+        if kw:
+            inp.add_simple_keywords(str(kw))
     inp.ncores = ncores
 
     block_args: Dict[str, object] = {
@@ -397,11 +410,95 @@ class OrcaQmmmOpiAdapter(StepAdapter):
             b = f"QM/{properties.get('method', 'XTB')}/MM"
         return b
 
-    def execute(self, run_spec: dict) -> QmmmResult:
-        return run_qmmm(**run_spec)
+    def execute(self, work_dir, *, geometry=None, cores=1, **kwargs) -> StepResult:
+        """Base-contract entry point: the geometry comes from ``geometry`` (a
+        .xyz path from the previous step) or from ``elements``/``coordinates``
+        kwargs; the QM/MM choices from the kwargs. Returns a ``StepResult`` so a
+        pipeline reaches this step through run_step."""
+        kwargs.pop("_prev_artifacts", None)
+        start = time.monotonic()
+        try:
+            elements, coordinates = _geometry_kwargs(geometry, kwargs)
+        except ValueError as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, Path(work_dir), start,
+                error=str(exc), error_kind=ErrorKind.MISSING_PARAM,
+            )
+        res = run_qmmm(
+            working_dir=str(work_dir),
+            base_name=kwargs.get("base_name", "calc"),
+            elements=elements,
+            coordinates=coordinates,
+            charge=_as_int(kwargs.get("charge", 0)),
+            mult=_as_int(kwargs.get("mult", 1)),
+            qmatoms=kwargs.get("qmatoms", []),
+            orcaff_filename=kwargs.get("orcaff_filename", ""),
+            embedding=kwargs.get("embedding", DEFAULT_EMBEDDING),
+            coupling=kwargs.get("coupling", "additive"),
+            method=kwargs.get("method", ""),
+            extra_keywords=kwargs.get("extra_keywords", ()),
+            qmmm_options=kwargs.get("qmmm_options"),
+            ncores=cores,
+            timeout=kwargs.get("timeout"),
+        )
+        return _step_result_from_qmmm(self, res, Path(work_dir), start)
 
 
 register(OrcaQmmmOpiAdapter())
+
+
+def _geometry_kwargs(geometry, kwargs) -> tuple:
+    """The (elements, coordinates) for the structure: a chained .xyz geometry
+    wins; otherwise the caller's explicit ``elements``/``coordinates`` kwargs
+    (the same resolution the other OPI adapters use)."""
+    if geometry is not None:
+        from delfin.tools.opi_chain import read_geometry_xyz
+
+        return read_geometry_xyz(geometry)
+    try:
+        return list(kwargs["elements"]), list(kwargs["coordinates"])
+    except KeyError as exc:
+        raise ValueError(f"missing required {exc} (or a chained geometry)") from exc
+
+
+def _step_result_from_qmmm(adapter, res: "QmmmResult", work_dir: Path,
+                           start: float) -> StepResult:
+    """Translate a :class:`QmmmResult` into the :class:`StepResult` the
+    pipeline's run_step contract expects.
+
+    ``meaningful`` is the success gate for an energy-bearing QM/MM single
+    point: terminate-normally AND SCF-converged AND a parsed total.  ``ok``
+    without ``meaningful`` would swallow a run that printed a FINAL SINGLE
+    POINT ENERGY from an unconverged SCF.
+    """
+    data: Dict[str, Any] = {
+        "meaningful": res.meaningful,
+        "total_energy_Eh": res.total_energy_Eh,
+        "qm_energy_Eh": res.qm_energy_Eh,
+        "energy_Eh": res.total_energy_Eh,
+        "scf_converged": res.scf_converged,
+        "terminated_normally": res.terminated_normally,
+        "findings": list(res.findings),
+        "failure_lines": list(res.failure_lines),
+    }
+    if res.error:
+        data["error"] = res.error
+    ok = res.ok and res.meaningful
+    error_kind = (ErrorKind.NONE if ok
+                  else ErrorKind.CONVERGENCE if res.scf_converged is False
+                  else ErrorKind.TOOL_FAILED)
+    return StepResult(
+        step_name=getattr(adapter, "name", "?"),
+        status=(StepStatus.SUCCESS if ok else StepStatus.FAILED),
+        work_dir=work_dir,
+        elapsed_seconds=time.monotonic() - start,
+        geometry=None,
+        artifacts={},
+        data=data,
+        output_file=res.output_file,
+        error=res.error,
+        error_kind=error_kind,
+    )
 
 
 def _n_atoms(properties: dict) -> int:
@@ -431,6 +528,8 @@ def run_qmmm(
     orcaff_filename: str,
     embedding: str = DEFAULT_EMBEDDING,
     coupling: str = "additive",
+    method: str = "",
+    extra_keywords: Sequence[str] = (),
     qmmm_options: Optional[Dict[str, object]] = None,
     ncores: int = 1,
     timeout: Optional[int] = None,
@@ -455,6 +554,10 @@ def run_qmmm(
         qmatoms = props["qmatoms"]
     if "orcaff_filename" in props:
         orcaff_filename = props["orcaff_filename"]
+    if "method" in props:
+        method = props["method"]
+    if "extra_keywords" in props:
+        extra_keywords = props["extra_keywords"] or ()
 
     errors, _ = validate_qmmm(
         qmatoms=qmatoms,
@@ -464,13 +567,13 @@ def run_qmmm(
         mult=mult,
         embedding=embedding,
         coupling=coupling,
-        extra_keywords=props.get("extra_keywords", ()),
+        extra_keywords=extra_keywords,
         qmmm_options=props.get("qmmm_options") or qmmm_options,
     )
     if errors:
         return QmmmResult(ok=False, error="; ".join(errors), output_file=f"{base_name}.out")
 
-    inp_path = build_qmmm_input(
+    inp_path = Path(build_qmmm_input(
         working_dir,
         base_name=base_name,
         elements=elements,
@@ -481,9 +584,11 @@ def run_qmmm(
         orcaff_filename=orcaff_filename,
         embedding=embedding,
         coupling=coupling,
+        method=method,
+        extra_keywords=extra_keywords,
         qmmm_options=props.get("qmmm_options") or qmmm_options,
         ncores=ncores,
-    )
+    ))
     out_path = inp_path.with_suffix(".out")
     if not run_orca(str(inp_path), str(out_path), timeout=timeout,
                     working_dir=Path(working_dir)):
