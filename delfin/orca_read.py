@@ -942,6 +942,10 @@ def read_thermochemistry(out_path: Union[str, Path]) -> list[ThermoReading]:
         zpe_eh, zpe_kcal = _thermo_both(block, "Zero point energy")
         h = _thermo_quantity(block, "Total Enthalpy", "Eh")
         ts_eh, ts_kcal = _thermo_both(block, "Final entropy term")
+        if ts_eh is None:
+            # ORCA also prints "Total entropy correction" in some blocks
+            # (same T*S value); accept either label.
+            ts_eh, ts_kcal = _thermo_both(block, "Total entropy correction")
         g = _thermo_quantity(block, "Final Gibbs free energy", "Eh")
         pressure = _thermo_quantity(block, "Pressure", "atm")
 

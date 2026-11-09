@@ -207,8 +207,11 @@ def test_builds_re_eval_input_with_orca_own_rules(tmp_path):
     # written out for ORCA to run.
     assert result.ok
     text = inp.read_text()
-    assert "Freq" in text
-    assert "Temp" in text
+    # OPI writes the keyword and block option in lower case (`!freq`,
+    # `temp`); assert case-insensitively so the check targets the
+    # directive and value, not OPI's spelling.
+    assert "freq" in text.lower()
+    assert "temp" in text.lower()
     assert "500" in text
     assert "2" in text
 
