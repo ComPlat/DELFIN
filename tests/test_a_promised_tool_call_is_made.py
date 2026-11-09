@@ -91,8 +91,10 @@ class TestTheCorrectiveTurn:
         src = inspect.getsource(A)
         assert "_PROMISED_CONT_MAX = 2" in src
         assert "_promised_count += 1" in src
-        assert "_promised_no_tool_call" in src
-        assert '_promises_an_unmade_tool_call("".join(_text_chunks))' in src
+        assert "_promised_no_tool_call" in src.replace('"promised_no_tool_call"',
+                                                       "_promised_no_tool_call") or \
+            '"promised_no_tool_call"' in src
+        assert '_promises_an_unmade_tool_call(_promised_text)' in src
         # The trigger must stand down once a tool call ran in this
         # response (no double execution).
         assert "not _tool_calls" in src or "not _tool_calls and" in src

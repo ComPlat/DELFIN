@@ -128,6 +128,21 @@ class TestPromiseShapesAreCorrected:
         assert out["tool_outputs"], out
         assert len(out["stops"]) == 1, out["stops"]
 
+    def test_repeated_promises_are_corrected_at_most_twice_then_reported(
+            self, open_tasks_workspace):
+        """A model that keeps promising gets at most _PROMISED_CONT_MAX
+        corrective rows, then the turn ends with the clear non-done stop
+        reason a supervisor resumes."""
+        client = make_client(open_tasks_workspace)
+        promise = [text_chunk(SHAPE2)]
+        out = run_stream(client, [promise] * 6)
+        corrective = sum(1 for n in out["notices"] if CORRECTIVE in n)
+        assert corrective == 2, corrective
+        assert out["stops"][-1] == "promised_no_tool_call", out["stops"]
+        # Only the two corrective rounds were spent: 3 rounds served
+        # (promise, correction, promise), then the turn ended.
+        assert len(out["sent"]) == 3, len(out["sent"])
+
 
 class TestTruncatedWriteFile:
     def test_a_length_cut_write_file_tells_the_model(self,
@@ -141,14 +156,19 @@ class TestTruncatedWriteFile:
         out = run_stream(client, [
             [text_chunk("writing the file now."),
              tool_chunk("write_file", cut_args, finish="length")],
+            [text_chunk("The file is not written yet.", finish="stop")],
         ])
-        joined = "\n".join(out["notices"])
-        assert "cut at the output limit" in joined or \
-            "truncated at the max-tokens limit" in joined, joined
-        # The message also reached the MODEL.
-        tool_rows = [m for m in out["sent"][-1] if m.get("role") == "tool"]
-        assert tool_rows and "cut at the output limit" in \
-            tool_rows[-1]["content"], out["sent"][-1]
+        # The cut_call continuation row went to the MODEL with the brief's
+        # wording (a harness row, not a chat notice).
+        rows = [str(m.get("content") or "") for m in out["sent"][-1]
+                if m.get("role") == "user"]
+        joined = "\n".join(rows + out["notices"])
+        assert "the arguments were cut off at the output limit" in joined, \
+            out["sent"][-1]
+        assert "write the file in smaller parts" in joined
+        # The message reached the MODEL (verified above) and the turn did
+        # not end before the continuation: two rounds were served.
+        assert len(out["sent"]) >= 2, out["sent"]
 
 
 class TestControl:
