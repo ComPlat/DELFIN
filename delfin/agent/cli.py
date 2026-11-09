@@ -1158,6 +1158,62 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
     return "", ""
 
 
+def _profile_default_mode() -> tuple[str, str]:
+    """``(mode, where it came from)`` of the stored dashboard profile
+    (``agent.permission_profile``, permission_profile.PROFILE_TO_MODE --
+    the dashboard's own table), or ``("", "")`` when none is stored.
+
+    The start mode when no ``--permission-mode`` is given and no mode
+    setting names one (``_persisted_default_mode`` returns ""). A profile
+    of ``all_free`` gives ``bypassPermissions`` and counts as the
+    confirmation ``--unattended`` gives a flag: the profile is the
+    dashboard's Bypass rung, chosen by a person (or the host's installer)
+    in the user settings file, which lies outside every writable root and
+    is a protected path besides (an agent write there is asked, never
+    automatic), and the dashboard already starts every session from it. A
+    persisted *mode* of bypass (``agent.permission_mode``,
+    ``kit.default_mode``) stays non-inherited, as before: the
+    permissions tool call persists ``kit.default_mode``, and a checked-out
+    repository can carry one.
+    ``--permission-mode bypassPermissions`` without ``--unattended`` stays
+    refused. Rejected: requiring ``--unattended`` for the profile too --
+    every headless and terminal session of such a host then runs in a
+    mode its owner did not choose, and the field test measured that as
+    one refusal per command off the auto-allow list. What the profile
+    cannot lift: the managed policy (coerce_mode on every assignment of
+    the mode), the isolation start check (bypass falls back to default
+    without a layer unless confirmed), the roots, the deny list and the
+    write path gate. Never raises."""
+    try:
+        from .permission_profile import SETTING, mode_for, stored_profile
+        profile, path = stored_profile()
+        mode = mode_for(profile)
+    except Exception:
+        return "", ""
+    if not mode:
+        return "", ""
+    return mode, f"{_tilde(path)} agent.{SETTING} = {profile}"
+
+
+def _start_posture(workspace: Path, flag_mode: str,
+                   unattended: bool) -> tuple[str, str]:
+    """``(mode, why)`` an attended session starts in, before the managed
+    policy: the flag, else a mode setting, else the stored profile
+    (_profile_default_mode), else ``launch_guard.DEFAULT_MODE``. Shared by
+    ``_start_interactive_session`` and ``boundaries.resolve_mode``."""
+    from . import launch_guard
+    flag_mode = str(flag_mode or "").strip()
+    persisted, persisted_from = _persisted_default_mode(workspace)
+    if not flag_mode and not persisted:
+        mode, source = _profile_default_mode()
+        if mode:
+            return mode, source
+    return launch_guard.resolve_posture(
+        flag_mode=flag_mode, persisted_mode=persisted,
+        unattended_opt_in=unattended,
+        settings_path=persisted_from or "~/.delfin/settings.json")
+
+
 def _claim_session(sid: str) -> bool:
     """Take the writer lock now, not at the first save.
 
@@ -1995,9 +2051,15 @@ def _headless_posture(args: argparse.Namespace,
       (``DEFAULT_MODE``), said on stderr. Taking the settings default
       there would give a headless run more than an interactive session
       with the same flags.
+    * No flag and no mode setting: the stored dashboard profile's mode
+      (``_profile_default_mode``; ``all_free`` gives bypass, the profile
+      being the confirmation -- see there).
     * Otherwise the flag, or ``""`` when none is passed, so the engine
       resolves the settings default (or ``default``) exactly as before --
       the same start posture the terminal now has.
+
+    ``note`` is always one line naming the mode and where it came from
+    (printed on stderr at start).
     """
     from . import launch_guard
 
@@ -2008,10 +2070,19 @@ def _headless_posture(args: argparse.Namespace,
                     "--unattended, on a headless run as in a terminal "
                     "session."), True
     if flag:
-        return flag, "", False
+        return flag, f"permission mode {flag} from --permission-mode", False
     persisted, source = _persisted_default_mode(workspace)
+    if not persisted:
+        # No flag, no mode setting: the stored dashboard profile, the same
+        # table and the same rule as an interactive start
+        # (_profile_default_mode).
+        p_mode, p_source = _profile_default_mode()
+        if p_mode:
+            return p_mode, f"permission mode {p_mode} from {p_source}", False
+        return "", (f"permission mode {launch_guard.DEFAULT_MODE} "
+                    "(nothing configured it)"), False
     if persisted != "bypassPermissions":
-        return "", "", False
+        return "", f"permission mode {persisted} from {source}", False
     source = source or "~/.delfin/settings.json"
     if not unattended:
         return "", (
@@ -2132,15 +2203,14 @@ def _start_interactive_session(args: argparse.Namespace, report,
     layer the host lacks, refuses the start); chdir to ``workspace``; the
     launch grants; the isolation flags; the engine; the session open
     (resume / continue / fork / claim); the starting posture
-    (launch_guard.resolve_posture, then managed_policy.coerce_mode); the
+    (_start_posture: the flag, a mode setting, the stored dashboard
+    profile, else default; then managed_policy.coerce_mode); the
     isolation start check (isolation_posture.apply_at_start).
 
     Output: an ``InteractiveStart``. Raises ``InteractiveStartRefused``;
     the working directory is then the one before the call. On success the
     process stays in ``workspace``; the caller moves it back.
     """
-    from . import launch_guard
-
     # The administrator's managed policy, before anything is built: a mode
     # the person named on the command line that the policy disallows, or a
     # required isolation layer this host lacks, ends an attended start here
@@ -2175,13 +2245,9 @@ def _start_interactive_session(args: argparse.Namespace, report,
             pass
         raise
 
-    persisted, persisted_from = _persisted_default_mode(workspace)
-    posture, why = launch_guard.resolve_posture(
-        flag_mode=getattr(args, "permission_mode", "") or "",
-        persisted_mode=persisted,
-        unattended_opt_in=bool(getattr(args, "unattended", False)),
-        settings_path=persisted_from or "~/.delfin/settings.json",
-    )
+    posture, why = _start_posture(
+        workspace, getattr(args, "permission_mode", "") or "",
+        bool(getattr(args, "unattended", False)))
     try:
         from . import managed_policy as _mp
         _managed_posture = _mp.coerce_mode(posture)
@@ -3910,8 +3976,13 @@ def _print_stop_all_check(report: dict) -> int:
     print(f"  Outlived their start:    {len(outlived) or 'none'}")
     for row in outlived:
         print(f"    pid {row['pid']} ({row['why']}): {row['command']}")
+    service = report.get("agent_service")
+    print("  Agent service:           " + (
+        f"pid {service['pid']}, {service['sessions']} session(s) running, "
+        f"{service['asleep']} asleep -- they run on without any window "
+        "(dashboard, terminal, phone) on purpose" if service else "none"))
     running = bool(
-        fresh or schedules or here or outlived
+        fresh or schedules or here or outlived or (service and service["sessions"])
         or any(r.get("alive_here") for r in kept)
         or any(r.get("alive_here") for r in daemons.values()))
     if running:
@@ -5400,6 +5471,13 @@ def build_parser() -> argparse.ArgumentParser:
                           "add <slug> <text>")
     kno.set_defaults(func=cmd_knowledge)
 
+    # lab — device control behind the safety kernel (delfin/lab/cli.py)
+    lab_p = sub.add_parser(
+        "lab", help="Lab devices: e-stop, approvals, manifest, daemons "
+                    "(delfin-agent lab --help)", add_help=False)
+    lab_p.add_argument("lab_args", nargs=argparse.REMAINDER)
+    lab_p.set_defaults(func=cmd_lab)
+
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
         "approvals",
@@ -6242,6 +6320,13 @@ def _stop_own_background_shells() -> None:
         _bj.get_registry().stop_running()
     except Exception:
         pass
+
+
+def cmd_lab(args) -> int:
+    """``delfin-agent lab ...``: handed whole to ``delfin.lab.cli``."""
+    from delfin.lab.cli import main as lab_main
+    return int(lab_main(list(getattr(args, "lab_args", None) or ["--help"]))
+               or 0)
 
 
 def main(argv: list[str] | None = None) -> int:

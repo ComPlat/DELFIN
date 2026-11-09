@@ -842,6 +842,10 @@ _XTB_STUB_DIR = Path(__file__).resolve().parent / "stubs"
 #: was in setup, and wrote xtb 6.7.1 into delfin/qm_tools/.mamba_env of the
 #: checkout 5 s into the run (test_the_switch_holds_between_tests_as_well).
 os.environ["DELFIN_AUTO_INSTALL_QM_TOOLS"] = "0"
+# Transient-retry backoff waits minutes in production; tests keep the old count
+# and do not sleep (delfin/agent/api_client.py _transient_retry_delay).
+os.environ.setdefault("DELFIN_STREAM_RETRY_MAX", "3")
+os.environ.setdefault("DELFIN_STREAM_RETRY_DELAY_SCALE", "0")
 
 
 @pytest.fixture(autouse=True)
@@ -1605,6 +1609,13 @@ def pytest_configure(config):
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
+    # A dashboard built by a test (a voila server, a create_tab without a
+    # stand-in build) keeps its sessions in its kernel: it must never reach
+    # the user's agent service, nor start one under /tmp. The tests of the
+    # service-backed dashboard give it a private service explicitly.
+    if "DELFIN_DASHBOARD_SESSIONS" in os.environ:
+        _LIFELINE_SAVED["DELFIN_DASHBOARD_SESSIONS"] = os.environ["DELFIN_DASHBOARD_SESSIONS"]
+    os.environ["DELFIN_DASHBOARD_SESSIONS"] = "kernel"
     _external_agent_guard.install(is_credential)
     _hypothesis_store_outside_the_checkout()
     _private_tmp_of_the_suite()
@@ -1613,6 +1624,7 @@ def pytest_configure(config):
 def pytest_unconfigure(config):
     import os
     _external_agent_guard.uninstall()
+    os.environ.pop("DELFIN_DASHBOARD_SESSIONS", None)
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()
