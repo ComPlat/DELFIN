@@ -30,7 +30,7 @@ import pytest
 pytest.importorskip("opi")
 
 from delfin.tools.adapters.orca_bs_opi import (  # noqa: E402
-    _read_s2_abs,
+    _bs_summary,
     build_bs_input,
     read_bs_output,
     run_bs,
@@ -52,54 +52,36 @@ FE_COORDS = (
     (4.5, 0.0, 0.0),
 )
 
-#: two synthetic high-spin / broken-symmetry runs for a BrokenSym 2,2 pair on
-#: a quintet (mult 5 -> 4 unpaired electrons) high-spin reference.
-HS_OUT = """# SYNTHETIC test fixture written for DELFIN -- not ORCA output
-# High-spin single point (mult 5) of a BrokenSym 2,2 pair.
-
-UHF SPIN CONTAMINATION
-
-   <S**2>     :   6.002000
-   S(S+1)     :   6.000000
-   <S**2> - S(S+1) :   0.002000
-   Deviation  :   0.002000
-
-FINAL SINGLE POINT ENERGY    -761.385394683
-
-ORCA TERMINATED NORMALLY
-"""
-
+#: a synthetic broken-symmetry run in ORCA 6.1's summary layout (written by
+#: hand for DELFIN; the numbers are those of a real ORCA 6.1.1 run: stretched
+#: H2 3.0 A, B3LYP/def2-SVP, BrokenSym 1,1, APMethod 3).  Its FINAL SINGLE
+#: POINT ENERGY is NOT E(BrokenSym) and must not enter J.
 BS_OUT = """# SYNTHETIC test fixture written for DELFIN -- not ORCA output
-# Broken-symmetry single point (BrokenSym 2,2) of the same quintet reference.
+S(High-Spin)      =   1.0
+<S**2>(High-Spin) =   2.0000
+<S**2>(BrokenSym) =   0.9845
+E(High-Spin)      =    -0.994776 Eh
+E(BrokenSym)      =    -0.996998 Eh
+E(High-Spin)-E(BrokenSym)= 0.0605 eV    487.723 cm**-1 (ANTIFERROMAGNETIC coupling)
 
-UHF SPIN CONTAMINATION
+          ---------------------------------------------------------
+          | Spin-Hamiltonian Analysis based on H(HDvV)= -2J*SA*SB |
+    -------                                                       -----------
+    | J(1) =    -487.72 cm**-1    (from -(E[HS]-E[BS])/Smax**2)             |
+    | J(2) =    -243.86 cm**-1    (from -(E[HS]-E[BS])/(Smax*(Smax+1))      |
+    | J(3) =    -480.29 cm**-1    (from -(E[HS]-E[BS])/(<S**2>HS-<S**2>BS)) |
+    -------------------------------------------------------------------------
 
-   <S**2>     :   1.604000
-   S(S+1)     :   0.000000
-   <S**2> - S(S+1) :   1.604000
-   Deviation  :   1.604000
+FINAL SINGLE POINT ENERGY        -0.999153098145
 
-***** SPIN-HAMILTONIAN ANALYSIS *****
-Spin-Hamiltonian Analysis based on H(HDvV)= -2J*SA*SB
-SA=2, SB=2
-
-   J(1) =   -113.871205 cm**-1  (from -(E[HS]-E[BS])/(SHDVDW))
-   J(2) =   -151.828274 cm**-1  (from -(E[HS]-E[BS])/(SA*SB))
-   J(3) =   -311.407133 cm**-1  (from -(E[HS]-E[BS])/(<S**2>HS-<S**2>BS))
-
-FINAL SINGLE POINT ENERGY    -761.534676590
-
-ORCA TERMINATED NORMALLY
+                             ****ORCA TERMINATED NORMALLY****
 """
 
 
-def _write_pair(tmp_path: Path) -> tuple[Path, Path]:
-    """Write the synthetic HS/BS runs and return their .out paths."""
-    hs = tmp_path / "calc_hs.out"
+def _write_bs(tmp_path: Path) -> Path:
     bs = tmp_path / "calc_bs.out"
-    hs.write_text(HS_OUT)
     bs.write_text(BS_OUT)
-    return hs, bs
+    return bs
 
 
 class TestValidateBs:
@@ -154,19 +136,16 @@ class TestValidateBs:
         assert any("NOTAWORD" in e for e in errors)
 
 
-class TestS2Read:
-    """Absolute <S^2> from the UHF SPIN CONTAMINATION block."""
+class TestBsSummary:
+    """ORCA's own BS summary block (S_max, both <S**2>, both energies)."""
 
-    def test_last_absolute_s2(self, tmp_path):
-        hs, _ = _write_pair(tmp_path)
-        assert _read_s2_abs(hs) == pytest.approx(6.002)
-        _, bs = _write_pair(tmp_path)
-        assert _read_s2_abs(bs) == pytest.approx(1.604)
+    def test_reads_every_summary_line(self):
+        d = _bs_summary(BS_OUT)
+        assert d == {"s_max": 1.0, "hs_s2": 2.0, "bs_s2": 0.9845,
+                     "hs_e": -0.994776, "bs_e": -0.996998, "delta_cm": 487.723}
 
-    def test_missing_block_returns_none(self, tmp_path):
-        f = tmp_path / "x.out"
-        f.write_text("# SYNTHETIC test fixture\nno spin block here\n")
-        assert _read_s2_abs(f) is None
+    def test_missing_block_returns_empty(self):
+        assert _bs_summary("# SYNTHETIC test fixture\nno summary here\n") == {}
 
 
 class TestBuildBsInput:
@@ -201,43 +180,49 @@ class TestBuildBsInput:
 
 
 class TestReadBsOutput:
-    def test_reads_energies_s2_and_j(self, tmp_path):
-        hs, bs = _write_pair(tmp_path)
-        res = read_bs_output(tmp_path, "calc_hs", "calc_bs")
+    def test_reads_orcas_summary_and_all_three_j(self, tmp_path):
+        _write_bs(tmp_path)
+        res = read_bs_output(tmp_path, "calc_bs")
         assert res.ok is True
-        assert res.hs_energy_Eh == pytest.approx(-761.385394683)
-        assert res.bs_energy_Eh == pytest.approx(-761.534676590)
-        assert res.hs_s2 == pytest.approx(6.002)
-        assert res.bs_s2 == pytest.approx(1.604)
-        # Yamaguchi (eq 5.170), 1 Eh = 219474.6313702 cm-1
-        expect = -(res.hs_energy_Eh - res.bs_energy_Eh) * 219474.6313702 \
-            / (res.hs_s2 - res.bs_s2)
-        assert res.j_yamaguchi_cm == pytest.approx(expect)
-        assert res.j_yamaguchi_cm < 0  # antiferromagnetic
-        # ORCA's own J(3) cross-check surfaced
-        assert res.orca_j3_cm == pytest.approx(-311.407133)
+        assert res.hs_energy_Eh == pytest.approx(-0.994776)
+        # E(BrokenSym), not the FINAL SINGLE POINT ENERGY (-0.999153)
+        assert res.bs_energy_Eh == pytest.approx(-0.996998)
+        assert (res.hs_s2, res.bs_s2, res.s_max) == (2.0, 0.9845, 1.0)
+        # each J equals ORCA's own value within its print rounding
+        assert res.j_noodleman_cm == pytest.approx(-487.72, abs=0.01)
+        assert res.j_bencini_cm == pytest.approx(-243.86, abs=0.01)
+        assert res.j_yamaguchi_cm == pytest.approx(-480.29, abs=0.1)
+        assert (res.orca_j1_cm, res.orca_j2_cm, res.orca_j3_cm) == (-487.72, -243.86, -480.29)
+
+    def test_missing_summary_is_not_meaningful(self, tmp_path):
+        (tmp_path / "calc_bs.out").write_text(
+            "FINAL SINGLE POINT ENERGY   -0.999153\n****ORCA TERMINATED NORMALLY****\n")
+        res = read_bs_output(tmp_path, "calc_bs")
+        assert res.ok is False and "summary block lacks" in res.error
 
     @pytest.fixture()
     def monkey_orca(self, tmp_path, monkeypatch):
-        hs, bs = _write_pair(tmp_path)
+        (tmp_path / "src").mkdir()
+        bs = _write_bs(tmp_path / "src")
+        calls = []
 
         def _fake_run_orca(inp, out, timeout=None, working_dir=None):
-            base = Path(out).stem  # calc_hs / calc_bs
-            src = hs if base.endswith("_hs") else bs
-            Path(out).write_text(src.read_text())
-            Path(inp).write_text("")
+            calls.append(Path(out).name)
+            Path(out).write_text(bs.read_text())
             return True
 
         monkeypatch.setattr(orca_mod, "run_orca", _fake_run_orca)
-        return tmp_path
+        return tmp_path, calls
 
     def test_run_bs_full_launch_path(self, monkey_orca):
+        wdir, calls = monkey_orca
         res = run_bs(
             elements=FE_ELEMENTS, coordinates=FE_COORDS,
             charge=0, mult=5, spin_a=2, spin_b=2,
-            work_dir=monkey_orca,
+            work_dir=wdir,
         )
         assert res.ok is True
+        assert calls == ["calc_bs.out"]  # one ORCA job gives HS and BS
         assert res.j_yamaguchi_cm is not None and res.j_yamaguchi_cm < 0
 
     def test_closed_shell_refused_before_launch(self, monkey_orca, tmp_path):

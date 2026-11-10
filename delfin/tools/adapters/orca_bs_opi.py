@@ -32,8 +32,11 @@ section 5.27 "Broken-Symmetry Wavefunctions and Exchange Couplings"):
   the density on listed atoms *after* converging the high-spin wavefunction
   and needs ``FinalMs``; "This value MUST be given since the program cannot
   determine it by itself" (lines 156-186).
-* Several formulae extract ``J_AB`` from ``E_HS``/``E_BS`` (eqs. 5.168-5.170).
-  The one this module implements is Yamaguchi's approximate spin projection
+* Several formulae extract ``J_AB`` from ``E_HS``/``E_BS`` (eqs. 5.168-5.170):
+  J(1) = -(E_HS - E_BS)/S_max^2 (Noodleman/Ginsberg, weak-coupling limit),
+  J(2) = -(E_HS - E_BS)/(S_max(S_max+1)) (Bencini/Gatteschi, strong-coupling
+  limit) and J(3), Yamaguchi's approximate spin projection.  All three are
+  reported; the preferred one is Yamaguchi's approximate spin projection
   (section 5.27.1, eq. 5.170), which ORCA itself prefers: "We prefer the
   last definition because it is approximately valid over the whole coupling
   strength regime while the first equation implies the weak coupling limit
@@ -51,12 +54,14 @@ section 5.27 "Broken-Symmetry Wavefunctions and Exchange Couplings"):
   H(HDvV)= -2J*SA*SB" block whose ``J(3)`` is this same Yamaguchi value;
   the module surfaces it as a cross-check alongside its own computation.
 
-This module runs **two** single points — the high-spin reference and the
-broken-symmetry determinant — and derives ``J`` from their energies and
-<;S^2> the way the manual's "two separate SCF calculations" description
-does.  Nothing in the existing modules is changed.  ``J`` is reported in
-``cm**-1`` (energy per hartree: 1 Eh = 2.194746313632e5 cm**-1, the standard
-value of the hartree in reciprocal centimetres).
+This module runs **one** ORCA job: the BS input makes ORCA converge the
+high-spin state first and then the broken-symmetry determinant (the manual's
+"two separate SCF calculations" happen inside that run).  E(High-Spin),
+E(BrokenSym), <S**2> of both and E_HS - E_BS in cm**-1 are read from the
+run's own summary block.  The FINAL SINGLE POINT ENERGY of an ``APMethod``
+run is NOT E(BrokenSym) (real ORCA 6.1.1, stretched H2: FINAL SP -0.999153,
+E(BrokenSym) -0.996998 Eh) and must not enter J.  ``J`` is reported in
+``cm**-1``.  Nothing in the existing modules is changed.
 """
 
 from __future__ import annotations
@@ -68,7 +73,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from delfin.tools._base import StepAdapter
 from delfin.tools._registry import register
-from delfin.tools._spec import ParamSpec
+from delfin.tools._spec import DataKeySpec, ParamSpec
 from delfin.tools._types import ErrorKind, StepStatus
 
 #: 1 Eh in reciprocal centimetres (fundamental constant; hartree as an
@@ -100,9 +105,19 @@ class BsOutput:
     hs_s2: Optional[float] = None
     #: broken-symmetry <S^2> (dimensionless)
     bs_s2: Optional[float] = None
-    #: J_AB by the Yamaguchi formula, cm**-1
+    #: E_HS - E_BS as ORCA prints it, cm**-1
+    delta_e_cm: Optional[float] = None
+    #: S of the high-spin state (S_max)
+    s_max: Optional[float] = None
+    #: J(1), eq. 5.168, weak-coupling limit, cm**-1
+    j_noodleman_cm: Optional[float] = None
+    #: J(2), eq. 5.169, strong-coupling limit, cm**-1
+    j_bencini_cm: Optional[float] = None
+    #: J(3), eq. 5.170, Yamaguchi (preferred over the whole regime), cm**-1
     j_yamaguchi_cm: Optional[float] = None
-    #: J(3) from ORCA's own Spin-Hamiltonian Analysis block, cm**-1
+    #: J(1)/J(2)/J(3) as ORCA's own Spin-Hamiltonian Analysis prints them
+    orca_j1_cm: Optional[float] = None
+    orca_j2_cm: Optional[float] = None
     orca_j3_cm: Optional[float] = None
     findings: tuple[dict, ...] = ()
     failure_lines: tuple[str, ...] = ()
@@ -365,89 +380,98 @@ def build_bs_input(
     return work_dir / f"{base_name}.inp"
 
 
-def _read_s2_abs(out_path: Path) -> Optional[float]:
-    """The absolute <S^2> value ORCA prints in the ``UHF SPIN CONTAMINATION``
-    block (last occurrence).
+_NUM = r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)"
 
-    ``delfin.orca_read`` exposes the *deviation* (``S2_DEVIATION``), not the
-    absolute <S^2> the Yamaguchi formula needs in its denominator; the
-    absolute value is parsed here from the ``.out`` text (manual 5.27 eq.
-    5.170).  The ORCA block prints ``<S**2> : value`` on its own line.
+
+def _bs_summary(text: str) -> dict:
+    """The last broken-symmetry summary block of an ORCA ``.out``.
+
+    ORCA prints, after the BS SCF::
+
+        S(High-Spin)      =   1.0
+        <S**2>(High-Spin) =   2.0000
+        <S**2>(BrokenSym) =   0.9845
+        E(High-Spin)      =    -0.994776 Eh
+        E(BrokenSym)      =    -0.996998 Eh
+        E(High-Spin)-E(BrokenSym)= 0.0605 eV    487.723 cm**-1 (...)
+
+    Returns the values found (keys s_max, hs_s2, bs_s2, hs_e, bs_e,
+    delta_cm); a missing line leaves its key out.
     """
     import re
 
-    if not out_path.is_file():
-        return None
-    vals = re.findall(
-        r"<\s*S\*\*2\s*>\s*:\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)",
-        out_path.read_text(errors="replace"),
-    )
-    return float(vals[-1]) if vals else None
+    pats = {
+        "s_max": r"S\(High-Spin\)\s*=\s*" + _NUM,
+        "hs_s2": r"<S\*\*2>\(High-Spin\)\s*=\s*" + _NUM,
+        "bs_s2": r"<S\*\*2>\(BrokenSym\)\s*=\s*" + _NUM,
+        "hs_e": r"E\(High-Spin\)\s*=\s*" + _NUM + r"\s*Eh",
+        "bs_e": r"E\(BrokenSym\)\s*=\s*" + _NUM + r"\s*Eh",
+        "delta_cm": r"E\(High-Spin\)-E\(BrokenSym\)\s*=.*?" + _NUM + r"\s*cm\*\*-1",
+    }
+    out = {}
+    for key, pat in pats.items():
+        vals = re.findall(pat, text)
+        if vals:
+            out[key] = float(vals[-1])
+    return out
 
 
-def read_bs_output(work_dir: Path, base_name_hs: str, base_name_bs: str) -> BsOutput:
-    """Read a finished high-spin + broken-symmetry pair.
+def read_bs_output(work_dir: Path, base_name: str) -> BsOutput:
+    """Read a finished broken-symmetry run (one ORCA job, ``APMethod 3``).
 
-    The high-spin energy comes through DELFIN's sanctioned reader
-    (``delfin.orca_read``, ``FINAL_SINGLE_POINT_ENERGY``) — that is the
-    value a downstream energy profile would also see — and the absolute
-    <S^2> of each side is parsed from its own ``.out``.  ``J`` by the
-    Yamaguchi formula (eq. 5.170) is computed in ``cm**-1`` and ORCA's own
-    ``J(3)`` (from the BS run's Spin-Hamiltonian Analysis block) is surfaced
-    as a cross-check.
+    E(High-Spin), E(BrokenSym), both <S**2>, S_max and E_HS - E_BS (cm**-1)
+    come from ORCA's own summary block; J(1)/J(2)/J(3) (eqs. 5.168-5.170)
+    are computed from the cm**-1 difference and ORCA's printed J values are
+    surfaced next to them as a cross-check.
     """
-    from delfin.orca_read import Quantity, read
     from delfin.parser import extract_last_J_block
 
-    def run_features(base: str):
-        e = read(work_dir, base, Quantity.FINAL_SINGLE_POINT_ENERGY)
-        return e.value, _read_s2_abs(work_dir / f"{base}.out")
-
-    hs_e, hs_s2 = run_features(base_name_hs)
-    bs_e, bs_s2 = run_features(base_name_bs)
-    out_path = work_dir / f"{base_name_bs}.out"
-    meaningful = (
-        hs_e is not None and bs_e is not None
-        and hs_s2 is not None and bs_s2 is not None
-    )
-
-    j_yam = None
-    if meaningful and hs_s2 != bs_s2:
-        j_yam = -(hs_e - bs_e) * _EH_TO_CM1 / (hs_s2 - bs_s2)
-    elif meaningful:
-        # <S^2> identical on both sides would divide by zero; the Yamaguchi
-        # denominator collapses and J is not defined here.
-        meaningful = False
-
-    orca_j3 = None
-    try:
-        blk = extract_last_J_block(str(out_path), raise_on_missing=False)
-        if blk and "J3" in blk:
-            orca_j3 = blk["J3"]
-    except Exception:
-        orca_j3 = None
-
-    hs_out = work_dir / f"{base_name_hs}.out"
-    failure_lines = tuple(
-        l for p in (hs_out, out_path) if p.is_file()
-        for l in _failure_lines(p)
-    )
-
-    if not meaningful:
+    out_path = work_dir / f"{base_name}.out"
+    text = out_path.read_text(errors="replace") if out_path.is_file() else ""
+    terminated = "ORCA TERMINATED NORMALLY" in text
+    summ = _bs_summary(text)
+    failure_lines = _failure_lines(out_path)
+    needed = ("s_max", "hs_s2", "bs_s2", "hs_e", "bs_e", "delta_cm")
+    if not terminated or any(k not in summ for k in needed):
         return BsOutput(
             ok=False, work_dir=work_dir, output_file=out_path,
             meaningful=False, failure_lines=failure_lines,
             error=(
-                "broken-symmetry pair not fully readable: "
-                f"hs_e={hs_e}, bs_e={bs_e}, hs_s2={hs_s2}, bs_s2={bs_s2}"
+                "broken-symmetry run not readable: "
+                + ("ORCA did not terminate normally" if not terminated else
+                   "summary block lacks " + ", ".join(
+                       k for k in needed if k not in summ))
             ),
         )
-
+    d_cm = summ["delta_cm"]
+    # the printed cm**-1 value is |E_HS - E_BS|; the sign comes from the
+    # energies themselves
+    if summ["hs_e"] < summ["bs_e"]:
+        d_cm = -d_cm
+    s_max = summ["s_max"]
+    ds2 = summ["hs_s2"] - summ["bs_s2"]
+    if s_max <= 0 or ds2 == 0:
+        return BsOutput(
+            ok=False, work_dir=work_dir, output_file=out_path,
+            meaningful=False, failure_lines=failure_lines,
+            error=f"J undefined: S_max={s_max}, <S**2>HS-<S**2>BS={ds2}",
+        )
+    orca = {}
+    try:
+        orca = extract_last_J_block(str(out_path), raise_on_missing=False) or {}
+    except Exception:
+        orca = {}
     return BsOutput(
         ok=True, work_dir=work_dir, output_file=out_path, meaningful=True,
-        hs_energy_Eh=hs_e, bs_energy_Eh=bs_e,
-        hs_s2=hs_s2, bs_s2=bs_s2, j_yamaguchi_cm=j_yam,
-        orca_j3_cm=orca_j3, failure_lines=failure_lines,
+        hs_energy_Eh=summ["hs_e"], bs_energy_Eh=summ["bs_e"],
+        hs_s2=summ["hs_s2"], bs_s2=summ["bs_s2"],
+        delta_e_cm=d_cm, s_max=s_max,
+        j_noodleman_cm=-d_cm / s_max ** 2,
+        j_bencini_cm=-d_cm / (s_max * (s_max + 1)),
+        j_yamaguchi_cm=-d_cm / ds2,
+        orca_j1_cm=orca.get("J1"), orca_j2_cm=orca.get("J2"),
+        orca_j3_cm=orca.get("J3"),
+        failure_lines=failure_lines,
     )
 
 
@@ -493,16 +517,11 @@ def run_bs(
 
     1. validate the physics + every keyword / block option (abort before any
        file is written when refused),
-    2. build and write both inputs with OPI's classes,
-    3. launch each through ``delfin.orca.run_orca``,
-    4. read both back (energy via ``delfin.orca_read``, <S^2> from each
-       ``.out``), compute ``J`` by the Yamaguchi formula and surface ORCA's
-       own ``J(3)`` cross-check.
-
-    The high-spin reference uses the same multiplicity and method as the
-    broken-symmetry run (which carries ``%scf BrokenSym M,N`` /
-    ``FlipSpin`` + ``FinalMs`` and ``APMethod 3``); only the ``%scf``
-    differs.  ``work_dir`` must already exist; when it is ``None`` a fresh
+    2. build and write the input with OPI's classes,
+    3. launch the BS job through ``delfin.orca.run_orca`` (ORCA converges
+       the high-spin state and then the BS determinant in that one job),
+    4. read ORCA's own summary block, compute J(1)/J(2)/J(3) and surface
+       ORCA's printed J values as a cross-check.  ``work_dir`` must already exist; when it is ``None`` a fresh
     directory is created under the current one.
     """
     from delfin.orca import run_orca
@@ -529,17 +548,8 @@ def run_bs(
         maxcore=maxcore, ncores=ncores,
     )
 
-    # High-spin reference: same method/mult, no broken-symmetry %scf.
-    hs_name = f"{base_name}_hs"
-    build_bs_input(wdir, spin_a=0, spin_b=0,
-                   flip_atoms=None, final_ms=None,
-                   scf_options=None, base_name=hs_name, hs_reference=True,
-                   **common)
-    hs_out = wdir / f"{hs_name}.out"
-    run_orca(str(wdir / f"{hs_name}.inp"), str(hs_out), timeout=timeout,
-             working_dir=wdir)
-
-    # Broken-symmetry determinant: carries the BS mechanism + APMethod 3.
+    # One ORCA job: the BS input converges the high-spin state first and
+    # then the broken-symmetry determinant (APMethod 3), and prints both.
     bs_name = f"{base_name}_bs"
     build_bs_input(wdir, spin_a=spin_a, spin_b=spin_b,
                    flip_atoms=flip_atoms, final_ms=final_ms,
@@ -548,7 +558,7 @@ def run_bs(
     run_orca(str(wdir / f"{bs_name}.inp"), str(bs_out), timeout=timeout,
              working_dir=wdir)
 
-    result = read_bs_output(wdir, hs_name, bs_name)
+    result = read_bs_output(wdir, bs_name)
     result.findings = tuple(findings)
     result.work_dir = wdir
     return result
@@ -583,7 +593,7 @@ class OrcaBsOpiAdapter(StepAdapter):
                   description="N: unpaired electrons on site B for BrokenSym"),
         ParamSpec("charge", "int", required=True, description="Molecular charge"),
         ParamSpec("mult", "int", default=3, description="Spin multiplicity (2S+1) of the high-spin reference"),
-        ParamSpec("method", "str", default="B3LYP", description="Functional"),
+        ParamSpec("functional", "str", default="B3LYP", description="Functional"),
         ParamSpec("basis", "str", default="def2-SVP", description="Basis set"),
         ParamSpec("final_ms", "int", default=None, description="FinalMs for FlipSpin mode"),
         ParamSpec("flip_atoms", "list", default=None, description="FlipSpin atom indices (0-based)"),
@@ -591,12 +601,15 @@ class OrcaBsOpiAdapter(StepAdapter):
         ParamSpec("base_name", "str", default="calc", description="Base name for input/output files"),
     )
     data_keys = (
-        ("hs_energy_Eh", "float", "Eh", "high-spin reference energy"),
-        ("bs_energy_Eh", "float", "Eh", "broken-symmetry energy"),
-        ("hs_s2", "float", "", "high-spin <S^2>"),
-        ("bs_s2", "float", "", "broken-symmetry <S^2>"),
-        ("j_yamaguchi_cm", "float", "cm^-1", "exchange coupling J by the Yamaguchi formula"),
-        ("orca_j3_cm", "float", "cm^-1", "J(3) from ORCA's own Spin-Hamiltonian Analysis"),
+        DataKeySpec("hs_energy_Eh", "float", "Eh", "E(High-Spin) from ORCA's BS summary"),
+        DataKeySpec("bs_energy_Eh", "float", "Eh", "E(BrokenSym) from ORCA's BS summary"),
+        DataKeySpec("hs_s2", "float", "", "<S**2>(High-Spin)"),
+        DataKeySpec("bs_s2", "float", "", "<S**2>(BrokenSym)"),
+        DataKeySpec("delta_e_cm", "float", "cm^-1", "E_HS - E_BS"),
+        DataKeySpec("j_noodleman_cm", "float", "cm^-1", "J(1), eq. 5.168, weak-coupling limit"),
+        DataKeySpec("j_bencini_cm", "float", "cm^-1", "J(2), eq. 5.169, strong-coupling limit"),
+        DataKeySpec("j_yamaguchi_cm", "float", "cm^-1", "J(3), eq. 5.170, Yamaguchi (preferred)"),
+        DataKeySpec("orca_j3_cm", "float", "cm^-1", "J(3) as ORCA prints it (cross-check)"),
     )
 
     def validate_params(self, **kwargs: Any) -> None:
@@ -645,8 +658,15 @@ class OrcaBsOpiAdapter(StepAdapter):
                 "bs_energy_Eh": res.bs_energy_Eh,
                 "hs_s2": res.hs_s2,
                 "bs_s2": res.bs_s2,
+                "delta_e_cm": res.delta_e_cm,
+                "s_max": res.s_max,
+                "j_noodleman_cm": res.j_noodleman_cm,
+                "j_bencini_cm": res.j_bencini_cm,
                 "j_yamaguchi_cm": res.j_yamaguchi_cm,
+                "orca_j1_cm": res.orca_j1_cm,
+                "orca_j2_cm": res.orca_j2_cm,
                 "orca_j3_cm": res.orca_j3_cm,
+                "hamiltonian": "H = -2J S_A.S_B",
                 "findings": list(res.findings),
                 "failure_lines": list(res.failure_lines),
             },
