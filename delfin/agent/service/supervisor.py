@@ -910,6 +910,16 @@ class Supervisor:
                         "this connection comes from an agent session's own "
                         "process: it may watch, not act (only the user "
                         "answers, sends and ends)")
+        # A member's feed is shown only to the user who owns the session
+        # (QS ruling: owner = the may_act=True human connection). An agent
+        # session's own process may watch the table overview but not read a
+        # member's steps into it -- the same NOT_ALLOWED the ACTING gate
+        # uses, so the refusal is uniform and never a NOT_FOUND that hides.
+        # The overview stays watchable by anyone (not gated here).
+        if method == "swarm.observe.feed" and not client.may_act:
+            return fail(protocol.NOT_ALLOWED,
+                        "a member's feed is only shown to the user who owns "
+                        "the session")
         if self.closing and method in ACTING and method != "service.shutdown":
             # Its connections stay open while the sessions end and save; a
             # session started now would outlive the service.
