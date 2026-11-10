@@ -45,11 +45,9 @@ def test_the_divider_stretches_over_the_column():
 def test_the_composer_buttons_and_details_bar_are_rounded():
     from delfin.dashboard import tab_agent
     css = tab_agent._AGENT_CSS
-    # The shell and Files buttons sit in the input area's row, beside the
-    # Send row, not in it (read from the page: a rule on the Send row
-    # passed here and left both square on screen).
-    assert "border-radius: 12px" in _rule(
-        css, ".delfin-agent-root .delfin-agent-input-area .jupyter-button")
+    # The commands and Files buttons are pills in the composer's row.
+    assert "border-radius: 999px" in _rule(
+        css, ".delfin-agent-root .delfin-agent-composer-bar > .jupyter-button")
     assert "border-radius: 12px" in _rule(
         css, ".delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse "
              "> .jupyter-widget-Collapse-header")
