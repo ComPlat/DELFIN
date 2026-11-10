@@ -10,7 +10,6 @@ from pathlib import Path
 from collections import Counter
 from itertools import permutations, product
 
-import py3Dmol
 import ipywidgets as widgets
 import html
 import json
@@ -41,13 +40,19 @@ from .molecule_viewer import (
     structure_viewer_fullscreen_css,
     structure_viewer_fullscreen_kind_js,
 )
-from .input_processing import (
-    parse_inp_resources, sanitize_orca_input, clean_input_data,
-    smiles_to_xyz_quick_with_previews,
-)
-
-
 _COORD_LINE_RE = re.compile(r'^\s*\*\s*(?:xyzfile|xyz|gzmt|internal)\b', re.IGNORECASE)
+
+
+def _input_processing():
+    """Import .input_processing on first use.
+
+    That module pulls in delfin.smiles_converter and, through it,
+    delfin.manta.ml_tables, whose module level ``import stk`` costs seconds
+    of every process start. The ORCA Builder is built lazily; its module
+    load must not pay for a SMILES engine before the reader asks.
+    """
+    from . import input_processing
+    return input_processing
 
 # On-screen size of the atom numbers in the molecule preview, as the factor the
 # high-resolution label texture is down-scaled by.  Selectable in the preview
@@ -1659,7 +1664,7 @@ def create_tab(ctx):
         # one-atom model of its own first letter, and after a conversion had
         # plainly filled the box the viewer still showed that atom -- which is
         # what "it does not show it" looked like from the outside.
-        if clean_input_data(raw)[1] == 'smiles':
+        if _input_processing().clean_input_data(raw)[1] == 'smiles':
             _show_in_viewer(_as_notice(
                 'SMILES detected. Use CONVERT SMILES, QUICK CONVERT or '
                 'CONVERT SMILES + UFF to turn it into coordinates.'))
@@ -1993,7 +1998,7 @@ def create_tab(ctx):
             return
         current = orca_preview.value.strip()
         if not current:
-            orca_preview.value = sanitize_orca_input(generate_orca_input())
+            orca_preview.value = _input_processing().sanitize_orca_input(generate_orca_input())
             state['last_auto_keywords'] = _build_keyword_line()
             return
 
@@ -2068,7 +2073,7 @@ def create_tab(ctx):
                 new_coord, text, count=1, flags=re.DOTALL,
             )
         text = new_text
-        orca_preview.value = sanitize_orca_input(text)
+        orca_preview.value = _input_processing().sanitize_orca_input(text)
 
     def _save_orca_job():
         """Save .inp, XYZ files, and extra files to the job directory.
@@ -2096,7 +2101,7 @@ def create_tab(ctx):
                 return None
             inp_content = generate_orca_input()
 
-        inp_content = sanitize_orca_input(inp_content)
+        inp_content = _input_processing().sanitize_orca_input(inp_content)
 
         job_dir = ctx.calc_dir / safe_job_name
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -2321,7 +2326,7 @@ def create_tab(ctx):
             if not strip_xyz_header(orca_coords.value):
                 return None, 'Coordinates or INP preview cannot be empty.'
             body = generate_orca_input()
-        return sanitize_orca_input(body), ''
+        return _input_processing().sanitize_orca_input(body), ''
 
     def _run_the_check(body, room):
         """Start ORCA on the input in *room* and say what happened.
@@ -2521,7 +2526,7 @@ def create_tab(ctx):
                 return
             job_dir, safe_job_name, inp_content, saved_files = result
 
-            pal_used, maxcore_used = parse_inp_resources(inp_content)
+            pal_used, maxcore_used = _input_processing().parse_inp_resources(inp_content)
             if pal_used is None:
                 pal_used = orca_pal.value
             if maxcore_used is None:
