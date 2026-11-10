@@ -376,3 +376,46 @@ class TestRunCasscfShape:
         assert result.meaningful is False
         assert "2*norb" in (result.error or "")
         assert not (tmp_path / "calc.inp").exists()
+
+# ---------------------------------------------------------------------------
+# run_casscf -- the REAL delfin.orca.run_orca signature is used (no mock of
+# the signature).  The stub below is declared with the exact signature of
+# delfin.orca.run_orca; a call shaped like run_orca(work_dir=..., ncores=...)
+# raises TypeError, so this test is RED against the pre-fix launch.
+# ---------------------------------------------------------------------------
+class TestRunCasscfLaunch:
+    def test_run_orca_called_with_real_signature(self, tmp_path: Path, monkeypatch) -> None:
+        recorded: dict = {}
+
+        # Exact real signature of delfin.orca.run_orca (orca.py:1503).
+        def fake_run_orca(input_file_path, output_log, timeout=None, *,
+                          scratch_subdir=None, working_dir=None, isolate=False,
+                          copy_files=None, extra_env=None) -> bool:
+            recorded["input_file_path"] = input_file_path
+            recorded["output_log"] = output_log
+            recorded["timeout"] = timeout
+            recorded["working_dir"] = working_dir
+            return False  # simulate a subprocess that did not run
+
+        monkeypatch.setattr("delfin.orca.run_orca", fake_run_orca)
+
+        result = run_casscf(
+            elements=ELEMENTS,
+            coordinates=COORDS,
+            charge=0,
+            nel=2,
+            norb=2,
+            mult=1,
+            nroots=2,
+            base_name="calc",
+            work_dir=tmp_path,
+        )
+
+        # The launch must have called run_orca with the real signature:
+        # positional (input_file_path, output_log) and keyword working_dir.
+        assert "input_file_path" in recorded
+        assert str(recorded["input_file_path"]) == str(tmp_path / "calc.inp")
+        assert str(recorded["output_log"]) == str(tmp_path / "calc.out")
+        assert recorded["working_dir"] == tmp_path
+        # A subprocess failure must surface as ok=False.
+        assert result.ok is False
