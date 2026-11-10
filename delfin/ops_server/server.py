@@ -2016,6 +2016,13 @@ def tool_geometry_align_rmsd(mobile_xyz: str, reference_xyz: str) -> str:
     return _dumps(delfin_api.geometry_align_rmsd(mobile_xyz, reference_xyz))
 
 
+def tool_frame_lineage(stage_dirs: list, rmsd_tol: float = 1e-3,
+                       conn_required: bool = True) -> str:
+    """Match pipeline-stage frames by geometry (never by index): lineage."""
+    return _dumps(delfin_api.frame_lineage(stage_dirs, rmsd_tol=rmsd_tol,
+                                           conn_required=conn_required))
+
+
 def tool_geometry_merge(fragments: list) -> str:
     """Concatenate xyz fragments into one structure (earlier atoms first)."""
     return _dumps(delfin_api.geometry_merge(fragments))
@@ -2104,6 +2111,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="geometry_replace_ligand")(_safe("geometry_replace_ligand", tool_geometry_replace_ligand))
     mcp.tool(name="geometry_mirror")(_safe("geometry_mirror", tool_geometry_mirror))
     mcp.tool(name="geometry_align_rmsd")(_safe("geometry_align_rmsd", tool_geometry_align_rmsd))
+    mcp.tool(name="frame_lineage")(_safe("frame_lineage", tool_frame_lineage))
     mcp.tool(name="geometry_merge")(_safe("geometry_merge", tool_geometry_merge))
     mcp.tool(name="geometry_freeze")(_safe("geometry_freeze", tool_geometry_freeze))
     mcp.tool(name="geometry_constraints_block")(_safe("geometry_constraints_block", tool_geometry_constraints_block))
