@@ -256,7 +256,20 @@ _BASELINE_TOKENS = 11_422
 # 10_466 on the then-main. Their payload (dictionary records, knowledge cards, the ranking
 # with CONTROL keys) lives in the tool RESULTS, not the schema.
 # Both on main together: 10_363 + 235 = 10_598.
-_TOKEN_BUDGET = 10_598
+# Lab control (delfin/lab, 2026-11-05): five tools -- lab_devices,
+# lab_read, lab_set, lab_plan_check, lab_estop -- measured at 342 as first
+# written and trimmed to 327 (e-stop reason dropped from the schema: the
+# audit records a default; descriptions cut to one clause each). 248 of the
+# 327 are structure (names, types, required), which no wording shrinks;
+# lab_set carries the whole write contract (device, channel, value, unit,
+# approval). Advertised only where a lab manifest exists
+# (ToolSurfaceContext.has_lab, read from delfin.lab.store), so an
+# installation without a lab pays nothing per request; the catalogue is
+# measured whole. Main measured 10_595, so the budget moves +324,
+# 10_598 -> 10_922. Rejected: one `lab` tool with an action enum (a single
+# schema whose arguments change meaning by action is the shape models
+# mis-call most; the refusal reasons are per-tool).
+_TOKEN_BUDGET = 10_922
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -270,6 +283,7 @@ _POST_COMPACTION_TOOLS = frozenset({
     "subagent_message", "show_molecule", "make_plot", "skill_share",
     "verify_source",
     "orca_explain", "orca_check_input", "workflow_candidates",
+    "lab_devices", "lab_read", "lab_set", "lab_plan_check", "lab_estop",
 })
 
 

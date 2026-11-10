@@ -90,8 +90,11 @@ def _validate_test_paths(test_paths: Sequence[str]) -> list[str]:
     A test path must live under ``tests/`` and contain only characters safe
     for a shell command and a JSON summary (no spaces, quotes, backslashes)
     so a malicious or mistaken path cannot become a pytest target outside
-    the repository or break the rendered script's quoting.
+    the repository or break the rendered script's quoting. An empty list
+    is refused too: a job that runs no test would silently come back green.
     """
+    if not test_paths:
+        raise ValueError("at least one test path is required")
     bad = []
     for p in test_paths:
         if ".." in p or not _SAFE_TEST_PATH.match(p):

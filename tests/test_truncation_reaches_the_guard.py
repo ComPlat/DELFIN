@@ -172,7 +172,7 @@ def test_the_emitted_result_is_still_redacted(tmp_path):
     """The event is what the tool trace is written from, and the trace gets
     bundled into bug reports. Restructuring the emission site must not lose
     that."""
-    secret = "sk-ant-api03-THISLOOKSLIKEAKEY0123456789abcdefghijklmnop"
+    secret = "sk-ant-api03-THISLOOKSLIKEAKEY0123456789abcdefghijklmnop"  # secret-guard: allow (synthetic DELFIN test sample)
     (tmp_path / "notes.txt").write_text(f"token: {secret}\n", encoding="utf-8")
     event = _tool_result(_run_one_tool_call(
         tmp_path, "read_file", {"path": "notes.txt"}))
