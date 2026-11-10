@@ -1337,6 +1337,15 @@ surfaces share the same engine, modes and slash commands. That one delegates wor
 that stands on its own to **subagents**, which run in parallel with their own tools
 and permissions — so a session is usually several agents, not one.
 
+### How to get into a running session
+
+Sessions live in your agent service, not in a window: the dashboard, the terminal and the phone are views on the same one, at the same time.
+- **Dashboard:** the sidebar's *Running sessions* lists every session of your service (any folder, started anywhere); one click opens it — its recent turns, then live. The pencil renames it. *×* closes only the view; *End session…* (with a confirmation) ends it.
+- **Terminal:** `delfin-agent tui`, then **←** on an empty prompt for the agent view, **↑ ↓** to a session, **Enter** to open it. `/name NAME` (or F2 / ctrl+r in the agent view) renames it.
+- **Phone:** `hol` in the messenger chat.
+
+An approval may be answered in any of them; the first answer counts, and every window shows which one gave it. Names are kept by the service (at most 50 characters; empty: folder and short id). Without a service (it cannot start here), the dashboard runs its sessions in its kernel and says so; other windows then cannot open them. `DELFIN_DASHBOARD_SESSIONS=kernel` (or `agent.dashboard_sessions: "kernel"` in the settings) keeps them there on purpose.
+
 ### Starting it
 
 ```bash

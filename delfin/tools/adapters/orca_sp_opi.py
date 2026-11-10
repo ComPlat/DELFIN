@@ -34,7 +34,9 @@ from typing import Any, Mapping, Optional, Sequence
 from delfin.common.logging import get_logger
 from delfin.tools._base import StepAdapter
 from delfin.tools._registry import register
+from delfin.tools._spec import ParamSpec
 from delfin.tools._types import ErrorKind, StepResult, StepStatus
+from delfin.tools.adapters.orca_selfheal_opi import run_with_self_heal
 
 logger = get_logger(__name__)
 
@@ -431,6 +433,12 @@ class OrcaSpOpiAdapter(StepAdapter):
     consumes = ("geometry",)
     produces = ("gbw", "qc_output", "property_json")
     requires_python = ("opi",)
+    params = (
+        ParamSpec("self_heal", "int", default=0,
+                  description="On SCF failure, escalate and retry this many "
+                              "times (SlowConv -> damping -> SOSCF) without "
+                              "changing method/basis/charge/mult. 0 = off."),
+    )
 
     def execute(
         self,
@@ -454,7 +462,12 @@ class OrcaSpOpiAdapter(StepAdapter):
                 error=f"missing required {exc}",
                 error_kind=ErrorKind.MISSING_PARAM,
             )
-        res = run_sp_dft(
+        self_heal = int(kwargs.get("self_heal", 0) or 0)
+
+        def _run_once(**params: Any):
+            return run_sp_dft(**params)
+
+        base: dict = dict(
             elements=elements,
             coordinates=coordinates,
             charge=kwargs.get("charge", 0),
@@ -472,20 +485,30 @@ class OrcaSpOpiAdapter(StepAdapter):
             work_dir=work_dir,
             timeout=kwargs.get("timeout"),
         )
+        attempt_log = None
+        if self_heal > 0:
+            res, attempt_log = run_with_self_heal(
+                run_once=_run_once, params=base, job_kind="SP",
+                max_attempts=self_heal)
+        else:
+            res = _run_once(**base)
+        data = {
+            "meaningful": res.meaningful,
+            "energy_Eh": res.energy_Eh,
+            "s2": res.s2,
+            "hl_gap_eV": res.hl_gap_eV,
+            "findings": list(res.findings),
+            "failure_lines": list(res.failure_lines),
+        }
+        if attempt_log:
+            data["_self_heal"] = attempt_log
         return self._make_result(
             self.name,
             StepStatus.SUCCESS if res.ok else StepStatus.FAILED,
             work_dir,
             start,
             output_file=res.output_file,
-            data={
-                "meaningful": res.meaningful,
-                "energy_Eh": res.energy_Eh,
-                "s2": res.s2,
-                "hl_gap_eV": res.hl_gap_eV,
-                "findings": list(res.findings),
-                "failure_lines": list(res.failure_lines),
-            },
+            data=data,
             error=res.error,
             # No kind on success; an unconverged SCF is a convergence failure,
             # anything else (abort, missing output) a tool failure.

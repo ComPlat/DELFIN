@@ -120,7 +120,7 @@ class TestIndexSession:
         _write_session(
             index_home, "sess-secret", title="credentials",
             messages=[("user",
-                       "use token sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 "
+                       "use token sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 "  # secret-guard: allow (synthetic DELFIN test sample)
                        "for the Fe complex")])
         session_index.index_session("sess-secret")
 

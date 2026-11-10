@@ -15,6 +15,10 @@ import pytest
 from delfin.tools._registry import get
 
 
+# A converged run writes the energy file in its working directory (real
+# ridft/dscf/jobex do); the TM2 guard treats exit 0 without it as unconverged.
+_CONVERGED_FAKE = "#!/bin/sh\nprintf '$energy      SCF       SCFKIN     SCFPOT\\n     1   -76.0   76.0   -152.0\\n$end\\n' > energy\nexit 0\n"
+
 @pytest.fixture
 def tm_fakes(tmp_path, monkeypatch):
     """Recording fakes for jobex AND aoforce on PATH.
@@ -29,7 +33,7 @@ def tm_fakes(tmp_path, monkeypatch):
     bin_dir.mkdir()
     for name in ("ridft", "dscf", "jobex", "aoforce"):
         fake = bin_dir / name
-        fake.write_text("#!/bin/sh\nexit 0\n")
+        fake.write_text(_CONVERGED_FAKE)
         fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     (bin_dir / "aoforce").write_text(
         f"#!/bin/sh\necho '$hessian' > {work_dir}/hessian\nexit 0\n")
@@ -104,7 +108,8 @@ class TestFreqHessianSurfaced:
         bin_dir.mkdir()
         for name in ("ridft", "aoforce"):
             f = bin_dir / name
-            f.write_text("#!/bin/sh\nexit 0\n")
+            # ridft converges; aoforce exits 0 and writes no hessian
+            f.write_text(_CONVERGED_FAKE if name == "ridft" else "#!/bin/sh\nexit 0\n")
             f.chmod(f.stat().st_mode | stat.S_IEXEC)
         monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
         result = _run("turbomole_freq", work_dir, charge=0)

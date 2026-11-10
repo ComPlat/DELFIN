@@ -84,7 +84,7 @@ def test_ssh_config_proxycommand_is_an_alert(tmp_path):
 def test_too_open_private_key_is_a_warning(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    _write(_ssh_dir(home) / "id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+    _write(_ssh_dir(home) / "id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\n",  # secret-guard: allow (synthetic DELFIN test sample)
            mode=0o644)
     findings = check_ssh(home)
     assert any(f.severity == "warn" and "id_ed25519" in f.path

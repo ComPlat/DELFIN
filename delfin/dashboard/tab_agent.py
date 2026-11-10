@@ -2707,12 +2707,14 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
 # The cap was defensible in itself; what it could not do is call itself
 # Bypass. A user who sets a control and is then asked anyway learns that
 # the control is decorative, and afterwards reads no label at all.
-PROFILE_TO_CLI_PERM: dict[str, str] = {
-    "plan":      "plan",                # read-only
-    "ask_all":   "default",             # asks before every write and shell
-    "repo_free": "acceptEdits",         # writes go through, shell asks
-    "all_free":  "bypassPermissions",   # asks nothing inside the folders
-}
+#
+# The table itself is delfin.agent.permission_profile.PROFILE_TO_MODE: the
+# terminal and headless doors start from the same stored profile, and one
+# object cannot drift from itself.
+from delfin.agent.permission_profile import (  # noqa: E402
+    PROFILE_TO_MODE as PROFILE_TO_CLI_PERM,
+    normalise as _normalise_profile,
+)
 
 
 def resolve_office_workspace(configured) -> Path | None:
@@ -3395,6 +3397,877 @@ window.__delfinAgentOwnsKey = function(e) {
     }
     return true;
 };
+"""
+
+
+#: The agent tab's page script: the keys of the input, the chat's scroll
+#: (follow the newest output only from the end, one record per session),
+#: the 3D stage and the rest of what the chat needs in the browser. Shown
+#: by every in-kernel tab and by the view of an agent-service session
+#: (live_tab); it installs itself once per page (window flags).
+_AGENT_PAGE_JS = """
+(function() {
+    // Its own flag: a second keyboard script (_enter_key_init_js) sets
+    // __delfinAgentKeys too and usually runs first, and behind that shared
+    // guard this listener was never installed -- on main as well.
+    if (!window.__delfinTabTakesSuggestion) {
+    window.__delfinTabTakesSuggestion = true;
+    // Tab in an EMPTY message box takes the grey suggestion waiting there.
+    // It fills the box and stops: sending stays the user's, and an offer
+    // that submits itself is a trap. With something typed, Tab keeps its
+    // normal job and moves focus. Capture phase, so no page handler can
+    // move focus before it has looked.
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            var ta = e.target;
+            if (ta && ta.tagName === 'TEXTAREA' && ta.closest
+                    && ta.closest('.delfin-agent-input')
+                    && !ta.value && ta.placeholder
+                    && ta.placeholder.indexOf('Message the agent') !== 0) {
+                e.preventDefault();
+                var setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, 'value').set;
+                setter.call(ta, ta.placeholder);
+                ta.dispatchEvent(new Event('input', {bubbles: true}));
+            }
+        }
+    }, true);
+    }
+    if (window.__delfinAgentKeys) return;
+    window.__delfinAgentKeys = true;
+    document.addEventListener('keydown', function(e) {
+        if (!window.__delfinAgentOwnsKey(e)) return;
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            if (e.target && e.target.tagName === 'TEXTAREA') {
+                var container = e.target.closest
+                    ? e.target.closest('.delfin-agent-input') : null;
+                if (container) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
+                    if (sendBtn) sendBtn.click();
+                    return;
+                }
+            }
+        }
+        if (e.key === 'Escape') {
+            var btns = document.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+                if (btns[i].textContent.trim() === 'Stop' && !btns[i].disabled
+                        && btns[i].offsetParent !== null) {
+                    btns[i].click(); e.preventDefault(); return;
+                }
+            }
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+            var a = window.__delfinQ('.delfin-agent-chat');
+            if (a) {
+                e.preventDefault();
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
+                if (ta) {
+                    var ns = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    ns.call(ta, '/clear');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sb = window.__delfinQ('.delfin-agent-send-row button');
+                        if (sb) sb.click();
+                    }, 50);
+                }
+            }
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            var a = window.__delfinQ('.delfin-agent-chat');
+            if (a) {
+                e.preventDefault();
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
+                if (ta) {
+                    var ns = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    ns.call(ta, '/search');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sb = window.__delfinQ('.delfin-agent-send-row button');
+                        if (sb) sb.click();
+                    }, 50);
+                }
+            }
+        }
+        // Shift+Tab: cycle permission mode
+        if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            var a = window.__delfinQ('.delfin-agent-chat');
+            if (a) {
+                e.preventDefault();
+                e.stopPropagation();
+                var ta = window.__delfinQ('.delfin-agent-input textarea');
+                if (ta) {
+                    var ns = Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value').set;
+                    ns.call(ta, '/perm-cycle');
+                    ta.dispatchEvent(new Event('input', {bubbles: true}));
+                    setTimeout(function() {
+                        var sb = window.__delfinQ('.delfin-agent-send-row button');
+                        if (sb) sb.click();
+                    }, 50);
+                }
+            }
+        }
+    }, true);
+})();
+
+// The blocks below are their own scripts: the guard above covers the
+// key handler only. Nested inside it, they were skipped whenever the
+// page bundle had already set the flag -- which on a resumed page is
+// always, and on a fresh one depends on which output rendered first.
+
+    // --- The 3D card in the chat: structure, trajectory, orbital ---
+    // Started from the card's own img.onerror, because the chat is
+    // written with innerHTML and a script element inserted that way is
+    // never executed. 3Dmol itself is the vendored build installed at
+    // start-up (dashboard/__init__), so nothing is fetched here and the
+    // viewer works on a node with no outbound network.
+    (function() {
+        if (window.__delfinMol3DInstalled) return;
+        window.__delfinMol3DInstalled = true;
+
+        // The wheel over a molecule in the chat scrolls the chat. 3Dmol
+        // takes every wheel event over its canvas for zoom and cancels it,
+        // so a card as tall as the chat stopped the reader dead: measured
+        // once the chat stopped rebuilding its cards, forty wheel steps
+        // down from inside a trajectory card left the reader ~1000 px short
+        // of the end. (While every update rebuilt the cards, the canvas
+        // under the pointer was missing part of the time and wheel steps
+        // fell through to the chat at random.) Stopped here, in the
+        // capture phase at the document,
+        // the event never reaches 3Dmol and nothing cancels it, so the
+        // browser scrolls. It zooms with Ctrl (a trackpad pinch arrives as
+        // a wheel with ctrlKey) or once the molecule has been clicked,
+        // until the pointer leaves it. The fullscreen view is not inside
+        // the chat and keeps its plain wheel zoom.
+        var zoomStage = null;
+        function chatStage(t) {
+            var s = t && t.closest ? t.closest('.delfin-mol3d-stage') : null;
+            return s && s.closest('.delfin-agent-chat-host') ? s : null;
+        }
+        document.addEventListener('pointerdown', function(e) {
+            zoomStage = chatStage(e.target);
+        }, {capture: true, passive: true});
+        document.addEventListener('pointerover', function(e) {
+            if (zoomStage && chatStage(e.target) !== zoomStage) zoomStage = null;
+        }, {capture: true, passive: true});
+        document.addEventListener('wheel', function(e) {
+            var stage = chatStage(e.target);
+            if (!stage || e.ctrlKey || stage === zoomStage) return;
+            e.stopPropagation();
+        }, {capture: true, passive: true});
+
+        function build(card, stage) {
+            var data = card.getAttribute('data-mol3d') || '';
+            var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
+            var label = card.getAttribute('data-mol3d-title') || '';
+            var frames = parseInt(card.getAttribute('data-mol3d-frames') || '1', 10);
+            var iso = parseFloat(card.getAttribute('data-mol3d-iso') || '0.02');
+            if (!(iso > 0)) iso = 0.02;
+            if (!data) return true;
+            // The chat scrolls inside its own frame (.delfin-agent-chat-frame);
+            // the browser viewport says nothing about how much room that
+            // frame actually has. Measure the frame and size the stage to
+            // fit inside it -- the card must never overflow the chat window
+            // it lives in.
+            var host = card.closest('.delfin-agent-chat-frame')
+                      || card.parentElement;
+            if (host) {
+                var frameH = host.clientHeight;
+                if (frameH > 0) {
+                    var stageH =
+                        Math.max(280, Math.min(Math.round(frameH * 0.8), 700)) + 'px';
+                    stage.style.height = stageH;
+                    // Kept on the frame, which survives the transcript:
+                    // Python replaces the whole transcript on every
+                    // streaming update, and a card rebuilt at 380 px and
+                    // sized here only after 3Dmol had built it moved the
+                    // end of the chat by its difference on every update
+                    // (717 px for three cards at 1920x1080). The card's
+                    // stage reads this property, so it is rebuilt at its
+                    // height.
+                    host.style.setProperty('--delfin-mol3d-h', stageH);
+                }
+            }
+            var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});
+            if (fmt === 'cube') {
+                viewer.addModel(data, 'cube');
+                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                // The same two isosurfaces the Calculations tab draws, so
+                // an orbital looks the same wherever it is opened.
+                viewer.addVolumetricData(data, 'cube',
+                    {isoval: iso, color: '#0026ff', opacity: 0.85});
+                viewer.addVolumetricData(data, 'cube',
+                    {isoval: -iso, color: '#b00010', opacity: 0.85});
+            } else if (frames > 1) {
+                viewer.addModelsAsFrames(data, fmt);
+                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                // Stepped by hand instead of auto-animated: the card's
+                // control bar (play, one back, one forward, reset) drives
+                // setFrame so the trajectory can be inspected frame by
+                // frame. Play advances once per ~10 fps and stops at the
+                // last frame; the bar shows the current one.
+                viewer.setFrame(0);
+                wireTrajectory(card, stage, viewer, frames);
+            } else {
+                viewer.addModel(data, fmt);
+                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+            }
+            viewer.zoomTo();
+            // zoomTo fits the bounding sphere, which leaves a chain small in
+            // a wide stage; a quarter closer still keeps it inside. Not for
+            // an orbital: its lobes reach past the atoms.
+            if (fmt !== 'cube') viewer.zoom(1.25);
+            viewer.render();
+            // Keep one in-memory copy of the source text for the fullscreen
+            // lightbox (wireFullscreen rebuilds from it), then drop the copy
+            // in the attribute so a long transcript does not hold every
+            // molecule twice.
+            card.__delfinMol3DData = data;
+            card.__delfinMol3DTitle = label;
+            var st = card.getAttribute('data-mol3d-style');
+            if (st) { try { card.__delfinMol3DStyle = JSON.parse(st); } catch (e) {} }
+            card.removeAttribute('data-mol3d');
+            card.__delfinViewer = viewer;
+            wireFullscreen(card, viewer, frames, iso);
+            return true;
+        }
+
+        function wireTrajectory(card, stage, viewer, nFrames) {
+            var btnPlay = card.querySelector('.delfin-mol3d-play');
+            var btnPrev = card.querySelector('.delfin-mol3d-prev');
+            var btnNext = card.querySelector('.delfin-mol3d-next');
+            var btnReset = card.querySelector('.delfin-mol3d-reset');
+            var btnFs = card.querySelector('.delfin-mol3d-fullscreen');
+            var counter = card.querySelector('.delfin-mol3d-frame');
+            var playing = false, timer = null;
+            function setCounter() {
+                if (counter) counter.textContent =
+                    (viewer.getFrame() + 1) + ' / ' + nFrames;
+            }
+            function stop() {
+                playing = false;
+                if (timer) { clearInterval(timer); timer = null; }
+                if (btnPlay) btnPlay.textContent = '\u25b6';
+            }
+            function step(delta) {
+                var f = viewer.getFrame() + delta;
+                if (f < 0) f = 0;
+                if (f >= nFrames) f = nFrames - 1;
+                viewer.setFrame(f);
+                viewer.render();
+                setCounter();
+                return f;
+            }
+            function play() {
+                if (playing) { stop(); return; }
+                playing = true;
+                if (btnPlay) btnPlay.textContent = '\u23f8';
+                timer = setInterval(function() {
+                    var last = step(1);
+                    if (last === nFrames - 1) stop();
+                }, 100);
+            }
+            if (btnPlay) btnPlay.onclick = play;
+            if (btnPrev) btnPrev.onclick = function() { stop(); step(-1); };
+            if (btnNext) btnNext.onclick = function() { stop(); step(1); };
+            if (btnReset) btnReset.onclick = function() {
+                stop(); viewer.setFrame(0);
+                viewer.zoomTo(); viewer.zoom(1.25); viewer.render(); setCounter();
+            };
+        }
+
+        function wireFullscreen(card, viewer, nFrames, iso) {
+            var btnFs = card.querySelector('.delfin-mol3d-fullscreen');
+            if (!btnFs) return;
+            var fs = null;
+            btnFs.onclick = function() {
+                if (fs) { closeFs(); return; }
+                var txt = card.__delfinMol3DData;
+                if (!txt) return;
+                // Same layout language as the Calculations-tab fullscreen:
+                // white viewer surface, a dark toolbar bar with the file
+                // name on the left and Close on the right, the viewer
+                // filling everything below it, ESC closes.
+                fs = document.createElement('div');
+                fs.className = 'delfin-mol3d-fs';
+                fs.style.cssText = 'position:fixed;inset:0;z-index:20000;'
+                    + 'display:flex;flex-direction:column;background:#fff;';
+                var bar = document.createElement('div');
+                bar.style.cssText = 'flex:0 0 auto;display:flex;'
+                    + 'align-items:center;gap:10px;padding:8px 14px;'
+                    + 'background:#111827;color:#fff;font:13px sans-serif;';
+                var title = document.createElement('div');
+                title.style.cssText = 'flex:1 1 auto;overflow:hidden;'
+                    + 'text-overflow:ellipsis;white-space:nowrap;';
+                title.textContent = (card.__delfinMol3DTitle || '');
+                var close = document.createElement('button');
+                close.type = 'button';
+                close.style.cssText = 'flex:0 0 auto;cursor:pointer;'
+                    + 'background:#374151;color:#fff;border:0;'
+                    + 'border-radius:4px;padding:4px 12px;font:13px sans-serif;';
+                close.textContent = 'Close \u2715 (Esc)';
+                close.onclick = closeFs;
+                bar.appendChild(title);
+                bar.appendChild(close);
+                var big = document.createElement('div');
+                big.style.cssText = 'flex:1 1 auto;min-height:0;'
+                    + 'position:relative;';
+                // A lightbox fullscreen re-creates the viewer rather than
+                // moving the DOM node: 3Dmol renders into the stage's box
+                // it was created with, and moving the node leaves a blank
+                // canvas. Rebuilding from the saved text is cheap and the
+                // trajectory frame index is copied back.
+                var f = viewer.getFrame();
+                var v2 = $3Dmol.createViewer(big,
+                    {backgroundColor: 'white'});
+                v2.setStyle({}, card.__delfinMol3DStyle ||
+                    {stick: {radius: 0.12}, sphere: {scale: 0.22}});
+                fs.appendChild(bar);
+                fs.appendChild(big);
+                document.body.appendChild(fs);
+                var f2 = card.getAttribute('data-mol3d-fmt');
+                if (f2 === 'cube') {
+                    v2.addModel(txt, 'cube');
+                    v2.addVolumetricData(txt, 'cube',
+                        {isoval: iso, color: '#0026ff', opacity: 0.85});
+                    v2.addVolumetricData(txt, 'cube',
+                        {isoval: -iso, color: '#b00010', opacity: 0.85});
+                } else if (nFrames > 1) {
+                    v2.addModelsAsFrames(txt, 'xyz');
+                    v2.setFrame(f);
+                } else {
+                    v2.addModel(txt, f2 || 'xyz');
+                }
+                v2.zoomTo();
+                v2.render();
+            };
+            function closeFs() {
+                if (!fs) return;
+                var p = document.body;
+                try { p.removeChild(fs); } catch (e) {}
+                fs = null;
+            }
+            document.addEventListener('keydown', function(ev) {
+                if (ev.key === 'Escape') closeFs();
+            });
+        }
+
+
+        // Viewers already built, kept across transcript rebuilds. Python
+        // replaces the whole transcript on every update, and each card used
+        // to build its viewer again with a new WebGL context: three cards
+        // made 15 canvases in 40 s (measured), Chrome keeps about 16
+        // contexts, and a long session with many cards froze the page. A
+        // rebuilt card that shows the same molecule (same stage id, same
+        // coordinates) gets the kept stage moved into it -- canvas, context
+        // and current frame included; a changed molecule is built anew.
+        //
+        // Chrome drops the oldest context past about 16, so a kept stage that
+        // no rebuilt card claimed within KEEP_IDLE_MS (its card left the
+        // transcript) gives its context back, and at most KEEP_MAX are kept.
+        var KEEP_MAX = 12, KEEP_IDLE_MS = 10000;
+        var kept3d = window.__delfinMol3DKept || (window.__delfinMol3DKept = []);
+        // FNV-1a over the whole text: two conformers may share their length
+        // and their first lines, never their full coordinates.
+        function hashOf(text) {
+            var h = 0x811c9dc5;
+            for (var i = 0; i < text.length; i++) {
+                h ^= text.charCodeAt(i);
+                h = Math.imul(h, 0x01000193) >>> 0;
+            }
+            return h.toString(16);
+        }
+        function keyOf(stage, card) {
+            var d = card.getAttribute('data-mol3d') || '';
+            return (stage.id || '') + '|' + d.length + '|' + hashOf(d);
+        }
+        function release(kept) {
+            var cv = kept.stage.querySelector('canvas');
+            if (!cv) return;
+            try {
+                var gl = cv.getContext('webgl2') || cv.getContext('webgl');
+                var ext = gl && gl.getExtension('WEBGL_lose_context');
+                if (ext) ext.loseContext();
+            } catch (e) {}
+        }
+        // An entry's clock starts when a sweep first finds it detached, so a
+        // rebuild after a long quiet spell still finds every viewer it had.
+        var sweep = null;
+        function prune() {
+            var now = Date.now(), waiting = false;
+            for (var i = kept3d.length - 1; i >= 0; i--) {
+                var k = kept3d[i];
+                if (k.stage.isConnected) { k.gone = 0; continue; }
+                if (!k.gone) k.gone = now;
+                if (now - k.gone >= KEEP_IDLE_MS || kept3d.length > KEEP_MAX) {
+                    kept3d.splice(i, 1);
+                    release(k);
+                } else {
+                    waiting = true;
+                }
+            }
+            if (waiting && !sweep) {
+                sweep = setTimeout(function() { sweep = null; prune(); },
+                                   KEEP_IDLE_MS + 100);
+            }
+        }
+        function reuse(card, stage, key) {
+            prune();
+            for (var i = kept3d.length - 1; i >= 0; i--) {
+                var kept = kept3d[i];
+                if (kept.key !== key || kept.stage.isConnected) continue;
+                stage.parentNode.replaceChild(kept.stage, stage);
+                card.__delfinMol3DDone = true;
+                card.__delfinViewer = kept.viewer;
+                card.__delfinMol3DData = kept.data;
+                card.__delfinMol3DTitle = kept.title;
+                card.__delfinMol3DStyle = kept.style;
+                card.__delfinViewerData = kept.data;
+                if (kept.frames > 1) {
+                    wireTrajectory(card, kept.stage, kept.viewer, kept.frames);
+                }
+                wireFullscreen(card, kept.viewer, kept.frames, kept.iso);
+                try { kept.viewer.resize(); kept.viewer.render(); } catch (e) {}
+                kept.gone = 0;
+                kept3d.splice(i, 1);
+                kept3d.push(kept);
+                return true;
+            }
+            return false;
+        }
+
+        window.__delfinMol3D = function(el) {
+            var card = el.closest ? el.closest('.delfin-chat-mol3d') : null;
+            if (!card || card.__delfinMol3DDone) return;
+            var stage = card.querySelector('.delfin-mol3d-stage');
+            if (!stage) return;
+            var key = keyOf(stage, card);
+            if (reuse(card, stage, key)) return;
+            var tries = 0;
+            function attempt() {
+                // Gone: the chat was rebuilt under us and this card no
+                // longer exists. Stop, rather than poll for an element
+                // that is never coming back.
+                if (!card.isConnected) return;
+                // Not on screen yet -- another session's tab, or a card
+                // still being laid out. A viewer built into a zero-sized
+                // element renders nothing and cannot be resized later.
+                var ready = (typeof $3Dmol !== 'undefined')
+                    && stage.offsetParent !== null && stage.clientWidth > 0;
+                if (!ready) {
+                    tries += 1;
+                    // ~30 s in total: a page that never gets there keeps
+                    // the text line under the stage, which still says
+                    // what the molecule is.
+                    if (tries < 200) setTimeout(attempt, tries < 20 ? 50 : 200);
+                    return;
+                }
+                card.__delfinMol3DDone = true;
+                try {
+                    // Keep a copy of the coordinates for the fullscreen
+                    // lightbox, which rebuilds the viewer at screen size.
+                    card.__delfinViewerData =
+                        card.getAttribute('data-mol3d') || '';
+                    build(card, stage);
+                    if (card.__delfinViewer) {
+                        kept3d.push({
+                            key: key, stage: stage, viewer: card.__delfinViewer,
+                            data: card.__delfinMol3DData || card.__delfinViewerData,
+                            title: card.__delfinMol3DTitle,
+                            style: card.__delfinMol3DStyle,
+                            frames: parseInt(card.getAttribute('data-mol3d-frames') || '1', 10),
+                            iso: parseFloat(card.getAttribute('data-mol3d-iso') || '0.02'),
+                            gone: 0
+                        });
+                        prune();
+                    }
+                    // The small build removes the attribute; fullscreen
+                    // needs the text again -- restore it from the copy.
+                    if (card.querySelector('.delfin-mol3d-fullscreen')
+                            && card.__delfinViewerData) {
+                        card.setAttribute('data-mol3d',
+                            card.__delfinViewerData);
+                    }
+                } catch (e) {
+                    // A malformed cube or a truncated frame must not take
+                    // the chat with it. The text line stays.
+                    stage.style.display = 'none';
+                }
+            }
+            attempt();
+        };
+    })();
+
+    // --- Chat scroll: follow the newest output only from the end ---
+    // The chat used to be pulled to the bottom on every refresh, which took
+    // the viewport away from a reader who had scrolled up to re-read
+    // something. Following is now conditional on the reader being at the end,
+    // and the state lives on `window` because Python replaces the whole chat
+    // element on each refresh -- an offset kept on the element would die
+    // with it.
+    (function() {
+        if (window.__delfinChatScroll) return;
+        window.__delfinChatScroll = true;
+        // Reflow and late-loading images move the end by a few pixels. Without
+        // a tolerance a reader sitting at the bottom would be dropped out of
+        // follow mode by output they never scrolled away from.
+        var CHAT_BOTTOM_TOLERANCE_PX = 60;
+        // One record PER SESSION. Every open session keeps its own chat
+        // element in this page and runs this tag whenever its own
+        // transcript is rebuilt, which a session running in the background
+        // does constantly. With one shared record, a background refresh
+        // measured a hidden element -- scrollHeight and clientHeight are
+        // both 0 there -- decided the reader's offset was past the end,
+        // read that as a swapped conversation and turned following back
+        // on. The next refresh of the session being READ then pulled it to
+        // the bottom. Reported as: scrolled-up history jumping to the end
+        // now and again, at the pace of some other session's output.
+        function makeState() {
+            return {
+                follow: true,   // is the reader at the end, so new output may pull the view
+                top: 0,         // the reader's offset, carried across a rebuild
+                mark: 0,        // content height when follow was last given up
+                unseen: false,  // output arrived below the reader's viewport
+                auto: false,    // the next scroll event is one we caused
+                timer: null
+            };
+        }
+        var STATES = window.__delfinChatFollowBy = {};
+        function keyOf(c) {
+            var k = (c && c.getAttribute)
+                ? c.getAttribute('data-delfin-session') : null;
+            return k || 'default';
+        }
+        function stateFor(c) {
+            var k = keyOf(c);
+            return STATES[k] || (STATES[k] = makeState());
+        }
+        // A page with one chat and no session mark keeps the old name, so
+        // anything reading it sees that session's record.
+        var S = window.__delfinChatFollow = stateFor(null);
+        // Standalone like every block here: the visible-session lookup when
+        // the page has it, the plain one otherwise.
+        function q(sel) {
+            return window.__delfinQ ? window.__delfinQ(sel)
+                                    : document.querySelector(sel);
+        }
+        // The host, not the content: the content is replaced on every
+        // streaming update and a scroll offset on it dies with it.
+        function chatEl() { return q('.delfin-agent-chat-host'); }
+        function atEnd(c) {
+            return (c.scrollHeight - c.scrollTop - c.clientHeight)
+                   <= CHAT_BOTTOM_TOLERANCE_PX;
+        }
+        // Written to the host, not the button: the button is replaced
+        // with every refresh and the stylesheet reads these two marks off
+        // its parent, so the fresh copy is right in the frame it appears.
+        function paint(c, st) {
+            st = st || stateFor(c);
+            if (!c || !c.setAttribute) return;
+            c.setAttribute('data-delfin-follow', st.follow ? '1' : '0');
+            c.setAttribute('data-delfin-unseen', st.unseen ? '1' : '0');
+        }
+        // Setting scrollTop queues a scroll event of our own making; the
+        // listener must not read it as the reader moving away. Arm the flag
+        // only when the value really changes, so a no-op poll never swallows
+        // a scroll the reader made in the same frame.
+        function setTop(c, top, st) {
+            st = st || stateFor(c);
+            // Compare the achievable offset. scrollHeight itself is always
+            // beyond the end, so comparing it directly writes on every poll.
+            top = Math.max(0, Math.min(top, c.scrollHeight - c.clientHeight));
+            // Browser zoom can leave a fractional scroll offset at the end.
+            // Do not keep writing the same rounded position on every poll.
+            if (Math.abs(c.scrollTop - top) < 1) return;
+            st.auto = true;
+            c.scrollTop = top;
+            if (st.timer) clearTimeout(st.timer);
+            st.timer = setTimeout(function() { st.auto = false; }, 200);
+        }
+        window.__delfinChatToBottom = function(el) {
+            var c = (el && el.closest)
+                ? el.closest('.delfin-agent-chat-host') : null;
+            if (!c) c = chatEl();
+            if (!c) return;
+            var st = stateFor(c);
+            st.follow = true;
+            st.unseen = false;
+            setTop(c, c.scrollHeight, st);
+            st.top = c.scrollTop;
+            paint(c, st);
+        };
+        // Called from the freshly rendered chat: either follow the new end or
+        // put the reader back where they were before the rebuild.
+        window.__delfinChatSync = function(c) {
+            if (!c) return;
+            // A chat with no viewport has no reader: a session that is open
+            // but not on screen measures 0 for both heights, so there is
+            // nothing to follow and nothing to restore. Returning here also
+            // keeps a hidden element from writing a clamped offset into its
+            // own record while it waits to be looked at.
+            if (!c.clientHeight) return;
+            var st = stateFor(c);
+            // A reflow or a temporarily shorter streaming message is not
+            // permission to resume following. Session changes/reset own that.
+            if (st.follow) {
+                // At the end: come along with the agent. This is the half
+                // that is wanted and is unchanged.
+                setTop(c, c.scrollHeight, st);
+                st.top = c.scrollTop;
+                st.mark = c.scrollHeight;
+            } else {
+                // Reading further up: WRITE NOTHING. The scrollport is the
+                // host now, and the host survives an update, so the offset
+                // is already where the reader left it -- there is nothing to
+                // restore. The restore existed only because the box used to
+                // be destroyed four times a second, and writing scrollTop at
+                // that rate is what made the text wander under the reader
+                // even when the value was right. New output lands below the
+                // viewport, unseen, and the "Newest" control says so.
+                if (c.scrollHeight > st.mark + 4) st.unseen = true;
+                st.top = c.scrollTop;
+            }
+            paint(c, st);
+        };
+        // ipywidgets replaces the HTML before the trailing image's onerror
+        // task runs. Waiting for that task (or the 150 ms poll) lets a frame
+        // paint at the old/clamped offset, then jump to the new end. Mutation
+        // observers run before paint: follow in the same rendering cycle.
+        // ResizeObserver covers images loading later and viewport resizing.
+        // Both use the same per-session decision, including hidden sessions
+        // and readers who have deliberately scrolled away.
+        var watchedChatSizes = new WeakSet();
+        // The shown messages are the container _chat_value's tag keeps
+        // beside the widget's content; the content itself is empty now.
+        var chatSizes = typeof ResizeObserver === 'undefined' ? null
+            : new ResizeObserver(function(entries) {
+                var hosts = new Set();
+                entries.forEach(function(entry) {
+                    var c = entry.target.closest('.delfin-agent-chat-host');
+                    if (c) hosts.add(c);
+                });
+                hosts.forEach(function(c) { window.__delfinChatSync(c); });
+            });
+        function watchChatSize(c) {
+            if (!chatSizes || !c) return;
+            [c, c.querySelector(':scope > .delfin-agent-chat')].forEach(
+                function(el) {
+                    if (!el || watchedChatSizes.has(el)) return;
+                    watchedChatSizes.add(el);
+                    chatSizes.observe(el);
+                });
+        }
+        window.__delfinWatchChat = watchChatSize;
+        if (typeof MutationObserver !== 'undefined' && document.body) {
+            new MutationObserver(function(records) {
+                var hosts = new Set();
+                records.forEach(function(record) {
+                    var target = record.target;
+                    if (target.nodeType !== 1) target = target.parentElement;
+                    var c = target && target.closest
+                        ? target.closest('.delfin-agent-chat-host') : null;
+                    if (c) hosts.add(c);
+                });
+                hosts.forEach(function(c) {
+                    watchChatSize(c);
+                    window.__delfinChatSync(c);
+                });
+            }).observe(document.body, {
+                childList: true, characterData: true, subtree: true
+            });
+        }
+        if (chatSizes && document.querySelectorAll) {
+            document.querySelectorAll('.delfin-agent-chat-host')
+                .forEach(watchChatSize);
+        }
+        // A cleared or brand-new conversation carries no offset worth keeping.
+        window.__delfinChatReset = function(el) {
+            var c = (el && el.closest)
+                ? el.closest('.delfin-agent-chat-host') : null;
+            var st = stateFor(c);
+            st.follow = true;
+            st.unseen = false;
+            st.top = 0;
+            st.mark = 0;
+        };
+        // The reader's own input: a scroll with none of it just before is
+        // not the reader's. Measured 2026-10-22: while the agent waited, the
+        // browser moved a following reader 12 px up every ~1.5 s with no
+        // script writing scrollTop, and the 150 ms poll put it back 60-85 ms
+        // later -- a visible jitter at the end of the chat. A wheel, a touch,
+        // a navigation key, or a pointer held on the chat (the scrollbar) is
+        // the reader; 300 ms after it covers inertia and key repeat.
+        var inputUntil = 0, pressed = false;
+        function readerInput() {
+            inputUntil = Date.now() + 300;
+        }
+        function pauseForReader(e) {
+            var c = e.target && e.target.closest
+                ? e.target.closest('.delfin-agent-chat-host') : null;
+            if (!c) return;
+            var st = stateFor(c);
+            st.auto = false;
+            if (st.timer) clearTimeout(st.timer);
+            st.follow = false;
+            st.top = c.scrollTop;
+            st.mark = c.scrollHeight;
+            paint(c, st);
+        }
+        function onChat(e) {
+            return !!(e.target && e.target.closest
+                      && e.target.closest('.delfin-agent-chat-host'));
+        }
+        document.addEventListener('wheel', function(e) {
+            if (onChat(e)) {
+                readerInput();
+                // Stop before the browser scroll event: a streaming update
+                // can otherwise reach the end first and swallow that event.
+                if (e.deltaY < 0) pauseForReader(e);
+                else stateFor(e.target.closest('.delfin-agent-chat-host')).auto = false;
+            }
+        }, {capture: true, passive: true});
+        document.addEventListener('touchmove', function(e) {
+            if (onChat(e)) { readerInput(); pauseForReader(e); }
+        }, {capture: true, passive: true});
+        document.addEventListener('keydown', function(e) {
+            if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key))
+                readerInput();
+            if (/^(PageUp|ArrowUp|Home)$/.test(e.key)) pauseForReader(e);
+        }, true);
+        document.addEventListener('pointerdown', function(e) {
+            if (onChat(e)) { pressed = true; readerInput(); pauseForReader(e); }
+        }, true);
+        function released() {
+            if (pressed) { pressed = false; readerInput(); }
+        }
+        document.addEventListener('pointerup', released, true);
+        document.addEventListener('pointercancel', released, true);
+        function byReader() {
+            return pressed || Date.now() < inputUntil;
+        }
+        // Scroll events do not bubble, so capture them at the document. That
+        // also survives the chat element being replaced on every refresh.
+        document.addEventListener('scroll', function(e) {
+            var c = e.target;
+            if (!c || !c.classList ||
+                !c.classList.contains('delfin-agent-chat-host')) return;
+            var st = stateFor(c);
+            var previousTop = st.top;
+            st.top = c.scrollTop;
+            if (st.auto) { st.auto = false; return; }
+            // Following, moved, and not by the reader: back to the end in
+            // this event, which runs before the next paint, so the move is
+            // never seen.
+            if (st.follow && !byReader()
+                    && c.scrollTop < c.scrollHeight - c.clientHeight - 1) {
+                setTop(c, c.scrollHeight, st);
+                st.top = c.scrollTop;
+                return;
+            }
+            // Once deliberately paused, even a small upward wheel gesture
+            // must stick. The generous tolerance only applies while following.
+            var end = atEnd(c) && (st.follow ||
+                (!pressed && c.scrollTop > previousTop &&
+                 c.scrollHeight - c.scrollTop - c.clientHeight <= 1));
+            if (end === st.follow) return;
+            st.follow = end;
+            if (end) { st.unseen = false; } else { st.mark = c.scrollHeight; }
+            paint(c, st);
+        }, true);
+        // Sending is an explicit move to the newest output; Enter-to-send
+        // clicks the same button, so one listener covers both. Matched by
+        // identity against the row's first button, the way the keyboard
+        // handlers above find it -- the row also holds the mode toggle, and
+        // pressing that is not a request to leave the reader's place.
+        document.addEventListener('click', function(e) {
+            if (!e.target || !e.target.closest) return;
+            var sendBtn = q('.delfin-agent-send-row button');
+            if (sendBtn && e.target.closest('button') === sendBtn) {
+                window.__delfinChatToBottom(chatEl());
+            }
+        }, true);
+        setInterval(function() {
+            // Only follow while the working indicator is visible
+            var working = q('.delfin-agent-working');
+            if (!working) return;
+            // The chat first, then ITS record: q() already scopes both the
+            // indicator and the element to the visible session, and the
+            // state has to be scoped the same way or this loop follows the
+            // session on screen using another session's decision.
+            var chat = chatEl();
+            if (!chat) return;
+            var st = stateFor(chat);
+            if (!st.follow) return;
+            // Poll only for a changed content height. A browser scroll can
+            // consume a pending auto-scroll flag; correcting it on this
+            // later tick causes a visible snap while no output arrives.
+            // The observers handle content and viewport resizing directly.
+            if (st.mark !== undefined && chat.scrollHeight === st.mark) return;
+            setTop(chat, chat.scrollHeight, st);
+            st.top = chat.scrollTop;
+            st.mark = chat.scrollHeight;
+        }, 150);
+    })();
+
+    // --- Auto-grow the message box with its content (up to a cap) ---
+    (function() {
+        if (window.__delfinInputGrow) return;
+        window.__delfinInputGrow = true;
+        var MAXH = 280;
+        function grow(ta) {
+            if (!ta) return;
+            // Measuring writes height:auto, so for one forced layout the
+            // box is at its 80 px floor and the chat frame above it is
+            // taller by the rest. The browser clamps a transcript at (or
+            // near) its end to that taller box, and the final height does
+            // not give the offset back. Offsets are kept and the ones
+            // that went down are put back before anything is painted.
+            var kept = [];
+            document.querySelectorAll('.delfin-agent-chat-host').forEach(
+                function(h) { if (h.clientHeight) kept.push([h, h.scrollTop]); });
+            ta.style.height = 'auto';
+            // The height includes the borders (box-sizing: border-box),
+            // scrollHeight does not: set to scrollHeight alone, a box
+            // whose content fitted overflowed by its two 1 px borders
+            // and drew a scrollbar (measured: 98 px box, 96 px inside).
+            var edge = ta.offsetHeight - ta.clientHeight;
+            ta.style.height = Math.min(ta.scrollHeight + edge, MAXH) + 'px';
+            kept.forEach(function(p) {
+                if (p[0].scrollTop < p[1]) p[0].scrollTop = p[1];
+            });
+            // Writing at the end of a box past its cap: keep the line being
+            // written inside the frame with its padding, not on the edge.
+            if (ta.selectionStart === ta.value.length) {
+                ta.scrollTop = ta.scrollHeight;
+            }
+        }
+        function inputTA() {
+            var sel = '.delfin-agent-input textarea';
+            return window.__delfinQ ? window.__delfinQ(sel)
+                                    : document.querySelector(sel);
+        }
+        // Grow while typing (also fires on the programmatic /clear,/search
+        // value-set dispatches above, so the box shrinks back when cleared).
+        document.addEventListener('input', function(e) {
+            if (e.target && e.target.tagName === 'TEXTAREA' &&
+                e.target.closest && e.target.closest('.delfin-agent-input')) {
+                grow(e.target);
+            }
+        });
+        // After a send the value is cleared from Python without firing an
+        // 'input' event — reset the height shortly after any send click.
+        document.addEventListener('click', function(e) {
+            if (e.target && e.target.closest &&
+                e.target.closest('.delfin-agent-send-row')) {
+                setTimeout(function() { grow(inputTA()); }, 60);
+            }
+        });
+    })();
 """
 
 
@@ -4885,6 +5758,48 @@ _ANSWER_FILE_SUFFIXES = tuple(sorted(set(
 _ANSWER_FILE_RE = re.compile(
     r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+(?:"
     + "|".join(re.escape(x) for x in _ANSWER_FILE_SUFFIXES) + r"))\b")
+
+
+def _session_agent_workspace(engine, fallback):
+    """The directory this session's agent actually works in.
+
+    Input: the engine (or None) and the legacy fallback (``ctx.agent_dir``).
+    Output: ``engine.kit_permissions.workspace`` — the same path the
+    engine's write permissions use — else ``engine.repo_dir``, else the
+    fallback. Used by the chat's artifact scans, which previously read
+    ``ctx.agent_dir`` and so missed files written in a launch-folder
+    workspace (Code mode started from a project directory).
+    """
+    try:
+        kp = getattr(engine, "kit_permissions", None)
+        ws = getattr(kp, "workspace", None) or getattr(engine, "repo_dir", None)
+        if ws:
+            return Path(ws)
+    except Exception:
+        pass
+    return fallback
+
+
+def _changed_workspace_files(known, directory):
+    """Diff the workspace against the last snapshot, by file name.
+
+    Input: ``known`` — the previous ``{name: (mtime_ns, size)}`` snapshot —
+    and the directory to scan (top level only, files only, as before).
+    Output: ``(changed, stamps)`` — the files whose stamp differs (new or
+    rewritten, sorted by name) and the fresh snapshot to store.
+    """
+    try:
+        current = {
+            p.name: p for p in Path(directory).iterdir() if p.is_file()
+        }
+        stamps = {n: _artifact_stamp(p) for n, p in current.items()}
+    except Exception:
+        return [], dict(known or {})
+    changed = [
+        (n, current[n]) for n in sorted(stamps)
+        if (known or {}).get(n) != stamps[n] and n in current
+    ]
+    return [p for _n, p in changed], stamps
 
 
 def _files_named_in_answer(text: str, workspace, already=(), limit: int = 3):
@@ -7099,14 +8014,10 @@ def create_tab(ctx):
         finally:
             state["_controls_sync_internal"] = False
         _saved_perm = _saved.get("permission_profile", _saved.get("permission_mode", ""))
-        # Migrate old permission names to new profiles
-        _perm_migration = {
-            "default": "ask_all", "erlaubt": "repo_free", "full": "all_free",
-            "acceptEdits": "repo_free", "auto": "all_free",
-            "bypassPermissions": "all_free",
-        }
-        _saved_perm = _perm_migration.get(_saved_perm, _saved_perm)
-        if _saved_perm in ("plan", "ask_all", "repo_free", "all_free"):
+        # Old permission names migrate to the current profiles
+        # (permission_profile.LEGACY_NAMES); "" when it names none.
+        _saved_perm = _normalise_profile(_saved_perm)
+        if _saved_perm:
             # Assigning a value the dropdown does not carry raises, and
             # the whole restore -- model, effort, everything after it --
             # would be lost to the except below. Every rung is offered in
@@ -8467,870 +9378,7 @@ def create_tab(ctx):
     _enter_js_output = widgets.Output()
     with _enter_js_output:
         from IPython.display import display as _ipyd, Javascript as _JS
-        _ipyd(_JS(_VISIBLE_LOOKUP_JS + """
-(function() {
-    // Its own flag: a second keyboard script (_enter_key_init_js) sets
-    // __delfinAgentKeys too and usually runs first, and behind that shared
-    // guard this listener was never installed -- on main as well.
-    if (!window.__delfinTabTakesSuggestion) {
-    window.__delfinTabTakesSuggestion = true;
-    // Tab in an EMPTY message box takes the grey suggestion waiting there.
-    // It fills the box and stops: sending stays the user's, and an offer
-    // that submits itself is a trap. With something typed, Tab keeps its
-    // normal job and moves focus. Capture phase, so no page handler can
-    // move focus before it has looked.
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Tab' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-            var ta = e.target;
-            if (ta && ta.tagName === 'TEXTAREA' && ta.closest
-                    && ta.closest('.delfin-agent-input')
-                    && !ta.value && ta.placeholder
-                    && ta.placeholder.indexOf('Message the agent') !== 0) {
-                e.preventDefault();
-                var setter = Object.getOwnPropertyDescriptor(
-                    window.HTMLTextAreaElement.prototype, 'value').set;
-                setter.call(ta, ta.placeholder);
-                ta.dispatchEvent(new Event('input', {bubbles: true}));
-            }
-        }
-    }, true);
-    }
-    if (window.__delfinAgentKeys) return;
-    window.__delfinAgentKeys = true;
-    document.addEventListener('keydown', function(e) {
-        if (!window.__delfinAgentOwnsKey(e)) return;
-        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-            if (e.target && e.target.tagName === 'TEXTAREA') {
-                var container = e.target.closest
-                    ? e.target.closest('.delfin-agent-input') : null;
-                if (container) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
-                    return;
-                }
-            }
-        }
-        if (e.key === 'Escape') {
-            var btns = document.querySelectorAll('button');
-            for (var i = 0; i < btns.length; i++) {
-                if (btns[i].textContent.trim() === 'Stop' && !btns[i].disabled
-                        && btns[i].offsetParent !== null) {
-                    btns[i].click(); e.preventDefault(); return;
-                }
-            }
-        }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            var a = window.__delfinQ('.delfin-agent-chat');
-            if (a) {
-                e.preventDefault();
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var ns = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    ns.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sb = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sb) sb.click();
-                    }, 50);
-                }
-            }
-        }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-            var a = window.__delfinQ('.delfin-agent-chat');
-            if (a) {
-                e.preventDefault();
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var ns = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    ns.call(ta, '/search');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sb = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sb) sb.click();
-                    }, 50);
-                }
-            }
-        }
-        // Shift+Tab: cycle permission mode
-        if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.metaKey) {
-            var a = window.__delfinQ('.delfin-agent-chat');
-            if (a) {
-                e.preventDefault();
-                e.stopPropagation();
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var ns = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    ns.call(ta, '/perm-cycle');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sb = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sb) sb.click();
-                    }, 50);
-                }
-            }
-        }
-    }, true);
-})();
-
-// The blocks below are their own scripts: the guard above covers the
-// key handler only. Nested inside it, they were skipped whenever the
-// page bundle had already set the flag -- which on a resumed page is
-// always, and on a fresh one depends on which output rendered first.
-
-    // --- The 3D card in the chat: structure, trajectory, orbital ---
-    // Started from the card's own img.onerror, because the chat is
-    // written with innerHTML and a script element inserted that way is
-    // never executed. 3Dmol itself is the vendored build installed at
-    // start-up (dashboard/__init__), so nothing is fetched here and the
-    // viewer works on a node with no outbound network.
-    (function() {
-        if (window.__delfinMol3DInstalled) return;
-        window.__delfinMol3DInstalled = true;
-
-        // The wheel over a molecule in the chat scrolls the chat. 3Dmol
-        // takes every wheel event over its canvas for zoom and cancels it,
-        // so a card as tall as the chat stopped the reader dead: measured
-        // once the chat stopped rebuilding its cards, forty wheel steps
-        // down from inside a trajectory card left the reader ~1000 px short
-        // of the end. (While every update rebuilt the cards, the canvas
-        // under the pointer was missing part of the time and wheel steps
-        // fell through to the chat at random.) Stopped here, in the
-        // capture phase at the document,
-        // the event never reaches 3Dmol and nothing cancels it, so the
-        // browser scrolls. It zooms with Ctrl (a trackpad pinch arrives as
-        // a wheel with ctrlKey) or once the molecule has been clicked,
-        // until the pointer leaves it. The fullscreen view is not inside
-        // the chat and keeps its plain wheel zoom.
-        var zoomStage = null;
-        function chatStage(t) {
-            var s = t && t.closest ? t.closest('.delfin-mol3d-stage') : null;
-            return s && s.closest('.delfin-agent-chat-host') ? s : null;
-        }
-        document.addEventListener('pointerdown', function(e) {
-            zoomStage = chatStage(e.target);
-        }, {capture: true, passive: true});
-        document.addEventListener('pointerover', function(e) {
-            if (zoomStage && chatStage(e.target) !== zoomStage) zoomStage = null;
-        }, {capture: true, passive: true});
-        document.addEventListener('wheel', function(e) {
-            var stage = chatStage(e.target);
-            if (!stage || e.ctrlKey || stage === zoomStage) return;
-            e.stopPropagation();
-        }, {capture: true, passive: true});
-
-        function build(card, stage) {
-            var data = card.getAttribute('data-mol3d') || '';
-            var fmt = card.getAttribute('data-mol3d-fmt') || 'xyz';
-            var label = card.getAttribute('data-mol3d-title') || '';
-            var frames = parseInt(card.getAttribute('data-mol3d-frames') || '1', 10);
-            var iso = parseFloat(card.getAttribute('data-mol3d-iso') || '0.02');
-            if (!(iso > 0)) iso = 0.02;
-            if (!data) return true;
-            // The chat scrolls inside its own frame (.delfin-agent-chat-frame);
-            // the browser viewport says nothing about how much room that
-            // frame actually has. Measure the frame and size the stage to
-            // fit inside it -- the card must never overflow the chat window
-            // it lives in.
-            var host = card.closest('.delfin-agent-chat-frame')
-                      || card.parentElement;
-            if (host) {
-                var frameH = host.clientHeight;
-                if (frameH > 0) {
-                    var stageH =
-                        Math.max(280, Math.min(Math.round(frameH * 0.8), 700)) + 'px';
-                    stage.style.height = stageH;
-                    // Kept on the frame, which survives the transcript:
-                    // Python replaces the whole transcript on every
-                    // streaming update, and a card rebuilt at 380 px and
-                    // sized here only after 3Dmol had built it moved the
-                    // end of the chat by its difference on every update
-                    // (717 px for three cards at 1920x1080). The card's
-                    // stage reads this property, so it is rebuilt at its
-                    // height.
-                    host.style.setProperty('--delfin-mol3d-h', stageH);
-                }
-            }
-            var viewer = $3Dmol.createViewer(stage, {backgroundColor: 'white'});
-            if (fmt === 'cube') {
-                viewer.addModel(data, 'cube');
-                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
-                // The same two isosurfaces the Calculations tab draws, so
-                // an orbital looks the same wherever it is opened.
-                viewer.addVolumetricData(data, 'cube',
-                    {isoval: iso, color: '#0026ff', opacity: 0.85});
-                viewer.addVolumetricData(data, 'cube',
-                    {isoval: -iso, color: '#b00010', opacity: 0.85});
-            } else if (frames > 1) {
-                viewer.addModelsAsFrames(data, fmt);
-                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
-                // Stepped by hand instead of auto-animated: the card's
-                // control bar (play, one back, one forward, reset) drives
-                // setFrame so the trajectory can be inspected frame by
-                // frame. Play advances once per ~10 fps and stops at the
-                // last frame; the bar shows the current one.
-                viewer.setFrame(0);
-                wireTrajectory(card, stage, viewer, frames);
-            } else {
-                viewer.addModel(data, fmt);
-                viewer.setStyle({}, {stick: {radius: 0.12}, sphere: {scale: 0.22}});
-            }
-            viewer.zoomTo();
-            // zoomTo fits the bounding sphere, which leaves a chain small in
-            // a wide stage; a quarter closer still keeps it inside. Not for
-            // an orbital: its lobes reach past the atoms.
-            if (fmt !== 'cube') viewer.zoom(1.25);
-            viewer.render();
-            // Keep one in-memory copy of the source text for the fullscreen
-            // lightbox (wireFullscreen rebuilds from it), then drop the copy
-            // in the attribute so a long transcript does not hold every
-            // molecule twice.
-            card.__delfinMol3DData = data;
-            card.__delfinMol3DTitle = label;
-            var st = card.getAttribute('data-mol3d-style');
-            if (st) { try { card.__delfinMol3DStyle = JSON.parse(st); } catch (e) {} }
-            card.removeAttribute('data-mol3d');
-            card.__delfinViewer = viewer;
-            wireFullscreen(card, viewer, frames, iso);
-            return true;
-        }
-
-        function wireTrajectory(card, stage, viewer, nFrames) {
-            var btnPlay = card.querySelector('.delfin-mol3d-play');
-            var btnPrev = card.querySelector('.delfin-mol3d-prev');
-            var btnNext = card.querySelector('.delfin-mol3d-next');
-            var btnReset = card.querySelector('.delfin-mol3d-reset');
-            var btnFs = card.querySelector('.delfin-mol3d-fullscreen');
-            var counter = card.querySelector('.delfin-mol3d-frame');
-            var playing = false, timer = null;
-            function setCounter() {
-                if (counter) counter.textContent =
-                    (viewer.getFrame() + 1) + ' / ' + nFrames;
-            }
-            function stop() {
-                playing = false;
-                if (timer) { clearInterval(timer); timer = null; }
-                if (btnPlay) btnPlay.textContent = '\u25b6';
-            }
-            function step(delta) {
-                var f = viewer.getFrame() + delta;
-                if (f < 0) f = 0;
-                if (f >= nFrames) f = nFrames - 1;
-                viewer.setFrame(f);
-                viewer.render();
-                setCounter();
-                return f;
-            }
-            function play() {
-                if (playing) { stop(); return; }
-                playing = true;
-                if (btnPlay) btnPlay.textContent = '\u23f8';
-                timer = setInterval(function() {
-                    var last = step(1);
-                    if (last === nFrames - 1) stop();
-                }, 100);
-            }
-            if (btnPlay) btnPlay.onclick = play;
-            if (btnPrev) btnPrev.onclick = function() { stop(); step(-1); };
-            if (btnNext) btnNext.onclick = function() { stop(); step(1); };
-            if (btnReset) btnReset.onclick = function() {
-                stop(); viewer.setFrame(0);
-                viewer.zoomTo(); viewer.zoom(1.25); viewer.render(); setCounter();
-            };
-        }
-
-        function wireFullscreen(card, viewer, nFrames, iso) {
-            var btnFs = card.querySelector('.delfin-mol3d-fullscreen');
-            if (!btnFs) return;
-            var fs = null;
-            btnFs.onclick = function() {
-                if (fs) { closeFs(); return; }
-                var txt = card.__delfinMol3DData;
-                if (!txt) return;
-                // Same layout language as the Calculations-tab fullscreen:
-                // white viewer surface, a dark toolbar bar with the file
-                // name on the left and Close on the right, the viewer
-                // filling everything below it, ESC closes.
-                fs = document.createElement('div');
-                fs.className = 'delfin-mol3d-fs';
-                fs.style.cssText = 'position:fixed;inset:0;z-index:20000;'
-                    + 'display:flex;flex-direction:column;background:#fff;';
-                var bar = document.createElement('div');
-                bar.style.cssText = 'flex:0 0 auto;display:flex;'
-                    + 'align-items:center;gap:10px;padding:8px 14px;'
-                    + 'background:#111827;color:#fff;font:13px sans-serif;';
-                var title = document.createElement('div');
-                title.style.cssText = 'flex:1 1 auto;overflow:hidden;'
-                    + 'text-overflow:ellipsis;white-space:nowrap;';
-                title.textContent = (card.__delfinMol3DTitle || '');
-                var close = document.createElement('button');
-                close.type = 'button';
-                close.style.cssText = 'flex:0 0 auto;cursor:pointer;'
-                    + 'background:#374151;color:#fff;border:0;'
-                    + 'border-radius:4px;padding:4px 12px;font:13px sans-serif;';
-                close.textContent = 'Close \u2715 (Esc)';
-                close.onclick = closeFs;
-                bar.appendChild(title);
-                bar.appendChild(close);
-                var big = document.createElement('div');
-                big.style.cssText = 'flex:1 1 auto;min-height:0;'
-                    + 'position:relative;';
-                // A lightbox fullscreen re-creates the viewer rather than
-                // moving the DOM node: 3Dmol renders into the stage's box
-                // it was created with, and moving the node leaves a blank
-                // canvas. Rebuilding from the saved text is cheap and the
-                // trajectory frame index is copied back.
-                var f = viewer.getFrame();
-                var v2 = $3Dmol.createViewer(big,
-                    {backgroundColor: 'white'});
-                v2.setStyle({}, card.__delfinMol3DStyle ||
-                    {stick: {radius: 0.12}, sphere: {scale: 0.22}});
-                fs.appendChild(bar);
-                fs.appendChild(big);
-                document.body.appendChild(fs);
-                var f2 = card.getAttribute('data-mol3d-fmt');
-                if (f2 === 'cube') {
-                    v2.addModel(txt, 'cube');
-                    v2.addVolumetricData(txt, 'cube',
-                        {isoval: iso, color: '#0026ff', opacity: 0.85});
-                    v2.addVolumetricData(txt, 'cube',
-                        {isoval: -iso, color: '#b00010', opacity: 0.85});
-                } else if (nFrames > 1) {
-                    v2.addModelsAsFrames(txt, 'xyz');
-                    v2.setFrame(f);
-                } else {
-                    v2.addModel(txt, f2 || 'xyz');
-                }
-                v2.zoomTo();
-                v2.render();
-            };
-            function closeFs() {
-                if (!fs) return;
-                var p = document.body;
-                try { p.removeChild(fs); } catch (e) {}
-                fs = null;
-            }
-            document.addEventListener('keydown', function(ev) {
-                if (ev.key === 'Escape') closeFs();
-            });
-        }
-
-
-        // Viewers already built, kept across transcript rebuilds. Python
-        // replaces the whole transcript on every update, and each card used
-        // to build its viewer again with a new WebGL context: three cards
-        // made 15 canvases in 40 s (measured), Chrome keeps about 16
-        // contexts, and a long session with many cards froze the page. A
-        // rebuilt card that shows the same molecule (same stage id, same
-        // coordinates) gets the kept stage moved into it -- canvas, context
-        // and current frame included; a changed molecule is built anew.
-        //
-        // Chrome drops the oldest context past about 16, so a kept stage that
-        // no rebuilt card claimed within KEEP_IDLE_MS (its card left the
-        // transcript) gives its context back, and at most KEEP_MAX are kept.
-        var KEEP_MAX = 12, KEEP_IDLE_MS = 10000;
-        var kept3d = window.__delfinMol3DKept || (window.__delfinMol3DKept = []);
-        // FNV-1a over the whole text: two conformers may share their length
-        // and their first lines, never their full coordinates.
-        function hashOf(text) {
-            var h = 0x811c9dc5;
-            for (var i = 0; i < text.length; i++) {
-                h ^= text.charCodeAt(i);
-                h = Math.imul(h, 0x01000193) >>> 0;
-            }
-            return h.toString(16);
-        }
-        function keyOf(stage, card) {
-            var d = card.getAttribute('data-mol3d') || '';
-            return (stage.id || '') + '|' + d.length + '|' + hashOf(d);
-        }
-        function release(kept) {
-            var cv = kept.stage.querySelector('canvas');
-            if (!cv) return;
-            try {
-                var gl = cv.getContext('webgl2') || cv.getContext('webgl');
-                var ext = gl && gl.getExtension('WEBGL_lose_context');
-                if (ext) ext.loseContext();
-            } catch (e) {}
-        }
-        // An entry's clock starts when a sweep first finds it detached, so a
-        // rebuild after a long quiet spell still finds every viewer it had.
-        var sweep = null;
-        function prune() {
-            var now = Date.now(), waiting = false;
-            for (var i = kept3d.length - 1; i >= 0; i--) {
-                var k = kept3d[i];
-                if (k.stage.isConnected) { k.gone = 0; continue; }
-                if (!k.gone) k.gone = now;
-                if (now - k.gone >= KEEP_IDLE_MS || kept3d.length > KEEP_MAX) {
-                    kept3d.splice(i, 1);
-                    release(k);
-                } else {
-                    waiting = true;
-                }
-            }
-            if (waiting && !sweep) {
-                sweep = setTimeout(function() { sweep = null; prune(); },
-                                   KEEP_IDLE_MS + 100);
-            }
-        }
-        function reuse(card, stage, key) {
-            prune();
-            for (var i = kept3d.length - 1; i >= 0; i--) {
-                var kept = kept3d[i];
-                if (kept.key !== key || kept.stage.isConnected) continue;
-                stage.parentNode.replaceChild(kept.stage, stage);
-                card.__delfinMol3DDone = true;
-                card.__delfinViewer = kept.viewer;
-                card.__delfinMol3DData = kept.data;
-                card.__delfinMol3DTitle = kept.title;
-                card.__delfinMol3DStyle = kept.style;
-                card.__delfinViewerData = kept.data;
-                if (kept.frames > 1) {
-                    wireTrajectory(card, kept.stage, kept.viewer, kept.frames);
-                }
-                wireFullscreen(card, kept.viewer, kept.frames, kept.iso);
-                try { kept.viewer.resize(); kept.viewer.render(); } catch (e) {}
-                kept.gone = 0;
-                kept3d.splice(i, 1);
-                kept3d.push(kept);
-                return true;
-            }
-            return false;
-        }
-
-        window.__delfinMol3D = function(el) {
-            var card = el.closest ? el.closest('.delfin-chat-mol3d') : null;
-            if (!card || card.__delfinMol3DDone) return;
-            var stage = card.querySelector('.delfin-mol3d-stage');
-            if (!stage) return;
-            var key = keyOf(stage, card);
-            if (reuse(card, stage, key)) return;
-            var tries = 0;
-            function attempt() {
-                // Gone: the chat was rebuilt under us and this card no
-                // longer exists. Stop, rather than poll for an element
-                // that is never coming back.
-                if (!card.isConnected) return;
-                // Not on screen yet -- another session's tab, or a card
-                // still being laid out. A viewer built into a zero-sized
-                // element renders nothing and cannot be resized later.
-                var ready = (typeof $3Dmol !== 'undefined')
-                    && stage.offsetParent !== null && stage.clientWidth > 0;
-                if (!ready) {
-                    tries += 1;
-                    // ~30 s in total: a page that never gets there keeps
-                    // the text line under the stage, which still says
-                    // what the molecule is.
-                    if (tries < 200) setTimeout(attempt, tries < 20 ? 50 : 200);
-                    return;
-                }
-                card.__delfinMol3DDone = true;
-                try {
-                    // Keep a copy of the coordinates for the fullscreen
-                    // lightbox, which rebuilds the viewer at screen size.
-                    card.__delfinViewerData =
-                        card.getAttribute('data-mol3d') || '';
-                    build(card, stage);
-                    if (card.__delfinViewer) {
-                        kept3d.push({
-                            key: key, stage: stage, viewer: card.__delfinViewer,
-                            data: card.__delfinMol3DData || card.__delfinViewerData,
-                            title: card.__delfinMol3DTitle,
-                            style: card.__delfinMol3DStyle,
-                            frames: parseInt(card.getAttribute('data-mol3d-frames') || '1', 10),
-                            iso: parseFloat(card.getAttribute('data-mol3d-iso') || '0.02'),
-                            gone: 0
-                        });
-                        prune();
-                    }
-                    // The small build removes the attribute; fullscreen
-                    // needs the text again -- restore it from the copy.
-                    if (card.querySelector('.delfin-mol3d-fullscreen')
-                            && card.__delfinViewerData) {
-                        card.setAttribute('data-mol3d',
-                            card.__delfinViewerData);
-                    }
-                } catch (e) {
-                    // A malformed cube or a truncated frame must not take
-                    // the chat with it. The text line stays.
-                    stage.style.display = 'none';
-                }
-            }
-            attempt();
-        };
-    })();
-
-    // --- Chat scroll: follow the newest output only from the end ---
-    // The chat used to be pulled to the bottom on every refresh, which took
-    // the viewport away from a reader who had scrolled up to re-read
-    // something. Following is now conditional on the reader being at the end,
-    // and the state lives on `window` because Python replaces the whole chat
-    // element on each refresh -- an offset kept on the element would die
-    // with it.
-    (function() {
-        if (window.__delfinChatScroll) return;
-        window.__delfinChatScroll = true;
-        // Reflow and late-loading images move the end by a few pixels. Without
-        // a tolerance a reader sitting at the bottom would be dropped out of
-        // follow mode by output they never scrolled away from.
-        var CHAT_BOTTOM_TOLERANCE_PX = 60;
-        // One record PER SESSION. Every open session keeps its own chat
-        // element in this page and runs this tag whenever its own
-        // transcript is rebuilt, which a session running in the background
-        // does constantly. With one shared record, a background refresh
-        // measured a hidden element -- scrollHeight and clientHeight are
-        // both 0 there -- decided the reader's offset was past the end,
-        // read that as a swapped conversation and turned following back
-        // on. The next refresh of the session being READ then pulled it to
-        // the bottom. Reported as: scrolled-up history jumping to the end
-        // now and again, at the pace of some other session's output.
-        function makeState() {
-            return {
-                follow: true,   // is the reader at the end, so new output may pull the view
-                top: 0,         // the reader's offset, carried across a rebuild
-                mark: 0,        // content height when follow was last given up
-                unseen: false,  // output arrived below the reader's viewport
-                auto: false,    // the next scroll event is one we caused
-                timer: null
-            };
-        }
-        var STATES = window.__delfinChatFollowBy = {};
-        function keyOf(c) {
-            var k = (c && c.getAttribute)
-                ? c.getAttribute('data-delfin-session') : null;
-            return k || 'default';
-        }
-        function stateFor(c) {
-            var k = keyOf(c);
-            return STATES[k] || (STATES[k] = makeState());
-        }
-        // A page with one chat and no session mark keeps the old name, so
-        // anything reading it sees that session's record.
-        var S = window.__delfinChatFollow = stateFor(null);
-        // Standalone like every block here: the visible-session lookup when
-        // the page has it, the plain one otherwise.
-        function q(sel) {
-            return window.__delfinQ ? window.__delfinQ(sel)
-                                    : document.querySelector(sel);
-        }
-        // The host, not the content: the content is replaced on every
-        // streaming update and a scroll offset on it dies with it.
-        function chatEl() { return q('.delfin-agent-chat-host'); }
-        function atEnd(c) {
-            return (c.scrollHeight - c.scrollTop - c.clientHeight)
-                   <= CHAT_BOTTOM_TOLERANCE_PX;
-        }
-        // Written to the host, not the button: the button is replaced
-        // with every refresh and the stylesheet reads these two marks off
-        // its parent, so the fresh copy is right in the frame it appears.
-        function paint(c, st) {
-            st = st || stateFor(c);
-            if (!c || !c.setAttribute) return;
-            c.setAttribute('data-delfin-follow', st.follow ? '1' : '0');
-            c.setAttribute('data-delfin-unseen', st.unseen ? '1' : '0');
-        }
-        // Setting scrollTop queues a scroll event of our own making; the
-        // listener must not read it as the reader moving away. Arm the flag
-        // only when the value really changes, so a no-op poll never swallows
-        // a scroll the reader made in the same frame.
-        function setTop(c, top, st) {
-            st = st || stateFor(c);
-            // Compare the achievable offset. scrollHeight itself is always
-            // beyond the end, so comparing it directly writes on every poll.
-            top = Math.max(0, Math.min(top, c.scrollHeight - c.clientHeight));
-            // Browser zoom can leave a fractional scroll offset at the end.
-            // Do not keep writing the same rounded position on every poll.
-            if (Math.abs(c.scrollTop - top) < 1) return;
-            st.auto = true;
-            c.scrollTop = top;
-            if (st.timer) clearTimeout(st.timer);
-            st.timer = setTimeout(function() { st.auto = false; }, 200);
-        }
-        window.__delfinChatToBottom = function(el) {
-            var c = (el && el.closest)
-                ? el.closest('.delfin-agent-chat-host') : null;
-            if (!c) c = chatEl();
-            if (!c) return;
-            var st = stateFor(c);
-            st.follow = true;
-            st.unseen = false;
-            setTop(c, c.scrollHeight, st);
-            st.top = c.scrollTop;
-            paint(c, st);
-        };
-        // Called from the freshly rendered chat: either follow the new end or
-        // put the reader back where they were before the rebuild.
-        window.__delfinChatSync = function(c) {
-            if (!c) return;
-            // A chat with no viewport has no reader: a session that is open
-            // but not on screen measures 0 for both heights, so there is
-            // nothing to follow and nothing to restore. Returning here also
-            // keeps a hidden element from writing a clamped offset into its
-            // own record while it waits to be looked at.
-            if (!c.clientHeight) return;
-            var st = stateFor(c);
-            // A reflow or a temporarily shorter streaming message is not
-            // permission to resume following. Session changes/reset own that.
-            if (st.follow) {
-                // At the end: come along with the agent. This is the half
-                // that is wanted and is unchanged.
-                setTop(c, c.scrollHeight, st);
-                st.top = c.scrollTop;
-                st.mark = c.scrollHeight;
-            } else {
-                // Reading further up: WRITE NOTHING. The scrollport is the
-                // host now, and the host survives an update, so the offset
-                // is already where the reader left it -- there is nothing to
-                // restore. The restore existed only because the box used to
-                // be destroyed four times a second, and writing scrollTop at
-                // that rate is what made the text wander under the reader
-                // even when the value was right. New output lands below the
-                // viewport, unseen, and the "Newest" control says so.
-                if (c.scrollHeight > st.mark + 4) st.unseen = true;
-                st.top = c.scrollTop;
-            }
-            paint(c, st);
-        };
-        // ipywidgets replaces the HTML before the trailing image's onerror
-        // task runs. Waiting for that task (or the 150 ms poll) lets a frame
-        // paint at the old/clamped offset, then jump to the new end. Mutation
-        // observers run before paint: follow in the same rendering cycle.
-        // ResizeObserver covers images loading later and viewport resizing.
-        // Both use the same per-session decision, including hidden sessions
-        // and readers who have deliberately scrolled away.
-        var watchedChatSizes = new WeakSet();
-        // The shown messages are the container _chat_value's tag keeps
-        // beside the widget's content; the content itself is empty now.
-        var chatSizes = typeof ResizeObserver === 'undefined' ? null
-            : new ResizeObserver(function(entries) {
-                var hosts = new Set();
-                entries.forEach(function(entry) {
-                    var c = entry.target.closest('.delfin-agent-chat-host');
-                    if (c) hosts.add(c);
-                });
-                hosts.forEach(function(c) { window.__delfinChatSync(c); });
-            });
-        function watchChatSize(c) {
-            if (!chatSizes || !c) return;
-            [c, c.querySelector(':scope > .delfin-agent-chat')].forEach(
-                function(el) {
-                    if (!el || watchedChatSizes.has(el)) return;
-                    watchedChatSizes.add(el);
-                    chatSizes.observe(el);
-                });
-        }
-        window.__delfinWatchChat = watchChatSize;
-        if (typeof MutationObserver !== 'undefined' && document.body) {
-            new MutationObserver(function(records) {
-                var hosts = new Set();
-                records.forEach(function(record) {
-                    var target = record.target;
-                    if (target.nodeType !== 1) target = target.parentElement;
-                    var c = target && target.closest
-                        ? target.closest('.delfin-agent-chat-host') : null;
-                    if (c) hosts.add(c);
-                });
-                hosts.forEach(function(c) {
-                    watchChatSize(c);
-                    window.__delfinChatSync(c);
-                });
-            }).observe(document.body, {
-                childList: true, characterData: true, subtree: true
-            });
-        }
-        if (chatSizes && document.querySelectorAll) {
-            document.querySelectorAll('.delfin-agent-chat-host')
-                .forEach(watchChatSize);
-        }
-        // A cleared or brand-new conversation carries no offset worth keeping.
-        window.__delfinChatReset = function(el) {
-            var c = (el && el.closest)
-                ? el.closest('.delfin-agent-chat-host') : null;
-            var st = stateFor(c);
-            st.follow = true;
-            st.unseen = false;
-            st.top = 0;
-            st.mark = 0;
-        };
-        // The reader's own input: a scroll with none of it just before is
-        // not the reader's. Measured 2026-10-22: while the agent waited, the
-        // browser moved a following reader 12 px up every ~1.5 s with no
-        // script writing scrollTop, and the 150 ms poll put it back 60-85 ms
-        // later -- a visible jitter at the end of the chat. A wheel, a touch,
-        // a navigation key, or a pointer held on the chat (the scrollbar) is
-        // the reader; 300 ms after it covers inertia and key repeat.
-        var inputUntil = 0, pressed = false;
-        function readerInput() {
-            inputUntil = Date.now() + 300;
-        }
-        function pauseForReader(e) {
-            var c = e.target && e.target.closest
-                ? e.target.closest('.delfin-agent-chat-host') : null;
-            if (!c) return;
-            var st = stateFor(c);
-            st.auto = false;
-            if (st.timer) clearTimeout(st.timer);
-            st.follow = false;
-            st.top = c.scrollTop;
-            st.mark = c.scrollHeight;
-            paint(c, st);
-        }
-        function onChat(e) {
-            return !!(e.target && e.target.closest
-                      && e.target.closest('.delfin-agent-chat-host'));
-        }
-        document.addEventListener('wheel', function(e) {
-            if (onChat(e)) {
-                readerInput();
-                // Stop before the browser scroll event: a streaming update
-                // can otherwise reach the end first and swallow that event.
-                if (e.deltaY < 0) pauseForReader(e);
-                else stateFor(e.target.closest('.delfin-agent-chat-host')).auto = false;
-            }
-        }, {capture: true, passive: true});
-        document.addEventListener('touchmove', function(e) {
-            if (onChat(e)) { readerInput(); pauseForReader(e); }
-        }, {capture: true, passive: true});
-        document.addEventListener('keydown', function(e) {
-            if (/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key))
-                readerInput();
-            if (/^(PageUp|ArrowUp|Home)$/.test(e.key)) pauseForReader(e);
-        }, true);
-        document.addEventListener('pointerdown', function(e) {
-            if (onChat(e)) { pressed = true; readerInput(); pauseForReader(e); }
-        }, true);
-        function released() {
-            if (pressed) { pressed = false; readerInput(); }
-        }
-        document.addEventListener('pointerup', released, true);
-        document.addEventListener('pointercancel', released, true);
-        function byReader() {
-            return pressed || Date.now() < inputUntil;
-        }
-        // Scroll events do not bubble, so capture them at the document. That
-        // also survives the chat element being replaced on every refresh.
-        document.addEventListener('scroll', function(e) {
-            var c = e.target;
-            if (!c || !c.classList ||
-                !c.classList.contains('delfin-agent-chat-host')) return;
-            var st = stateFor(c);
-            var previousTop = st.top;
-            st.top = c.scrollTop;
-            if (st.auto) { st.auto = false; return; }
-            // Following, moved, and not by the reader: back to the end in
-            // this event, which runs before the next paint, so the move is
-            // never seen.
-            if (st.follow && !byReader()
-                    && c.scrollTop < c.scrollHeight - c.clientHeight - 1) {
-                setTop(c, c.scrollHeight, st);
-                st.top = c.scrollTop;
-                return;
-            }
-            // Once deliberately paused, even a small upward wheel gesture
-            // must stick. The generous tolerance only applies while following.
-            var end = atEnd(c) && (st.follow ||
-                (!pressed && c.scrollTop > previousTop &&
-                 c.scrollHeight - c.scrollTop - c.clientHeight <= 1));
-            if (end === st.follow) return;
-            st.follow = end;
-            if (end) { st.unseen = false; } else { st.mark = c.scrollHeight; }
-            paint(c, st);
-        }, true);
-        // Sending is an explicit move to the newest output; Enter-to-send
-        // clicks the same button, so one listener covers both. Matched by
-        // identity against the row's first button, the way the keyboard
-        // handlers above find it -- the row also holds the mode toggle, and
-        // pressing that is not a request to leave the reader's place.
-        document.addEventListener('click', function(e) {
-            if (!e.target || !e.target.closest) return;
-            var sendBtn = q('.delfin-agent-send-row button');
-            if (sendBtn && e.target.closest('button') === sendBtn) {
-                window.__delfinChatToBottom(chatEl());
-            }
-        }, true);
-        setInterval(function() {
-            // Only follow while the working indicator is visible
-            var working = q('.delfin-agent-working');
-            if (!working) return;
-            // The chat first, then ITS record: q() already scopes both the
-            // indicator and the element to the visible session, and the
-            // state has to be scoped the same way or this loop follows the
-            // session on screen using another session's decision.
-            var chat = chatEl();
-            if (!chat) return;
-            var st = stateFor(chat);
-            if (!st.follow) return;
-            // Poll only for a changed content height. A browser scroll can
-            // consume a pending auto-scroll flag; correcting it on this
-            // later tick causes a visible snap while no output arrives.
-            // The observers handle content and viewport resizing directly.
-            if (st.mark !== undefined && chat.scrollHeight === st.mark) return;
-            setTop(chat, chat.scrollHeight, st);
-            st.top = chat.scrollTop;
-            st.mark = chat.scrollHeight;
-        }, 150);
-    })();
-
-    // --- Auto-grow the message box with its content (up to a cap) ---
-    (function() {
-        if (window.__delfinInputGrow) return;
-        window.__delfinInputGrow = true;
-        var MAXH = 280;
-        function grow(ta) {
-            if (!ta) return;
-            // Measuring writes height:auto, so for one forced layout the
-            // box is at its 80 px floor and the chat frame above it is
-            // taller by the rest. The browser clamps a transcript at (or
-            // near) its end to that taller box, and the final height does
-            // not give the offset back. Offsets are kept and the ones
-            // that went down are put back before anything is painted.
-            var kept = [];
-            document.querySelectorAll('.delfin-agent-chat-host').forEach(
-                function(h) { if (h.clientHeight) kept.push([h, h.scrollTop]); });
-            ta.style.height = 'auto';
-            // The height includes the borders (box-sizing: border-box),
-            // scrollHeight does not: set to scrollHeight alone, a box
-            // whose content fitted overflowed by its two 1 px borders
-            // and drew a scrollbar (measured: 98 px box, 96 px inside).
-            var edge = ta.offsetHeight - ta.clientHeight;
-            ta.style.height = Math.min(ta.scrollHeight + edge, MAXH) + 'px';
-            kept.forEach(function(p) {
-                if (p[0].scrollTop < p[1]) p[0].scrollTop = p[1];
-            });
-            // Writing at the end of a box past its cap: keep the line being
-            // written inside the frame with its padding, not on the edge.
-            if (ta.selectionStart === ta.value.length) {
-                ta.scrollTop = ta.scrollHeight;
-            }
-        }
-        function inputTA() {
-            var sel = '.delfin-agent-input textarea';
-            return window.__delfinQ ? window.__delfinQ(sel)
-                                    : document.querySelector(sel);
-        }
-        // Grow while typing (also fires on the programmatic /clear,/search
-        // value-set dispatches above, so the box shrinks back when cleared).
-        document.addEventListener('input', function(e) {
-            if (e.target && e.target.tagName === 'TEXTAREA' &&
-                e.target.closest && e.target.closest('.delfin-agent-input')) {
-                grow(e.target);
-            }
-        });
-        // After a send the value is cleared from Python without firing an
-        // 'input' event — reset the height shortly after any send click.
-        document.addEventListener('click', function(e) {
-            if (e.target && e.target.closest &&
-                e.target.closest('.delfin-agent-send-row')) {
-                setTimeout(function() { grow(inputTA()); }, 60);
-            }
-        });
-    })();
-"""))
+        _ipyd(_JS(_VISIBLE_LOOKUP_JS + _AGENT_PAGE_JS))
 
     # -- UI widget registry (for /ui command) --------------------------------
     _ui_widgets: dict[str, widgets.Widget] = {
@@ -12739,12 +12787,38 @@ def create_tab(ctx):
     def _on_inspector_next(button):
         _on_advance_role(button)
 
+    def _question_gate(role_id, last_out) -> bool:
+        """The QUESTION: protocol: the card that asks the person, and the
+        wait for the answer. False when the reply carries no question."""
+        import re as _re_q
+        _q_match = _re_q.search(r"QUESTION:\s*(.+?)(?:\n\n|\Z)", last_out, _re_q.DOTALL)
+        if not _q_match:
+            return False
+        _q_text = _q_match.group(1).strip()
+        _role_label = _format_role_label(role_id)
+        from delfin.dashboard.live_sessions import ends_with_question
+        if ends_with_question(last_out, _q_text):
+            # The reply ends with the question: the chat shows it already.
+            _title, _detail = f"{_role_label} is asking you the question above.", ""
+        else:
+            _title, _detail = f"{_role_label} is asking you:", _q_text
+        _append_gate_message(
+            "question",
+            role_id,
+            _title,
+            _detail,
+            f"Reply to the {_role_label}.",
+        )
+        state["_awaiting_agent_question"] = role_id
+        _update_status()
+        return True
+
     def _append_gate_message(gate_type, role, title, detail="", hint=""):
         _set_active_gate(gate_type, role, title, detail)
         _record_cycle_event(gate_type or "gate", title, detail, role)
+        # The hint is the card's own line (gate_hint); in the body as well it
+        # was drawn twice.
         body = detail.strip()
-        if hint:
-            body = f"{body}\n\n{hint}".strip()
         _append_chat_message(
             "gate",
             body,
@@ -12905,10 +12979,14 @@ def create_tab(ctx):
                 f'</div>'
             )
         elif role == "gate":
-            content = _md_to_html(msg["content"])
+            gate_hint = msg.get("gate_hint", "")
+            raw = str(msg.get("content") or "")
+            if gate_hint and raw.rstrip().endswith(gate_hint):
+                # A card saved before the hint stayed out of its body.
+                raw = raw.rstrip()[:-len(gate_hint)].rstrip()
+            content = _md_to_html(raw) if raw.strip() else ""
             gate_type = msg.get("gate_type", "")
             gate_title = msg.get("gate_title", _gate_label(gate_type))
-            gate_hint = msg.get("gate_hint", "")
             gate_role = msg.get("role_label", "")
             card_cls = f"delfin-chat-msg delfin-gate-card delfin-gate-{_html.escape(gate_type or 'review')}"
             badge = _gate_label(gate_type)
@@ -21324,21 +21402,16 @@ def create_tab(ctx):
                     """
                     try:
                         before = dict(state.get("_ws_known_files") or {})
-                        current = {
-                            p.name: p for p in ctx.agent_dir.iterdir()
-                            if p.is_file()
-                        }
-                        stamps = {n: _artifact_stamp(p)
-                                  for n, p in current.items()}
+                        _scan_dir = _session_agent_workspace(
+                            engine, getattr(ctx, "agent_dir", None))
+                        changed, stamps = _changed_workspace_files(
+                            before, _scan_dir)
                     except Exception:
                         return
-                    changed = [n for n, st in stamps.items()
-                               if before.get(n) != st]
                     if not changed:
                         return
-                    for name in sorted(changed):
-                        path = current.get(name)
-                        if path is None or _shown_already(path):
+                    for path in sorted(changed):
+                        if _shown_already(path):
                             continue
                         if path.suffix.lower() in _HELD_PREVIEW_SUFFIXES:
                             _drop_held_preview(path)
@@ -21727,13 +21800,16 @@ def create_tab(ctx):
                 if _handoff:
                     current_msg = f"{_handoff}\n\n{current_msg}"
 
-                # D4: snapshot agent_workspace before the turn so we can
-                # diff and inline-render any new artifacts the agent
-                # creates (PNG/SVG/CSV/JSON).
+                # D4: snapshot the session workspace before the turn so we
+                # can diff and inline-render any new artifacts the agent
+                # creates (PNG/SVG/CSV/JSON). The same directory the
+                # engine's write permissions use, not the legacy agent_dir.
                 try:
                     state["_ws_known_files"] = {
                         p.name: _artifact_stamp(p)
-                        for p in ctx.agent_dir.iterdir() if p.is_file()
+                        for p in _session_agent_workspace(
+                            engine, getattr(ctx, "agent_dir", None)).iterdir()
+                        if p.is_file()
                     }
                 except Exception:
                     state["_ws_known_files"] = {}
@@ -22017,12 +22093,18 @@ def create_tab(ctx):
 
                     # Files the answer NAMED, which the artifact diff above
                     # cannot see: it only knows what this turn wrote. See
-                    # _files_named_in_answer for what bounds it. A path
-                    # drawn this turn in any view is not drawn again.
+                    # _files_named_in_answer for what bounds it. Searched
+                    # in the session's workspace, like the diff above. A
+                    # path drawn this turn in any view is not drawn again.
                     try:
                         for _f in _files_named_in_answer(
-                                "".join(chunks), ctx.agent_dir,
-                                already=state.get("_emitted_artifacts") or ()):
+                                "".join(chunks),
+                                _session_agent_workspace(
+                                    engine,
+                                    getattr(ctx, "agent_dir", None)),
+                                already=list(
+                                    (state.get("_emitted_artifacts")
+                                     or {}).keys())):
                             _show_artifact(_f)
                     except Exception:
                         pass
@@ -22645,25 +22727,9 @@ def create_tab(ctx):
                         continue
 
                     # --- QUESTION: Protocol — any agent can ask the user ---
-                    if "QUESTION:" in last_out:
-                        import re as _re_q
-                        _q_match = _re_q.search(
-                            r"QUESTION:\s*(.+?)(?:\n\n|\Z)", last_out, _re_q.DOTALL
-                        )
-                        if _q_match:
-                            _q_text = _q_match.group(1).strip()
-                            _role_label = _format_role_label(prev_role_id)
-                            _append_gate_message(
-                                "question",
-                                prev_role_id,
-                                f"{_role_label} is asking you:",
-                                _q_text,
-                                f"Reply to the {_role_label}.",
-                            )
-                            state["_awaiting_agent_question"] = prev_role_id
-                            _update_status()
-                            _update_pipeline_display(engine)
-                            break
+                    if "QUESTION:" in last_out and _question_gate(prev_role_id, last_out):
+                        _update_pipeline_display(engine)
+                        break
 
                     # --- Confidence Gate — pause on low confidence ---
                     if "**confidence:** low" in last_out.lower():
@@ -24734,6 +24800,8 @@ def create_tab(ctx):
         "auto_after_turn": _auto_after_turn,
         "fold_title": _fold_title,
         "refresh_chat": _refresh_chat_html,
+        "chat_html": chat_html,
+        "question_gate": _question_gate,
     }
 
 
