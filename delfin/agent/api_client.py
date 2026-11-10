@@ -7297,6 +7297,9 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "find_orca_errors", "extract_thermochem",
     # result_checks reads a finished run; it writes nothing.
     "result_checks",
+    # frame_lineage (#573): reads the .xyz frames of the given stage
+    # directories and compares them; it writes nothing and runs nothing.
+    "frame_lineage",
     # geometry_edit: xyz text in, xyz text out; no file write, no run.
     "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
     "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
