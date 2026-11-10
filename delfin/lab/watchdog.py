@@ -46,7 +46,10 @@ def sweep(kernel, *, now: Optional[float] = None) -> list[str]:
         age = now - float(act.get("heartbeat", 0))
         dead = (act.get("host") == here and act.get("pid")
                 and not _store.pid_alive(act["pid"]))
-        if age <= d.deadman_s and not dead:
+        # A heartbeat dated after ``now`` is impossible without a backward
+        # wall-clock jump; fail safe and trip instead of waiting for the
+        # clock to reach the timestamp again.
+        if 0 <= age <= d.deadman_s and not dead:
             continue
         why = (f"dead-man: owner process {act.get('pid')} is gone" if dead
                else f"dead-man: no heartbeat from {act.get('person')} "
@@ -67,8 +70,10 @@ def sweep(kernel, *, now: Optional[float] = None) -> list[str]:
             limit = d.deadman_s if d else 30.0
             if dev_id in doc["active"]:
                 continue
-            if now - float(lock.get("heartbeat", 0)) > limit:
-                doc["locks"].pop(dev_id, None)
+            hb = float(lock.get("heartbeat", 0))
+            if not 0 <= now - hb > limit:
+                continue
+            doc["locks"].pop(dev_id, None)
     return tripped
 
 

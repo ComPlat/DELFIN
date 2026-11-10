@@ -5,6 +5,8 @@ A backward jump (NTP correction, manual clock change) makes
 owner's hazardous device stays on. A heartbeat timestamp in the future
 relative to the sweep clock is impossible without a jump; the device is
 put safe instead. Same for the device-side watchdog in the simulator.
+All writes go through one FakeClock-driven kernel so no timestamp mixes
+wall-clock and simulated time.
 """
 import os
 
@@ -18,25 +20,31 @@ def _actor():
 
 
 def _hold(k, actor, lab, dev="hotplate", value=60, clock=None):
-    r = k.set(actor, dev, "setpoint", value, unit="degC")
-    if not r.get("ok") and r.get("approval_request"):
-        from delfin.lab import approvals
-        req = r["approval_request"]
-        approvals.grant(req, approver=actor.person,
-                        now=clock.t if clock else None)
-        r = k.set(actor, dev, "setpoint", value, unit="degC", approval=req)
-    assert r.get("ok"), r
-    return r
+    channels = [("power", "on")]
+    if dev == "hotplate":
+        channels.append(("setpoint", value))
+    for ch, v in channels:
+        r = k.set(actor, dev, ch, v,
+                  unit="degC" if ch == "setpoint" else None)
+        if not r.get("ok") and r.get("approval_request"):
+            from delfin.lab import approvals
+            req = r["approval_request"]
+            approvals.grant(req, approver=actor.person,
+                            now=clock.t if clock else None)
+            r = k.set(actor, dev, ch, v, unit="degC" if ch == "setpoint" else None,
+                      approval=req)
+        assert r.get("ok"), (ch, r)
 
 
 def test_backward_clock_jump_still_trips_the_deadman(lab):
     from delfin.lab import safety, store, watchdog
-    from _lab_support import prepare_heating
 
     clock = FakeClock(1000.0)
     k = safety.Kernel.load(clock=clock)
     actor = _actor()
-    prepare_heating(lab)
+    # heating above 40 degC needs stirrer, hood and hotplate power on
+    _hold(k, actor, lab, dev="stirrer", clock=clock)
+    _hold(k, actor, lab, dev="fume_hood", clock=clock)
     _hold(k, actor, lab, clock=clock)
     with store.state() as doc:
         hb = float(doc["active"]["hotplate"]["heartbeat"])
@@ -50,6 +58,9 @@ def test_backward_clock_jump_still_trips_the_deadman(lab):
         f"dead-man must fire on a future heartbeat, tripped={tripped}"
     assert sim("hotplate").get("power") == "off"
 
+    # a person clears the latch (CLI clear), the control re-holds
+    from delfin.lab import estop
+    assert estop.clear_latch("hotplate", by="alice")["ok"]
     # control: a fresh hold with the clock consistent is untouched
     _hold(k, actor, lab, clock=clock)
     assert watchdog.sweep(k) == []
@@ -64,18 +75,20 @@ def test_backward_clock_jump_fires_the_device_watchdog(lab):
     k = safety.Kernel.load(clock=clock)
     d = man.devices["hotplate"]
     sim_d = k.driver(d)
-    # hotplate heating, device watchdog armed at clock + deadman_s
-    from _lab_support import prepare_heating
-    prepare_heating(lab)
+    _hold(k, _actor(), lab, dev="stirrer", clock=clock)
+    _hold(k, _actor(), lab, dev="fume_hood", clock=clock)
     _hold(k, _actor(), lab, clock=clock)
     assert sim_d.arm_watchdog(d, d.deadman_s)
     with simulator._world() as w:
         deadline = w["devices"]["hotplate"]["watchdog"]
     assert deadline > clock.t, "control: deadline is in the future"
 
-    # the clock jumps BACKWARD past the deadline: the device must fail
-    # safe rather than wait for a wall time it has already passed.
-    sim_d.clock = lambda: deadline - 10.0
+    # the clock jumps BACKWARD below the moment the watchdog was armed: the
+    # deadline can no longer be reached by this clock, so the device must
+    # fail safe rather than wait for real time to catch up.
+    with simulator._world() as w:
+        armed = w["devices"]["hotplate"]["watchdog_armed"]
+    sim_d.clock = lambda: armed - 10.0
     r = sim_d.read(d)
     vals = r.get("values") or sim("hotplate")
     assert vals.get("power") == "off", \
