@@ -157,3 +157,57 @@ def test_a_short_burst_under_the_strikes_is_left_alone(cluster):
 def test_own_processes_reads_this_users_proc_entries():
     procs = hpc_guard.own_processes()
     assert any(p.pid > 0 and p.cpu_s >= 0 for p in procs)
+
+
+def _handler(name, module="delfin.agent.cli"):
+    def f(args):
+        return 0
+    f.__name__ = name
+    f.__module__ = module
+    return f
+
+
+class _Args:
+    scheduler_action = "status"
+
+
+def test_delfin_agent_chat_moves_onto_a_compute_node(cluster, monkeypatch):
+    monkeypatch.setattr(hpc_guard.shutil, "which", lambda name: "/usr/bin/srun")
+    monkeypatch.setattr(hpc_guard, "_read_user_settings", lambda: {})
+    ran = []
+    hpc_guard.keep_cli_off_login_node(_handler("cmd_chat"), _Args(), ["chat", "-n", "x"],
+                                      env=LOGIN, execvp=lambda f, a: ran.append(a),
+                                      isatty=lambda: True)
+    assert ran and ran[0][:2] == ["srun", "--pty"]
+    assert ran[0][-5:] == ["-m", "delfin.agent.cli", "chat", "-n", "x"]
+
+
+def test_light_delfin_agent_commands_stay_on_the_login_node(cluster):
+    ran = []
+    for name in ("cmd_sessions", "cmd_watch", "cmd_where", "_cmd_service"):
+        hpc_guard.keep_cli_off_login_node(_handler(name), _Args(), [name],
+                                          env=LOGIN, execvp=lambda f, a: ran.append(a),
+                                          isatty=lambda: True)
+    hpc_guard.keep_cli_off_login_node(_handler("main", "delfin.agent.cli_swarm"), _Args(), ["swarm", "status"],
+                                      env=LOGIN, execvp=lambda f, a: ran.append(a))
+    assert ran == []
+
+
+def test_a_swarm_start_and_the_schedule_daemon_are_refused(cluster):
+    with pytest.raises(SystemExit):
+        hpc_guard.keep_cli_off_login_node(_handler("main", "delfin.agent.cli_swarm"), _Args(),
+                                          ["swarm", "start", "--execute"], env=LOGIN)
+    args = _Args()
+    args.scheduler_action = "start"
+    with pytest.raises(SystemExit):
+        hpc_guard.keep_cli_off_login_node(_handler("cmd_scheduler"), args,
+                                          ["scheduler", "start"], env=LOGIN)
+
+
+def test_every_moved_command_is_a_real_handler_of_delfin_agent():
+    from delfin.agent import cli
+    for name in hpc_guard.MOVED_COMMANDS:
+        assert callable(getattr(cli, name, None)), name
+    assert callable(cli.cmd_scheduler)
+    swarm = cli.build_parser().parse_args(["swarm"]).func
+    assert swarm.__module__ == "delfin.agent.cli_swarm"

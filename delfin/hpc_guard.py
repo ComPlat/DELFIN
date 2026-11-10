@@ -156,6 +156,42 @@ def run_on_compute_node(argv: Sequence[str], what: str, *,
     execvp(cmd[0], cmd)
 
 
+#: delfin-agent subcommands (by handler) that run agent turns or tests and
+#: move onto a compute node when started from a terminal on a login node.
+MOVED_COMMANDS = {
+    "cmd_chat": "an agent session",
+    "cmd_run": "an agent turn",
+    "_cmd_tui": "the terminal UI's agent sessions",
+    "_run_prcheck_subcommand": "the pre-PR check (it runs tests)",
+    "cmd_bench": "a benchmark run",
+}
+
+
+def keep_cli_off_login_node(func, args, argv: Sequence[str], *,
+                            env: Optional[dict] = None,
+                            execvp: Callable = os.execvp,
+                            isatty: Optional[Callable[[], bool]] = None) -> None:
+    """The delfin-agent entry point's guard, called once its arguments are
+    parsed. A session, a turn, the TUI, a pre-PR check or a benchmark moves
+    onto a compute node (srun --pty) from a terminal and is refused without
+    one. Starting a swarm or the schedule daemon is refused: their sessions
+    outlive the command, so they belong in an sbatch job. Everything else
+    (status, lists, approvals, watch, where, ...) stays: it is light."""
+    name = getattr(func, "__name__", "")
+    is_swarm = getattr(func, "__module__", "") == "delfin.agent.cli_swarm"
+    if is_swarm and "start" in argv:
+        exit_on_login_node("a swarm's member sessions",
+                           "start the swarm from inside an sbatch job", env=env)
+    if name == "cmd_scheduler" and getattr(args, "scheduler_action", "") == "start":
+        exit_on_login_node("the schedule daemon",
+                           "run it inside an sbatch job", env=env)
+    what = MOVED_COMMANDS.get(name)
+    if what:
+        kw = {} if isatty is None else {"isatty": isatty}
+        run_on_compute_node([sys.executable, "-m", "delfin.agent.cli", *argv],
+                            what, env=env, execvp=execvp, **kw)
+
+
 # --------------------------------------------------------------------------
 # The load watcher
 # --------------------------------------------------------------------------
