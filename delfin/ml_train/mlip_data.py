@@ -26,7 +26,7 @@ F = -grad(E).  The conversion keeps that sign.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
@@ -197,8 +197,10 @@ def _parse_engrad_blocks(path: str):
 
     ``#``-comment lines (as both xTB and ORCA write) and blank lines are
     skipped; the first three token groups are ``n``, the total energy in Eh
-    and the 3*n Cartesian gradient components in Eh/bohr.  Returns
-    ``(n, energy_eh, grad_eh_bohr)``.
+    and the 3*n Cartesian gradient components in Eh/bohr.  A real ORCA/xTB
+    ``.engrad`` then carries "the atomic numbers and current coordinates in
+    Bohr" (n rows of Z x y z); that block is not part of the gradient and is
+    ignored here.  Returns ``(n, energy_eh, grad_eh_bohr)``.
     """
     tokens: list[str] = []
     with open(path) as fh:
@@ -212,15 +214,19 @@ def _parse_engrad_blocks(path: str):
     try:
         n = int(tokens[0])
         energy_eh = float(tokens[1])
-        grad = [float(t) for t in tokens[2:]]
+        rest = tokens[2:]
+        grad = [float(t) for t in rest[:3 * n]]
     except ValueError as exc:  # pragma: no cover - defensive
         raise DataSourceError(f"malformed engrad {path}: {exc}") from exc
     if not grad:
         raise DataSourceError(f"engrad has no gradient block: {path}")
-    if len(grad) != 3 * n:
+    # exactly 3n gradient components, optionally followed by the n x 4
+    # atomic-number/coordinate block; anything else is not an engrad
+    if len(grad) != 3 * n or len(rest) not in (3 * n, 7 * n):
         raise DataSourceError(
-            f"engrad {path}: gradient block has {len(grad)} components, "
-            f"expected {3 * n} for {n} atoms"
+            f"engrad {path}: {len(rest)} values after the energy, expected "
+            f"{3 * n} (gradient) or {7 * n} (gradient + coordinates) for "
+            f"{n} atoms"
         )
     return n, energy_eh, grad
 

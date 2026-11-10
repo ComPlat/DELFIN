@@ -285,3 +285,25 @@ def test_parse_engrad_blocks_rejects_length_mismatch(tmp_path):
     )
     with pytest.raises(md.DataSourceError):
         md._parse_engrad_blocks(str(engrad))
+
+
+def test_engrad_with_trailing_coordinate_block_reads_only_the_gradient(tmp_path):
+    """Real-run finding: a real ORCA .engrad carries, after the gradient, the
+    atomic numbers and coordinates in bohr (n rows of Z x y z).  The parser
+    took them as gradient components and refused every real ORCA run
+    ("21 components, expected 9").  Layout written by hand for DELFIN."""
+    p = tmp_path / "mol.engrad"
+    p.write_text(
+        "#\n# Number of atoms\n#\n 3\n#\n# The current total energy in Eh\n#\n"
+        "   -76.321269021722\n#\n# The current gradient in Eh/bohr\n#\n"
+        "   0.0\n   0.0\n   0.000054308982\n"
+        "   0.0\n   0.000034845279\n  -0.000027157558\n"
+        "   0.0\n  -0.000034837970\n  -0.000027151344\n"
+        "#\n# The atomic numbers and current coordinates in Bohr\n#\n"
+        "   8     0.0000000    0.0000000    0.2404299\n"
+        "   1     0.0000000    1.4307886   -0.8960420\n"
+        "   1     0.0000000   -1.4307887   -0.8960420\n"
+    )
+    n, e, grad = md._parse_engrad_blocks(str(p))
+    assert (n, e) == (3, -76.321269021722)
+    assert grad[2] == 0.000054308982 and len(grad) == 9

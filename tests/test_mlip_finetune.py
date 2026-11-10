@@ -168,3 +168,34 @@ def test_model_hand_over_returns_model_argument_for_mlip_route(tmp_path):
     # orca_mlips.ext_params_for would forward as --model
     assert f"--model {fake_model}" in args
     assert "--backend mace" in args
+
+
+def test_training_sbatch_has_no_bare_option_lines(tmp_path):
+    """Real-run finding: '--nodes=1'/'--ntasks=1' were written without
+    '#SBATCH', so bash ran them as commands and the job died at once."""
+    import subprocess
+
+    from delfin.mlp_tools.cluster_dispatch import MLPClusterConfig
+
+    cfg = MLPClusterConfig(gpu_partitions="gpu_x", gres="gpu:1")
+    spec = mf.build_training_spec(tmp_path / "d.extxyz", out_dir=tmp_path / "o")
+    text = mf.render_training_sbatch(cfg, spec)
+    assert not [l for l in text.splitlines() if l.startswith("--")]
+    assert "#SBATCH --nodes=1" in text and "#SBATCH --ntasks=1" in text
+    script = tmp_path / "t.sbatch"
+    script.write_text(text)
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
+
+
+def test_submit_and_train_refuse_instead_of_faking_a_training(tmp_path, monkeypatch):
+    from delfin.mlp_tools.cluster_dispatch import MLPClusterConfig
+
+    cfg = MLPClusterConfig(gpu_partitions="gpu_x", gres="gpu:1")
+    spec = mf.build_training_spec(tmp_path / "d.extxyz", out_dir=tmp_path / "o")
+    with pytest.raises(NotImplementedError):
+        mf.write_and_submit_training(cfg, spec, job_dir=tmp_path, submit=True)
+    monkeypatch.setattr("sys.argv", ["x", "--train", "--dataset", "d", "--out", str(tmp_path / "o")])
+    with pytest.raises(SystemExit) as exc:
+        mf.__main__()
+    assert exc.value.code != 0
+    assert not (tmp_path / "o" / "training_started.json").exists()

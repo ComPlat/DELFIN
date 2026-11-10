@@ -5,10 +5,9 @@ MACE foundation-model fine-tune and for fairchem, with documented, cited
 defaults (learning rate, epochs, energy/force weights, cutoff), plus a
 training submission spec that goes through
 ``delfin.mlp_tools.cluster_dispatch`` (the same GPU-on-the-cluster path DELFIN
-uses for MLIP *inference* jobs).  Nothing here submits by default: the sbatch
-is rendered and written, and the dry run is the default (``submit=True`` is
-required for any cluster side effect, exactly as in
-:func:`delfin.mlp_tools.cluster_dispatch.write_and_submit`).
+uses for MLIP *inference* jobs).  Nothing here submits: the sbatch is
+rendered and written as a dry run; ``submit=True`` is refused until a trainer
+is wired to the job's entry point.
 
 After training, :func:`register_model` writes a registration record for the
 fine-tuned checkpoint and :func:`model_hand_over` turns it into the
@@ -22,12 +21,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence, Union
+from typing import Any, Mapping, Optional, Union
 
 from delfin.mlp_tools.cluster_dispatch import MLPClusterConfig
 from delfin.ml_train.mlip_data import (
     HoldOutError,
-    LicenceError,
     check_source_licence,
     refuses_hold_out,
 )
@@ -229,8 +227,8 @@ def render_training_sbatch(
             f"#SBATCH --job-name={job_name}",
             f"#SBATCH --partition={cfg.gpu_partitions}",
             f"#SBATCH --gres={cfg.gres}",
-            "--nodes=1",
-            "--ntasks=1",
+            "#SBATCH --nodes=1",
+            "#SBATCH --ntasks=1",
             f"#SBATCH --cpus-per-task={cpus}",
             f"#SBATCH --mem={cfg.mem_mb}M",
             f"#SBATCH --time={tlim}",
@@ -242,7 +240,7 @@ def render_training_sbatch(
             "export TORCH_NUM_THREADS=2",
             "export PYTHONNOUSERSITE=1",
             *env_activation,
-            f"export DELFIN_MLP_TRAIN=1",
+            "export DELFIN_MLP_TRAIN=1",
             f"export DELFIN_MLP_TRAIN_DATASET={spec.dataset_extxyz}",
             f"export DELFIN_MLP_TRAIN_OUT={spec.out_dir}",
             "",
@@ -263,48 +261,27 @@ def write_and_submit_training(
     job_dir: Union[str, Path],
     job_name: str = "mlp_train",
     submit: bool = False,
-    active_jobs: Optional[int] = None,
-    sbatch: str = "sbatch",
 ) -> dict:
-    """Write the training sbatch; submit only when ``submit=True``.
+    """Write the training sbatch (dry run).  ``submit=True`` is refused.
 
-    The dry run is the default: no cluster side effect without an explicit
-    request.  The submission path routes through ``delfin.scheduler_client``
-    exactly as ``cluster_dispatch.write_and_submit`` does.  Returns
+    No trainer is wired to the job's entry point yet, so a queued GPU job
+    could not train; refusing keeps the cluster free of jobs that cannot do
+    their work.  The written sbatch and the config stay available.  Returns
     ``{script, submitted, sbatch_output}``.
     """
-    from delfin.mlp_tools.cluster_dispatch import assert_can_submit, scheduler_client
-
     if submit:
-        if active_jobs is None:
-            from delfin.mlp_tools.cluster_dispatch import count_active_mlp_jobs
-
-            active_jobs = count_active_mlp_jobs()
-        assert_can_submit(active=active_jobs)
+        raise NotImplementedError(
+            "MLIP fine-tuning launch is not wired yet: the training entry "
+            "point does not run a trainer. Use the written config with the "
+            "framework's own trainer; submit=True is refused."
+        )
     script = render_training_sbatch(cfg, spec, job_name=job_name)
     job_dir = Path(job_dir)
     job_dir.mkdir(parents=True, exist_ok=True)
     path = (job_dir / f"{job_name}.sbatch").resolve()
     path.write_text(script, encoding="utf-8")
     path.chmod(0o755)
-    out = {"script": str(path), "submitted": False, "sbatch_output": ""}
-    if not submit:
-        return out
-    if cfg.env_activation:
-        # activation lines are shell, so the launch cannot be sys.executable;
-        # sbatch runs the script, which activates and then python -m ...
-        pass
-    argv = [sbatch, str(path)]
-    from delfin.mlp_tools.cluster_dispatch import scheduler_client as sc
-
-    done_out = sc.query(sc.kind_of_argv(argv), argv) or ""
-    out["sbatch_output"] = done_out.strip()
-    if not done_out:
-        raise RuntimeError(
-            f"sbatch failed: {out['sbatch_output'] or 'no output'}"
-        )
-    out["submitted"] = True
-    return out
+    return {"script": str(path), "submitted": False, "sbatch_output": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -369,8 +346,8 @@ def model_hand_over(record: Mapping[str, Any], *, backend: str = "mace") -> str:
 
 
 def __main__() -> None:
-    """Cluster entry point: records a training launch (no training on a login
-    node or in tests; the submit path is what queues the real GPU job)."""
+    """Cluster entry point.  No trainer is wired yet, so ``--train`` fails
+    loudly (exit 2) instead of reporting a training that never ran."""
     import argparse
 
     ap = argparse.ArgumentParser(prog="delfin.ml_train.mlip_finetune")
@@ -379,15 +356,9 @@ def __main__() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--framework", default="mace")
     a = ap.parse_args()
-    Path(a.out).mkdir(parents=True, exist_ok=True)
-    marker = Path(a.out) / "training_started.json"
-    marker.write_text(
-        json.dumps(
-            {"dataset": a.dataset, "framework": a.framework,
-             "status": "queued on cluster; run sbatch to execute"},
-            indent=2,
-        ) + "\n",
-        encoding="utf-8",
+    raise SystemExit(
+        f"delfin.ml_train.mlip_finetune: no {a.framework} trainer is wired "
+        f"yet; nothing was trained (dataset {a.dataset}, out {a.out})"
     )
 
 
