@@ -153,3 +153,23 @@ def test_api_frame_lineage_tool(stage_dir):
                     ("frame_2.xyz", "frame_3.xyz")}
     assert data["stages"][1]["summary"]["appeared"] == 1
     assert data["rmsd_tol"] == 0.05
+
+
+def test_equal_geometries_are_paired_one_to_one(tmp_path):
+    """Real-run finding (MANTA [Fe(NH3)6]2+ isomers share one heavy-atom
+    geometry): a greedy best match sent every source to the first equal
+    destination, demoted the rest to 'merged' and reported a carried-over
+    frame as 'appeared'.  Three equal sources, two equal destinations must
+    give two kept, one merged and nothing appeared."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    for i in range(3):
+        _xyz(a / f"frame_{i}.xyz", ["O", "H", "H"], WATER)
+    for i in range(2):
+        _xyz(b / f"frame_{i}.xyz", ["O", "H", "H"], _rotation(WATER))
+    res = lineage_between_stages([str(a), str(b)])
+    status = sorted(e.status for e in res.edges)
+    assert status == ["kept", "kept", "merged"], status
+    kept_dst = sorted(e.dst_frame for e in res.edges if e.status == "kept")
+    assert kept_dst == ["frame_0.xyz", "frame_1.xyz"]

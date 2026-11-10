@@ -157,46 +157,57 @@ def _heavy_rmsd(src: Frame, dst: Frame) -> Optional[float]:
 
 def _match_pair(src_frames: list[Frame], dst_frames: list[Frame],
                 rmsd_tol: float, conn_required: bool) -> list[LineageEdge]:
-    """One source stage -> one destination stage.  Geometry only."""
-    edges: list[LineageEdge] = []
-    for sf in src_frames:
-        best: Optional[tuple] = None
-        for df in dst_frames:
+    """One source stage -> one destination stage.  Geometry only.
+
+    Sources and destinations are first paired one to one with the least
+    total RMSD among the pairs within tolerance (Hungarian assignment), so
+    a carried-over frame is ``kept`` even when several frames share its
+    heavy-atom geometry.  A source left over that still lies within
+    tolerance of some destination is ``merged`` into its closest one; any
+    other source ``vanished``; a destination without source ``appeared``.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    cand: dict[tuple[int, int], float] = {}
+    for i, sf in enumerate(src_frames):
+        for j, df in enumerate(dst_frames):
             if df.signature != sf.signature:
                 continue
             if conn_required and df.conn_class != sf.conn_class:
                 continue
             rmsd = _heavy_rmsd(sf, df)
-            if rmsd is None or rmsd > rmsd_tol:
-                continue
-            if best is None or (rmsd, df.name) < best:
-                best = (rmsd, df.name)
-        if best is None:
-            edges.append(LineageEdge(sf.name, 0, None, 1, "vanished"))
+            if rmsd is not None and rmsd <= rmsd_tol:
+                cand[(i, j)] = rmsd
+    pair: dict[int, int] = {}
+    if cand:
+        big = 1.0e9
+        cost = np.full((len(src_frames), len(dst_frames)), big)
+        for (i, j), r in cand.items():
+            cost[i, j] = r
+        for i, j in zip(*linear_sum_assignment(cost)):
+            if cost[i, j] < big:
+                pair[int(i)] = int(j)
+    edges: list[LineageEdge] = []
+    for i, sf in enumerate(src_frames):
+        if i in pair:
+            j = pair[i]
+            edges.append(LineageEdge(sf.name, 0, dst_frames[j].name, 1,
+                                     "kept", rmsd=cand[(i, j)]))
+            continue
+        near = sorted((r, dst_frames[j].name) for (a, j), r in cand.items()
+                      if a == i)
+        if near:
+            edges.append(LineageEdge(sf.name, 0, near[0][1], 1, "merged",
+                                     rmsd=near[0][0]))
         else:
-            edges.append(LineageEdge(sf.name, 0, best[1], 1, "kept",
-                                     rmsd=best[0]))
-    # merges: any second source within tolerance of a claimed destination
-    for df in dst_frames:
-        members = [e for e in edges if e.dst_frame == df.name
-                   and e.status == "kept"]
-        if len(members) > 1:
-            # keep the least-RMSD one, demote the rest to 'merged'
-            members.sort(key=lambda e: (e.rmsd, e.src_frame))
-            for e in members[1:]:
-                e.status = "merged"
-    # appeared: destinations with no source
+            edges.append(LineageEdge(sf.name, 0, None, 1, "vanished"))
     taken = {e.dst_frame for e in edges if e.dst_frame}
     for df in dst_frames:
         if df.name not in taken:
             edges.append(LineageEdge(df.name, 1, None, 1, "appeared",
                                      rmsd=None))
-    # normalise src/dst stage numbers
     for e in edges:
-        if e.status == "appeared":
-            e.src_stage, e.dst_stage = 0, 1
-        else:
-            e.src_stage, e.dst_stage = 0, 1
+        e.src_stage, e.dst_stage = 0, 1
     return edges
 
 
