@@ -13,7 +13,9 @@ whoever starts something:
   node instead, through ``srun --pty`` (:func:`run_on_compute_node`);
 * :func:`watch` is the net under all of it: it samples this user's own
   processes on the login node and stops (SIGSTOP, by PID) a DELFIN process
-  that keeps the user above the core budget.
+  that keeps the user above the core budget. It is not started by hand:
+  every ``delfin-agent`` call on a login node makes sure one watcher runs
+  on that host (:func:`ensure_watcher`, one per user and host).
 
 Where a host is a login node is decided in one place,
 ``delfin.agent.calc_policy.host_kind`` (no job id, scheduler commands on
@@ -177,6 +179,10 @@ def keep_cli_off_login_node(func, args, argv: Sequence[str], *,
     one. Starting a swarm or the schedule daemon is refused: their sessions
     outlive the command, so they belong in an sbatch job. Everything else
     (status, lists, approvals, watch, where, ...) stays: it is light."""
+    try:
+        ensure_watcher(env=env)
+    except Exception:
+        pass  # the watcher is a net; it never breaks the command
     name = getattr(func, "__name__", "")
     is_swarm = getattr(func, "__module__", "") == "delfin.agent.cli_swarm"
     if is_swarm and "start" in argv:
@@ -295,6 +301,72 @@ def watch(*, budget: float = LOGIN_CORE_BUDGET, interval: float = 30.0,
     return stopped
 
 
+# --------------------------------------------------------------------------
+# One watcher per user and login node, started by DELFIN itself
+# --------------------------------------------------------------------------
+
+def _watch_files() -> tuple:
+    """The lock and log of this host's watcher (HOME is shared between the
+    login nodes, so the host name is part of the name)."""
+    import socket
+    base = Path.home() / ".delfin"
+    host = socket.gethostname().split(".")[0] or "host"
+    return base / f"hpc_watch.{host}.lock", base / f"hpc_watch.{host}.log"
+
+
+def _try_lock(path: Path):
+    """An open file holding an exclusive lock on *path*, or None when
+    another process holds it."""
+    import fcntl
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
+def watcher_running() -> bool:
+    """True when this host's watcher holds its lock."""
+    fh = _try_lock(_watch_files()[0])
+    if fh is None:
+        return True
+    fh.close()
+    return False
+
+
+def _spawn_watcher() -> None:
+    """Start the watcher detached (own session, no terminal), its output in
+    the host's log file."""
+    import subprocess
+    log = _watch_files()[1]
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "a") as out:
+        subprocess.Popen([sys.executable, "-m", "delfin.hpc_guard", "watch"],
+                         stdin=subprocess.DEVNULL, stdout=out,
+                         stderr=subprocess.STDOUT, close_fds=True,
+                         start_new_session=True)
+
+
+def ensure_watcher(*, env: Optional[dict] = None,
+                   running: Optional[Callable[[], bool]] = None,
+                   spawn: Optional[Callable[[], None]] = None) -> bool:
+    """On a login node, start this host's watcher unless it runs already.
+    Returns True when one was started. Off a login node nothing happens."""
+    if not on_login_node(env):
+        return False
+    if spawn is None and "PYTEST_CURRENT_TEST" in os.environ:
+        return False  # a test that simulates a login node starts no daemon
+    running = running or watcher_running
+    spawn = spawn or _spawn_watcher
+    if running():
+        return False
+    spawn()
+    return True
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(
@@ -311,10 +383,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.cmd == "check":
         print("login node" if on_login_node() else "not a login node")
         return 0
+    if not on_login_node():
+        print("hpc_guard watch: not a login node, nothing to watch")
+        return 0
+    lock = _try_lock(_watch_files()[0])
+    if lock is None:
+        print("hpc_guard watch: a watcher already runs on this host")
+        return 0
     try:
         watch(budget=args.budget, interval=args.interval)
     except KeyboardInterrupt:
         pass
+    finally:
+        lock.close()
     return 0
 
 
