@@ -286,3 +286,20 @@ def test_predict_before_fit_raises():
     split = _split(len(ds.molecules))
     with pytest.raises(arch.NeedsExtraError):
         arch.predict("random_forest", None, ds, split)
+
+
+def test_cod_needs_cc0_and_unstated_source_is_refused():
+    # real-run finding: COD data with a non-CC0 licence was accepted because
+    # "cod" returned early before the CC0 check
+    arch.check_licence("cod", "CC0")
+    with pytest.raises(ValueError, match="CC0"):
+        arch.check_licence("cod", "proprietary")
+    with pytest.raises(ValueError):
+        arch.check_licence("", "")
+
+    class Bare:  # no source/licence stated
+        molecules = []
+        properties = []
+
+    with pytest.raises(ValueError):
+        arch.fit("random_forest", Bare(), arch.SimpleSplit([], []))

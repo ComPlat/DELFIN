@@ -178,7 +178,7 @@ def refuse_holdout(path: str) -> None:
                     raise ValueError(f"refusing pool_6000 hold-out input: {path!r}")
 
 
-_ALLOWED_SOURCES = {"cod", "own", "own-calculation", "own_calculation"}
+_OWN_SOURCES = {"own", "own-calculation", "own_calculation"}
 
 
 def check_licence(source: str, licence: str) -> None:
@@ -189,14 +189,16 @@ def check_licence(source: str, licence: str) -> None:
     """
     src = (source or "").strip().lower()
     lic = (licence or "").strip().lower()
-    if src in _ALLOWED_SOURCES:
-        return
     if src in ("ccdc", "csd") or "ccdc" in src or "csd" in src:
         raise ValueError(
             f"CSD/CCDC-derived data is licence-restricted and refused: {source!r}")
-    # COD data must carry CC0
-    if src == "cod" and "cc0" not in lic:
-        raise ValueError(f"COD data must be CC0, got licence {licence!r}")
+    if src in _OWN_SOURCES:
+        return
+    if src == "cod":
+        # COD data must carry CC0
+        if "cc0" not in lic:
+            raise ValueError(f"COD data must be CC0, got licence {licence!r}")
+        return
     raise ValueError(
         f"unknown data source {source!r} with licence {licence!r} refused; "
         "use COD (CC0) or own calculations")
@@ -566,8 +568,10 @@ def fit(name: str, dataset, split, **fit_kwargs
     # guard: only allowed data sources, and never a hold-out provenance.
     # refuse_holdout matches PATH components (LOCKBOX2/pool_6000/stage1_v2),
     # so it must receive the dataset's data path, not its licence source label.
-    check_licence(getattr(dataset, "source", "own-calculation"),
-                  getattr(dataset, "licence", "CC0"))
+    # a dataset that does not state its source/licence is refused, not
+    # assumed to be an own calculation
+    check_licence(getattr(dataset, "source", ""),
+                  getattr(dataset, "licence", ""))
     refuse_holdout(getattr(dataset, "path", ""))
     if entry.lazy_import:
         raise NeedsExtraError(
