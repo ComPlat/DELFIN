@@ -74,6 +74,7 @@ _KINDS = {
     # why the rung records instead of asking, rather than doing neither.
     "outside_read_bypass": ("👁", "Read outside the roots (Bypass)"),
     "worktree_merge_refused": ("⛔", "Worktree merge refused (a file it writes is not allowed)"),
+    "local_project_init": ("🗂", "Workspace made a local git repository (user's yes)"),
     "approval_timeout": ("⌛", "Approval window expired"),
     # The posture switched to bypass by a person (shift+tab and its
     # confirmation, in the terminal or the window).
@@ -137,6 +138,18 @@ _KINDS = {
     "handover_root":  ("📂", "Shared hand-over directory in use"),
     "settings_updated": ("🛡", "Settings changed by a security update"),
     "push_unrequested": ("📤", "Push nobody asked for"),
+    # Lab device control (delfin/lab/audit.py LAB_EVENT_KINDS): the safety
+    # kernel refused a write, put a device in its safe state, tripped the
+    # dead-man, saw a readback that does not match, or refused an approval
+    # or a manifest; an e-stop and its clearing.
+    "lab_refused":    ("🧯", "Lab write refused by the safety kernel"),
+    "lab_safe_state": ("🧯", "Lab device put in its safe state"),
+    "lab_estop":      ("🛑", "Lab emergency stop"),
+    "lab_estop_cleared": ("🛑", "Lab emergency stop cleared by a person"),
+    "lab_deadman":    ("⏱", "Lab dead-man tripped (no heartbeat / owner gone)"),
+    "lab_readback_mismatch": ("🧯", "Lab device readback does not match"),
+    "lab_approval_refused": ("🚫", "Lab approval refused"),
+    "lab_manifest_refused": ("📕", "Lab manifest refused (changed or unpinned)"),
     "pr_create_unrequested": ("📤", "Pull request nobody asked for"),
     "pr_merge_contributor": ("🚫", "Merge attempted by a contributor"),
     "pr_merge_unrequested": ("📤", "Merge nobody asked for"),
@@ -149,6 +162,7 @@ _KINDS = {
     "gh_alias_refused": ("🚫", "gh alias that hides a guarded command"),
     "gh_extension_refused": ("🚫", "gh extension install refused"),
     "git_config_program": ("⚙", "Git setting that runs a program"),
+    "env_root_prefix": ("📦", "Environment under the conda root prefix"),
     # The user's permission rules (permission_rules.py).
     "permission_rule_deny": ("⛔", "Refused by a permission rule"),
     "permission_rule_ask": ("❓", "Asked by a permission rule"),
@@ -188,6 +202,7 @@ _KINDS = {
     "read_only_shape":   ("✅", "Harmless command form approved by rule"),
     "caged_unasked":     ("🧱", "Command run unasked inside the filesystem cage"),
     "calculation_admitted": ("🧪", "Calculation started unasked: setup and resources checked"),
+    "information_call":  ("ℹ️", "Program asked for its version or help, run unasked"),
     "classifier_ask":    ("❓", "Action classifier asked the user"),
     "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),

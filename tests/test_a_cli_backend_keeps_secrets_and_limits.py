@@ -37,8 +37,8 @@ def launch(monkeypatch):
     monkeypatch.setattr(A.shutil, "which", lambda name, *a, **k:
                         "/usr/bin/claude" if name == "claude" else real_which(name, *a, **k))
     monkeypatch.setenv("KIT_TOOLBOX_API_KEY", KIT)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-own-key-for-the-cli")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-own-key-for-codex")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-own-key-for-the-cli")  # secret-guard: allow (synthetic DELFIN test sample)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-own-key-for-codex")  # secret-guard: allow (synthetic DELFIN test sample)
     return seen
 
 
@@ -66,7 +66,7 @@ def test_the_claude_cli_always_gets_the_secret_deny_rules(launch, mode):
                  "Read(~/.delfin/credentials.json)"):
         assert rule in rules
     assert KIT not in json.dumps(env) and "OPENAI_API_KEY" not in env
-    assert env["ANTHROPIC_API_KEY"] == "sk-ant-own-key-for-the-cli"
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-own-key-for-the-cli"  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 def _codex(mode, launch, monkeypatch):
@@ -83,7 +83,7 @@ def test_codex_accepting_edits_stays_in_the_workspace(launch, monkeypatch, mode)
     assert cmd[cmd.index("--sandbox") + 1] == "workspace-write"
     assert "danger-full-access" not in cmd
     assert KIT not in json.dumps(env) and "ANTHROPIC_API_KEY" not in env
-    assert env["OPENAI_API_KEY"] == "sk-openai-own-key-for-codex"
+    assert env["OPENAI_API_KEY"] == "sk-openai-own-key-for-codex"  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 def test_no_mode_gives_codex_the_whole_disk(launch, monkeypatch):

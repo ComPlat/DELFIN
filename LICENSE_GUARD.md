@@ -118,7 +118,15 @@ and WEIGHT licence are separate things and both are declared per backend
   the upstream text is marked `verified=False`, never guessed.
 - **What an installer may do:** hint only (`pip install <pkg>` in an
   install_hint string). DELFIN never installs an MLIP package or weights
-  on its own.
+  on its own. The guided set-up (`delfin/mlp_tools/guided_setup.py`,
+  `delfin mlp_setup`) shows the exact commands with the backend's code
+  and weight licence records and runs a command only after the user
+  approved that command (terminal y/N, or the agent's shell gate, which
+  asks for every installer command in every mode). It installs packages
+  into a separate environment; weights are fetched by the backend into
+  the user's own cache on first use (the verify job), never into the
+  repository. For a gated checkpoint the plan tells the user to run
+  `hf auth login` themselves; the token never passes through DELFIN.
 - Every backend's `weight_licence.url` names the model card / licence page
   the user must check before depending on the checkpoint.
 
@@ -132,3 +140,22 @@ documented reference. Use sparingly.
 Git history is not rewritten by this package. Files removed here stay
 in older commits; deciding on a history rewrite is the person's
 decision.
+
+## Bring-your-own-licence tools
+
+A small number of scripts under `tools/` exist for users who hold their own CSD licence. They read
+the user's local CSD installation and produce, on the user's machine, a file DELFIN can be pointed
+at. The rules for every such tool:
+
+- It lives in `tools/` only. No module under `delfin/` imports it (checked by
+  `tests/test_byol_tools.py`), and DELFIN runs without it.
+- Its single CSD import carries `# license-guard: allow` and is executed only under the CSD
+  Python API interpreter (`run_csd_python_api`).
+- What it produces stays local. The derived table is never committed to this repository and is
+  not redistributed; shipping it would need the written consent of the CCDC.
+- The shipped default stays open data: the metal-donor target table delivered with MANTA is the
+  COD (CC0) table `delfin/manta/data/ml_targets_cod.tsv`.
+
+Current tools: `tools/export_csd_crystals.py` (exports single-complex crystal coordinates for
+`tools/derive_ml_targets.py`, which derives the bond-valence metal-donor table and is licence-free
+itself).

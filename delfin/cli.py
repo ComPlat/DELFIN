@@ -1587,6 +1587,10 @@ def main(argv: list[str] | None = None) -> int:
         from delfin.review import main as _review_main
 
         return _review_main(arg_list[1:])
+    if arg_list and arg_list[0] == "provenance":
+        from delfin.provenance_record import main as _provenance_main
+
+        return _provenance_main(arg_list[1:])
     if arg_list and arg_list[0] == "doctor":
         return _run_doctor_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "qm_check":
@@ -1597,6 +1601,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_csp_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "mlp_check":
         return _run_mlp_check_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "mlp_setup":
+        from delfin.mlp_tools.setup_cli import main as _mlp_setup_main
+
+        return _mlp_setup_main(arg_list[1:])
     if arg_list and arg_list[0] == "analysis_check":
         return _run_analysis_check_subcommand(arg_list[1:])
     if arg_list and arg_list[0] == "tadf_xtb":
@@ -2272,6 +2280,15 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("DELFIN data JSON written to %s", output_json)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to generate DELFIN_Data.json: %s", exc, exc_info=True)
+
+        # Auto-write PROVENANCE.json alongside the run's DELFIN_Data.json
+        try:
+            from delfin.provenance_record import build_record, write_record
+
+            write_record(build_record(workspace_root), workspace_root)
+            logger.info("PROVENANCE.json written to %s", workspace_root)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to write PROVENANCE.json: %s", exc, exc_info=True)
 
         # Generate DOCX report at the end of the run
         try:

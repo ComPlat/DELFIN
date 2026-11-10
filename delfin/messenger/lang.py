@@ -35,6 +35,7 @@ EN = {
     'dateien – bereitgestellte Dateien; datei NAME – herunterladen.\n'
     'Im Forum: austausch on/off – ausdrückliche Agentenmitteilungen teilen (standardmäßig aus).\n'
     'neu NAME – neue Sitzung im eigenen Ordner starten; neu NAME: Auftrag – mit erstem Auftrag.\n'
+    'neu NAME arbeitskopie – in einer eigenen Arbeitskopie; zusammenführen [PFAD] – Arbeitskopie zurückführen.\n'
     'zeitpläne – Chat für Zeitpläne öffnen; im Sitzungs-Chat: plan ZEIT AUFGABE.\n'
     'profil frei|standard – im Sitzungs-Chat für dessen Ordner; sonst: profil <sitzung> frei.\n'
     'sync aktualisiert die aktivierten Sitzungen.':
@@ -48,6 +49,7 @@ EN = {
     'files – files made available; file NAME – download one.\n'
     'In the forum: exchange on/off – share explicit agent announcements (off by default).\n'
     'new NAME – start a session in a folder of its own; new NAME: task – with a first task.\n'
+    'new NAME arbeitskopie – in a worktree of its own; merge [PATH] – merge it back.\n'
     'schedules – open the schedules chat; in a session chat: schedule WHEN TASK.\n'
     'profil frei|standard – in a session chat for its folder; otherwise: profil <session> frei.\n'
     'sync refreshes the enabled sessions.',
@@ -134,6 +136,22 @@ EN = {
     'New session {title} started (folder {folder}). The chat invitation is in SimpleX; '
     'it asks before commands.',
     'Auftrag übergeben.': 'Task delivered.',
+    # -- session worktrees (neu NAME arbeitskopie, zusammenführen) ------------------
+    'Zusammenführen ist nicht gelungen.': 'The merge did not go through.',
+    'Keine Sitzungs-Arbeitskopien. neu NAME arbeitskopie legt eine an.':
+    'No session worktrees. neu NAME arbeitskopie makes one.',
+    'Sitzungs-Arbeitskopien:': 'Session worktrees:',
+    '{path} — {summary}': '{path} — {summary}',
+    'zusammenführen PFAD führt eine zurück.': 'zusammenführen PATH merges one back.',
+    'Zurückgeführt nach {target}: {files} (uncommitiert, zur Durchsicht).':
+    'Merged back to {target}: {files} (uncommitted, for review).',
+    'Konflikt, nichts überschrieben: {files}. {message} Die Arbeitskopie bleibt: dort lösen, dann erneut zusammenführen.':
+    'Conflict, nothing overwritten: {files}. {message} The worktree is kept: resolve it there, then merge again.',
+    'Zusammenführen nicht angewendet: {message}':
+    'Merge not applied: {message}',
+    'Fehler': 'error',
+    'die geänderten Dateien': 'the changed files',
+    'keine Dateiänderungen': 'no file changes',
     # -- requests ------------------------------------------------------------------
     '❓ Rückfrage': '❓ Question',
     '📋 Planfreigabe': '📋 Plan approval',

@@ -87,6 +87,11 @@ PREFER_SYSTEM_TOOLS="${PREFER_SYSTEM_TOOLS:-0}"
 # finishes the same job normally. A floor rather than a pin, so newer builds
 # are still taken.
 XTB_MINIMUM="${XTB_MINIMUM:-6.7.1}"
+# The conda specs themselves. A deployment that pins one build per host
+# (scripts/pi/pi_install.sh: xtb==6.7.1, crest==3.0.2) names them here;
+# the defaults are the floor above and the newest CREST.
+XTB_SPEC="${XTB_SPEC:-xtb>=${XTB_MINIMUM}}"
+CREST_SPEC="${CREST_SPEC:-crest}"
 INSTALL_STD2_FROM_SOURCE="${INSTALL_STD2_FROM_SOURCE:-0}"
 FORCE_REDOWNLOAD="${FORCE_REDOWNLOAD:-0}"
 FORCE_CONDA_UPDATE="${FORCE_CONDA_UPDATE:-0}"
@@ -484,7 +489,7 @@ install_xtb() {
       return
     fi
   fi
-  install_managed_or_adopt xtb "xtb>=${XTB_MINIMUM}" xtb
+  install_managed_or_adopt xtb "${XTB_SPEC}" xtb
 }
 
 # MOPAC: PM6, PM7 and PM6-D3H4. Two megabytes from conda-forge, its own
@@ -533,7 +538,7 @@ install_crest() {
       return
     fi
   fi
-  install_managed_or_adopt crest "crest" crest
+  install_managed_or_adopt crest "${CREST_SPEC}" crest
 }
 
 install_dftbplus() {
