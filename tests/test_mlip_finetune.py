@@ -15,6 +15,7 @@ import pytest
 
 from delfin.mlp_tools.cluster_dispatch import MLPClusterConfig
 from delfin.ml_train import mlip_finetune as mf
+from delfin.ml_train.mlip_data import LicenceError
 
 
 # ------------------------------------------------------------------ defaults
@@ -141,7 +142,7 @@ def test_register_model_writes_a_registration_record(tmp_path):
 def test_register_model_refuses_csd_source(tmp_path):
     fake_model = tmp_path / "model_0.pt"
     fake_model.write_bytes(b"x")
-    with pytest.raises(mf.LicenceError):
+    with pytest.raises(LicenceError):
         mf.register_model(
             fake_model, framework="mace", method="MACE",
             basis=None, source="csd 1234", licence="CCDC", out_dir=tmp_path / "reg")

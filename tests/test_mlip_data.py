@@ -8,6 +8,8 @@ Tests here write tiny SYNTHETIC fixtures in the test (never real outputs).
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -147,7 +149,7 @@ def test_frames_to_extxyz_force_columns_match_atoms(tmp_path):
 def test_frames_to_extxyz_records_stress_when_present(tmp_path):
     run = _write_xtb_run(tmp_path / "run", energy_eh=-10.0)
     frame = md.read_run(run, "mol", program="xtb", source="own", licence="self")
-    frame = md.replace(frame, stress=[1.0, 2.0, 3.0, 0.0, 0.0, 0.0])
+    frame = dataclasses.replace(frame, stress=[1.0, 2.0, 3.0, 0.0, 0.0, 0.0])
     out = tmp_path / "data.extxyz"
     md.frames_to_extxyz([frame], out)
     assert 'stress="1.0 2.0 3.0 0.0 0.0 0.0"' in out.read_text(encoding="utf-8")
