@@ -184,24 +184,71 @@ def write_example_spec(path: Path | str, *, force: bool = False) -> Path:
     return target
 
 
-def write_member_settings(member: dict[str, Any], repo_dir: Path) -> Path:
-    """Persist the member's write scope into ITS repo settings.
+def write_member_settings(member: dict[str, Any], repo_dir: Path,
+                          *, home: Path | str | None = None) -> Path:
+    """Persist the member's role policy + write scope into ITS repo settings.
 
     Writes only to the member's own worktree settings file
-    (``<worktree>/.delfin/settings.json``), never the user's. This is
-    how the write scope from the spec reaches the existing permission
-    gate: the gate reads ``kit`` write_allow_globs, so we record them
-    where it looks.
+    (``<worktree>/.delfin/settings.json``), never the user's. The file is
+    MERGED, never replaced, so it can only TIGHTEN:
+
+    - the role's deny patterns are unioned on top of any existing deny
+      patterns (an existing pattern is never dropped),
+    - ``write_allow_globs`` is narrowed to the member's owned scope
+      INTERSECTED with whatever is already there (never widened); a fresh
+      member gets exactly its owned scope,
+    - the permission mode is never written as bypass (the member starts at
+      the default mode -- only the person grants more trust),
+    - an unknown role is refused before anything is written.
+
+    The role policy comes from :func:`delfin.agent.swarm.policy` so a
+    member's effective policy equals its role policy (deny patterns are
+    tighten-only in ``kit_settings._merge``, so reading the file back
+    through ``kit_settings.load`` on the worktree yields the same policy).
     """
+    from .policy import deny_patterns_for
     from .. import kit_settings as _ks
 
     wt = repo_dir / member["worktree"]
     settings_path = wt / ".delfin" / "settings.json"
+
+    role = member["role"]
+    # Unknown role -> PolicyError (a ValueError) raised BEFORE any write.
+    role_deny = deny_patterns_for(role, home=home)
+    scope = list(member["owned"])
+    requested_mode = member["permission_mode"]
+
+    existing: dict[str, Any] = {}
+    if settings_path.exists():
+        with settings_path.open("r", encoding="utf-8") as f:
+            existing = json.load(f)
+    existing_kit = existing.get("kit", {})
+
+    # deny patterns union -- existing survive, role patterns added.
+    merged_deny: list[str] = []
+    for pattern in (list(existing_kit.get("deny_patterns", [])) + role_deny):
+        if pattern not in merged_deny:
+            merged_deny.append(pattern)
+
+    # write_allow_globs narrow: owned scope must still be inside what the
+    # worktree already allowed (intersection); a fresh member gets its own.
+    existing_globs = list(existing_kit.get("write_allow_globs", []))
+    if existing_globs:
+        merged_globs = [g for g in scope if g in set(existing_globs)]
+    else:
+        merged_globs = scope
+
+    # never a bypass mode: valid non-bypass modes pass through, everything
+    # else (bypass included) falls back to the safe default.
+    _SAFE_MODES = {"plan", "default", "diff_approval", "acceptEdits"}
+    safe_mode = requested_mode if requested_mode in _SAFE_MODES else "default"
+
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings = {
         "kit": {
-            "write_allow_globs": list(member["owned"]),
-            "default_mode": member["permission_mode"],
+            "deny_patterns": merged_deny,
+            "write_allow_globs": merged_globs,
+            "default_mode": safe_mode,
         },
     }
     settings_path.write_text(json.dumps(settings, indent=2),
