@@ -356,20 +356,26 @@ def reference_electrode(solvent: str) -> Tuple[float, str]:
 def e0_ox(g0: float, g_ox: float, n: int = 1, e_ref_v: float = 4.345) -> float:
     """Oxidation potential E°(Red -> Ox) vs. the given reference, in V.
 
-    ``E_ox = -((g0 - g_ox) * EH_TO_KJ) / F - e_ref`` with ``g0`` the reduced
-    (valence) state and ``g_ox`` the oxidised state, in Hartree.  This is the
-    sign and conversion convention DELFIN uses for redox potentials.
+    ``E_ox = -((g0 - g_ox) * EH_TO_KJ) / (n F) - e_ref`` with ``g0`` the
+    reduced (valence) state and ``g_ox`` the oxidised state, in Hartree, and
+    ``n`` the number of electrons transferred.  This is the sign and
+    conversion convention DELFIN uses for redox potentials.
     """
-    return -((g0 - g_ox) * _EH_TO_KJ) / _F_KJ_PER_V_MOL - float(e_ref_v)
+    if int(n) < 1:
+        raise ValueError(f"n must be a positive electron count, got {n!r}")
+    return -((g0 - g_ox) * _EH_TO_KJ) / (int(n) * _F_KJ_PER_V_MOL) - float(e_ref_v)
 
 
 def e0_red(g0: float, g_red: float, n: int = 1, e_ref_v: float = 4.345) -> float:
     """Reduction potential E°(Red -> e- -> Red) vs. the given reference, V.
 
-    ``E_red = ((g0 - g_red) * EH_TO_KJ) / F - e_ref`` with ``g0`` the neutral
-    (oxidised) state and ``g_red`` the reduced state, in Hartree.
+    ``E_red = ((g0 - g_red) * EH_TO_KJ) / (n F) - e_ref`` with ``g0`` the
+    neutral (oxidised) state, ``g_red`` the reduced state, in Hartree, and
+    ``n`` the number of electrons transferred.
     """
-    return ((g0 - g_red) * _EH_TO_KJ) / _F_KJ_PER_V_MOL - float(e_ref_v)
+    if int(n) < 1:
+        raise ValueError(f"n must be a positive electron count, got {n!r}")
+    return ((g0 - g_red) * _EH_TO_KJ) / (int(n) * _F_KJ_PER_V_MOL) - float(e_ref_v)
 
 
 def read_solv_free(
@@ -631,4 +637,4 @@ class OrcaSolvFreeOpiAdapter(StepAdapter):
 register(OrcaSolvFreeOpiAdapter())
 
 # Re-export the isodesmic pKa cycle from delfin (reuse, do not duplicate).
-from delfin.pka import pka_from_cycle  # noqa: E402  # re-exported public surface
+from delfin.pka import pka_from_cycle  # noqa: E402, F401  # re-exported public surface

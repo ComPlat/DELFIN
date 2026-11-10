@@ -351,3 +351,17 @@ def test_orca_parser_accepts_solvated_input(tmp_path):
         "ORCA rejected the OPI-built solvated input; messages: "
         f"{result['messages']}"
     )
+
+
+def test_redox_e0_divides_by_the_electron_count():
+    """Real-run finding: n was accepted but ignored, so a two-electron
+    potential came out equal to the one-electron one."""
+    g0, gox, e_ref = -1.0, -0.9, 4.345
+    one = solvfree.e0_ox(g0, gox, n=1, e_ref_v=e_ref) + e_ref
+    two = solvfree.e0_ox(g0, gox, n=2, e_ref_v=e_ref) + e_ref
+    assert two == pytest.approx(one / 2)
+    one = solvfree.e0_red(g0, -1.1, n=1, e_ref_v=e_ref) + e_ref
+    two = solvfree.e0_red(g0, -1.1, n=2, e_ref_v=e_ref) + e_ref
+    assert two == pytest.approx(one / 2)
+    with pytest.raises(ValueError):
+        solvfree.e0_ox(g0, gox, n=0)
