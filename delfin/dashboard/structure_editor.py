@@ -32,7 +32,6 @@ from pathlib import Path
 
 import ipywidgets as widgets
 
-import py3Dmol
 
 from . import climb as _climb
 from . import editor_journal as _journal_mod
@@ -44,11 +43,19 @@ from . import saddle as _saddle
 from . import scan_profile as _scan_profile
 from . import separate_systems as _separate
 from . import solvents as _solvents
-from .input_processing import (
-    append_hapto_previews_to_isomers, clean_input_data, smiles_to_xyz_isomers,
-    smiles_to_xyz_quick_with_previews,
-)
 from . import under_load as _under_load
+
+def _input_processing():
+    """Import .input_processing on first use.
+
+    That module pulls in delfin.smiles_converter and, through it,
+    delfin.manta.ml_tables, whose module level ``import stk`` costs seconds
+    of every process start. The editor is on the startup path of two tabs,
+    but none of its module code converts a SMILES until the reader asks.
+    """
+    from . import input_processing
+    return input_processing
+
 from .molecule_viewer import (
     apply_molecule_view_style, build_molecule_view_style, get_viewer_profile,
     submit_manip_bootstrap_js, submit_manip_version,
@@ -968,7 +975,7 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
             for position, part in enumerate(
                     _separate.split_smiles(cleaned_data), start=1):
                 made, count, _m, previews, error = (
-                    smiles_to_xyz_quick_with_previews(part))
+                    _input_processing().smiles_to_xyz_quick_with_previews(part))
                 if error or not made:
                     error = (f'part {position} could not be built: '
                              f'{error or "nothing came back"}')
@@ -986,7 +993,7 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
             }
         elif quick:
             xyz_string, num_atoms, _method, preview_items, error = (
-                smiles_to_xyz_quick_with_previews(cleaned_data)
+                _input_processing().smiles_to_xyz_quick_with_previews(cleaned_data)
             )
             result = {
                 'error': error,
@@ -1025,7 +1032,7 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
                 per_part, error = [], None
                 for position, part in enumerate(
                         _separate.split_smiles(cleaned_data), start=1):
-                    made, error = smiles_to_xyz_isomers(
+                    made, error = _input_processing().smiles_to_xyz_isomers(
                         part, **_iso_kwargs)
                     if error or not made:
                         error = (f'part {position} could not be built: '
@@ -1035,13 +1042,13 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
                     # the ways this ligand can sit on this metal, which
                     # is a question about this part and no other.
                     if not manta:
-                        made = append_hapto_previews_to_isomers(
+                        made = _input_processing().append_hapto_previews_to_isomers(
                             made, part, include_quick=apply_uff)
                     per_part.append(made)
                 isomers = ([] if error
                            else _separate.combine_isomers(per_part))
             else:
-                isomers, error = smiles_to_xyz_isomers(
+                isomers, error = _input_processing().smiles_to_xyz_isomers(
                     cleaned_data, **_iso_kwargs)
             # For a split input each part has had its own already,
             # from its own SMILES.  Handed the whole string here they
@@ -1051,7 +1058,7 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
             # appending them made the dashboard manifold longer than what
             # delfin-manta emits for the same SMILES (a trailing "quick" frame).
             if not error and isomers and not separate and not manta:
-                isomers = append_hapto_previews_to_isomers(
+                isomers = _input_processing().append_hapto_previews_to_isomers(
                     isomers,
                     cleaned_data,
                     include_quick=apply_uff,
@@ -21309,7 +21316,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
 
     def _build_mol_output_bundle(xyz_data):
-        view = py3Dmol.view(width='100%', height=viewer_height)
+        from .molecule_viewer import py3dmol
+        view = py3dmol().view(width='100%', height=viewer_height)
         view.addModel(xyz_data, 'xyz')
         # Drawn so that a double bond *can* be two lines; whether it is one
         # is the Orders switch's question and nobody else's.  The global
@@ -22008,7 +22016,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # convert, and the structure that came out was the one before it.
         typed = (read_input() or '').strip()
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
-        if typed and clean_input_data(typed)[1] == 'smiles':
+        if typed and _input_processing().clean_input_data(typed)[1] == 'smiles':
             raw_input = typed
         else:
             raw_input = (cached_smiles or typed or '').strip()
@@ -22016,7 +22024,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _replace_mol_output_text('Please enter SMILES in the input box.')
             return
 
-        cleaned_data, input_type = clean_input_data(raw_input)
+        cleaned_data, input_type = _input_processing().clean_input_data(raw_input)
         if input_type != 'smiles':
             _replace_mol_output_text('Please enter SMILES in the input box.')
             return
@@ -22102,7 +22110,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         from delfin.common.external_builders import TOOLS as _EXT_TOOLS
         display_name = _EXT_TOOLS[tool]['display']
         typed = (read_input() or '').strip()
-        cleaned_data, input_type = clean_input_data(typed) if typed else ('', '')
+        cleaned_data, input_type = _input_processing().clean_input_data(typed) if typed else ('', '')
         if not typed or input_type != 'smiles':
             _replace_mol_output_text(
                 f'Please enter a metal-complex SMILES in the input box for {display_name}.')
