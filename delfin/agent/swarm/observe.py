@@ -54,6 +54,8 @@ STATE_ENDED = "ended"
 STATE_WAITING_MODEL = "waiting for model"
 STATE_WAITING_MESSAGE = "waiting for a message"
 STATE_WORKING = "working"
+#: No open session record names the member: not started, or gone.
+STATE_NO_SESSION = "no session"
 
 #: How long (s) without a model token counts as "waiting for model". We do
 #: not read settings here (pure module): this is a stable, documented floor.
@@ -63,13 +65,12 @@ WAIT_ON_MODEL_S = 10 * 60
 def _state_of(record: Optional[dict]) -> str:
     """The SWV state of a member from its session-health-shaped record.
 
-    ``None`` (no record at all) is treated as ``working``: we cannot claim
-    a pause, an approval, a wait or an ended turn from absence, and a
-    member that has simply not been seen is not invented into a liveness
-    that the stores do not prove.
+    ``None`` (no record at all) is ``no session``: absence proves neither
+    a pause, an approval, a wait nor work, and a member that has simply
+    not been seen is not invented into a liveness the stores do not prove.
     """
     if not record:
-        return STATE_WORKING
+        return STATE_NO_SESSION
     if record.get("open_approvals"):
         return STATE_NEEDS_APPROVAL
     if record.get("paused"):

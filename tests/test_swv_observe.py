@@ -213,15 +213,14 @@ def test_overview_spec_file_source(audit_log, tmp_path):
 
 
 def test_overview_missing_member_never_lies(audit_log):
-    """A member with no session record still has a row, its state the safe
-    fallback ('working'/'paused' from absence cannot be claimed) — fail
-    closed, never invent a liveness."""
+    """A member with no session record still has a row, its state 'no
+    session': absence proves neither work nor a pause -- never invent a
+    liveness."""
     source = _spec([{"name": "swv", "roles": {"builder": True}}])
     rows = _observe.swarm_overview(source, records=[],  # no record at all
                                    steps_fn=lambda *a, **k: ([], 0))
     assert len(rows) == 1
-    # No open approvals, not paused, nothing to prove a wait -> working.
-    assert rows[0]["state"] == "working"
+    assert rows[0]["state"] == "no session"
 
 
 # ---------------------------------------------------------------------------
