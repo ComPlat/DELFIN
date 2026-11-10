@@ -609,9 +609,22 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             return None
         return module.create_tab(ctx)[0]
 
+    # Whether the tab can exist is decided without importing it: the module
+    # and its one hard dependency beyond the dashboard's own are findable.
+    # The import itself waits for the first open (_chemdarwin_build).
+    import importlib.util as _ilu
+    try:
+        _cd_findable = all(_ilu.find_spec(name) is not None for name in
+                           ('delfin.dashboard.tab_chemdarwin', 'rdkit'))
+    except Exception:
+        _cd_findable = False
     for spec in tab_specs:
         if spec['id'] == 'chemdarwin':
             spec['build'] = _chemdarwin_build
+            spec['available'] = _cd_findable
+            if _cd_findable:
+                spec['default_visible'] = True
+                spec['reason'] = ''
             break
 
     # Additively append dynamically-registered tabs (tab_registry). No-op when
@@ -700,8 +713,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     hidden.add(tab_id)
         return order, hidden
 
+    # A tab that drives other tabs' widgets (through ctx.submit_refs,
+    # ctx.orca_builder_refs, ...) needs them built first: the agent fills
+    # the ORCA Builder, submits and reads the job list whichever tab the
+    # reader opened before it.
+    _TAB_NEEDS = {
+        'agent': ('submit', 'recalc', 'orca_builder', 'job_status', 'calculations'),
+    }
+
     def _build_tab_now(spec):
-        """Build a tab that was left out because Settings had it hidden.
+        """Build a deferred tab: on its first open, or one Settings had hidden.
 
         Its startup script cannot go out through ctx.run_js: that clears the
         output before it writes, which would wipe the script every tab already
@@ -710,6 +731,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         build = spec.pop('build', None)
         if not callable(build):
             return
+        for need in _TAB_NEEDS.get(spec.get('id'), ()):
+            for other in ctx.tab_specs or []:
+                if other.get('id') == need and other.get('widget') is None:
+                    _build_tab_now(other)
         already = len(ctx.init_js_parts)
         try:
             spec['widget'] = build()
@@ -780,22 +805,36 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         ctx.tabs_widget.observe(_on_tab_change, names='selected_index')
         _tab_change_state['handler'] = _on_tab_change
 
+    def _bar_widget(spec):
+        """What the bar shows for *spec*: its built widget, or an empty
+        placeholder while it waits for its first open; None for a tab that
+        has neither (a build that failed)."""
+        if spec.get('widget') is not None:
+            return spec['widget']
+        if not callable(spec.get('build')):
+            return None
+        if spec.get('placeholder') is None:
+            spec['placeholder'] = widgets.VBox()
+        return spec['placeholder']
+
     def _rebuild_dashboard_tabs(selected_title=None):
         specs = _sorted_visible_specs()
+        # Only the tab the reader sees is built: at the first build the
+        # first visible one, later the one being selected. Every other tab
+        # stays on the bar as a placeholder until its first open (see
+        # _on_tab_change) -- a cold start pays one tab's build cost instead
+        # of the bar's, and no tab goes missing from the bar.
         if ctx.tabs_widget is None:
-            # First build: only the tab the reader sees goes out. Every
-            # other visible tab is a lazy placeholder until its first open
-            # (see _on_tab_change) -- a cold start pays one tab's build
-            # cost instead of the bar's.
-            for spec in tab_schedule.startup_specs_to_build(specs):
-                if spec.get('widget') is None and callable(spec.get('build')):
-                    _build_tab_now(spec)
+            to_build = tab_schedule.startup_specs_to_build(specs)
         else:
-            for spec in specs:
-                if spec.get('widget') is None and callable(spec.get('build')):
-                    _build_tab_now(spec)
-        children = [spec['widget'] for spec in specs if spec.get('widget') is not None]
-        titles = [spec['title'] for spec in specs if spec.get('widget') is not None]
+            to_build = [spec for spec in specs if spec['title'] == selected_title]
+        for spec in to_build:
+            if spec.get('widget') is None and callable(spec.get('build')):
+                _build_tab_now(spec)
+        shown = [(spec['title'], _bar_widget(spec)) for spec in specs]
+        shown = [(title, widget) for title, widget in shown if widget is not None]
+        children = [widget for _, widget in shown]
+        titles = [title for title, _ in shown]
         selected_index = titles.index(selected_title) if selected_title in titles else None
         if ctx.tabs_widget is None:
             ctx.tabs_widget = widgets.Tab(children=children)

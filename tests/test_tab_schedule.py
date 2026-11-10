@@ -95,3 +95,44 @@ def test_the_viewer_package_is_not_imported_by_the_dashboard_modules(tmp_path):
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                           env=child_env(tmp_path))
     assert done.returncode == 0, done.stderr[-800:]
+
+
+def test_every_visible_tab_is_on_the_bar_and_builds_on_its_first_open(tmp_path):
+    """A deferred tab is still on the bar (a placeholder until opened), and
+    opening it builds it once: the cold start must not drop the Agent tab,
+    the ORCA Builder, ChemDarwin or Job Status from the bar."""
+    import subprocess
+    import sys
+
+    from conftest import child_env
+    code = (
+        "import ipywidgets as w\n"
+        "import delfin.dashboard as d\n"
+        "d.display = lambda *a, **k: None\n"
+        "tabs = []\n"
+        "init = w.Tab.__init__\n"
+        "def record(self, *a, **k):\n"
+        "    init(self, *a, **k)\n"
+        "    tabs.append(self)\n"
+        "w.Tab.__init__ = record\n"
+        "d.create_dashboard(backend='local')\n"
+        "bar = next(t for t in tabs if 'Submit Job' in t.titles)\n"
+        "for title in ('Recalc', 'ORCA Builder', 'ChemDarwin', 'DELFIN Agent', 'Job Status', 'Calculations'):\n"
+        "    assert title in bar.titles, (title, bar.titles)\n"
+        "i = bar.titles.index('DELFIN Agent')\n"
+        "placeholder = bar.children[i]\n"
+        "assert not placeholder.children, 'built at start'\n"
+        "bar.selected_index = i\n"
+        "i = bar.titles.index('DELFIN Agent')\n"
+        "assert bar.children[i] is not placeholder, 'not built on open'\n"
+        "assert bar.selected_index == i\n"
+        "import gc\n"
+        "from delfin.dashboard.context import DashboardContext\n"
+        "ctx = next(o for o in gc.get_objects() if isinstance(o, DashboardContext))\n"
+        "for refs in ('submit_refs', 'orca_builder_refs', 'recalc_refs',\n"
+        "             'job_status_refs', 'calc_browser_refs'):\n"
+        "    assert getattr(ctx, refs), ('the agent tab drives it', refs)\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, env=child_env(tmp_path), timeout=600)
+    assert done.returncode == 0, done.stderr[-1500:]
