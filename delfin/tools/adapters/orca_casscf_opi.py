@@ -210,6 +210,7 @@ def build_casscf_input(
     moread: Optional[Path] = None,
     basis: str = "def2-SVP",
     extra_keywords: Optional[Sequence[str]] = None,
+    ncores: int = 2,
     base_name: str = "calc",
     work_dir: Path = Path("."),
 ) -> Path:
@@ -313,6 +314,7 @@ def build_casscf_input(
         )
 
     inp_path = wdir / f"{base_name}.inp"
+    inp.ncores = ncores
     calc = Calculator(base_name, working_dir=wdir, version_check=False)
     calc.input = inp
     calc.structure = structure
@@ -509,6 +511,7 @@ def run_casscf(
     nel, norb, mult, nroots,
     weights=None, nevpt2=False, ptmethod="", trafostep="", maxiter=None,
     moread=None, basis="def2-SVP", extra_keywords=None,
+    ncores=2, timeout=None,
     work_dir=None, base_name="calc",
 ) -> OrcaCasscfResult:
     """Run one CASSCF(+NEVPT2) single point and read the result back.
@@ -532,24 +535,32 @@ def run_casscf(
         )
 
     from delfin.orca import run_orca
+    out_path = wdir / f"{base_name}.out"
 
     try:
-        build_casscf_input(
+        inp_path = build_casscf_input(
             elements=elements, coordinates=coordinates, charge=charge,
             nel=nel, norb=norb, mult=mult, nroots=nroots,
             weights=weights, nevpt2=nevpt2, ptmethod=ptmethod,
             trafostep=trafostep, maxiter=maxiter, moread=moread,
-            basis=basis, extra_keywords=extra_keywords,
+            basis=basis, extra_keywords=extra_keywords, ncores=ncores,
             base_name=base_name, work_dir=wdir,
         )
-        run_orca(work_dir=wdir, base_name=base_name, ncores=1)
+        success = run_orca(str(inp_path), str(out_path), timeout=timeout,
+                           working_dir=wdir)
     except Exception as exc:
         return OrcaCasscfResult(
             ok=False, work_dir=wdir, meaningful=False,
-            error=str(exc), failure_lines=_failure_lines(wdir / f"{base_name}.out"),
+            error=str(exc), failure_lines=_failure_lines(out_path),
         )
 
-    return read_casscf_output(wdir, base_name)
+    result = read_casscf_output(wdir, base_name)
+    if not success and result.ok:
+        result.ok = False
+        result.meaningful = False
+        result.error = result.error or "ORCA subprocess reported failure"
+        result.failure_lines = result.failure_lines or _failure_lines(out_path)
+    return result
 
 
 class OrcaCasscfOpiAdapter(StepAdapter):
