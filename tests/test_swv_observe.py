@@ -192,6 +192,26 @@ def test_overview_roster_source_plain_file(audit_log, tmp_path):
     assert by_name["reviewer"]["package"] == "ops"
 
 
+def test_overview_roster_source_plain_dict(audit_log):
+    """The same roster handed over as an object (the RPC's ``source``)."""
+    roster = {"ops-1": {"package": "ops", "role": "builder"}}
+    rows = _observe.swarm_overview(roster, records=[_health_record("ops-1")],
+                                   steps_fn=lambda *a, **k: ([], 0))
+    assert [(r["name"], r["package"], r["role"]) for r in rows] == [
+        ("ops-1", "ops", "builder")]
+
+
+def test_overview_spec_file_source(audit_log, tmp_path):
+    """A swarm.yaml path gives its members, not an empty table."""
+    spec = tmp_path / "swarm.yaml"
+    spec.write_text(json.dumps({"packages": [
+        {"name": "alpha", "roles": {"builder": True, "reviewer": True}}]}),
+        encoding="utf-8")
+    rows = _observe.swarm_overview(str(spec), records=[],
+                                   steps_fn=lambda *a, **k: ([], 0))
+    assert sorted(r["name"] for r in rows) == ["alpha-builder", "alpha-reviewer"]
+
+
 def test_overview_missing_member_never_lies(audit_log):
     """A member with no session record still has a row, its state the safe
     fallback ('working'/'paused' from absence cannot be claimed) — fail

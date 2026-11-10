@@ -42,7 +42,7 @@ swarm.observe.* are pure reads only, ownership enforced server-side.
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 #: The user-facing states of a member row (task SWV, target 5). They are a
 #: faithful projection of the session record, in a fixed priority so the
@@ -116,7 +116,7 @@ def _members_of(source) -> list[dict]:
             return out
         # A bare roster dict is also accepted: name -> {package, role}.
         out = []
-        for name, meta in (source.items() or {}).items():
+        for name, meta in source.items():
             if not isinstance(meta, dict):
                 continue
             out.append({
@@ -133,6 +133,9 @@ def _members_of(source) -> list[dict]:
     if not os.path.exists(path):
         raise ValueError(f"roster file does not exist: {path}")
     data = _read_roster(path)
+    if isinstance(data, dict) and isinstance(data.get("packages"), list):
+        # The file is an SW1 spec (swarm.yaml), not a roster.
+        return _members_of(data)
     out = []
     for name, meta in (data or {}).items():
         if not isinstance(meta, dict):
@@ -208,7 +211,6 @@ def swarm_overview(source,
     pending_approvals_count}`` — all JSON-able.
     """
     import time as _time
-    from .. import audit_log as _al
 
     steps_fn = steps_fn or _default_steps
     commits_fn = commits_fn or _default_commits
@@ -305,7 +307,6 @@ def member_feed(session: str,
     ``steps_fn``/``commits_fn``/``log_path`` are the injectable writers
     (defaults: the real stores).
     """
-    from .. import audit_log as _al
 
     steps_fn = steps_fn or _default_steps
     entries: list[dict] = []
