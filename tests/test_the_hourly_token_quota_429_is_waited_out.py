@@ -48,7 +48,7 @@ URL = "https://fake-endpoint.example/v1"
 QUOTA_BODY = (
     "Hourly token quota exceeded: 6,233,280 / 6,000,000 free tokens used. "
     "Free tokens = fresh tokens + 10% of cached tokens (prompt-cache hits "
-    "are 10x cheaper). Quota resets at 2026-11-09 22:00 UTC (in 410s).")
+    "are 10x cheaper). Quota resets in 300s.")
 
 
 class _Delta:
