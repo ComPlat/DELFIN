@@ -563,7 +563,6 @@ def build_zfs_input(
         RelativisticCorrection,
     )
     from opi.input import Input
-    from opi.core import Calculator
 
     inp = Input()
     keywords: list[Any] = [_lookup(BasisSet, basis)]
@@ -689,7 +688,6 @@ def build_soc_tddft_input(
     )
     from opi.input.simple_keywords.task import Task
     from opi.input import Input
-    from opi.core import Calculator
 
     inp = Input()
     keywords: list[Any] = [
@@ -910,10 +908,14 @@ def _launch(wdir: Path, base_name: str) -> Optional[str]:
     calculation is never run in CI; the caller's launcher is stubbed there."""
     from delfin.orca import run_orca
 
+    inp = wdir / f"{base_name}.inp"
+    out = wdir / f"{base_name}.out"
     try:
-        run_orca(base_name, wdir)
+        ok = run_orca(str(inp), str(out), working_dir=wdir)
     except Exception as exc:  # noqa: BLE001 - report the launch failure
         return f"failed to launch ORCA: {exc}"
+    if not ok:
+        return f"ORCA did not finish normally (see {out.name})"
     return None
 
 
@@ -932,45 +934,58 @@ class OrcaRelSpinOpiAdapter(StepAdapter):
     produces = ("result.json",)
     requires_python = ()
 
-    def execute(self, *, work_dir: str, base_name: str,
+    def execute(self, work_dir: Path, *, cores: int = 1,
                 **kwargs: Any) -> StepResult:
+        """Run one relspin job (``job``: rel_sp | zfs | soc_tddft).
+
+        Standard step contract: ``cores`` becomes the input's ``%pal``;
+        the other kwargs go to the matching ``run_*`` function.  The numbers
+        are returned in ``StepResult.data``; a FAILED result always says why.
+        """
+        import time
+
+        start = time.monotonic()
+        wdir = Path(work_dir)
+        kwargs.pop("_prev_artifacts", None)
+        kwargs.pop("geometry", None)
         job = kwargs.pop("job", "rel_sp")
+        runners = {"rel_sp": run_rel_sp, "zfs": run_zfs,
+                   "soc_tddft": run_soc_tddft}
+        if job not in runners:
+            return self._make_result(
+                self.name, StepStatus.FAILED, wdir, start,
+                error=f"unknown job {job!r}; use one of {sorted(runners)}",
+                error_kind=ErrorKind.MISSING_PARAM,
+            )
+        kwargs.setdefault("base_name", job)
         try:
-            wdir = Path(work_dir)
-            if job == "rel_sp":
-                result = run_rel_sp(wdir, base_name=base_name, **kwargs)
-            elif job == "zfs":
-                result = run_zfs(wdir, base_name=base_name, **kwargs)
-            elif job == "soc_tddft":
-                result = run_soc_tddft(wdir, base_name=base_name, **kwargs)
-            else:
-                return StepResult(
-                    status=StepStatus.FAILED,
-                    error=f"unknown job {job!r}",
-                    error_kind=ErrorKind.INVALID_INPUT,
-                )
+            result = runners[job](wdir, ncores=cores, **kwargs)
+        except TypeError as exc:  # a missing or unknown parameter
+            return self._make_result(
+                self.name, StepStatus.FAILED, wdir, start,
+                error=f"{job}: {exc}", error_kind=ErrorKind.MISSING_PARAM,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("relspin %s failed: %s", job, exc)
-            return StepResult(
-                status=StepStatus.FAILED,
-                error=str(exc),
-                error_kind=ErrorKind.RUNTIME_ERROR,
+            return self._make_result(
+                self.name, StepStatus.FAILED, wdir, start,
+                error=f"{job}: {exc}", error_kind=ErrorKind.INTERNAL,
             )
-
+        data = self._result_data(result)
         if not result.ok:
-            kind = ErrorKind.INVALID_INPUT if result.error else ErrorKind.RUNTIME_ERROR
-            return StepResult(
-                status=StepStatus.FAILED,
+            return self._make_result(
+                self.name, StepStatus.FAILED, wdir, start, data=data,
+                output_file=result.output_file,
                 error=result.error or f"{job} run failed",
-                error_kind=kind,
+                error_kind=ErrorKind.TOOL_FAILED,
             )
-        return StepResult(
-            status=StepStatus.COMPLETED,
-            result=self._make_result(result),
-            error=None,
+        return self._make_result(
+            self.name, StepStatus.SUCCESS, wdir, start, data=data,
+            output_file=result.output_file,
         )
 
-    def _make_result(self, result: OrcaRelSpinResult) -> dict:
+    @staticmethod
+    def _result_data(result: OrcaRelSpinResult) -> dict:
         return {
             "job": result.job,
             "terminated_normally": result.terminated_normally,

@@ -16,7 +16,6 @@ Every refusal is asserted with its reason.  Result reading goes through
 here in the test -- never real ORCA output.
 """
 import json
-from pathlib import Path
 
 import pytest
 
@@ -397,19 +396,11 @@ class TestAdapterRegistration:
 # (same shape as tests/test_opi_esd_probe.py).
 # ---------------------------------------------------------------------------
 
-def _probe_dir():
-    """A scratch dir for the probe inputs, under this worktree's scratch/
-    (never /tmp; the task's scratch-only rule)."""
-    d = Path(__file__).resolve().parent.parent / "scratch" / "probe_inputs"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def test_probe_orca_parser_accepts_the_relspin_input():
+def test_probe_orca_parser_accepts_the_relspin_input(tmp_path):
     from delfin.orca_knowledge.probe import probe_input
 
     path = build_rel_sp_input(
-        _probe_dir(), hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+        tmp_path, hamiltonian="ZORA", basis="ZORA-def2-TZVP",
         elements=ELS, coordinates=XYZ, charge=0, mult=1,
         maxcore=400, ncores=1, base_name="probe_rel",
     )
@@ -422,11 +413,11 @@ def test_probe_orca_parser_accepts_the_relspin_input():
     )
 
 
-def test_probe_orca_parser_accepts_the_zfs_input():
+def test_probe_orca_parser_accepts_the_zfs_input(tmp_path):
     from delfin.orca_knowledge.probe import probe_input
 
     path = build_zfs_input(
-        _probe_dir(), basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
+        tmp_path, basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
         charge=0, mult=2, maxcore=400, ncores=1, base_name="probe_zfs",
     )
     verdict = probe_input(path.read_text(), timeout_s=300)
