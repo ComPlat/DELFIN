@@ -1589,6 +1589,12 @@ def _hypothesis_store_removed() -> None:
 
 
 def pytest_configure(config):
+    # Tests never run on a shared cluster login node (account suspension
+    # 2026-11-10, issue #640): `delfin-agent test-on-slurm` runs them on a
+    # compute node from a node-local copy.
+    from delfin.hpc_guard import on_login_node, refusal_text
+    if on_login_node():
+        pytest.exit(refusal_text("tests", "delfin-agent test-on-slurm"), returncode=2)
     config.addinivalue_line(
         "markers",
         "slow: heavy or order-dependent test, excluded from the fast CI gate",

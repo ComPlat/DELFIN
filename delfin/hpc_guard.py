@@ -1,0 +1,286 @@
+"""Keep DELFIN's heavy parts off shared HPC login nodes.
+
+A cluster login node is shared by every user of the machine. On 2026-11-10
+the cluster operators suspended an account because DELFIN agent sessions,
+the agent service, dashboards and test runs filled a login node with tasks
+(GitHub issue #640). The rule since then is enforced here, not left to
+whoever starts something:
+
+* agent sessions, the agent service, the dashboard server, the MCP servers
+  and test runs do not start on a login node; inside a SLURM job they run
+  as before, and on a workstation (no scheduler) nothing changes;
+* an interactive session asked for on a login node is started on a compute
+  node instead, through ``srun --pty`` (:func:`run_on_compute_node`);
+* :func:`watch` is the net under all of it: it samples this user's own
+  processes on the login node and stops (SIGSTOP, by PID) a DELFIN process
+  that keeps the user above the core budget.
+
+Where a host is a login node is decided in one place,
+``delfin.agent.calc_policy.host_kind`` (no job id, scheduler commands on
+PATH). There is deliberately no environment switch that turns the refusal
+off: a session must not be able to talk its way back onto the login node.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import signal
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Iterable, Optional, Sequence
+
+#: Cores this user's processes may keep busy on a login node, together.
+LOGIN_CORE_BUDGET = 2.0
+
+#: Where the compute-node session goes when the settings name nothing. The
+#: dev partitions cap the time at 30 minutes, too short for a session.
+DEFAULT_JOB = {
+    "partition": "cpu",
+    "time": "08:00:00",
+    "cpus": 4,
+    "mem": "16G",
+}
+
+#: The srun binary, named once (it is not one of the throttled query
+#: commands of delfin.scheduler_client; it starts a job step).
+_SRUN = "srun"
+
+
+class LoginNodeRefused(RuntimeError):
+    """A heavy part of DELFIN was asked to start on a shared login node."""
+
+
+def on_login_node(env: Optional[dict] = None) -> bool:
+    """True on a cluster login node: no SLURM job, scheduler on PATH."""
+    from delfin.agent.calc_policy import host_kind
+    return host_kind(env) == "login_node"
+
+
+def refusal_text(what: str, how: str = "") -> str:
+    """The one message every refusal prints: what, why, what to do."""
+    how = how or ("start it inside a SLURM job (sbatch, or srun --pty for "
+                  "an interactive shell on a compute node)")
+    return (f"DELFIN does not run {what} on a login node. Login nodes are "
+            "shared by every user of the cluster; heavy work there breaks "
+            f"the cluster's rules and gets the account suspended. Instead: "
+            f"{how}.")
+
+
+def refuse_on_login_node(what: str, how: str = "", *,
+                         env: Optional[dict] = None) -> None:
+    """Raise :class:`LoginNodeRefused` when this is a login node."""
+    if on_login_node(env):
+        raise LoginNodeRefused(refusal_text(what, how))
+
+
+def exit_on_login_node(what: str, how: str = "", *,
+                       env: Optional[dict] = None) -> None:
+    """For a command-line entry point: print the refusal and exit 2."""
+    try:
+        refuse_on_login_node(what, how, env=env)
+    except LoginNodeRefused as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2) from None
+
+
+# --------------------------------------------------------------------------
+# An interactive session on a compute node
+# --------------------------------------------------------------------------
+
+def job_settings(settings: Optional[dict] = None) -> dict:
+    """The compute-node job for a session: DEFAULT_JOB under the ``hpc``
+    entry of the user settings (``agent_partition``, ``agent_time``,
+    ``agent_cpus``, ``agent_mem``). Read only; a broken file gives the
+    defaults."""
+    if settings is None:
+        settings = _read_user_settings()
+    hpc = settings.get("hpc") if isinstance(settings, dict) else None
+    hpc = hpc if isinstance(hpc, dict) else {}
+    job = dict(DEFAULT_JOB)
+    for key in DEFAULT_JOB:
+        value = hpc.get(f"agent_{key}")
+        if value not in (None, ""):
+            job[key] = value
+    return job
+
+
+def _read_user_settings() -> dict:
+    try:
+        from delfin.user_settings import get_settings_path
+        data = json.loads(Path(get_settings_path()).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def compute_node_argv(argv: Sequence[str], *, job: Optional[dict] = None,
+                      name: str = "delfin-agent") -> list:
+    """The srun command that runs *argv* interactively on a compute node.
+
+    The environment goes along as srun's default does (all of it); there is
+    no ``--export`` with named variables (a known cause of failed job
+    starts on this cluster)."""
+    job = job_settings() if job is None else job
+    return [_SRUN, "--pty",
+            f"--partition={job['partition']}",
+            f"--time={job['time']}",
+            "--nodes=1", "--ntasks=1",
+            f"--cpus-per-task={int(job['cpus'])}",
+            f"--mem={job['mem']}",
+            f"--job-name={name}",
+            *argv]
+
+
+def run_on_compute_node(argv: Sequence[str], what: str, *,
+                        env: Optional[dict] = None,
+                        execvp: Callable = os.execvp,
+                        isatty: Callable[[], bool] = lambda: sys.stdin.isatty(),
+                        ) -> None:
+    """On a login node, replace this process with *argv* under ``srun --pty``.
+
+    Returns (doing nothing) off a login node. A non-interactive caller (no
+    terminal: a script, a cron job, an agent) is refused instead -- it
+    belongs in an sbatch job, not in a blocking interactive step."""
+    if not on_login_node(env):
+        return
+    if not isatty() or not shutil.which(_SRUN):
+        exit_on_login_node(what, "submit it with sbatch", env=env)
+        return
+    cmd = compute_node_argv(list(argv))
+    print(f"{what}: login node -- starting it on a compute node "
+          f"({' '.join(cmd[:8])} ...); it waits for a free node.",
+          file=sys.stderr)
+    execvp(cmd[0], cmd)
+
+
+# --------------------------------------------------------------------------
+# The load watcher
+# --------------------------------------------------------------------------
+
+@dataclass
+class Proc:
+    pid: int
+    cpu_s: float      # utime + stime so far
+    cmdline: str
+
+
+def own_processes(uid: Optional[int] = None,
+                  proc: Path = Path("/proc")) -> list:
+    """This user's processes with their CPU seconds so far (from /proc)."""
+    uid = os.getuid() if uid is None else uid
+    tick = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    out = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            cpu = (int(fields[11]) + int(fields[12])) / tick
+            cmd = (entry / "cmdline").read_bytes().replace(b"\0", b" ")
+        except (OSError, IndexError, ValueError):
+            continue
+        out.append(Proc(int(entry.name), cpu, cmd.decode(errors="replace").strip()))
+    return out
+
+
+def busy_cores(before: Iterable[Proc], after: Iterable[Proc],
+               seconds: float) -> dict:
+    """Cores each pid kept busy between two samples, by pid."""
+    first = {p.pid: p.cpu_s for p in before}
+    return {p.pid: (p.cpu_s - first[p.pid]) / seconds
+            for p in after if p.pid in first and seconds > 0}
+
+
+def is_delfin(cmdline: str) -> bool:
+    """A process DELFIN started (its interpreter runs delfin code or a
+    delfin entry point), never the person's shell or editor."""
+    return "delfin" in cmdline and "hpc_guard" not in cmdline
+
+
+def watch(*, budget: float = LOGIN_CORE_BUDGET, interval: float = 30.0,
+          strikes: int = 2, rounds: Optional[int] = None,
+          sample: Callable[[], list] = own_processes,
+          stop: Callable[[int], None] = lambda pid: os.kill(pid, signal.SIGSTOP),
+          note: Callable[[str], None] = lambda text: print(text, flush=True),
+          sleep: Callable[[float], None] = time.sleep,
+          env: Optional[dict] = None) -> int:
+    """Sample this user's load on the login node; stop what keeps it high.
+
+    Every *interval* seconds the cores this user's processes keep busy are
+    added up. Over *budget* for *strikes* samples in a row, the busiest
+    DELFIN process is stopped with SIGSTOP (by its PID; ``kill -CONT <pid>``
+    resumes it inside a job) and the stop is reported through *note*.
+    Returns the number of processes stopped. Off a login node it does
+    nothing."""
+    if not on_login_node(env):
+        note("hpc_guard watch: not a login node, nothing to watch")
+        return 0
+    stopped = 0
+    over = 0
+    prev = sample()
+    done = 0
+    while rounds is None or done < rounds:
+        sleep(interval)
+        cur = sample()
+        load = busy_cores(prev, cur, interval)
+        prev = cur
+        done += 1
+        total = sum(load.values())
+        if total <= budget:
+            over = 0
+            continue
+        over += 1
+        if over < strikes:
+            continue
+        names = {p.pid: p.cmdline for p in cur}
+        candidates = sorted((pid for pid in load if is_delfin(names.get(pid, ""))),
+                            key=lambda pid: load[pid], reverse=True)
+        if not candidates:
+            note(f"hpc_guard: {total:.1f} cores busy on the login node, none "
+                 "of it DELFIN -- look with htop")
+            over = 0
+            continue
+        pid = candidates[0]
+        try:
+            stop(pid)
+        except OSError as exc:
+            note(f"hpc_guard: could not stop {pid}: {exc}")
+            continue
+        stopped += 1
+        over = 0
+        note(f"hpc_guard: {total:.1f} cores busy on the login node (budget "
+             f"{budget:g}); stopped pid {pid} ({load[pid]:.1f} cores): "
+             f"{names.get(pid, '')[:160]}")
+    return stopped
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="python -m delfin.hpc_guard",
+        description="Keep DELFIN off shared login nodes: check this host, or "
+                    "watch this user's load and stop DELFIN processes that "
+                    "keep it over the core budget.")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("check", help="Say whether this host is a login node")
+    w = sub.add_parser("watch", help="Watch the load (until Ctrl+C)")
+    w.add_argument("--budget", type=float, default=LOGIN_CORE_BUDGET)
+    w.add_argument("--interval", type=float, default=30.0)
+    args = parser.parse_args(argv)
+    if args.cmd == "check":
+        print("login node" if on_login_node() else "not a login node")
+        return 0
+    try:
+        watch(budget=args.budget, interval=args.interval)
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
