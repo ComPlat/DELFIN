@@ -20,6 +20,10 @@ also permits 3.10, but nothing verifies it — do not rely on it.
 
 ## Before you open a pull request
 
+- **Run the secret guard.** `python scripts/secret_guard.py --staged`
+  checks your staged diff; CI scans the whole tracked tree
+  (`tests/test_no_secrets_are_committed.py`). Allow markers are inline
+  only, with a reason. See SECRET_GUARD.md.
 - **Run the fast suite.** `pytest -q -m "not slow"` is the core of the merge
   gate; the full list of required checks is in
   [docs/MAIN_PROTECTION.md](docs/MAIN_PROTECTION.md).
