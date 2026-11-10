@@ -216,3 +216,49 @@ def test_every_moved_command_is_a_real_handler_of_delfin_agent():
     assert callable(cli.cmd_scheduler)
     swarm = parser.parse_args(["swarm"]).func
     assert swarm.__module__ == "delfin.agent.cli_swarm"
+
+
+def test_every_delfin_agent_call_on_a_login_node_makes_sure_a_watcher_runs(cluster, monkeypatch):
+    started = []
+    monkeypatch.setattr(hpc_guard, "watcher_running", lambda: False)
+    monkeypatch.setattr(hpc_guard, "_spawn_watcher", lambda: started.append(1))
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    hpc_guard.keep_cli_off_login_node(_handler("cmd_sessions"), _Args(), ["sessions"],
+                                      env=LOGIN)
+    assert started == [1]
+
+
+def test_a_running_watcher_is_not_started_twice(cluster):
+    started = []
+    assert not hpc_guard.ensure_watcher(env=LOGIN, running=lambda: True,
+                                        spawn=lambda: started.append(1))
+    assert hpc_guard.ensure_watcher(env=LOGIN, running=lambda: False,
+                                    spawn=lambda: started.append(1))
+    assert started == [1]
+
+
+def test_no_watcher_off_a_login_node(cluster):
+    started = []
+    assert not hpc_guard.ensure_watcher(env=IN_JOB, running=lambda: False,
+                                        spawn=lambda: started.append(1))
+    assert started == []
+
+
+def test_a_test_that_simulates_a_login_node_starts_no_daemon(cluster, monkeypatch):
+    monkeypatch.setattr(hpc_guard, "watcher_running", lambda: False)
+    import subprocess
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("spawned"))
+    assert not hpc_guard.ensure_watcher(env=LOGIN)
+
+
+def test_the_lock_admits_one_watcher_per_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(hpc_guard.Path, "home", classmethod(lambda cls: tmp_path))
+    lock = hpc_guard._watch_files()[0]
+    assert str(lock).startswith(str(tmp_path))
+    assert not hpc_guard.watcher_running()
+    held = hpc_guard._try_lock(lock)
+    try:
+        assert held is not None and hpc_guard.watcher_running()
+    finally:
+        held.close()
+    assert not hpc_guard.watcher_running()
