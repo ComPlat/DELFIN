@@ -200,10 +200,9 @@ def swarm_observe_feed(params: dict[str, Any]) -> dict[str, Any]:
     """swarm.observe.feed: one member's recent steps, newest last.
 
     Ownership -- a feed is shown only to the user who owns the session --
-    is NOT yet enforced by any layer; it is a follow-up (this wrapper is
-    currently callable by any requestor, pending a supervisor ownership
-    gate). This thin wrapper only reads observe.member_feed and re-labels
-    the list under ``entries``.
+    is enforced before dispatch, in the supervisor (an agent's own
+    connection gets NOT_ALLOWED). This thin wrapper only reads
+    observe.member_feed and re-labels the list under ``entries``.
     """
     session = str(params.get("session") or "")
     if not session:
