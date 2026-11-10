@@ -205,7 +205,7 @@ NATURAL ORBITALS
 N(occ)=  1.98432 1.96541 1.74203 0.25797 0.03459 0.01568
 
 ***  ORCA TERMINATED NORMALLY  ***
-CASSCF CONVERGED AFTER  12 ITERATIONS
+                     ---- THE CAS-SCF GRADIENT HAS CONVERGED ----
 """
 
 # Real ORCA 6.1 SA-CASSCF transition-energy block, the two formats ORCA
@@ -222,7 +222,7 @@ STATE   ROOT MULT IRREP DE/a.u.    DE/eV    DE/cm**-1
    1:    0    3  B3u   0.163741     4.456  35937.1
 
 ***  ORCA TERMINATED NORMALLY  ***
-CASSCF CONVERGED AFTER  8 ITERATIONS
+                     ---- THE CAS-SCF GRADIENT HAS CONVERGED ----
 """
 
 REAL_CASSCF_TRANSITION_PAREN_NO_IRREP = """\
@@ -233,7 +233,7 @@ STATE   ROOT MULT  DE/a.u.    DE/eV    DE/cm**-1
    1:    0   11   0.008644     0.235   1897.1
 
 ***  ORCA TERMINATED NORMALLY  ***
-CASSCF CONVERGED AFTER  8 ITERATIONS
+                     ---- THE CAS-SCF GRADIENT HAS CONVERGED ----
 """
 
 REAL_CASSCF_TRANSITION_NO_IRREP = """\
@@ -244,7 +244,7 @@ STATE   ROOT MULT  DE/a.u.    DE/eV    DE/cm**-1
    1:    0    3   0.163741     4.456  35937.1
 
 ***  ORCA TERMINATED NORMALLY  ***
-CASSCF CONVERGED AFTER  8 ITERATIONS
+                     ---- THE CAS-SCF GRADIENT HAS CONVERGED ----
 """
 
 # Real ORCA 6.1 single-root SC-NEVPT2 results block (manual NEVPT2.txt lines
@@ -273,7 +273,7 @@ REAL_NEVPT2_OUT = """\
 ---------------------------------------------------------------
 
 ***  ORCA TERMINATED NORMALLY  ***
-CASSCF CONVERGED AFTER  8 ITERATIONS
+                     ---- THE CAS-SCF GRADIENT HAS CONVERGED ----
 """
 
 
@@ -459,3 +459,91 @@ class TestExecuteCores:
         pal = [l for l in inp.splitlines() if "nprocs 4" in l]
         assert pal, "expected %pal nprocs 4 in the built input"
         assert result.status is not None
+
+
+# ---------------------------------------------------------------------------
+# Real-run regression (ORCA 6.1.1, ethylene SA-CASSCF(2,2) nroots=2 + NEVPT2):
+# the converged run was reported FAILED with no error and no data.  ORCA marks
+# convergence with "THE CAS-SCF GRADIENT HAS CONVERGED", prints ROOT lines in
+# an initial CI check before the final CAS-SCF STATES section, and its NEVPT2
+# section has its own "LOWEST ROOT (ROOT 0, MULT 1)" line.  Layout written by
+# hand for DELFIN; only the numbers come from that run.
+# ---------------------------------------------------------------------------
+SYNTHETIC_SA_CASSCF_NEVPT2_OUT = """\
+# SYNTHETIC test fixture written for DELFIN -- not ORCA output
+                 <<<<<<<<<<<<<<<<<<INITIAL CI STATE CHECK>>>>>>>>>>>>>>>>>>
+BLOCK  0 MULT= 1 NROOTS= 2
+ROOT   0:  E=     -77.9063639238 Eh
+ROOT   1:  E=     -77.4943128271 Eh 11.212 eV  90434.8 cm**-1
+   N(occ)=  1.43902 0.56098
+                     ---- THE CAS-SCF GRADIENT HAS CONVERGED ----
+   N(occ)=  1.46585 0.53415
+Final CASSCF energy       : -77.810985940 Eh
+CAS-SCF STATES FOR BLOCK  0 MULT= 1 NROOTS= 2
+ROOT   0:  E=     -77.9949877220 Eh
+ROOT   1:  E=     -77.6269841585 Eh 10.014 eV  80767.4 cm**-1
+        Total Energy (E0+dE)    : E  = -78.25526612840630
+        Total Energy (E0+dE)    : E  = -77.93860686136583
+ NEVPT2 TRANSITION ENERGIES
+LOWEST ROOT (ROOT 0, MULT 1) =    -78.255266128 Eh -2129.434 eV
+STATE ROOT MULT  DE/a.u.     DE/eV    DE/cm**-1
+   1:   1    1   0.316659     8.617  69498.7
+                             ****ORCA TERMINATED NORMALLY****
+"""
+
+
+class TestRealRunRegression:
+    def test_real_marker_counts_as_converged_and_numbers_are_casscf(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "calc.out").write_text(SYNTHETIC_SA_CASSCF_NEVPT2_OUT)
+        r = read_casscf_output(tmp_path, "calc")
+        assert r.casscf_converged and r.ok
+        # final CAS-SCF STATES roots only, not the initial CI check
+        assert r.energies_total_Eh == (-77.9949877220, -77.6269841585)
+        # CASSCF state energies, never the NEVPT2 LOWEST ROOT block
+        assert r.state_energies_Eh == (-77.9949877220, -77.6269841585)
+        assert r.nevpt2_energies_Eh == (-78.25526612840630, -77.93860686136583)
+        assert r.natural_orbital_occupations == ((0, 1.46585), (1, 0.53415))
+
+    def test_invented_marker_is_not_convergence(self, tmp_path: Path) -> None:
+        text = SYNTHETIC_SA_CASSCF_NEVPT2_OUT.replace(
+            "---- THE CAS-SCF GRADIENT HAS CONVERGED ----",
+            "CASSCF CONVERGED AFTER  8 ITERATIONS",
+        )
+        (tmp_path / "calc.out").write_text(text)
+        assert not read_casscf_output(tmp_path, "calc").ok
+
+    def test_execute_returns_data_on_success(self, tmp_path: Path, monkeypatch) -> None:
+        import delfin.tools.adapters.orca_casscf_opi as mod
+
+        def fake_run_orca(input_file_path, output_log, timeout=None, **_kw) -> bool:
+            Path(output_log).write_text(SYNTHETIC_SA_CASSCF_NEVPT2_OUT)
+            return True
+
+        monkeypatch.setattr("delfin.orca.run_orca", fake_run_orca)
+        res = mod.OrcaCasscfOpiAdapter().execute(
+            tmp_path, elements=ELEMENTS, coordinates=COORDS, charge=0,
+            nel=2, norb=2, mult=1, nroots=2, nevpt2=True, base_name="calc",
+        )
+        assert res.status.name == "SUCCESS"
+        assert res.data["nevpt2_energies_Eh"] == [-78.25526612840630, -77.93860686136583]
+        assert res.data["state_energies_Eh"] == [-77.9949877220, -77.6269841585]
+        assert (res.data["nel"], res.data["norb"], res.data["mult"]) == (2, 2, 1)
+
+    def test_execute_failure_always_has_an_error(self, tmp_path: Path, monkeypatch) -> None:
+        import delfin.tools.adapters.orca_casscf_opi as mod
+
+        def fake_run_orca(input_file_path, output_log, timeout=None, **_kw) -> bool:
+            Path(output_log).write_text(
+                SYNTHETIC_SA_CASSCF_NEVPT2_OUT.replace(
+                    "---- THE CAS-SCF GRADIENT HAS CONVERGED ----", ""))
+            return True
+
+        monkeypatch.setattr("delfin.orca.run_orca", fake_run_orca)
+        res = mod.OrcaCasscfOpiAdapter().execute(
+            tmp_path, elements=ELEMENTS, coordinates=COORDS, charge=0,
+            nel=2, norb=2, mult=1, nroots=2, base_name="calc",
+        )
+        assert res.status.name == "FAILED"
+        assert "did not converge" in (res.error or "")

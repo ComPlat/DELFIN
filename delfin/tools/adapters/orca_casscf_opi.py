@@ -352,9 +352,10 @@ def read_casscf_output(work_dir: Path, base_name: str) -> OrcaCasscfResult:
             # testable without committing any real ORCA output.
             terminated = "TERMINATED NORMALLY" in text
 
-    converged = bool(text) and (
-        "CASSCF CONVERGED" in text or "SCF CONVERGED" in text
-    )
+    # ORCA 6.1 marks a converged CASSCF with "---- THE CAS-SCF GRADIENT HAS
+    # CONVERGED ----" (or "... ENERGY HAS CONVERGED"); it never prints a
+    # "CASSCF CONVERGED" line.
+    converged = bool(text) and bool(_CASSCF_CONVERGED_RE.search(text))
     meaningful = terminated and converged
 
     result = OrcaCasscfResult(
@@ -378,6 +379,11 @@ def read_casscf_output(work_dir: Path, base_name: str) -> OrcaCasscfResult:
     if not meaningful:
         result.failure_lines = _failure_lines(out_path)
     return result
+
+
+_CASSCF_CONVERGED_RE = __import__("re").compile(
+    r"THE CAS-SCF (?:GRADIENT|ENERGY)\s+HAS CONVERGED"
+)
 
 
 def _text_nevpt2_energies(text: str) -> tuple:
@@ -404,12 +410,18 @@ def _total_energies_text(text: str) -> tuple:
     """Per-root CI energies (Eh) from ``CAS-SCF STATES`` ``ROOT n: E=`` lines.
 
     ``CAS-SCF STATES FOR BLOCK  1 MULT= 1 NROOTS= 1`` prints ``ROOT   1:  E=
-    <E> Eh`` per root (manual CASSCF.txt lines 2320-2324).  Empty when the
-    output uses no such block.
+    <E> Eh`` per root (manual CASSCF.txt lines 2320-2324).  ORCA also prints
+    ``ROOT n: E=`` lines in its INITIAL CI STATE CHECK before the macro
+    iterations; only the final ``CAS-SCF STATES FOR BLOCK`` section counts.
+    Empty when the output uses no such block.
     """
     if not text:
         return ()
     import re
+    start = text.find("CAS-SCF STATES FOR BLOCK")
+    if start < 0:
+        return ()
+    text = text[start:]
     return tuple(
         float(m.group(1))
         for m in re.finditer(
@@ -453,12 +465,18 @@ def _text_state_energies(text: str) -> tuple:
     if not text:
         return ()
     import re
+    # The NEVPT2 section prints its own LOWEST ROOT / transition table; those
+    # are NEVPT2 energies, never CASSCF state energies.
+    nev = re.search(r"NEVPT2\s+(?:Results|TOTAL ENERGIES|TRANSITION ENERGIES)", text)
+    if nev:
+        text = text[:nev.start()]
     lowest = re.search(
-        r"LOWEST ROOT(?: \(ROOT \d+ ,MULT \d+\))?\s*=\s*(-?[0-9.eE+\-]+)\s+Eh",
+        r"LOWEST ROOT(?: \(ROOT \d+\s*,\s*MULT \d+\))?\s*=\s*(-?[0-9.eE+\-]+)\s+Eh",
         text,
     )
     if not lowest:
-        return ()
+        # no SA-CASSCF transition block: the final CAS-SCF STATES roots
+        return tuple(sorted(_total_energies_text(text)))
     header = re.search(
         r"^STATE\s+ROOT\s+MULT(?:\s+IRREP)?\s+(DE/a\.u\.)\s+DE/eV\s+DE/cm\*\*-1",
         text, re.MULTILINE,
@@ -593,9 +611,31 @@ class OrcaCasscfOpiAdapter(StepAdapter):
         wdir = Path(work_dir).resolve()
         base_name = kwargs.pop("base_name", "calc")
         result = run_casscf(work_dir=wdir, base_name=base_name, ncores=cores, **kwargs)
-        kw = {}
-        if result.error:
-            kw["error"] = result.error
+        kw: dict[str, Any] = {}
+        if result.ok:
+            kw["data"] = {
+                "nel": kwargs.get("nel"), "norb": kwargs.get("norb"),
+                "mult": kwargs.get("mult"), "nroots": kwargs.get("nroots", 1),
+                "state_energies_Eh": list(result.state_energies_Eh),
+                "nevpt2_energies_Eh": list(result.nevpt2_energies_Eh),
+                "energies_total_Eh": list(result.energies_total_Eh),
+                "natural_orbital_occupations":
+                    [list(p) for p in result.natural_orbital_occupations],
+                "findings": [str(f) for f in result.findings],
+            }
+        else:
+            # A FAILED step always says why.
+            if result.error:
+                why = result.error
+            elif not result.terminated_normally:
+                why = "ORCA did not terminate normally"
+            elif not result.casscf_converged:
+                why = "CASSCF did not converge"
+            else:
+                why = "CASSCF result could not be read"
+            if result.failure_lines and not result.error:
+                why += ": " + " | ".join(result.failure_lines[:3])
+            kw["error"] = why
             kw["error_kind"] = ErrorKind.PARSE
         if result.artifacts:
             kw["artifacts"] = result.artifacts
