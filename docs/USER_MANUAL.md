@@ -1344,7 +1344,7 @@ Sessions live in your agent service, not in a window: the dashboard, the termina
 - **Terminal:** `delfin-agent tui`, then **←** on an empty prompt for the agent view, **↑ ↓** to a session, **Enter** to open it. `/name NAME` (or F2 / ctrl+r in the agent view) renames it.
 - **Phone:** `hol` in the messenger chat.
 
-An approval may be answered in any of them; the first answer counts, and every window shows which one gave it. Names are kept by the service (at most 50 characters; empty: folder and short id). Without a service (it cannot start here), the dashboard runs its sessions in its kernel and says so; other windows then cannot open them. `DELFIN_DASHBOARD_SESSIONS=kernel` (or `agent.dashboard_sessions: "kernel"` in the settings) keeps them there on purpose.
+An approval may be answered in any of them; the first answer counts, and every window shows which one gave it. Names are kept by the service (at most 50 characters; empty: folder and short id). A session started in the dashboard runs in the dashboard's kernel by default, with the agent tab's full chat; the terminal and the phone cannot open it. Sessions of a running service (started in the terminal or on the phone) are still listed under *Running sessions* and open from there. `DELFIN_DASHBOARD_SESSIONS=service` (or `agent.dashboard_sessions: "service"` in the settings) starts dashboard sessions in the service instead; their view does not yet have all of the chat's controls.
 
 ### Starting it
 
