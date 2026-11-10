@@ -316,18 +316,35 @@ def _same_composition(a: Sequence, b: Sequence) -> bool:
 
 
 def _same_ts_geometry(a: Sequence, b: Sequence, tolerance: float = 0.10) -> bool:
-    """Match atom order AND Cartesian positions, in Angstrom.
+    """Match ordered TS atoms after removing ONE shared translation (Angstrom).
 
-    The Hessian parser already converts ORCA Bohr coordinates to Angstrom.
-    Reject a different geometry even when its elemental formula matches.
+    ORCA can output the same optimized structure in a different Cartesian
+    origin in .xyz and .hess. Absolute-coordinate comparison falsely rejects
+    that case, even though all internal distances and normal-mode
+    displacements are unchanged.
+
+    Both inputs are already in Angstrom (delfin.imag converts Hessian Bohr).
+    Do not permute atoms or rotate coordinates; the matched Hessian mode and
+    the XYZ must retain the same element order and orientation. A *local*
+    geometric distortion still exceeds the per-atom 0.10 Angstrom limit.
     """
-    return (
-        _same_composition(a, b)
-        and all(
-            math.dist(tuple(map(float, atom_a[1:4])),
-                      tuple(map(float, atom_b[1:4]))) <= tolerance
-            for atom_a, atom_b in zip(a, b)
-        )
+    if not _same_composition(a, b):
+        return False
+    if not a:
+        return True
+
+    differences = [
+        tuple(float(atom_a[k]) - float(atom_b[k]) for k in (1, 2, 3))
+        for atom_a, atom_b in zip(a, b)
+    ]
+    # Use the average displacement as the common translation. fsum avoids
+    # cancellation when positions lie far from the coordinate origin.
+    translation = tuple(
+        math.fsum(d[axis] for d in differences) / len(differences)
+        for axis in range(3)
+    )
+    return all(
+        math.dist(d, translation) <= tolerance for d in differences
     )
 
 

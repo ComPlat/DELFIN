@@ -5471,6 +5471,13 @@ def build_parser() -> argparse.ArgumentParser:
                           "add <slug> <text>")
     kno.set_defaults(func=cmd_knowledge)
 
+    # lab — device control behind the safety kernel (delfin/lab/cli.py)
+    lab_p = sub.add_parser(
+        "lab", help="Lab devices: e-stop, approvals, manifest, daemons "
+                    "(delfin-agent lab --help)", add_help=False)
+    lab_p.add_argument("lab_args", nargs=argparse.REMAINDER)
+    lab_p.set_defaults(func=cmd_lab)
+
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
         "approvals",
@@ -6292,6 +6299,33 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Lines of the log to show (logs)")
     svc.set_defaults(func=_cmd_service)
 
+    # Durable sessions (package F1): the supervisor as a SLURM job instead
+    # of on the login node. Offline commands only -- rendering and status
+    # touch the shared filesystem, never submit anything; the rendered
+    # script is submitted by the person with sbatch (delfin does not
+    # submit from this path). Handler imported on use, like _cmd_service.
+    def _cmd_durable(args):
+        from delfin.agent.service.durable_host import cmd_durable
+        return cmd_durable(args)
+
+    dur = sub.add_parser(
+        "durable",
+        help="Durable sessions: render the SLURM job that runs the agent "
+             "service on a compute node, and read its supervisor heartbeat",
+    )
+    dur.add_argument("durable_action", nargs="?", default="status",
+                     choices=["render", "status"])
+    dur.add_argument("--walltime", default="12:00:00",
+                     help="render: the job's walltime (hh:mm:ss)")
+    dur.add_argument("--partition", default=None,
+                     help="render: SLURM partition")
+    dur.add_argument("--qos", default=None, help="render: SLURM QOS")
+    dur.add_argument("--signal-minutes", dest="signal_minutes", type=int,
+                     default=5,
+                     help="render: minutes before the walltime end for the "
+                          "checkpoint signal (0..60)")
+    dur.set_defaults(func=_cmd_durable)
+
     return p
 
 
@@ -6313,6 +6347,13 @@ def _stop_own_background_shells() -> None:
         _bj.get_registry().stop_running()
     except Exception:
         pass
+
+
+def cmd_lab(args) -> int:
+    """``delfin-agent lab ...``: handed whole to ``delfin.lab.cli``."""
+    from delfin.lab.cli import main as lab_main
+    return int(lab_main(list(getattr(args, "lab_args", None) or ["--help"]))
+               or 0)
 
 
 def main(argv: list[str] | None = None) -> int:
