@@ -288,12 +288,19 @@ def parity_gate(
     plan["clone_dir"] = str(clone)
     if not clone.exists():
         base_repo = base_repo or _infer_base_repo()
-        subprocess.run(
-            ["git", "clone", "-q", "--no-checkout", base_repo, str(clone)],
-            check=True, capture_output=True, text=True)
-        subprocess.run(
-            ["git", "-C", str(clone), "checkout", "-q", ref],
-            check=True, capture_output=True, text=True)
+        from delfin.agent import safe_git
+
+        # through safe_git: no hooks, filters or programs named by the
+        # repository's own configuration run while cloning/checking out
+        for args, cwd in (
+            (["clone", "-q", "--no-checkout", str(base_repo), str(clone)], work),
+            (["checkout", "-q", ref], clone),
+        ):
+            done = safe_git.run(args, cwd, timeout=600)
+            if done.returncode != 0:
+                raise RuntimeError(
+                    f"git {args[0]} failed ({done.returncode}): "
+                    f"{(done.stderr or '').strip()[:300]}")
     venv_py = _ensure_venv(work, python_for_venv, install_cmd, clone)
     build_cmd = list(command) if command is not None else \
         [str(venv_py.parent / "delfin-manta")]

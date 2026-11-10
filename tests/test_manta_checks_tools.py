@@ -194,18 +194,20 @@ def test_parity_gate_executed_uses_fake_install_and_cli(tmp_path, monkeypatch):
     calls = []
     real_run = subprocess.run
 
+    def fake_git(args, cwd, **kw):
+        # git goes through safe_git: no real clone, an empty repo dir instead
+        s = ["git", *[str(a) for a in args]]
+        calls.append(s)
+        if args[0] == "clone":
+            Path(s[-1]).mkdir(parents=True, exist_ok=True)
+        return subprocess.CompletedProcess(s, 0, "", "")
+
     def fake_run(cmd, **kw):
         calls.append([str(c) for c in cmd])
-        s = [str(c) for c in cmd]
-        if s[:2] == ["git", "clone"]:
-            # no real clone: create an empty repo dir the checkout would use
-            clone = Path(s[-1])
-            clone.mkdir(parents=True, exist_ok=True)
-            return subprocess.CompletedProcess(s, 0, "", "")
-        if s[:2] == ["git", "-C"]:
-            return subprocess.CompletedProcess(s, 0, "", "")
         return real_run(cmd, **kw)   # the build itself really runs the fake CLI
 
+    from delfin.agent import safe_git
+    monkeypatch.setattr(safe_git, "run", fake_git)
     monkeypatch.setattr(mc.subprocess, "run", fake_run)
     monkeypatch.setattr(mc, "_ensure_venv",
                         lambda *a, **k: venv / "bin" / "python")
