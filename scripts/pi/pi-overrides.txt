@@ -1,0 +1,10 @@
+# uv overrides for the Raspberry Pi's install (pi_install.sh, used while the
+# orca extra is installed). An override REPLACES every requirement on the
+# package, so the range below must stay inside pyproject.toml's own numpy
+# range (tests/test_opi_is_the_same_everywhere.py checks it).
+#
+# Why: orca-pi 2.0.0 needs numpy>=2.2.6; mendeleev 0.14-0.20.1 (all DELFIN
+# admits) declare numpy<2 on Python < 3.12 and numpy 2 on 3.12. The Pi runs
+# 3.11; mendeleev 0.20.1 on numpy 2.2.6 / 3.11 was checked to read its
+# element data unchanged.
+numpy>=2.2.6,<2.3

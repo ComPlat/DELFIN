@@ -7,8 +7,8 @@ licensed-program run; no coordinates from any real system are used.
 * `synth_h2o.out` -- hand-authored text in the ORCA 6.1.1 output format. Its
   first line is the required SYNTHETIC marker. It carries only the exact
   block lines DELFIN's thermochemistry readers match (Program-Version,
-  SCF SETTINGS/SUCCESS, THERMOCHEMISTRY block, FINAL SINGLE POINT ENERGY,
-  ORCA TERMINATED NORMALLY).
+  SCF SETTINGS/SUCCESS, THERMOCHEMISTRY block, FINAL SINGLE POINT ENERGY, the
+  normal-termination line).
 * `synth_h2o.property.json` -- hand-authored property data in OPI's property
   JSON schema (keys verified against opi.output.core._safe_get paths:
   Geometries[].Single_Point_Data, Geometries[].thermochemistry_energies[]).

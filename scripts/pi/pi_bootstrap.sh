@@ -264,6 +264,15 @@ Exec=sh -c 'x-www-browser "$(delfin-dashboard-url)"'
 Icon=applications-science
 Categories=Science;Education;
 EOF
+# Lab control: the e-stop owner and the dead-man are systemd user units of
+# the agent user (pi_install.sh installs them); lingering lets them run
+# without a login. GPIO (libgpiod, /dev/gpiochip*, group gpio via the
+# Raspberry Pi OS udev rule) only when asked for: the group grants the whole
+# chip, so it is an explicit choice (docs/design/lab-control.md section 9).
+loginctl enable-linger "$AGENT_USER" || echo "warning: lingering not enabled for $AGENT_USER" >&2
+if [[ "${LAB_GPIO:-0}" == "1" ]] && getent group gpio >/dev/null; then
+    usermod -aG gpio "$AGENT_USER"
+fi
 systemctl daemon-reload
 if [[ "$dashboard_unit_new" == "1" ]]; then
     systemctl enable delfin-dashboard.service

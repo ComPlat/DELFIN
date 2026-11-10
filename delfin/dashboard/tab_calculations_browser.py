@@ -22,45 +22,10 @@ from pathlib import Path
 import ipywidgets as widgets
 import numpy as np
 from IPython.display import HTML, clear_output, display
+from rdkit import Chem, RDLogger
+from rdkit.Chem import AllChem, rdDepictor
+from rdkit.Chem.Draw import MolToImage
 
-from .constants import CALC_SEARCH_OPTIONS
-from .energy_labels import format_xyz_comment_label
-from .input_processing import (
-    parse_inp_resources,
-    parse_resource_settings,
-    smiles_to_xyz,
-    smiles_to_xyz_quick,
-    contains_metal,
-    is_smiles,
-)
-from . import upload_limits as _upload_limits
-from .helpers import (
-    disable_spellcheck, image_data_uri, js_string_literal,
-    neutralise_link_targets, save_neb_trajectory_csv,
-    save_neb_trajectory_plot_png,
-)
-from . import docx_view as _docx
-from . import pdf_view as _pdf
-from . import formula_engine as _formula_engine
-from . import spreadsheet_view as _sheet
-from . import text_view as _text_view
-from . import ketcher as _ketcher
-from . import ketcher_panel as _ketcher_panel
-from .molecule_viewer import (
-    VIEWER_CONTAINER_DYNAMIC_SCALE,
-    VIEWER_CONTAINER_HEIGHT_PX,
-    coord_to_xyz,
-    parse_xyz_frames,
-    get_viewer_profile,
-    measurement_bootstrap_js,
-    molecule_view_style_js,
-    patch_viewer_mouse_controls_js,
-    render_fukui_panel,
-    structure_viewer_fullscreen_bootstrap_js,
-    structure_viewer_fullscreen_css,
-    structure_viewer_fullscreen_kind_js,
-    viewer_disabled_html,
-)
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
 from delfin.reporting.delfin_docx_report import _orca_plot_binary
 from delfin.ssh_transfer_jobs import (
@@ -71,17 +36,53 @@ from delfin.ssh_transfer_jobs import (
 )
 from delfin.user_settings import (
     get_settings_path,
-    is_calc_unread,
     load_remote_archive_enabled,
     load_transfer_settings,
     mark_calc_as_read,
     normalize_ssh_transfer_settings,
     update_calc_running_transitions,
 )
-from rdkit import Chem, RDLogger
-from rdkit.Chem import rdDepictor, AllChem
-from rdkit.Chem.Draw import MolToImage
 
+from . import docx_view as _docx
+from . import formula_engine as _formula_engine
+from . import ketcher as _ketcher
+from . import ketcher_panel as _ketcher_panel
+from . import pdf_view as _pdf
+from . import spreadsheet_view as _sheet
+from . import text_view as _text_view
+from . import upload_limits as _upload_limits
+from .constants import CALC_SEARCH_OPTIONS
+from .energy_labels import format_xyz_comment_label
+from .helpers import (
+    disable_spellcheck,
+    image_data_uri,
+    js_string_literal,
+    neutralise_link_targets,
+    save_neb_trajectory_csv,
+    save_neb_trajectory_plot_png,
+)
+from .input_processing import (
+    contains_metal,
+    is_smiles,
+    parse_inp_resources,
+    parse_resource_settings,
+    smiles_to_xyz_quick,
+)
+from .molecule_viewer import (
+    VIEWER_CONTAINER_DYNAMIC_SCALE,
+    VIEWER_CONTAINER_HEIGHT_PX,
+    coord_to_xyz,
+    get_viewer_profile,
+    measurement_bootstrap_js,
+    molecule_view_style_js,
+    parse_xyz_frames,
+    patch_viewer_mouse_controls_js,
+    render_fukui_panel,
+    structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css,
+    structure_viewer_fullscreen_kind_js,
+    viewer_disabled_html,
+)
 
 ORCA_CPCM_TOP10_SOLVENTS = (
     "chloroform",
@@ -1759,6 +1760,12 @@ def create_tab(ctx):
             calc_spin_density_settings,
             calc_spin_density_status,
         ],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
+    # TS -> GOAT preparation panel: the dialog lives in ts_goat_panel.py
+    # and is attached here when the 'TS -> GOAT' option is selected.
+    calc_ts_goat_panel = widgets.VBox(
+        [],
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
     )
 
@@ -5068,7 +5075,9 @@ def create_tab(ctx):
         # Fallback: parse orbitals directly from selected ORCA output.
         # This is robust for OCCUPIER directories without DELFIN_Data.json.
         try:
-            from delfin.reporting.delfin_collector import parse_orbitals as _parse_orbitals
+            from delfin.reporting.delfin_collector import (
+                parse_orbitals as _parse_orbitals,
+            )
 
             parsed = _parse_orbitals(selected_path)
             if parsed:
@@ -8033,8 +8042,8 @@ def create_tab(ctx):
         calc_xyz_frame_input.max = len(frames)
         calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
         large_traj_note = (
-            f' <span style="color:#888;font-size:0.85em;">'
-            f'(large trajectory, single-frame mode)</span>'
+            ' <span style="color:#888;font-size:0.85em;">'
+            '(large trajectory, single-frame mode)</span>'
             if len(frames) > CALC_XYZ_LARGE_TRAJ_FRAMES else ''
         )
         calc_xyz_frame_total.value = f"<b>/ {len(frames)}</b>"
@@ -9097,6 +9106,18 @@ def create_tab(ctx):
             calc_options_dropdown.layout.display = 'block'
         elif selected and sel_lower.endswith('.out'):
             out_options = ['(Options)', 'Print Mode', 'MO Plot', 'Print NMR', 'Spin Density']
+            # 'TS -> GOAT' is offered only for a TS output; the panel itself
+            # re-checks and explains why a file does not qualify, so the
+            # dropdown never guesses from the name alone.
+            try:
+                # Head-only check: this runs on every .out selection, so
+                # it must not read a whole (possibly huge) output.
+                out_path_candidate = _calc_path_for_label(selected)
+                from delfin.ts_goat import is_optts_output
+                if is_optts_output(out_path_candidate):
+                    out_options.append('TS → GOAT')
+            except Exception:
+                pass
             if rmsd_available:
                 out_options.append('RMSD')
             calc_options_dropdown.options = out_options
@@ -10196,6 +10217,204 @@ def create_tab(ctx):
             _calc_show_mo_plot_panel(False)
             _calc_show_spin_density_panel(True, visualize=False)
             calc_content_area.layout.display = 'block'
+        elif change['new'] == 'TS → GOAT':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
+            # TS→GOAT owns the entire content pane while open; hiding
+            # only the text body left "File Content" and its toolbar
+            # competing with the panel at the bottom of the window.
+            _ts_file_ui_before = (
+                calc_content_area.layout.display,
+                calc_content_label.layout.display,
+                calc_content_toolbar.layout.display,
+            )
+            calc_content_area.layout.display = 'none'
+            calc_content_label.layout.display = 'none'
+            calc_content_toolbar.layout.display = 'none'
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'block'
+            _ts_labels = _calc_selected_labels()
+            _ts_path = _calc_path_for_label(_ts_labels[0]) if _ts_labels else None
+            if _ts_path is None:
+                calc_content_area.layout.display = _ts_file_ui_before[0]
+                calc_content_label.layout.display = _ts_file_ui_before[1]
+                calc_content_toolbar.layout.display = _ts_file_ui_before[2]
+                calc_ts_goat_panel.children = [widgets.HTML(
+                    '<b>TS → GOAT:</b> select a .out file first.')]
+            else:
+                def _ts_render_viewer(xyz_lines, indices, arrows=None):
+                    """Render the TS with constraint atoms highlighted."""
+                    _render_3dmol(xyz_lines, fmt='xyz')
+
+                def _ts_render_in_panel(atoms, indices, arrows=None,
+                                        output_widget=None,
+                                        mode_vector=None,
+                                        frames_payload=None):
+                    """Render the TS INTO the panel's own Output widget.
+
+                    The panel passes its ``viewer_out`` Output widget as
+                    ``output_widget`` (the panel owns it, the tab only
+                    draws into it).  Highlights the constraint atoms
+                    and injects the click JS that toggles atoms in the
+                    constraint field.
+                    """
+                    if output_widget is None:
+                        return  # panel shows its own fallback note
+                    from delfin.dashboard import molecule_viewer as _mv
+                    xyz_lines = '\n'.join(
+                        [str(len(atoms)), 'optimized TS']
+                        + [f'{el} {x:.6f} {y:.6f} {z:.6f}'
+                           for el, x, y, z in atoms]
+                    )
+                    # py3Dmol's loader script inside a later-attached
+                    # Output never runs on Voila replay (inert HTML) --
+                    # the exact cause of the "3Dmol.js failed to load"
+                    # banner (user report 2026-11-02).  Store only the
+                    # static div + payload, then instantiate the
+                    # GLViewer through the run_js channel, which Voila
+                    # executes even for panels that come up after the
+                    # page loaded.  The library is already on the page
+                    # from the startup bundle; nothing hits a CDN.
+                    arrows_payload = None
+                    if arrows:
+                        flat = []
+                        for _el, x, y, z in arrows:
+                            flat.extend([x, y, z])
+                        arrows_payload = flat
+                    vid = _mv.render_xyz_static_div(
+                        output_widget, xyz_lines, width=640, height=450,
+                        highlight_indices=list(indices or []),
+                        arrows=arrows_payload,
+                        frames=frames_payload,
+                    )
+                    if vid:
+                        _ts_viewer_state['vid'] = vid
+                        # the animation displaces along mode_vector --
+                        # SEPARATE from the visible arrows toggle: the
+                        # animation data must reach the browser even
+                        # when no arrows are drawn (default).
+                        vec_payload = None
+                        if mode_vector:
+                            vec_payload = [
+                                v for a in mode_vector
+                                for v in (a[1], a[2], a[3])]
+                        _run_js(_mv.ts_goat_viewer_bootstrap_js(
+                            vid, width=640, height=450,
+                            click_sync_css='.ts-goat-click-sync',
+                            arrows=arrows_payload,
+                            mode_vector=vec_payload,
+                        ))
+
+                def _ts_scroll_top():
+                    _run_js(
+                        "setTimeout(function(){"
+                        "var el=document.querySelector('.calc-file-list');"
+                        " if(el) el.scrollTop=0;},80);"
+                    )
+
+                _ts_viewer_state = {'vid': None}
+
+                def _ts_get_viewer_id():
+                    """The last panel viewer id, for 'Ansicht zentrieren'."""
+                    return _ts_viewer_state.get('vid')
+
+                def _ts_update_highlights_in_panel(indices):
+                    """Toggle atom halos without clearing/recreating WebGL."""
+                    vid = _ts_viewer_state.get('vid')
+                    if vid:
+                        from delfin.dashboard import molecule_viewer as _mv
+                        _run_js(_mv.ts_goat_viewer_highlights_js(
+                            vid, indices))
+
+                def _ts_center_viewer(vid):
+                    """Re-center the panel viewer ('Ansicht zentrieren')."""
+                    from delfin.dashboard import molecule_viewer as _mv
+                    _run_js(_mv.ts_goat_viewer_center_js(vid))
+
+                def _ts_animate_in_panel(vid, running):
+                    """Play/pause validated ORCA XYZ frames without camera reset.
+
+                    The speed slider changes the timeout used by each
+                    subsequent frame; no old sinusoidal JS is involved.
+                    """
+                    from delfin.dashboard import molecule_viewer as _mv
+                    if running == 'speed':
+                        period_ms = max(60, int(
+                            200 / (_ts_anim_speed_value() or 1.0)))
+                        _run_js(
+                            "window.__tsGoatPeriodMs=" + str(period_ms) + ";")
+                        return
+                    _run_js(_mv.ts_goat_viewer_frames_js(vid, running))
+
+                _ts_panel_widgets = {'items': []}
+
+                def _ts_collect_speed(widget_box):
+                    """Remember panel widgets for the speed lookup."""
+                    def _walk(w, acc):
+                        for child in getattr(w, 'children', ()):
+                            acc.append(child)
+                            _walk(child, acc)
+                        return acc
+                    try:
+                        _ts_panel_widgets['items'] = _walk(widget_box, [])
+                    except Exception:
+                        pass
+
+                def _ts_anim_speed_value():
+                    """Current speed from the panel widget, if reachable."""
+                    for w in _ts_panel_widgets['items']:
+                        if ('ts-goat-speed-slider' in
+                                getattr(w, '_dom_classes', ()) or
+                                getattr(w, 'description', '') == 'Speed:'):
+                            return getattr(w, 'value', 1.0)
+                    return 1.0
+
+                def _ts_restore_file_ui():
+                    calc_content_area.layout.display = _ts_file_ui_before[0]
+                    calc_content_label.layout.display = _ts_file_ui_before[1]
+                    calc_content_toolbar.layout.display = _ts_file_ui_before[2]
+
+                def _ts_on_close():
+                    calc_ts_goat_panel.children = []
+                    calc_ts_goat_panel.layout.display = 'none'
+                    _ts_restore_file_ui()
+
+                from .ts_goat_panel import open_ts_goat_dialog
+                open_result = open_ts_goat_dialog(
+                    _ts_path,
+                    callbacks={
+                        'backend': ctx.backend,
+                        'reset_dropdown': _calc_reset_options_dropdown,
+                        'render_viewer': _ts_render_viewer,
+                        'scroll_top': _ts_scroll_top,
+                        'render_in_panel': _ts_render_in_panel,
+                        'update_highlights_in_panel': _ts_update_highlights_in_panel,
+                        'on_close': _ts_on_close,
+                        'center_viewer': _ts_center_viewer,
+                        'get_viewer_id': _ts_get_viewer_id,
+                        'animate_in_panel': _ts_animate_in_panel,
+                    },
+                )
+                if open_result['error']:
+                    _ts_restore_file_ui()
+                    # the message carries folder names and exception
+                    # text: external text, escaped like every other
+                    calc_ts_goat_panel.children = [widgets.HTML(
+                        '<b>TS → GOAT:</b> '
+                        + _html.escape(str(open_result['error'])))]
+                else:
+                    calc_ts_goat_panel.children = [open_result['panel']]
+                    _ts_collect_speed(open_result['panel'])
+            _calc_reset_options_dropdown()
         elif change['new'] == 'Calc NMR':
             calc_override_input.layout.display = 'none'
             calc_override_time.layout.display = 'none'
@@ -12044,7 +12263,8 @@ def create_tab(ctx):
                                 row.append('—')
                     rows.append(row)
         calc_table_output.value = _render_extract_table_html(headers, rows)
-        import io, csv as _csv
+        import csv as _csv
+        import io
         buf = io.StringIO()
         csv_rows = [['' if c == '—' else c for c in row] for row in rows]
         _csv.writer(buf, delimiter=';').writerows([headers] + csv_rows)
@@ -13450,7 +13670,7 @@ def create_tab(ctx):
                 calc_update_view()
                 try:
                     head_bytes = min(CALC_TEXT_CHUNK_BYTES, size)
-                    with open(str(full_path), 'r', errors='ignore') as fh:
+                    with open(str(full_path), errors='ignore') as fh:
                         head_text = fh.read(head_bytes)
                     head_frames = parse_xyz_frames(head_text)
                     _calc_load_text_preview_chunk(full_path, size, 0)
@@ -13962,7 +14182,7 @@ def create_tab(ctx):
                     try:
                         if size > CALC_LOG_XYZ_EXTRACT_MAX:
                             # Read only the tail of large logs (XYZ blocks are near the end)
-                            with open(str(full_path), 'r', errors='ignore') as fh:
+                            with open(str(full_path), errors='ignore') as fh:
                                 fh.seek(max(0, size - CALC_TEXT_CHUNK_BYTES))
                                 xyz_source = fh.read()
                         else:
@@ -14188,6 +14408,14 @@ def create_tab(ctx):
         # construction. Still keyed by folder as well, so the same name in
         # another directory still opens.
         state['last_opened_label'] = (state['current_path'], name)
+        # a newly opened file ends the TS→GOAT session for the previous
+        # .out (single-selection panel is bound to one concrete output)
+        if calc_ts_goat_panel.children:
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'none'
+            # the panel hid the label and toolbar too; let the view
+            # decide all three for the current mode
+            calc_update_view()
         _calc_open_item(label)
 
     def calc_on_open_request(change):
@@ -14206,6 +14434,13 @@ def create_tab(ctx):
     def calc_on_selection_change(change):
         _calc_update_explorer_action_state()
         labels = [label for label in (change['new'] or ()) if label and not label.startswith('(')]
+        # TS→GOAT belongs to one concrete .out: any other selection
+        # (another file, an .xyz, nothing) hides the panel so the normal
+        # preview shows and no stale constraints/viewer stay around.
+        if calc_ts_goat_panel.children and len(labels) != 1:
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'none'
+            calc_update_view()
         if len(labels) == 1:
             # The click bridge above has usually opened this one already.  This
             # path still serves keyboard navigation, and stands in whenever the
@@ -15896,6 +16131,7 @@ def create_tab(ctx):
         calc_print_mode_panel,
         calc_mo_plot_panel,
         calc_spin_density_panel,
+        calc_ts_goat_panel,
         calc_delete_confirm,
         calc_delete_status,
         calc_mol_container,
@@ -16299,6 +16535,8 @@ def create_tab(ctx):
         'calc_ketcher_container': calc_ketcher_container,
         'calc_recalc_toolbar': calc_recalc_toolbar,
         'calc_content_toolbar': calc_content_toolbar,
+        'calc_content_label': calc_content_label,
+        'calc_ts_goat_panel': calc_ts_goat_panel,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # the spreadsheet, for driving it the way the browser does

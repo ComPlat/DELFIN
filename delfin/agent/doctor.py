@@ -251,6 +251,28 @@ def _check_python_deps(ctx: dict) -> list[dict]:
     return out
 
 
+def _check_optional_tools(ctx: dict) -> list[dict]:
+    """Optional chemistry programs, one row per install group.
+
+    The table and the presence probe are ``optional_tools`` -- the same
+    the Pi's post-install smoke step reads -- so the doctor and the deploy
+    name the same groups. Nothing is imported or run here (``find_spec``
+    and the tool resolver): importing torch alone takes seconds on a Pi.
+    ``python -m delfin.agent.optional_tools smoke`` runs the computations.
+    """
+    from . import optional_tools as ot
+    out: list[dict] = []
+    for group in ot.GROUPS:
+        status, detail = ot.availability(group)
+        if status == ot.OK:
+            out.append(_row(f"optional: {group.name}", PASS, detail))
+            continue
+        fix = (f"{group.install}  (Raspberry Pi: {ot.pi_hint(group)}; "
+               "scripts/pi/README.md)")
+        out.append(_row(f"optional: {group.name}", WARN, detail, fix))
+    return out
+
+
 def _check_test_runner(ctx: dict) -> list[dict]:
     """Can the agent run the suite in the interpreter it would use.
 
@@ -1156,6 +1178,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("credentials", "_check_credentials"),
     ("chemistry binaries", "_check_binaries"),
     ("python deps", "_check_python_deps"),
+    ("optional chemistry", "_check_optional_tools"),
     ("test runner", "_check_test_runner"),
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
@@ -1172,7 +1195,26 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
     ("terminal window", "_check_tui"),
+    ("MLIP", "_check_mlip"),
 )
+
+
+def _check_mlip(ctx: dict) -> list[dict]:
+    """The orca-mlips set-up: env, GPU partition and backend configured,
+    and the env's ProgExt command present. From
+    ``guided_setup.mlip_readiness`` (settings + file checks; no scheduler
+    query, no process). Not configured is a PASS: MLIPs are optional."""
+    from delfin.mlp_tools.guided_setup import mlip_readiness
+
+    # ctx["settings"] is the agent's settings; runtime.* lives in DELFIN's
+    # user settings, which mlip_readiness loads when given none.
+    given = ctx.get("settings") or {}
+    state = mlip_readiness(given if "runtime" in given else None)
+    if not state["configured"] or state["ready"]:
+        return [_row("MLIP", PASS, state["detail"])]
+    return [_row("MLIP", WARN, state["detail"],
+                 "delfin mlp_setup plan, then delfin mlp_setup configure --write",
+                 command="delfin mlp_setup plan")]
 
 
 def _check_child_network(ctx: dict) -> list[dict]:

@@ -144,6 +144,40 @@ submits nothing); GPU partition configured -> one sbatch job with
 `--nodes=1` so ORCA and the MLIP server share a node; no GPU -> local CPU
 fallback (<= 2 cores, < 30 min, small systems only) or refusal.
 
+## Setting up an MLIP environment on a cluster (orca-mlips)
+
+Only when the user asks to set MLIPs up (or a planned ExtOpt job has no
+environment). Order, each step shown to the user before the next:
+
+1. `mlp_setup_probe` (read-only): GPU partitions + gres, NVIDIA driver
+   (only where `nvidia-smi` exists; a login node usually has none), CUDA
+   and ORCA modules, ORCA >= 6.1, micromamba/mamba/conda, existing MLIP
+   envs and their `orca-mlips-*` commands, current `runtime.mlp`. No
+   Slurm or no GPU is an answer, not an error.
+2. `mlp_setup_plan` (read-only): partition, backend with its code AND
+   weight licence (UMA: gated, the user's own Hugging Face approval and
+   login; MACE: non-commercial weights; ORB: Apache-2.0; AIMNet2: MIT),
+   the torch build for the probed CUDA version, the install commands, the
+   settings diff, the removal command. Show the licence lines to the user.
+3. Install: run each command of kind `run` as its OWN bash call, in
+   order; the shell gate asks the user for every one, in every mode.
+   Stop at the first refusal or failure. A `manual` step (`hf auth
+   login`) is for the user in their own terminal: never run it, never ask
+   for, read, print or store a token. After it, probe again.
+4. `mlp_setup_configure` with `write=false` shows the diff; with
+   `write=true` it writes through `save_settings` (asked).
+5. `mlp_setup_verify` writes a water job (dry run); submit it with the
+   returned `sbatch` command via bash (asked), then
+   `mlp_setup_verify_result` reports pass/fail with the cold vs warm
+   ProgExt call (start + model load vs one gradient) and the ExtOpt Opt
+   time; on failure it names the likely cause (CUDA mismatch, login,
+   partition, module, env).
+6. Removal: the plan's `remove_command`, via bash (asked).
+
+In a terminal the same flow is `delfin mlp_setup probe|plan|install|
+configure|verify|result|remove`; `install` and `remove` ask for each
+command and refuse without a terminal.
+
 ## When an MLIP is enough, and when DFT must follow
 
 ### MLIP preopt / TS guess: sound when

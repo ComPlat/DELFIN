@@ -63,7 +63,7 @@ def test_carrier_grade_nat_is_internal(monkeypatch):
 @pytest.mark.parametrize("text,kind", [
     ("clone https://max:S3cretPassw0rd@git.example.org/repo.git", "url-password"),
     ("machine api.example.org login max password hunter2xyz", "netrc-password"),
-    ("litellm key sk-AbCdEfGhIjKlMnOpQrStUv in the traceback", "provider-api-key"),
+    ("litellm key sk-AbCdEfGhIjKlMnOpQrStUv in the traceback", "provider-api-key"),  # secret-guard: allow (synthetic DELFIN test sample)
 ])
 def test_new_secret_shapes_are_redacted(text, kind):
     findings = []

@@ -1337,6 +1337,15 @@ surfaces share the same engine, modes and slash commands. That one delegates wor
 that stands on its own to **subagents**, which run in parallel with their own tools
 and permissions — so a session is usually several agents, not one.
 
+### How to get into a running session
+
+Sessions live in your agent service, not in a window: the dashboard, the terminal and the phone are views on the same one, at the same time.
+- **Dashboard:** the sidebar's *Running sessions* lists every session of your service (any folder, started anywhere); one click opens it — its recent turns, then live. The pencil renames it. *×* closes only the view; *End session…* (with a confirmation) ends it.
+- **Terminal:** `delfin-agent tui`, then **←** on an empty prompt for the agent view, **↑ ↓** to a session, **Enter** to open it. `/name NAME` (or F2 / ctrl+r in the agent view) renames it.
+- **Phone:** `hol` in the messenger chat.
+
+An approval may be answered in any of them; the first answer counts, and every window shows which one gave it. Names are kept by the service (at most 50 characters; empty: folder and short id). Without a service (it cannot start here), the dashboard runs its sessions in its kernel and says so; other windows then cannot open them. `DELFIN_DASHBOARD_SESSIONS=kernel` (or `agent.dashboard_sessions: "kernel"` in the settings) keeps them there on purpose.
+
 ### Starting it
 
 ```bash
@@ -1898,6 +1907,16 @@ Self-contained work is delegated to an isolated agent with its own tool loop and
 Launch with `/explore`, `/review`, `/plan`, `/delegate <task>`, or let the agent delegate on its own. Several run in parallel — a writing preset gets its own git worktree, so concurrent edits cannot collide — or in the background, and a finished one can be continued with its context intact. Each run is bounded in wall-clock time, tool calls and output, and a subagent may not spawn subagents of its own unless that depth is raised; both in Settings.
 
 Your own presets are markdown files with frontmatter in `~/.delfin/subagents/`.
+
+### A workspace folder without git: local projects
+
+Worktrees, branches, parallel writing subagents and sessions in their own worktree need git. When one of them is requested in a workspace folder that is not a git repository (for example your default `agent_workspace`), the agent asks you once whether the folder should become a **local** repository. A yes runs `git init` (branch `main`), writes a `.gitignore` and makes one first commit of what is there. Kept out of that commit, and of later ones: QM program output and artifacts (`*.out`, `*.gbw`, `*.hess`, `*.engrad`, `*.densities`, `*.tmp`, `*.opt`, ..., and any file whose content is ORCA output whatever its name -- ORCA output may not be redistributed, see LICENSE_GUARD.md), checkpoints and model weights (`*.ckpt`, `*.pt`, `*.pth`, `*.safetensors`), archives, files above 10 MB (listed by name), nested repositories and secrets (`.env`, `credentials*`, `*.key`, `id_*`). An existing `.gitignore` is extended, not replaced. No remote is added: nothing leaves the machine, and adding a remote (`git remote add origin <url>`) is your step. A no leaves the folder unchanged and is not asked again in that session. Refused without a question: your home directory itself, system paths, a mount point, a folder inside another repository, plan mode and auto iterations.
+
+With a local project:
+
+- `orchestrate` gives each writing subagent its own worktree and branch; with `"merge": true` the finished worktrees are merged back into the folder, uncommitted, for review. A conflict is reported (`merges[].status = "conflict"`) and leaves the folder as it was, the conflicting worktree kept for a manual merge. A writer that asked for its own worktree never runs in the folder itself.
+- Several sessions in the same workspace: start each in its own worktree ("Own worktree" in the dashboard's new-session form; `session.create` with `worktree: true` in the agent service -- with `initProject: true` once you agreed to make a plain folder a local project). The trees live in `<workspace>/.delfin/worktrees/`, each on a `session/...` branch. `session.merge` brings a finished session's commits and changes back into the folder (refused while a session still works in that tree); a conflict is reported and nothing is written.
+- The branch views list the local branches; Pull is disabled with the reason (there is no `origin`).
 
 ### Memory and sessions
 
