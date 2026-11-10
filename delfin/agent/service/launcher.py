@@ -41,10 +41,32 @@ def service_log() -> Path:
     return eventlog.service_dir() / "logs" / "service.log"
 
 
+#: What a service started from a dashboard kernel (or a TUI in its
+#: terminal) does not take along: the server's token and port, the
+#: kernel's Jupyter and editor variables, the lifeline, the page's resume
+#: and terminal settings -- branch_preview._DROP_EXACT / _DROP_PREFIX, the
+#: same judgement for a preview server. Kept unlike there: PYTHONPATH and
+#: PYTHONHOME (which DELFIN the service imports), the user's secrets (the
+#: sessions need their provider key). With the server's variables gone,
+#: stop_all.status() no longer reads the service as a kernel whose
+#: dashboard died.
+_SERVICE_DROP_EXACT = frozenset({
+    "JUPYTER_TOKEN", "DELFIN_VOILA_PORT", "DELFIN_VOILA_ROOT_DIR",
+    "DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS", "DELFIN_RESUME_SESSION",
+    "DELFIN_RESUME_URL_PATH", "DELFIN_AGENT_TERMINAL",
+    "DELFIN_AGENT_TERMINAL_ARGV", "DELFIN_AGENT_TERMINAL_CWD",
+    "DELFIN_KETCHER_URL", "DELFIN_KEEP_SESSIONS", "BROWSER", "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION", "MPLBACKEND", "PYTHONSTARTUP",
+    "JUPYTER_CONFIG_DIR", "JUPYTER_RUNTIME_DIR",
+})
+_SERVICE_DROP_PREFIX = ("JPY_", "VSCODE_", "KERNEL_", "DELFIN_PREVIEW_")
+
+
 def _service_env() -> dict[str, str]:
     from .. import lifeline
 
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items()
+           if k not in _SERVICE_DROP_EXACT and not k.startswith(_SERVICE_DROP_PREFIX)}
     for name in (lifeline.ENV_PID, lifeline.ENV_TICKS):
         env.pop(name, None)
     return env
@@ -91,6 +113,10 @@ def ensure_service(*, timeout: float = START_TIMEOUT_S,
     """
     deadline = time.monotonic() + timeout
     hello, why = client.probe()
+    if why.startswith("unsafe:"):
+        # Someone else's socket, or a planted one: neither used nor
+        # started beside.
+        raise ServiceDidNotStart(f"the agent service socket is not safely yours: {why[7:].strip()}")
     # A service being moved over to this release: never the one to use.
     old = 0
     if hello is not None:

@@ -25,6 +25,7 @@ from delfin.tools.opi_chain import (
     run_opi_job,
     step_result_from,
 )
+from delfin.tools.adapters.orca_selfheal_opi import run_with_self_heal
 
 _GEOMETRY_PARAMS = (
     ParamSpec("functional", "str", default="r2SCAN-3c", description="DFT functional"),
@@ -32,6 +33,11 @@ _GEOMETRY_PARAMS = (
     ParamSpec("ri", "str", default="", description="RI approximation keyword"),
     ParamSpec("aux_basis", "str", default="", description="Auxiliary basis"),
     ParamSpec("dispersion", "str", default="D4", description="Dispersion correction"),
+    ParamSpec("self_heal", "int", default=0,
+              description="On SCF/geometry/freq failure, escalate and retry "
+                          "this many times (SlowConv -> damping -> SOSCF; "
+                          "fixed trust -> RecHess) without changing "
+                          "method/basis/charge/mult. 0 = off."),
 )
 
 
@@ -75,8 +81,12 @@ class OrcaOptOpiAdapter(StepAdapter):
                 self.name, StepStatus.FAILED, work_dir, start,
                 error=str(exc), error_kind=ErrorKind.MISSING_PARAM,
             )
-        res = run_opi_job(
-            job_kind="OPT",
+        self_heal = int(kwargs.get("self_heal", 0) or 0)
+
+        def _run_once(**params):
+            return run_opi_job(job_kind="OPT", **params)
+
+        base: dict = dict(
             elements=elements,
             coordinates=coordinates,
             charge=kwargs.get("charge", 0),
@@ -88,6 +98,7 @@ class OrcaOptOpiAdapter(StepAdapter):
             dispersion=kwargs.get("dispersion", "D4"),
             extra_keywords=kwargs.get("extra_keywords"),
             scf_options=kwargs.get("scf_options"),
+            geom_options=kwargs.get("geom_options"),
             moread=kwargs.get("moread"),
             maxcore=kwargs.get("maxcore", 1000),
             ncores=cores,
@@ -95,7 +106,16 @@ class OrcaOptOpiAdapter(StepAdapter):
             work_dir=work_dir,
             timeout=kwargs.get("timeout"),
         )
-        return step_result_from(self, res, work_dir, start)
+        attempt_log = None
+        if self_heal > 0:
+            res, attempt_log = run_with_self_heal(
+                run_once=_run_once, params=base, job_kind="OPT",
+                max_attempts=self_heal)
+        else:
+            res = _run_once(**base)
+        return step_result_from(
+            self, res, work_dir, start,
+            data_extra={"_self_heal": attempt_log} if attempt_log else None)
 
 
 class OrcaFreqOpiAdapter(StepAdapter):
@@ -132,8 +152,12 @@ class OrcaFreqOpiAdapter(StepAdapter):
             freq_options["temp"] = float(kwargs["freq_temp"])
         if kwargs.get("freq_pressure") is not None:
             freq_options["pressure"] = float(kwargs["freq_pressure"])
-        res = run_opi_job(
-            job_kind="FREQ",
+        self_heal = int(kwargs.get("self_heal", 0) or 0)
+
+        def _run_once(**params):
+            return run_opi_job(job_kind="FREQ", **params)
+
+        base: dict = dict(
             elements=elements,
             coordinates=coordinates,
             charge=kwargs.get("charge", 0),
@@ -145,6 +169,7 @@ class OrcaFreqOpiAdapter(StepAdapter):
             dispersion=kwargs.get("dispersion", "D4"),
             extra_keywords=kwargs.get("extra_keywords"),
             scf_options=kwargs.get("scf_options"),
+            geom_options=kwargs.get("geom_options"),
             freq_options=freq_options or None,
             moread=kwargs.get("moread"),
             maxcore=kwargs.get("maxcore", 1000),
@@ -153,7 +178,16 @@ class OrcaFreqOpiAdapter(StepAdapter):
             work_dir=work_dir,
             timeout=kwargs.get("timeout"),
         )
-        return step_result_from(self, res, work_dir, start)
+        attempt_log = None
+        if self_heal > 0:
+            res, attempt_log = run_with_self_heal(
+                run_once=_run_once, params=base, job_kind="FREQ",
+                max_attempts=self_heal)
+        else:
+            res = _run_once(**base)
+        return step_result_from(
+            self, res, work_dir, start,
+            data_extra={"_self_heal": attempt_log} if attempt_log else None)
 
 
 class OrcaOptFreqOpiAdapter(StepAdapter):
@@ -189,8 +223,12 @@ class OrcaOptFreqOpiAdapter(StepAdapter):
             freq_options["temp"] = float(kwargs["freq_temp"])
         if kwargs.get("freq_pressure") is not None:
             freq_options["pressure"] = float(kwargs["freq_pressure"])
-        res = run_opi_job(
-            job_kind="OPT_FREQ",
+        self_heal = int(kwargs.get("self_heal", 0) or 0)
+
+        def _run_once(**params):
+            return run_opi_job(job_kind="OPT_FREQ", **params)
+
+        base: dict = dict(
             elements=elements,
             coordinates=coordinates,
             charge=kwargs.get("charge", 0),
@@ -202,6 +240,7 @@ class OrcaOptFreqOpiAdapter(StepAdapter):
             dispersion=kwargs.get("dispersion", "D4"),
             extra_keywords=kwargs.get("extra_keywords"),
             scf_options=kwargs.get("scf_options"),
+            geom_options=kwargs.get("geom_options"),
             freq_options=freq_options or None,
             moread=kwargs.get("moread"),
             maxcore=kwargs.get("maxcore", 1000),
@@ -210,7 +249,16 @@ class OrcaOptFreqOpiAdapter(StepAdapter):
             work_dir=work_dir,
             timeout=kwargs.get("timeout"),
         )
-        return step_result_from(self, res, work_dir, start)
+        attempt_log = None
+        if self_heal > 0:
+            res, attempt_log = run_with_self_heal(
+                run_once=_run_once, params=base, job_kind="OPT_FREQ",
+                max_attempts=self_heal)
+        else:
+            res = _run_once(**base)
+        return step_result_from(
+            self, res, work_dir, start,
+            data_extra={"_self_heal": attempt_log} if attempt_log else None)
 
 
 register(OrcaOptOpiAdapter())
