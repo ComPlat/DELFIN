@@ -6366,6 +6366,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
+    # Never on a shared cluster login node (account suspension 2026-11-10,
+    # issue #640): a session, a turn or the TUI started there moves onto a
+    # compute node (srun --pty); a swarm start or the schedule daemon is
+    # refused. Light commands stay. Off a login node this does nothing.
+    from delfin import hpc_guard as _hpc_guard
+    _hpc_guard.keep_cli_off_login_node(getattr(args, "func", None), args, argv)
     if getattr(args, "func", None) in (cmd_chat, cmd_run):
         guard_principles_or_exit()
         # An agent in a terminal ends with an emergency stop given anywhere
