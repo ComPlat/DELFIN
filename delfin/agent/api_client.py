@@ -9163,7 +9163,7 @@ def _shell_visible(cmd: str) -> str:
     return _blank_quoted(cmd)
 
 
-_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))")
+_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])([\w.-]+)\2|([\w.-]+))")
 
 
 def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:

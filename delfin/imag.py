@@ -243,6 +243,23 @@ def _first_job_energy(out_path: Path) -> Optional[float]:
 
 def _read_xyz(path: Path) -> List[Atom]:
     """Atoms of an xyz file; extra columns (orca_pltvib writes the mode vector) are ignored."""
+    path = Path(path)
+    from delfin import orca_read
+    if orca_read._reader_mode() == "text":
+        # orca.reader=text: the pre-switch direct read, byte for byte.
+        return _read_xyz_direct(path)
+    try:
+        reading = orca_read.read(path.parent, path.stem,
+                                 orca_read.Quantity.FINAL_GEOMETRY)
+    except Exception:
+        return _read_xyz_direct(path)
+    if reading.value is None:
+        return _read_xyz_direct(path)
+    return [tuple(a) for a in reading.value]
+
+
+def _read_xyz_direct(path: Path) -> List[Atom]:
+    """The established xyz parser (kept as the text fallback)."""
     lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
     count = int(lines[0].split()[0])
     atoms: List[Atom] = []
