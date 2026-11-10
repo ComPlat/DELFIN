@@ -206,8 +206,13 @@ def test_a_swarm_start_and_the_schedule_daemon_are_refused(cluster):
 
 def test_every_moved_command_is_a_real_handler_of_delfin_agent():
     from delfin.agent import cli
+    parser = cli.build_parser()
+    # the TUI's handler is defined inside build_parser; the guard matches
+    # handlers by name, so take it from the parser itself
+    tui = parser.parse_args(["tui"]).func
     for name in hpc_guard.MOVED_COMMANDS:
-        assert callable(getattr(cli, name, None)), name
+        found = tui if name == tui.__name__ else getattr(cli, name, None)
+        assert callable(found), name
     assert callable(cli.cmd_scheduler)
-    swarm = cli.build_parser().parse_args(["swarm"]).func
+    swarm = parser.parse_args(["swarm"]).func
     assert swarm.__module__ == "delfin.agent.cli_swarm"
