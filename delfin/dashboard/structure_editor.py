@@ -32,7 +32,6 @@ from pathlib import Path
 
 import ipywidgets as widgets
 
-import py3Dmol
 
 from . import climb as _climb
 from . import editor_journal as _journal_mod
@@ -21317,7 +21316,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
 
     def _build_mol_output_bundle(xyz_data):
-        view = py3Dmol.view(width='100%', height=viewer_height)
+        from .molecule_viewer import py3dmol
+        view = py3dmol().view(width='100%', height=viewer_height)
         view.addModel(xyz_data, 'xyz')
         # Drawn so that a double bond *can* be two lines; whether it is one
         # is the Orders switch's question and nobody else's.  The global

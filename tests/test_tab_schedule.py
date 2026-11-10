@@ -74,3 +74,21 @@ def test_open_spec_is_idempotent_after_an_explicit_widget(specs):
     spec_list[0]['widget'] = widget
     assert tab_schedule.open_spec(spec_list[0]) is widget
     assert build_calls == []
+
+
+def test_the_viewer_package_is_not_imported_by_the_dashboard_modules():
+    """The startup path must not pull py3Dmol in: importing the viewer and
+    the structure editor leaves it unloaded until a viewer is built, and the
+    first use installs the script-safe argument rule."""
+    import subprocess
+    import sys
+    code = (
+        "import sys\n"
+        "import delfin.dashboard.molecule_viewer as mv\n"
+        "import delfin.dashboard.structure_editor\n"
+        "assert 'py3Dmol' not in sys.modules, 'imported at startup'\n"
+        "m = mv.py3dmol()\n"
+        "assert m.tostr._delfin_script_safe\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-800:]

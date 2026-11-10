@@ -967,7 +967,7 @@ def test_converting_again_builds_what_is_in_the_box_now(builder):
     assert refs['read_input']() == 'CCCCCCCC'
     source = open(structure_editor.__file__, encoding='utf-8').read()
     body = source.split('def _start_smiles_conversion')[1].split('\n    def ')[0]
-    assert "if typed and clean_input_data(typed)[1] == 'smiles':" in body
+    assert "if typed and _input_processing().clean_input_data(typed)[1] == 'smiles':" in body
     assert 'raw_input = typed' in body
     # ...and the remembered one is still there for a box holding coordinates.
     assert 'raw_input = (cached_smiles or typed' in body

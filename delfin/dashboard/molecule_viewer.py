@@ -27,11 +27,12 @@ def py3dmol():
     if _py3dmol_cache:
         return _py3dmol_cache[0]
     import py3Dmol
+    _harden_py3dmol(py3Dmol)
     _py3dmol_cache.append(py3Dmol)
     return py3Dmol
 
 
-def _harden_py3dmol():
+def _harden_py3dmol(module):
     """Route py3Dmol's argument encoding through the script-safe rule.
 
     py3Dmol writes every argument of a viewer call (``addModel(text,
@@ -42,7 +43,6 @@ def _harden_py3dmol():
     unicode escapes, which the script reads back as the same characters.
     Idempotent; a py3Dmol without ``tostr`` is left alone.
     """
-    module = py3dmol()
     original = getattr(module, 'tostr', None)
     if original is None or getattr(original, '_delfin_script_safe', False):
         return
@@ -56,8 +56,6 @@ def _harden_py3dmol():
     tostr._delfin_script_safe = True
     module.tostr = tostr
 
-
-_harden_py3dmol()
 
 DEFAULT_3DMOL_BACKGROUND = 'white'
 DEFAULT_3DMOL_ZOOM = 0.90
