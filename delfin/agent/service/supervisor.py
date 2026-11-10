@@ -1950,6 +1950,12 @@ def main(argv: list[str] | None = None) -> int:
 
     state_paths.scratch_state_from_environment()
     args = parse_args(argv)
+    # The service runs every session's turns: never on a shared login node
+    # (issue #640). launcher.start_service refuses first; this holds for a
+    # service started by hand.
+    from ...hpc_guard import exit_on_login_node
+    exit_on_login_node("the agent service",
+                       "run delfin-agent tui or chat inside a SLURM job")
     from .. import cli as _cli
     from .. import lifeline as _lifeline
     from .. import process_guard as _process_guard
