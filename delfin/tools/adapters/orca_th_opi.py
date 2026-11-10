@@ -50,6 +50,8 @@ Re-evaluation input (ORCA's own rules):
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 from typing import Any, Optional
 
@@ -78,6 +80,81 @@ def _first_float(text: str) -> Optional[float]:
         except ValueError:
             continue
     return None
+
+
+_GEOMETRY_HEADER_RE = re.compile(
+    r"^\s*\*\s*xyz\s+(-?\d+)\s+(-?\d+)\s*$"
+)
+_ATOM_COORD_RE = re.compile(
+    r"^\s*([A-Za-z][a-z]?)\s+(-?[\d.]+(?:[eE][+-]?\d+)?)\s+"
+    r"(-?[\d.]+(?:[eE][+-]?\d+)?)\s+"
+    r"(-?[\d.]+(?:[eE][+-]?\d+)?)\s*$"
+)
+
+
+def _quote_inhessname(inp: Path) -> None:
+    """Wrap the ``%freq inhessname`` value in double quotes.
+
+    OPI's BlockFreq renders a string value bare (``inhessname /abs/path.hess``),
+    which real ORCA 6.1 rejects: "Invalid assignment in FREQ block".  ORCA
+    accepts the value only quoted (``inhessname \"/abs/path.hess\"``).
+    """
+    text = inp.read_text()
+    new = re.sub(
+        r"(?m)^(\s*inhessname\s+)(\S+)$",
+        lambda m: m.group(1) + '"' + m.group(2) + '"',
+        text,
+    )
+    if new != text:
+        inp.write_text(new)
+
+
+def _read_source_level(inp_file: Path) -> Optional[dict[str, Any]]:
+    """Parse the source ORCA ``.inp`` for the level a Hessian-reusing
+    re-evaluation input must inherit: charge + multiplicity (from the
+    ``* xyz <charge> <mult>`` header), method + basis (from the ``!`` line),
+    and the geometry atoms.  Returns None when any part is missing (e.g. the
+    input used ``moread`` or a non-``xyz`` coordinate block), so the caller
+    refuses rather than emit a level that is not the source run's.
+    """
+    if not inp_file.is_file():
+        return None
+    text = inp_file.read_text()
+    method = basis = None
+    charge = mult = None
+    geometry: list[tuple[str, float, float, float]] = []
+    after_header = False
+    for line in text.splitlines():
+        if line.startswith("!"):
+            toks = line[1:].split()
+            if len(toks) >= 2:
+                method, basis = toks[0], toks[1]
+            continue
+        m = _GEOMETRY_HEADER_RE.match(line)
+        if m:
+            charge, mult = int(m.group(1)), int(m.group(2))
+            after_header = True
+            continue
+        if after_header:
+            if line.strip() == "*":
+                after_header = False
+                continue
+            a = _ATOM_COORD_RE.match(line)
+            if a:
+                geometry.append(
+                    (a.group(1), float(a.group(2)),
+                     float(a.group(3)), float(a.group(4)))
+                )
+    if (charge is None or mult is None or not method
+            or not basis or not geometry):
+        return None
+    return {
+        "charge": charge,
+        "mult": mult,
+        "functional": method,
+        "basis": basis,
+        "geometry": geometry,
+    }
 
 
 class OrcaThOpiAdapter(StepAdapter):
@@ -130,6 +207,16 @@ class OrcaThOpiAdapter(StepAdapter):
             type="path",
             required=False,
             description="existing .hess the re-evaluation input reuses (inhessname)",
+        ),
+        ParamSpec(
+            name="source_inp",
+            type="path",
+            required=False,
+            description=(
+                "source ORCA .inp whose charge, multiplicity, method, basis "
+                "and geometry a Hessian-reusing re-evaluation input inherits "
+                "(default: the .out's sibling .inp)"
+            ),
         ),
         ParamSpec(
             name="geometry",
@@ -312,7 +399,14 @@ class OrcaThOpiAdapter(StepAdapter):
                         ),
                         error_kind=ErrorKind.MISSING_INPUT,
                     )
-                if not geometry_in:
+                inp_raw = kwargs.get("source_inp")
+                source_inp = (
+                    Path(inp_raw).expanduser()
+                    if inp_raw is not None
+                    else out_file.with_suffix(".inp")
+                )
+                level = _read_source_level(source_inp)
+                if level is None:
                     return self._make_result(
                         self.name,
                         StepStatus.FAILED,
@@ -321,22 +415,31 @@ class OrcaThOpiAdapter(StepAdapter):
                         data=data,
                         error=(
                             "a Hessian-reusing re-evaluation input needs the "
-                            "source molecule's geometry (provide "
-                            "geometry=[(element, x, y, z), ...]): a .hess "
-                            "file carries no atomic coordinates, so the "
-                            "nominal single-He structure would make ORCA "
-                            "compute the wrong molecule (thermochemistry of "
-                            "helium, not the source run)"
+                            "source run's charge, multiplicity, method, basis "
+                            "and geometry (read from its input file "
+                            f"{source_inp}); that file is absent or does not "
+                            "carry a * xyz geometry block, so the input would "
+                            "not re-evaluate the source chemistry at the new "
+                            "temperature"
                         ),
                         error_kind=ErrorKind.MISSING_INPUT,
                     )
+                src_geometry = level["geometry"]
+            else:
+                source_inp = None
+                level = None
+                src_geometry = geometry_in
             inp_path = self._make_re_eval_input(
                 work_dir,
                 requested_re,
                 re_eval_pressure,
                 hessian_in,
                 kwargs.get("input_path"),
-                geometry_in,
+                src_geometry,
+                charge=level["charge"] if level is not None else 0,
+                mult=level["mult"] if level is not None else 1,
+                functional=level["functional"] if level is not None else "BP86",
+                basis=level["basis"] if level is not None else "def2-SVP",
             )
             if inp_path is None:
                 return self._make_result(
@@ -384,16 +487,22 @@ class OrcaThOpiAdapter(StepAdapter):
         hessian: Optional[Path],
         input_path: Optional[Any],
         geometry: Optional[Any] = None,
+        *,
+        charge: int = 0,
+        mult: int = 1,
+        functional: str = "BP86",
+        basis: str = "def2-SVP",
     ) -> Optional[Path]:
         """Build the ``%freq`` re-evaluation input with OPI typed objects.
 
-        Uses :func:`delfin.tools.opi_chain.build_orca_input`` (``Task.FREQ``,
-        ``BlockFreq``), mirroring the other OPI blocks.  When a ``hessian`` is
-        reused, the source molecule's ``geometry`` (list of ``(element, x, y,
-        z)``) is written into the ``* xyz`` block: a ``.hess`` file carries no
-        atomic coordinates, so ORCA cannot recover the geometry from it.  Only
-        when no Hessian is reused (grammar-only probe path) is the structure
-        left nominal.  The caller must still set the source level.
+        The input inherits the *source* run's level from ``execute``: charge,
+        multiplicity, method, basis and geometry.  A ``.hess`` carries no atomic
+        coordinates, so a Hessian-reusing input is only written with the source
+        molecule's geometry (a nominal single He would re-evaluate the wrong
+        chemistry).  When no Hessian is reused (grammar-only probe path) the
+        default BP86/def2-SVP charge-0 singlet He remains.  The ``$hess`` path
+        is rendered quoted (``inhessname "..."``): real ORCA 6.1 aborts with
+        "Invalid assignment in FREQ block" on a bare path.
         """
         target = Path(input_path) if input_path is not None else work_dir / "reval.inp"
         freq_options: dict[str, Any] = {"temp": float(temperature)}
@@ -415,10 +524,10 @@ class OrcaThOpiAdapter(StepAdapter):
                 job_kind=JOB_FREQ,
                 elements=elements,
                 coordinates=coordinates,
-                charge=0,
-                mult=1,
-                functional="BP86",
-                basis="def2-SVP",
+                charge=charge,
+                mult=mult,
+                functional=functional,
+                basis=basis,
                 freq_options=freq_options,
                 base_name=target.stem,
             )
@@ -428,6 +537,8 @@ class OrcaThOpiAdapter(StepAdapter):
         if built != target:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(built.read_text())
+        if hessian is not None:
+            _quote_inhessname(target)
         return target
 
 

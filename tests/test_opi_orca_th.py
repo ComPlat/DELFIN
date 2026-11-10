@@ -193,23 +193,31 @@ def test_builds_re_eval_input_with_orca_own_rules(tmp_path):
     """A new T/p that ORCA did not print is requested: build a %freq rerun that
     reuses the existing Hessian, so ORCA only repeats the thermochemistry
     (manual 4.6.1 / 4.7). A .hess file carries no atomic coordinates, so the
-    source geometry is supplied and written into the ``* xyz`` block."""
+    source level -- geometry, charge, multiplicity, method and basis -- is read
+    from the source .inp and written into the re-evaluation input, and the
+    reused Hessian path is rendered quoted (ORCA 6.1 rejects an unquoted
+    ``inhessname``: "Invalid assignment in FREQ block")."""
     out = _write_out(tmp_path, _TWO_TEMP_OUT)
     hess = tmp_path / "freq.hess"
     hess.write_text("# synthetic Hessian placeholder\n$hessian\n3\n")
     inp = tmp_path / "reval.inp"
-    geo = [
-        ("O", 0.0, 0.0, 0.117),
-        ("H", 0.0, 0.757, -0.469),
-        ("H", 0.0, -0.757, -0.469),
-    ]
+    src_inp = tmp_path / "freq.inp"
+    src_inp.write_text(
+        "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+        "! B3LYP def2-SVP\n"
+        "* xyz 0 1\n"
+        "O  0.0  0.0  0.117\n"
+        "H  0.0  0.757 -0.469\n"
+        "H  0.0 -0.757 -0.469\n"
+        "*\n"
+    )
     result = _adapter().execute(
         tmp_path,
         output_file=str(out),
         re_eval_temp=500.0,
         re_eval_pressure=2.0,
         hessian=str(hess),
-        geometry=geo,
+        source_inp=str(src_inp),
         input_path=inp,
     )
     # The reading still succeeds for the existing block; the re-eval input is
@@ -223,10 +231,16 @@ def test_builds_re_eval_input_with_orca_own_rules(tmp_path):
     assert "temp" in text.lower()
     assert "500" in text
     assert "2" in text
-    # the source geometry, not a nominal single He, is what ORCA will run
+    # the SOURCE level is what ORCA will run: method+basis, charge+mult, and
+    # geometry from the source .inp, not a nominal single He.
     assert "He" not in text, "nominal single-He structure must not be emitted"
     assert "O" in text and "H" in text
-    assert "inhessname" in text.lower()
+    assert "b3lyp" in text.lower()
+    assert "def2-svp" in text.lower()
+    assert "* xyz 0 1" in text.lower()
+    # the reused Hessian path is quoted: ORCA 6.1 aborts on an unquoted
+    # inhessname ("Invalid assignment in FREQ block").
+    assert 'inhessname "%s"' % str(hess) in text
 
 
 # --------------------------------------------------------------------------- #

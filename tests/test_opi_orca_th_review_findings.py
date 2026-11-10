@@ -103,3 +103,78 @@ def test_reeval_refuses_missing_hessian_file(tmp_path):
     assert not result.ok
     assert result.error_kind.name in ("MISSING_INPUT", "PARSE")
     assert "hess" in result.error.lower()
+
+
+
+def _write_source_inp(path, method="B3LYP", basis="def2-SVP",
+                      charge=0, mult=1, atoms=None):
+    """A SYNTHETIC source ORCA input whose geometry block carries the level the
+    re-evaluation input must inherit: method/basis from the ``!`` line and
+    charge/multiplicity from the ``* xyz <charge> <mult>`` header."""
+    atoms = atoms or [
+        ("O", 0.000000, 0.000000, 0.117300),
+        ("H", 0.000000, 0.757200, -0.469200),
+        ("H", 0.000000, -0.757200, -0.469200),
+    ]
+    lines = [_HEADER, f"! {method} {basis}", f"* xyz {charge} {mult}"]
+    for el, x, y, z in atoms:
+        lines.append(f"{el} {x!r} {y!r} {z!r}")
+    lines.append("*")
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def test_reeval_input_carries_source_geometry_charge_mult_method(tmp_path):
+    """A Hessian-reusing re-evaluation input must inherit the source run's
+    geometry, charge, multiplicity AND method/basis (operator-A real-run FAIL:
+    a nominal BP86/def2-SVP charge-0 singlet He input returns E_el -2.898 Eh
+    for what should be H2O B3LYP/def2-SVP -76.3 Eh).  Everything is read from
+    the source .inp.  The inhessname path must be quoted for ORCA to accept
+    it (unquoted aborts with 'Invalid assignment in FREQ block')."""
+    out = tmp_path / "freq.out"
+    out.write_text(_thermo_body())
+    hess = tmp_path / "freq.hess"
+    hess.write_text("$hessian\n3\n$act_atom 0\n")
+    inp = tmp_path / "freq.inp"
+    _write_source_inp(inp)
+    target = tmp_path / "reval.inp"
+
+    result = _registry.get("orca_th_opi").execute(
+        tmp_path,
+        output_file=str(out),
+        re_eval_temp=500.0,
+        re_eval_pressure=2.0,
+        hessian=str(hess),
+        source_inp=str(inp),
+        input_path=target,
+    )
+    assert result.ok, result.error
+    text = target.read_text()
+    # the hess path is quoted so ORCA does not abort
+    assert f'inhessname "{hess}"' in text, text
+    # method/basis of the source run, not the nominal hardcoded level
+    assert "!b3lyp" in text and "!def2-svp" in text, text
+    # charge + multiplicity from the source run
+    assert "* xyz 0 1" in text, text
+    # geometry of the source run, not a single He atom
+    assert "O" in text and "H" in text and "He" not in text, text
+
+
+def test_reeval_refuses_without_readable_source_inp(tmp_path):
+    """The source level (geometry/charge/mult/method) cannot be invented; if the
+    source .inp is missing the block must refuse rather than write the nominal
+    placeholder that produced the wrong real-run chemistry."""
+    out = tmp_path / "freq.out"
+    out.write_text(_thermo_body())
+    hess = tmp_path / "freq.hess"
+    hess.write_text("$hessian\n3\n$act_atom 0\n")
+    result = _registry.get("orca_th_opi").execute(
+        tmp_path,
+        output_file=str(out),
+        re_eval_temp=500.0,
+        hessian=str(hess),
+        source_inp=str(tmp_path / "missing.inp"),
+    )
+    assert not result.ok
+    assert result.error_kind.name in ("MISSING_INPUT", "PARSE")
+    assert "inp" in result.error.lower()
