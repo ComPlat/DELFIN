@@ -419,3 +419,43 @@ class TestRunCasscfLaunch:
         assert recorded["working_dir"] == tmp_path
         # A subprocess failure must surface as ok=False.
         assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# OrcaCasscfOpiAdapter.execute -- the step framework's cores knob reaches the
+# input's %pal block.  The adapter must translate the standard StepAdapter
+# `cores=` contract (afp.py:31, orca_dlpno_opi.py:663) into run_casscf's
+# ncores= so the built input gets %pal nprocs <cores>.  A pre-fix execute that
+# forwards cores= to run_casscf (which accepts only ncores) raises TypeError on
+# the launch path and never writes %pal.
+# ---------------------------------------------------------------------------
+class TestExecuteCores:
+    def test_execute_cores_land_in_pal_block(self, tmp_path: Path, monkeypatch) -> None:
+        import delfin.tools.adapters.orca_casscf_opi as mod
+
+        def fake_run_orca(input_file_path, output_log, timeout=None, *,
+                          scratch_subdir=None, working_dir=None, isolate=False,
+                          copy_files=None, extra_env=None) -> bool:
+            return False  # do not actually run ORCA
+
+        monkeypatch.setattr("delfin.orca.run_orca", fake_run_orca)
+
+        adapter = mod.OrcaCasscfOpiAdapter()
+        result = adapter.execute(
+            tmp_path,
+            elements=ELEMENTS,
+            coordinates=COORDS,
+            charge=0,
+            nel=2,
+            norb=2,
+            mult=1,
+            nroots=2,
+            cores=4,
+            base_name="calc",
+        )
+        # execute returns a StepResult; the build must have written %pal with
+        # the requested cores even though the run itself did not launch.
+        inp = (tmp_path / "calc.inp").read_text()
+        pal = [l for l in inp.splitlines() if "nprocs 4" in l]
+        assert pal, "expected %pal nprocs 4 in the built input"
+        assert result.status is not None

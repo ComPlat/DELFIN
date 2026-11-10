@@ -578,14 +578,21 @@ class OrcaCasscfOpiAdapter(StepAdapter):
     consumes = ()
     produces = ()
 
-    def execute(self, **kwargs: Any) -> StepResult:
-        """Run the step and return a typed ``StepResult``."""
+    def execute(self, work_dir: Path, *, cores: int = 2, **kwargs: Any) -> StepResult:
+        """Run the step and return a typed ``StepResult``.
+
+        ``cores`` is the step framework's parallelisation knob (same contract
+        as ``OrcaDlpnoOpiAdapter.execute``); it is forwarded to ``run_casscf``
+        as ``ncores`` so the input's ``%pal nprocs`` block uses the requested
+        cores.  Other kwargs (elements, coordinates, charge, ...) pass through
+        to ``run_casscf``.
+        """
         import time
 
         start = time.monotonic()
-        wdir = Path(kwargs.pop("work_dir", Path("."))).resolve()
+        wdir = Path(work_dir).resolve()
         base_name = kwargs.pop("base_name", "calc")
-        result = run_casscf(work_dir=wdir, base_name=base_name, **kwargs)
+        result = run_casscf(work_dir=wdir, base_name=base_name, ncores=cores, **kwargs)
         kw = {}
         if result.error:
             kw["error"] = result.error
