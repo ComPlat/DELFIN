@@ -1577,6 +1577,19 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
                     and os.environ.get("DELFIN_FFFREE_DONOR_SIGMA_COUNT", "0") == "1"
                     and (_sig_tot >= 4 or (_sig_tot == 3 and _period3))):
                 continue          # tetrahedral or pyramidal -- in both cases NOT flat
+            # PERIOD 3+ WITH THREE OR MORE SIGMA PARTNERS IS NEVER FLAT
+            # (DELFIN_FFFREE_FLATTEN_P3_PYRAMIDAL, default off).  A sulfoxide or sulfinyl S, a
+            # selenoxide Se, an arsine-oxide-like As carries a formal double bond, so the
+            # bond-graph sp2 test above fires, but it is pyramidal (three partners and a lone
+            # pair) or tetrahedral (S-bound DMSO: C, C, O and the metal).  The projection into
+            # the plane of its three heavy neighbours, done while keeping the three lengths as
+            # well as a plane allows, shortens them: an O-bound DMSO S=O leaves Open Babel at
+            # 1.53 A and this step at 1.27-1.38 A; an S-bound DMSO S=O (JIQTOV, CUDVEF) at
+            # 1.25-1.38 A.  This is the period-3 half of the DONOR_SIGMA_COUNT rule, for every
+            # atom, metal-bonded or not.  Aromatic atoms keep the flattening.
+            if (_sig_tot >= 3 and _period3 and not atom.GetIsAromatic()
+                    and os.environ.get("DELFIN_FFFREE_FLATTEN_P3_PYRAMIDAL", "0") == "1"):
+                continue
             if len(heavy_nbrs) != 3:
                 continue
             idx = atom.GetIdx()

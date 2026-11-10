@@ -345,3 +345,91 @@ class TestRenderedInput:
         from delfin.tools._registry import get
 
         assert get("orca_sp_opi_basis_solv") is not None
+
+
+class TestNoSolvationAndAdapterRefusal:
+    """Regression: a pure per-element basis/ECP job with NO solvent must run,
+    and the refusal path must not crash on a nonexistent ErrorKind member."""
+
+    def test_build_solvation_no_model_is_a_noop(self):
+        # REAL-RUN FAIL #496: without solvation the block refused every call
+        # with "solvent '' is not one ORCA knows".  Empty model == no request.
+        blocks, keywords, errors, _, _ = build_solvation(
+            model="", solvent="",
+        )
+        assert errors == []
+        assert blocks == []
+        assert keywords == []
+
+    def test_build_solvation_none_model_is_a_noop(self):
+        blocks, keywords, errors, _, _ = build_solvation(
+            model=None, solvent="",
+        )
+        assert errors == []
+        assert blocks == []
+        assert keywords == []
+
+    def test_empty_solvent_with_model_still_refuses(self):
+        # A model with no solvent is a genuine refusal (invalid parameter).
+        blocks, keywords, errors, _, _ = build_solvation(
+            model="CPCM", solvent="",
+        )
+        assert any("is not one ORCA knows" in e for e in errors), errors
+
+    def test_adapter_refusal_uses_a_real_errorkind(self, tmp_path):
+        # REAL-RUN FAIL #496: the refusal path referenced the nonexistent
+        # ErrorKind.INVALID_PARAM -> AttributeError instead of a FAILED StepResult.
+        from delfin.tools._types import ErrorKind
+        from delfin.tools.adapters.orca_basis_solv_opi import _build_input_path
+
+        inp_path, errors, warnings, suggestions = _build_input_path(
+            tmp_path / "refuse",
+            elements=["O", "H", "H"],
+            coordinates=[(0.0, 0.0, 0.0), (0.9, 0.0, 0.0), (-0.3, 0.8, 0.0)],
+            charge=0,
+            mult=1,
+            functional="B3LYP",
+            basis="def2-SVP",
+            ri="", aux_basis="", dispersion="",
+            extra_keywords=(),
+            scf_options=None,
+            per_element=None,
+            per_element_ecp=None,
+            ecp="",
+            aux_j="", aux_jk="", aux_c="", aux="",
+            rel_hamiltonian="",
+            ghost_atom_indices=(),
+            solvent_model="CPCM",
+            solvent="",          # invalid -> refusal
+            solvation_block_form=False,
+            method_family="dft",
+            job="",
+            maxcore=1000,
+            ncores=1,
+            base_name="calc",
+        )
+        assert errors, "CPCM with empty solvent must refuse"
+        # ErrorKind has no INVALID_PARAM (REAL-RUN FAIL #496: the adapter used
+        # a nonexistent member -> AttributeError).  The refusal kind must be a
+        # real member; TOOL_FAILED is the generic adapter-rejection kind.
+        kinds = {k.value for k in ErrorKind}
+        assert "invalid_param" not in kinds
+        assert ErrorKind.TOOL_FAILED in ErrorKind
+        assert ErrorKind.TOOL_FAILED.value == "tool_failed"
+        # a pure no-solvation request with valid basis produces no errors
+        nosolv = tmp_path / "nosolv"
+        nosolv.mkdir(exist_ok=True)
+        inp2, errors2, _, _ = _build_input_path(
+            nosolv,
+            elements=["O", "H", "H"],
+            coordinates=[(0.0, 0.0, 0.0), (0.9, 0.0, 0.0), (-0.3, 0.8, 0.0)],
+            charge=0, mult=1, functional="B3LYP", basis="def2-SVP",
+            ri="", aux_basis="", dispersion="", extra_keywords=(),
+            scf_options=None, per_element={"O": "def2-TZVP"},
+            per_element_ecp=None, ecp="", aux_j="", aux_jk="",
+            aux_c="", aux="", rel_hamiltonian="", ghost_atom_indices=(),
+            solvent_model="", solvent="", solvation_block_form=False,
+            method_family="dft", job="", maxcore=1000, ncores=1,
+            base_name="calc",
+        )
+        assert errors2 == [], errors2
