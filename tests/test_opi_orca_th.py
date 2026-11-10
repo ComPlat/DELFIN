@@ -199,7 +199,14 @@ def test_builds_re_eval_input_with_orca_own_rules(tmp_path):
     ``inhessname``: "Invalid assignment in FREQ block")."""
     out = _write_out(tmp_path, _TWO_TEMP_OUT)
     hess = tmp_path / "freq.hess"
-    hess.write_text("# synthetic Hessian placeholder\n$hessian\n3\n")
+    hess.write_text(
+        "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+        "$hessian\n3\n"
+        "$atoms\n3\n"
+        " O     15.99900      0.000000000000     0.000000004060     0.127178864930\n"
+        " H      1.00800      0.000000000000     1.430788610790    -1.009292976525\n"
+        " H      1.00800      0.000000000000    -1.430788675226    -1.009292995708\n"
+    )
     inp = tmp_path / "reval.inp"
     src_inp = tmp_path / "freq.inp"
     src_inp.write_text(

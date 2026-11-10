@@ -40,12 +40,13 @@ Re-evaluation input (ORCA's own rules):
     The block never runs ORCA; it only writes the input for the caller.
 
     Because the re-evaluated chemistry must stay the source run's chemistry,
-    the written input carries the source molecule's geometry (supplied via
-    ``geometry``): a ``.hess`` file holds no atomic coordinates, so the
-    structure cannot be recovered from it.  The input's method (charge 0,
-    singlet, BP86/def2-SVP) stays nominal and is marked as such in the result
-    data; the caller must set the source level before running.  The block
-    itself never redefines the method of the reading path.
+    the written input inherits charge, multiplicity, method and basis from the
+    source ``.inp`` and takes the geometry from the Hessian's own ``$atoms``
+    block -- the structure the Hessian was computed at.  For an Opt+Freq
+    source the ``.inp`` holds only the START geometry, which does not belong
+    to the Hessian (real ORCA 6.1.1 run, H2O B3LYP/def2-SVP: G(350 K) off by
+    0.69 mEh with the start geometry).  The block itself never redefines the
+    method of the reading path.
 """
 
 from __future__ import annotations
@@ -107,6 +108,36 @@ def _quote_inhessname(inp: Path) -> None:
     )
     if new != text:
         inp.write_text(new)
+
+
+_BOHR_TO_ANGSTROM = 0.529177210903  # CODATA 2018
+
+
+def _read_hess_geometry(hess_file: Path) -> Optional[list[tuple[str, float, float, float]]]:
+    """Atoms of an ORCA ``.hess`` file from its ``$atoms`` block.
+
+    ORCA writes ``$atoms``, the atom count, then one line per atom: element,
+    mass, x, y, z in bohr.  This is the geometry the Hessian belongs to (the
+    optimised one for an Opt+Freq run).  Returns Angstrom coordinates, or None
+    when the block is missing or malformed.
+    """
+    try:
+        lines = hess_file.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    for i, line in enumerate(lines):
+        if line.strip() != "$atoms":
+            continue
+        try:
+            n = int(lines[i + 1].split()[0])
+            atoms = []
+            for row in lines[i + 2:i + 2 + n]:
+                f = row.split()
+                atoms.append((f[0], *(float(v) * _BOHR_TO_ANGSTROM for v in f[2:5])))
+        except (IndexError, ValueError):
+            return None
+        return atoms if len(atoms) == n and n > 0 else None
+    return None
 
 
 def _read_source_level(inp_file: Path) -> Optional[dict[str, Any]]:
@@ -225,7 +256,8 @@ class OrcaThOpiAdapter(StepAdapter):
             description=(
                 "source molecule geometry, [(element, x, y, z), ...] in "
                 "Angstrom, written into a Hessian-reusing re-evaluation "
-                "input (a .hess file holds no atomic coordinates)"
+                "input when no Hessian is reused (with a Hessian the geometry "
+                "comes from its $atoms block)"
             ),
         ),
         ParamSpec(
@@ -424,7 +456,27 @@ class OrcaThOpiAdapter(StepAdapter):
                         ),
                         error_kind=ErrorKind.MISSING_INPUT,
                     )
-                src_geometry = level["geometry"]
+                hess_geometry = _read_hess_geometry(hessian_in)
+                src_elements = [g[0].capitalize() for g in level["geometry"]]
+                if hess_geometry is None or [
+                    g[0].capitalize() for g in hess_geometry
+                ] != src_elements:
+                    return self._make_result(
+                        self.name,
+                        StepStatus.FAILED,
+                        work_dir,
+                        start,
+                        data=data,
+                        error=(
+                            f"the Hessian {hessian_in} has no readable $atoms "
+                            "block matching the source molecule "
+                            f"({' '.join(src_elements)}); the re-evaluation "
+                            "must run at the geometry the Hessian was "
+                            "computed at"
+                        ),
+                        error_kind=ErrorKind.MISSING_INPUT,
+                    )
+                src_geometry = hess_geometry
             else:
                 source_inp = None
                 level = None
@@ -458,12 +510,11 @@ class OrcaThOpiAdapter(StepAdapter):
             data["re_eval_note"] = (
                 "The re-evaluation input reuses the existing Hessian "
                 "(inhessname) so ORCA only repeats the thermochemistry at the "
-                "new temperature/pressure (ORCA manual section 4.6), and "
-                "carries the source geometry supplied via `geometry` (a .hess "
-                "file holds no atomic coordinates). Its nominal level "
-                "(BP86/def2-SVP, charge 0, singlet) must be replaced by the "
-                "source run's level before running; this block never "
-                "redefines the method itself."
+                "new temperature/pressure (ORCA manual section 4.6). It "
+                "inherits charge, multiplicity, method and basis from the "
+                "source input and the geometry from the Hessian's $atoms "
+                "block (the structure the Hessian belongs to); this block "
+                "never redefines the method itself."
             )
 
         return self._make_result(
@@ -496,9 +547,8 @@ class OrcaThOpiAdapter(StepAdapter):
         """Build the ``%freq`` re-evaluation input with OPI typed objects.
 
         The input inherits the *source* run's level from ``execute``: charge,
-        multiplicity, method, basis and geometry.  A ``.hess`` carries no atomic
-        coordinates, so a Hessian-reusing input is only written with the source
-        molecule's geometry (a nominal single He would re-evaluate the wrong
+        multiplicity, method and basis, and the geometry of the Hessian's
+        ``$atoms`` block (a nominal single He would re-evaluate the wrong
         chemistry).  When no Hessian is reused (grammar-only probe path) the
         default BP86/def2-SVP charge-0 singlet He remains.  The ``$hess`` path
         is rendered quoted (``inhessname "..."``): real ORCA 6.1 aborts with

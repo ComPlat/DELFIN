@@ -134,7 +134,7 @@ def test_reeval_input_carries_source_geometry_charge_mult_method(tmp_path):
     out = tmp_path / "freq.out"
     out.write_text(_thermo_body())
     hess = tmp_path / "freq.hess"
-    hess.write_text("$hessian\n3\n$act_atom 0\n")
+    hess.write_text(_HESS_WITH_ATOMS)
     inp = tmp_path / "freq.inp"
     _write_source_inp(inp)
     target = tmp_path / "reval.inp"
@@ -158,6 +158,57 @@ def test_reeval_input_carries_source_geometry_charge_mult_method(tmp_path):
     assert "* xyz 0 1" in text, text
     # geometry of the source run, not a single He atom
     assert "O" in text and "H" in text and "He" not in text, text
+
+
+# Real ORCA .hess layout ($atoms: element, mass, x y z in bohr); numbers of an
+# optimised H2O B3LYP/def2-SVP run, layout written by hand for DELFIN.
+_HESS_WITH_ATOMS = (
+    "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+        "$hessian\n3\n"
+        "$atoms\n3\n"
+        " O     15.99900      0.000000000000     0.000000004060     0.127178864930\n"
+        " H      1.00800      0.000000000000     1.430788610790    -1.009292976525\n"
+        " H      1.00800      0.000000000000    -1.430788675226    -1.009292995708\n"
+)
+
+
+def test_reeval_geometry_comes_from_the_hessian_atoms_block(tmp_path):
+    """Operator-A real-run FAIL: for an Opt+Freq source the .inp holds only the
+    START geometry, but the Hessian belongs to the optimised one (G(350 K) off
+    by 0.69 mEh on real ORCA 6.1.1).  The input must carry the $atoms geometry
+    of the .hess (bohr -> Angstrom), not the .inp start structure."""
+    out = tmp_path / "freq.out"
+    out.write_text(_thermo_body())
+    hess = tmp_path / "freq.hess"
+    hess.write_text(_HESS_WITH_ATOMS)
+    inp = tmp_path / "freq.inp"
+    _write_source_inp(inp)
+    target = tmp_path / "reval.inp"
+    result = _registry.get("orca_th_opi").execute(
+        tmp_path, output_file=str(out), re_eval_temp=350.0,
+        hessian=str(hess), source_inp=str(inp), input_path=target,
+    )
+    assert result.ok, result.error
+    rows = [l.split() for l in target.read_text().splitlines()
+            if l.split()[:1] in (["O"], ["H"])]
+    assert [r[0] for r in rows] == ["O", "H", "H"]
+    assert float(rows[0][3]) == pytest.approx(0.127178864930 * 0.529177210903, abs=1e-8)
+    assert float(rows[1][2]) == pytest.approx(1.430788610790 * 0.529177210903, abs=1e-8)
+
+
+def test_reeval_refuses_hessian_whose_atoms_do_not_match_the_source(tmp_path):
+    out = tmp_path / "freq.out"
+    out.write_text(_thermo_body())
+    hess = tmp_path / "freq.hess"
+    hess.write_text(_HESS_WITH_ATOMS.replace(" O     15.99900", " N     14.00700"))
+    inp = tmp_path / "freq.inp"
+    _write_source_inp(inp)
+    result = _registry.get("orca_th_opi").execute(
+        tmp_path, output_file=str(out), re_eval_temp=350.0,
+        hessian=str(hess), source_inp=str(inp),
+    )
+    assert not result.ok
+    assert "$atoms" in result.error
 
 
 def test_reeval_refuses_without_readable_source_inp(tmp_path):
