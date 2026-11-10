@@ -205,3 +205,45 @@ def test_dry_run_default_submits_nothing(tmp_path, monkeypatch):
 def test_submission_respects_the_concurrent_job_cap(tmp_path):
     with pytest.raises(cd.JobCapExceeded):
         mj._check_cap(active=MAX_CONCURRENT_MLP_JOBS)
+
+
+# ---------------------------------------------- real-run findings (dev_cpu job)
+
+
+def test_the_script_runs_under_bash_with_its_arguments(tmp_path):
+    """A real job died at once: the run record's folder stood on its own
+    line after the heredoc (run as a command, sys.argv[1] missing), and the
+    completion stamp called a bare 'python'.  The arguments now come before
+    the heredoc and both blocks use the job's venv."""
+    import subprocess
+    req = _req(tmp_path, gpu=False, partition="cpu")
+    text = mj.render_model_sbatch(req, partition="cpu")
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line == "PYEOF":
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            assert not nxt.startswith('"'), f"argument after a heredoc: {nxt}"
+    assert not any(line.startswith("python -") for line in lines)
+    script = tmp_path / "s.sh"
+    script.write_text(text)
+    assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
+
+
+def test_logs_go_to_the_job_folder(tmp_path):
+    req = _req(tmp_path, gpu=False, partition="cpu")
+    text = mj.render_model_sbatch(req, partition="cpu")
+    out = tmp_path / "out"
+    assert f"#SBATCH --output={out}/whisper_job_%j.out" in text
+    assert f"#SBATCH --error={out}/whisper_job_%j.err" in text
+
+
+def test_the_cap_counts_only_model_jobs(monkeypatch, tmp_path):
+    """A user with 21 MANTA build tasks queued could not submit one model
+    job: every squeue line counted.  Only names under MODEL_JOB_PREFIX do."""
+    from delfin import scheduler_client as sc
+    text = mj.render_model_sbatch(_req(tmp_path, gpu=False, partition="cpu"),
+                                  partition="cpu")
+    assert f"#SBATCH --job-name={mj.MODEL_JOB_PREFIX}whisper_job" in text
+    names = "\n".join(["manta_freeze2_cluster"] * 21 + ["model_whisper_job"])
+    monkeypatch.setattr(sc, "query", lambda kind, argv, runner=None: names)
+    assert mj.count_active_model_jobs() == 1
