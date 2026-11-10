@@ -131,7 +131,7 @@ def test_overview_state_map_all_six_cases(audit_log):
                        last_turn={"stopped": True}),
         _health_record("p-d", open_approvals=["r1"]),                 # NEEDS APPROVAL
         _health_record("p-e", paused=True),                           # paused
-        _health_record("p-f", idle_s=200, resume_planned=False,       # waiting for message?
+        _health_record("p-f", idle_s=200, resume_planned=False,       # waiting for a message
                        last_turn={"stopped": False}),
     ]
     rows = _observe.swarm_overview(source, records=records,
@@ -142,7 +142,7 @@ def test_overview_state_map_all_six_cases(audit_log):
     assert states["c"] == "ended"
     assert states["d"] == "NEEDS APPROVAL"
     assert states["e"] == "paused"
-    assert states["f"] == "working"
+    assert states["f"] == "waiting for a message"
 
 
 def test_overview_last_tool_call_and_activity_age_from_audit_log(audit_log):
@@ -192,16 +192,35 @@ def test_overview_roster_source_plain_file(audit_log, tmp_path):
     assert by_name["reviewer"]["package"] == "ops"
 
 
+def test_overview_roster_source_plain_dict(audit_log):
+    """The same roster handed over as an object (the RPC's ``source``)."""
+    roster = {"ops-1": {"package": "ops", "role": "builder"}}
+    rows = _observe.swarm_overview(roster, records=[_health_record("ops-1")],
+                                   steps_fn=lambda *a, **k: ([], 0))
+    assert [(r["name"], r["package"], r["role"]) for r in rows] == [
+        ("ops-1", "ops", "builder")]
+
+
+def test_overview_spec_file_source(audit_log, tmp_path):
+    """A swarm.yaml path gives its members, not an empty table."""
+    spec = tmp_path / "swarm.yaml"
+    spec.write_text(json.dumps({"packages": [
+        {"name": "alpha", "roles": {"builder": True, "reviewer": True}}]}),
+        encoding="utf-8")
+    rows = _observe.swarm_overview(str(spec), records=[],
+                                   steps_fn=lambda *a, **k: ([], 0))
+    assert sorted(r["name"] for r in rows) == ["alpha-builder", "alpha-reviewer"]
+
+
 def test_overview_missing_member_never_lies(audit_log):
-    """A member with no session record still has a row, its state the safe
-    fallback ('working'/'paused' from absence cannot be claimed) — fail
-    closed, never invent a liveness."""
+    """A member with no session record still has a row, its state 'no
+    session': absence proves neither work nor a pause -- never invent a
+    liveness."""
     source = _spec([{"name": "swv", "roles": {"builder": True}}])
     rows = _observe.swarm_overview(source, records=[],  # no record at all
                                    steps_fn=lambda *a, **k: ([], 0))
     assert len(rows) == 1
-    # No open approvals, not paused, nothing to prove a wait -> working.
-    assert rows[0]["state"] == "working"
+    assert rows[0]["state"] == "no session"
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +237,16 @@ def test_feed_steps_newest_last_with_result_status(audit_log):
     feed = _observe.member_feed("swv-builder", since=0,
                                 records=[_health_record("swv-builder")],
                                 steps_fn=_al.steps_since, log_path=path)
-    # newest last
-    kinds = [e["kind"] for e in feed]
-    assert kinds[-1] in ("tool", "refusal")
+    # newest last -- pin the REAL order, not a vacuous kind check. The
+    # steps are written into the log oldest-first (bash, write_file,
+    # run_tests) and steps_since returns them the same way, so the newest
+    # step (run_tests) must be the LAST feed entry. The old check
+    # `kinds[-1] in ("tool", "refusal")` was always true and never caught
+    # the blanket entries.reverse() that flipped the steps to newest-first
+    # (F1), mixing them with the commits.
+    step_texts = [e["text"] for e in feed if e["kind"] in ("tool", "refusal")]
+    assert step_texts[0] == "git status"    # oldest step first
+    assert step_texts[-1] == "tests/t.py"   # newest step last
     assert all(e["kind"] in ("tool", "refusal", "commit") for e in feed)
     # the denial is present and marked as a refusal
     denied = [e for e in feed if e["kind"] == "refusal"]
