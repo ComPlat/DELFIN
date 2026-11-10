@@ -55,13 +55,21 @@ Refusals (each returns an error string from :func:`validate_qmmm`)
   handling"; we deliberately do not force method / charge / multiplicity.
 - **Physically wrong charge / multiplicity**: non-integer charge, or a
   multiplicity that is not a positive integer.
+- **No QM level stated**: an additive run without ``method`` (the QM level,
+  e.g. ``"B3LYP def2-SVP"``), or a subtractive run without a QM level in
+  ``extra_keywords``.  ORCA would otherwise run the QM region silently at its
+  HF/def2-SVP default (real ORCA 6.1.1 run: "!QMMM" alone gave a
+  terminated-normally HF energy).
+- **Force-field path**: a relative ``orcaff_filename`` is checked in the
+  run's working directory, where ORCA reads it.
 
 Reading
 -------
 Results come back as typed values with units on :class:`QmmmResult`.  The
-**total** energy is read through ``delfin.orca_read.read(...,
-Quantity.FINAL_SINGLE_POINT_ENERGY)`` (an additive QM/MM run prints one
-``FINAL SINGLE POINT ENERGY`` for the whole system).  The **QM-region**
+**total** energy is the ``FINAL SINGLE POINT ENERGY (QM/MM)`` line and the MM
+part the ``FINAL SINGLE POINT ENERGY (MM)`` line; the plain ``FINAL SINGLE
+POINT ENERGY`` line of an additive run is the QM region only (real ORCA 6.1.1
+water dimer: QM -76.328646, MM 0.029412, QM/MM -76.299234 Eh).  The **QM-region**
 energy is the converged SCF electronic energy of the high-level subsystem,
 printed as ``Total Energy : <float> Eh`` in the converged SCF block -- the
 same line the existing reader matches for ``final_energy`` (manual
@@ -94,7 +102,14 @@ from delfin.tools._registry import register
 from delfin.tools._types import ErrorKind, StepResult, StepStatus
 from delfin.orca import run_orca
 
-_TOTAL_ENERGY_PATTERN = re.compile(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)")
+# ORCA 6.1 prints three lines for an additive QM/MM single point:
+#   FINAL SINGLE POINT ENERGY (MM)     <MM energy>
+#   FINAL SINGLE POINT ENERGY          <QM region in the embedding field>
+#   FINAL SINGLE POINT ENERGY (QM/MM)  <QM/MM total = QM + MM>
+# The plain line is NOT the total (real run: QM -76.328646, total -76.299234).
+_TOTAL_ENERGY_PATTERN = re.compile(r"FINAL SINGLE POINT ENERGY \(QM/MM\)\s+(-?\d+\.\d+)")
+_MM_ENERGY_PATTERN = re.compile(r"FINAL SINGLE POINT ENERGY \(MM\)\s+(-?\d+\.\d+)")
+_QM_FSPE_PATTERN = re.compile(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)")
 _QM_SCF_PATTERN = re.compile(r"Total Energy\s*:\s*(-?\d+\.\d+)")
 
 
@@ -117,12 +132,19 @@ class QmmmResult:
     meaningful: bool = False
     total_energy_Eh: Optional[float] = None
     qm_energy_Eh: Optional[float] = None
+    mm_energy_Eh: Optional[float] = None
     geometry: List[Tuple[str, Tuple[float, float, float]]] = field(
         default_factory=list
     )
     findings: List[str] = field(default_factory=list)
     failure_lines: List[str] = field(default_factory=list)
     error: Optional[str] = None
+
+
+def known_keyword_lazy(word: str) -> bool:
+    from delfin.orca_knowledge import known_keyword
+
+    return bool(known_keyword(word))
 
 
 def validate_qmmm(
@@ -136,12 +158,16 @@ def validate_qmmm(
     coupling: str = "additive",
     extra_keywords: Sequence[str] = (),
     qmmm_options: Optional[Dict[str, object]] = None,
+    method: Optional[str] = None,
+    work_dir: Optional[str] = None,
 ) -> Tuple[List[str], List[str]]:
     """Validate an additive QM/MM input; returns ``(errors, warnings)``.
 
     Never "fixes" method, charge, multiplicity or state -- an error always
     means the user must change the input.  Individual refuse conditions are
-    documented in the module docstring.
+    documented in the module docstring.  ``method`` is checked when given
+    (every path that writes an input passes it); ``work_dir`` is where a
+    relative ``orcaff_filename`` must exist.
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -175,12 +201,36 @@ def validate_qmmm(
         )
     else:
         ff = Path(orcaff_filename)
+        if not ff.is_absolute() and work_dir is not None:
+            ff = Path(work_dir) / ff
         if not ff.is_file():
             errors.append(
                 f"force-field file '{orcaff_filename}' not found on disk -- "
                 "an additive QM/MM run cannot build its MM / boundary "
                 "descriptors without it (manual 6.2.1)."
             )
+
+    # --- the QM level must be stated (never ORCA's silent HF default) --------
+    if method is not None:
+        if coupling == "additive" and not str(method).strip():
+            errors.append(
+                "no QM level: an additive QM/MM run needs 'method' (e.g. "
+                "'B3LYP def2-SVP'); without it ORCA runs the QM region at its "
+                "HF/def2-SVP default (manual 6.2.1)."
+            )
+        if coupling == "subtractive" and not any(
+            str(k).strip() for k in extra_keywords
+        ):
+            errors.append(
+                "no QM level: a subtractive QM/QM2/MM run needs the QM level "
+                "in 'extra_keywords' ('method' is the QM2 level); without it "
+                "ORCA runs the QM region at its HF/def2-SVP default "
+                "(manual 6.2.2.1)."
+            )
+        if coupling == "additive":
+            for kw in str(method).split():
+                if not known_keyword_lazy(kw):
+                    errors.append(f"unknown ORCA simple keyword {kw!r} in method.")
 
     # --- physically wrong charge / multiplicity ------------------------------
     if not isinstance(charge, int) or isinstance(charge, bool):
@@ -220,16 +270,18 @@ def validate_qmmm(
     return errors, warnings
 
 
+def _last_float(pattern: "re.Pattern[str]", text: str) -> Optional[float]:
+    match = list(pattern.finditer(text))
+    return float(match[-1].group(1)) if match else None
+
+
 def _total_energy_text(out_path: Path) -> Optional[float]:
-    """Last ``FINAL SINGLE POINT ENERGY`` (the additive QM/MM total)."""
+    """Last ``FINAL SINGLE POINT ENERGY (QM/MM)`` (the additive QM/MM total)."""
     try:
         text = out_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    match = [m for m in _TOTAL_ENERGY_PATTERN.finditer(text)]
-    if not match:
-        return None
-    return float(match[-1].group(1))
+    return _last_float(_TOTAL_ENERGY_PATTERN, text)
 
 
 def _qm_energy_text(out_path: Path) -> Optional[float]:
@@ -247,10 +299,10 @@ def _qm_energy_text(out_path: Path) -> Optional[float]:
 def read_qmmm_output(work_dir: str, base_name: str) -> QmmmResult:
     """Read total + QM energies from a finished additive QM/MM run.
 
-    The total energy is read through ``delfin.orca_read.read`` with
-    ``Quantity.FINAL_SINGLE_POINT_ENERGY`` so it obeys the reader's OPI /
-    convergence gates; the QM-region energy is parsed here from the same
-    converged SCF line the reader matches.  Units: Hartree.
+    The total is the ``(QM/MM)`` line, the MM part the ``(MM)`` line; the
+    QM-region energy is the converged SCF line the reader matches, and
+    ``delfin.orca_read`` is cross-checked against the plain (QM-region)
+    ``FINAL SINGLE POINT ENERGY`` line.  Units: Hartree.
     """
     result = QmmmResult(work_dir=work_dir, output_file=f"{base_name}.out")
     out_path = Path(work_dir) / f"{base_name}.out"
@@ -267,30 +319,31 @@ def read_qmmm_output(work_dir: str, base_name: str) -> QmmmResult:
     result.scf_converged = scf_ok
     result.total_energy_Eh = total
     result.qm_energy_Eh = _qm_energy_text(out_path)
+    result.mm_energy_Eh = _last_float(_MM_ENERGY_PATTERN, text)
     result.meaningful = bool(normal and scf_ok and total is not None)
     result.ok = bool(normal and total is not None)
     if not result.ok:
         result.error = (
             "run did not terminate normally" if not normal
-            else "no FINAL SINGLE POINT ENERGY found"
+            else "no FINAL SINGLE POINT ENERGY (QM/MM) found"
         )
         result.failure_lines.extend(
             line.strip() for line in text.splitlines()[-8:]
         )
 
-    # Gate consistency with the reader's view of the same file.
+    # Cross-check with the reader's view of the same file.  The reader's
+    # FINAL_SINGLE_POINT_ENERGY is the plain line, i.e. the QM-region part,
+    # never the QM/MM total, so it is compared with that line only.
     try:
         reading = read(Path(work_dir), base_name, Quantity.FINAL_SINGLE_POINT_ENERGY)
-        if reading is not None and reading.value is not None:
-            total_rd = float(reading.value)
-            if result.total_energy_Eh is not None and abs(
-                result.total_energy_Eh - total_rd
-            ) > 1e-6:
-                result.findings.append(
-                    "total energy differs from the reader's "
-                    "FINAL_SINGLE_POINT_ENERGY view; reported the reader value"
-                )
-                result.total_energy_Eh = total_rd
+        qm_fspe = _last_float(_QM_FSPE_PATTERN, text)
+        if (reading is not None and reading.value is not None
+                and qm_fspe is not None
+                and abs(float(reading.value) - qm_fspe) > 1e-6):
+            result.findings.append(
+                "the reader's FINAL_SINGLE_POINT_ENERGY differs from the "
+                "output's QM-region line"
+            )
     except Exception as exc:  # reader is best-effort here
         result.findings.append(f"reader check skipped: {exc}")
 
@@ -329,7 +382,10 @@ def build_qmmm_input(
         mult=mult,
         embedding=embedding,
         coupling=coupling,
+        extra_keywords=extra_keywords,
         qmmm_options=qmmm_options,
+        method=method,
+        work_dir=work_dir,
     )
     if errors:
         raise ValueError("; ".join(errors))
@@ -348,6 +404,8 @@ def build_qmmm_input(
         inp.add_simple_keywords(f"QM/{low}/MM")
     else:
         inp.add_simple_keywords("QMMM")
+        for kw in str(method).split():
+            inp.add_simple_keywords(kw)
     for kw in extra_keywords or ():
         if kw:
             inp.add_simple_keywords(str(kw))
@@ -399,6 +457,7 @@ class OrcaQmmmOpiAdapter(StepAdapter):
             coupling=properties.get("coupling", "additive"),
             extra_keywords=properties.get("extra_keywords", ()),
             qmmm_options=properties.get("qmmm_options"),
+            method=properties.get("method", ""),
         )
         if errors:
             raise ValueError("; ".join(errors))
@@ -475,6 +534,7 @@ def _step_result_from_qmmm(adapter, res: "QmmmResult", work_dir: Path,
         "meaningful": res.meaningful,
         "total_energy_Eh": res.total_energy_Eh,
         "qm_energy_Eh": res.qm_energy_Eh,
+        "mm_energy_Eh": res.mm_energy_Eh,
         "energy_Eh": res.total_energy_Eh,
         "scf_converged": res.scf_converged,
         "terminated_normally": res.terminated_normally,
@@ -569,6 +629,8 @@ def run_qmmm(
         coupling=coupling,
         extra_keywords=extra_keywords,
         qmmm_options=props.get("qmmm_options") or qmmm_options,
+        method=method,
+        work_dir=working_dir,
     )
     if errors:
         return QmmmResult(ok=False, error="; ".join(errors), output_file=f"{base_name}.out")

@@ -51,9 +51,11 @@ SCF CONVERGED
 
  Total Energy :                -76.120000000000
 
+FINAL SINGLE POINT ENERGY (MM)        0.015000000000
 -------------------------
-FINAL SINGLE POINT ENERGY      -76.105000000000
+FINAL SINGLE POINT ENERGY      -76.120000000000
 -------------------------
+FINAL SINGLE POINT ENERGY (QM/MM)      -76.105000000000
 
 ****ORCA TERMINATED NORMALLY****
 """
@@ -189,7 +191,7 @@ def test_build_writes_input_with_qmmm_block(tmp_path):
         elements=ELEMS, coordinates=COORDS, charge=1, mult=1,
         qmatoms=QMATOMS, orcaff_filename=str(ff),
         embedding="electrostatic", coupling="additive",
-        ncores=2,
+        method="B3LYP def2-SVP", ncores=2,
     )
     text = Path(inp).read_text()
     assert "!qmmm" in text
@@ -317,6 +319,7 @@ def test_orca_parser_accepts_qmmm_input():
 # confirmed-by-probe defects (red first, then fixed below the boundary)
 # ---------------------------------------------------------------------------
 
+@needs_opi
 def test_execute_follows_stepadapter_contract(tmp_path):
     """execute() must take the (work_dir, *, geometry, cores, **kwargs)
     signature every other registered adapter has and return a StepResult, so a
@@ -353,7 +356,7 @@ def test_extra_keywords_reach_the_input(tmp_path):
     inp = qm.build_qmmm_input(
         str(tmp_path), base_name="ek", elements=ELEMS, coordinates=COORDS,
         charge=0, mult=1, qmatoms=QMATOMS, orcaff_filename=str(ff),
-        extra_keywords=("def2-TZVP",),
+        method="B3LYP", extra_keywords=("def2-TZVP",),
     )
     text = Path(inp).read_text()
     assert _re.search(r"def2[- ]TZVP\b", text, _re.I), text
@@ -369,9 +372,70 @@ def test_subtractive_writes_qm_method_keyword(tmp_path):
     inp = qm.build_qmmm_input(
         str(tmp_path), base_name="sub", elements=ELEMS, coordinates=COORDS,
         charge=0, mult=1, qmatoms=QMATOMS, orcaff_filename=str(ff),
-        coupling="subtractive", method="XTB",
+        coupling="subtractive", method="XTB", extra_keywords=("B3LYP", "def2-SVP"),
     )
     text = Path(inp).read_text()
     first = text.splitlines()[0].lower()
     assert "qm/xtb/mm" in first, text
     assert not _re.search(r"!\s*qmmm\b", first), text
+
+
+
+# ---------------------------------------------------------------------------
+# operator real-run findings (ORCA 6.1.1, water dimer, ORCAFF from orca_mm)
+# ---------------------------------------------------------------------------
+
+def test_additive_without_qm_level_is_refused(tmp_path):
+    """'!QMMM' alone ran the QM region at ORCA's HF/def2-SVP default."""
+    ff = _make_ff_file(tmp_path)
+    errors, _ = qm.validate_qmmm(
+        qmatoms=QMATOMS, orcaff_filename=str(ff), n_atoms=len(ELEMS),
+        charge=0, mult=1, method="",
+    )
+    assert any("no QM level" in e for e in errors), errors
+
+
+def test_subtractive_without_qm_level_is_refused(tmp_path):
+    ff = _make_ff_file(tmp_path)
+    errors, _ = qm.validate_qmmm(
+        qmatoms=QMATOMS, orcaff_filename=str(ff), n_atoms=len(ELEMS),
+        charge=0, mult=1, coupling="subtractive", method="XTB",
+    )
+    assert any("no QM level" in e for e in errors), errors
+
+
+def test_relative_ff_file_is_found_in_the_work_dir(tmp_path, monkeypatch):
+    """The force field is read by ORCA in the run directory; a relative name
+    must be checked there, not in the process working directory."""
+    run = tmp_path / "run"
+    run.mkdir()
+    ff = _make_ff_file(run)
+    monkeypatch.chdir(tmp_path)
+    errors, _ = qm.validate_qmmm(
+        qmatoms=QMATOMS, orcaff_filename=ff.name, n_atoms=len(ELEMS),
+        charge=0, mult=1, method="B3LYP def2-SVP", work_dir=str(run),
+    )
+    assert not [e for e in errors if "force-field" in e], errors
+
+
+@needs_opi
+def test_additive_method_is_written_as_the_qm_level(tmp_path):
+    ff = _make_ff_file(tmp_path)
+    inp = qm.build_qmmm_input(
+        str(tmp_path), base_name="lvl", elements=ELEMS, coordinates=COORDS,
+        charge=0, mult=1, qmatoms=QMATOMS, orcaff_filename=str(ff),
+        method="B3LYP def2-SVP",
+    )
+    head = Path(inp).read_text().lower()
+    assert "b3lyp" in head and "def2-svp" in head, head
+
+
+def test_total_is_the_qmmm_line_not_the_qm_region_line(tmp_path):
+    """Real-run finding: the plain FINAL SINGLE POINT ENERGY line of an
+    additive run is the QM region only; reporting it as the total dropped the
+    MM energy (0.029 Eh = 18 kcal/mol on a water dimer)."""
+    _write_synthetic_run(tmp_path)
+    r = qm.read_qmmm_output(str(tmp_path), "qmmm_probe")
+    assert r.total_energy_Eh == pytest.approx(-76.105)
+    assert r.mm_energy_Eh == pytest.approx(0.015)
+    assert r.total_energy_Eh == pytest.approx(r.qm_energy_Eh + r.mm_energy_Eh)
