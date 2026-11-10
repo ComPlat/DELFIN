@@ -76,12 +76,14 @@ def test_open_spec_is_idempotent_after_an_explicit_widget(specs):
     assert build_calls == []
 
 
-def test_the_viewer_package_is_not_imported_by_the_dashboard_modules():
+def test_the_viewer_package_is_not_imported_by_the_dashboard_modules(tmp_path):
     """The startup path must not pull py3Dmol in: importing the viewer and
     the structure editor leaves it unloaded until a viewer is built, and the
     first use installs the script-safe argument rule."""
     import subprocess
     import sys
+
+    from conftest import child_env
     code = (
         "import sys\n"
         "import delfin.dashboard.molecule_viewer as mv\n"
@@ -90,5 +92,6 @@ def test_the_viewer_package_is_not_imported_by_the_dashboard_modules():
         "m = mv.py3dmol()\n"
         "assert m.tostr._delfin_script_safe\n"
     )
-    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          env=child_env(tmp_path))
     assert done.returncode == 0, done.stderr[-800:]
