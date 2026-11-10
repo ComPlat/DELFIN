@@ -314,7 +314,7 @@ resume.
 * [tasmota] https://tasmota.github.io/docs/Commands/ (PulseTime: 1..111 in 0.1 s, 112..64900 = seconds + 100)
 * [gpiozero] https://gpiozero.readthedocs.io/en/stable/api_pins.html ; [gpiod] https://pypi.org/project/gpiod/ ; [rpi-6144] https://github.com/raspberrypi/linux/pull/6144 ; [rpi-udev] https://github.com/RPi-Distro/raspberrypi-sys-mods ; [rpi-gpio] secondary, https://raspberry.tips/en/raspberrypi-tutorials/raspberry-pi-5-gpio-rpigpio-not-working-alternatives
 * [mosquitto] https://mosquitto.org/man/mosquitto-conf-5.html ; MQTT 5.0, https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html
-* [chemotion-api] https://github.com/ComPlat/chemotion_ELN/blob/main/app/api/api.rb ; https://github.com/ComPlat/chemotion_ELN/tree/main/app/api/chemotion ; [labimotion] https://chemotion.ibcs.kit.edu/docs/labimotion/user ; [nfdi4chem] https://knowledgebase.nfdi4chem.de/knowledge_base/docs/chemotion_repository/
+* [chemotion-api] https://github.com/ComPlat/chemotion_ELN/blob/main/app/api/api.rb ; https://github.com/ComPlat/chemotion_ELN/tree/main/app/api/chemotion ; [labimotion] https://docs.chemotion.net/labimotion/user ; [nfdi4chem] https://knowledgebase.nfdi4chem.de/knowledge_base/docs/chemotion_repository/
 * [chemasap] https://www.chemasap.kit.edu/
-* Self-driving labs: Abolhasani & Kumacheva, Nat. Synth. 2, 483 (2023), doi:10.1038/s44160-022-00231-0 ; Tom et al., Chem. Rev. 124, 9633 (2024), doi:10.1021/acs.chemrev.4c00055 ; safety monitoring preprints (weight accordingly): arXiv:2508.05148, arXiv:2602.15061
-* [fair] Wilkinson et al., Sci. Data 3, 160018 (2016), doi:10.1038/sdata.2016.18 ; AnIML https://animl.org/overview ; Allotrope https://allotropefoundation.org/
+* Self-driving labs: Nat. Synth. 2, 483 (2023), doi:10.1038/s44160-022-00231-0 ; Chem. Rev. 124, 9633 (2024), doi:10.1021/acs.chemrev.4c00055 ; safety monitoring preprints (weight accordingly): arXiv:2508.05148, arXiv:2602.15061
+* [fair] Sci. Data 3, 160018 (2016), doi:10.1038/sdata.2016.18 ; AnIML https://animl.org/overview ; Allotrope https://allotropefoundation.org/

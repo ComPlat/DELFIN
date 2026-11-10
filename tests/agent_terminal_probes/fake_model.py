@@ -45,7 +45,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "fake-model"
-FAKE_SECRET = "sk-live-FAKE0123456789abcdef"
+FAKE_SECRET = "sk-live-FAKE0123456789abcdef"  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 def _last(messages: list[dict], role: str) -> dict | None:

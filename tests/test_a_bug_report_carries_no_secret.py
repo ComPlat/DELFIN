@@ -16,7 +16,7 @@ def _ws(tmp_path):
     ws.mkdir()
     (ws / "run.py").write_text("print('ok')\n")
     (ws / ".env").write_text("API_TOKEN=abc123\n")
-    (ws / "server.key").write_text("-----BEGIN PRIVATE KEY-----\nMII\n")
+    (ws / "server.key").write_text("-----BEGIN PRIVATE KEY-----\nMII\n")  # secret-guard: allow (synthetic DELFIN test sample)
     (ws / "credentials.json").write_text(json.dumps({"k": "v"}))
     (ws / "settings.cfg").write_text("OPENAI_API_KEY=sk-proj-" + "A" * 40 + "\n")
     return ws

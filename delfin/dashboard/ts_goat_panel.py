@@ -461,7 +461,7 @@ def build_ts_goat_panel(
         'elements': (), 'coordinates': (), 'charge': 0, 'mult': 1,
         'mode_arrows': None,
         'mode_arrows_by_index': {}, 'imaginary_modes': [],
-        'hess_path': None,
+        'hess_path': None, 'geometry_source': 'xyz',
     }
 
     def _esc(text):
@@ -577,12 +577,13 @@ def build_ts_goat_panel(
             ('Output', files.out_path), ('Input', files.inp_path),
             ('TS geometry', files.xyz_path), ('Hessian', files.hess_path),
         ):
-            rows.append(
-                f'<li><b>{label}:</b> '
-                + (_esc(Path(path).name) if path else
-                   '<span style="color:#c62828;">not found</span>')
-                + '</li>'
-            )
+            if label == 'TS geometry' and state.get('geometry_source') == 'hessian':
+                source = ('Hessian $atoms ('
+                          + _esc(Path(files.hess_path).name) + ')')
+            else:
+                source = (_esc(Path(path).name) if path else
+                          '<span style="color:#c62828;">not found</span>')
+            rows.append(f'<li><b>{label}:</b> {source}</li>')
         problems = ''
         if files.problems:
             problems = '<ul style="color:#c62828; font-size:12px;">' + ''.join(
@@ -897,6 +898,7 @@ def build_ts_goat_panel(
             'mode_arrows_by_index', {})
         state['imaginary_modes'] = open_result.get('imaginary_modes', [])
         state['hess_path'] = open_result.get('hess_path')
+        state['geometry_source'] = open_result.get('geometry_source', 'xyz')
         state['mode_displaced'] = None
         state['traj'] = None
         anim_play.disabled = False
@@ -922,6 +924,7 @@ def build_ts_goat_panel(
             'select the reactive mode; the constraints are re-proposed '
             'for the selected mode.</div>'
         ) if len(mode_opts) > 1 else ''
+        mode_warning.value += open_result.get('geometry_notice', '')
         proposed = state['proposed']
         status.value = (
             f'<span style="font-size:12px;color:#526a76;">'
@@ -1168,28 +1171,64 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             result['error_kind'] = 'not_usable_ts'
             return result
         files = ts_goat.collect_ts_files(calc_dir, out_path=calc_path)
-        ts_atoms = ts_goat.read_xyz(files.xyz_path) if files.xyz_path else None
-        if ts_atoms is None:
-            result['error'] = (
-                'No matching TS geometry (.xyz) found in '
-                f'{calc_dir.name} -- the atom order must match the '
-                'Hessian. Select the geometry manually.'
+        # Hessian is required even when an XYZ is available. Check first
+        # so an absent Hessian is not misreported as an XYZ problem.
+        if files.hess_path is None:
+            others = sorted(p.name for p in calc_dir.glob('*.hess'))
+            hint = (
+                ' Other .hess files here: ' + ', '.join(others[:5]) + '.'
+                if others else ''
             )
-            result['error_kind'] = 'no_xyz'
+            result['error'] = (
+                f'No Hessian (.hess) matching {calc_path.name} was found '
+                f'in {calc_dir.name}. The Hessian from the same OptTS '
+                'calculation is required.' + hint
+            )
+            result['error_kind'] = 'no_hess'
             return result
+
+        ts_atoms = ts_goat.read_xyz(files.xyz_path) if files.xyz_path else None
+        geometry_source = 'xyz'
+        geometry_notice = ''
+        if ts_atoms is None:
+            # The matching Hessian's $atoms block is the actual reference
+            # geometry for the selected vibrational modes, in Angstrom.
+            # Never accept a composition-only XYZ or write into the run.
+            try:
+                ts_atoms = ts_goat._hessian_reference_atoms(files.hess_path)
+            except (OSError, ValueError, IndexError) as exc:
+                result['error'] = (
+                    'No compatible TS .xyz found, and the matching Hessian '
+                    f'$atoms geometry is unreadable: {exc}'
+                )
+                result['error_kind'] = 'no_xyz'
+                return result
+            if not ts_atoms:
+                result['error'] = (
+                    'No compatible TS .xyz found, and the matching '
+                    'Hessian contains no $atoms coordinates.'
+                )
+                result['error_kind'] = 'no_xyz'
+                return result
+            geometry_source = 'hessian'
+            geometry_notice = (
+                '<div style="color:#b26a00;font-size:12px;">'
+                'No compatible .xyz found. Using optimized geometry from '
+                'the matching Hessian $atoms block ('
+                + html.escape(files.hess_path.name) +
+                '). Verify this Hessian belongs to the selected '
+                'OptTS calculation.</div>'
+            )
+            files.problems = [
+                p for p in files.problems
+                if not p.startswith('no matching TS geometry (.xyz)')
+            ]
+
         # TS geometry + selected mode only (see _on_mode_change).
         proposed = ts_goat.analyze_reactive_center(
             files.hess_path, ts_atoms,
             mode_index=status.auto_mode_index,
-        ) if files.hess_path else None
-        if proposed is None:
-            result['error'] = (
-                'No Hessian (.hess) found -- the imaginary-mode analysis '
-                'and the reactive-centre proposal are not possible '
-                'without it.'
-            )
-            result['error_kind'] = 'no_hess'
-            return result
+        )
         # Consistency: the XYZ used for the input must match the Hessian
         # the mode came from (same atom count and element order); and the
         # selected mode must actually be one of the Hessian's imaginary
@@ -1279,13 +1318,15 @@ def open_ts_goat_dialog(calc_path, callbacks) -> dict:
             'files': files, 'ts_atoms': ts_atoms, 'proposed': proposed,
             'elements': [a[0] for a in ts_atoms],
             'coordinates': [(x, y, z) for _, x, y, z in ts_atoms],
+            'geometry_source': geometry_source,
+            'geometry_notice': geometry_notice,
             'charge': charge,
             'mult': mult,
             'mode_arrows': arrows,
             'mode_arrows_by_index': mode_arrows_by_index,
             'imaginary_modes': list(status.imaginary_modes),
             'hess_path': files.hess_path,
-            'status_html': warn_html
+            'status_html': warn_html + geometry_notice
             + (
                 f'<span style="font-size:12px;">{html.escape(str(Path(calc_path).name))}: '
                 f'data quality {proposed.reliability}'
