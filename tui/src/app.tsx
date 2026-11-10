@@ -18,6 +18,7 @@ import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-
 import { Pins } from "./agents/pins"
 import { WINDOW_COMMANDS, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead } from "./commands"
 import { createSwarmView } from "./swarm/view"
+import { createSwarmWatch } from "./swarm/watch"
 import type { ArgumentChoices } from "./composer/complete"
 import { CLICK_PAUSE_MS } from "./mouse"
 import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
@@ -319,6 +320,11 @@ export function App(props: AppProps): JSX.Element {
       if (body) return Boolean(await swarm.newSwarm(body))
       return true
     }
+    if (watchOpen()) {
+      // The read-only watch accepts no input into a member session: a
+      // typed line while it is open is consumed, never delivered.
+      return true
+    }
     return deliver(text, how, shown)
   }
 
@@ -361,6 +367,21 @@ export function App(props: AppProps): JSX.Element {
     // requests. With an argument the line goes to the session as typed.
     if (/^\/swarm$/.test(text.trim()) && !how) {
       void swarm.open()
+      return true
+    }
+    // /swarm watch <source> (package SWV, phase 2b): the read-only watch.
+    // The source is the file that names the members -- a roster (name ->
+    // package/role) or a swarm.yaml spec; there is no default swarm, so a
+    // bare /swarm watch says what to pass. The watch never accepts input
+    // into a member session.
+    if (/^\/swarm watch(?:\s+(\S+))?$/.test(text.trim()) && !how) {
+      const m = /^\/swarm watch(?:\s+(\S+))?$/.exec(text.trim())
+      if (!m?.[1]) {
+        say("usage: /swarm watch <roster.json | swarm.yaml> -- the file that names the members")
+        return true
+      }
+      watchSource = m[1]
+      void watch.open()
       return true
     }
       // Also with the key that steers: a rename is the window's, never the turn's.
@@ -528,6 +549,26 @@ export function App(props: AppProps): JSX.Element {
     draft: () => composer.value(),
   })
   const swarmOpen = () => swarm.state.open
+  // The read-only /swarm watch (package SWV, phase 2b): a table of one
+  // row per member, Enter opens a member's live feed, Esc back. It only
+  // asks the observe.* requests; there is never an input into a member
+  // session. It reuses the submit + key routing below like the swarm
+  // view, but has no composer input of its own.
+  // The roster / spec path given to /swarm watch (the read-only watch
+  // target, package SWV phase 2b). Never touches session state.
+  let watchSource: string | undefined
+  // The service answers {rows} and {entries}; the watch takes the lists.
+  const watch = createSwarmWatch({
+    keymap: props.keymap,
+    now: () => Date.now() / 1000,
+    askOverview: () => props.client.request("swarm.observe.overview",
+      { sourcePath: watchSource }).then((r) => (r as any)?.rows ?? []) as never,
+    askFeed: (name) => props.client.request("swarm.observe.feed", { session: name })
+      .then((r) => (r as any)?.entries ?? []) as never,
+    note: say,
+    draft: () => composer.value(),
+  })
+  const watchOpen = () => watch.state.open
   // The alternate screen, while the view is open.
   createEffect(() => {
     if (!props.agentScreen) return
@@ -971,6 +1012,24 @@ export function App(props: AppProps): JSX.Element {
         return
       }
       if (swarm.handleKey(key) || composer.handleKey(key)) key.preventDefault()
+      return
+    }
+    if (watchOpen()) {
+      // The read-only /swarm watch (phase 2b): ctrl+c / quit close or
+      // leave like the command view, then the view's own keys (Enter on
+      // a member -> live feed, Esc back, table keys in the footer). No
+      // composer input: there is never an input box into a member.
+      if (key.ctrl && key.name === "c" && !composer.search()) {
+        key.preventDefault()
+        watch.close()
+        return
+      }
+      if (km.matches("quit", key) && !draft()) {
+        key.preventDefault()
+        props.onQuit()
+        return
+      }
+      if (watch.handleKey(key)) key.preventDefault()
       return
     }
     if (offer() && !asked && takeOffer(key)) {

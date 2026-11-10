@@ -303,6 +303,9 @@ _EXPECTED_READ_ONLY = {
     "find_orca_errors", "extract_thermochem",
     # result_checks (2026-11-01): reads a finished run; writes nothing.
     "result_checks",
+    # frame_lineage (2026-11-10): reads the .xyz frames of the given stage
+    # directories and compares them; writes nothing, runs nothing.
+    "frame_lineage",
     # geometry_edit (2026-11-01): xyz text in, xyz text out; no write.
     "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
     "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
