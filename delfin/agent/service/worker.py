@@ -1025,6 +1025,8 @@ def initial_title(args: argparse.Namespace, engine) -> str:
     """What a session is called when it starts: the title or the name given;
     resumed, continued or forked without one, the one it was saved under
     (if it was given one -- never the store's stand-in, its first message)."""
+    if getattr(args, "untitled", False) and not args.title:
+        return ""                     # reset to the default name: kept so
     title = args.title or args.name
     if not title and (args.resume or args.continue_session or args.fork_session):
         title = stored_title(str(getattr(engine, "session_id", "") or args.resume))
@@ -1054,7 +1056,8 @@ class Worker:
 
     def __init__(self, engine, *, writer: protocol.LineWriter, reader,
                  workspace: Path, banner: list[str], notices: list[str],
-                 name: str = "", title: str = "", fake: bool = False, save: bool = True):
+                 name: str = "", title: str | None = None, fake: bool = False,
+                 save: bool = True):
         from ..repl import ReplOptions
 
         self.engine = engine
@@ -1064,9 +1067,10 @@ class Worker:
         #: The address: the name it started with (mail, approvals and presence
         #: reach the session by it, or by its id when there is none).
         self.name = name
-        #: What it is called: the title given, else that name; a rename
-        #: changes this, never the address.
-        self.title = protocol.clean_title(title or name)
+        #: What it is called: the title given (initial_title: that name when
+        #: none, "" for a session renamed back to the default), else that
+        #: name; a rename changes this, never the address.
+        self.title = protocol.clean_title(name if title is None else title)
         self.fake = fake
         self.save = save
         sid = str(getattr(engine, "session_id", "") or "")
@@ -1176,6 +1180,9 @@ class Worker:
                 "model": str(getattr(client, "model", "") or ""),
                 "effort": str(getattr(client, "effort", "")
                               or getattr(self.engine, "effort", "") or ""),
+                # The agent mode: /mode switches the engine, and every
+                # window has to hear it (session.updated.mode).
+                "mode": str(getattr(self.engine, "mode", "") or ""),
                 "tasks": self._task_rows(),
                 # Whether shift+tab may stop on bypass ("" yes, else why
                 # not) and whether its first step was confirmed already.
@@ -1300,7 +1307,10 @@ class Worker:
                 "workspace": str(self.workspace),
                 "provider": str(getattr(self.engine, "provider", "") or ""),
                 "model": facts["model"],
-                "mode": str(getattr(self.engine, "mode", "") or ""),
+                # As session.updated reports it later: a window that starts
+                # from this header must show the effort the session has.
+                "effort": facts["effort"],
+                "mode": facts["mode"],
                 "approval": facts["approval"],
                 "title": self.title or None,
                 "banner": [l for l in self.banner if l is not None],
@@ -1563,7 +1573,8 @@ class Worker:
                 reason=str(params.get("reason") or ""),
                 persist=bool(params.get("persist", False)),
                 text=str(params.get("text") or ""),
-                command=str(params.get("command") or ""))
+                command=str(params.get("command") or ""),
+                client=str(params.get("client") or ""))
         except UnknownRequest as exc:
             raise _Refusal(protocol.UNKNOWN_REQUEST, str(exc)) from None
         except InvalidAnswer as exc:
@@ -1592,10 +1603,10 @@ class Worker:
         """What the session is called: what the store saves it under, what
         its checkpoints carry, what every window shows. Its address -- the
         name it started with, or its id -- stays: mail, approvals and its
-        presence keep reaching it by that."""
+        presence keep reaching it by that. Nothing printable left: the
+        title is cleared and every window shows the default name
+        (protocol.default_name); the store then keeps it as untitled."""
         title = protocol.clean_title(params.get("title"))
-        if not title:
-            raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
         self.title = title
         self.agent.session_title = title
 
@@ -1808,6 +1819,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="the address the session is reached by (mail, approvals)")
     p.add_argument("--title", default="",
                    help="what the session is called (`/rename`); the name when not given")
+    p.add_argument("--untitled", action="store_true",
+                   help="renamed back to the default name: no title, neither the name "
+                        "(-n, its address) nor the saved one (the service's wake)")
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
     p.add_argument("--effort", default="")
@@ -1938,6 +1952,14 @@ def main(argv: list[str] | None = None) -> int:
             from .fake_engine import FakeEngine
             engine = FakeEngine(str(workspace), delay=args.fake_delay,
                                 steer_window=args.fake_steer_window)
+            # Started as asked, as a real engine is: what a window then
+            # shows of model, effort and mode is the session's own.
+            if args.model:
+                engine.client.model = args.model
+            if args.effort:
+                engine.effort = engine.client.effort = args.effort
+            if args.mode and args.mode in engine.MODES:
+                engine._load_mode(args.mode)
             if args.resume:
                 # As a real resume (cli._open_session restores the id): the
                 # session goes on under its id, in the same log -- with what

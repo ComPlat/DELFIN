@@ -89,6 +89,7 @@ def validate_chain_method(
     dispersion: str = "",
     extra_keywords: Optional[Sequence[str]] = None,
     scf_options: Optional[Mapping[str, Any]] = None,
+    geom_options: Optional[Mapping[str, Any]] = None,
     freq_options: Optional[Mapping[str, Any]] = None,
     cards: Optional[Sequence[dict]] = None,
 ) -> tuple[list[str], list[dict]]:
@@ -105,10 +106,15 @@ def validate_chain_method(
         scf_options=scf_options,
         cards=cards,
     )
+    from delfin.orca_knowledge import known_block_option
+
+    for key in (geom_options or {}):
+        if not known_block_option("geom", key):
+            errors.append(
+                f"geom: block option {key!r} is not one ORCA knows; refused."
+            )
     for key in (freq_options or {}):
         if key not in _FREQ_OPTION_KEYS:
-            from delfin.orca_knowledge import known_block_option
-
             if not known_block_option("freq", key):
                 errors.append(
                     f"freq: block option {key!r} is not one ORCA knows; refused."
@@ -132,6 +138,7 @@ def build_orca_input(
     method_keywords: Optional[Sequence[str]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     scf_options: Optional[Mapping[str, Any]] = None,
+    geom_options: Optional[Mapping[str, Any]] = None,
     freq_options: Optional[Mapping[str, Any]] = None,
     moread: Optional[str] = None,
     maxcore: int = 1000,
@@ -201,6 +208,10 @@ def build_orca_input(
         from opi.input.blocks.block_scf import BlockScf
 
         blocks.append(BlockScf(**scf_options))
+    if geom_options:
+        from opi.input.blocks.block_geom import BlockGeom
+
+        blocks.append(BlockGeom(**geom_options))
     if job_kind in (JOB_FREQ, JOB_OPT_FREQ) and freq_options:
         blocks.append(BlockFreq(**freq_options))
     unwritten: list[Any] = []
@@ -335,6 +346,7 @@ def run_opi_job(
     method_keywords: Optional[Sequence[str]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     scf_options: Optional[Mapping[str, Any]] = None,
+    geom_options: Optional[Mapping[str, Any]] = None,
     freq_options: Optional[Mapping[str, Any]] = None,
     moread: Optional[str] = None,
     maxcore: int = 1000,
@@ -363,6 +375,7 @@ def run_opi_job(
         dispersion=dispersion,
         extra_keywords=extra_keywords,
         scf_options=scf_options,
+        geom_options=geom_options,
         freq_options=freq_options,
     )
     if errors:
@@ -388,6 +401,7 @@ def run_opi_job(
         method_keywords=method_keywords,
         extra_keywords=extra_keywords,
         scf_options=scf_options,
+        geom_options=geom_options,
         freq_options=freq_options,
         moread=moread,
         maxcore=maxcore,
