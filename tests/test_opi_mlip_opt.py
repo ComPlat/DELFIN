@@ -286,3 +286,17 @@ class TestRegistration:
         assert adapter is not None
         assert adapter.name == "orca_mlip_opt_opi"
         assert "opi" in adapter.requires_python
+
+
+def test_a_refused_request_is_a_failed_step_not_a_crash(tmp_path):
+    """Real-run finding: the refusal path used ErrorKind.INVALID_INPUT, which
+    does not exist, so every refusal raised AttributeError."""
+    from delfin.tools.adapters.orca_mlip_opt_opi import OrcaMlipOptOpiAdapter
+
+    res = OrcaMlipOptOpiAdapter().execute(
+        str(tmp_path), elements=["O", "H", "H"],
+        coordinates=[[0, 0, 0.117], [0, 0.757, -0.469], [0, -0.757, -0.469]],
+        backend="xyzzy",
+    )
+    assert res.status.name == "FAILED"
+    assert "not an orca-mlips plugin" in res.error

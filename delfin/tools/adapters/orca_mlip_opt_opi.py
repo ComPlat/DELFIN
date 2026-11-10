@@ -332,6 +332,7 @@ class OrcaMlipOptOpiAdapter(StepAdapter):
     ) -> StepResult:
         kwargs.pop("_prev_artifacts", None)
         start = time.monotonic()
+        work_dir = Path(work_dir)
         try:
             elements = kwargs.get("elements")
             coordinates = kwargs.get("coordinates")
@@ -383,7 +384,7 @@ class OrcaMlipOptOpiAdapter(StepAdapter):
                 work_dir,
                 start,
                 error=str(exc),
-                error_kind=ErrorKind.INVALID_INPUT,
+                error_kind=ErrorKind.MISSING_PARAM,
             )
 
         from delfin.orca import run_orca
