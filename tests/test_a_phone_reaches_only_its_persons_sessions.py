@@ -171,6 +171,29 @@ def test_neu_starts_the_session_in_the_persons_own_service_and_folder(acct):
     assert not acct.services[""].calls("session.create") and not acct.services["ben"].calls("session.create")
 
 
+def test_zusammenfuehren_stays_in_the_persons_own_folder(acct):
+    """A person's merge lists and merges only worktrees under their own
+    phone folder: a path under the owner's root is refused in the bridge
+    and no service sees session.merge; the control, a path under the
+    person's own root, reaches their service."""
+    own_root = acct.home / "people" / "anna" / "DELFIN-Handy"
+    acct.say("21", "@21", "zusammenführen")
+    listed = acct.services["anna"].calls("session.worktrees")
+    assert listed and listed[0]["cwd"] == str(own_root)
+    assert not acct.services[""].calls("session.worktrees")
+    owner_wt = acct.home.parent / "DELFIN-Handy" / "x" / ".delfin" / "worktrees" / "wt1"
+    owner_wt.mkdir(parents=True)
+    acct.say("21", "@21", f"zusammenführen {owner_wt}")
+    for name in ("", "anna", "ben"):
+        assert not acct.services[name].calls("session.merge"), name
+    anna_wt = own_root / "x" / ".delfin" / "worktrees" / "wt1"
+    anna_wt.mkdir(parents=True)
+    acct.say("21", "@21", f"zusammenführen {anna_wt}")
+    merged = acct.services["anna"].calls("session.merge")
+    assert merged and merged[0]["path"] == str(anna_wt.resolve())
+    assert not acct.services[""].calls("session.merge")
+
+
 @pytest.mark.parametrize("sender", ["99", "25"])
 def test_unknown_and_unverified_contacts_are_ignored_in_groups(acct, sender):
     if sender == "25":
