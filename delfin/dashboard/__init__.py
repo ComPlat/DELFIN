@@ -741,9 +741,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         except Exception:
             spec['widget'] = None
             return
-        fresh = '\n'.join(ctx.init_js_parts[already:])
-        if fresh.strip():
-            _append_js(ctx, fresh)
+        # One script per output: joined into one block, a script that
+        # throws at load (seen: "MathJax is not defined") ended the block,
+        # and every script after it -- the session list's keys and its
+        # suggestions among them -- never ran.
+        for fresh in ctx.init_js_parts[already:]:
+            if fresh and fresh.strip():
+                _append_js(ctx, fresh)
         # On the bar already as a placeholder: the built tab goes INTO it.
         # Handing the Tab widget a new children list makes the browser
         # rebuild every tab from the first changed position -- the tab the

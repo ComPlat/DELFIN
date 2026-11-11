@@ -190,3 +190,16 @@ def test_warm_up_can_be_switched_off():
 
 def test_without_a_running_loop_nothing_is_scheduled():
     assert tab_schedule._call_later(0.1, lambda: None) is False
+
+
+def test_a_deferred_tab_sends_each_page_script_on_its_own():
+    """Joined into one block, a script that threw at load stopped every
+    script after it (11.11.: the session list's keys never ran)."""
+    import inspect
+
+    import delfin.dashboard as d
+    src = inspect.getsource(d.create_dashboard)
+    i = src.index("def _build_tab_now")
+    body = src[i:i + 2500]
+    assert "for fresh in ctx.init_js_parts[already:]:" in body
+    assert "'\\n'.join(ctx.init_js_parts[already:])" not in body
