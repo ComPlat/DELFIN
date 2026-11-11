@@ -250,13 +250,11 @@ _SIDEBAR_CSS = """<style>
     overflow-x: hidden !important; border: 1px solid #e5e7eb;
     border-radius: 6px; background: #ffffff; }
 .delfin-path-suggest:empty { display: none; }
-.delfin-path-option { width: 100% !important; height: auto !important;
-    min-height: 24px; margin: 0 !important; padding: 3px 8px !important;
-    border: 0; background: transparent !important; text-align: left;
-    font-size: 12px; line-height: 1.3; color: #1f2937;
-    white-space: pre-line; overflow: hidden; overflow-wrap: anywhere;
-    font-family: 'SF Mono', 'Consolas', monospace; }
-.delfin-path-option::first-line { font-weight: 600; }
+.delfin-path-option { width: 100% !important; height: 24px !important;
+    margin: 0 !important; padding: 0 8px !important; border: 0;
+    background: transparent !important; text-align: left; font-size: 12px;
+    line-height: 24px; color: #1f2937; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; font-family: 'SF Mono', 'Consolas', monospace; }
 .delfin-path-suggest { max-height: 300px; }
 .delfin-path-option:hover, .delfin-path-option.delfin-path-active {
     background: #dbeafe !important; color: #0f172a; }
@@ -302,18 +300,6 @@ _SIDEBAR_CSS = """<style>
 #: Folders shown under the working-directory box at once (the list
 #: scrolls; workspace_choices bounds what is read at _PICKER_MAX).
 _SUGGEST_SHOWN = 40
-
-def _suggest_label(path: str, width: int = 30) -> str:
-    """Two lines for a suggested folder: its name, then where it is (the
-    parent, shortened from the LEFT so its end stays readable). The column
-    is narrow; one line of a full path showed only its middle."""
-    path = str(path).rstrip("/") or "/"
-    name = os.path.basename(path) or path
-    parent = _display_path(os.path.dirname(path)) if os.path.dirname(path) else ""
-    if len(parent) > width:
-        parent = "…" + parent[-(width - 1):]
-    return f"{name}/\n{parent}" if parent else f"{name}/"
-
 
 #: Keys of the working-directory box: Tab, Up/Down, Enter, Esc.
 _PATH_KEYS_JS = """\
@@ -2834,8 +2820,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         choices = fits + [c for c in choices if c not in fits]
         buttons = []
         for path in choices[:_SUGGEST_SHOWN]:
-            b = _classed(widgets.Button(description=_suggest_label(str(path)),
-                                        tooltip=str(path)),
+            # One line each, as a terminal lists them: a folder of the typed
+            # one by its name, any other by its short path (~/..., …/x/y).
+            p = str(path)
+            if typed_dir and p.startswith(typed_dir) and "/" not in p[len(typed_dir):].strip("/"):
+                label = p[len(typed_dir):].strip("/") + "/"
+            else:
+                label = _display_path(p).rstrip("/") + "/"
+            b = _classed(widgets.Button(description=label, tooltip=p),
                          "delfin-path-option")
             b.on_click(lambda _b, _p=path: _pick_folder(_p))
             buttons.append(b)
