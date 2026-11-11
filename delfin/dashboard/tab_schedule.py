@@ -54,9 +54,11 @@ def open_spec(spec):
 
 
 #: Seconds after the page went out before the first idle build, and
-#: between two. Each build holds the kernel for its own duration; a click
+#: between two. The first waits until the browser has fetched the page's
+#: widgets: started after 1 s, the agent tab's build held the kernel while
+#: the page loaded and the load took 59 s instead of 44 s (measured 11.11.). Each build holds the kernel for its own duration; a click
 #: in that moment waits at most for one tab, never for the whole bar.
-WARM_FIRST_S = 1.0
+WARM_FIRST_S = 8.0
 WARM_GAP_S = 0.4
 
 
