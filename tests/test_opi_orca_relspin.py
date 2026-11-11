@@ -25,6 +25,8 @@ import pytest
 pytest.importorskip("opi")
 
 from delfin.tools.adapters.orca_relspin_opi import (  # noqa: E402
+    read_rel_sp_result,
+    read_zfs_result,
     build_rel_sp_input,
     build_soc_tddft_input,
     build_zfs_input,
@@ -427,3 +429,91 @@ def test_probe_orca_parser_accepts_the_zfs_input(tmp_path):
         f"ORCA rejected the OPI-built ZFS input; messages: "
         f"{verdict['messages']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Real-run findings (operator report): method required, no !tddft simple
+# keyword, launch ignores the NMR-report False, OPI Output signature,
+# probe inputs must not land in the checkout's scratch/.
+# ---------------------------------------------------------------------------
+
+class TestRealRunFindings:
+    def test_rel_sp_requires_a_functional(self, tmp_path):
+        with pytest.raises((TypeError, ValueError), match="functional"):
+            build_rel_sp_input(
+                tmp_path, hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+                elements=ELS, coordinates=XYZ, charge=0, mult=1,
+                maxcore=1000, ncores=1, base_name="x",
+            )
+
+    def test_rel_sp_writes_the_functional(self, tmp_path):
+        path = build_rel_sp_input(
+            tmp_path, hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+            functional="B3LYP", elements=ELS, coordinates=XYZ, charge=0,
+            mult=1, maxcore=1000, ncores=1, base_name="fn",
+        )
+        assert "!b3lyp" in _read_inp(path).lower()
+
+    def test_zfs_writes_the_functional(self, tmp_path):
+        path = build_zfs_input(
+            tmp_path, basis="def2-TZVP", functional="PBE",
+            elements=ZFS_ELS, coordinates=XYZ, charge=0, mult=2,
+            maxcore=1000, ncores=1, base_name="zf",
+        )
+        assert "!pbe" in _read_inp(path).lower()
+
+    def test_soc_tddft_writes_the_functional(self, tmp_path):
+        path = build_soc_tddft_input(
+            tmp_path, basis="def2-TZVP", functional="PBE", nroots=5,
+            elements=ZFS_ELS, coordinates=XYZ, charge=0, mult=2,
+            maxcore=1000, ncores=1, base_name="sc",
+        )
+        assert "!pbe" in _read_inp(path).lower()
+
+    def test_soc_tddft_input_has_no_tddft_simple_keyword(self, tmp_path):
+        # ORCA: "UNRECOGNIZED OR DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE
+        # TDDFT" -- TDDFT is selected by the %tddft block only.
+        path = build_soc_tddft_input(
+            tmp_path, basis="def2-TZVP", functional="PBE", nroots=5,
+            elements=ZFS_ELS, coordinates=XYZ, charge=0, mult=2,
+            maxcore=1000, ncores=1, base_name="sc",
+        )
+        lines = [
+            ln for ln in _read_inp(path).splitlines()
+            if ln.startswith("!") and "tddft" in ln.lower()
+        ]
+        assert lines == []
+
+    def test_launch_tolerates_a_false_return_from_the_runner(self, tmp_path, monkeypatch):
+        # A %eprnmr input goes through run_orca's NMR-report path, which
+        # returns False when no H shieldings exist -- the run itself finished
+        # normally.  _launch must error only on a raised exception; the
+        # readers gate on terminated_normally().
+        import delfin.tools.adapters.orca_relspin_opi as mod
+
+        def fake_orca(base, wdir):
+            return False
+        monkeypatch.setattr("delfin.orca.run_orca", fake_orca)
+        assert mod._launch(tmp_path, "j") is None
+
+    def test_launch_reports_a_raised_exception(self, tmp_path, monkeypatch):
+        import delfin.tools.adapters.orca_relspin_opi as mod
+
+        def boom(base, wdir):
+            raise RuntimeError("orca gone")
+        monkeypatch.setattr("delfin.orca.run_orca", boom)
+        err = mod._launch(tmp_path, "j")
+        assert err is not None and "orca gone" in err
+
+    def test_read_rel_sp_result_never_imports_a_missing_reader(self, tmp_path):
+        # The reader must not depend on a non-existent orca_read symbol;
+        # a bogus .out yields ok=False, not an ImportError.
+        (tmp_path / "j.out").write_text("# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n")
+        res = read_rel_sp_result(tmp_path, "j")
+        assert res.ok is False
+
+    def test_read_zfs_result_never_imports_a_missing_reader(self, tmp_path):
+        (tmp_path / "z.out").write_text(
+            "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n")
+        res = read_zfs_result(tmp_path, "z")
+        assert res.ok is False
