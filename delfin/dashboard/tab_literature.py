@@ -13,11 +13,10 @@ import json
 import os
 import re
 import shutil
+import threading
 from pathlib import Path
 
 import ipywidgets as widgets
-
-import threading
 
 from . import text_view as _text_view
 from . import upload_limits as _upload_limits
