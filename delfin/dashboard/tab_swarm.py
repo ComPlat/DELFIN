@@ -1033,10 +1033,23 @@ def create_watch_tab(ctx: Any):
 
     refresh_btn.on_click(lambda _b: _refresh(force=True))
 
+    def _shown() -> bool:
+        """Whether Swarm Watch is the tab on screen: reading the sessions
+        for a tab nobody looks at costs the login node for nothing."""
+        try:
+            tabs = getattr(ctx, "tabs_widget", None)
+            title_of = getattr(ctx, "tab_indices_title_of", None)
+            if tabs is None or not callable(title_of):
+                return True
+            return title_of(tabs.selected_index) == "Swarm Watch"
+        except Exception:
+            return True
+
     def _tick() -> None:
         if state["_stopped"]:
             return
-        _refresh()
+        if _shown():
+            _refresh()
         timer = threading.Timer(5.0, _tick)
         timer.daemon = True
         state["_timer"] = timer
