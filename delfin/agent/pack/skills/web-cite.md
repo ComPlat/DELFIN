@@ -30,8 +30,16 @@ retrieved date is what makes a citation honest about a moving web.
    unverifiable. Never fetch a wall with a stealth browser.
 6. A truncated fetch is cited as a partial view: say what was NOT read
    (page too large, timed out), never summarise as if complete.
+7. A computational method (functional, basis set, dispersion correction,
+   solvation model, program) is cited by its ORIGINAL paper: find it by
+   a title search (`verify_source(action="works", ...)`; OpenAlex,
+   most-cited match first) and confirm the DOI with
+   `verify_source(action="doi", ...)` before citing it.
 
 ## Not
 - Never cite a search snippet as the source of a claim — fetch the page.
 - Never merge several sources into one citation to hide a gap.
 - Never cite a URL you did not actually fetch this session.
+- Never query Google Scholar by script: it has no API and its terms
+  forbid automated access. OpenAlex, Crossref, Semantic Scholar, arXiv
+  and Europe PMC are the official routes.
