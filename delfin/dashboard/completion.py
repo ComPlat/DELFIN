@@ -160,7 +160,7 @@ def _suggest(text, cwd, own, history, programs) -> dict:
         # Whole earlier commands that start with what was typed (newest
         # first, each once) -- as zsh's history suggestions do, for the
         # command word and for the arguments alike.
-        hist = list(own) + list(history if history is not None else shell_history())
+        hist = list(history if history is not None else shell_history()) + list(own)
         seen, items = set(), []
         for cmd in reversed(hist):
             cmd = cmd[1:] if cmd.startswith("!") else cmd
