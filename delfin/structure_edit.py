@@ -262,6 +262,20 @@ def _h_directions(
                 for k in range(3):
                     s[k] -= u[k]
             return [_unit(tuple(s))]
+        if count == 2 and heavy_order <= 2:
+            # Two single bonds (operator round 7, ethanol's CH2): an sp3
+            # centre. The two H sit on either side of the bond plane,
+            # 54.74 deg from the outward bisector (H-X-H 109.47); the
+            # in-plane placement below put one of them 0.42 A from O.
+            u1, u2 = _unit(away[0]), _unit(away[1])
+            d = _unit(tuple(-(u1[k] + u2[k]) for k in range(3)))
+            n = (u1[1] * u2[2] - u1[2] * u2[1],
+                 u1[2] * u2[0] - u1[0] * u2[2],
+                 u1[0] * u2[1] - u1[1] * u2[0])
+            n = _unit(n) if sum(x * x for x in n) > 1e-12 else _any_perp(d)
+            half = math.radians(109.47 / 2.0)
+            return [tuple(math.cos(half) * d[k] + side * math.sin(half) * n[k]
+                          for k in range(3)) for side in (1.0, -1.0)]
         # =CH2-type sp2: H in the plane spanned by the two bonds,
         # mirrored across the C-C axis, so X-X-H and H-X-H both come
         # out at real sp2 values (ethylene: 121.5 / 117).
@@ -439,6 +453,10 @@ _XH_BOND_LENGTHS: dict[str, float] = {
     "B": 1.19,
 }
 
+# X-Y-H angles (degrees) at a two-valent Y with one heavy neighbour X:
+# methanol C-O-H 108.5, CH3SH C-S-H 96.5, CH3SeH ~95.
+_XYH_ANGLES: dict[str, float] = {"O": 108.5, "S": 96.5, "Se": 95.0}
+
 # Elements that can take an aromatic (order 1.5) bond in the ring window.
 _SP2_ELEMENTS = {"C", "N"}
 
@@ -516,7 +534,23 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
                 if carbon_order >= 2:
                     dir_order = 2
         r_h_i = _XH_BOND_LENGTHS.get(sym, radii[i] + _COSMETIC_H_RADIUS)
-        for direction in _h_directions(away, missing, dir_order):
+        directions = _h_directions(away, missing, dir_order)
+        if missing == 1 and len(away) == 1 and dir_order == 1:
+            # One H on a two-valent atom with one single-bonded heavy
+            # neighbour (O-H, S-H; operator round 7: methanol, phenol and
+            # CH3SH came out linear, 180 deg). Bent at the real X-Y-H
+            # angle; of the azimuths around the bond, the one farthest
+            # from every atom already present.
+            bend = _XYH_ANGLES.get(sym, 109.47)
+            base = tuple(-x for x in away[0])
+            others = [c for k, c in enumerate(new_coords) if k != i]
+            directions = [max(
+                _ring(base, 180.0 - bend, 12),
+                key=lambda dvec: min(
+                    (math.dist(tuple(g.coords[i][k] + dvec[k] * r_h_i
+                                     for k in range(3)), c)
+                     for c in others), default=0.0))]
+        for direction in directions:
             pos = tuple(
                 g.coords[i][k] + direction[k] * r_h_i for k in range(3)
             )
