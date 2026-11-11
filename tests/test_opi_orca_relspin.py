@@ -55,25 +55,25 @@ def _read_inp(path):
 class TestValidateRelspin:
     def test_rel_sp_zora_with_recontracted_basis_is_accepted(self):
         errors, warnings = validate_relspin(
-            job="rel_sp", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+            functional="B3LYP", job="rel_sp", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
         )
         assert errors == []
 
     def test_rel_sp_dkh2_with_recontracted_basis_is_accepted(self):
         errors, _ = validate_relspin(
-            job="rel_sp", hamiltonian="DKH2", basis="DKH-def2-TZVP",
+            functional="B3LYP", job="rel_sp", hamiltonian="DKH2", basis="DKH-def2-TZVP",
         )
         assert errors == []
 
     def test_unknown_hamiltonian_is_an_error(self):
         errors, _ = validate_relspin(
-            job="rel_sp", hamiltonian="ZORAX", basis="def2-TZVP",
+            functional="B3LYP", job="rel_sp", hamiltonian="ZORAX", basis="def2-TZVP",
         )
         assert any("ZORAX" in e for e in errors)
 
     def test_unknown_basis_is_an_error(self):
         errors, _ = validate_relspin(
-            job="rel_sp", hamiltonian="ZORA", basis="not-a-basis",
+            functional="B3LYP", job="rel_sp", hamiltonian="ZORA", basis="not-a-basis",
         )
         assert any("not-a-basis" in e for e in errors)
 
@@ -81,59 +81,59 @@ class TestValidateRelspin:
         """Manual 6.1 sec 2.12.6: ZORA/DKH need recontracted (ZORA-/DKH-)
         basis sets; a plain def2 basis silently changes the Hamiltonian."""
         errors, _ = validate_relspin(
-            job="rel_sp", hamiltonian="ZORA", basis="def2-TZVP",
+            functional="B3LYP", job="rel_sp", hamiltonian="ZORA", basis="def2-TZVP",
         )
         assert errors, "non-relativistic basis with ZORA must be refused"
         assert any("ZORA" in e for e in errors)
 
     def test_nonrel_basis_allowed_when_explicitly_requested(self):
         errors, _ = validate_relspin(
-            job="rel_sp", hamiltonian="ZORA", basis="def2-TZVP",
+            functional="B3LYP", job="rel_sp", hamiltonian="ZORA", basis="def2-TZVP",
             allow_nonrel_basis=True,
         )
         assert errors == []
 
     def test_unknown_job_is_an_error(self):
-        errors, _ = validate_relspin(job="not-a-job", basis="def2-TZVP")
+        errors, _ = validate_relspin(job="not-a-job", functional="B3LYP", basis="def2-TZVP")
         assert any("not-a-job" in e for e in errors)
 
     def test_zfs_with_singlet_is_refused(self):
         """A closed shell has no zero-field splitting (manual epr.txt: the
         ZFS tensor needs at least one unpaired electron)."""
         errors, _ = validate_relspin(
-            job="zfs", basis="def2-TZVP", mult=1,
+            functional="B3LYP", job="zfs", basis="def2-TZVP", mult=1,
         )
         assert any("multiplicity" in e.lower() for e in errors)
 
     def test_zfs_with_triplet_is_accepted(self):
         errors, _ = validate_relspin(
-            job="zfs", basis="def2-TZVP", mult=2, elements=ZFS_ELS,
+            functional="B3LYP", job="zfs", basis="def2-TZVP", mult=2, elements=ZFS_ELS,
         )
         assert errors == []
 
     def test_unknown_epr_option_is_an_error(self):
         errors, _ = validate_relspin(
-            job="zfs", basis="def2-TZVP", mult=2,
+            functional="B3LYP", job="zfs", basis="def2-TZVP", mult=2,
             epr_options={"dtensor": "nonsense"},
         )
         assert any("dtensor" in e.lower() for e in errors)
 
     def test_unknown_rel_option_is_an_error(self):
         errors, _ = validate_relspin(
-            job="zfs", basis="def2-TZVP", mult=2, elements=ZFS_ELS,
+            functional="B3LYP", job="zfs", basis="def2-TZVP", mult=2, elements=ZFS_ELS,
             rel_options={"nonsenserel": 1},
         )
         assert any("nonsenserel" in e.lower() for e in errors)
 
     def test_soc_tddft_with_zero_nroots_is_refused(self):
         errors, _ = validate_relspin(
-            job="soc_tddft", basis="def2-TZVP", mult=1, nroots=0,
+            functional="B3LYP", job="soc_tddft", basis="def2-TZVP", mult=1, nroots=0,
         )
         assert any("nroots" in e.lower() for e in errors)
 
     def test_soc_tddft_typical_is_accepted(self):
         errors, _ = validate_relspin(
-            job="soc_tddft", basis="def2-TZVP", mult=1, nroots=8,
+            functional="B3LYP", job="soc_tddft", basis="def2-TZVP", mult=1, nroots=8,
         )
         assert errors == []
 
@@ -141,7 +141,7 @@ class TestValidateRelspin:
         """He has 2 electrons; multiplicity 2 would be an even-electron
         doublet, which is impossible (parity of N-1 must match 2S)."""
         errors, _ = validate_relspin(
-            job="rel_sp", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+            functional="B3LYP", job="rel_sp", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
             charge=0, mult=2, elements=ELS,
         )
         assert any("multiplicity" in e.lower() for e in errors)
@@ -150,7 +150,7 @@ class TestValidateRelspin:
         """He+ has 1 electron; multiplicity 2 is the physically possible
         doublet and must be accepted."""
         errors, _ = validate_relspin(
-            job="rel_sp", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+            functional="B3LYP", job="rel_sp", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
             charge=1, mult=2,
         )
         assert errors == []
@@ -158,14 +158,14 @@ class TestValidateRelspin:
     def test_unknown_dsoc_value_is_refused(self):
         """OPI's BlockEprnmr model allows only qro|pk|cp|pcp|cvw."""
         errors, _ = validate_relspin(
-            job="zfs", basis="def2-TZVP", mult=2,
+            functional="B3LYP", job="zfs", basis="def2-TZVP", mult=2,
             epr_options={"dsoc": "qrx"},
         )
         assert any("dsoc" in e.lower() for e in errors)
 
     def test_dsoc_cpcm_with_triplet_is_accepted(self):
         errors, _ = validate_relspin(
-            job="zfs", basis="def2-TZVP", mult=2,
+            functional="B3LYP", job="zfs", basis="def2-TZVP", mult=2,
             epr_options={"dsoc": "cp"},
         )
         assert errors == []
@@ -178,7 +178,7 @@ class TestValidateRelspin:
 class TestBuildRelSpInput:
     def test_zora_builds_recontracted_basis_and_rel_block(self, tmp_path):
         path = build_rel_sp_input(
-            tmp_path, hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+            tmp_path, functional="B3LYP", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
             elements=ELS, coordinates=XYZ, charge=0, mult=1,
             maxcore=1000, ncores=2, base_name="zora_he",
         )
@@ -190,7 +190,7 @@ class TestBuildRelSpInput:
 
     def test_dkh2_builds_dkh_basis_and_rel_block(self, tmp_path):
         path = build_rel_sp_input(
-            tmp_path, hamiltonian="DKH2", basis="DKH-def2-TZVP",
+            tmp_path, functional="B3LYP", hamiltonian="DKH2", basis="DKH-def2-TZVP",
             elements=ELS, coordinates=XYZ, charge=0, mult=1,
             maxcore=1000, ncores=1, base_name="dkh_he",
         )
@@ -201,7 +201,7 @@ class TestBuildRelSpInput:
 
     def test_picture_change_and_order_reach_the_rel_block(self, tmp_path):
         path = build_rel_sp_input(
-            tmp_path, hamiltonian="DKH2", basis="DKH-def2-TZVP",
+            tmp_path, functional="B3LYP", hamiltonian="DKH2", basis="DKH-def2-TZVP",
             elements=ELS, coordinates=XYZ, charge=0, mult=1,
             rel_options={"picturechange": 2, "order": 4},
             maxcore=1000, ncores=1, base_name="dkh_pc",
@@ -213,7 +213,7 @@ class TestBuildRelSpInput:
     def test_nonrel_basis_raises(self, tmp_path):
         with pytest.raises(ValueError, match="def2-TZVP"):
             build_rel_sp_input(
-                tmp_path, hamiltonian="ZORA", basis="def2-TZVP",
+                tmp_path, functional="B3LYP", hamiltonian="ZORA", basis="def2-TZVP",
                 elements=ELS, coordinates=XYZ, charge=0, mult=1,
                 maxcore=1000, ncores=1, base_name="bad",
             )
@@ -221,7 +221,7 @@ class TestBuildRelSpInput:
     def test_impossible_multiplicity_raises(self, tmp_path):
         with pytest.raises(ValueError, match="multiplicity"):
             build_rel_sp_input(
-                tmp_path, hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+                tmp_path, functional="B3LYP", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
                 elements=ELS, coordinates=XYZ, charge=0, mult=2,
                 maxcore=1000, ncores=1, base_name="bad",
             )
@@ -229,7 +229,7 @@ class TestBuildRelSpInput:
     def test_extra_keywords_are_validated_too(self, tmp_path):
         with pytest.raises(ValueError, match="NOTREAL"):
             build_rel_sp_input(
-                tmp_path, hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+                tmp_path, functional="B3LYP", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
                 elements=ELS, coordinates=XYZ, charge=0, mult=1,
                 extra_keywords=("NOTREAL",),
                 maxcore=1000, ncores=1, base_name="bad",
@@ -239,7 +239,7 @@ class TestBuildRelSpInput:
 class TestBuildZfsInput:
     def test_triplet_builds_eprnmr_block(self, tmp_path):
         path = build_zfs_input(
-            tmp_path, basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
+            tmp_path, functional="PBE", basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
             charge=0, mult=2, maxcore=1000, ncores=1, base_name="zfs_h",
         )
         text = _read_inp(path)
@@ -249,7 +249,7 @@ class TestBuildZfsInput:
 
     def test_epr_options_reach_the_block(self, tmp_path):
         path = build_zfs_input(
-            tmp_path, basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
+            tmp_path, functional="PBE", basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
             charge=0, mult=2, epr_options={"dsoc": "cp"},
             maxcore=1000, ncores=1, base_name="zfs_h",
         )
@@ -258,7 +258,7 @@ class TestBuildZfsInput:
 
     def test_zora_hamiltonian_adds_rel_block(self, tmp_path):
         path = build_zfs_input(
-            tmp_path, basis="ZORA-def2-TZVP", hamiltonian="ZORA",
+            tmp_path, functional="PBE", basis="ZORA-def2-TZVP", hamiltonian="ZORA",
             elements=ZFS_ELS, coordinates=XYZ, charge=0, mult=2,
             maxcore=1000, ncores=1, base_name="zfs_zora",
         )
@@ -270,7 +270,7 @@ class TestBuildZfsInput:
     def test_singlet_raises(self, tmp_path):
         with pytest.raises(ValueError, match="multiplicity"):
             build_zfs_input(
-                tmp_path, basis="def2-TZVP", elements=ZFS_ELS,
+                tmp_path, functional="PBE", basis="def2-TZVP", elements=ZFS_ELS,
                 coordinates=XYZ,
                 charge=0, mult=1, maxcore=1000, ncores=1, base_name="bad",
             )
@@ -278,7 +278,7 @@ class TestBuildZfsInput:
     def test_unknown_epr_option_raises(self, tmp_path):
         with pytest.raises(ValueError, match="dtensor"):
             build_zfs_input(
-                tmp_path, basis="def2-TZVP", elements=ZFS_ELS,
+                tmp_path, functional="PBE", basis="def2-TZVP", elements=ZFS_ELS,
                 coordinates=XYZ,
                 charge=0, mult=2, epr_options={"dtensor": "nonsense"},
                 maxcore=1000, ncores=1, base_name="bad",
@@ -288,12 +288,19 @@ class TestBuildZfsInput:
 class TestBuildSocTddftInput:
     def test_typical_builds_tddft_block_with_soc(self, tmp_path):
         path = build_soc_tddft_input(
-            tmp_path, basis="def2-TZVP", nroots=8, elements=ELS,
+            tmp_path, functional="PBE", basis="def2-TZVP", nroots=8, elements=ELS,
             coordinates=XYZ, charge=0, mult=1,
             maxcore=1000, ncores=1, base_name="soc_he",
         )
         text = _read_inp(path)
-        assert "!tddft" in text
+        # TDDFT is selected by the %tddft block only: a "!tddft" simple
+        # keyword is rejected by ORCA 6.1.1 ("UNRECOGNIZED OR DUPLICATED
+        # KEYWORD(S) IN SIMPLE INPUT LINE TDDFT").
+        assert "%tddft" in text and "nroots 8" in text
+        assert not any(
+            ln.startswith("!") and "tddft" in ln.lower()
+            for ln in text.splitlines()
+        )
         assert "%tddft" in text
         assert "nroots 8" in text
         assert "soc True" in text
@@ -301,14 +308,14 @@ class TestBuildSocTddftInput:
     def test_nroots_zero_raises(self, tmp_path):
         with pytest.raises(ValueError, match="nroots"):
             build_soc_tddft_input(
-                tmp_path, basis="def2-TZVP", nroots=0, elements=ELS,
+                tmp_path, functional="PBE", basis="def2-TZVP", nroots=0, elements=ELS,
                 coordinates=XYZ, charge=0, mult=1,
                 maxcore=1000, ncores=1, base_name="bad",
             )
 
     def test_dkh2_adds_rel_block(self, tmp_path):
         path = build_soc_tddft_input(
-            tmp_path, basis="DKH-def2-TZVP", hamiltonian="DKH2", nroots=6,
+            tmp_path, functional="PBE", basis="DKH-def2-TZVP", hamiltonian="DKH2", nroots=6,
             elements=ELS, coordinates=XYZ, charge=0, mult=1,
             maxcore=1000, ncores=1, base_name="soc_dkh",
         )
@@ -402,7 +409,7 @@ def test_probe_orca_parser_accepts_the_relspin_input(tmp_path):
     from delfin.orca_knowledge.probe import probe_input
 
     path = build_rel_sp_input(
-        tmp_path, hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+        tmp_path, functional="PBE", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
         elements=ELS, coordinates=XYZ, charge=0, mult=1,
         maxcore=400, ncores=1, base_name="probe_rel",
     )
@@ -419,7 +426,7 @@ def test_probe_orca_parser_accepts_the_zfs_input(tmp_path):
     from delfin.orca_knowledge.probe import probe_input
 
     path = build_zfs_input(
-        tmp_path, basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
+        tmp_path, functional="PBE", basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
         charge=0, mult=2, maxcore=400, ncores=1, base_name="probe_zfs",
     )
     verdict = probe_input(path.read_text(), timeout_s=300)
@@ -448,8 +455,8 @@ class TestRealRunFindings:
 
     def test_rel_sp_writes_the_functional(self, tmp_path):
         path = build_rel_sp_input(
-            tmp_path, hamiltonian="ZORA", basis="ZORA-def2-TZVP",
-            functional="B3LYP", elements=ELS, coordinates=XYZ, charge=0,
+            tmp_path, functional="B3LYP", hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+            elements=ELS, coordinates=XYZ, charge=0,
             mult=1, maxcore=1000, ncores=1, base_name="fn",
         )
         assert "!b3lyp" in _read_inp(path).lower()
@@ -491,7 +498,7 @@ class TestRealRunFindings:
         # readers gate on terminated_normally().
         import delfin.tools.adapters.orca_relspin_opi as mod
 
-        def fake_orca(base, wdir):
+        def fake_orca(inp, out, working_dir=None, **_kw):
             return False
         monkeypatch.setattr("delfin.orca.run_orca", fake_orca)
         assert mod._launch(tmp_path, "j") is None
@@ -499,7 +506,7 @@ class TestRealRunFindings:
     def test_launch_reports_a_raised_exception(self, tmp_path, monkeypatch):
         import delfin.tools.adapters.orca_relspin_opi as mod
 
-        def boom(base, wdir):
+        def boom(inp, out, working_dir=None, **_kw):
             raise RuntimeError("orca gone")
         monkeypatch.setattr("delfin.orca.run_orca", boom)
         err = mod._launch(tmp_path, "j")

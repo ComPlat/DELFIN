@@ -31,6 +31,7 @@ property record, SOC states from the ``.out`` SOC-corrected spectrum section.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -151,6 +152,7 @@ def _validate_block_values(block: str, options: Mapping[str, Any]) -> list[str]:
 def validate_method(
     *,
     job: str,
+    functional: str = "",
     hamiltonian: str = "",
     basis: str,
     extra_keywords: Optional[Sequence[str]] = None,
@@ -169,6 +171,14 @@ def validate_method(
     launch, so a mismatched basis is refused with a reason here).
     """
     errors: list[str] = []
+    if not functional:
+        errors.append(
+            "functional is required: ORCA otherwise runs the pure SCF "
+            "Hartree-Fock silently ('Ab initio Hamiltonian Method .... "
+            "Hartree-Fock'), which changes the chemistry; refusing."
+        )
+    else:
+        _validated_keyword(errors, functional, "functional")
     if hamiltonian:
         _validated_keyword(errors, hamiltonian, "hamiltonian")
     _validated_keyword(errors, basis, "basis")
@@ -192,7 +202,7 @@ def validate_method(
         errors.extend(_validate_block_values(block, opts or {}))
 
     calc = {
-        "keywords": [k for k in (hamiltonian, basis) if k]
+        "keywords": [k for k in (functional, hamiltonian, basis) if k]
         + [str(k) for k in (extra_keywords or ())],
         "blocks": {
             "rel": dict(rel_options or {}),
@@ -210,6 +220,7 @@ def validate_method(
 def validate_relspin(
     *,
     job: str,
+    functional: str = "",
     basis: str,
     hamiltonian: str = "",
     elements: Optional[Sequence[str]] = None,
@@ -245,6 +256,7 @@ def validate_relspin(
 
     kw_errors, kw_warnings = validate_method(
         job=job,
+        functional=functional,
         hamiltonian=hamiltonian,
         basis=basis,
         rel_options=rel_options,
@@ -362,6 +374,7 @@ def build_rel_sp_input(
     wdir: Path,
     *,
     hamiltonian: str,
+    functional: str = "",
     basis: str,
     elements: Sequence[str],
     coordinates: Sequence[Sequence[float]],
@@ -382,6 +395,7 @@ def build_rel_sp_input(
     """
     errors, _ = validate_method(
         job="rel_sp",
+        functional=functional,
         hamiltonian=hamiltonian,
         basis=basis,
         extra_keywords=extra_keywords,
@@ -404,13 +418,16 @@ def build_rel_sp_input(
 
     from opi.input.blocks.block_rel import BlockRel
     from opi.input.simple_keywords.basis_set import BasisSet
+    from opi.input.simple_keywords.dft import Dft
     from opi.input.simple_keywords.relativistic_correction import (
         RelativisticCorrection,
     )
     from opi.input import Input
 
     inp = Input()
-    keywords: list[Any] = [_lookup(BasisSet, basis)]
+    keywords: list[Any] = [
+        _lookup(Dft, functional), _lookup(BasisSet, basis)
+    ]
     h_kw = _lookup(RelativisticCorrection, hamiltonian)
     keywords.append(h_kw)
     for kw in extra_keywords or ():
@@ -470,10 +487,19 @@ def _write_input(inp: Any, *, wdir: Path, base_name: str,
 
 
 def _read_output(wdir: Path, base_name: str) -> Any:
-    """Return OPI's parsed output handle for the finished run's ``.out``."""
-    from opi.output import Output
+    """Return OPI's parsed output handle for the finished run's ``.out``.
 
-    return Output(path=str(wdir / f"{base_name}.out"))
+    OPI's ``Output`` takes the run's base name and working directory and
+    reads ``<base_name>.out`` (plus the property JSON when present) from
+    there."""
+    from opi.output.core import Output
+
+    try:
+        out = Output(basename=base_name, working_dir=wdir)
+        out.parse()
+    except Exception:  # noqa: BLE001 - the caller treats None as a failed run
+        return None
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -484,16 +510,14 @@ def _read_output(wdir: Path, base_name: str) -> Any:
 
 def read_rel_sp_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
     """Parse a finished scalar-relativistic single-point run into
-    :class:`OrcaRelSpinResult`."""
-    from delfin.orca_read import read_final_single_point_energy
-
+    :class:`OrcaRelSpinResult` (final energy via OPI's parsed output)."""
     out = _read_output(wdir, base_name)
     ok = terminated = out is not None and getattr(
         out, "terminated_normally", lambda: False
     )()
     energy = None
     if ok:
-        energy = read_final_single_point_energy(wdir, base_name)
+        energy = out.get_final_energy()
     return OrcaRelSpinResult(
         ok=ok,
         work_dir=wdir,
@@ -508,6 +532,7 @@ def read_rel_sp_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
 def build_zfs_input(
     wdir: Path,
     *,
+    functional: str = "",
     basis: str,
     elements: Sequence[str],
     coordinates: Sequence[Sequence[float]],
@@ -530,6 +555,7 @@ def build_zfs_input(
     """
     errors, _ = validate_method(
         job="zfs",
+        functional=functional,
         hamiltonian=hamiltonian,
         basis=basis,
         extra_keywords=extra_keywords,
@@ -559,13 +585,16 @@ def build_zfs_input(
     from opi.input.blocks.block_eprnmr import BlockEprnmr
     from opi.input.blocks.block_rel import BlockRel
     from opi.input.simple_keywords.basis_set import BasisSet
+    from opi.input.simple_keywords.dft import Dft
     from opi.input.simple_keywords.relativistic_correction import (
         RelativisticCorrection,
     )
     from opi.input import Input
 
     inp = Input()
-    keywords: list[Any] = [_lookup(BasisSet, basis)]
+    keywords: list[Any] = [
+        _lookup(Dft, functional), _lookup(BasisSet, basis)
+    ]
     if hamiltonian:
         keywords.append(_lookup(RelativisticCorrection, hamiltonian))
     for kw in extra_keywords or ():
@@ -633,6 +662,7 @@ def read_zfs_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
 def build_soc_tddft_input(
     wdir: Path,
     *,
+    functional: str = "",
     basis: str,
     nroots: int,
     elements: Sequence[str],
@@ -655,6 +685,7 @@ def build_soc_tddft_input(
     """
     errors, _ = validate_method(
         job="soc_tddft",
+        functional=functional,
         hamiltonian=hamiltonian,
         basis=basis,
         extra_keywords=extra_keywords,
@@ -683,16 +714,15 @@ def build_soc_tddft_input(
     from opi.input.blocks.block_tddft import BlockTddft
     from opi.input.blocks.block_rel import BlockRel
     from opi.input.simple_keywords.basis_set import BasisSet
+    from opi.input.simple_keywords.dft import Dft
     from opi.input.simple_keywords.relativistic_correction import (
         RelativisticCorrection,
     )
-    from opi.input.simple_keywords.task import Task
     from opi.input import Input
 
     inp = Input()
     keywords: list[Any] = [
-        _lookup(BasisSet, basis),
-        _lookup(Task, "TDDFT"),
+        _lookup(Dft, functional), _lookup(BasisSet, basis)
     ]
     if hamiltonian:
         keywords.append(_lookup(RelativisticCorrection, hamiltonian))
@@ -911,11 +941,14 @@ def _launch(wdir: Path, base_name: str) -> Optional[str]:
     inp = wdir / f"{base_name}.inp"
     out = wdir / f"{base_name}.out"
     try:
-        ok = run_orca(str(inp), str(out), working_dir=wdir)
+        run_orca(str(inp), str(out), working_dir=wdir)
     except Exception as exc:  # noqa: BLE001 - report the launch failure
         return f"failed to launch ORCA: {exc}"
-    if not ok:
-        return f"ORCA did not finish normally (see {out.name})"
+    # The runner's return value is ignored on purpose: a %eprnmr input goes
+    # through run_orca's automatic NMR-report path, which returns False when
+    # the run has no H shieldings to plot -- that says nothing about ORCA's
+    # own termination.  The readers gate on terminated_normally() from the
+    # parsed .out instead.
     return None
 
 
@@ -942,8 +975,6 @@ class OrcaRelSpinOpiAdapter(StepAdapter):
         the other kwargs go to the matching ``run_*`` function.  The numbers
         are returned in ``StepResult.data``; a FAILED result always says why.
         """
-        import time
-
         start = time.monotonic()
         wdir = Path(work_dir)
         kwargs.pop("_prev_artifacts", None)
