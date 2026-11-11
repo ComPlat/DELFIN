@@ -727,92 +727,311 @@ def watched_feed_html(feed: list[dict[str, Any]]) -> list[str]:
     return out
 
 
-def create_watch_tab(ctx: Any):
-    """The Swarm Watch tab: the overview table with live refresh (bounded
-    rate) and a click-to-view member feed, read-only.
+#: Rules of the agent tab's own stylesheets that give Swarm Watch the same
+#: look (chat bubbles, the composer and its round Send, the session list).
+_LOOK_KEYS = ("delfin-chat-msg", "delfin-chat-user", "delfin-chat-agent",
+              "delfin-chat-system", "delfin-agent-composer", "delfin-agent-send",
+              "delfin-agent-input", "delfin-sessions", "delfin-session-item",
+              "delfin-session-title", "delfin-session-path",
+              "delfin-session-heading", "delfin-session-head",
+              "delfin-session-list", "delfin-session-text",
+              "delfin-session-active")
 
-    Mirrors create_tab's throttled timer (one refresh per interval,
-    cooperative stop, no second scheduler loop). Observing never changes a
-    member session: everything rendered comes from observe's read-only API
-    and there is no script/approve/input control anywhere.
+
+def _strip_blocks(css: str) -> str:
+    """CSS without comments and without at-rule blocks (@media, @keyframes,
+    @supports), which a flat rule parser would cut in half."""
+    import re as _re
+    css = _re.sub(r"/\*.*?\*/", "", css, flags=_re.S)
+    out, i = [], 0
+    while i < len(css):
+        at = css.find("@", i)
+        if at < 0:
+            out.append(css[i:])
+            break
+        out.append(css[i:at])
+        brace = css.find("{", at)
+        semi = css.find(";", at)
+        if brace < 0 or (0 <= semi < brace):
+            i = (semi + 1) if semi >= 0 else len(css)
+            continue
+        depth, j = 0, brace
+        while j < len(css):
+            if css[j] == "{":
+                depth += 1
+            elif css[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        i = j + 1
+    return "".join(out)
+
+
+def agent_look_css() -> str:
+    """The agent tab's look for Swarm Watch, taken from its own stylesheets
+    (tab_agent._AGENT_CSS, agent_sessions._SIDEBAR_CSS) at import time, with
+    every class renamed into Swarm Watch's own namespace (``delfin-swv-``).
+
+    One source: a change to the agent tab's design reaches this tab too, so
+    no second, diverging Send button or bubble can grow here. Renamed
+    because the agent tab's page scripts find its controls by class across
+    the whole page (its Enter-to-send clicks the first
+    ``.delfin-agent-send-row button``) and must never find these.
+    """
+    import re as _re
+    try:
+        from delfin.dashboard import agent_sessions as _as
+        from delfin.dashboard import tab_agent as _ta
+        sources = [_ta._AGENT_CSS, _as._SIDEBAR_CSS]
+    except Exception:
+        return ""
+    rules = []
+    for src in sources:
+        body = src.replace("<style>", "").replace("</style>", "")
+        for sel, decl in _re.findall(r"([^{}]+)\{([^{}]*)\}", _strip_blocks(body)):
+            sel = " ".join(sel.split())
+            if not any(k in sel for k in _LOOK_KEYS):
+                continue
+            sel = sel.replace(".delfin-agent-root ", ".delfin-swv ")
+            sel = _re.sub(r"\.delfin-(agent|chat|session)", r".delfin-swv-\1", sel)
+            rules.append(f"{sel} {{{decl.strip()}}}")
+    return "<style>\n" + "\n".join(rules) + "\n" + _SWV_OWN_CSS + "\n</style>"
+
+
+#: What Swarm Watch adds around the borrowed look: the two columns, the
+#: scrolling chat, the header line.
+_SWV_OWN_CSS = """
+.delfin-swv-shell { width: 100%; align-items: flex-start; gap: 12px; }
+.delfin-swv-main { flex: 1 1 auto; min-width: 0; gap: 8px; }
+.delfin-swv-head { font-size: 13px; color: #334155; padding: 2px 4px; }
+.delfin-swv-head b { color: #0f172a; font-size: 14px; }
+.delfin-swv-chat { max-height: calc(100vh - 380px); min-height: 240px;
+    overflow-y: auto !important; padding: 8px; border: 1px solid #e5e7eb;
+    border-radius: 10px; background: #fafafa; }
+.delfin-swv-chat .widget-html-content { display: flex; flex-direction: column; }
+.delfin-swv-note { font-size: 11px; color: #64748b; }
+.delfin-swv-steps { font-size: 11px; color: #475569; }
+.delfin-swv-session-title.delfin-swv-needs::before { content: "";
+    display: inline-block; width: 7px; height: 7px; margin: 0 6px 1px 0;
+    border-radius: 50%; background: #f97316; vertical-align: middle; }
+"""
+
+#: Enter sends from the Swarm Watch box (Shift+Enter: a new line).
+_SWV_KEYS_JS = """
+(function () {
+    if (window.__delfinSwvKeys) return;
+    window.__delfinSwvKeys = true;
+    document.addEventListener('keydown', function (e) {
+        var t = e.target;
+        if (!t || t.tagName !== 'TEXTAREA' || !t.closest) return;
+        if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey) return;
+        var box = t.closest('.delfin-swv-agent-composer');
+        var send = box && box.querySelector('.delfin-swv-agent-send');
+        if (send) { e.preventDefault(); setTimeout(function () { send.click(); }, 80); }
+    }, true);
+})();
+"""
+
+
+def chat_bubbles_html(name: str, *, records: list[dict] | None = None,
+                      load: Any = None, last_n: int = 40) -> str:
+    """One session's saved conversation as the agent tab's bubbles
+    (renamed classes): the person's messages right, the agent's left with
+    its markdown, messages from sessions and the harness as system lines.
+    Escaped throughout (chat_markdown emits only its own markup)."""
+    from delfin.agent import session_store
+    from delfin.dashboard import chat_markdown
+    load = load or session_store.load_session
+    if records is None:
+        try:
+            from delfin.agent import session_presence
+            records = session_presence.open_sessions()
+        except Exception:
+            records = []
+    sid = next((str(r.get("session_id") or "") for r in records or []
+                if str(r.get("key") or r.get("name") or "") == name), "")
+    data = load(sid) if sid else None
+    msgs = [m for m in (data or {}).get("chat_messages") or [] if isinstance(m, dict)]
+    if not msgs:
+        return "<i>No saved conversation yet -- it is written at each turn's end.</i>"
+
+    def code(lang: str, src: str) -> str:
+        return "<pre><code>" + _html.escape(src) + "</code></pre>"
+
+    out = []
+    for m in msgs[-last_n:]:
+        role = str(m.get("role") or "")
+        text = str(m.get("content") or "")
+        if role == "assistant":
+            body = chat_markdown.render(text[:20000], code) or _html.escape(text[:2000])
+            out.append(f'<div class="delfin-swv-chat-msg delfin-swv-chat-agent">{body}</div>')
+        elif role == "user" and not m.get("_harness"):
+            out.append('<div class="delfin-swv-chat-msg delfin-swv-chat-user">'
+                       + _html.escape(text[:4000]) + "</div>")
+        else:
+            out.append('<div class="delfin-swv-chat-msg delfin-swv-chat-system">'
+                       + _html.escape(text[:600]) + ("…" if len(text) > 600 else "")
+                       + "</div>")
+    return "".join(out)
+
+
+def create_watch_tab(ctx: Any):
+    """Swarm Watch, laid out like the agent tab: the running sessions of
+    every node on the left, the picked one's conversation as the agent
+    tab's bubbles on the right, and the same composer below it (it sends a
+    message from the operator to the session's inbox, never as the user).
+    Read-only otherwise: no approval or stop control here (RX1/SV1).
+
+    With a roster or spec on the context, a table of its members follows
+    the conversation (the observe API, as before).
     """
     if not HAS_WIDGETS:
         raise ImportError("ipywidgets is required for the Swarm Watch tab.")
+    import time as _time
 
-    state: dict[str, Any] = {"_timer": None, "_stopped": False}
+    state: dict[str, Any] = {"_timer": None, "_stopped": False,
+                             "picked": "", "rows": [], "_list_at": 0.0,
+                             "_chat_at": 0.0}
 
+    try:
+        add_js = getattr(ctx, "add_init_js", None)
+        if callable(add_js):
+            add_js(_SWV_KEYS_JS)
+    except Exception:
+        pass
+
+    heading = widgets.HTML("Running sessions")
+    heading.add_class("delfin-swv-session-heading")
+    refresh_btn = widgets.Button(description="↻", tooltip="Read the sessions now",
+                                 layout=widgets.Layout(width="28px", height="26px"))
+    head = widgets.HBox([heading, refresh_btn])
+    head.add_class("delfin-swv-session-head")
+    list_box = widgets.VBox([])
+    list_box.add_class("delfin-swv-session-list")
+    count_html = widgets.HTML("")
+    count_html.add_class("delfin-swv-note")
+    sidebar = widgets.VBox([head, list_box, count_html])
+    sidebar.add_class("delfin-swv-sessions")
+
+    head_html = widgets.HTML("<i>Pick a session on the left.</i>")
+    head_html.add_class("delfin-swv-head")
+    chat_html = widgets.HTML("")
+    chat_html.add_class("delfin-swv-chat")
+    steps_html = widgets.HTML("")
+    steps_html.add_class("delfin-swv-steps")
+    msg_box = widgets.Textarea(
+        placeholder="Message to this session (Enter sends; it reads it as a "
+                    "message from the operator, not as the user)",
+        layout=widgets.Layout(width="100%"))
+    msg_box.add_class("delfin-swv-agent-input")
+    send_btn = widgets.Button(description="Send", tooltip="Send (Enter)",
+                              layout=widgets.Layout(width="34px", height="34px"))
+    send_btn.add_class("delfin-swv-agent-send")
+    send_row = widgets.HBox([send_btn])
+    send_row.add_class("delfin-swv-agent-send-row")
+    send_note = widgets.HTML("")
+    send_note.add_class("delfin-swv-note")
+    gap = widgets.HTML("")
+    gap.add_class("delfin-swv-agent-composer-gap")
+    bar = widgets.HBox([send_note, gap, send_row])
+    bar.add_class("delfin-swv-agent-composer-bar")
+    composer = widgets.VBox([msg_box, bar])
+    composer.add_class("delfin-swv-agent-composer")
     table_html = widgets.HTML("")
-    detail_html = widgets.HTML("")
-    status_html = widgets.HTML("")
-    feed_box = widgets.VBox([])
+    main = widgets.VBox([head_html, chat_html, steps_html, composer, table_html])
+    main.add_class("delfin-swv-main")
+    shell = widgets.HBox([sidebar, main])
+    shell.add_class("delfin-swv-shell")
+    root = widgets.VBox([widgets.HTML(agent_look_css()), shell])
+    root.add_class("delfin-swv")
 
-    def _source() -> Any:
-        spec_path = getattr(ctx, "swarm_spec_path", None)
-        if spec_path and str(spec_path):
-            return {"spec_packages": []}  # resolved per refresh below
-        roster = getattr(ctx, "roster_path", None)
-        return str(roster) if roster else None
+    def _pick(name: str) -> None:
+        state["picked"] = name
+        state["_chat_at"] = 0.0
+        _render_list()
+        _render_chat()
 
-    def _rows_html() -> list[str]:
-        # A roster file path is handed straight to the observe API; a spec
-        # path is loaded once and its packages dict passed through.
-        roster = _source()
-        if isinstance(roster, str) and roster:
-            return watched_rows_html(watch_overview(roster))
-        spec_path = getattr(ctx, "swarm_spec_path", None)
-        if spec_path and Path(spec_path).exists():
-            try:
-                spec = load_spec(Path(spec_path))
-            except Exception:
-                return []
-            return watched_rows_html(watch_overview(spec))
-        return []
+    def _render_list() -> None:
+        items = []
+        for row in state["rows"]:
+            name = row["name"]
+            title = widgets.Button(description=name,
+                                   tooltip=f"{name} on {row['host']}")
+            title.add_class("delfin-swv-session-title")
+            if row.get("approvals"):
+                title.add_class("delfin-swv-needs")
+            title.on_click(lambda _b, _n=name: _pick(_n))
+            path = widgets.HTML(_html.escape(
+                f"{row['host']} · {row['state'] or '?'} · {row['branch']}"))
+            path.add_class("delfin-swv-session-path")
+            text = widgets.VBox([title, path])
+            text.add_class("delfin-swv-session-text")
+            item = widgets.HBox([text])
+            item.add_class("delfin-swv-session-item")
+            if name == state["picked"]:
+                item.add_class("delfin-swv-session-active")
+            items.append(item)
+        list_box.children = tuple(items)
+        count_html.value = (f"{len(items)} running on "
+                            f"{len({r['host'] for r in state['rows']})} node(s)"
+                            if items else "No session runs.")
 
-    def _refresh() -> None:
-        try:
-            rows = _rows_html()
-            if rows:
-                header = ("<tr><td><b>member</b></td><td>pkg</td>"
-                          "<td>role</td><td>model</td><td>state</td>"
-                          "<td>last tool</td><td>commits</td>"
-                          "<td>approvals</td></tr>")
-                table_html.value = ("<table>" + header +
-                                    "".join(rows) + "</table>")
-            else:
-                # No roster or spec: every open session of this user, on
-                # every node (a wave in a SLURM job included).
-                import time as _time
-                if _time.time() - state.get("_running_at", 0.0) >= RUNNING_REFRESH_S:
-                    state["_running"] = running_rows_html(running_session_rows())
-                    state["_running_at"] = _time.time()
-                running = state.get("_running") or []
-                if running:
-                    table_html.value = (
-                        "<div><b>All running sessions</b> (every node; set a "
-                        "roster or spec to watch one swarm)</div><table>"
-                        + RUNNING_HEADER + "".join(running) + "</table>")
-                else:
-                    table_html.value = ("<em>No session runs. Set a swarm "
-                                        "spec or roster path to watch one "
-                                        "swarm.</em>")
-            status_html.value = ""
-        except Exception as exc:  # a broken source must not kill the tab
-            table_html.value = ""
-            status_html.value = (
-                f"<span style='color:#b91c1c'>{_html.escape(str(exc))}</span>")
-
-    def _show_member(name_obj) -> None:
-        # Click a member -> its live feed (read-only). The feed data comes
-        # from observe (the same API cmd_watch reads); no approve control.
-        name = str(getattr(name_obj, "description", name_obj))
-        feed = watch_feed(name, since=0)
-        entries = watched_feed_html(feed)
-        if not entries:
-            detail_html.value = f"<em>No recent steps for {_html.escape(name)}.</em>"
-            feed_box.children = ()
+    def _render_chat() -> None:
+        name = state["picked"]
+        if not name:
             return
-        detail_html.value = f"<b>{_html.escape(name)}</b> — recent steps:"
-        feed_box.children = tuple(widgets.HTML(e) for e in entries)
+        row = next((r for r in state["rows"] if r["name"] == name), None)
+        if row:
+            appr = (f" · <span style='color:#c2410c'>{row['approvals']} approval(s) open</span>"
+                    if row["approvals"] else "")
+            head_html.value = (f"<b>{_html.escape(name)}</b> · {_html.escape(row['host'])}"
+                               f" · {_html.escape(row['branch'])} · {_html.escape(row['model'])}"
+                               f" · {_html.escape(row['state'])}{appr}")
+        chat_html.value = chat_bubbles_html(name)
+        try:
+            steps = watch_feed(name, since=0) or []
+        except Exception:
+            steps = []
+        steps_html.value = ("<b>Latest steps</b><br>" + "<br>".join(
+            watched_feed_html(steps[-8:]))) if steps else ""
+        state["_chat_at"] = _time.time()
+
+    def _send(_b=None) -> None:
+        said = send_to_session(state["picked"], msg_box.value)
+        send_note.value = _html.escape(said)
+        if said.startswith("Sent"):
+            msg_box.value = ""
+
+    send_btn.on_click(_send)
+
+    def _refresh(force: bool = False) -> None:
+        now = _time.time()
+        try:
+            if force or now - state["_list_at"] >= RUNNING_REFRESH_S:
+                state["rows"] = running_session_rows()
+                state["_list_at"] = now
+                if not state["picked"] and state["rows"]:
+                    state["picked"] = state["rows"][0]["name"]
+                _render_list()
+                _render_chat()
+            elif state["picked"] and now - state["_chat_at"] >= 10.0:
+                _render_chat()
+            roster = getattr(ctx, "roster_path", None)
+            spec_path = getattr(ctx, "swarm_spec_path", None)
+            rows = []
+            if roster:
+                rows = watched_rows_html(watch_overview(str(roster)))
+            elif spec_path and Path(spec_path).exists():
+                rows = watched_rows_html(watch_overview(load_spec(Path(spec_path))))
+            table_html.value = ("<table><tr><td><b>member</b></td><td>pkg</td><td>role</td>"
+                                "<td>model</td><td>state</td><td>last tool</td>"
+                                "<td>commits</td><td>approvals</td></tr>"
+                                + "".join(rows) + "</table>") if rows else ""
+        except Exception as exc:  # a broken source must not kill the tab
+            send_note.value = f"<span style='color:#b91c1c'>{_html.escape(str(exc))}</span>"
+
+    refresh_btn.on_click(lambda _b: _refresh(force=True))
 
     def _tick() -> None:
         if state["_stopped"]:
@@ -823,70 +1042,9 @@ def create_watch_tab(ctx: Any):
         state["_timer"] = timer
         timer.start()
 
-    refresh_btn = widgets.Button(description="Refresh", icon="refresh",
-                                 button_style="info")
-    refresh_btn.on_click(lambda _b: (state.__setitem__("_running_at", 0.0), _refresh()))
-
-    click_row = widgets.HTML(
-        "<em>Pick a session to look into it, or write to it.</em>")
-
-    # Look into one session and write to it (any node: both go through the
-    # shared HOME -- its saved conversation, its steps, its inbox).
-    pick = widgets.Dropdown(options=[], description="Session",
-                            layout=widgets.Layout(width="320px"))
-    look_btn = widgets.Button(description="Look in", icon="eye")
-    view_html = widgets.HTML("")
-    msg_box = widgets.Textarea(
-        placeholder="Message to the session (it reads it as a message from "
-                    "the operator, not as the user)",
-        layout=widgets.Layout(width="100%", height="70px"))
-    send_btn = widgets.Button(description="Send", icon="paper-plane",
-                              button_style="primary")
-    send_note = widgets.HTML("")
-
-    def _names() -> list[str]:
-        try:
-            return [r["name"] for r in running_session_rows() if r.get("name")]
-        except Exception:
-            return []
-
-    def _fill_pick() -> None:
-        names = _names()
-        keep = pick.value
-        pick.options = names
-        if keep in names:
-            pick.value = keep
-
-    def _look(_b=None) -> None:
-        if not pick.value:
-            _fill_pick()
-        if pick.value:
-            view_html.value = session_view_html(str(pick.value))
-
-    def _send(_b=None) -> None:
-        send_note.value = _html.escape(
-            send_to_session(str(pick.value or ""), msg_box.value))
-        if send_note.value.startswith("Sent"):
-            msg_box.value = ""
-
-    look_btn.on_click(_look)
-    send_btn.on_click(_send)
-    pick.observe(lambda ch: _look() if ch.get("new") else None, names="value")
-    _fill_pick()
-
-    return widgets.VBox([
-        widgets.HTML("<h3>Swarm Watch</h3>"),
-        widgets.HBox([refresh_btn, status_html]),
-        table_html,
-        click_row,
-        widgets.HBox([pick, look_btn]),
-        widgets.HBox([msg_box, send_btn],
-                     layout=widgets.Layout(width="100%")),
-        send_note,
-        view_html,
-        detail_html,
-        feed_box,
-    ])
+    _refresh(force=True)
+    _tick()
+    return root
 
 
 # Self-register AFTER create_tab is defined (module end, the tab_review.py
