@@ -884,14 +884,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     _rebuild_dashboard_tabs()
     tabs = ctx.tabs_widget
-    # The tabs not built at start are built right after the page is out,
-    # one per idle moment: the DELFIN Agent first (it is what most readers
-    # open next, and it builds the tabs it drives), then the rest in bar
-    # order -- so a click finds its tab ready instead of building it.
-    tab_schedule.warm_up(
-        ctx, _build_tab_now,
-        order=[s for s in ctx.tab_specs or [] if s.get('id') == 'agent']
-        + _sorted_visible_specs())
+    # The DELFIN Agent tab is built right after the page is out, in an idle
+    # moment (with the tabs it drives): it is the one opened next, and its
+    # build is the slow one. Every other tab stays lazy -- built on its
+    # first open, never paid for when nobody opens it (a login node is
+    # shared: no kernel memory or CPU for tabs nobody looks at).
+    # DELFIN_DASHBOARD_WARM=all warms the whole bar.
+    import os as _os_warm
+    _warm = [s for s in ctx.tab_specs or [] if s.get('id') == 'agent']
+    if str(_os_warm.environ.get('DELFIN_DASHBOARD_WARM', '')).strip().lower() == 'all':
+        _warm += _sorted_visible_specs()
+    tab_schedule.warm_up(ctx, _build_tab_now, order=_warm)
 
     # -- header bar --------------------------------------------------------
     # One row: the branch switcher, Test, the running previews, Pull, More
