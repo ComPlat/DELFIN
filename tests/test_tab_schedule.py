@@ -185,11 +185,19 @@ def test_every_visible_tab_is_built_at_start(tmp_path):
         "    child = bar.children[bar.titles.index(title)]\n"
         "    assert getattr(child, 'children', None), ('not built at start', title)\n"
     )
-    # Run in tmp_path: building every tab writes what the tabs write in the
-    # working directory (the Literature tab's folder), not into the checkout.
-    done = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                          text=True, env=child_env(tmp_path), timeout=600,
-                          cwd=tmp_path)
+    # Building every tab builds the Literature tab, which keeps its folder
+    # in the checkout (literature/, git-ignored). The run must leave the
+    # checkout as it found it: a folder this test made goes again.
+    import shutil
+    from pathlib import Path
+    lit = Path(__file__).resolve().parent.parent / "literature"
+    had_lit = lit.exists()
+    try:
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, env=child_env(tmp_path), timeout=600)
+    finally:
+        if not had_lit and lit.is_dir():
+            shutil.rmtree(lit, ignore_errors=True)
     assert done.returncode == 0, done.stderr[-1500:]
 
 
