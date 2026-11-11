@@ -89,8 +89,15 @@ def test_launcher_only_flags_stay_on_the_login_node():
     assert out == ["--dark", "--resume", "latest"]
 
 
-def _with_jobs(monkeypatch, live):
-    monkeypatch.setattr(dashboard_job, "_squeue", lambda runner=None: live)
+def _with_jobs(monkeypatch, live, fresh=True):
+    monkeypatch.setattr(dashboard_job, "_squeue", lambda runner=None: (live, fresh))
+
+
+def _age(job, seconds):
+    p = dashboard_job.state_dir() / f"{job}.json"
+    rec = json.loads(p.read_text())
+    rec["submitted_at"] -= seconds
+    p.write_text(json.dumps(rec))
 
 
 def test_an_ended_job_loses_its_token(monkeypatch, tmp_path):
@@ -98,6 +105,7 @@ def test_an_ended_job_loses_its_token(monkeypatch, tmp_path):
                          cwd=str(tmp_path))
     dashboard_job.submit([], keep=False, port=8866, run=_fake_sbatch({}, "2"),
                          cwd=str(tmp_path))
+    _age("1", 600)
     _with_jobs(monkeypatch, {"2": ("RUNNING", "n1", "5:00:00")})
     rows = dashboard_job.running()
     assert [r["job"] for r in rows] == ["2"]
@@ -166,3 +174,19 @@ def test_keep_inside_a_job_arms_the_sessions_without_tmux(monkeypatch):
         cli_voila.main(["--keep"])
     assert os.environ.get("DELFIN_KEEP_SESSIONS") == "1"
     monkeypatch.delenv("DELFIN_KEEP_SESSIONS", raising=False)
+
+
+def test_a_cached_answer_from_before_the_submit_ends_nothing(monkeypatch, tmp_path):
+    # Found in the first real run: the throttle re-served the squeue answer
+    # taken before sbatch, the new job was "ended" and its token dropped.
+    dashboard_job.submit([], keep=True, port=8866, run=_fake_sbatch({}, "5"),
+                         cwd=str(tmp_path))
+    _with_jobs(monkeypatch, {}, fresh=True)          # squeue lags the submit
+    assert [r["job"] for r in dashboard_job.running()] == ["5"]
+    _age("5", 600)
+    _with_jobs(monkeypatch, {}, fresh=False)         # throttled, cached
+    assert [r["job"] for r in dashboard_job.running()] == ["5"]
+    assert dashboard_job.token_path("5").exists()
+    _with_jobs(monkeypatch, {}, fresh=True)          # really gone
+    assert dashboard_job.running() == []
+    assert not dashboard_job.token_path("5").exists()

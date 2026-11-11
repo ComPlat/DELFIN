@@ -156,13 +156,21 @@ def _forget(job: str) -> None:
 # Scheduler
 # --------------------------------------------------------------------------
 
-def _squeue(runner: Callable | None = None) -> dict:
-    """{job id: (state, node, time left)} of the user's dashboard jobs."""
+#: A job the scheduler does not list yet within this long after its submit
+#: is still starting, not gone (squeue lags behind sbatch).
+SUBMIT_GRACE_S = 120.0
+
+
+def _squeue(runner: Callable | None = None) -> tuple:
+    """({job id: (state, node, time left)}, fresh) for the user's dashboard
+    jobs. ``fresh`` is False when the throttle answered from its cache: an
+    answer from before a submit must never declare that job ended."""
     from delfin import scheduler_client
 
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
     argv = ["squeue", "-h", "-u", user, "-n", JOB_NAME, "-o", "%i|%T|%N|%L"]
     out = scheduler_client.query("squeue", argv, runner=runner)
+    fresh = out is not scheduler_client.THROTTLED and out is not None
     if out is scheduler_client.THROTTLED:
         out = scheduler_client.default_client.last_result("squeue", argv)
     jobs = {}
@@ -170,18 +178,25 @@ def _squeue(runner: Callable | None = None) -> dict:
         parts = line.strip().split("|")
         if len(parts) == 4 and parts[0]:
             jobs[parts[0]] = (parts[1], parts[2], parts[3])
-    return jobs
+    return jobs, fresh
 
 
 def running(runner: Callable | None = None) -> list:
     """Records of dashboard jobs the scheduler still knows, newest last,
-    each with ``state``, ``node`` and ``left`` filled in."""
-    live = _squeue(runner)
+    each with ``state``, ``node`` and ``left`` filled in. A job is only
+    dropped (and its token with it) on a fresh answer that does not list
+    it, and never within :data:`SUBMIT_GRACE_S` of its submit."""
+    live, fresh = _squeue(runner)
     out = []
+    now = time.time()
     for r in records():
         job = str(r["job"])
         if job in live:
             r["state"], r["node"], r["left"] = live[job]
+            out.append(r)
+        elif (not fresh
+              or now - float(r.get("submitted_at") or 0) < SUBMIT_GRACE_S):
+            r["state"], r["node"], r["left"] = "UNKNOWN", "", "-"
             out.append(r)
         else:
             _forget(job)
@@ -333,7 +348,7 @@ def wait_until_served(rec: dict, *, poll: float = 5.0, limit: float = 7200.0,
             _say(f"\nDashboard job {rec['job']} has ended -- see "
                  f"{rec.get('log')}")
             return None
-        if cur["state"] != shown:
+        if cur["state"] != shown and cur["state"] != "UNKNOWN":
             _say(f"  job {cur['job']}: {cur['state'].lower()}"
                  + (f" on {cur['node']}" if cur["state"] == "RUNNING" else
                     " (waiting for a free node)"))
