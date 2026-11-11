@@ -8554,6 +8554,21 @@ class AgentEngine:
         # session" is the user's call, not ours -- asking once too often is
         # the safe side of that question.
         out["refusals"] = self._export_refusals()
+        # The system prompt as the model was given it, so a resume in a new
+        # process sends the same bytes and the endpoint's cache of the whole
+        # history stays warm; what changed since goes into the next turn's
+        # tail (_held_system_prompt). Not a declared field: a session saved
+        # before it existed has lost nothing a resume must report.
+        held = getattr(self, "_held_prompt", None)
+        if isinstance(held, dict) and held.get("prompt"):
+            # Saved through save_session's **extra (persisted verbatim).
+            out["held_system_prompt"] = dict(
+                role=str(held.get("role") or ""),
+                prompt=str(held["prompt"]),
+                sections={str(k): str(v) for k, v in
+                          (held.get("sections") or {}).items()},
+                carriers=[str(c) for c in held.get("carriers") or ()],
+            )
         return out
 
     def _export_refusals(self) -> dict:
@@ -8798,6 +8813,23 @@ class AgentEngine:
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")
+        # The held system prompt (export_state): kept only when well formed;
+        # _held_system_prompt still rebuilds it when the role changed or a
+        # carrier of an earlier update is gone from the restored history.
+        _held = data.get("held_system_prompt")
+        try:
+            if isinstance(_held, dict) and str(_held.get("prompt") or ""):
+                self._held_prompt = {
+                    "role": str(_held.get("role") or ""),
+                    "prompt": str(_held["prompt"]),
+                    "sections": {str(k): str(v) for k, v in
+                                 dict(_held.get("sections") or {}).items()},
+                    "carriers": [str(c) for c in _held.get("carriers") or ()],
+                }
+            else:
+                self._held_prompt = None
+        except Exception:
+            self._held_prompt = None
         ev = self._restore_evidence(data)
         # The denials come back onto the permission object, not onto the
         # engine: that is where every gate reads them. The object is
