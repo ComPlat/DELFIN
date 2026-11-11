@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — rxembed, Molassembler and MetalloGen as constructors
+
+- **Three more SMILES constructors beside Architector, molSimplify and epic-MACE**:
+  RXEMBED / MOLASSEMBLER / METALLOGEN buttons in the structure editor (Submit Job and
+  ORCA Builder), `smiles_converter=RXEMBED|MOLASSEMBLER|METALLOGEN` in CONTROL, and
+  `delfin cluster --tool rxembed|molassembler|metallogen`, all through one build
+  (`delfin/cluster_bench/tool_workers/smiles_tools.py`). Each runs in an environment of
+  its own (`python -m delfin.installer --install rxembed|molassembler|metallogen`;
+  `DELFIN_<TOOL>_PYTHON`); a missing tool is an error naming the installer.
+- rxembed: `rx.embed(rx.isomers(smiles))` as shipped (pinned commit 9c0ba5a6; Python
+  >= 3.12, RDKit >= 2026.9.1). Molassembler 3.0.1: every stereoisomer, ten seeded
+  distance-geometry conformers each; a dative SMILES is refused, not rewritten.
+  MetalloGen: only its ORCA calculator (GFN2-xTB through ORCA), never Gaussian; one
+  m-SMILES per distinct donor arrangement. MANTA is unchanged.
+
 ### Added — open ports are on screen and can be closed; a server never runs in the foreground
 
 - **The ports a background job really listens on** (read from /proc for the

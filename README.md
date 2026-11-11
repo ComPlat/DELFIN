@@ -403,7 +403,7 @@ The DOCX and JSON reports are written at the end of every main run; a failure th
 Which builder runs is decided by one CONTROL key, and a SMILES run must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]
 ```
 
 | Value | What it does | Best for |
@@ -414,12 +414,17 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 | `ARCHITECTOR` | [architector](https://github.com/lanl/Architector) automated 3D generation; needs a metal-containing SMILES. | Metal complexes, instant preview |
 | `MOLSIMPLIFY` | [molSimplify](https://molsimplify.mit.edu/), one structure per geometry of the coordination number; needs a metal-containing SMILES. | Metal complexes |
 | `MACE` | [epic-MACE](https://github.com/EPiCs-group/epic-mace) (Chernyshov & Pidko, JCTC 2024): every stereomer of the geometries that fit the donor sites, ten conformers each; runs in its own Python 3.7 environment. | Metal complexes, hapto ligands |
+| `RXEMBED` | [rxembed](https://github.com/aligfellow/rxembed) (MIT): `rx.embed(rx.isomers(smiles))` -- every stereoisomer and coordination arrangement on its default polyhedron of the coordination number, its default conformers; runs in its own Python 3.12 / RDKit 2026.9 environment. | Organic molecules and metal complexes |
+| `MOLASSEMBLER` | [Molassembler](https://github.com/qcscine/molassembler) (Sobez & Reiher, JCIM 2020; BSD-3): every stereoisomer, ten seeded distance-geometry conformers each; reads charge-separated SMILES only (no `->`); runs in its own environment. | Inorganic stereoisomers |
+| `METALLOGEN` | [MetalloGen](https://github.com/kyunghoonlee777/MetalloGen) (Lee et al., JCIM 2025; BSD-3): every arrangement of the donors on the usual geometries of the site count, generated and relaxed with GFN2-xTB through ORCA; needs ORCA; runs in its own environment. | Metal complexes, xTB-relaxed |
+
+rxembed, Molassembler and MetalloGen are installed like epic-MACE, each into an environment of its own under `~/.delfin/ai_tools/.mamba_env/<name>`: `python -m delfin.installer --install rxembed` (pinned GitHub commit 9c0ba5a6, version 0.2.0; it needs Python >= 3.12 and RDKit >= 2026.9.1, newer than DELFIN's own), `--install molassembler` (scine-molassembler 3.0.1) and `--install metallogen` (pinned GitHub commit fa26e2ad); `DELFIN_RXEMBED_PYTHON`, `DELFIN_MOLASSEMBLER_PYTHON` and `DELFIN_METALLOGEN_PYTHON` point to another interpreter. rxembed and Molassembler take the SMILES as written; Molassembler's SMILES reader does not parse dative bonds, so `N->[Pt](<-N)(Cl)Cl` is refused and `[NH3+][Pt-2]([NH3+])(Cl)Cl` builds. MetalloGen's default calculator is xTB through Gaussian; DELFIN uses only its ORCA calculator (GFN2-xTB through ORCA's `otool_xtb`) and never Gaussian, so it needs ORCA. MetalloGen builds the one arrangement its m-SMILES writes; DELFIN writes one m-SMILES per distinct arrangement of the donor sites (proper rotations identify arrangements, mirror images are kept, donors of one ligand at most four bonds apart are never trans) on the usual polyhedra of the site count (SP + TET for 4, TBP + SPY for 5, OH for 6, ...), and every frame carries its GFN2-xTB energy.
 
 epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-group/epic-mace](https://github.com/EPiCs-group/epic-mace), GPL-3.0) needs Python 3.7 and RDKit 2020.09, so it is never installed beside DELFIN: `python -m delfin.installer --install epic-mace` (or `install.sh --only epic-mace`, or the Install button in Settings) builds an environment of its own with micromamba under `~/.delfin/ai_tools/.mamba_env/epic_mace` (from the pinned GitHub commit efb5778e, which adds hapto ligands and the TET/SPY/TBP/SAN geometries to the octahedron and square of the PyPI release), and DELFIN calls it there as an external program; `DELFIN_MACE_PYTHON` points it to another interpreter. The geometry follows from the number of donor sites (a hapto ligand is one site): OH for 6, SP + TET for 4, SPY + TBP for 5, SAN for two hapto ligands. Every stereomer (enantiomers kept) gets ten conformers; MACE has no random seed, so two builds can differ.
 
 In the Submit tab the same choice appears as the converter dropdown, next to `BUILD COMPLEX` (stepwise assembly using ORCA's `%DOCKER`, submitted as a job) and the `CONVERT SMILES`, `QUICK CONVERT SMILES` and `CONVERT SMILES + UFF` buttons of the structure editor.
 
-For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousands -- `delfin cluster` builds with MANTA, Architector, molSimplify or epic-MACE as a sharded, resumable Slurm array (or shard by shard on a workstation) and merges the result into one multi-frame xyz archive, with code and environment recorded for reproduction: see [docs/CONSTRUCTION_BATCH.md](docs/CONSTRUCTION_BATCH.md).
+For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousands -- `delfin cluster` builds with MANTA, Architector, molSimplify, epic-MACE, rxembed, Molassembler or MetalloGen as a sharded, resumable Slurm array (or shard by shard on a workstation) and merges the result into one multi-frame xyz archive, with code and environment recorded for reproduction: see [docs/CONSTRUCTION_BATCH.md](docs/CONSTRUCTION_BATCH.md).
 
 ### MANTA
 
@@ -743,7 +748,7 @@ delfin/
   # ── Tool integrations ──
   tools/                   # step and pipeline system, 25 adapters, mcp_server.py
   mlp_tools/               # ML potentials (ANI-2x, MACE, CHGNet, M3GNet, …)
-  ai_tools/                # AI/ML tool registry (21 tools across 9 categories)
+  ai_tools/                # AI/ML tool registry (25 tools across 9 categories)
   analysis_tools/          # cclib, Packmol, Multiwfn, CENSO, morfeus wrappers
   csp_tools/               # crystal structure generation (Genarris)
   qm_tools/                # external QM binary management
@@ -893,10 +898,13 @@ Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **
 [DeepChem](https://deepchem.io/),
 [ADMETlab](https://admetlab3.scbdd.com/)
 
-**AI/ML — Metal Complex ML (3):**
+**AI/ML — Metal Complex ML (6):**
 [molSimplify](https://molsimplify.mit.edu/),
 [architector](https://github.com/lanl/Architector),
-[epic-MACE](https://github.com/EPiCs-group/epic-mace)
+[epic-MACE](https://github.com/EPiCs-group/epic-mace),
+[rxembed](https://github.com/aligfellow/rxembed),
+[Molassembler](https://github.com/qcscine/molassembler),
+[MetalloGen](https://github.com/kyunghoonlee777/MetalloGen)
 
 **Analysis / Post-Processing (15):**
 [cclib](https://cclib.github.io/),
