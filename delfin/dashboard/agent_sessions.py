@@ -260,7 +260,14 @@ _SIDEBAR_CSS = """<style>
 .delfin-path-suggest { max-height: 300px; }
 .delfin-path-option:hover, .delfin-path-option.delfin-path-active {
     background: #dbeafe !important; color: #0f172a; }
-.delfin-session-rename-input { width: 100% !important; }
+/* Rename in place: the field takes the name's place and size. */
+.delfin-session-rename { width: 100%; margin: 0; }
+.delfin-session-rename-input { width: 100% !important; margin: 0 !important; }
+.delfin-session-rename-input input { height: 22px !important; padding: 0 6px;
+    font-size: 13px; font-weight: 500; color: #0f172a; border: 1px solid #93c5fd;
+    border-radius: 5px; box-shadow: 0 0 0 2px rgba(147, 197, 253, 0.35);
+    background: #ffffff; outline: none; }
+.delfin-session-item { overflow: hidden; }
 /* Suggestions above the message box (_COMPLETE_JS). */
 .delfin-complete-pop { position: fixed; z-index: 10000; max-height: 260px;
     overflow-y: auto; background: #ffffff; border: 1px solid #e5e7eb;
@@ -501,6 +508,24 @@ _RENAME_KEYS_JS = """\
         var box = t.closest('.delfin-live-rename');
         var cancel = box && box.querySelector('.delfin-live-rename-cancel');
         if (cancel) { e.preventDefault(); e.stopPropagation(); cancel.click(); }
+    }, true);
+    function focusField(item) {
+        var tries = 0;
+        (function go() {
+            var input = item && item.querySelector('.delfin-session-rename-input input');
+            if (input && input.offsetParent) { input.focus(); input.select(); return; }
+            if (tries++ < 20) setTimeout(go, 50);
+        })();
+    }
+    document.addEventListener('dblclick', function (e) {
+        var title = e.target && e.target.closest && e.target.closest('.delfin-session-title');
+        var item = title && title.closest('.delfin-session-item');
+        var pencil = item && item.querySelector('.delfin-session-rename-btn');
+        if (pencil) { e.preventDefault(); pencil.click(); focusField(item); }
+    }, true);
+    document.addEventListener('click', function (e) {
+        var pencil = e.target && e.target.closest && e.target.closest('.delfin-session-rename-btn');
+        if (pencil) focusField(pencil.closest('.delfin-session-item'));
     }, true);
 })();
 """
@@ -2383,48 +2408,59 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 "delfin-session-merge")
             merge_btn.on_click(
                 lambda _b, _where=where: _merge_back(_where))
-        # Rename in place: the pencil opens a box over the name; Enter or
-        # Save keeps it, Esc or Cancel leaves it (the running rows do the
-        # same, so both lists read alike).
+        # Rename in place, as in a file manager or an editor's tab: a
+        # double click on the name or the pencil turns the name into a text
+        # field of the same size with the text selected; Enter or a click
+        # elsewhere keeps it, Esc leaves it. No Save/Cancel buttons -- in
+        # the narrow column they only made the row scroll.
         pencil = _classed(widgets.Button(
-            description="✎", tooltip="Rename (Enter saves, Esc cancels)"),
+            description="✎", tooltip="Rename (double click the name; Enter keeps, Esc leaves)"),
             "delfin-session-close")
         pencil.add_class("delfin-session-rename-btn")
         name_edit = widgets.Text(continuous_update=False,
                                  placeholder="Name (empty: its first message)")
         name_edit.add_class("delfin-session-rename-input")
-        name_save = widgets.Button(description="Save")
-        name_cancel = _classed(widgets.Button(description="Cancel"),
-                               "delfin-live-rename-cancel")
+        # Esc clicks this (the page script); it is never shown.
+        name_cancel = _classed(widgets.Button(
+            description="", layout=widgets.Layout(display="none")),
+            "delfin-live-rename-cancel")
         rename_box = _classed(widgets.HBox(
-            [name_edit, name_save, name_cancel],
-            layout=widgets.Layout(display="none")), "delfin-running-rename")
+            [name_edit, name_cancel],
+            layout=widgets.Layout(display="none")), "delfin-session-rename")
         rename_box.add_class("delfin-live-rename")
         row = _classed(widgets.HBox([
-            _classed(widgets.VBox([title_btn, info, rename_box]),
+            _classed(widgets.VBox([title_btn, rename_box, info]),
                      "delfin-session-text"),
             *([merge_btn] if merge_btn else []), pencil, close_btn]),
             "delfin-session-item")
         rec = {"key": key, "workspace": where, "tab": tab, "refs": refs or {},
                "ctx": session_ctx, "title_btn": title_btn, "info": info,
                "row": row, "merge_btn": merge_btn}
+        editing = {"on": False}
 
         def _open_rename(_b=None):
+            editing["on"] = True
             name_edit.value = title_btn.description \
                 if title_btn.description != "New session" else ""
+            title_btn.layout.display = "none"
             rename_box.layout.display = ""
 
         def _close_rename(_b=None):
+            editing["on"] = False
             rename_box.layout.display = "none"
+            title_btn.layout.display = ""
 
-        def _save_rename(_b=None, _key=key):
+        def _keep_name(change=None, _key=key):
+            # continuous_update=False: the value arrives on Enter or blur.
+            if not editing["on"]:
+                return
             rename_session(_key, name_edit.value)
             _close_rename()
 
         pencil.on_click(_open_rename)
-        name_save.on_click(_save_rename)
         name_cancel.on_click(_close_rename)
-        name_edit.on_submit(_save_rename)
+        name_edit.observe(_keep_name, names="value")
+        name_edit.on_submit(_keep_name)
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
         session_ctx.agent_status_html.observe(
