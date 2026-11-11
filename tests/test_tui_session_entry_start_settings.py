@@ -46,7 +46,11 @@ def test_a_bare_resume_opens_the_picker_and_resumes_nothing(tmp_path):
 
 
 def test_the_marker_is_the_window_s_own():
-    source = (REPO / "tui" / "src" / "entry.ts").read_text(encoding="utf-8")
+    entry_ts = REPO / "tui" / "src" / "entry.ts"
+    if not (REPO / "tui").is_dir():
+        # A copy of the Python side only (test-on-slurm): CI has the window.
+        pytest.skip("no tui/ in this copy of the repository")
+    source = entry_ts.read_text(encoding="utf-8")
     m = re.search(r'export const RESUME_PICK = "([^"]+)"', source)
     assert m, "entry.ts names RESUME_PICK"
     assert m.group(1) == cli_service.RESUME_PICK
