@@ -265,9 +265,10 @@ def test_without_slurm_a_server_is_a_workstation(monkeypatch, tmp_path):
 
 def test_the_person_can_allow_more_sessions_on_a_login_node():
     from delfin.dashboard import agent_sessions as S
-    assert S.login_node_sessions({}) == 1
+    assert S.login_node_sessions({}) == S._MAX_OPEN      # several, as before
+    assert S.login_node_sessions({"hpc": {"login_node_sessions": 2}}) == 2
     assert S.login_node_sessions({"hpc": {"login_node_sessions": 6}}) == 6
     assert S.login_node_sessions({"hpc": {"login_node_sessions": 99}}) == S._MAX_OPEN
-    assert S.login_node_sessions({"hpc": {"login_node_sessions": "x"}}) == 1
+    assert S.login_node_sessions({"hpc": {"login_node_sessions": "x"}}) == S._MAX_OPEN
     assert S.login_node_refusal(5, kind="login_node", on_host=5, limit=6) == ""
     assert S.login_node_refusal(6, kind="login_node", on_host=6, limit=6)

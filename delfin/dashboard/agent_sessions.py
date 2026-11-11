@@ -27,16 +27,17 @@ _OPEN_SESSIONS_PATH = Path.home() / ".delfin" / "agent_open_sessions.json"
 # Each open session is a full agent tab with its own engine and timers.
 _MAX_OPEN = 8
 
-#: Agent sessions a dashboard on a cluster login node may run (issue #640)
-#: unless the user setting ``hpc.login_node_sessions`` names another number:
+#: Agent sessions a dashboard on a cluster login node may run (issue #640):
+#: as many as the tab holds (the person, 11.11.: several sessions as
+#: before), unless the user setting ``hpc.login_node_sessions`` names fewer:
 #: the login node is shared; its sessions' tests and builds go to SLURM
 #: either way (calc_policy.login_node_heavy), and further sessions run on a
 #: compute node (``delfin-voila --job``, or a swarm).
-LOGIN_NODE_SESSIONS = 1
+LOGIN_NODE_SESSIONS = _MAX_OPEN
 
 
 def login_node_sessions(settings: Optional[dict] = None) -> int:
-    """The limit: ``hpc.login_node_sessions`` (1.._MAX_OPEN), else 1."""
+    """The limit: ``hpc.login_node_sessions`` (1.._MAX_OPEN), else _MAX_OPEN."""
     if settings is None:
         try:
             from delfin.hpc_guard import _read_user_settings
