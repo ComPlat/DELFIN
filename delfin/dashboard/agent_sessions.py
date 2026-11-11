@@ -2451,16 +2451,27 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             title_btn.layout.display = ""
 
         def _keep_name(change=None, _key=key):
-            # continuous_update=False: the value arrives on Enter or blur.
+            # The typed name arrives as the value (continuous_update=False:
+            # on Enter or blur) -- AFTER the Enter event, so the name is
+            # kept from the value, never from the submit.
             if not editing["on"]:
                 return
             rename_session(_key, name_edit.value)
             _close_rename()
 
+        def _enter_pressed(_w=None):
+            # Enter with the name unchanged brings no value: close then.
+            def _late():
+                if editing["on"]:
+                    _keep_name()
+            t = threading.Timer(0.6, _late)
+            t.daemon = True
+            t.start()
+
         pencil.on_click(_open_rename)
         name_cancel.on_click(_close_rename)
         name_edit.observe(_keep_name, names="value")
-        name_edit.on_submit(_keep_name)
+        name_edit.on_submit(_enter_pressed)
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
         session_ctx.agent_status_html.observe(
