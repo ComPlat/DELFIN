@@ -794,7 +794,10 @@ def agent_look_css() -> str:
             if not any(k in sel for k in _LOOK_KEYS):
                 continue
             sel = sel.replace(".delfin-agent-root ", ".delfin-swv ")
-            sel = _re.sub(r"\.delfin-(agent|chat|session)", r".delfin-swv-\1", sel)
+            # The bubbles keep the agent tab's own classes, so a message
+            # looks exactly the same here; only controls are renamed (the
+            # agent tab's scripts find ITS composer and Send by class).
+            sel = _re.sub(r"\.delfin-(agent|session)", r".delfin-swv-\1", sel)
             rules.append(f"{sel} {{{decl.strip()}}}")
     return "<style>\n" + "\n".join(rules) + "\n" + _SWV_OWN_CSS + "\n</style>"
 
@@ -807,9 +810,12 @@ _SWV_OWN_CSS = """
 .delfin-swv-head { font-size: 13px; color: #334155; padding: 2px 4px; }
 .delfin-swv-head b { color: #0f172a; font-size: 14px; }
 .delfin-swv-chat { max-height: calc(100vh - 380px); min-height: 240px;
-    overflow-y: auto !important; padding: 8px; border: 1px solid #e5e7eb;
-    border-radius: 10px; background: #fafafa; }
-.delfin-swv-chat .widget-html-content { display: flex; flex-direction: column; }
+    overflow-y: auto !important; padding: 12px 16px; border: 1px solid #e5e7eb;
+    border-radius: 12px; background: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; }
+.delfin-swv-chat .widget-html-content { display: flex; flex-direction: column;
+    line-height: 1.5; }
 .delfin-swv-note { font-size: 11px; color: #64748b; }
 .delfin-swv-steps { font-size: 11px; color: #475569; }
 .delfin-swv-session-title.delfin-swv-needs::before { content: "";
@@ -856,7 +862,20 @@ def chat_bubbles_html(name: str, *, records: list[dict] | None = None,
     if not msgs:
         return "<i>No saved conversation yet -- it is written at each turn's end.</i>"
 
+    try:
+        from delfin.dashboard.tab_agent import _code_block_html as _agent_code
+    except Exception:
+        _agent_code = None
+    counter = {"n": 0}
+
     def code(lang: str, src: str) -> str:
+        # The agent tab's own block: highlighted, with its copy button.
+        counter["n"] += 1
+        if _agent_code is not None:
+            try:
+                return _agent_code(lang, src, counter["n"])
+            except Exception:
+                pass
         return "<pre><code>" + _html.escape(src) + "</code></pre>"
 
     out = []
@@ -865,12 +884,12 @@ def chat_bubbles_html(name: str, *, records: list[dict] | None = None,
         text = str(m.get("content") or "")
         if role == "assistant":
             body = chat_markdown.render(text[:20000], code) or _html.escape(text[:2000])
-            out.append(f'<div class="delfin-swv-chat-msg delfin-swv-chat-agent">{body}</div>')
+            out.append(f'<div class="delfin-chat-msg delfin-chat-agent">{body}</div>')
         elif role == "user" and not m.get("_harness"):
-            out.append('<div class="delfin-swv-chat-msg delfin-swv-chat-user">'
+            out.append('<div class="delfin-chat-msg delfin-chat-user">'
                        + _html.escape(text[:4000]) + "</div>")
         else:
-            out.append('<div class="delfin-swv-chat-msg delfin-swv-chat-system">'
+            out.append('<div class="delfin-chat-msg delfin-chat-system">'
                        + _html.escape(text[:600]) + ("…" if len(text) > 600 else "")
                        + "</div>")
     return "".join(out)
