@@ -241,6 +241,17 @@ _SIDEBAR_CSS = """<style>
 .delfin-complete-item:hover, .delfin-complete-active { background: #dbeafe; color: #0f172a; }
 .delfin-complete-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .delfin-complete-kind { color: #94a3b8; font-size: 11px; flex: 0 0 auto; }
+/* "Newest" at the foot of the visible chat, also in a short chat. The
+   button is the transcript's last child; sticky keeps it at the foot only
+   once the chat scrolls, so in a new session it sat under the last
+   message. margin-top:auto pushes it to the end of the (min 100 % high)
+   column, the negative bottom margin into the 84 px foot reserve; with a
+   working line it stays above that line (the sticky offset of the agent
+   tab's own rule). */
+.delfin-agent-chat-host > .delfin-agent-chat > .delfin-chat-jump {
+    margin-top: auto !important; margin-bottom: -78px !important; }
+.delfin-agent-chat-frame:has(> .delfin-agent-working-slot .delfin-agent-working)
+    .delfin-agent-chat > .delfin-chat-jump { margin-bottom: 0 !important; }
 </style>"""
 
 #: Drag the sessions column to a width. Runs once per shell (data-bound
