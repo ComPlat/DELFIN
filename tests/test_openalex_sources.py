@@ -468,3 +468,17 @@ def test_markdown_and_bibtex_records():
     bib = ss.to_bibtex(rec)
     assert bib.startswith("@article{Doe2022,") and "doi = {10.1039/test.2}" in bib
     assert ss.suggest_basename(rec) == "Doe2022_An_open_benchmark_of_spin_state"
+
+
+def test_crossref_retries_without_select_on_http_400(net, monkeypatch):
+    urls = []
+
+    def get(url, *, timeout_s, headers=None):
+        urls.append(url)
+        if "select=" in url:
+            raise urllib.error.HTTPError(url, 400, "Bad Request", {}, None)
+        return HOST_BODY["api.crossref.org"]
+    monkeypatch.setattr(ss, "_get", get)
+    recs = ss.search_crossref("spin", 3)
+    assert len(urls) == 2 and "select=" not in urls[1]
+    assert recs[0]["doi"] == "10.1063/1.464913"

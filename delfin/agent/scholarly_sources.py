@@ -59,6 +59,7 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Callable
@@ -313,14 +314,23 @@ def search_crossref(query: str, max_results: int = 10,
                     prefix: str = "") -> list[dict]:
     params = {"query": query, "rows": max(1, min(int(max_results), 50)),
               "select": ("DOI,title,author,container-title,issued,type,"
-                         "is-referenced-by-count,license,institution")}
+                         "is-referenced-by-count,license")}
     if prefix:
         params["filter"] = f"prefix:{prefix}"
     mail = contact_email()
     if mail:
         params["mailto"] = mail
     url = "https://api.crossref.org/works?" + urllib.parse.urlencode(params)
-    data = _get_json(url, timeout_s=timeout_s)
+    try:
+        data = _get_json(url, timeout_s=timeout_s)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 400:
+            raise
+        # A field list the API no longer accepts must not cost the whole
+        # source: once more without `select` (full records, same parser).
+        params.pop("select")
+        url = "https://api.crossref.org/works?" + urllib.parse.urlencode(params)
+        data = _get_json(url, timeout_s=timeout_s)
     items = ((data.get("message") or {}).get("items") or []) \
         if isinstance(data, dict) else []
     return [r for r in (_crossref_record(i) for i in items
@@ -1025,7 +1035,6 @@ def download_open_pdf(rec: dict, *, timeout_s: float = 30.0,
     why = web_tools._check_url(url)
     if why:
         raise ValueError(f"refused: {why}")
-    import urllib.request
     req = urllib.request.Request(url, headers={
         "User-Agent": web_tools._USER_AGENT, "Accept": "application/pdf"})
     with source_apis._HostSlot(host, timeout_s):
