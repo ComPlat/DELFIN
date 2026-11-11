@@ -47,6 +47,21 @@ from delfin.agent.service.client import ServiceClient  # noqa: E402
 PYTHON = os.environ.get("DELFIN_PYTHON") or sys.executable
 
 
+def _end_service(sock: Path, wait_s: float = 10.0) -> None:
+    """Ask the service behind ``sock`` to shut down and wait until its socket is
+    gone; nothing when no service answers there."""
+    if not sock.exists():
+        return
+    try:
+        with ServiceClient(sock) as cl:
+            cl.request("service.shutdown")
+    except Exception:
+        return
+    deadline = time.monotonic() + wait_s
+    while sock.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="tui-agents-"))
     runtime = Path(tempfile.mkdtemp(prefix="dta", dir="/tmp"))
@@ -239,6 +254,11 @@ def main() -> int:
     finally:
         (tmp / "screen.txt").write_text(tmux.history())
         tmux.close()
+        # The service outlives the TUI by design, so the check ends it on every
+        # path: a check that stopped early used to delete the socket directory
+        # under a running service, which then ran on with nothing able to
+        # reach it (ten such processes were found 25 days later).
+        _end_service(sock)
         shutil.rmtree(runtime, ignore_errors=True)
     print(f"tmux agent view check; scrollback in {tmp / 'screen.txt'}")
     if problems:

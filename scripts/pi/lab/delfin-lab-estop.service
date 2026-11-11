@@ -1,0 +1,37 @@
+# DELFIN lab e-stop owner: re-asserts the safe state of every device under
+# an active e-stop (delfin/lab/watchdog.py enforce_estop). A systemd USER
+# unit of the agent user, installed and restarted by scripts/pi/pi_install.sh;
+# runs only with lingering enabled (admin, once: loginctl enable-linger <user>).
+# The stop itself is `delfin-agent lab estop`, which works without this unit;
+# the unit is what keeps the devices down while the stop stands.
+[Unit]
+Description=DELFIN lab e-stop owner (safe state while an e-stop stands)
+ConditionPathExists=%h/delfin/src/pyproject.toml
+
+[Service]
+Type=simple
+Environment=DELFIN_LAB_DIR=%h/.delfin/lab
+ExecStart=%h/delfin/.venv/bin/python -m delfin.agent.cli lab daemon --role estop --interval 2
+Restart=always
+RestartSec=2
+# Hardening. In a user unit the filesystem settings need unprivileged user
+# namespaces (systemd implies PrivateUsers); where those are off systemd
+# refuses to start the unit and says why, it does not run it unconfined.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.delfin
+PrivateTmp=yes
+PrivateDevices=no
+# The simulator needs no network. A network driver (Shelly, Tasmota MQTT,
+# Home Assistant; phase 3) widens this in a drop-in to AF_UNIX AF_INET AF_INET6.
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=default.target

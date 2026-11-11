@@ -340,6 +340,37 @@ ANNOUNCES_ACTION_RE = re.compile(
     r"[^.!?\n]{0,160}[:.]?\s*$"
 )
 
+#: A final answer that claims a tool call is happening NOW and makes none
+#: (swarm field, harness main d44702503, 216 runs on kit.deepseek-v4-flash,
+#: often right before a large write_file). Unlike ANNOUNCES_ACTION_RE this
+#: scans the WHOLE text, not the last sentence: the field shapes put the
+#: promise in the first sentence and declarative filler last ("I am
+#: executing the write_file tool call now -- ... This is the actual tool
+#: invocation being executed."), and cover an ellipsis ending and a
+#: trailing tag block. Present-continuous ("I am executing/emitting"),
+#: immediate future ("I'll apply ... now"), a self-reference to the act of
+#: calling, and the German present forms. Past reports ("I wrote the
+#: file"), questions and plain answers do not match.
+PROMISES_TOOL_CALL_RE = re.compile(
+    r"(?i)(?:"
+    # "I am executing …", "I'm applying … now", "I am now emitting …"
+    r"i(?:'m|\s+am)\s+(?:now\s+|just\s+|about\s+to\s+)?(?!going\b)\w+ing\b"
+    # "I'll apply … now", "I will run … now"
+    r"|i(?:'ll|\s+will)\s+(?:now\s+)?\w+\b[^.!?]{0,120}\bnow\b"
+    # "I'll run git status/log and the two greps: <system_warning>…"
+    r"|i(?:'ll|\s+will)\s+(?:now\s+)?\w+\b[^.!?]{0,120}<[a-z_]+>"
+    # self-reference to the act of calling: "emitting the actual tool call
+    # block", "executing the write_file tool call"
+    r"|(?:executing|emitting|issuing|invoking)\s+the\s+"
+    r"(?:actual\s+)?(?:\w+\s+)?(?:tool\s+)?(?:call|invocation|block)\b"
+    # German present: "Ich führe jetzt den write_file Aufruf aus.",
+    # "Ich schreibe jetzt die Datei.", "Ich erstelle nun den Test."
+    r"|ich\s+(?:f[üu]hre|schreibe|erstelle|[äa]ndere|korrigiere|lese|"
+    r"pr[üu]fe|bearbeite|[öo]ffne|starte|gebe|rufe|teste|schicke|"
+    r"speichere|schreibe)\b[^.!?]{0,80}?\b(?:jetzt|nun)\b"
+    r")"
+)
+
 GERMAN_WRITE_VERB_RE = re.compile("(?i)" + GERMAN_WRITE_VERB_SOURCE)
 GERMAN_READ_VERB_RE = re.compile("(?i)" + GERMAN_READ_VERB_SOURCE)
 
