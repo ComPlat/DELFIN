@@ -16044,6 +16044,12 @@ def _classifier_timeout_s() -> float:
         return _CLASSIFIER_TIMEOUT_S
 
 
+#: When the classifier's attach last fetched the served roster in this
+#: process (None: never), and how long a failed fetch waits before the next.
+_ROSTER_TRIED_AT: Optional[float] = None
+_ROSTER_RETRY_S = 300.0
+
+
 def _classifier_settings() -> Optional[dict]:
     """``{"model", "rules", "broad"}`` when the classifier is on, else None.
 
@@ -33186,9 +33192,13 @@ class OpenAIClient(_BaseClient):
         # classifier must be independent of the session's model (a slow one
         # with many agents latched every action to a human, 2026-10-29). The
         # client is the only place with both the session model and the
-        # endpoint, so it stows the resolved ids here. Cached roster only
-        # (no fetch): re-attaching on every set_permissions must not spend a
-        # /v1/models round trip each time.
+        # endpoint, so it stows the resolved ids here. The cached roster
+        # first; when it is empty -- every fresh process, so every headless
+        # and swarm session (measured 2026-11-11: the classifier ran on
+        # deepseek alone with no confirmation chain) -- it is fetched once,
+        # and a failed fetch is retried at most every _ROSTER_RETRY_S, so
+        # re-attaching on every set_permissions does not spend a /v1/models
+        # round trip each time.
         try:
             from . import model_capabilities as _mc
             from .action_classifier import DEFAULT_MODEL as _default_cls
@@ -33196,6 +33206,14 @@ class OpenAIClient(_BaseClient):
             base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
             api_key = getattr(self, "_api_key", "") or ""
             served = _mc.kit_models_served(base_url, api_key)
+            if not served and getattr(self, "_provider", "") == "kit":
+                global _ROSTER_TRIED_AT
+                now = time.monotonic()
+                if (_ROSTER_TRIED_AT is None
+                        or now - _ROSTER_TRIED_AT >= _ROSTER_RETRY_S):
+                    _ROSTER_TRIED_AT = now
+                    served = _mc.kit_models_served(base_url, api_key,
+                                                   fetch=True)
             model = getattr(self, "model", "") or ""
             cfg_model = str(cfg.get("model") or _default_cls)
             explicit = bool(cfg.get("explicit_model"))
