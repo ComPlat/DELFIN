@@ -231,6 +231,16 @@ _SIDEBAR_CSS = """<style>
 .delfin-path-option:hover, .delfin-path-option.delfin-path-active {
     background: #dbeafe !important; color: #0f172a; }
 .delfin-session-rename-input { width: 100% !important; }
+/* Suggestions above the message box (_COMPLETE_JS). */
+.delfin-complete-pop { position: fixed; z-index: 10000; max-height: 260px;
+    overflow-y: auto; background: #ffffff; border: 1px solid #e5e7eb;
+    border-radius: 10px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+    padding: 4px; font-family: 'SF Mono', 'Consolas', monospace; font-size: 12px; }
+.delfin-complete-item { display: flex; justify-content: space-between; gap: 12px;
+    padding: 4px 8px; border-radius: 6px; cursor: pointer; color: #1f2937; }
+.delfin-complete-item:hover, .delfin-complete-active { background: #dbeafe; color: #0f172a; }
+.delfin-complete-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.delfin-complete-kind { color: #94a3b8; font-size: 11px; flex: 0 0 auto; }
 </style>"""
 
 #: Drag the sessions column to a width. Runs once per shell (data-bound
@@ -296,6 +306,127 @@ _PATH_KEYS_JS = """\
         var input = form && form.querySelector('.delfin-path-input input');
         if (input) setTimeout(function () { input.focus(); }, 0);
     }, true);
+})();
+"""
+
+#: Suggestions in the message box (delfin.dashboard.completion): for a
+#: `!command` and for a word that starts like a path. The box sends what is
+#: typed up to the caret to a hidden field; the kernel answers in a hidden
+#: HTML; a popup above the box shows the answer. Tab takes the highlighted
+#: (or first) suggestion, Up/Down move, Enter takes one only when one was
+#: highlighted (otherwise it sends, as always), Esc closes. Keys are taken
+#: on `window` in the capture phase, ahead of the box's own Enter-to-send.
+_COMPLETE_JS = """\
+(function () {
+    if (window.__delfinComplete) return;
+    window.__delfinComplete = true;
+    var st = {seq: 0, items: [], start: 0, at: -1, ta: null, timer: null, pop: null};
+    function pop() {
+        if (!st.pop) {
+            st.pop = document.createElement('div');
+            st.pop.className = 'delfin-complete-pop';
+            st.pop.style.display = 'none';
+            document.body.appendChild(st.pop);
+            st.pop.addEventListener('mousedown', function (e) {
+                var row = e.target.closest('.delfin-complete-item');
+                if (!row) return;
+                e.preventDefault();
+                take(parseInt(row.getAttribute('data-i'), 10));
+            });
+        }
+        return st.pop;
+    }
+    function hide() { st.items = []; st.at = -1; if (st.pop) st.pop.style.display = 'none'; }
+    function wanted(before) {
+        var line = before.slice(before.lastIndexOf('\\n') + 1);
+        if (before.indexOf('\\n') < 0 && line.charAt(0) === '!' && line.length > 1) return true;
+        var word = line.split(/\\s/).pop();
+        return /^(\\/|~\\/|~$|\\.\\/|\\.\\.\\/)/.test(word);
+    }
+    function ask(ta) {
+        var before = ta.value.slice(0, ta.selectionStart);
+        if (!wanted(before)) { hide(); return; }
+        var q = document.querySelector('.delfin-complete-query input');
+        if (!q) return;
+        st.ta = ta;
+        st.seq += 1;
+        q.value = JSON.stringify({text: before, seq: st.seq});
+        q.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+    function render() {
+        var p = pop();
+        if (!st.items.length || !st.ta) { hide(); return; }
+        var r = st.ta.getBoundingClientRect();
+        p.innerHTML = '';
+        st.items.forEach(function (it, i) {
+            var row = document.createElement('div');
+            row.className = 'delfin-complete-item' + (i === st.at ? ' delfin-complete-active' : '');
+            row.setAttribute('data-i', String(i));
+            var lab = document.createElement('span');
+            lab.className = 'delfin-complete-label';
+            lab.textContent = it.label;
+            var kind = document.createElement('span');
+            kind.className = 'delfin-complete-kind';
+            kind.textContent = it.kind;
+            row.appendChild(lab); row.appendChild(kind);
+            p.appendChild(row);
+        });
+        p.style.left = Math.max(8, r.left) + 'px';
+        p.style.width = Math.min(Math.max(320, r.width * 0.6), 640) + 'px';
+        p.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+        p.style.display = 'block';
+        var act = p.querySelector('.delfin-complete-active');
+        if (act && act.scrollIntoView) act.scrollIntoView({block: 'nearest'});
+    }
+    function take(i) {
+        var it = st.items[i], ta = st.ta;
+        if (!it || !ta) return;
+        var caret = ta.selectionStart;
+        var v = ta.value.slice(0, st.start) + it.insert + ta.value.slice(caret);
+        ta.value = v;
+        var pos = st.start + it.insert.length;
+        ta.setSelectionRange(pos, pos);
+        ta.dispatchEvent(new Event('input', {bubbles: true}));
+        ta.focus();
+        hide();
+        if (/\\/$/.test(it.insert)) ask(ta);   // a folder: go on into it
+    }
+    document.addEventListener('input', function (e) {
+        var t = e.target;
+        if (!t || t.tagName !== 'TEXTAREA' || !t.closest || !t.closest('.delfin-agent-input')) return;
+        clearTimeout(st.timer);
+        st.timer = setTimeout(function () { ask(t); }, 110);
+    }, true);
+    window.addEventListener('keydown', function (e) {
+        if (!st.items.length || !st.ta || e.target !== st.ta) return;
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault(); e.stopImmediatePropagation();
+            var n = st.items.length;
+            st.at = e.key === 'ArrowDown' ? (st.at + 1) % n : (st.at <= 0 ? n - 1 : st.at - 1);
+            render();
+        } else if (e.key === 'Tab' && !e.shiftKey) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            take(st.at >= 0 ? st.at : 0);
+        } else if (e.key === 'Enter' && !e.shiftKey && st.at >= 0) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            take(st.at);
+        } else if (e.key === 'Escape') {
+            e.preventDefault(); e.stopImmediatePropagation();
+            hide();
+        }
+    }, true);
+    document.addEventListener('focusout', function (e) {
+        if (e.target === st.ta) setTimeout(hide, 150);
+    }, true);
+    new MutationObserver(function () {
+        var el = document.querySelector('.delfin-complete-result [data-json]');
+        if (!el) return;
+        var data;
+        try { data = JSON.parse(el.getAttribute('data-json')); } catch (_e) { return; }
+        if (!data || data.seq !== st.seq) return;
+        st.items = data.items || []; st.start = data.start || 0; st.at = -1;
+        render();
+    }).observe(document.documentElement, {childList: true, subtree: true, characterData: true});
 })();
 """
 
@@ -1667,9 +1798,46 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                                  is_open=lambda sid: any(r.get("session_id") == sid
                                                          for r in sessions))
     running_panel.widget.layout.display = "none"
+    # The message box's suggestions (_COMPLETE_JS): what is typed up to the
+    # caret comes in here, the answer goes out in complete_result.
+    complete_query = _classed(widgets.Text(
+        continuous_update=True, layout=widgets.Layout(display="none")),
+        "delfin-complete-query")
+    complete_result = _classed(widgets.HTML(
+        "", layout=widgets.Layout(display="none")), "delfin-complete-result")
+
+    def _on_complete(change) -> None:
+        try:
+            ask = json.loads(change.get("new") or "{}")
+        except ValueError:
+            return
+        if not isinstance(ask, dict):
+            return
+        try:
+            from delfin.dashboard import completion as _completion
+            rec = next((r for r in sessions if r["key"] == view.get("active")), None)
+            cwd = (rec or {}).get("workspace") or default_workspace(ctx)
+            own = []
+            if rec is not None and not rec.get("live"):
+                for m in _state(rec).get("chat_messages") or []:
+                    text = str((m or {}).get("content") or "") if isinstance(m, dict) else ""
+                    if (m.get("role") == "user" and text.startswith("!")
+                            and "\n" not in text):
+                        own.append(text)
+            answer = _completion.suggest(str(ask.get("text") or ""), cwd,
+                                         own_commands=own)
+        except Exception:
+            answer = {"start": 0, "items": []}
+        answer["seq"] = ask.get("seq")
+        complete_result.value = ('<div data-json="%s"></div>'
+                                 % html.escape(json.dumps(answer), quote=True))
+
+    complete_query.observe(_on_complete, names="value")
+
     sidebar = _classed(widgets.VBox(
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
-         running_panel.widget, resume_dropdown, elsewhere_note, stop_all_btn]),
+         running_panel.widget, resume_dropdown, elsewhere_note, stop_all_btn,
+         complete_query, complete_result]),
         "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
     splitter_host = _classed(widgets.HBox([widgets.HTML("")]),
@@ -1685,6 +1853,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     _register_init_js(ctx, _SPLITTER_INIT_JS)
     _register_init_js(ctx, _RENAME_KEYS_JS)
     _register_init_js(ctx, _PATH_KEYS_JS)
+    _register_init_js(ctx, _COMPLETE_JS)
 
     # -- lookup -------------------------------------------------------------
 
