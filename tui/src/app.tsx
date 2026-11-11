@@ -369,13 +369,18 @@ export function App(props: AppProps): JSX.Element {
       void swarm.open()
       return true
     }
-    // /swarm watch [source] (package SWV, phase 2b): the read-only watch.
-    // An optional roster path / spec path is stored so the overview ask
-    // can target it; without one the default active swarm is shown. The
-    // watch never accepts input into a member session.
+    // /swarm watch <source> (package SWV, phase 2b): the read-only watch.
+    // The source is the file that names the members -- a roster (name ->
+    // package/role) or a swarm.yaml spec; there is no default swarm, so a
+    // bare /swarm watch says what to pass. The watch never accepts input
+    // into a member session.
     if (/^\/swarm watch(?:\s+(\S+))?$/.test(text.trim()) && !how) {
       const m = /^\/swarm watch(?:\s+(\S+))?$/.exec(text.trim())
-      watchSource = m?.[1]
+      if (!m?.[1]) {
+        say("usage: /swarm watch <roster.json | swarm.yaml> -- the file that names the members")
+        return true
+      }
+      watchSource = m[1]
       void watch.open()
       return true
     }
@@ -549,20 +554,19 @@ export function App(props: AppProps): JSX.Element {
   // asks the observe.* requests; there is never an input into a member
   // session. It reuses the submit + key routing below like the swarm
   // view, but has no composer input of its own.
-  // A roster path / spec path given to /swarm watch (the read-only
-  // watch target, package SWV phase 2b); undefined = the default active
-  // swarm. Never touches session state.
+  // The roster / spec path given to /swarm watch (the read-only watch
+  // target, package SWV phase 2b). Never touches session state.
   let watchSource: string | undefined
+  // The service answers {rows} and {entries}; the watch takes the lists.
   const watch = createSwarmWatch({
     keymap: props.keymap,
     now: () => Date.now() / 1000,
     // The envelope unwrapped here, like askTriage's: the request returns
     // { rows: [...] } (protocol.py), the watch state holds the rows.
     askOverview: () => props.client.request("swarm.observe.overview",
-      watchSource ? { sourcePath: watchSource } : {})
-      .then((r) => ((r as { rows?: unknown })?.rows ?? []) as never) as never,
+      { sourcePath: watchSource }).then((r) => (r as any)?.rows ?? []) as never,
     askFeed: (name) => props.client.request("swarm.observe.feed", { session: name })
-      .then((r) => ((r as { entries?: unknown })?.entries ?? []) as never) as never,
+      .then((r) => (r as any)?.entries ?? []) as never,
     note: say,
     draft: () => composer.value(),
   })

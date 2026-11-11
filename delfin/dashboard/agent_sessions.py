@@ -1150,10 +1150,12 @@ def _session_title(state: dict) -> str:
 # Sessions in the agent service
 # ---------------------------------------------------------------------------
 
-#: Where sessions run: "service" (the default: the person's agent service,
-#: so the terminal and the phone open them too) or "kernel" (this
-#: dashboard's kernel, as before the service). The environment variable
-#: wins over agent.dashboard_sessions in the settings.
+#: Where the dashboard starts its sessions: "kernel" (the default: this
+#: dashboard's kernel, shown in the agent tab's full chat) or "service" (the
+#: person's agent service, so the terminal and the phone open them too; shown
+#: in live_tab's view, which does not yet have the chat's controls). Either
+#: way the sidebar lists the sessions a running service has and opens them.
+#: The environment variable wins over agent.dashboard_sessions in the settings.
 SESSIONS_ENV = "DELFIN_DASHBOARD_SESSIONS"
 
 #: The permission profiles the agent tab's ladder stores, and the posture
@@ -1169,7 +1171,7 @@ _PROFILE_OLD_NAMES = {"default": "ask_all", "erlaubt": "repo_free", "full": "all
 
 
 def sessions_where() -> str:
-    """``"service"`` or ``"kernel"``: where this dashboard starts sessions."""
+    """``"kernel"`` (default) or ``"service"``: where this dashboard starts sessions."""
     raw = os.environ.get(SESSIONS_ENV, "").strip().lower()
     if not raw:
         try:
@@ -1178,7 +1180,7 @@ def sessions_where() -> str:
                       .get("dashboard_sessions") or "").strip().lower()
         except Exception:
             raw = ""
-    return "kernel" if raw == "kernel" else "service"
+    return "service" if raw == "service" else "kernel"
 
 
 def dashboard_session_settings() -> dict:
@@ -1210,18 +1212,21 @@ def _service_connector(service: Any, explicit_build: bool):
     """What gives the session list its agent-service client, or None for
     sessions in the kernel only. ``service``: False (none), a callable
     returning a ``live_sessions.LiveClient``, a client, or None -- the
-    person's service unless a stand-in ``build`` was given or the setting
-    says kernel."""
+    person's service unless a stand-in ``build`` was given. With sessions in
+    the kernel (the default) a service is only joined when one runs: its
+    sessions (started in the terminal or on the phone) are listed, and
+    nothing is started for the list alone."""
     if service is False:
         return None
     if callable(service):
         return service
     if service is not None:
         return lambda: service
-    if explicit_build or sessions_where() == "kernel":
+    if explicit_build:
         return None
     from delfin.dashboard import live_sessions
-    return lambda: live_sessions.connect(start=True)
+    start = sessions_where() == "service"
+    return lambda: live_sessions.connect(start=start)
 
 
 _RUNNING_CSS = """<style>
@@ -1489,7 +1494,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     sessions: list[dict] = []
     view: dict[str, Any] = {"active": "", "restoring": True,
-                            "scripts_added": False, "resume_at": 0.0}
+                            "scripts_added": False, "resume_at": 0.0,
+                            # A stand-in service (tests, explicit callers) starts
+                            # sessions there; the person's own only when set so.
+                            "start_in_service": connector is not None and (
+                                service is not None or sessions_where() == "service")}
     shared_status = getattr(ctx, "agent_status_html", None)
 
     def _classed(w, *names):
@@ -1549,7 +1558,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     # The agent service: every session started here runs in it, and the
     # running list shows every session it holds. Without one, the kernel.
     live: dict[str, Any] = {"client": None, "why": "", "retry_at": 0.0, "scripts": False}
-    running_panel = RunningPanel(None, on_open=lambda sid: open_live(sid),
+    running_panel = RunningPanel(None, on_open=lambda sid: open_from_list(sid),
                                  is_open=lambda sid: any(r.get("session_id") == sid
                                                          for r in sessions))
     running_panel.widget.layout.display = "none"
@@ -1938,6 +1947,62 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                                    "this session asks as Accept Edits.")
         return rec
 
+    #: How long a take-over waits for the service to save and let go of
+    #: the session before it says so and shows the service view instead.
+    _TAKE_OVER_WAIT_S = 20.0
+
+    def open_from_list(sid: str) -> Optional[dict]:
+        """One click on a session of the service (the running list).
+
+        Input: the session id. Output: the open record, or None.
+        Dashboard sessions run in this kernel (the default): a session of
+        the service that is done or asleep is taken over -- the service
+        saves and ends it, and this kernel resumes the same session, with
+        its whole history, in the agent tab's full chat. A session that is
+        working or waits for an answer keeps running where it is and opens
+        in the service's view; nothing is cut off mid-turn.
+
+        Rejected: a second, reduced chat for service sessions (the view
+        that lost the composer, context bar and controls); resuming the
+        session here while the service still holds it (two writers on one
+        session file).
+        """
+        import time as _time
+        from delfin.dashboard import live_sessions as LS
+        for rec in sessions:
+            if rec.get("session_id") == sid or _session_id(rec) == sid:
+                activate(rec["key"])
+                return rec
+        summary = running_panel.running.summary(sid) or {}
+        client = live["client"]
+        if (view["start_in_service"] or client is None
+                or LS.state_word(summary) in ("working", "needs you")):
+            return open_live(sid)
+        name = str(summary.get("name") or sid[:8])
+        where = str(summary.get("workspace") or "")
+        try:
+            client.stop(sid)
+        except (LS.ServiceError, TimeoutError, OSError) as exc:
+            _say(f"{name} could not be moved here ({getattr(exc, 'message', exc)}); "
+                 "it opens in the service's view.")
+            return open_live(sid)
+        # The service lets go once its worker has saved and exited: the
+        # session leaves the running list (session.removed / ended).
+        # Both conditions, polled: the running list drops it on the
+        # service's event, and the saved file may be written a moment later.
+        deadline = _time.monotonic() + _TAKE_OVER_WAIT_S
+        while _time.monotonic() < deadline and (
+                running_panel.running.summary(sid) or not _saved_session(sid)):
+            _time.sleep(0.2)
+        if running_panel.running.summary(sid) or not _saved_session(sid):
+            _say(f"{name} did not finish saving in time; open it again in a moment.")
+            return None
+        rec = open_session(where, sid, in_kernel=True)
+        if rec is not None:
+            _say(f"{name} now runs in this dashboard's chat; the terminal and the "
+                 "phone no longer have it.")
+        return rec
+
     # -- open, close ----------------------------------------------------------
 
     def open_session(workspace: str = "", session_id: str = "", *,
@@ -1954,6 +2019,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         if len(sessions) >= _MAX_OPEN:
             _say(f"{_MAX_OPEN} sessions are open — close one first.")
             return None
+        in_kernel = in_kernel or not view["start_in_service"]
         if live["client"] is not None and not in_kernel:
             where = str(workspace or "").strip() or default_workspace(ctx)
             live["note"] = ""
@@ -2441,7 +2507,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         open_session()
     if sessions and _find(view["active"]) is None:
         activate(sessions[-1]["key"])
-    if connector is not None and live["client"] is None:
+    if view["start_in_service"] and live["client"] is None:
         _say(_kernel_notice())
     if wanted:
         for rec in sessions:
@@ -2494,4 +2560,5 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         "running": running_panel.running,
         "running_panel": running_panel,
         "open_live": open_live,
+        "open_from_list": open_from_list,
     }

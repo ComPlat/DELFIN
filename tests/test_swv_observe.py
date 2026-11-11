@@ -192,16 +192,35 @@ def test_overview_roster_source_plain_file(audit_log, tmp_path):
     assert by_name["reviewer"]["package"] == "ops"
 
 
+def test_overview_roster_source_plain_dict(audit_log):
+    """The same roster handed over as an object (the RPC's ``source``)."""
+    roster = {"ops-1": {"package": "ops", "role": "builder"}}
+    rows = _observe.swarm_overview(roster, records=[_health_record("ops-1")],
+                                   steps_fn=lambda *a, **k: ([], 0))
+    assert [(r["name"], r["package"], r["role"]) for r in rows] == [
+        ("ops-1", "ops", "builder")]
+
+
+def test_overview_spec_file_source(audit_log, tmp_path):
+    """A swarm.yaml path gives its members, not an empty table."""
+    spec = tmp_path / "swarm.yaml"
+    spec.write_text(json.dumps({"packages": [
+        {"name": "alpha", "roles": {"builder": True, "reviewer": True}}]}),
+        encoding="utf-8")
+    rows = _observe.swarm_overview(str(spec), records=[],
+                                   steps_fn=lambda *a, **k: ([], 0))
+    assert sorted(r["name"] for r in rows) == ["alpha-builder", "alpha-reviewer"]
+
+
 def test_overview_missing_member_never_lies(audit_log):
-    """A member with no session record still has a row, its state the safe
-    fallback ('working'/'paused' from absence cannot be claimed) — fail
-    closed, never invent a liveness."""
+    """A member with no session record still has a row, its state 'no
+    session': absence proves neither work nor a pause -- never invent a
+    liveness."""
     source = _spec([{"name": "swv", "roles": {"builder": True}}])
     rows = _observe.swarm_overview(source, records=[],  # no record at all
                                    steps_fn=lambda *a, **k: ([], 0))
     assert len(rows) == 1
-    # No open approvals, not paused, nothing to prove a wait -> working.
-    assert rows[0]["state"] == "working"
+    assert rows[0]["state"] == "no session"
 
 
 def test_overview_defaults_to_the_real_health_records(monkeypatch):
@@ -255,3 +274,15 @@ def test_feed_steps_newest_last_with_result_status(audit_log):
     # the denial is present and marked as a refusal
     denied = [e for e in feed if e["kind"] == "refusal"]
     assert denied and "outside scope" in denied[0]["text"]
+
+
+def test_overview_without_records_reads_the_real_sessions(monkeypatch):
+    """The dashboard and the TUI call swarm_overview(source) with no records:
+    it must read the live sessions, not treat every member as missing (the
+    whole running wave showed 'no session')."""
+    monkeypatch.setattr(_observe, "_default_records",
+                        lambda: [_health_record("ops-1")])
+    rows = _observe.swarm_overview({"ops-1": {"package": "ops", "role": "builder"}},
+                                   steps_fn=lambda *a, **k: ([], 0),
+                                   commits_fn=lambda name: {})
+    assert rows[0]["state"] == "working"

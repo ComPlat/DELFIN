@@ -42,7 +42,7 @@ swarm.observe.* are pure reads only, ownership enforced server-side.
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 #: The user-facing states of a member row (task SWV, target 5). They are a
 #: faithful projection of the session record, in a fixed priority so the
@@ -54,6 +54,8 @@ STATE_ENDED = "ended"
 STATE_WAITING_MODEL = "waiting for model"
 STATE_WAITING_MESSAGE = "waiting for a message"
 STATE_WORKING = "working"
+#: No open session record names the member: not started, or gone.
+STATE_NO_SESSION = "no session"
 
 #: How long (s) without a model token counts as "waiting for model". We do
 #: not read settings here (pure module): this is a stable, documented floor.
@@ -63,13 +65,12 @@ WAIT_ON_MODEL_S = 10 * 60
 def _state_of(record: Optional[dict]) -> str:
     """The SWV state of a member from its session-health-shaped record.
 
-    ``None`` (no record at all) is treated as ``working``: we cannot claim
-    a pause, an approval, a wait or an ended turn from absence, and a
-    member that has simply not been seen is not invented into a liveness
-    that the stores do not prove.
+    ``None`` (no record at all) is ``no session``: absence proves neither
+    a pause, an approval, a wait nor work, and a member that has simply
+    not been seen is not invented into a liveness the stores do not prove.
     """
     if not record:
-        return STATE_WORKING
+        return STATE_NO_SESSION
     if record.get("open_approvals"):
         return STATE_NEEDS_APPROVAL
     if record.get("paused"):
@@ -116,7 +117,7 @@ def _members_of(source) -> list[dict]:
             return out
         # A bare roster dict is also accepted: name -> {package, role}.
         out = []
-        for name, meta in (source.items() or ()):
+        for name, meta in source.items():
             if not isinstance(meta, dict):
                 continue
             out.append({
@@ -133,6 +134,9 @@ def _members_of(source) -> list[dict]:
     if not os.path.exists(path):
         raise ValueError(f"roster file does not exist: {path}")
     data = _read_roster(path)
+    if isinstance(data, dict) and isinstance(data.get("packages"), list):
+        # The file is an SW1 spec (swarm.yaml), not a roster.
+        return _members_of(data)
     out = []
     for name, meta in (data or {}).items():
         if not isinstance(meta, dict):
@@ -208,17 +212,14 @@ def swarm_overview(source,
     pending_approvals_count}`` — all JSON-able.
     """
     import time as _time
-    from .. import audit_log as _al
 
     steps_fn = steps_fn or _default_steps
     commits_fn = commits_fn or _default_commits
-    # Without explicit records (the production path: the service's
-    # swarm.observe.overview passes only ``source``), the REAL health
-    # records are read -- what the docstring promises. Never raises:
+    # None means "read the real sessions" (the production path: the service's
+    # swarm.observe.overview, the dashboard's Swarm tab and the TUI's
+    # /swarm watch pass nothing); an empty list stays empty. Never raises:
     # _default_records answers [] when the stores cannot be read.
-    if records is None:
-        records = _default_records()
-    records = list(records)
+    records = _default_records() if records is None else list(records)
     now = now if now is not None else _time.time()
     rec_by_name = {str(r.get("name") or r.get("session_id") or ""): r
                    for r in records if isinstance(r, dict)}
@@ -316,7 +317,6 @@ def member_feed(session: str,
     ``steps_fn``/``commits_fn``/``log_path`` are the injectable writers
     (defaults: the real stores).
     """
-    from .. import audit_log as _al
 
     steps_fn = steps_fn or _default_steps
     entries: list[dict] = []
