@@ -1033,15 +1033,21 @@ def main(argv=None):
         "--stop", nargs="?", const="latest", default=None, metavar="JOB",
         help="End a dashboard job (JOB, or 'all').")
     parser.add_argument(
+        "--job", action="store_true",
+        help=("Run the dashboard as a SLURM job on a compute node and tunnel "
+              "to it (reconnects to a running one). For more than the one "
+              "agent session a login node allows."))
+    parser.add_argument(
         "--new", action="store_true",
-        help="On a login node: start another dashboard job although one runs.")
+        help="With --job: start another dashboard job although one runs.")
     args = parser.parse_args(argv)
-    from delfin.hpc_guard import on_login_node
-    if (on_login_node() or args.list or args.attach is not None
+    if (args.job or args.list or args.attach is not None
             or args.stop is not None):
-        # A login node is shared: the server, its kernels and the agent
-        # sessions in them run as a SLURM job on a compute node instead
-        # (issue #640), reached through a tunnel; managed by these flags.
+        # A dashboard in a SLURM job (issue #640): any number of agent
+        # sessions, reached through a tunnel, managed by these flags. On a
+        # login node the dashboard itself runs here as before, with ONE
+        # agent session (agent_sessions.login_node_refusal) whose tests and
+        # builds go to SLURM.
         from delfin import dashboard_job
         return dashboard_job.main(
             args, list(argv) if argv is not None else sys.argv[1:])

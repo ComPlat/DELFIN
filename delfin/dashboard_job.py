@@ -1,12 +1,12 @@
-"""``delfin-voila`` on a login node: the dashboard runs in a SLURM job.
+"""``delfin-voila --job``: the dashboard runs in a SLURM job.
 
 A cluster's login nodes are shared by everyone; the dashboard's server, its
 kernels and the agent sessions inside them are real work and belong on a
-compute node (issue #640). Refusing was safe but left the person without a
-dashboard. This module makes the same command do the right thing:
+compute node (issue #640). On a login node ``delfin-voila`` runs the
+dashboard itself with ONE agent session; everything beyond that runs here:
 
-    delfin-voila              start a dashboard job, or reconnect to the one running
-    delfin-voila --keep       the same, every session it opens is kept
+    delfin-voila --job          start a dashboard job, or reconnect to the one running
+    delfin-voila --job --keep   the same, every session it opens is kept
     delfin-voila --list       the dashboard jobs that run, with node and time left
     delfin-voila --attach [JOB]   reconnect (the newest one without JOB)
     delfin-voila --stop [JOB]     end a dashboard job
@@ -52,7 +52,7 @@ _START_RE = re.compile(r"Starting DELFIN Dashboard on (https?)://[^:\s]+:(\d+)")
 
 #: Flags that only make sense for the launcher on the login node, or that
 #: the job sets itself.
-_LOCAL_ONLY = {"--list", "--attach", "--stop", "--new", "--keep",
+_LOCAL_ONLY = {"--list", "--attach", "--stop", "--new", "--keep", "--job",
                "--open-browser", "--no-browser", "--strict-port"}
 _LOCAL_WITH_VALUE = {"--port", "--token", "--ip"}
 
@@ -428,7 +428,7 @@ def connect(rec: dict, *, port: int, open_browser: bool | None = None,
 
 def format_list(rows: list) -> str:
     if not rows:
-        return "No dashboard job runs. Start one with: delfin-voila  (or --keep)"
+        return "No dashboard job runs. Start one with: delfin-voila --job  (or --job --keep)"
     out = ["JOB        STATE      NODE         LEFT         KEPT  STARTED"]
     for r in rows:
         started = time.strftime("%d.%m. %H:%M",
@@ -483,10 +483,10 @@ def main(args, argv: Sequence[str]) -> int:
     if rows and not args.new:
         rec = rows[-1]
         _say(f"A dashboard already runs (job {rec['job']}) -- reconnecting. "
-             "Another one: delfin-voila --new")
+             "Another one: delfin-voila --job --new")
         if args.keep and not rec.get("keep"):
             _say("  (it was started without --keep; arm 'Keep session' in its "
-                 "header, or start a kept one with --new --keep)")
+                 "header, or start a kept one with --job --new --keep)")
         return connect(rec, port=args.port, open_browser=open_browser)
     try:
         jid = submit(argv, keep=bool(args.keep), port=args.port)
@@ -494,7 +494,7 @@ def main(args, argv: Sequence[str]) -> int:
         _say(f"Could not submit the dashboard job: {exc}")
         return 1
     spec = job_spec()
-    _say(f"Login node -- the dashboard runs as SLURM job {jid} "
+    _say(f"The dashboard runs as SLURM job {jid} "
          f"({spec['partition']}, {spec['cpus']} cores, {spec['mem']}, "
          f"{spec['time']}){', every session kept' if args.keep else ''}.")
     rec = next((r for r in records() if r["job"] == jid), {"job": jid})

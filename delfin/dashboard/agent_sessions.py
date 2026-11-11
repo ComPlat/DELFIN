@@ -26,6 +26,47 @@ import ipywidgets as widgets
 _OPEN_SESSIONS_PATH = Path.home() / ".delfin" / "agent_open_sessions.json"
 # Each open session is a full agent tab with its own engine and timers.
 _MAX_OPEN = 8
+
+#: Agent sessions a dashboard on a cluster login node may run (issue #640):
+#: the login node is shared, so ONE main session runs there -- its tests
+#: and builds go to SLURM -- and every further session runs on a compute
+#: node (``delfin-voila --job``, or a swarm).
+LOGIN_NODE_SESSIONS = 1
+
+
+def login_node_refusal(open_here: int, *, kind: Optional[str] = None,
+                       on_host: Optional[int] = None) -> str:
+    """Why one more agent session may not open here, or "".
+
+    ``open_here``: this dashboard's open sessions; ``on_host``: the open
+    sessions presence knows on this host (other dashboards and terminals
+    included; default: asked). Only a login node limits.
+    """
+    if kind is None:
+        try:
+            from delfin.agent.calc_policy import host_kind
+            kind = host_kind()
+        except Exception:
+            return ""
+    if kind != "login_node":
+        return ""
+    if on_host is None:
+        try:
+            import socket
+            from delfin.agent import session_presence
+            me = socket.gethostname().split(".")[0]
+            on_host = sum(1 for r in session_presence.open_sessions()
+                          if str(r.get("host") or "").split(".")[0] == me)
+        except Exception:
+            on_host = 0
+    if max(int(open_here), int(on_host)) < LOGIN_NODE_SESSIONS:
+        return ""
+    return ("A cluster login node runs one agent session (the cluster's "
+            "rule, issue #640) and it is open. More sessions run on a "
+            "compute node: start the dashboard there with "
+            "`delfin-voila --job` (your sessions come along), or a swarm. "
+            "Not a shared login node? Set DELFIN_HOST_KIND=workstation "
+            "(or hpc.host_kind in the settings).")
 _REFRESH_S = 3.0
 # Reading the saved sessions parses every session file, so the resume list
 # is rebuilt on open/close and at this interval, not on every refresh.
@@ -1962,6 +2003,10 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                     return rec
         if len(sessions) >= _MAX_OPEN:
             _say(f"{_MAX_OPEN} sessions are open — close one first.")
+            return None
+        _refusal = login_node_refusal(len(sessions))
+        if _refusal:
+            _say(_refusal)
             return None
         in_kernel = in_kernel or not view["start_in_service"]
         if live["client"] is not None and not in_kernel:

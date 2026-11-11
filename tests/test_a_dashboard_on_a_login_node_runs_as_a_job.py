@@ -53,13 +53,23 @@ def _fake_sbatch(seen, jid="4711"):
     return run
 
 
-def test_on_a_login_node_the_launcher_hands_over_to_the_job(monkeypatch):
+def test_job_hands_over_to_the_dashboard_job(monkeypatch):
     seen = {}
-    monkeypatch.setattr("delfin.hpc_guard.on_login_node", lambda env=None: True)
     monkeypatch.setattr(dashboard_job, "main",
                         lambda args, argv: seen.setdefault("argv", argv) and 0)
-    assert cli_voila.main(["--keep", "--dark"]) in (0, ["--keep", "--dark"])
-    assert seen["argv"] == ["--keep", "--dark"]
+    cli_voila.main(["--job", "--keep", "--dark"])
+    assert seen["argv"] == ["--job", "--keep", "--dark"]
+
+
+def test_on_a_login_node_the_dashboard_itself_runs_here(monkeypatch):
+    # The person's decision (11.11.): the dashboard stays on the login node
+    # with one agent session; only --job and the job flags go to SLURM.
+    monkeypatch.setattr("delfin.hpc_guard.on_login_node", lambda env=None: True)
+    monkeypatch.setattr(dashboard_job, "main",
+                        lambda args, argv: pytest.fail("not without --job"))
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: False)
+    with pytest.raises(SystemExit):
+        cli_voila.main([])
 
 
 def test_the_submit_carries_no_token_on_its_command_line(monkeypatch, tmp_path):
@@ -84,7 +94,7 @@ def test_the_submit_carries_no_token_on_its_command_line(monkeypatch, tmp_path):
 
 def test_launcher_only_flags_stay_on_the_login_node():
     out = dashboard_job.passthrough_args(
-        ["--list", "--attach", "123", "--stop", "--new", "--keep", "--port",
+        ["--list", "--attach", "123", "--stop", "--new", "--keep", "--job", "--port",
          "9000", "--token=x", "--open-browser", "--dark", "--resume", "latest"])
     assert out == ["--dark", "--resume", "latest"]
 
@@ -190,3 +200,65 @@ def test_a_cached_answer_from_before_the_submit_ends_nothing(monkeypatch, tmp_pa
     _with_jobs(monkeypatch, {}, fresh=True)          # really gone
     assert dashboard_job.running() == []
     assert not dashboard_job.token_path("5").exists()
+
+
+def test_a_login_node_dashboard_opens_one_agent_session():
+    from delfin.dashboard.agent_sessions import login_node_refusal
+    assert login_node_refusal(0, kind="login_node", on_host=0) == ""
+    said = login_node_refusal(1, kind="login_node", on_host=0)
+    assert "delfin-voila --job" in said
+    # another dashboard or terminal on the same login node counts too
+    assert login_node_refusal(0, kind="login_node", on_host=1)
+    assert login_node_refusal(5, kind="slurm_job", on_host=5) == ""
+    assert login_node_refusal(5, kind="workstation", on_host=5) == ""
+
+
+@pytest.mark.parametrize("cmd", [
+    "pytest -q tests/x.py", "cd a && python3 -m pytest", "npx tsc --noEmit",
+    "bun build x", "make -j4", "pip install foo", "echo $(make)",
+    "OMP_NUM_THREADS=1 timeout 600 .venv/bin/pytest x"])
+def test_tests_and_builds_are_named_heavy_on_a_login_node(cmd):
+    from delfin.agent import calc_policy
+    assert "test-on-slurm" in calc_policy.login_node_heavy(cmd, "login_node")
+    assert calc_policy.login_node_heavy(cmd, "slurm_job") == ""
+
+
+@pytest.mark.parametrize("cmd", [
+    "ruff check .", "git status", "grep pytest file", "cat pytest.ini",
+    "ls make", 'git commit -m "make tests"',
+    "delfin-agent test-on-slurm a b c 20 t.py"])
+def test_reading_git_and_test_on_slurm_are_not_heavy(cmd):
+    from delfin.agent import calc_policy
+    assert calc_policy.login_node_heavy(cmd, "login_node") == ""
+
+
+def test_a_server_named_a_workstation_keeps_every_function(monkeypatch, tmp_path):
+    # The person (11.11.): on a server the login-node limits must not apply,
+    # even where SLURM's client happens to be installed.
+    from delfin.agent import calc_policy
+    monkeypatch.setattr(calc_policy.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr("delfin.user_settings.get_settings_path",
+                        lambda: str(tmp_path / "none.json"))
+    env = {}
+    assert calc_policy.host_kind(env) == "login_node"          # the guess
+    env = {"DELFIN_HOST_KIND": "workstation"}
+    assert calc_policy.host_kind(env) == "workstation"
+    assert calc_policy.host_kind({"DELFIN_HOST_KIND": "nonsense"}) == "login_node"
+    assert calc_policy.host_kind({"DELFIN_HOST_KIND": "workstation",
+                                  "SLURM_JOB_ID": "1"}) == "slurm_job"
+    (tmp_path / "s.json").write_text('{"hpc": {"host_kind": "workstation"}}')
+    monkeypatch.setattr("delfin.user_settings.get_settings_path",
+                        lambda: str(tmp_path / "s.json"))
+    assert calc_policy.host_kind({}) == "workstation"
+    monkeypatch.setattr(calc_policy, "host_kind", lambda env=None: "workstation")
+    from delfin.dashboard.agent_sessions import login_node_refusal
+    assert login_node_refusal(7, on_host=7) == ""
+    assert calc_policy.login_node_heavy("pytest -q") == ""
+
+
+def test_without_slurm_a_server_is_a_workstation(monkeypatch, tmp_path):
+    from delfin.agent import calc_policy
+    monkeypatch.setattr(calc_policy.shutil, "which", lambda n: None)
+    monkeypatch.setattr("delfin.user_settings.get_settings_path",
+                        lambda: str(tmp_path / "none.json"))
+    assert calc_policy.host_kind({}) == "workstation"
