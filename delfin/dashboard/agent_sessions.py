@@ -1885,7 +1885,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
          running_panel.widget, resume_dropdown, elsewhere_note, stop_all_btn,
          complete_query, complete_result,
          widgets.HTML(_self_running_html(_RENAME_KEYS_JS, _PATH_KEYS_JS,
-                                         _COMPLETE_JS))]),
+                                         _COMPLETE_JS, _SPLITTER_INIT_JS))]),
         "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
     splitter_host = _classed(widgets.HBox([widgets.HTML("")]),
