@@ -124,7 +124,10 @@ def test_every_visible_tab_is_on_the_bar_and_builds_on_its_first_open(tmp_path):
         "assert not placeholder.children, 'built at start'\n"
         "bar.selected_index = i\n"
         "i = bar.titles.index('DELFIN Agent')\n"
-        "assert bar.children[i] is not placeholder, 'not built on open'\n"
+        # 11.11.: a built tab goes INTO its placeholder (the bar is never
+        # handed a new list, which made the browser rebuild every tab).
+        "assert bar.children[i] is placeholder, 'the bar was rebuilt'\n"
+        "assert placeholder.children, 'not built on open'\n"
         "assert bar.selected_index == i\n"
         "import gc\n"
         "from delfin.dashboard.context import DashboardContext\n"
