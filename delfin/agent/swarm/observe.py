@@ -116,7 +116,7 @@ def _members_of(source) -> list[dict]:
             return out
         # A bare roster dict is also accepted: name -> {package, role}.
         out = []
-        for name, meta in (source.items() or {}).items():
+        for name, meta in (source.items() or ()):
             if not isinstance(meta, dict):
                 continue
             out.append({
@@ -212,7 +212,13 @@ def swarm_overview(source,
 
     steps_fn = steps_fn or _default_steps
     commits_fn = commits_fn or _default_commits
-    records = list(records or [])
+    # Without explicit records (the production path: the service's
+    # swarm.observe.overview passes only ``source``), the REAL health
+    # records are read -- what the docstring promises. Never raises:
+    # _default_records answers [] when the stores cannot be read.
+    if records is None:
+        records = _default_records()
+    records = list(records)
     now = now if now is not None else _time.time()
     rec_by_name = {str(r.get("name") or r.get("session_id") or ""): r
                    for r in records if isinstance(r, dict)}
