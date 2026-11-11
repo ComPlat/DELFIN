@@ -313,3 +313,12 @@ def test_the_schema_offers_paths():
     props = spec["parameters"]["properties"]
     assert props["paths"]["type"] == "array"
     assert props["paths"]["items"] == {"type": "string"}
+
+
+def test_the_single_file_reader_never_drops_paths_silently(ws):
+    """Below the split, `paths` is refused rather than read as `path`."""
+    from delfin.agent.api_client import _doc_executor
+    out = _doc_executor._execute_read_file(
+        {"path": "a.py", "paths": ["b.py"]}, _perms(ws))
+    assert "ALPHA = 1" not in out
+    assert "nothing was read" in json.loads(out)["error"]

@@ -11539,7 +11539,6 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative or absolute.",
                     },
                     "offset": {
                         "type": "integer",
@@ -11552,6 +11551,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "around": {
                         "type": "string",
                         "description": "Regex; ±10 lines around its match.",
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Up to 4 more files; same options.",
                     },
                 },
                 "required": ["path"],
@@ -14848,6 +14852,130 @@ def _repair_json_args(raw) -> dict | None:
     if isinstance(val, dict):
         return {str(k): v for k, v in val.items()}
     return None
+
+
+# read_file(paths=[...]): files per call, `path` included. Five covers the
+# measured need (2-5 files read back to back, one request each) and keeps
+# the worst case at five per-file results in one round.
+READ_FILE_MAX_PATHS = 5
+_READ_FILE_PATH_KEYS = ("path", "file_path", "filename", "file", "target")
+
+
+def _read_file_targets(arguments: Any) -> tuple[Optional[list[str]], str]:
+    """The files a read_file call names, when it uses ``paths``.
+
+    Input: read_file's arguments. Output ``(files, error)``:
+    ``(None, "")`` for the single-file form (no ``paths``, or an empty
+    ``paths`` beside a ``path``) -- the caller proceeds unchanged;
+    ``(files, "")`` with the path first (``path`` or an alias, as
+    ``_get_path_arg`` takes it) then ``paths``, duplicates dropped;
+    ``(None, error)`` for a malformed list or more than
+    READ_FILE_MAX_PATHS names. The count is taken before duplicates are
+    dropped: the call is refused for what it asked, not for what was left.
+    """
+    if not isinstance(arguments, dict) or arguments.get("paths") is None:
+        return None, ""
+    raw = arguments.get("paths")
+    first = _DocToolExecutor._get_path_arg(arguments)
+    if (not isinstance(raw, list)
+            or not all(isinstance(p, str) and p.strip() for p in raw)
+            or not (raw or first)):
+        return None, (
+            "read_file: paths must be a list of file paths (strings), "
+            f"at most {READ_FILE_MAX_PATHS} together with path.")
+    if not raw:
+        return None, ""
+    named = ([first] if first else []) + [p.strip() for p in raw]
+    if len(named) > READ_FILE_MAX_PATHS:
+        return None, (
+            f"read_file reads at most {READ_FILE_MAX_PATHS} files per call "
+            f"(path and paths together); this call named {len(named)}. "
+            "Nothing was read -- split it into several calls.")
+    return list(dict.fromkeys(named)), ""
+
+
+def _read_file_single_args(arguments: dict, path: str) -> dict:
+    """One file's arguments out of a several-file read_file call: every
+    other argument (offset, limit, around, ...) applies to each file."""
+    single = {k: v for k, v in arguments.items()
+              if k != "paths" and k not in _READ_FILE_PATH_KEYS}
+    single["path"] = path
+    return single
+
+
+def _split_call_id(call_id: str, k: int, taken: set) -> str:
+    """A tool_call id for the k-th file (k >= 1) of a split call.
+
+    Unique within the round. An id of nine letters and digits (the form
+    Mistral-family chat templates require) gets a derived id of the same
+    form; any other id gets a suffix."""
+    import hashlib
+    salt = 0
+    while True:
+        if re.fullmatch(r"[A-Za-z0-9]{9}", call_id):
+            new = hashlib.sha1(
+                f"{call_id}:{k}:{salt}".encode()).hexdigest()[:9]
+        else:
+            new = f"{call_id}_{k}" + (f"_{salt}" if salt else "")
+        if new not in taken:
+            return new
+        salt += 1
+
+
+def _split_multi_read_calls(
+    tc_list: list[dict], raw_args_by_id: dict[str, str],
+) -> tuple[list[dict], dict[str, str]]:
+    """Every read_file call naming several files, as one call per file.
+
+    Input: the round's tool calls as they go into the assistant message,
+    and the raw argument text per call id. Output: the same lists with
+    each such call replaced by single-file read_file calls (the first
+    keeps the original id). Done before the assistant message is written,
+    so the history, the per-call loop (reread note, read ledger, observed
+    files, verification notes, events) and every executor gate see only
+    the single-file form they already handle; no consumer needs to know
+    ``paths``. A call that is malformed or over the cap is left as it is,
+    and the executor answers it with the error.
+
+    Rejected: joining the files into one result inside the loop. Every
+    per-call mechanism there keys on the call's arguments and its one
+    result row, so each would have needed its own list handling, and a
+    gate written for one spelling misses the other. Cost of the split:
+    the model's history shows N single reads where it emitted one call
+    (same request count, a few bytes of call ids per extra file).
+    """
+    if not any((tc.get("function") or {}).get("name", "").strip()
+               == "read_file" for tc in tc_list):
+        return tc_list, raw_args_by_id
+    taken = {tc["id"] for tc in tc_list}
+    out: list[dict] = []
+    raw_out = dict(raw_args_by_id)
+    for tc in tc_list:
+        fn = tc.get("function") or {}
+        if (fn.get("name") or "").strip() != "read_file":
+            out.append(tc)
+            continue
+        raw = raw_args_by_id.get(tc["id"], fn.get("arguments"))
+        if isinstance(raw, dict):
+            args = raw
+        else:
+            try:
+                args = json.loads(raw or "{}")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                args = _repair_json_args(raw)
+        files, err = _read_file_targets(args)
+        if err or not files:
+            out.append(tc)
+            continue
+        for k, path in enumerate(files):
+            cid = tc["id"] if k == 0 else _split_call_id(tc["id"], k, taken)
+            taken.add(cid)
+            text = json.dumps(_read_file_single_args(args, path),
+                              ensure_ascii=False)
+            raw_out[cid] = text
+            out.append({**tc, "id": cid,
+                        "function": {**fn, "arguments": text}})
+    return out, raw_out
 
 
 # A delegate's report is the answer the parent asked for, not bulk tool
@@ -18286,7 +18414,26 @@ class _DocToolExecutor:
         writes that attribute from its own thread, and the gate used to
         read it two or three times per call, so a flip landing between
         two reads decided one call by two different policies.
+
+        A read_file naming several files (``paths``) runs here as one
+        single-file call per file, each through the whole of
+        ``_execute_pinned`` (rules, hooks, role, mode, read gate, read
+        baseline), under one pin; the results are joined, each under a
+        ``=== <path> ===`` header. The streaming loop splits such calls
+        before they get here (_split_multi_read_calls); this covers the
+        callers that enter the executor directly (Code Mode).
         """
+        if _bare_tool_name(name) == "read_file":
+            files, err = _read_file_targets(arguments)
+            if err:
+                return json.dumps({"error": err})
+            if files is not None:
+                with _pin_permission_mode(permissions):
+                    return "\n\n".join(
+                        f"=== {p} ===\n" + self._execute_pinned(
+                            name, _read_file_single_args(arguments, p),
+                            permissions)
+                        for p in files)
         with _pin_permission_mode(permissions):
             return self._execute_pinned(name, arguments, permissions)
 
@@ -19519,6 +19666,13 @@ class _DocToolExecutor:
     def _execute_read_file(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
+        # A several-file call is split in execute() before it gets here.
+        # One that arrives anyway is refused: reading only `path` would
+        # drop the other files without saying so.
+        if arguments.get("paths") is not None:
+            return json.dumps({"error": (
+                "read_file: 'paths' reached the single-file reader; "
+                "nothing was read. Call read_file once per file.")})
         rel_path = self._get_path_arg(arguments)
         if not rel_path:
             return json.dumps({"error": "path is required"})
@@ -34921,6 +35075,10 @@ class OpenAIClient(_BaseClient):
                             "arguments": _sendable_tool_args(_raw_emitted),
                         },
                     })
+                # A read_file naming several files becomes one call per
+                # file HERE, before anything records or dispatches it.
+                tc_list, _raw_args_by_id = _split_multi_read_calls(
+                    tc_list, _raw_args_by_id)
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
                 _turn_tool_names.update(
