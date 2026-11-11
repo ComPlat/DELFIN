@@ -1988,8 +1988,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             return open_live(sid)
         # The service lets go once its worker has saved and exited: the
         # session leaves the running list (session.removed / ended).
+        # Both conditions, polled: the running list drops it on the
+        # service's event, and the saved file may be written a moment later.
         deadline = _time.monotonic() + _TAKE_OVER_WAIT_S
-        while running_panel.running.summary(sid) and _time.monotonic() < deadline:
+        while _time.monotonic() < deadline and (
+                running_panel.running.summary(sid) or not _saved_session(sid)):
             _time.sleep(0.2)
         if running_panel.running.summary(sid) or not _saved_session(sid):
             _say(f"{name} did not finish saving in time; open it again in a moment.")
@@ -2557,4 +2560,5 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         "running": running_panel.running,
         "running_panel": running_panel,
         "open_live": open_live,
+        "open_from_list": open_from_list,
     }
