@@ -64,3 +64,29 @@ def test_the_tab_reads_without_the_git_walk(monkeypatch):
     monkeypatch.setattr(session_health, "collect", collect)
     T.running_session_rows(now=NOW, settings={}, beats={})
     assert seen["with_git"] is False
+
+
+def test_looking_in_shows_the_conversation_and_steps_escaped():
+    recs = [{"key": "nacht-s1", "session_id": "abc"}]
+    data = {"chat_messages": [
+        {"role": "user", "content": "build RX1"},
+        {"role": "assistant", "content": "<script>x</script> done"},
+        {"role": "user", "content": "[Message from ...]", "_harness": "True"}]}
+    html = T.session_view_html(
+        "nacht-s1", records=recs, load=lambda sid: data if sid == "abc" else None,
+        feed=lambda name, since=0: [{"at": 1.0, "kind": "tool", "text": "bash ls"}])
+    assert "build RX1" in html and "&lt;script&gt;" in html and "<script>" not in html
+    assert "<b>message</b>" in html          # a session message is not "user"
+    assert "bash ls" in html
+
+
+def test_sending_goes_to_the_inbox_as_the_operator():
+    seen = {}
+    said = T.send_to_session("nacht-s1", " hello ",
+                             send=lambda n, t: seen.update(n=n, t=t) or {"id": "f" * 32})
+    assert seen == {"n": "nacht-s1", "t": "hello"} and said.startswith("Sent")
+    assert T.send_to_session("", "x", send=lambda *a: 1/0).startswith("Pick")
+
+    def refuse(n, t):
+        raise RuntimeError("no session is known as 'x'")
+    assert "Not sent" in T.send_to_session("x", "hi", send=refuse)

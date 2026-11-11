@@ -634,6 +634,77 @@ def running_rows_html(rows: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+def session_view_html(name: str, *, records: list[dict] | None = None,
+                      load: Any = None, feed: Any = None,
+                      last_n: int = 12) -> str:
+    """What one running session said and did lately, as escaped HTML.
+
+    Read-only, from the shared HOME, so a session on another node is
+    shown the same way: its saved conversation (``session_store``, written
+    at each turn's end) and its latest tool steps (``member_feed``, the
+    audit log). Nothing here acts on the session.
+    """
+    from delfin.agent import session_store
+    load = load or session_store.load_session
+    feed = feed or watch_feed
+    if records is None:
+        try:
+            from delfin.agent import session_presence
+            records = session_presence.open_sessions()
+        except Exception:
+            records = []
+    sid = ""
+    for rec in records or []:
+        if str(rec.get("key") or rec.get("name") or "") == name:
+            sid = str(rec.get("session_id") or "")
+            break
+    parts = [f"<h4>{_html.escape(name)}</h4>"]
+    data = load(sid) if sid else None
+    msgs = (data or {}).get("chat_messages") or []
+    if msgs:
+        parts.append("<div><b>Conversation</b> (as of its last turn end)</div>")
+        for m in msgs[-last_n:]:
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "")
+            text = str(m.get("content") or "")
+            who = ("message" if role == "user" and m.get("_harness")
+                   else role or "?")
+            colour = {"assistant": "#1d4ed8", "user": "#065f46"}.get(role, "#6b7280")
+            parts.append(
+                f"<div style='margin:4px 0; padding:4px 6px; border-left:3px solid {colour}; "
+                f"white-space:pre-wrap'><b>{_html.escape(who)}</b>: "
+                f"{_html.escape(text[:1500])}{' ...' if len(text) > 1500 else ''}</div>")
+    else:
+        parts.append("<div><em>No saved conversation yet.</em></div>")
+    try:
+        steps = feed(name, since=0) or []
+    except Exception:
+        steps = []
+    if steps:
+        parts.append("<div style='margin-top:6px'><b>Latest steps</b></div>")
+        parts.extend(f"<div>{h}</div>" for h in watched_feed_html(steps[-15:]))
+    return "".join(parts)
+
+
+def send_to_session(name: str, text: str, *, send: Any = None) -> str:
+    """Leave *text* in session *name*'s inbox (from the operator, never as
+    the user -- the session reads it as a session message). Returns what to
+    say."""
+    text = str(text or "").strip()
+    if not name or not text:
+        return "Pick a session and write a message first."
+    if send is None:
+        from delfin.agent import ops_interface
+        send = ops_interface.send
+    try:
+        out = send(name, text) or {}
+    except Exception as exc:
+        return f"Not sent: {exc}"
+    return (f"Sent to {name} -- it reads it at its next step "
+            f"(id {str(out.get('id') or '')[:8]}).")
+
+
 def watched_feed_html(feed: list[dict[str, Any]]) -> list[str]:
     """One HTML string per ``member_feed`` entry, newest last.
 
@@ -757,14 +828,62 @@ def create_watch_tab(ctx: Any):
     refresh_btn.on_click(lambda _b: (state.__setitem__("_running_at", 0.0), _refresh()))
 
     click_row = widgets.HTML(
-        "<em>Click a member in the table to open its live feed "
-        "(read-only; like <tt>delfin-agent watch</tt>).</em>")
+        "<em>Pick a session to look into it, or write to it.</em>")
+
+    # Look into one session and write to it (any node: both go through the
+    # shared HOME -- its saved conversation, its steps, its inbox).
+    pick = widgets.Dropdown(options=[], description="Session",
+                            layout=widgets.Layout(width="320px"))
+    look_btn = widgets.Button(description="Look in", icon="eye")
+    view_html = widgets.HTML("")
+    msg_box = widgets.Textarea(
+        placeholder="Message to the session (it reads it as a message from "
+                    "the operator, not as the user)",
+        layout=widgets.Layout(width="100%", height="70px"))
+    send_btn = widgets.Button(description="Send", icon="paper-plane",
+                              button_style="primary")
+    send_note = widgets.HTML("")
+
+    def _names() -> list[str]:
+        try:
+            return [r["name"] for r in running_session_rows() if r.get("name")]
+        except Exception:
+            return []
+
+    def _fill_pick() -> None:
+        names = _names()
+        keep = pick.value
+        pick.options = names
+        if keep in names:
+            pick.value = keep
+
+    def _look(_b=None) -> None:
+        if not pick.value:
+            _fill_pick()
+        if pick.value:
+            view_html.value = session_view_html(str(pick.value))
+
+    def _send(_b=None) -> None:
+        send_note.value = _html.escape(
+            send_to_session(str(pick.value or ""), msg_box.value))
+        if send_note.value.startswith("Sent"):
+            msg_box.value = ""
+
+    look_btn.on_click(_look)
+    send_btn.on_click(_send)
+    pick.observe(lambda ch: _look() if ch.get("new") else None, names="value")
+    _fill_pick()
 
     return widgets.VBox([
         widgets.HTML("<h3>Swarm Watch</h3>"),
         widgets.HBox([refresh_btn, status_html]),
         table_html,
         click_row,
+        widgets.HBox([pick, look_btn]),
+        widgets.HBox([msg_box, send_btn],
+                     layout=widgets.Layout(width="100%")),
+        send_note,
+        view_html,
         detail_html,
         feed_box,
     ])
