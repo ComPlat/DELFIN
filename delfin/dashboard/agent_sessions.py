@@ -27,15 +27,33 @@ _OPEN_SESSIONS_PATH = Path.home() / ".delfin" / "agent_open_sessions.json"
 # Each open session is a full agent tab with its own engine and timers.
 _MAX_OPEN = 8
 
-#: Agent sessions a dashboard on a cluster login node may run (issue #640):
-#: the login node is shared, so ONE main session runs there -- its tests
-#: and builds go to SLURM -- and every further session runs on a compute
-#: node (``delfin-voila --job``, or a swarm).
+#: Agent sessions a dashboard on a cluster login node may run (issue #640)
+#: unless the user setting ``hpc.login_node_sessions`` names another number:
+#: the login node is shared; its sessions' tests and builds go to SLURM
+#: either way (calc_policy.login_node_heavy), and further sessions run on a
+#: compute node (``delfin-voila --job``, or a swarm).
 LOGIN_NODE_SESSIONS = 1
 
 
+def login_node_sessions(settings: Optional[dict] = None) -> int:
+    """The limit: ``hpc.login_node_sessions`` (1.._MAX_OPEN), else 1."""
+    if settings is None:
+        try:
+            from delfin.hpc_guard import _read_user_settings
+            settings = _read_user_settings()
+        except Exception:
+            settings = {}
+    hpc = settings.get("hpc") if isinstance(settings, dict) else None
+    try:
+        n = int((hpc or {}).get("login_node_sessions") or LOGIN_NODE_SESSIONS)
+    except (TypeError, ValueError):
+        n = LOGIN_NODE_SESSIONS
+    return max(1, min(_MAX_OPEN, n))
+
+
 def login_node_refusal(open_here: int, *, kind: Optional[str] = None,
-                       on_host: Optional[int] = None) -> str:
+                       on_host: Optional[int] = None,
+                       limit: Optional[int] = None) -> str:
     """Why one more agent session may not open here, or "".
 
     ``open_here``: this dashboard's open sessions; ``on_host``: the open
@@ -59,10 +77,12 @@ def login_node_refusal(open_here: int, *, kind: Optional[str] = None,
                           if str(r.get("host") or "").split(".")[0] == me)
         except Exception:
             on_host = 0
-    if max(int(open_here), int(on_host)) < LOGIN_NODE_SESSIONS:
+    limit = login_node_sessions() if limit is None else int(limit)
+    if max(int(open_here), int(on_host)) < limit:
         return ""
-    return ("A cluster login node runs one agent session (the cluster's "
-            "rule, issue #640) and it is open. More sessions run on a "
+    return (f"A cluster login node runs {limit} agent session"
+            f"{'' if limit == 1 else 's'} here (hpc.login_node_sessions; "
+            "issue #640) and that many are open. More sessions run on a "
             "compute node: start the dashboard there with "
             "`delfin-voila --job` (your sessions come along), or a swarm. "
             "Not a shared login node? Set DELFIN_HOST_KIND=workstation "

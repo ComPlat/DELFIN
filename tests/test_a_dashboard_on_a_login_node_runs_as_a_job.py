@@ -204,11 +204,11 @@ def test_a_cached_answer_from_before_the_submit_ends_nothing(monkeypatch, tmp_pa
 
 def test_a_login_node_dashboard_opens_one_agent_session():
     from delfin.dashboard.agent_sessions import login_node_refusal
-    assert login_node_refusal(0, kind="login_node", on_host=0) == ""
-    said = login_node_refusal(1, kind="login_node", on_host=0)
+    assert login_node_refusal(0, kind="login_node", on_host=0, limit=1) == ""
+    said = login_node_refusal(1, kind="login_node", on_host=0, limit=1)
     assert "delfin-voila --job" in said
     # another dashboard or terminal on the same login node counts too
-    assert login_node_refusal(0, kind="login_node", on_host=1)
+    assert login_node_refusal(0, kind="login_node", on_host=1, limit=1)
     assert login_node_refusal(5, kind="slurm_job", on_host=5) == ""
     assert login_node_refusal(5, kind="workstation", on_host=5) == ""
 
@@ -262,3 +262,13 @@ def test_without_slurm_a_server_is_a_workstation(monkeypatch, tmp_path):
     monkeypatch.setattr("delfin.user_settings.get_settings_path",
                         lambda: str(tmp_path / "none.json"))
     assert calc_policy.host_kind({}) == "workstation"
+
+
+def test_the_person_can_allow_more_sessions_on_a_login_node():
+    from delfin.dashboard import agent_sessions as S
+    assert S.login_node_sessions({}) == 1
+    assert S.login_node_sessions({"hpc": {"login_node_sessions": 6}}) == 6
+    assert S.login_node_sessions({"hpc": {"login_node_sessions": 99}}) == S._MAX_OPEN
+    assert S.login_node_sessions({"hpc": {"login_node_sessions": "x"}}) == 1
+    assert S.login_node_refusal(5, kind="login_node", on_host=5, limit=6) == ""
+    assert S.login_node_refusal(6, kind="login_node", on_host=6, limit=6)
