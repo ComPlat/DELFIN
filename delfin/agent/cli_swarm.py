@@ -5,9 +5,10 @@ wires the argparse subcommand to ``main``. Every action is a thin call
 into delfin/agent/swarm/ -- no orchestration logic lives here, so the
 SW2 dashboard and the SW3 lead call the same library functions.
 
-Read-only actions: plan, status, list. Side-effecting: init (writes the
-example spec), start (creates worktrees + branches; the user confirms
-with --execute after seeing --dry-run).
+Read-only actions: plan, status, jobs. Side-effecting: init (writes the
+example spec), start (creates worktrees + branches; on a cluster login
+node it submits the swarm as a SLURM job after a check and a
+confirmation, see delfin/agent/swarm/job.py), stop (ends a swarm job).
 """
 
 from __future__ import annotations
@@ -44,11 +45,37 @@ def main(argv: list[str] | None = None) -> int:
                         help="Spec file to validate and plan from")
 
     p_start = sub.add_parser(
-        "start", help="Start the swarm: one worktree + branch per member")
+        "start",
+        help="Start the swarm (on a cluster login node: as a SLURM job)",
+        description=(
+            "Start the swarm a spec describes. On a cluster login node the "
+            "swarm is submitted as one SLURM job (at most "
+            "8 member sessions per job): it checks the spec, says what "
+            "will happen, asks, submits, and tells you how to watch and "
+            "stop it. Inside a job or on a workstation it creates one "
+            "worktree + branch per member, as before."))
+    p_start.add_argument("spec_file", nargs="?", default="",
+                         metavar="SPEC",
+                         help="Spec file to start from (default: "
+                              "swarm.yaml, or --spec)")
     p_start.add_argument("--spec", default="swarm.yaml",
                          help="Spec file to start from")
     p_start.add_argument("--dry-run", action="store_true",
                          help="Show exactly what would start; start nothing")
+    p_start.add_argument("--job", action="store_true",
+                         help="Submit it as a SLURM job of its own even "
+                              "inside a job (a login node always does)")
+    p_start.add_argument("-y", "--yes", action="store_true",
+                         help="Submit without asking (needed when no "
+                              "terminal can answer)")
+
+    sub.add_parser(
+        "jobs", help="Swarm jobs: state, node, time left, how to attach")
+    p_stop = sub.add_parser(
+        "stop", help="Stop a swarm job (its member sessions end)")
+    p_stop.add_argument("job", nargs="?", default="",
+                        help="The job id (default: the only one running), "
+                             "or 'all'")
 
     p_status = sub.add_parser(
         "status", help="Show swarm status (JSON with --json)")
@@ -75,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_start(args)
     if args.swarm_cmd == "status":
         return _cmd_status(args)
+    if args.swarm_cmd == "jobs":
+        return _cmd_jobs(args)
+    if args.swarm_cmd == "stop":
+        return _cmd_stop(args)
     if args.swarm_cmd == "triage":
         return _cmd_triage(args)
     if args.swarm_cmd == "merge":
@@ -114,18 +145,28 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_start(args: argparse.Namespace) -> int:
+    from .swarm import job as _job
     from .swarm.launch import LaunchError, plan_launch, render_dry_run
     from .swarm.launch import start_members
     from .swarm.spec import SpecError, load_spec
 
+    spec_path = Path(args.spec_file or args.spec)
     try:
-        spec = load_spec(args.spec)
+        spec = load_spec(spec_path)
         plan = plan_launch(spec)
+    except FileNotFoundError:
+        print(f"ERROR: no spec at {spec_path}. Write an example to edit "
+              "with `delfin-agent swarm init`.", file=sys.stderr)
+        return 1
     except (SpecError, LaunchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    where = _job.route(prefer_job=bool(args.job))
+    if where == "job":
+        return _start_as_job(args, spec_path)
     if args.dry_run:
         print(render_dry_run(plan))
+        print("Run the same command without --dry-run to start.")
         return 0
     try:
         result = start_members(spec, execute=True)
@@ -137,6 +178,83 @@ def _cmd_start(args: argparse.Namespace) -> int:
               f"{m['worktree']} (permission_mode {m['permission_mode']})")
     print("Pass the prompt to each member session, spaced; "
           "see the role prompts in delfin/agent/swarm/prompts.py.")
+    return 0
+
+
+def _start_as_job(args: argparse.Namespace, spec_path: Path) -> int:
+    """Check, explain, ask, submit: a swarm as a SLURM job."""
+    from .swarm import job as _job
+
+    text = spec_path.read_text(encoding="utf-8")
+    pre = _job.preflight(text, spec_path, route_="job",
+                         running=_job.jobs())
+    print(_job.confirmation_text(pre))
+    if not pre["ok"]:
+        return 1
+    if args.dry_run:
+        print("Nothing submitted (dry run). Run the same command without "
+              "--dry-run to submit.")
+        return 0
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("Not submitted: no terminal to confirm. Pass --yes to "
+                  "submit without asking.", file=sys.stderr)
+            return 2
+        try:
+            answer = input("Submit this swarm job? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            print("Not submitted.")
+            return 1
+    try:
+        rec = _job.submit(text, pre)
+    except _job.SwarmJobError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    res = rec["resources"]
+    print(f"Submitted swarm job {rec['job']} ({res['partition']}, "
+          f"{res['cpus']} cores, {res['mem']}, {res['time']}).")
+    rows = {str(r["job"]): r for r in _job.jobs()}
+    now = rows.get(rec["job"])
+    if now is not None and now.get("state") not in (None, "UNKNOWN"):
+        print("  " + _job.status_line(now))
+    else:
+        print("  It waits for a free compute node; `delfin-agent swarm "
+              "jobs` shows the node once it runs.")
+    print(f"  Job log: {rec['log']}")
+    for line in _job.watch_lines(rec["job"]):
+        print("  " + line)
+    return 0
+
+
+def _cmd_jobs(_args: argparse.Namespace) -> int:
+    from .swarm import job as _job
+
+    print(_job.format_jobs(_job.jobs()))
+    return 0
+
+
+def _cmd_stop(args: argparse.Namespace) -> int:
+    from .swarm import job as _job
+
+    rows = _job.jobs()
+    if args.job == "all":
+        ids = [str(r["job"]) for r in rows]
+    elif args.job:
+        ids = [args.job]
+    elif len(rows) == 1:
+        ids = [str(rows[0]["job"])]
+    else:
+        print(_job.format_jobs(rows))
+        if rows:
+            print("Several swarm jobs run -- name one: delfin-agent swarm "
+                  "stop JOB  (or: stop all)")
+        return 1
+    if not ids:
+        print("No swarm job runs.")
+        return 1
+    print(_job.cancel(ids))
     return 0
 
 
@@ -162,6 +280,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
         if report["waiting_for_user"]:
             print(f"waiting for you: {len(report['waiting_for_user'])} "
                   f"item(s)")
+        from .swarm import job as _job
+        if _job.host_kind() != "workstation":
+            rows = _job.jobs()
+            if rows:
+                print(_job.format_jobs(rows))
     problems = _status.validate_report(report)
     if problems:
         print("WARNING: status report failed its schema check: "

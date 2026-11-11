@@ -85,16 +85,23 @@ def plan_members(spec: dict[str, Any]) -> list[dict[str, Any]]:
 def plan_launch(spec: dict[str, Any]) -> dict[str, Any]:
     """The full launch plan: members + start order + what the user sees."""
     members = plan_members(spec)
+    # The example spec (and the help) put both under ``limits:``; a
+    # top-level key still wins, as before.
+    limits = spec.get("limits") if isinstance(spec.get("limits"), dict) \
+        else {}
     return {
         "goal": spec["goal"],
         "members": members,
-        "start_spacing_s": spec.get("start_spacing_s", 15),
-        "memory_gate": spec.get("memory_gate", True),
+        "start_spacing_s": spec.get("start_spacing_s",
+                                    limits.get("start_spacing_s", 15)),
+        "memory_gate": spec.get("memory_gate",
+                                limits.get("memory_gate", True)),
         "dry_run": True,
     }
 
 
-def start_members(spec: dict[str, Any], *, execute: bool = False) -> dict:
+def start_members(spec: dict[str, Any], *, execute: bool = False,
+                  repo: Path | str | None = None) -> dict:
     """Start the swarm: one worktree + branch per member.
 
     The default refuses: starting paid sessions must be a deliberate act
@@ -108,7 +115,19 @@ def start_members(spec: dict[str, Any], *, execute: bool = False) -> dict:
         raise LaunchError(
             "refusing to start without execute=True -- pass --dry-run to "
             "see the plan, or execute to start it")
-    repo = Path.cwd()
+    # Never on a shared login node (issue #640): there a swarm is
+    # submitted as a SLURM job (delfin.agent.swarm.job) and its job body
+    # calls this on the compute node.
+    from delfin.hpc_guard import on_login_node
+    if on_login_node():
+        raise LaunchError(
+            "a swarm does not start on a login node: it runs as a SLURM "
+            "job. Start it with `delfin-agent swarm start [swarm.yaml]` or "
+            "the Start button in the dashboard's Swarm tab; both submit "
+            "the job for you.")
+    # The repository the worktrees go into: the caller's (the dashboard
+    # passes the spec's repository), else the working directory as before.
+    repo = Path(repo) if repo else Path.cwd()
     started = []
     for member in plan["members"]:
         wt_path = repo / member["worktree"]
@@ -141,7 +160,7 @@ def render_dry_run(plan: dict[str, Any]) -> str:
                      f"(never bypass)")
         lines.append(f"    task: {m['task']}")
         lines.append("")
-    lines.append("Nothing started (dry run). Pass --execute to start.")
+    lines.append("Nothing started (dry run).")
     return "\n".join(lines)
 
 

@@ -193,10 +193,16 @@ def test_light_delfin_agent_commands_stay_on_the_login_node(cluster):
     assert ran == []
 
 
-def test_a_swarm_start_and_the_schedule_daemon_are_refused(cluster):
-    with pytest.raises(SystemExit):
-        hpc_guard.keep_cli_off_login_node(_handler("main", "delfin.agent.cli_swarm"), _Args(),
-                                          ["swarm", "start", "--execute"], env=LOGIN)
+def test_a_swarm_start_is_handed_to_the_swarm_job_and_the_daemon_refused(cluster):
+    """A swarm start passes the guard: the swarm command submits it as a
+    SLURM job itself (delfin.agent.swarm.job), it never runs here."""
+    ran = []
+    hpc_guard.keep_cli_off_login_node(_handler("main", "delfin.agent.cli_swarm"), _Args(),
+                                      ["swarm", "start"], env=LOGIN,
+                                      execvp=lambda f, a: ran.append(a))
+    assert ran == []
+    from delfin.agent.swarm import job
+    assert job.route(LOGIN) == "job"
     args = _Args()
     args.scheduler_action = "start"
     with pytest.raises(SystemExit):
