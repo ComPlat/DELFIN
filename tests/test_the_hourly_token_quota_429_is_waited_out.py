@@ -45,6 +45,12 @@ from delfin.agent import model_capabilities as mc
 
 URL = "https://fake-endpoint.example/v1"
 
+# The real sleep, captured at import: _make_client zeroes the time module's
+# sleep for every test, so a test that must sleep for real (the stop-during-
+# wait test) cannot restore it with `time.sleep` -- that name would already
+# resolve to the no-op at call time.
+_REAL_SLEEP = time.sleep
+
 QUOTA_BODY = (
     "Hourly token quota exceeded: 6,233,280 / 6,000,000 free tokens used. "
     "Free tokens = fresh tokens + 10% of cached tokens (prompt-cache hits "
@@ -123,6 +129,14 @@ def _make_client(monkeypatch, tmp_path, model="qwen2.5-coder:7b"):
         "delfin.agent.mcp_client.get_registry",
         lambda *a, **k: _FakeRegistry())
     import delfin.agent.api_client as A
+    # stream_message starts by probing doc/calc tool availability; a
+    # stub keeps the test hermetic -- without it the calc probe builds a
+    # full index of the real ~/calc corpus (~2-4 s) on this machine,
+    # which has nothing to do with quota handling and skews every
+    # wall-clock assertion.
+    monkeypatch.setattr(A._doc_executor, "_ensure_loaded", lambda: False)
+    monkeypatch.setattr(A._doc_executor, "_ensure_calc_loaded",
+                        lambda: False)
     # Real sliced sleeps must be instant in tests: the client waits in
     # 1 s slices honoring stop, but the slices themselves are driven
     # through A.time.sleep, which we zero here. A test that must observe
@@ -320,7 +334,11 @@ def test_unparsable_429_body_keeps_the_old_backoff(monkeypatch, tmp_path):
 def test_a_stop_during_the_quota_wait_breaks_it_within_2s(monkeypatch, tmp_path):
     A, client, gate_root = _make_client(monkeypatch, tmp_path)
     # Real sliced sleep so the wait is observable; the slices honor stop.
-    monkeypatch.setattr(A.time, "sleep", time.sleep)
+    # NOTE: _make_client has already zeroed the time module's sleep, so
+    # `time.sleep` here would resolve to that no-op -- restore the real
+    # sleep captured at import, and use a SHORT reset so the wait is a
+    # real-time wait the stopper can land inside.
+    monkeypatch.setattr(A.time, "sleep", _REAL_SLEEP)
     calls = {"n": 0}
     wait_started = threading.Event()
 
@@ -335,9 +353,10 @@ def test_a_stop_during_the_quota_wait_breaks_it_within_2s(monkeypatch, tmp_path)
     def _create(**kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
+            wait_started.set()  # the quota wait (or its retry) is about to start
             raise RateLimited(
                 "Hourly token quota exceeded: 1 / 2 free tokens used. "
-                "Quota resets in 300s.")
+                "Quota resets in 6s.")
         return _Stream([_Chunk([_Choice(_Delta(content="ok"), finish="stop")],
                                usage=_Usage())])
 
@@ -357,8 +376,11 @@ def test_a_stop_during_the_quota_wait_breaks_it_within_2s(monkeypatch, tmp_path)
 def test_a_budget_shorter_than_the_wait_ends_with_its_own_reason(
         monkeypatch, tmp_path):
     A, client, gate_root = _make_client(monkeypatch, tmp_path)
-    # The engine's run-ceiling probe: run_budget_s hit.
-    client.run_ceiling = lambda spent: "run_budget_s"
+    # The engine's run-ceiling probe: run_budget_s hit. The real probe
+    # measures elapsed wall clock, so it reports nothing at the first
+    # round and only fires once the quota wait has begun.
+    client.run_ceiling = lambda spent: (
+        "run_budget_s" if getattr(client, "quota_tokens_used", None) else "")
     calls = {"n": 0}
 
     def _create(**kwargs):

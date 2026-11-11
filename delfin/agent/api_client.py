@@ -11,6 +11,7 @@ import importlib
 import itertools
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -32087,6 +32088,86 @@ def _transient_retry_delay(attempt: int) -> float:
         scale = 1.0
     return max(0.0, d * scale)
 
+
+# The marker the endpoint's hourly token-quota 429 carries in its body.
+# A per-minute rate-limit 429 does not say this, so the marker alone
+# separates the two: a quota means "the key is spent, wait until the
+# reset"; per-minute congestion means "slow down now", which the backoff
+# ladder already cures.
+_QUOTA_429_MARKER = "hourly token quota exceeded"
+
+# The furthest a quota reset may park a run: the quota is HOURLY, so a
+# reset further than 65 minutes away cannot be the body of this hour's
+# quota (a clock skew, a stale proxy cache or a mispelled unit) and is
+# clamped rather than trusted.
+_QUOTA_RESET_MAX_S = 65 * 60
+
+
+def _quota_429_reset(body: str, *, now: float | None = None
+                     ) -> tuple[float, int, int] | None:
+    """Parse the hourly token-quota 429's body, or None.
+
+    Input: the exception's text (the body, whatever ``str(exc)`` embeds).
+    Output: ``(reset_epoch_s, tokens_used, tokens_limit)`` when the body
+    is a quota 429 whose reset could be read, else ``None`` -- and
+    ``None`` for every NON-quota 429, so a plain per-minute rate limit
+    keeps the transient backoff ladder.
+
+    The reset instant prefers the absolute UTC time ("Quota resets at
+    2026-11-09 22:00 UTC"); the relative "in Ns" is the fallback, because
+    the absolute instant survives a stalled run's start-up delay while
+    "in Ns" was measured the moment the endpoint answered. A reset further
+    than :data:`_QUOTA_RESET_MAX_S` away is clamped to the window's edge:
+    an hourly quota cannot reset further out than that. Never raises.
+    """
+    import datetime
+    try:
+        text = str(body or "")
+        low = text.lower()
+        if _QUOTA_429_MARKER not in low:
+            return None
+        t_now = float(now if now is not None else time.time())
+        used = limit = None
+        try:
+            import re
+            m = re.search(r"exceeded:\s*([\d,.\s]+)\s*/\s*([\d,.\s]+)", low)
+            if m:
+                used = int(float(m.group(1).replace(",", "").replace(" ", "")))
+                limit = int(float(m.group(2).replace(",", "").replace(" ", "")))
+        except (ValueError, AttributeError):
+            used = limit = None
+        reset = None
+        try:
+            import re
+            m = re.search(r"quota resets at\s+(\d{4}-\d{2}-\d{2}[ T]"
+                          r"\d{2}:\d{2}(?::\d{2})?)\s*utc\b", low)
+            if m:
+                stamp = m.group(1)
+                fmt = ("%Y-%m-%d %H:%M" if len(stamp) == 16
+                       else "%Y-%m-%d %H:%M:%S")
+                dt = datetime.datetime.strptime(stamp, fmt).replace(
+                    tzinfo=datetime.timezone.utc)
+                reset = dt.timestamp()
+        except (ValueError, AttributeError):
+            reset = None
+        if reset is None:
+            try:
+                import re
+                m = re.search(r"resets in\s+(\d+)\s*s", low)
+                if not m:
+                    m = re.search(r"resets at\s+[^(]*\(in\s+(\d+)\s*s\)", low)
+                if m:
+                    reset = t_now + int(m.group(1))
+            except (ValueError, AttributeError):
+                reset = None
+        if reset is None:
+            return None
+        if reset > t_now + _QUOTA_RESET_MAX_S:
+            reset = t_now + _QUOTA_RESET_MAX_S
+        return (reset, used or 0, limit or 0)
+    except Exception:
+        return None
+
 # How many times a single turn may switch to another model because KIT does
 # not serve the one it asked for (either "Model not found" or "…temporarily
 # unavailable"). A headless run is ONE long turn that can ask several models;
@@ -32884,12 +32965,15 @@ class OpenAIClient(_BaseClient):
         here; a client without one behaves exactly as before.
         """
         probe = getattr(self, "should_stop", None)
-        if probe is None:
-            return False
-        try:
-            return bool(probe())
-        except Exception:
-            return False
+        if probe is not None:
+            try:
+                if bool(probe()):
+                    return True
+            except Exception:
+                pass
+        # The client's own stop flag (set directly by a test harness or
+        # an embedding layer): same semantics as the probe.
+        return bool(getattr(self, "_stop_requested", False))
 
     def _run_ceiling_reached(self, spent: float) -> str:
         """The run ceiling (``run_budget_s`` / ``run_budget_usd``) the
@@ -34428,6 +34512,93 @@ class OpenAIClient(_BaseClient):
                         cost_usd=self._estimate_cost(_total_in, _total_out),
                         cached_tokens=_total_cached, stop_reason="stopped")
                     return
+                _quota = _quota_429_reset(str(_stream_exc), now=time.time())
+                if _quota is not None:
+                    # A KIT hourly token-quota 429: the key is spent until
+                    # the reset. This is a spend ceiling, not congestion, so
+                    # it never reaches the transient backoff ladder nor the
+                    # shared endpoint gate (the gate stays at its own limit
+                    # and the round's `finally` has no congestion to report).
+                    # Wait out the reset in ~1 s slices honoring stop, then
+                    # retry the round; the jitter keeps sessions sharing a
+                    # key from all firing at the same second. The wait counts
+                    # toward the run's wall-clock budget, so a budget shorter
+                    # than the reset ends the turn with its own stop reason.
+                    _reset_epoch, _used, _limit = _quota
+                    self.quota_tokens_used = _used
+                    self.quota_tokens_limit = _limit
+                    # A quota wait is a retry, so it consumes the same
+                    # attempt ladder as a transient error: once drained,
+                    # re-raise instead of waiting forever against an
+                    # endpoint that never recovers.
+                    if _stream_attempt >= _STREAM_RETRY_MAX:
+                        raise _stream_exc
+                    _stream_attempt += 1
+                    _remaining = _reset_epoch - time.time()
+                    if _remaining > 0:
+                        _remaining += random.uniform(5.0, 30.0)
+                        import datetime as _dt_mod
+                        _until = _dt_mod.datetime.fromtimestamp(
+                            _reset_epoch, tz=_dt_mod.timezone.utc
+                        ).strftime("%H:%M")
+                        yield StreamEvent(type="notice", text=(
+                            f"\n🪙 KIT token quota used up -- waiting until "
+                            f"{_until} UTC ({max(1, int(_remaining // 60))} "
+                            "min). No request goes out inside the window.\n"))
+                        # Slices are counted, not clocked: each 1 s slice is
+                        # one second of wait regardless of how fast the
+                        # host executes the sleep, so a mocked sleep still
+                        # terminates and a real sleep keeps the wait honest.
+                        while _remaining > 0:
+                            if self._stop_was_requested() or getattr(
+                                    self, "_stop_requested", False):
+                                yield StreamEvent(
+                                    type="message_delta",
+                                    input_tokens=_total_in,
+                                    output_tokens=_total_out,
+                                    cost_usd=self._estimate_cost(
+                                        _total_in, _total_out),
+                                    cached_tokens=_total_cached,
+                                    stop_reason="stopped")
+                                return
+                            _ceiling_hit = self._run_ceiling_reached(
+                                self._estimate_cost(_total_in, _total_out))
+                            if _ceiling_hit:
+                                yield StreamEvent(type="notice", text=(
+                                    "\n🛑 The run's wall-clock budget is "
+                                    "shorter than the quota reset: this "
+                                    "turn stops here and the run starts "
+                                    "no new work. Nothing was lost; the "
+                                    "next run continues.\n"))
+                                yield StreamEvent(
+                                    type="message_delta",
+                                    input_tokens=_total_in,
+                                    output_tokens=_total_out,
+                                    cost_usd=self._estimate_cost(
+                                        _total_in, _total_out),
+                                    cached_tokens=_total_cached,
+                                    stop_reason="quota_wait_exceeds_budget")
+                                return
+                            # 0.25 s sub-slices: a stop/pause must be honored
+                            # within ~1 s, and 4 sub-slices still make one
+                            # logical second (a mocked sleep terminates).
+                            time.sleep(0.25)
+                            _remaining -= 0.25
+                        # The slices are done (a mocked sleep burns them
+                        # in microseconds, before an external stop flag
+                        # can land): still no retry on a stopped turn.
+                        if self._stop_was_requested() or getattr(
+                                self, "_stop_requested", False):
+                            yield StreamEvent(
+                                type="message_delta",
+                                input_tokens=_total_in,
+                                output_tokens=_total_out,
+                                cost_usd=self._estimate_cost(
+                                    _total_in, _total_out),
+                                cached_tokens=_total_cached,
+                                stop_reason="stopped")
+                            return
+                    continue
                 if not _is_stream_unsupported_error(_stream_exc):
                     # Not a stream-format issue. A transient shared-proxy
                     # hiccup (timeout / 5xx / rate-limit) retries the round —
