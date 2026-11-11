@@ -200,6 +200,10 @@ _NOT_CARRIED = {
     # Per turn: what the turn verified (turn_verification), read by the
     # test-claim caveat of the same turn; the next turn starts its own.
     "_last_turn_verification",
+    # Per turn: the VR1 number+unit claim records of the answer just
+    # returned (claim -> file, line, verdict), shown next to that answer;
+    # the next turn verifies its own answer from scratch.
+    "last_claim_verification",
     # The experiment-discipline steering block of the current turn, the
     # same kind of per-message pointer.
     "_experiment_hint",
@@ -214,6 +218,9 @@ _NOT_CARRIED = {
     "_repeated_sequences",
     # U5: per-turn DSML re-request latches, re-armed by every real user turn.
     "_dsml_leak_spent", "_dsml_guard_active",
+    # LK1: the per-turn DSML re-request budget, rebuilt by every real user
+    # turn; a resumed session starts with no turn and no budget behind it.
+    "_dsml_policy",
     # Per turn: the history a fresh start cut in THIS turn, given back only
     # if the same turn ends unanswered; reset at every turn start.
     "_fresh_cut_this_turn",

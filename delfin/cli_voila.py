@@ -1024,6 +1024,10 @@ def main(argv=None):
         ),
     )
     args = parser.parse_args(argv)
+    from delfin.hpc_guard import exit_on_login_node
+    exit_on_login_node("the dashboard server",
+                       "open the cluster's JupyterHub (it runs on a compute node) "
+                       "or start delfin-voila inside a SLURM job")
     if getattr(args, "keep", False):
         _rc = _reexec_under_tmux(argv)
         if _rc is not None:

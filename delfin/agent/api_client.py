@@ -6926,7 +6926,7 @@ def _ends_with_a_question(text: str) -> bool:
 def _announces_an_action(text: str) -> bool:
     """True when an answer ENDS by saying what it is about to do.
 
-    The last sentence, not any sentence: "I'll read the lines" in the
+     The last sentence, not any sentence: "I'll read the lines" in the
     middle of a finished report is narration; at the very end, followed
     by nothing, it is a promise the turn did not keep. Never true for an
     answer that ends with a question -- that one is waiting on the user
@@ -6943,6 +6943,51 @@ def _announces_an_action(text: str) -> bool:
         if mark in last:
             last = last.rsplit(mark, 1)[-1]
     return bool(ANNOUNCES_ACTION_RE.search(last.strip()))
+
+
+#: The corrective user row for a promised-but-unmade tool call. The short
+#: wording the brief fixes on purpose: a large write_file is the usual
+#: reason the model stalled, so the row names parts up front.
+_PROMISED_CONT_TEXT = (
+    "No tool call arrived. Make the call now; if the file is large, "
+    "write it in parts.")
+
+#: Bounded corrective re-requests per turn for a promised tool call: one
+#: or two, never a loop. The field shape repeats ("the same run repeated
+#: this 6 times"), so the cap keeps a stalling model from consuming the
+#: round budget on promises alone.
+_PROMISED_CONT_MAX = 2
+
+#: Stop reason when the corrective budget is spent and the turn still
+#: ends on a promise: NOT end_turn ("done"), so a supervisor resumes it
+#: instead of treating the run as finished.
+_PROMISED_STOP_REASON = "promised_no_tool_call"
+
+
+def _promises_an_unmade_tool_call(text: str) -> bool:
+    """True when a final answer claims a tool call is happening NOW and
+    no tool call ran in that response.
+
+    Different from :func:`_announces_an_action`, which reads only the
+    LAST sentence and is fired by planning language ("I'll read ...").
+    The field shapes (harness main d44702503, 216 runs,
+    kit.deepseek-v4-flash) put the promise FIRST and declarative filler
+    last:
+
+        "I am executing the write_file tool call now -- creating
+        ``orca_scan_opi.py`` ... This is the actual tool invocation
+        being executed."
+
+    So the whole text is scanned, for the present-continuous/immediate
+    first-person claim plus the German present forms. Past reports
+    ("I wrote the file"), questions and plain answers do not match; the
+    caller supplies the no-tool-call fact.
+    """
+    from .german import PROMISES_TOOL_CALL_RE
+    tail = (text or "").strip()
+    if not tail or _ends_with_a_question(tail):
+        return False
+    return bool(PROMISES_TOOL_CALL_RE.search(tail))
 
 
 def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
@@ -7297,6 +7342,9 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "find_orca_errors", "extract_thermochem",
     # result_checks reads a finished run; it writes nothing.
     "result_checks",
+    # frame_lineage (#573): reads the .xyz frames of the given stage
+    # directories and compares them; it writes nothing and runs nothing.
+    "frame_lineage",
     # geometry_edit: xyz text in, xyz text out; no file write, no run.
     "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
     "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
@@ -9163,7 +9211,7 @@ def _shell_visible(cmd: str) -> str:
     return _blank_quoted(cmd)
 
 
-_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))")
+_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])([\w.-]+)\2|([\w.-]+))")
 
 
 def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
@@ -9308,6 +9356,192 @@ PERSON_OUTPUT_CHARS = 4_000_000
 # still reads max_output_chars: the attribute is never written.
 _PERSON_OUTPUT: "_contextvars.ContextVar[bool]" = (
     _contextvars.ContextVar("delfin_person_output", default=False))
+
+
+#: Model behind this session's commits, for the co-author trailer. A bash
+#: call run by a model turn appends the trailer to every git commit it
+#: carries; a command the USER runs from the prompt (!cmd) stays untouched
+#: because that code path runs inside ``output_for_a_person``. Set by the
+#: executor/engine once per session; empty means no trailer is appended.
+_TRAILER_MODEL: "_contextvars.ContextVar[str]" = (
+    _contextvars.ContextVar("delfin_trailer_model", default=""))
+
+
+def set_commit_trailer_model(model: str = "") -> None:
+    """Record the model that stands behind this session's commits.
+
+    The executor appends ``Co-Authored-By: DELFIN-Agent (<model>) <email>``
+    to every ``git commit`` a model bash call runs, unless
+    ``agent.commit_coauthor`` is false or the call is a user ``!cmd``. Empty
+    model turns the trailer off. Takes effect on this thread only.
+    """
+    _TRAILER_MODEL.set(model or "")
+
+
+def _commit_trailer_enabled() -> bool:
+    """Model set and the setting not switched off and not a user !cmd here."""
+    if _TRAILER_MODEL.get() and not _PERSON_OUTPUT.get():
+        from delfin.user_settings import load_settings
+        agent = (load_settings() or {}).get("agent") or {}
+        return bool(agent.get("commit_coauthor", True))
+    return False
+
+
+def _commit_trailer_value() -> str:
+    """The exact trailer line for the current model/email settings."""
+    model = _TRAILER_MODEL.get()
+    from delfin.user_settings import load_settings
+    from delfin.user_settings import DEFAULT_SETTINGS
+    agent = (load_settings() or {}).get("agent") or {}
+    email = str(agent.get("commit_coauthor_email", "") or "").strip()
+    if not email:
+        email = (
+            (DEFAULT_SETTINGS.get("agent") or {})
+            .get("commit_coauthor_email", "") or "")
+    return f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+
+
+def _commit_trailer_rewrite(cmd: str) -> str:
+    """Append a co-author ``--trailer`` to every git commit a model runs.
+
+    ``_bash_isolation_argv`` is the single choke point every bash command
+    (foreground, background, detach) passes through, so rewriting the command
+    string there covers all of them. Recognises ``git commit`` in each
+    top-level ``&&`` / ``;`` / ``|`` segment -- including the ``-C`` / ``-c
+    key=value`` spellings -- by locating the ``git`` program and its ``commit``
+    subcommand, then inserting ``--trailer '<value>'`` immediately after the
+    subcommand token. git appends the trailer at commit time and deduplicates
+    an identical value on ``--amend``, so an amend that re-applies the same
+    line stays single (the notes confirm this).
+    """
+    if not _commit_trailer_enabled():
+        return cmd
+    trailer = _commit_trailer_value()
+    try:
+        return _rewrite_segments_for_trailer(cmd, trailer)
+    except Exception:
+        # A failure to rewrite must not turn a valid git command into a
+        # refused or mangled one -- leave it exactly as written.
+        return cmd
+
+
+def _rewrite_segments_for_trailer(cmd: str, trailer: str) -> str:
+    """Insert ``--trailer '<value>'`` after each top-level ``git … commit``.
+
+    Walks ``cmd`` once, tracking quotes, backslashes and the chain
+    operators ``&&`` / ``||`` / ``;`` / ``|`` / newline, so a commit inside
+    a compound command (``git add x && git commit -m y``) is caught as
+    cleanly as a bare one. Heredoc bodies are opaque data and are skipped
+    verbatim (never read as words, never rewritten). Every ``commit`` found
+    gets ``--trailer '<value>'`` spliced in immediately after its token; git
+    accepts the option before or after ``-m`` / ``-F`` / ``--amend`` and
+    deduplicates an identical ``Co-Authored-By`` line on ``--amend``, so
+    re-applying the trailer never doubles it. The value is single-quoted
+    (git's ``--trailer`` takes a literal string; an embedded quote is
+    escaped for the shell).
+    """
+    trailer_arg = " --trailer '" + trailer.replace("'", "'\\''") + "'"
+    # insertion byte-offsets into cmd, one per git-commit segment
+    inserts: list[int] = []
+    q: str | None = None
+    i, n = 0, len(cmd)
+    # token start offsets of the current segment (offsets into cmd)
+    seg_words: list[int] = []
+    while i < n:
+        c = cmd[i]
+        if c == "\\" and q != "'" and i + 1 < n:
+            i += 2
+            continue
+        if q is not None:
+            q = None if c == q else q
+            i += 1
+            continue
+        if c in ("'", '"'):
+            q = c
+            i += 1
+            continue
+        if cmd[i:i + 2] == "<<":
+            nr = _consumed_span(cmd, i)
+            if nr is not None:
+                i = nr
+                continue
+        if c in " \t":
+            i += 1
+            continue
+        if c in ("|", ";") or cmd[i:i + 2] in ("&&", "||") or c == "\n":
+            pos = _commit_sub_pos(cmd, seg_words)
+            if pos is not None:
+                inserts.append(pos)
+            seg_words = []
+            i += 2 if cmd[i:i + 2] in ("&&", "||") else 1
+            continue
+        # a word starts; consume until a shell-breaking character
+        start = i
+        while i < n and cmd[i] not in " \t\n;|&'\"\\":
+            i += 1
+        seg_words.append(start)
+    pos = _commit_sub_pos(cmd, seg_words)
+    if pos is not None:
+        inserts.append(pos)
+    if not inserts:
+        return cmd
+    # splice from the end so earlier offsets stay valid
+    out = cmd
+    for off in sorted(inserts, reverse=True):
+        out = out[:off] + trailer_arg + out[off:]
+    return out
+
+
+def _consumed_span(cmd: str, i: int):
+    """Offset just past a here-document body starting at ``i`` (``<<``), or
+    None when the ``<<`` is not a heredoc (a here-string ``<<<`` or a bare
+    redirect ``<<`` into an empty name, which cannot be an operator).
+    Mirrors ``_split_shell_segments``'s heredoc handling.
+    """
+    if cmd[i:i + 3] == "<<<":
+        return None
+    body, end = _consume_heredoc(cmd, i)
+    return end if body is not None else None
+
+
+def _commit_sub_pos(cmd: str, words: list[int]) -> int | None:
+    """Byte offset in ``cmd`` just after a ``commit`` token, if ``words``
+    spell ``git … commit``; else None.
+
+    ``words`` are token start offsets of one shell segment. The leading
+    env assignments (``VAR=x git …``) and ``-C <dir>`` / ``-c key=val``
+    option/value pairs are skipped, so ``git -c user.email=t commit`` and
+    ``git -C /repo -c k=v commit`` both resolve to ``commit``.
+    """
+    if not words:
+        return None
+    n = len(words)
+
+    def _tok(k: int) -> str:
+        e = words[k + 1] if k + 1 < n else len(cmd)
+        return cmd[words[k]:e].strip()
+
+    def _is_env_assignment(k: int) -> bool:
+        t = _tok(k)
+        return "=" in t and not t.startswith("=") and not t.startswith("-")
+
+    def _takes_value(k: int) -> bool:
+        t = _tok(k)
+        return t == "-C" or t == "-c"
+
+    # program: skip leading env assignments
+    p = 0
+    while p < n and _is_env_assignment(p):
+        p += 1
+    if p >= n or _tok(p) != "git":
+        return None
+    # subcommand: skip -C/-c option/value pairs between git and the operand
+    s = p + 1
+    while s < n and _takes_value(s):
+        s += 2 if s + 1 < n else 1
+    if s >= n or _tok(s) != "commit":
+        return None
+    return words[s] + len("commit")
 
 
 @contextlib.contextmanager
@@ -14693,7 +14927,8 @@ _CONTINUE_TEXT = {
                    "write_file(..., mode=\"append\") -- or say in your "
                    "answer that it is not done."),
     "cut_call": ("[Continue] Your last tool call was cut at the output "
-                 "limit and did not run. Write a long file in parts: "
+                 "limit and did not run: the arguments were cut off at "
+                 "the output limit; write the file in smaller parts -- "
                  "write_file(path, <first part>), then write_file(path, "
                  "<next part>, mode=\"append\")."),
     "cut": ("[Continue] Your answer was cut at the output limit. Continue "
@@ -15853,6 +16088,12 @@ def _classifier_timeout_s() -> float:
         return min(max(seconds, low), high)
     except Exception:
         return _CLASSIFIER_TIMEOUT_S
+
+
+#: When the classifier's attach last fetched the served roster in this
+#: process (None: never), and how long a failed fetch waits before the next.
+_ROSTER_TRIED_AT: Optional[float] = None
+_ROSTER_RETRY_S = 300.0
 
 
 def _classifier_settings() -> Optional[dict]:
@@ -31457,6 +31698,7 @@ def _bash_isolation_argv(
     -- with ``_caged_readonly_paths`` bound read-only and without the
     SLURM controller route.
     """
+    cmd = _commit_trailer_rewrite(cmd)
     plain = ["/bin/bash", "-c", cmd]
     _announce_child_network()
     # The --isolate override (set once per process by `delfin-agent
@@ -31876,7 +32118,29 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # A handful of API/stream failures are TRANSIENT — a shared-proxy hiccup, not a
 # bad request. On long KIT runs in a field report (vLLM behind an Open-WebUI proxy) a
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
-_STREAM_RETRY_MAX = 3
+_STREAM_RETRY_MAX = int(os.environ.get("DELFIN_STREAM_RETRY_MAX", "7") or 7)
+
+
+def _transient_retry_delay(attempt: int) -> float:
+    """Seconds to wait before transient-retry ``attempt`` (1-based).
+
+    The first three stay short (1.5, 3, 6 s: a proxy hiccup); later ones
+    back off to minutes (30, 60, 120, 240 s, then 240) with +-20 % jitter, so
+    a KIT outage of ~8 minutes is ridden out instead of ending the turn.
+    Measured 2026-11-06/07: 504/503 bursts of several minutes ended dozens of
+    unattended sessions after the old 1.5/3/6 s schedule (10.5 s in total).
+    ``DELFIN_STREAM_RETRY_DELAY_SCALE`` scales the wait (the test suite sets 0).
+    """
+    import random
+    base = (1.5, 3.0, 6.0, 30.0, 60.0, 120.0, 240.0)
+    d = base[attempt - 1] if attempt <= len(base) else base[-1]
+    if attempt > 3:
+        d *= random.uniform(0.8, 1.2)
+    try:
+        scale = float(os.environ.get("DELFIN_STREAM_RETRY_DELAY_SCALE", "1"))
+    except ValueError:
+        scale = 1.0
+    return max(0.0, d * scale)
 
 # How many times a single turn may switch to another model because KIT does
 # not serve the one it asked for (either "Model not found" or "…temporarily
@@ -32952,13 +33216,31 @@ class OpenAIClient(_BaseClient):
             # session on another backend asks its own model instead of
             # failing on every action.
             wire = self.model
-        resp = self.client.with_options(
-            timeout=_classifier_timeout_s(), max_retries=0,
-        ).chat.completions.create(
-            model=wire or self.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=120, stream=False)
-        return str(resp.choices[0].message.content or "")
+        t0 = time.monotonic()
+        outcome = "error"
+        try:
+            resp = self.client.with_options(
+                timeout=_classifier_timeout_s(), max_retries=0,
+            ).chat.completions.create(
+                model=wire or self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=120, stream=False)
+            outcome = "verdict"
+            return str(resp.choices[0].message.content or "")
+        finally:
+            # A request against the endpoint's quota like the turn's own:
+            # written beside them, marked, so the count can be split by what
+            # spent it (KIT: 2,000 requests a key a day, 2026-11-11).
+            session = getattr(self, "metrics_session", "")
+            if isinstance(session, str) and session:
+                try:
+                    from . import turn_metrics as _tm_cls
+                    _tm_cls.record_request(
+                        session, model=wire or self.model, purpose="classifier",
+                        total_ms=int((time.monotonic() - t0) * 1000),
+                        finish_reason=outcome)
+                except Exception:
+                    pass
 
     def _attach_classifier_runner(
         self, permissions: Optional["KitToolPermissions"],
@@ -32974,9 +33256,13 @@ class OpenAIClient(_BaseClient):
         # classifier must be independent of the session's model (a slow one
         # with many agents latched every action to a human, 2026-10-29). The
         # client is the only place with both the session model and the
-        # endpoint, so it stows the resolved ids here. Cached roster only
-        # (no fetch): re-attaching on every set_permissions must not spend a
-        # /v1/models round trip each time.
+        # endpoint, so it stows the resolved ids here. The cached roster
+        # first; when it is empty -- every fresh process, so every headless
+        # and swarm session (measured 2026-11-11: the classifier ran on
+        # deepseek alone with no confirmation chain) -- it is fetched once,
+        # and a failed fetch is retried at most every _ROSTER_RETRY_S, so
+        # re-attaching on every set_permissions does not spend a /v1/models
+        # round trip each time.
         try:
             from . import model_capabilities as _mc
             from .action_classifier import DEFAULT_MODEL as _default_cls
@@ -32984,6 +33270,14 @@ class OpenAIClient(_BaseClient):
             base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
             api_key = getattr(self, "_api_key", "") or ""
             served = _mc.kit_models_served(base_url, api_key)
+            if not served and getattr(self, "_provider", "") == "kit":
+                global _ROSTER_TRIED_AT
+                now = time.monotonic()
+                if (_ROSTER_TRIED_AT is None
+                        or now - _ROSTER_TRIED_AT >= _ROSTER_RETRY_S):
+                    _ROSTER_TRIED_AT = now
+                    served = _mc.kit_models_served(base_url, api_key,
+                                                   fetch=True)
             model = getattr(self, "model", "") or ""
             cfg_model = str(cfg.get("model") or _default_cls)
             explicit = bool(cfg.get("explicit_model"))
@@ -33732,6 +34026,10 @@ class OpenAIClient(_BaseClient):
         # Whether the announced-action continuation already fired this
         # turn; see the second auto-continue trigger.
         _announced_count = 0
+        # Bounded corrective re-requests for a PROMISED tool call that
+        # never came (shapes 1-4 in the field, harness main d44702503);
+        # see the corrective trigger below the announce continuation.
+        _promised_count = 0
         # The go-ahead and prose-choice triggers (go_ahead.py), once each
         # per turn, judged against the message that opened the turn and
         # every tool the turn called.
@@ -34238,7 +34536,7 @@ class OpenAIClient(_BaseClient):
                         _round_in = 0
                         finish_reason = None
                         _stream_attempt += 1
-                        _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
+                        _delay = _transient_retry_delay(_stream_attempt)
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
@@ -34583,11 +34881,14 @@ class OpenAIClient(_BaseClient):
                         _dsml_leaked = None
                     if _dsml_leaked:
                         self._dsml_rerequest = True
+                        # Sourced wording (LK1): the notice text lives in
+                        # leak_recovery.dsml_leak_notice, the one place both
+                        # this per-request notice and the engine's exhaustion
+                        # caveat read it from.
+                        from delfin.agent.leak_recovery import dsml_leak_notice
                         yield StreamEvent(
                             type="notice",
-                            text=(f"\n\n⚠️ a call to {_dsml_leaked[0]} "
-                                  f"was written as text instead of calling "
-                                  f"the tool; it did not run.\n"),
+                            text=dsml_leak_notice(_dsml_leaked[0]),
                         )
 
             # If model made tool calls, execute them locally and loop
@@ -34717,10 +35018,10 @@ class OpenAIClient(_BaseClient):
                                                 "multi_edit", "apply_patch"):
                             result = json.dumps({"error": (
                                 f"invalid JSON in arguments for '{fn_name}': "
-                                f"{_args_parse_error}. The call was cut at "
-                                "the output limit and did NOT run; the same "
-                                "call cuts again. Write a long file in "
-                                "parts: write_file(path, <first part>), then "
+                                f"{_args_parse_error}. The arguments were "
+                                "cut off at the output limit; write the "
+                                "file in smaller parts: write_file(path, "
+                                "<first part>), then "
                                 "write_file(path, <next part>, "
                                 "mode=\"append\") for each further part."
                             )})
@@ -35882,6 +36183,48 @@ class OpenAIClient(_BaseClient):
             # 2026-10-20 (bug report davh 414e5a17): "Ich lese jetzt ...",
             # sent back once, read, announced the edit, and the turn ended --
             # turn after turn; the user saw "I'm doing it now" and nothing.
+            # Corrective trigger for a PROMISED tool call that never
+            # came. The four field shapes (harness main d44702503, 216
+            # runs on kit.deepseek-v4-flash, often right before a large
+            # write_file) end the turn with prose like "I am executing
+            # the write_file tool call now" and no tool call, so the run
+            # looks "done" with the task list untouched. PR #600 covers
+            # leaked tool-call MARKUP; this covers the prose promise.
+            # First, unlike the announce trigger below: the whole text is
+            # matched, not the last sentence, because the promise sits in
+            # the first sentence with declarative filler last. Second,
+            # unlike the announce trigger: it is gated on OPEN TASKS (the
+            # brief's condition), it does NOT need tool activity between
+            # rounds (the stalled model repeats the same sentence), and
+            # when the budget is spent the turn ends with a distinct
+            # stop_reason so a supervisor resumes it instead of a silent
+            # "done". Never after a tool ran in this response -- a tool
+            # result already answered the promise, and re-requesting
+            # would execute the step twice.
+            _promised_text = "".join(_text_chunks) if _text_chunks else ""
+            _promised_end_state = self._open_task_state()
+            _promised_fires = (
+                not _tool_calls
+                and _promised_count < _PROMISED_CONT_MAX
+                and _auto_cont_count < _AUTO_CONT_CAP
+                and not self._waiting_on_watched_jobs()
+                and _promised_end_state.get("state", "none")
+                in ("open", "unknown")
+                and _promises_an_unmade_tool_call(_promised_text))
+            if _promised_fires:
+                _promised_count += 1
+                _auto_cont_count += 1
+                if _promised_text.strip():
+                    api_messages.append(
+                        {"role": "assistant", "content": _promised_text})
+                api_messages.append({"role": "user",
+                                     "content": _PROMISED_CONT_TEXT})
+                yield StreamEvent(
+                    type="notice",
+                    text=("\n\n↻ promised a tool call → corrected: "
+                          + _PROMISED_CONT_TEXT + "\n"))
+                continue
+
             _announced = (_announced_count < _ANNOUNCE_CONT_MAX
                           and (_announced_count == 0 or _did_tools_since_cont)
                           and _auto_cont_count < _AUTO_CONT_CAP
@@ -35999,9 +36342,19 @@ class OpenAIClient(_BaseClient):
                                   text="\n\n" + _end_notice + "\n")
             _stop = finish_reason or "end_turn"
             if _stop in ("end_turn", "stop", ""):
-                _stop = {"open": "end_turn_open_tasks",
-                         "unknown": "end_turn_tasks_unknown"}.get(
-                             str(_end_state.get("state", "")), "end_turn")
+                # A promise that survived the corrective budget: the turn
+                # does not end "done" -- the supervisor sees WHY it ended
+                # and resumes it (the brief's clear stop_reason).
+                if (not _tool_calls
+                        and _promised_end_state.get("state", "none")
+                        in ("open", "unknown")
+                        and _promises_an_unmade_tool_call(
+                            "".join(_text_chunks) if _text_chunks else "")):
+                    _stop = _PROMISED_STOP_REASON
+                else:
+                    _stop = {"open": "end_turn_open_tasks",
+                             "unknown": "end_turn_tasks_unknown"}.get(
+                                 str(_end_state.get("state", "")), "end_turn")
             _uncommitted = _uncommitted_note(
                 getattr(self._permissions, "workspace", None))
             if _uncommitted:

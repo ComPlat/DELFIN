@@ -10,7 +10,17 @@ from delfin import recalc_control
 from delfin.config import validate_control_text
 
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck
-from .input_processing import parse_resource_settings
+
+
+def _input_processing():
+    """Import .input_processing on first use.
+
+    That module pulls in delfin.smiles_converter and, through it,
+    delfin.manta.ml_tables, whose module level ``import stk`` costs seconds
+    of every process start.
+    """
+    from . import input_processing
+    return input_processing
 
 
 def _builds_from_smiles(job_dir: Path, control_text: str):
@@ -125,7 +135,7 @@ def create_tab(ctx):
                 recalc_control.remember_before_edit(job_dir, previous_text)
             control_path.write_text(control_text)
 
-            pal, maxcore = parse_resource_settings(recalc_control_widget.value)
+            pal, maxcore = _input_processing().parse_resource_settings(recalc_control_widget.value)
             if pal is None or maxcore is None:
                 print('Error: PAL/maxcore not found in CONTROL.txt')
                 return
