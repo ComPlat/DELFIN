@@ -203,3 +203,15 @@ def test_a_deferred_tab_sends_each_page_script_on_its_own():
     body = src[i:i + 2500]
     assert "for fresh in ctx.init_js_parts[already:]:" in body
     assert "'\\n'.join(ctx.init_js_parts[already:])" not in body
+
+
+def test_tabs_built_before_shown_wait_for_their_root():
+    """A tab built in the background (warm-up, or the agent tab's needs) has
+    no DOM until its first open; its bind script gave up after 4 s and the
+    splitter and the explorer's clicks stayed dead (11.11., Calculations)."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "delfin" / "dashboard"
+    calc = (root / "tab_calculations_browser.py").read_text(encoding="utf-8")
+    lit = (root / "tab_literature.py").read_text(encoding="utf-8")
+    assert "__delfinCalcRootWaits" in calc and "initCalcScopeBind(0)" in calc
+    assert "__delfinLitRootWaits" in lit and "initLitSplitter(0)" in lit
