@@ -155,7 +155,8 @@ jobs:
           - { os: ubuntu-24.04-arm, target: bun-linux-arm64, patched: true }
           # macOS: the prebuilt native library for now -- the patched build
           # script does not build Darwin yet (on the user checklist).
-          - { os: macos-14, target: bun-darwin-arm64, patched: false }
+          # macos-14 is retired as well; macos-15 is the Apple silicon image.
+          - { os: macos-15, target: bun-darwin-arm64, patched: false }
           # macos-13 is retired; macos-15-intel is the x86_64 image.
           - { os: macos-15-intel, target: bun-darwin-x64, patched: false }
     steps:
