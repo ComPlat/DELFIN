@@ -51,3 +51,62 @@ def open_spec(spec):
         spec['widget'] = None
         return None
     return spec['widget']
+
+
+#: Seconds after the page went out before the first idle build, and
+#: between two. Each build holds the kernel for its own duration; a click
+#: in that moment waits at most for one tab, never for the whole bar.
+WARM_FIRST_S = 1.0
+WARM_GAP_S = 0.4
+
+
+def _call_later(delay, fn):
+    """Run *fn* on the kernel's event loop after *delay* s; False when
+    there is no running loop (a test, a plain script)."""
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        if not loop.is_running():
+            return False
+        loop.call_later(delay, fn)
+        return True
+    except Exception:
+        return False
+
+
+def warm_up(ctx, build_now, order, *, call_later=None, env=None):
+    """Build the tabs not yet built, one per idle moment, in *order*.
+
+    Input: the dashboard context, its ``_build_tab_now`` and the specs in
+    the order they should become ready. Each step builds the first spec of
+    *order* that is still unbuilt (and buildable), then schedules the next
+    step; a spec a click already built is skipped. Off with
+    ``DELFIN_DASHBOARD_WARM=0``. Returns whether the first step was
+    scheduled.
+    """
+    import os
+    env = os.environ if env is None else env
+    if str(env.get('DELFIN_DASHBOARD_WARM', '1')).strip() in ('0', 'false', 'no', 'off'):
+        return False
+    call_later = call_later or _call_later
+    queue = []
+    seen = set()
+    for spec in order or []:
+        if id(spec) in seen:
+            continue
+        seen.add(id(spec))
+        queue.append(spec)
+
+    def step():
+        while queue:
+            spec = queue.pop(0)
+            if spec.get('widget') is None and callable(spec.get('build')):
+                try:
+                    build_now(spec)
+                except Exception:
+                    pass
+                break
+        if queue:
+            call_later(WARM_GAP_S, step)
+
+    return bool(call_later(WARM_FIRST_S, step))

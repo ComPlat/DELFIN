@@ -744,6 +744,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         fresh = '\n'.join(ctx.init_js_parts[already:])
         if fresh.strip():
             _append_js(ctx, fresh)
+        # On the bar already as a placeholder: the built tab goes INTO it.
+        # Handing the Tab widget a new children list makes the browser
+        # rebuild every tab from the first changed position -- the tab the
+        # reader is on included -- which is what made a tab switch slow.
+        holder = spec.get('placeholder')
+        if holder is not None and spec.get('widget') is not None:
+            holder.children = (spec['widget'],)
 
     def _sorted_visible_specs():
         order, hidden = _resolve_tab_preferences()
@@ -794,7 +801,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             for spec in ctx.tab_specs or []:
                 if spec.get('title') == title and spec.get('widget') is None:
                     _build_tab_now(spec)
-                    if spec.get('widget') is not None:
+                    # A placeholder was filled in place; only a tab that
+                    # had none needs the bar handed a new list.
+                    if (spec.get('widget') is not None
+                            and spec.get('placeholder') is None):
                         ctx.rebuild_dashboard_tabs(spec['title'])
                     break
             if title == 'Job Status':
@@ -806,15 +816,19 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         _tab_change_state['handler'] = _on_tab_change
 
     def _bar_widget(spec):
-        """What the bar shows for *spec*: its built widget, or an empty
-        placeholder while it waits for its first open; None for a tab that
-        has neither (a build that failed)."""
+        """What the bar shows for *spec*: the placeholder it went out with
+        (filled once built -- the same object, so the bar never changes
+        under the reader), its built widget, or a new empty placeholder
+        while it waits; None for a tab that has none of these (a build
+        that failed)."""
+        if spec.get('placeholder') is not None:
+            return spec['placeholder']
         if spec.get('widget') is not None:
             return spec['widget']
         if not callable(spec.get('build')):
             return None
-        if spec.get('placeholder') is None:
-            spec['placeholder'] = widgets.VBox()
+        spec['placeholder'] = widgets.VBox(
+            layout=widgets.Layout(width='100%'))
         return spec['placeholder']
 
     def _rebuild_dashboard_tabs(selected_title=None):
@@ -866,6 +880,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     _rebuild_dashboard_tabs()
     tabs = ctx.tabs_widget
+    # The tabs not built at start are built right after the page is out,
+    # one per idle moment: the DELFIN Agent first (it is what most readers
+    # open next, and it builds the tabs it drives), then the rest in bar
+    # order -- so a click finds its tab ready instead of building it.
+    tab_schedule.warm_up(
+        ctx, _build_tab_now,
+        order=[s for s in ctx.tab_specs or [] if s.get('id') == 'agent']
+        + _sorted_visible_specs())
 
     # -- header bar --------------------------------------------------------
     # One row: the branch switcher, Test, the running previews, Pull, More

@@ -136,3 +136,54 @@ def test_every_visible_tab_is_on_the_bar_and_builds_on_its_first_open(tmp_path):
     done = subprocess.run([sys.executable, "-c", code], capture_output=True,
                           text=True, env=child_env(tmp_path), timeout=600)
     assert done.returncode == 0, done.stderr[-1500:]
+
+
+# -- warm-up: tabs become ready in idle moments (11.11.) ----------------------
+
+from delfin.dashboard import tab_schedule  # noqa: E402
+
+def _fake_loop():
+    calls = []
+    return calls, (lambda delay, fn: calls.append((delay, fn)) or True)
+
+
+def test_warm_up_builds_one_tab_per_idle_step_in_order():
+    built = []
+    specs = [{"id": "agent", "build": lambda: None},
+             {"id": "calc", "build": lambda: None},
+             {"id": "done", "widget": object(), "build": lambda: None}]
+
+    def build_now(spec):
+        built.append(spec["id"])
+        spec["widget"] = object()
+        spec.pop("build", None)
+    calls, later = _fake_loop()
+    assert tab_schedule.warm_up(None, build_now, specs, call_later=later, env={})
+    while calls:
+        _, fn = calls.pop(0)
+        fn()
+    assert built == ["agent", "calc"]          # the built one is skipped
+
+
+def test_a_tab_a_click_built_first_is_not_built_again():
+    built = []
+    spec = {"id": "agent", "build": lambda: None}
+    calls, later = _fake_loop()
+    tab_schedule.warm_up(None, lambda s: built.append(s["id"]), [spec, spec],
+                         call_later=later, env={})
+    spec["widget"] = object()                  # the reader clicked it meanwhile
+    while calls:
+        calls.pop(0)[1]()
+    assert built == []
+
+
+def test_warm_up_can_be_switched_off():
+    calls, later = _fake_loop()
+    assert not tab_schedule.warm_up(None, lambda s: None, [{"build": print}],
+                                    call_later=later,
+                                    env={"DELFIN_DASHBOARD_WARM": "0"})
+    assert calls == []
+
+
+def test_without_a_running_loop_nothing_is_scheduled():
+    assert tab_schedule._call_later(0.1, lambda: None) is False
