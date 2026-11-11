@@ -1,0 +1,49 @@
+"""Sessions can be renamed; the working directory completes like a shell.
+
+The person (11.11.): renaming sessions, and picking the path the way it is
+usual today -- suggestions while typing, Tab completes, arrows choose.
+"""
+from __future__ import annotations
+
+import inspect
+
+from delfin.dashboard import agent_sessions as AS
+
+
+def test_a_chosen_name_wins_over_the_first_message():
+    state = {"chat_messages": [{"role": "user", "content": "Hi there"}],
+             "_messenger_titles": {"sid1": "RX1 review"}}
+    assert AS._session_title(state, "sid1") == "RX1 review"
+    assert AS._session_title(state, "other") == "Hi there"
+    assert AS._session_title(state) == "Hi there"
+
+
+def test_the_name_is_kept_where_the_save_reads_it():
+    src = inspect.getsource(AS.create_tab)
+    # the agent tab's save writes _messenger_titles[sid] as the saved title
+    assert 'state.setdefault("_messenger_titles", {})' in src
+    assert "_store.rename_session(sid, name)" in src
+    assert "delfin-session-rename-btn" in src
+
+
+def test_escape_cancels_a_rename_and_is_bound_once():
+    js = AS._RENAME_KEYS_JS
+    assert "Escape" in js and ".delfin-live-rename-cancel" in js
+    assert "__delfinRenameKeys" in js
+
+
+def test_the_folder_box_has_keys_like_a_shell():
+    js = AS._PATH_KEYS_JS
+    for key in ("'Tab'", "'ArrowDown'", "'ArrowUp'", "'Enter'", "'Escape'"):
+        assert key in js, key
+    assert "__delfinPathKeys" in js
+    src = inspect.getsource(AS.create_tab)
+    assert "widgets.Text(" in src and "delfin-path-input" in src
+    assert "delfin-path-suggest" in src
+
+
+def test_what_fits_the_typed_path_comes_first():
+    src = inspect.getsource(AS.create_tab)
+    i = src.index("def _show_suggestions")
+    body = src[i:i + 1500]
+    assert "fits + [c for c in choices if c not in fits]" in body

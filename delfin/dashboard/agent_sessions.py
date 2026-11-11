@@ -218,6 +218,19 @@ _SIDEBAR_CSS = """<style>
     border-radius: 4px; z-index: 10; pointer-events: auto; }
 .delfin-session-splitter:hover { background: linear-gradient(
     to right, #b0b0b0, #e0e0e0, #b0b0b0); }
+/* The working-directory list (the box's suggestions). */
+.delfin-path-suggest { gap: 0; max-height: 220px; overflow-y: auto !important;
+    overflow-x: hidden !important; border: 1px solid #e5e7eb;
+    border-radius: 6px; background: #ffffff; }
+.delfin-path-suggest:empty { display: none; }
+.delfin-path-option { width: 100% !important; height: 24px !important;
+    margin: 0 !important; padding: 0 8px !important; border: 0;
+    background: transparent !important; text-align: left; font-size: 12px;
+    color: #1f2937; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; font-family: 'SF Mono', 'Consolas', monospace; }
+.delfin-path-option:hover, .delfin-path-option.delfin-path-active {
+    background: #dbeafe !important; color: #0f172a; }
+.delfin-session-rename-input { width: 100% !important; }
 </style>"""
 
 #: Drag the sessions column to a width. Runs once per shell (data-bound
@@ -225,6 +238,81 @@ _SIDEBAR_CSS = """<style>
 #: one keep_js() call from the dashboard. The widths it writes override the
 #: 236px CSS default on the sidebar, so a drag sticks and a refresh keeps
 #: the choice. Mirrors the calc browser's .calc-splitter handler.
+#: Esc in a rename box cancels it, in the session list as in the running
+#: list (live_tab binds the same key for its own view; bound once here so
+#: the list does not depend on a service view having been opened).
+#: Folders shown under the working-directory box at once (the list
+#: scrolls; workspace_choices bounds what is read at _PICKER_MAX).
+_SUGGEST_SHOWN = 40
+
+#: Keys of the working-directory box: Tab, Up/Down, Enter, Esc.
+_PATH_KEYS_JS = """\
+(function () {
+    if (window.__delfinPathKeys) return;
+    window.__delfinPathKeys = true;
+    function opts(form) {
+        return Array.prototype.slice.call(
+            form.querySelectorAll('.delfin-path-suggest .delfin-path-option'));
+    }
+    function mark(list, i) {
+        list.forEach(function (b, j) {
+            b.classList.toggle('delfin-path-active', j === i);
+            if (j === i && b.scrollIntoView) b.scrollIntoView({block: 'nearest'});
+        });
+    }
+    document.addEventListener('keydown', function (e) {
+        var t = e.target;
+        if (!t || !t.closest || t.tagName !== 'INPUT') return;
+        var host = t.closest('.delfin-path-input');
+        var form = host && t.closest('.delfin-session-form');
+        if (!form) return;
+        var list = opts(form);
+        var at = list.findIndex(function (b) {
+            return b.classList.contains('delfin-path-active'); });
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if (!list.length) return;
+            e.preventDefault();
+            at = e.key === 'ArrowDown' ? Math.min(list.length - 1, at + 1)
+                                       : Math.max(0, at - 1);
+            mark(list, at);
+        } else if (e.key === 'Tab' && !e.shiftKey && list.length) {
+            e.preventDefault();
+            (list[at >= 0 ? at : 0]).click();
+            setTimeout(function () { t.focus(); }, 0);
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (at >= 0) { list[at].click(); setTimeout(function () { t.focus(); }, 0); return; }
+            var start = form.querySelector('.delfin-session-start');
+            // Let the typed value reach the kernel before Start reads it.
+            if (start) setTimeout(function () { start.click(); }, 120);
+        } else if (e.key === 'Escape') {
+            var cancel = form.querySelector('.delfin-session-cancel');
+            if (cancel) { e.preventDefault(); cancel.click(); }
+        }
+    }, true);
+    document.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest && e.target.closest('.delfin-path-option');
+        var form = b && b.closest('.delfin-session-form');
+        var input = form && form.querySelector('.delfin-path-input input');
+        if (input) setTimeout(function () { input.focus(); }, 0);
+    }, true);
+})();
+"""
+
+_RENAME_KEYS_JS = """\
+(function () {
+    if (window.__delfinRenameKeys) return;
+    window.__delfinRenameKeys = true;
+    document.addEventListener('keydown', function (e) {
+        var t = e.target;
+        if (!t || !t.closest || e.key !== 'Escape') return;
+        var box = t.closest('.delfin-live-rename');
+        var cancel = box && box.querySelector('.delfin-live-rename-cancel');
+        if (cancel) { e.preventDefault(); e.stopPropagation(); cancel.click(); }
+    }, true);
+})();
+"""
+
 _SPLITTER_INIT_JS = """\
 (function () {
     // The agent tab's DOM may not exist when this runs. ipywidgets Tab
@@ -1137,7 +1225,15 @@ def is_delivered_message(text: str) -> bool:
     return str(text or "").lstrip().startswith(_DELIVERED_PREFIX)
 
 
-def _session_title(state: dict) -> str:
+def _session_title(state: dict, session_id: str = "") -> str:
+    """The name in the list: the one the person gave it, else the start of
+    its first message. A chosen name lives in ``_messenger_titles`` -- the
+    map the agent tab's own save writes as the saved session's title, so
+    it survives a reload and shows in Resume."""
+    chosen = (state.get("_messenger_titles") or {}).get(session_id) \
+        if session_id else ""
+    if chosen:
+        return str(chosen)
     for message in state.get("chat_messages") or []:
         if isinstance(message, dict) and message.get("role") == "user":
             text = " ".join(str(message.get("content") or "").split())
@@ -1510,10 +1606,18 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     new_btn = _classed(widgets.Button(description="+", tooltip="New session"),
                        "delfin-session-add")
     head = _classed(widgets.HBox([heading, new_btn]), "delfin-session-head")
-    workdir_box = widgets.Combobox(
-        options=workspace_choices(ctx), value=default_workspace(ctx),
-        placeholder="Working directory", ensure_option=False,
+    # The working directory is picked the way a terminal or an editor's
+    # quick-open does it: type a path, the folders that fit are listed
+    # under the box; Tab takes the highlighted (or first) one, Up/Down move
+    # the highlight, a click goes into a folder, Enter starts (or takes the
+    # highlighted folder first), Esc closes the card. The browser's own
+    # datalist could do none of that.
+    workdir_box = widgets.Text(
+        value=default_workspace(ctx), continuous_update=True,
+        placeholder="Working directory -- type a path, Tab completes",
         layout=widgets.Layout(width="100%"))
+    workdir_box.add_class("delfin-path-input")
+    path_suggest = _classed(widgets.VBox(), "delfin-path-suggest")
     start_btn = _classed(widgets.Button(description="Start"),
                          "delfin-session-start")
     cancel_btn = _classed(widgets.Button(description="Cancel"),
@@ -1538,7 +1642,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     consent_no.on_click(lambda _b: _hide_consent())
     new_form = _classed(widgets.VBox(
         [_classed(widgets.HTML("Working directory"), "delfin-session-label"),
-         workdir_box, own_worktree_box, worktree_hint, consent_box,
+         workdir_box, path_suggest, own_worktree_box, worktree_hint,
+         consent_box,
          _classed(widgets.HBox([cancel_btn, start_btn]),
                   "delfin-session-actions")],
         layout=widgets.Layout(display="none")), "delfin-session-form")
@@ -1578,6 +1683,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     # this runs after the shell is really on the page (the sidebar HTML
     # alone would render too early to find it).
     _register_init_js(ctx, _SPLITTER_INIT_JS)
+    _register_init_js(ctx, _RENAME_KEYS_JS)
+    _register_init_js(ctx, _PATH_KEYS_JS)
 
     # -- lookup -------------------------------------------------------------
 
@@ -1641,6 +1748,36 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     def _session_id(rec: dict) -> str:
         return str(_state(rec).get("active_session_id") or "")
+
+    def rename_session(key: str, name: str) -> str:
+        """Give an open session the name *name* (empty: back to its first
+        message). Kept with the session: its next save writes it as the
+        saved title; a session no process holds is renamed on disk now.
+        Returns the name shown."""
+        name = " ".join(str(name or "").split())[:80]
+        rec = next((r for r in sessions if r["key"] == key), None)
+        if rec is None or rec.get("live"):
+            return ""
+        state = _state(rec)
+        sid = _session_id(rec)
+        if sid:
+            titles = state.setdefault("_messenger_titles", {})
+            if name:
+                titles[sid] = name
+            else:
+                titles.pop(sid, None)
+            try:
+                from delfin.agent import session_store as _store
+                _store.rename_session(sid, name)
+            except Exception:
+                pass
+        else:
+            rec["chosen_title"] = name
+        refresh()
+        _refresh_resume_options()
+        return rec["title_btn"].description
+
+    view["rename_session"] = rename_session
 
     def _held_elsewhere(session_id: str, key: str) -> bool:
         return any(rec["key"] != key and _session_id(rec) == session_id
@@ -2015,13 +2152,48 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 "delfin-session-merge")
             merge_btn.on_click(
                 lambda _b, _where=where: _merge_back(_where))
+        # Rename in place: the pencil opens a box over the name; Enter or
+        # Save keeps it, Esc or Cancel leaves it (the running rows do the
+        # same, so both lists read alike).
+        pencil = _classed(widgets.Button(
+            description="✎", tooltip="Rename (Enter saves, Esc cancels)"),
+            "delfin-session-close")
+        pencil.add_class("delfin-session-rename-btn")
+        name_edit = widgets.Text(continuous_update=False,
+                                 placeholder="Name (empty: its first message)")
+        name_edit.add_class("delfin-session-rename-input")
+        name_save = widgets.Button(description="Save")
+        name_cancel = _classed(widgets.Button(description="Cancel"),
+                               "delfin-live-rename-cancel")
+        rename_box = _classed(widgets.HBox(
+            [name_edit, name_save, name_cancel],
+            layout=widgets.Layout(display="none")), "delfin-running-rename")
+        rename_box.add_class("delfin-live-rename")
         row = _classed(widgets.HBox([
-            _classed(widgets.VBox([title_btn, info]), "delfin-session-text"),
-            *([merge_btn] if merge_btn else []), close_btn]),
+            _classed(widgets.VBox([title_btn, info, rename_box]),
+                     "delfin-session-text"),
+            *([merge_btn] if merge_btn else []), pencil, close_btn]),
             "delfin-session-item")
         rec = {"key": key, "workspace": where, "tab": tab, "refs": refs or {},
                "ctx": session_ctx, "title_btn": title_btn, "info": info,
                "row": row, "merge_btn": merge_btn}
+
+        def _open_rename(_b=None):
+            name_edit.value = title_btn.description \
+                if title_btn.description != "New session" else ""
+            rename_box.layout.display = ""
+
+        def _close_rename(_b=None):
+            rename_box.layout.display = "none"
+
+        def _save_rename(_b=None, _key=key):
+            rename_session(_key, name_edit.value)
+            _close_rename()
+
+        pencil.on_click(_open_rename)
+        name_save.on_click(_save_rename)
+        name_cancel.on_click(_close_rename)
+        name_edit.on_submit(_save_rename)
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
         session_ctx.agent_status_html.observe(
@@ -2124,7 +2296,13 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 _on_live_change(rec["key"])
                 continue
             state = _state(rec)
-            label = _session_title(state)
+            sid_now = _session_id(rec)
+            if rec.get("chosen_title") and sid_now:
+                # A name given before the session had an id goes where the
+                # save reads it as soon as there is one.
+                state.setdefault("_messenger_titles", {})[sid_now] = \
+                    rec.pop("chosen_title")
+            label = rec.get("chosen_title") or _session_title(state, sid_now)
             if rec["title_btn"].description != label:
                 rec["title_btn"].description = label
             _mark(rec)
@@ -2135,7 +2313,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             try:
                 from delfin.agent import session_presence as _presence
                 _presence.announce(rec["key"], session_id=sid,
-                                   title=_session_title(state),
+                                   title=_session_title(state, sid),
                                    workspace=rec["workspace"])
             except Exception:
                 pass
@@ -2268,7 +2446,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             worktree_hint.value = ""
 
     def _on_new(_btn=None) -> None:
-        workdir_box.options = workspace_choices(ctx)
+        _refresh_folder_choices()
         new_form.layout.display = ""
         new_btn.layout.display = "none"
         _suggest_worktree()
@@ -2362,14 +2540,42 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     workdir_box.observe(_suggest_worktree, names="value")
 
+    def _pick_folder(path: str) -> None:
+        """Go into *path*: the box shows it with a trailing slash, so the
+        list below becomes its sub-folders (as Tab does in a shell)."""
+        workdir_box.value = str(path).rstrip("/") + "/"
+
+    def _show_suggestions(choices: list, typed: str) -> None:
+        typed_dir = typed if typed.endswith("/") else \
+            (typed.rsplit("/", 1)[0] + "/" if "/" in typed else "")
+        typed_dir = os.path.expanduser(typed_dir) if typed_dir else ""
+        # What fits the typed path first: Tab takes the first entry, and
+        # it must complete what was typed, not jump to the default folder.
+        full = os.path.expanduser(typed) if typed else ""
+        fits = [c for c in choices if full and str(c).startswith(full)]
+        choices = fits + [c for c in choices if c not in fits]
+        buttons = []
+        for path in choices[:_SUGGEST_SHOWN]:
+            if typed_dir and str(path).startswith(typed_dir):
+                label = str(path)[len(typed_dir):] + "/"
+            else:
+                label = _display_path(str(path))
+            b = _classed(widgets.Button(description=label, tooltip=str(path)),
+                         "delfin-path-option")
+            b.on_click(lambda _b, _p=path: _pick_folder(_p))
+            buttons.append(b)
+        path_suggest.children = tuple(buttons)
+
     def _refresh_folder_choices(change=None) -> None:
-        """The list under the box follows what is typed, like an editor's
-        open dialog: the folders of the typed path, or of its parent."""
+        """The list under the box follows what is typed, like a shell's Tab:
+        the folders of the typed path, or of its parent."""
         try:
             typed = str((change or {}).get("new") if change else workdir_box.value or "")
             choices = workspace_choices(ctx, typed)
-            if list(workdir_box.options) != choices:
-                workdir_box.options = choices
+            key = (typed, tuple(choices))
+            if view.get("suggested") != key:
+                view["suggested"] = key
+                _show_suggestions(choices, typed)
         except Exception:
             pass
 
