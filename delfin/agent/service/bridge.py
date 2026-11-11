@@ -1324,22 +1324,21 @@ class Bridge:
         the workspaces root; with one, session.merge does it. A conflict is
         reported as such -- the main checkout is left as it was and the
         worktree is kept, so nothing is overwritten. The path must stay
-        inside the workspaces root (DELFIN_MESSENGER_WORKSPACES), like the
-        create folders do."""
-        import os
-        root = os.environ.get(WORKSPACES_ENV, "").strip()
+        inside this context's phone folder (_workspaces_root: the owner's
+        DELFIN_MESSENGER_WORKSPACES, a person's own), like the create
+        folders do; a person never reaches the owner's worktrees."""
+        root = self._workspaces_root()
         path = str(params.get("path") or "").strip()
+        if not root:
+            return {"error": 'New sessions from the phone are not set up on this computer.'}
         if not path:
-            if not root or not os.path.isabs(root) or not os.path.isdir(root):
-                return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
             reply = await self._request("session.worktrees", {"cwd": root})
             worktrees = reply.get("worktrees") or []
             return {"ok": True, "worktrees": worktrees}
-        if not root or not os.path.isabs(root):
-            return {"error": "Neue Sitzungen vom Handy sind auf diesem Rechner nicht eingerichtet."}
         inside = os.path.realpath(path)
-        if os.path.commonpath([os.path.realpath(root), inside]) != os.path.realpath(root):
-            return {"error": "Der Pfad liegt nicht in den Sitzungsordnern des Telefons."}
+        real_root = os.path.realpath(root)
+        if os.path.commonpath([real_root, inside]) != real_root:
+            return {"error": "The path is not in the phone's session folders."}
         reply = await self._request("session.merge", {"path": inside})
         if reply.get("error"):
             return {"error": reply["error"]}

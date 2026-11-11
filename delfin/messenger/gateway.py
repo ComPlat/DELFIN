@@ -1318,7 +1318,7 @@ class Rooms:
         it is merged. A conflict is said, nothing overwritten."""
         reply = await self.ask({'cmd': 'merge', 'path': rest.strip()})
         if reply.get('error'):
-            return t('Error: {error}').format(error=reply['error'])
+            return t('Error: {error}').format(error=t(reply['error']))
         if not reply.get('ok'):
             return t('The merge did not go through.')
         if not rest.strip():

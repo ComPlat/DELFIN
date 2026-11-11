@@ -237,12 +237,15 @@ DE = {
     'No session worktrees. new NAME arbeitskopie makes one.':
     'Keine Sitzungs-Arbeitskopien. neu NAME arbeitskopie legt eine an.',
     'Session worktrees:': 'Sitzungs-Arbeitskopien:',
+    '{path} — {summary}': '{path} — {summary}',
     'merge PATH merges one back.': 'zusammenführen PFAD führt eine zurück.',
     'Merged back to {target}: {files} (uncommitted, for review).':
     'Zurückgeführt nach {target}: {files} (uncommitiert, zur Durchsicht).',
     'Conflict, nothing overwritten: {files}. {message} The worktree is kept: resolve it there, then merge again.':
     'Konflikt, nichts überschrieben: {files}. {message} Die Arbeitskopie bleibt: dort lösen, dann erneut zusammenführen.',
     'Merge not applied: {message}': 'Zusammenführen nicht angewendet: {message}',
+    "The path is not in the phone's session folders.":
+    'Der Pfad liegt nicht in den Sitzungsordnern des Telefons.',
     'error': 'Fehler',
     'the changed files': 'die geänderten Dateien',
     'no file changes': 'keine Dateiänderungen',
