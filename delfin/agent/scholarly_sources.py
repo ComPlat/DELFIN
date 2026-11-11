@@ -907,14 +907,23 @@ def find_method_reference(name: str, *, max_results: int = 5,
                   "sort": "cited_by_count:desc", "per-page": per_search}
         try:
             recs = _openalex_request(params, timeout_s)
-            if not recs:
-                # The topic filter can be too narrow (a method paper filed
-                # under another field): one retry on the title alone.
-                params["filter"] = f"title.search:{title}"
-                recs = _openalex_request(params, timeout_s)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                errors.append(_one_line(exc))
+                continue
+            recs = []            # e.g. 400 for a filter OpenAlex rejects
         except Exception as exc:
             errors.append(_one_line(exc))
             continue
+        if not recs:
+            # The topic filter can be too narrow (a method paper filed
+            # under another field) or rejected: one retry on the title alone.
+            params["filter"] = f"title.search:{title}"
+            try:
+                recs = _openalex_request(params, timeout_s)
+            except Exception as exc:
+                errors.append(_one_line(exc))
+                continue
         for rec in recs:
             rec["match"] = how
             found.append(rec)

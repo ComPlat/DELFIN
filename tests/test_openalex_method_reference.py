@@ -117,3 +117,16 @@ def test_source_apis_re_exports_the_agent_functions(monkeypatch):
     fed = source_apis.federated_search("exact exchange", sources=["openalex"],
                                        unpaywall=False)
     assert fed["status"] == {"openalex": "ok"}
+
+
+def test_rejected_topic_filter_falls_back_to_title_only(monkeypatch):
+    calls = []
+
+    def get(url, *, timeout_s, headers=None):
+        calls.append(url)
+        if "primary_topic" in urllib.parse.unquote(url):
+            raise urllib.error.HTTPError(url, 400, "Bad Request", {}, None)
+        return json.dumps({"results": [BECKE]}).encode()
+    monkeypatch.setattr(ss, "_get", get)
+    out = ss.find_method_reference("D4")
+    assert out["status"] == "ok" and len(calls) == 2
