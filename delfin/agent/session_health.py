@@ -281,7 +281,11 @@ def collect(settings=None, *, with_git: bool = True):
             oldest[s] = opened
     out = []
     seen_keys = set()
-    for row in ops_interface.sessions(with_git=with_git):
+    # Asked for only when it differs from the default, so a caller (or a
+    # test) that replaces sessions() with a plain function still works.
+    rows = ops_interface.sessions() if with_git else \
+        ops_interface.sessions(with_git=False)
+    for row in rows:
         key = str(row.get("name") or "")
         sid = str(row.get("session_id") or "")
         seen_keys.add(key)
