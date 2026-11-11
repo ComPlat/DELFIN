@@ -437,17 +437,24 @@ def disable_spellcheck(ctx, class_name='delfin-nospell'):
             if (!el) return;
             const tag = (el.tagName || '').toUpperCase();
             if (tag !== 'TEXTAREA' && tag !== 'INPUT') return;
-            el.setAttribute('spellcheck', 'false');
-            el.spellcheck = false;
-            el.setAttribute('autocorrect', 'off');
-            el.setAttribute('autocapitalize', 'off');
-            el.setAttribute('autocomplete', 'off');
-            el.setAttribute('data-gramm', 'false');
-            el.setAttribute('data-gramm_editor', 'false');
-            el.setAttribute('data-enable-grammarly', 'false');
-            el.setAttribute('data-lt-active', 'false');
-            el.setAttribute('data-grammarly', 'false');
-            el.setAttribute('data-ms-editor', 'false');
+            // Set an attribute only when it differs: the observer below
+            // watches these attributes, and setAttribute writes a mutation
+            // record even for the value already there -- unguarded, one
+            // change elsewhere fed the observer its own writes forever and
+            // froze the page (the Calculations tab, built on first open).
+            function put(name, value) {{
+                if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+            }}
+            put('spellcheck', 'false');
+            put('autocorrect', 'off');
+            put('autocapitalize', 'off');
+            put('autocomplete', 'off');
+            put('data-gramm', 'false');
+            put('data-gramm_editor', 'false');
+            put('data-enable-grammarly', 'false');
+            put('data-lt-active', 'false');
+            put('data-grammarly', 'false');
+            put('data-ms-editor', 'false');
             if (!el.hasAttribute('lang')) el.setAttribute('lang', '');
         }}
         function scan(root) {{
