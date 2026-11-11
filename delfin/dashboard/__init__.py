@@ -68,6 +68,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from .context import DashboardContext
     from .helpers import (
         _append_js,
+        self_running_html,
         apply_branding,
         create_busy_css,
         create_page_css,
@@ -78,6 +79,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
 
+    from . import tab_schedule
+
     from . import (
         tab_agent,
         tab_agent_activity,
@@ -86,7 +89,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         tab_office,
         tab_calculations_browser,
         tab_literature,
-        tab_remote_archive,
         tab_settings,
         tab_job_status,
         tab_orca_builder,
@@ -94,6 +96,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         tab_submit,
         tab_tools,
     )
+    # tab_remote_archive is NOT imported here: its module load pulls the
+    # delfin.smiles_converter -> delfin.manta.ml_tables -> stk chain (seconds
+    # of process start). It imports lazily inside its spec 'build', which
+    # only runs when the Remote Archive tab is first opened.
 
     # -- ensure delfin is importable & up-to-date --------------------------
     _ensure_delfin_importable()
@@ -254,37 +260,66 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     )
 
     # -- create tabs -------------------------------------------------------
-    tab1, refs1 = tab_submit.create_tab(ctx)
-    tab2, refs2 = tab_recalc.create_tab(ctx)
-    tab3, refs3 = tab_job_status.create_tab(ctx)
-    tab4, refs4 = tab_orca_builder.create_tab(ctx)
+    # Every tab below the first visible one is deferred: its spec carries a
+    # 'build' lambda and widget stays None until the reader opens the tab
+    # (tab_schedule.open_spec). A cold start then pays only the first tab's
+    # build cost -- the numbers in the lazy-tab task showed the other tabs
+    # together cost several times the first tab's build.
+    # The refs dicts are filled in by the lambdas on first build, in place,
+    # the same way _clone_of_browser_now fills the Settings-held dicts: the
+    # dicts are created here so Settings can capture them by value before
+    # any tab is built.
+    refs1, refs2, refs3, refs4, refs5, refs7, refs_tools = {}, {}, {}, {}, {}, {}, {}
 
-    # Wire cross-tab widget references for agent dashboard control
-    ctx.orca_pal_widget = refs4.get('orca_pal')
-    ctx.orca_maxcore_widget = refs4.get('orca_maxcore')
+    def _build_now(factory, refs, attribute=None):
+        """Run one deferred tab factory, fill its refs dict in place."""
+        made = factory(ctx)
+        widget = made[0]
+        if refs is not None:
+            refs.update(made[1] or {})
+        if attribute:
+            setattr(ctx, attribute, refs)
+        return widget
+    def _deferred_orca_builder():
+        """The ORCA Builder tab: its widgets are the PAL/maxcore source the
+        Calculations tab reads, so the build also publishes them on ctx."""
+        def build():
+            widget = _build_now(
+                tab_orca_builder.create_tab, refs4, 'orca_builder_refs')
+            ctx.orca_pal_widget = refs4.get('orca_pal')
+            ctx.orca_maxcore_widget = refs4.get('orca_maxcore')
+            return widget
+        return build
+
+    def _deferred(id_, factory, refs, attribute=None):
+        return lambda: _build_now(factory, refs, attribute)
+
+    # The first visible tab (Submit Job, default_order 10) is built eagerly:
+    # it is what the reader sees first and its refs are the startup
+    # contract of the dashboard.
+    tab1, refs1 = tab_submit.create_tab(ctx)
     ctx.submit_refs = refs1
-    ctx.orca_builder_refs = refs4
-    ctx.job_status_refs = refs3
-    ctx.recalc_refs = refs2
+
+    # Wire cross-tab widget references for agent dashboard control. The
+    # ORCA builder, job status and recalc refs are filled on the tab's
+    # first open through the same dicts the agent reads.
+    ctx.submit_refs = refs1
 
     # TURBOMOLE tab (only for SLURM backends)
-    tab_tm = None
     if ctx.backend.supports_turbomole:
         from . import tab_turbomole_builder
-        tab_tm, _ = tab_turbomole_builder.create_tab(ctx)
+        _tm_available = True
+    else:
+        _tm_available = False
 
     try:
         remote_archive_enabled = load_remote_archive_enabled()
     except Exception:
         remote_archive_enabled = False
 
-    tab5, refs5 = tab_calculations_browser.create_tab(ctx)
-    ctx.calc_browser_refs = refs5
     # A tab hidden in Settings is built anyway today: the preference drops it
-    # from the bar and nothing else. Archive and Office are two more builds of
-    # the calculations browser -- the heaviest thing a cold start does -- so
-    # hiding one and paying for it is the worst of both. They are built when
-    # they are wanted, which for a visible tab is still at startup.
+    # from the bar and nothing else. With lazy building every tab not on
+    # screen is unbuilt until first open -- hidden or not.
     try:
         _hidden_at_start = {
             str(item) for item in
@@ -302,43 +337,72 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         refs.update(made or {})
         return widget
 
-    def _clone_of_browser(tab_id, build, refs):
-        """The tab, or None if Settings has it hidden.
+    _agent_backend_available = bool(shutil.which("claude"))
+    try:
+        from delfin.agent.credentials import load_credential as _lc_anth
+        _agent_backend_available = bool(
+            shutil.which("claude") or _lc_anth("ANTHROPIC_API_KEY")
+        )
+    except Exception:
+        _agent_backend_available = bool(
+            shutil.which("claude") or os.environ.get("ANTHROPIC_API_KEY", "")
+        )
 
-        *refs* is the dict the Settings tab is handed further down. It is
-        filled in rather than replaced, because Settings captures it by value
-        and applying a new Archive or Office folder calls back through it.
+    def _clone_of_browser(tab_id, build, refs):
+        """The lazy build lambda for a browser clone, or None if Settings
+        has the tab hidden at start (so its spec never builds).
+
+        The clone is built through the spec's ``build`` on first open, like
+        every tab that is not the first visible one. ``refs`` is the dict the
+        Settings tab is handed by value further down; it is filled in place
+        when the build runs, so applying a new Archive or Office folder calls
+        back through the same dict.
         """
         if tab_id in _hidden_at_start:
             return None
-        return _clone_of_browser_now(build, refs)
+        return lambda: _clone_of_browser_now(build, refs)
 
     tab6 = _clone_of_browser('archive', tab_archive_statistics.create_tab, refs6)
     tab_off = _clone_of_browser('office', tab_office.create_tab, refs_off)
     tab_hm = _clone_of_browser('home', tab_home.create_tab, refs_home)
-    tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
+    archive_build, office_build, home_build = tab6, tab_off, tab_hm
+
+    # Archive, Office and Home build lazily through their specs' 'build'
+    # lambdas on first open; the refs dicts are filled in place so Settings
+    # keeps working when it applies a new folder.
     ctx.remote_archive_refs = refs7
-    tab_lit, _ = tab_literature.create_tab(ctx)
-    # The agent tab is a list of sessions, each a whole agent tab. Should the
-    # list itself fail to build, the single tab it wraps still works.
-    try:
-        from . import agent_sessions
-        tab_ag, _ = agent_sessions.create_tab(ctx)
-    except Exception:
-        tab_ag, _ = tab_agent.create_tab(ctx)
-    tab_ag_act = tab_agent_activity.create_tab(ctx)
-    # Tools & Platform tab (defensive: never let it break dashboard startup)
-    try:
-        tab_tools_widget, refs_tools = tab_tools.create_tab(ctx)
-    except Exception:
-        tab_tools_widget, refs_tools = None, {}
-    ctx.tools_refs = refs_tools
-    try:
-        from delfin.agent.credentials import load_credential as _lc_anth
-        _anth_key = _lc_anth("ANTHROPIC_API_KEY")
-    except Exception:
-        _anth_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    _agent_backend_available = bool(shutil.which("claude") or _anth_key)
+
+    def _deferred_remote_archive():
+        """Remote Archive: its module imports on first open (its load pulls
+        the stk chain, seconds of process start), not when the spec is
+        written."""
+        def build():
+            from . import tab_remote_archive
+            return _build_now(
+                tab_remote_archive.create_tab, refs7, 'remote_archive_refs')
+        return build
+
+    def _deferred_agent_tab():
+        """The DELFIN Agent tab: the session list, or the single agent tab
+        when the list itself fails to build."""
+        def build():
+            try:
+                from . import agent_sessions
+                return agent_sessions.create_tab(ctx)[0]
+            except Exception:
+                return tab_agent.create_tab(ctx)[0]
+        return build
+
+    def _deferred_tools_tab():
+        """The Tools tab; a failing build yields None, never a startup break."""
+        def build():
+            try:
+                widget, made = tab_tools.create_tab(ctx)
+            except Exception:
+                return None
+            refs_tools.update(made or {})
+            return widget
+        return build
 
     tab_specs = [
         {
@@ -354,32 +418,35 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         {
             'id': 'recalc',
             'title': 'Recalc',
-            'widget': tab2,
+            'widget': None,
             'default_order': 20,
             'default_visible': True,
             'available': True,
             'fixed': False,
+            'build': _deferred('recalc', tab_recalc.create_tab, refs2, 'recalc_refs'),
             'reason': '',
         },
         {
             'id': 'orca_builder',
             'title': 'ORCA Builder',
-            'widget': tab4,
+            'widget': None,
             'default_order': 30,
             'default_visible': True,
             'available': True,
             'fixed': False,
+            'build': _deferred_orca_builder(),
             'reason': '',
         },
         {
             'id': 'turbomole_builder',
             'title': 'TURBOMOLE Builder',
-            'widget': tab_tm,
+            'widget': None,
             'default_order': 40,
-            'default_visible': tab_tm is not None,
-            'available': tab_tm is not None,
+            'default_visible': _tm_available,
+            'available': _tm_available,
             'fixed': False,
-            'reason': '' if tab_tm is not None else 'Only available for supported SLURM backends.',
+            'build': _deferred('turbomole', tab_turbomole_builder.create_tab, None) if _tm_available else None,
+            'reason': '' if _tm_available else 'Only available for supported SLURM backends.',
         },
         {
             'id': 'chemdarwin',
@@ -394,107 +461,112 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         {
             'id': 'agent',
             'title': 'DELFIN Agent',
-            'widget': tab_ag,
+            'widget': None,
             'default_order': 55,
             'default_visible': _agent_backend_available,
             'available': True,
             'fixed': False,
+            'build': _deferred_agent_tab(),
             'reason': '' if _agent_backend_available else 'Install the Anthropic CLI or set ANTHROPIC_API_KEY.',
         },
         {
             'id': 'agent_activity',
             'title': 'Agent Activity',
-            'widget': tab_ag_act,
+            'widget': None,
             'default_order': 56,
             'default_visible': _agent_backend_available,
             'available': True,
             'fixed': False,
+            'build': _deferred('agent_activity', tab_agent_activity.create_tab, None),
             'reason': '' if _agent_backend_available else 'Install the Anthropic CLI or set ANTHROPIC_API_KEY.',
         },
         {
             'id': 'job_status',
             'title': 'Job Status',
-            'widget': tab3,
+            'widget': None,
             'default_order': 60,
             'default_visible': True,
             'available': True,
             'fixed': False,
+            'build': _deferred('job_status', tab_job_status.create_tab, refs3, 'job_status_refs'),
             'reason': '',
         },
         {
             'id': 'calculations',
             'title': 'Calculations',
-            'widget': tab5,
+            'widget': None,
             'default_order': 70,
             'default_visible': True,
             'available': True,
             'fixed': False,
+            'build': _deferred('calculations', tab_calculations_browser.create_tab, refs5, 'calc_browser_refs'),
             'reason': '',
         },
         {
             'id': 'archive',
             'title': 'Archive',
-            'widget': tab6,
+            'widget': None,
             'default_order': 80,
             'default_visible': True,
             'available': True,
             'fixed': False,
-            # Hidden in Settings means not built; showing it again builds it.
-            'build': lambda: _clone_of_browser_now(tab_archive_statistics.create_tab, refs6),
+            'build': archive_build,
             'reason': '',
         },
         {
             'id': 'home',
             'title': 'Home',
-            'widget': tab_hm,
+            'widget': None,
             'default_order': 81,
             'default_visible': False,
             'available': True,
             'fixed': False,
-            'build': lambda: _clone_of_browser_now(tab_home.create_tab, refs_home),
+            'build': home_build,
             'reason': 'Off by default: it browses the whole home directory.',
         },
         {
             'id': 'office',
             'title': 'Office',
-            'widget': tab_off,
+            'widget': None,
             'default_order': 82,
             'default_visible': True,
             'available': True,
             'fixed': False,
-            # Hidden in Settings means not built; showing it again builds it.
-            'build': lambda: _clone_of_browser_now(tab_office.create_tab, refs_off),
+            'build': office_build,
             'reason': '',
         },
         {
             'id': 'literature',
             'title': 'Literature',
-            'widget': tab_lit,
+            'widget': None,
             'default_order': 85,
             'default_visible': True,
             'available': True,
             'fixed': False,
+            'build': _deferred('literature', tab_literature.create_tab, None),
             'reason': '',
         },
         {
             'id': 'remote_archive',
             'title': 'Remote Archive',
-            'widget': tab7,
+            'widget': None,
             'default_order': 90,
             'default_visible': False,
-            'available': tab7 is not None,
+            'available': remote_archive_enabled,
             'fixed': False,
-            'reason': '' if tab7 is not None else 'Enable Remote Archive in Settings first.',
+            'build': _deferred_remote_archive() if remote_archive_enabled else None,
+            'reason': '' if remote_archive_enabled else 'Enable Remote Archive in Settings first.',
         },
         {
             'id': 'tools',
             'title': 'Tools',
-            'widget': tab_tools_widget,
+            'widget': None,
             'default_order': 9_000,
             'default_visible': True,
-            'available': tab_tools_widget is not None,
+            'available': True,
             'fixed': False,
-            'reason': '' if tab_tools_widget is not None else 'Tools panel unavailable.',
+            'build': _deferred_tools_tab(),
+            'reason': 'Tools panel unavailable if its build fails.',
         },
         {
             'id': 'settings',
@@ -508,19 +580,52 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         },
     ]
 
-    try:
-        from . import tab_chemdarwin
-        tab_cd, _ = tab_chemdarwin.create_tab(ctx)
-    except Exception:
-        tab_cd = None
+    def _chemdarwin_available():
+        """Import the ChemDarwin tab module once, to know it is installed.
 
+        Its module load pulls the stk chain (seconds of process start), so
+        the probe runs at first open through the spec's build, not at
+        dashboard startup. Result is cached for later spec reads.
+        """
+        try:
+            from . import tab_chemdarwin
+        except Exception:
+            return None
+        return tab_chemdarwin
+
+    _chemdarwin_state = {'module': None, 'probed': False}
+
+    def _chemdarwin_build():
+        """Build ChemDarwin on first open, probing its module then.
+
+        The module load pulls the stk chain (seconds of process start), so
+        the availability probe must not run at dashboard startup. A module
+        that is not installed leaves the tab unavailable.
+        """
+        if not _chemdarwin_state['probed']:
+            _chemdarwin_state['module'] = _chemdarwin_available()
+            _chemdarwin_state['probed'] = True
+        module = _chemdarwin_state['module']
+        if module is None:
+            return None
+        return module.create_tab(ctx)[0]
+
+    # Whether the tab can exist is decided without importing it: the module
+    # and its one hard dependency beyond the dashboard's own are findable.
+    # The import itself waits for the first open (_chemdarwin_build).
+    import importlib.util as _ilu
+    try:
+        _cd_findable = all(_ilu.find_spec(name) is not None for name in
+                           ('delfin.dashboard.tab_chemdarwin', 'rdkit'))
+    except Exception:
+        _cd_findable = False
     for spec in tab_specs:
         if spec['id'] == 'chemdarwin':
-            spec['widget'] = tab_cd
-            spec['available'] = tab_cd is not None
-            spec['reason'] = '' if tab_cd is not None else spec['reason']
-            if tab_cd is not None:
+            spec['build'] = _chemdarwin_build
+            spec['available'] = _cd_findable
+            if _cd_findable:
                 spec['default_visible'] = True
+                spec['reason'] = ''
             break
 
     # Additively append dynamically-registered tabs (tab_registry). No-op when
@@ -609,8 +714,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     hidden.add(tab_id)
         return order, hidden
 
+    # A tab that drives other tabs' widgets (through ctx.submit_refs,
+    # ctx.orca_builder_refs, ...) needs them built first: the agent fills
+    # the ORCA Builder, submits and reads the job list whichever tab the
+    # reader opened before it.
+    _TAB_NEEDS = {
+        'agent': ('submit', 'recalc', 'orca_builder', 'job_status', 'calculations'),
+    }
+
     def _build_tab_now(spec):
-        """Build a tab that was left out because Settings had it hidden.
+        """Build a deferred tab: on its first open, or one Settings had hidden.
 
         Its startup script cannot go out through ctx.run_js: that clears the
         output before it writes, which would wipe the script every tab already
@@ -619,15 +732,30 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         build = spec.pop('build', None)
         if not callable(build):
             return
+        for need in _TAB_NEEDS.get(spec.get('id'), ()):
+            for other in ctx.tab_specs or []:
+                if other.get('id') == need and other.get('widget') is None:
+                    _build_tab_now(other)
         already = len(ctx.init_js_parts)
         try:
             spec['widget'] = build()
         except Exception:
             spec['widget'] = None
             return
-        fresh = '\n'.join(ctx.init_js_parts[already:])
-        if fresh.strip():
-            _append_js(ctx, fresh)
+        # The tab carries its own init scripts and runs them when it is
+        # shown (helpers.self_running_html). Sent as a Javascript output
+        # into ctx.js_output after the page was out, they never ran: every
+        # tab built on its first open lost its splitter, explorer clicks,
+        # upload and keys (Calculations, Remote Archive, ... since 09.11.).
+        parts = [p for p in ctx.init_js_parts[already:] if p and str(p).strip()]
+        if parts and spec.get('widget') is not None:
+            runner = widgets.HTML(self_running_html(*parts), layout=widgets.Layout(
+                width='0px', height='0px', margin='0', overflow='hidden'))
+            built = spec['widget']
+            if isinstance(built, widgets.Box):
+                built.children = tuple(built.children) + (runner,)
+            else:
+                spec['widget'] = widgets.VBox([built, runner])
 
     def _sorted_visible_specs():
         order, hidden = _resolve_tab_preferences()
@@ -653,7 +781,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         fixed_specs.sort(key=lambda spec: spec.get('default_order', 10_000))
         return visible_specs + fixed_specs
 
-    refresh_job_list = refs3.get('refresh_job_list')
+    refresh_job_list_holder = {'getter': None}
     _tab_change_state = {'handler': None}
 
     def _install_tab_observer():
@@ -666,22 +794,59 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             except Exception:
                 pass
 
-        job_status_idx = ctx.tab_indices.get('Job Status')
-
         def _on_tab_change(change):
-            if change.get('new') == job_status_idx and refresh_job_list:
-                refresh_job_list()
+            # A tab that is on the bar but not yet built builds here, on
+            # its first open, and keeps its state from then on.
+            index = change.get('new')
+            if index is None or not ctx.tab_indices:
+                return
+            title = ctx.tab_indices_title_of(index)
+            if title is None:
+                return
+            for spec in ctx.tab_specs or []:
+                if spec.get('title') == title and spec.get('widget') is None:
+                    _build_tab_now(spec)
+                    if spec.get('widget') is not None:
+                        ctx.rebuild_dashboard_tabs(spec['title'])
+                    break
+            if title == 'Job Status':
+                getter = refresh_job_list_holder['getter']
+                if callable(getter):
+                    getter()
 
         ctx.tabs_widget.observe(_on_tab_change, names='selected_index')
         _tab_change_state['handler'] = _on_tab_change
 
+    def _bar_widget(spec):
+        """What the bar shows for *spec*: its built widget, or an empty
+        placeholder while it waits for its first open; None for a tab that
+        has neither (a build that failed)."""
+        if spec.get('widget') is not None:
+            return spec['widget']
+        if not callable(spec.get('build')):
+            return None
+        if spec.get('placeholder') is None:
+            spec['placeholder'] = widgets.VBox()
+        return spec['placeholder']
+
     def _rebuild_dashboard_tabs(selected_title=None):
         specs = _sorted_visible_specs()
-        for spec in specs:
+        # Only the tab the reader sees is built: at the first build the
+        # first visible one, later the one being selected. Every other tab
+        # stays on the bar as a placeholder until its first open (see
+        # _on_tab_change) -- a cold start pays one tab's build cost instead
+        # of the bar's, and no tab goes missing from the bar.
+        if ctx.tabs_widget is None:
+            to_build = tab_schedule.startup_specs_to_build(specs)
+        else:
+            to_build = [spec for spec in specs if spec['title'] == selected_title]
+        for spec in to_build:
             if spec.get('widget') is None and callable(spec.get('build')):
                 _build_tab_now(spec)
-        children = [spec['widget'] for spec in specs if spec.get('widget') is not None]
-        titles = [spec['title'] for spec in specs if spec.get('widget') is not None]
+        shown = [(spec['title'], _bar_widget(spec)) for spec in specs]
+        shown = [(title, widget) for title, widget in shown if widget is not None]
+        children = [widget for _, widget in shown]
+        titles = [title for title, _ in shown]
         selected_index = titles.index(selected_title) if selected_title in titles else None
         if ctx.tabs_widget is None:
             ctx.tabs_widget = widgets.Tab(children=children)
@@ -692,6 +857,11 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         else:
             hand_over_tabs(ctx.tabs_widget, children, titles, selected_index)
         ctx.tab_indices = {title: i for i, title in enumerate(titles)}
+        ctx.tab_indices_title_of = (
+            lambda index: titles[index]
+            if index is not None and 0 <= index < len(titles) else None)
+        refresh_job_list_holder['getter'] = (
+            ctx.job_status_refs or {}).get('refresh_job_list')
         _install_tab_observer()
 
     ctx.rebuild_dashboard_tabs = _rebuild_dashboard_tabs

@@ -1485,11 +1485,11 @@ _AGENT_CSS = """\
 }
 /* Empty (marked from Python when a send clears it): the resting height,
    over whatever the grow script last wrote inline. */
-.delfin-agent-input-empty textarea { height: 80px !important; }
+.delfin-agent-input-empty textarea { height: 56px !important; }
 .delfin-agent-input textarea {
-    min-height: 80px;
+    min-height: 56px;
     max-height: 280px;
-    height: 80px;
+    height: 56px;
     overflow-y: auto;
     resize: none;
     box-sizing: border-box;
@@ -2421,20 +2421,20 @@ _AGENT_CSS = """\
 .delfin-md-table { font-size: 13px; border-radius: 8px; overflow: hidden; }
 .delfin-md-table th, .delfin-md-table td { border-color: #e2e8f0; padding: 5px 10px; }
 .delfin-md-table th { background: #f1f5f9; color: #0f172a; }
+/* The text sits inside the composer's frame without a frame of its own:
+   the border, the corner and the focus ring belong to the whole box. */
 .delfin-agent-root .delfin-agent-input textarea {
     font-size: 14px;
-    padding: 10px 12px;
-    border: 1px solid #cbd5e1;
-    border-radius: 12px;
-    background: #ffffff;
+    padding: 10px 14px 4px;
+    border: none;
+    border-radius: 12px 12px 0 0;
+    background: transparent;
     color: #0f172a;
-    transition: border-color .12s ease, box-shadow .12s ease;
+    box-shadow: none;
 }
 .delfin-agent-root .delfin-agent-input textarea:focus {
     outline: none;
-    border-color: #93c5fd;
-    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12),
-                0 2px 8px rgba(15, 23, 42, 0.06);
+    box-shadow: none;
 }
 /* Past the 280 px cap the box scrolls: a thin rounded bar without arrow
    buttons, in the box's own colours (Chromium and Safari); Firefox takes
@@ -2459,45 +2459,99 @@ _AGENT_CSS = """\
         scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent;
     }
 }
-/* The shell, Files and Send buttons are as tall as the box beside them:
-   the rows stretch their items, and the buttons' 80 px from their widget
-   layout becomes the least height. */
-.delfin-agent-root .delfin-agent-input-area > .widget-hbox {
-    align-items: stretch !important;
-}
-.delfin-agent-root .delfin-agent-send-row {
-    align-items: stretch !important;
-}
-/* The box and Send carry the widgets' 2 px vertical margin; the shell and
-   Files buttons beside them did not, and stood 4 px taller. */
-.delfin-agent-root .delfin-agent-input-area > .widget-hbox > .jupyter-button {
-    margin-top: 2px !important; margin-bottom: 2px !important;
-}
-.delfin-agent-root .delfin-agent-input-area .jupyter-button {
-    height: auto !important; min-height: 80px;
-}
-.delfin-agent-root .delfin-agent-input textarea::placeholder { color: #94a3b8; }
-.delfin-agent-send-row .jupyter-button.mod-primary {
+/* THE COMPOSER: one rounded box. The message on top; below it one row --
+   commands and attach, the chips that shape the next message (permission,
+   model, effort), and Send as a round button at the lower right. The
+   border, the corner and the focus ring are the box's, so text, chips and
+   Send read as one piece and grow together. */
+.delfin-agent-root .delfin-agent-composer {
+    margin: 6px 0 0 0;
+    border: 1px solid #cbd5e1;
     border-radius: 12px;
-    font-weight: 600;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition: border-color .12s ease, box-shadow .12s ease;
+    overflow: visible !important;
 }
-/* The rest of the composer and the bars around the chat take the same
-   corner: the shell and Files buttons (in the input area's row, not in
-   the Send row) keep their light grey; the Details bar is a 12 px bar;
-   the working line, task line and Background box are strips inset 8 px
-   into the rounded chat frame, so they sit inside its corners instead of
-   running under them. */
-.delfin-agent-root .delfin-agent-input-area .jupyter-button {
-    border-radius: 12px;
+.delfin-agent-root .delfin-agent-composer:focus-within {
+    border-color: #93c5fd;
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12),
+                0 2px 8px rgba(15, 23, 42, 0.06);
 }
-.delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary) {
-    background: #eeeeee; border: none; color: #334155;
-    /* The 40 px shell button holds an icon and "/": with the default
-       padding and a border its label was cut to ">_ ..." (measured). */
-    padding: 0 4px;
+.delfin-agent-root .delfin-agent-composer > .delfin-agent-input {
+    width: 100% !important; margin: 0 !important;
 }
-.delfin-agent-root .delfin-agent-input-area .jupyter-button:not(.mod-primary):hover {
-    background: #e2e5e9;
+.delfin-agent-root .delfin-agent-composer-bar {
+    align-items: center !important;
+    gap: 6px;
+    padding: 2px 8px 8px 10px;
+    flex-wrap: wrap;
+    overflow: visible !important;
+}
+.delfin-agent-root .delfin-agent-composer-gap { flex: 1 1 auto; min-width: 0; }
+/* Commands, attach and the KIT quick mode: quiet pills. */
+.delfin-agent-root .delfin-agent-composer-bar > .jupyter-button,
+.delfin-agent-root .delfin-agent-composer-bar .delfin-agent-upload {
+    height: 28px !important; min-height: 0 !important;
+    width: auto !important; margin: 0 !important;
+    padding: 0 10px !important;
+    border: 1px solid transparent; border-radius: 999px;
+    background: transparent; color: #475569;
+    font-size: 12px !important; line-height: 26px !important;
+    flex-direction: row !important;
+}
+.delfin-agent-root .delfin-agent-composer-bar > .jupyter-button:hover,
+.delfin-agent-root .delfin-agent-composer-bar .delfin-agent-upload:hover {
+    background: #f1f5f9; color: #0f172a;
+}
+.delfin-agent-root .delfin-agent-composer-bar .delfin-agent-upload i.fa {
+    margin: 0 4px 0 0 !important; font-size: 12px;
+}
+/* The chips: the header's dropdowns, without their label, as pills.
+   The label stays in the page for assistive technology and tests. */
+.delfin-agent-root .delfin-agent-chip { width: auto !important; margin: 0 !important; }
+.delfin-agent-root .delfin-agent-chip > .widget-label {
+    position: absolute !important; width: 1px !important; height: 1px !important;
+    overflow: hidden !important; clip: rect(0 0 0 0);
+}
+.delfin-agent-root .delfin-agent-chip select {
+    height: 28px; min-width: 0; max-width: 220px;
+    padding: 0 26px 0 10px;
+    border: 1px solid #e2e8f0; border-radius: 999px;
+    background-color: #ffffff; color: #334155;
+    font-size: 12px; cursor: pointer;
+}
+.delfin-agent-root .delfin-agent-chip select:hover { background-color: #f8fafc; border-color: #cbd5e1; }
+.delfin-agent-root .delfin-agent-chip select:focus {
+    outline: none; border-color: #93c5fd;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+/* The permission chip says what the next message may do: amber for the
+   widest posture, as a warning colour, not a decoration. */
+.delfin-agent-root .delfin-agent-chip-perm select { padding-left: 28px !important;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2'><path d='M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z'/></svg>"),
+        var(--jp-widgets-dropdown-arrow);
+    background-repeat: no-repeat, no-repeat;
+    background-position: 10px center, right center;
+    background-size: 12px 12px, 20px; }
+/* Send: a round button with an arrow; its name stays "Send" for the page
+   scripts, assistive technology and tests. */
+.delfin-agent-root .delfin-agent-send-row { margin: 0 0 0 auto !important; }
+.delfin-agent-root .delfin-agent-send-row .jupyter-button.delfin-agent-send {
+    width: 34px !important; height: 34px !important; min-height: 0 !important;
+    padding: 0 !important; margin: 0 !important;
+    border-radius: 50% !important;
+    font-size: 0 !important; color: transparent !important;
+    background: #2563eb; border: none;
+    display: flex !important; align-items: center; justify-content: center;
+}
+.delfin-agent-root .delfin-agent-send-row .jupyter-button.delfin-agent-send::before {
+    content: "\\2191"; font-size: 18px; font-weight: 700; color: #ffffff;
+    line-height: 1;
+}
+.delfin-agent-root .delfin-agent-send-row .jupyter-button.delfin-agent-send:hover { background: #1d4ed8; }
+.delfin-agent-root .delfin-agent-send-row .jupyter-button.delfin-agent-send:disabled {
+    background: #cbd5e1;
 }
 .delfin-agent-root .delfin-agent-below > .jupyter-widget-Collapse > .jupyter-widget-Collapse-header {
     border-radius: 12px; border: 1px solid #e2e8f0; background: #f8fafc;
@@ -8367,9 +8421,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width="90px"))
     auto_box = widgets.HBox([loop_panel_html, auto_stop_btn],
                             layout=widgets.Layout(display="none"))
+    # Model, effort and permission live in the composer as chips (one
+    # place for what shapes the next message); the header keeps the mode,
+    # the provider, auto, stop and the git and report groups.
     _controls_hbox = widgets.HBox(
-        [mode_dropdown, provider_dropdown, model_dropdown,
-         effort_dropdown, perm_dropdown, auto_toggle_btn, stop_btn,
+        [mode_dropdown, provider_dropdown, auto_toggle_btn, stop_btn,
          git_group, bug_group, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
@@ -8693,8 +8749,7 @@ def create_tab(ctx):
     kit_mode_quick_btn = widgets.Button(
         description="Plan",
         tooltip="Cycle KIT mode (next: Default)",
-        layout=widgets.Layout(width="80px", height="80px",
-                              margin="0 0 0 4px", display="none"),
+        layout=widgets.Layout(width="auto", height="28px", display="none"),
     )
 
     def _refresh_kit_mode_chip():
@@ -9138,7 +9193,7 @@ def create_tab(ctx):
     # ----- Slash-command palette (discoverable command browser) -----
     palette_toggle_btn = widgets.Button(
         description="/", icon="terminal",
-        layout=widgets.Layout(width="40px", height="32px"),
+        layout=widgets.Layout(width="auto", height="28px"),
         tooltip="Show / browse slash commands",
     )
     palette_search = widgets.Text(
@@ -9229,12 +9284,11 @@ def create_tab(ctx):
     # One calm line. The KIT write-access tip it used to carry stays in the
     # write-access line of the Details fold (kit_dirs_status), where it is
     # read when wanted rather than on every empty input.
-    _INPUT_HINT = "Message DELFIN\u2026  (Enter to send, Shift+Enter for a new line)"
+    _INPUT_HINT = ("Ask anything, / for commands  "
+                   "(Enter sends, Shift+Enter starts a new line)")
     input_textarea = widgets.Textarea(
         placeholder=_INPUT_HINT,
-        layout=widgets.Layout(
-            flex="1 1 auto", width="auto", height="80px",
-        ),
+        layout=widgets.Layout(width="100%", height="56px"),
     )
     input_textarea.add_class("delfin-agent-input")
 
@@ -9255,19 +9309,14 @@ def create_tab(ctx):
     send_btn = widgets.Button(
         description="Send",
         button_style="primary",
-        layout=widgets.Layout(width="80px", height="80px"),
+        tooltip="Send (Enter)",
+        layout=widgets.Layout(width="34px", height="34px"),
     )
-    # image_upload is created later (line ~2240) but inserted here so
-    # the whole row [📎 | textarea | Send | quick-mode] is one strip.
-    input_row = widgets.HBox(
-        [input_textarea, send_btn, kit_mode_quick_btn],
-        layout=widgets.Layout(
-            margin="0 0 0 4px",
-            flex="1 1 auto", width="auto",
-            align_items="flex-start",
-        ),
-    )
-    input_row.add_class("delfin-agent-send-row")
+    send_btn.add_class("delfin-agent-send")
+    # Send alone in the row the page scripts look in: they find it as the
+    # row's first button (Enter, follow-to-bottom, the grow reset).
+    send_row = widgets.HBox([send_btn])
+    send_row.add_class("delfin-agent-send-row")
 
     # What could come next, under the box you type in. Drawn from the
     # tasks the agent itself left open -- not a second call to the model
@@ -10516,8 +10565,9 @@ def create_tab(ctx):
     # and the agent picks them up via read_file / notebook_read.
     image_upload = widgets.FileUpload(
         multiple=True,
-        description="📎 Files",
-        layout=widgets.Layout(width="90px", height="80px"),
+        description="Files",
+        tooltip="Attach files (they land in the workspace's .delfin/uploads)",
+        layout=widgets.Layout(width="auto", height="28px"),
     )
     image_upload.add_class("delfin-agent-upload")
     state["_pending_uploads"] = []
@@ -10941,16 +10991,25 @@ def create_tab(ctx):
     messenger_code_row = widgets.HBox(
         [messenger_code_input, messenger_code_btn, messenger_cancel_btn],
         layout=widgets.Layout(display="none", gap="6px", margin="2px 0 4px 0"))
-    _input_area = widgets.VBox(
-        [_palette_pop, messenger_pair_html, messenger_code_row,
-         widgets.HBox(
-             [palette_toggle_btn, image_upload, input_row],
-             layout=widgets.Layout(
-                 width="100%",
-                 align_items="flex-start",
-                 margin="6px 0 0 0",
-             ),
-         )])
+    # The composer is one rounded box: the message on top; below it the
+    # commands and attach buttons, the chips that shape the next message
+    # (permission, model, effort), the KIT quick mode, and the round Send.
+    # The chips are the header's own dropdowns, moved -- every handler
+    # stays bound to the same widget.
+    for _chip, _kind in ((perm_dropdown, "perm"), (model_dropdown, "model"),
+                         (effort_dropdown, "effort")):
+        _chip.add_class("delfin-agent-chip")
+        _chip.add_class(f"delfin-agent-chip-{_kind}")
+        _chip.layout.width = "auto"
+    _composer_gap = widgets.HTML("")
+    _composer_gap.add_class("delfin-agent-composer-gap")
+    composer_bar = widgets.HBox(
+        [palette_toggle_btn, image_upload, perm_dropdown, model_dropdown,
+         effort_dropdown, _composer_gap, kit_mode_quick_btn, send_row])
+    composer_bar.add_class("delfin-agent-composer-bar")
+    composer = widgets.VBox([input_textarea, composer_bar])
+    composer.add_class("delfin-agent-composer")
+    _input_area = widgets.VBox([_palette_pop, messenger_pair_html, messenger_code_row, composer])
     _input_area.add_class("delfin-agent-input-area")
     # The terminal panel beside the chat (delfin-voila --agent-terminal
     # only): the one program the launcher was given. The page script

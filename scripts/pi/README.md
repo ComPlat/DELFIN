@@ -197,6 +197,7 @@ unchanged; then it takes seconds.
 | `pi_github_deploy_key.sh` | Pi (agent user) | Push access to one repository via a deploy key, GitHub host key pinned |
 | `pi_harden_host.sh` | Pi (root) | Host lockdown: sshd key only, nftables, fail2ban, security updates, sudo password |
 | `delfin_people.sh` | Pi (agent user) | `delfin-people`: who works in the account through the Windows launcher, `--attach NAME` to watch |
+| `lab/delfin-lab-estop.service`, `lab/delfin-lab-watchdog.service` | Pi (agent user, systemd user units) | Lab control: the e-stop owner and the dead-man, installed and restarted by `pi_install.sh`; the deploy then runs `python -m delfin.lab.smoke` (prints `smoke lab ok`). Admin steps: lingering (`pi_bootstrap.sh` does it), and GPIO only with `LAB_GPIO=1` (adds the agent user to `gpio`). See `docs/design/lab-control.md` |
 
 ## New card (Windows)
 

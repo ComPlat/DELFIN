@@ -22,9 +22,7 @@ from pathlib import Path
 import ipywidgets as widgets
 import numpy as np
 from IPython.display import HTML, clear_output, display
-from rdkit import Chem, RDLogger
-from rdkit.Chem import AllChem, rdDepictor
-from rdkit.Chem.Draw import MolToImage
+
 
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
 from delfin.reporting.delfin_docx_report import _orca_plot_binary
@@ -61,13 +59,19 @@ from .helpers import (
     save_neb_trajectory_csv,
     save_neb_trajectory_plot_png,
 )
-from .input_processing import (
-    contains_metal,
-    is_smiles,
-    parse_inp_resources,
-    parse_resource_settings,
-    smiles_to_xyz_quick,
-)
+
+def _input_processing():
+    """Import .input_processing on first use.
+
+    That module pulls in delfin.smiles_converter and, through it,
+    delfin.manta.ml_tables, whose module level ``import stk`` costs seconds
+    of every process start. Nothing on the startup path needs it: the names
+    are wanted when a SMILES is parsed or an input is inspected, so the
+    import runs then, once, and is cached by sys.modules afterwards.
+    """
+    from . import input_processing
+    return input_processing
+
 from .molecule_viewer import (
     VIEWER_CONTAINER_DYNAMIC_SCALE,
     VIEWER_CONTAINER_HEIGHT_PX,
@@ -1267,6 +1271,20 @@ def create_tab(ctx):
     calc_file_info = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    # One line, as a file header is today: a long name ends in an ellipsis
+    # (hover shows it whole) instead of breaking anywhere onto a second line
+    # beside the action buttons.
+    calc_file_info.add_class('calc-file-info')
+
+    def _calc_file_info_tooltip(change):
+        # The whole header as plain text on hover, for a name cut short.
+        text = re.sub(r'<[^>]+>', '', str(change.get('new') or ''))
+        try:
+            calc_file_info.tooltip = _html.unescape(text).strip() or None
+        except Exception:
+            pass
+
+    calc_file_info.observe(_calc_file_info_tooltip, names='value')
     calc_path_display = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
@@ -2116,9 +2134,24 @@ def create_tab(ctx):
     )
 
     # -- helper closures ----------------------------------------------------
-    RDLogger.DisableLog('rdApp.*')
+    # RDKit is imported here, at first use inside create_tab, not at module
+    # load: a cold dashboard start never draws a structure, and the import
+    # (with its module-level RDLogger.DisableLog) is what module load paid
+    # for every startup regardless.
+
+    def _calc_rdkit():
+        from rdkit import Chem, RDLogger
+        RDLogger.DisableLog('rdApp.*')
+        return Chem
+
+    def _calc_rdkit_chem_all():
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import AllChem, rdDepictor
+        RDLogger.DisableLog('rdApp.*')
+        return Chem, AllChem, rdDepictor
 
     def _calc_parse_complex_mol(smiles):
+        Chem = _calc_rdkit()
         mol = Chem.MolFromSmiles(smiles)
         if mol is not None:
             return mol
@@ -2140,11 +2173,12 @@ def create_tab(ctx):
         return Chem.MolFromSmiles(smiles, sanitize=False)
 
     def _calc_preselect_smiles_to_3d_molblock(smiles, seed=42):
+        Chem, AllChem, rdDepictor = _calc_rdkit_chem_all()
         try:
             seed = int(seed)
         except Exception:
             seed = 42
-        is_complex = contains_metal(smiles)
+        is_complex = _input_processing().contains_metal(smiles)
         mol = None
         if is_complex:
             mol = _calc_parse_complex_mol(smiles)
@@ -3774,6 +3808,8 @@ def create_tab(ctx):
 
         with calc_preselect_img:
             clear_output(wait=True)
+            Chem, _allchem, rdDepictor = _calc_rdkit_chem_all()
+            from rdkit.Chem.Draw import MolToImage
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 mol = Chem.MolFromSmiles(smiles, sanitize=False)
@@ -4630,7 +4666,7 @@ def create_tab(ctx):
                     input_text = input_path.read_text(errors='ignore')
                 except Exception:
                     input_text = ''
-            if not is_smiles(input_text):
+            if not _input_processing().is_smiles(input_text):
                 return False
             smiles_lines = [ln.strip() for ln in input_text.splitlines() if ln.strip()]
             if not smiles_lines:
@@ -7089,9 +7125,10 @@ def create_tab(ctx):
             return '\n'.join(lines)
         # input.txt may contain only a SMILES string (optionally with short comment lines).
         # Convert to XYZ so it can be visualized like regular coordinates.
-        if is_smiles(text):
+        if _input_processing().is_smiles(text):
             smiles_line = lines[0].strip()
-            xyz_string, num_atoms, _method, error = smiles_to_xyz_quick(smiles_line)
+            xyz_string, num_atoms, _method, error = (
+                _input_processing().smiles_to_xyz_quick(smiles_line))
             if not error and xyz_string:
                 return f"{num_atoms}\n{title}\n{xyz_string}"
         atom_count = len(lines)
@@ -10723,7 +10760,7 @@ def create_tab(ctx):
                 new_inp.write_text(inp_content)
 
                 slurm_time = calc_override_time.value.strip() or '24:00:00'
-                pal_used, maxcore_used = parse_inp_resources(inp_content)
+                pal_used, maxcore_used = _input_processing().parse_inp_resources(inp_content)
                 if pal_used is None and ctx.orca_pal_widget is not None:
                     pal_used = ctx.orca_pal_widget.value
                 if maxcore_used is None and ctx.orca_maxcore_widget is not None:
@@ -10789,7 +10826,7 @@ def create_tab(ctx):
             maxcore_used = None
             control_path = workspace_path / 'CONTROL.txt'
             if control_path.exists():
-                pal_used, maxcore_used = parse_resource_settings(control_path.read_text())
+                pal_used, maxcore_used = _input_processing().parse_resource_settings(control_path.read_text())
 
             if pal_used is None or maxcore_used is None:
                 inp_candidate = None
@@ -10804,7 +10841,7 @@ def create_tab(ctx):
                     inp_candidate = inp_files[0] if inp_files else None
 
                 if inp_candidate is not None and inp_candidate.exists():
-                    pal_inp, maxcore_inp = parse_inp_resources(inp_candidate.read_text())
+                    pal_inp, maxcore_inp = _input_processing().parse_inp_resources(inp_candidate.read_text())
                     if pal_used is None:
                         pal_used = pal_inp
                     if maxcore_used is None:
@@ -10898,7 +10935,7 @@ def create_tab(ctx):
             inp_path.write_text(inp_content)
 
             slurm_time = calc_recalc_time.value.strip() or '24:00:00'
-            pal_used, maxcore_used = parse_inp_resources(inp_content)
+            pal_used, maxcore_used = _input_processing().parse_inp_resources(inp_content)
             if pal_used is None and ctx.orca_pal_widget is not None:
                 pal_used = ctx.orca_pal_widget.value
             if maxcore_used is None and ctx.orca_maxcore_widget is not None:
@@ -14242,7 +14279,7 @@ def create_tab(ctx):
             if name in ('input.txt', 'start.txt'):
                 # For SMILES-only input.txt, open the same side-by-side 2D/3D visual mode
                 # used for mutation-space CSV browsing.
-                if name == 'input.txt' and is_smiles(content):
+                if name == 'input.txt' and _input_processing().is_smiles(content):
                     _set_view_toggle(True, False)
                     _on_view_toggle()
                     return
@@ -16067,6 +16104,11 @@ def create_tab(ctx):
         '.calc-left .widget-vbox { overflow:hidden !important; }'
         '.calc-left code { display:block !important; overflow:hidden !important;'
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
+        '.calc-file-info { flex:1 1 auto !important; min-width:0 !important; }'
+        '.calc-file-info .widget-html-content { white-space:nowrap; overflow:hidden;'
+        ' text-overflow:ellipsis; }'
+        '.calc-file-info .widget-html-content span[style*="break-all"]'
+        ' { word-break:normal !important; }'
         '.calc-splitter { width:8px; height:100%; cursor:col-resize; touch-action:none;'
         ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
         ' border-radius:4px; display:block;'
@@ -16259,10 +16301,24 @@ def create_tab(ctx):
                     }}, 100);
                     return;
                 }}
+                // Built before it is shown (the agent tab builds the tabs it
+                // drives; the dashboard warms it): the tab's DOM appears only
+                // on its first open. Giving up after 4 s left the splitter and
+                // the explorer's clicks unbound for good. Wait for THIS tab's
+                // root instead -- one observer per scope, gone once bound.
                 // No fallback to the first .calc-tab on the page: with three
-                // browsers open that is somebody else's tab, and binding this
-                // tab's splitter and upload target to it is worse than not
-                // binding at all.
+                // browsers open that is somebody else's tab.
+                var waits = (window.__delfinCalcRootWaits = window.__delfinCalcRootWaits || {{}});
+                if (!waits[scopeKey]) {{
+                    waits[scopeKey] = new MutationObserver(function() {{
+                        if (document.querySelector('.' + scopeKey)) {{
+                            waits[scopeKey].disconnect();
+                            delete waits[scopeKey];
+                            initCalcScopeBind(0);
+                        }}
+                    }});
+                    waits[scopeKey].observe(document.body, {{childList: true, subtree: true}});
+                }}
                 return;
             }}
             window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};

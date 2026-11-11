@@ -326,6 +326,14 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "swarm.resume": {},
     "swarm.triage.list": {"queue": "[object]"},
     "swarm.triage.answer": {"item": "object", "answer": "string"},
+    # Read-only watch (package SWV): pure observe reads. source: an SW1
+    # spec object, or a roster file path (name -> {package, role}), so an
+    # operator wave with no spec shows too. feed: newest last steps of one
+    # member session. Ownership for swarm.observe.feed (only the owning
+    # user may see a member's feed) is NOT yet enforced by any layer and
+    # is a follow-up; the API is currently callable by any requestor.
+    "swarm.observe.overview": {"source": "object?", "sourcePath": "string?"},
+    "swarm.observe.feed": {"session": "string", "since": "integer?"},
 }
 
 SERVICE_RESULTS: dict[str, dict[str, str]] = {
@@ -378,6 +386,11 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "swarm.triage.list": {"items": "[object]"},
     "swarm.triage.answer": {"answered": "boolean", "item_id": "string?",
                             "logged": "string?"},
+    # Read-only watch (package SWV): overview = one row per member
+    # ([object]); feed = that member's steps newest last ([object], each
+    # {at, kind, text}).
+    "swarm.observe.overview": {"rows": "[object]"},
+    "swarm.observe.feed": {"entries": "[object]"},
 }
 
 #: Events from the service itself, to every window.

@@ -38,6 +38,7 @@ HELP = (
     'files – files made available; file NAME – download one.\n'
     'In the forum: exchange on/off – share explicit agent announcements (off by default).\n'
     'new NAME: task – with a first task. At the computer: /sync or /sync NAME in the session.\n'
+    'new NAME arbeitskopie – in a worktree of its own; merge [PATH] – merge it back.\n'
     'schedules – open the schedules chat; in a session chat: schedule WHEN TASK.\n'
     'profil frei|standard – in a session chat for its folder; otherwise: profil <session> frei.\n'
     'phones – your paired phones; unpair – unpair this phone. sync refreshes the chats.'
@@ -105,6 +106,7 @@ _EVENT_COMMANDS = {
     'status': 'status', 'pending': 'pending', 'stop': 'stop', 'update': 'update',
     'details': 'details', 'more': 'more', 'mehr': 'more', 'name': 'name', 'rename': 'name',
     'neu': 'new', 'new': 'new', 'forum': 'forum', 'meldungen': 'notify', 'notify': 'notify',
+    'zusammenführen': 'merge', 'zusammenfuehren': 'merge', 'merge': 'merge',
     'dateien': 'files', 'files': 'files', 'datei': 'file_get', 'file': 'file_get',
     'austausch': 'exchange', 'exchange': 'exchange', 'profil': 'profile', 'profile': 'profile',
     'plan': 'schedule', 'zeitpläne': 'schedules', 'zeitplaene': 'schedules', 'pläne': 'schedules',
@@ -807,6 +809,8 @@ class Rooms:
                 return reply.get('error') or t('The schedule was not made.')
         if command in {'neu', 'new'}:
             return await self.start_session(rest)
+        if command in {'zusammenführen', 'zusammenfuehren', 'merge'}:
+            return await self.merge_back(rest)
         if command == 'chat' and rest.strip():
             if rest.strip() not in self._active:
                 return t('Type /sync in the TUI/dashboard session you want first.')
@@ -1280,9 +1284,22 @@ class Rooms:
 
     async def start_session(self, rest):
         """`neu NAME[: task]`: a session in a folder of its own, its chat, and
-        the task as its first prompt. The host chooses folder and profile."""
+        the task as its first prompt. The host chooses folder and profile.
+        `neu NAME arbeitskopie` (or `in arbeitskopie`) runs it in its own
+        worktree of the folder; the typed word is the consent to make the
+        folder a local project."""
+        # The worktree word is the matcher's, the only German part: name
+        # [in] arbeitskopie. Everything the phone is shown is translated
+        # whole (lang.t).
+        m = re.match(r"\s*(?P<name>.*?)\s*(?:\bin\s+)?arbeitskopie\s*$",
+                     rest, re.IGNORECASE)
+        worktree = False
+        if m and m.group("name").strip():
+            rest = m.group("name")
+            worktree = True
         name, colon, task = rest.partition(':')
-        reply = await self.ask({'cmd': 'create', 'name': name.strip()})
+        reply = await self.ask({'cmd': 'create', 'name': name.strip(),
+                                **({'worktree': True} if worktree else {})})
         if not reply.get('ok'):
             return reply.get('error') or t('The session was not started.')
         sid = reply['sessionId']
@@ -1294,6 +1311,37 @@ class Rooms:
             sent = await self.session(sid, 'prompt', text=task.strip())
             text += '\n' + (sent.get('error') or t('Task delivered.'))
         return text
+
+    async def merge_back(self, rest):
+        """`zusammenführen [pfad]`: merge a session worktree back into its
+        main checkout. Without a path the worktrees are listed; with one,
+        it is merged. A conflict is said, nothing overwritten."""
+        reply = await self.ask({'cmd': 'merge', 'path': rest.strip()})
+        if reply.get('error'):
+            return t('Error: {error}').format(error=reply['error'])
+        if not reply.get('ok'):
+            return t('The merge did not go through.')
+        if not rest.strip():
+            worktrees = reply.get('worktrees') or []
+            if not worktrees:
+                return t('No session worktrees. new NAME arbeitskopie makes one.')
+            lines = [t('Session worktrees:')]
+            lines += [t('{path} — {summary}').format(path=w.get('path') or '?',
+                                                     summary=w.get('summary') or '')
+                      for w in worktrees]
+            lines.append(t('merge PATH merges one back.'))
+            return '\n'.join(lines)
+        status = reply.get('status')
+        if status == 'ok':
+            files = ', '.join(reply.get('files') or []) or t('no file changes')
+            return t('Merged back to {target}: {files} (uncommitted, for review).').format(
+                target=reply.get('target') or '', files=files)
+        if status == 'conflict':
+            files = ', '.join(reply.get('files') or []) or t('the changed files')
+            return t('Conflict, nothing overwritten: {files}. {message} The worktree is kept: resolve it there, then merge again.').format(
+                files=files, message=reply.get('message') or '')
+        return t('Merge not applied: {message}').format(
+            message=reply.get('message') or t('error'))
 
     @staticmethod
     def pending_text(items):
