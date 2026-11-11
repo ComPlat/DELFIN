@@ -382,10 +382,18 @@ def _drive_page(args, url: str, rec: dict, model_name: str) -> None:
             page = browser.new_page(viewport={"width": 1400, "height": 1000})
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)[:200]))
-            page.goto(f"{url}/?token={TOKEN}", wait_until="domcontentloaded",
+            # "commit", not "domcontentloaded": voila holds the document
+            # open while the kernel renders, and a render that never ends
+            # should still leave a screenshot of how far it came.
+            page.goto(f"{url}/?token={TOKEN}", wait_until="commit",
                       timeout=WAIT_PAGE * 1000)
-            page.wait_for_selector(".delfin-session-strip, .delfin-sessions",
-                                   timeout=WAIT_PAGE * 1000)
+            try:
+                page.wait_for_selector(".delfin-session-strip, .delfin-sessions",
+                                       timeout=WAIT_PAGE * 1000)
+            except Exception:
+                _shot(page, args, "not_rendered", rec)
+                rec["page_errors"] = errors[:10]
+                raise
             t["page_loaded"] = round(time.time() - t0, 1)
             tabs = page.evaluate("() => Array.from(document.querySelectorAll("
                                  "'.lm-TabBar-tab')).map(t => t.innerText.trim())")
