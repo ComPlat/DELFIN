@@ -52,6 +52,31 @@ def _default_runner(cmd: Sequence[str]) -> Optional[str]:
         return None
 
 
+def child_env_runner(env: Optional[dict] = None):
+    """A scheduler query runner carrying the given child environment.
+
+    Some queries (sbatch submits, scontrol probes) must run in the *current
+    process's child environment* -- the one a detached job would inherit --
+    not the terminal's.  This returns a runner that runs ``argv`` under
+    ``child_env(env)`` and returns the subprocess stdout (or stdout+stderr on
+    failure, so an sbatch error is not swallowed).  Shared by every module
+    that submits a job, so the child-env behaviour lives in one place.
+    """
+    from delfin.agent.lifeline import child_env
+
+    env = child_env(env)
+
+    import subprocess
+
+    def _run(argv):
+        proc = subprocess.run(argv, capture_output=True, text=True, env=env)
+        return proc.stdout if proc.returncode == 0 else (
+            proc.stdout + proc.stderr)
+
+    return _run
+
+
+
 class SchedulerClient:
     """Process-wide throttle + shared cache for scheduler queries.
 
