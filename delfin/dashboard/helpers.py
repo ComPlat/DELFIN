@@ -411,6 +411,38 @@ def parse_time_to_seconds(time_str):
         return 48 * 3600
 
 
+def self_running_html(*scripts):
+    """HTML that runs *scripts* when the browser shows it.
+
+    Each script sits as raw text in an inert ``<script type="text/x-delfin">``
+    (raw text: no '<' in the code is read as a tag) and an <img> whose load
+    fails runs each one on its own through its onerror -- the way the agent
+    tab's chat tags run their code. One script that throws stops no other.
+
+    For a tab built after the page went out: its init scripts were sent as a
+    Javascript output into the shared JS output widget, and since tabs build
+    on first open (09.11.) those outputs were never executed -- measured: the
+    Calculations tab's resolvers stayed undefined, its splitter and explorer
+    were never bound.
+    """
+    out = []
+    for script in scripts:
+        if not script or not str(script).strip():
+            continue
+        body = str(script).replace("</script", "<\\/script")
+        out.append('<script type="text/x-delfin" class="delfin-tab-js">'
+                   + body + "</script>")
+    if not out:
+        return ""
+    out.append('<img src="" alt="" style="display:none" onerror="'
+               "this.parentNode.querySelectorAll('script.delfin-tab-js')"
+               ".forEach(function(t){try{(0,eval)(t.textContent)}"
+               "catch(e){console.error('DELFIN tab script',e)}});"
+               "this.remove();"
+               '">')
+    return "".join(out)
+
+
 def _append_js(ctx, script):
     """Append JavaScript to the shared output without clearing prior JS."""
     if not script:

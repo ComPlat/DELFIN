@@ -83,12 +83,15 @@ def test_showing_a_tab_again_builds_it(source):
 
 def test_a_late_tab_does_not_wipe_the_page(source):
     """Every tab's startup script goes out in one ctx.run_js, and run_js clears
-    the output before it writes. A tab built after that must append."""
+    the output before it writes, so a tab built after that must not use it.
+    It carries its own scripts instead (helpers.self_running_html, 11.11.):
+    sent as a Javascript output into ctx.js_output after the page was out,
+    they were never executed."""
     builder = source.split('def _build_tab_now')[1].split('\n    def ')[0]
     # Its own docstring names run_js as the thing it must not use, so the
     # prose is dropped and only the code is looked at.
     code = builder.split('"""')[-1]
-    assert '_append_js(ctx, fresh)' in code
+    assert 'self_running_html(*parts)' in code
     assert 'ctx.run_js' not in code
     assert "build = spec.pop('build', None)" in code, 'build once, not per rebuild'
 
