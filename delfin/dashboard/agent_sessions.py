@@ -1558,7 +1558,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     # The agent service: every session started here runs in it, and the
     # running list shows every session it holds. Without one, the kernel.
     live: dict[str, Any] = {"client": None, "why": "", "retry_at": 0.0, "scripts": False}
-    running_panel = RunningPanel(None, on_open=lambda sid: open_live(sid),
+    running_panel = RunningPanel(None, on_open=lambda sid: open_from_list(sid),
                                  is_open=lambda sid: any(r.get("session_id") == sid
                                                          for r in sessions))
     running_panel.widget.layout.display = "none"
@@ -1945,6 +1945,59 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             except LS.ServiceError as exc:
                 rec["refs"]["say"](f"Bypass is not available here ({exc.message}); "
                                    "this session asks as Accept Edits.")
+        return rec
+
+    #: How long a take-over waits for the service to save and let go of
+    #: the session before it says so and shows the service view instead.
+    _TAKE_OVER_WAIT_S = 20.0
+
+    def open_from_list(sid: str) -> Optional[dict]:
+        """One click on a session of the service (the running list).
+
+        Input: the session id. Output: the open record, or None.
+        Dashboard sessions run in this kernel (the default): a session of
+        the service that is done or asleep is taken over -- the service
+        saves and ends it, and this kernel resumes the same session, with
+        its whole history, in the agent tab's full chat. A session that is
+        working or waits for an answer keeps running where it is and opens
+        in the service's view; nothing is cut off mid-turn.
+
+        Rejected: a second, reduced chat for service sessions (the view
+        that lost the composer, context bar and controls); resuming the
+        session here while the service still holds it (two writers on one
+        session file).
+        """
+        import time as _time
+        from delfin.dashboard import live_sessions as LS
+        for rec in sessions:
+            if rec.get("session_id") == sid or _session_id(rec) == sid:
+                activate(rec["key"])
+                return rec
+        summary = running_panel.running.summary(sid) or {}
+        client = live["client"]
+        if (view["start_in_service"] or client is None
+                or LS.state_word(summary) in ("working", "needs you")):
+            return open_live(sid)
+        name = str(summary.get("name") or sid[:8])
+        where = str(summary.get("workspace") or "")
+        try:
+            client.stop(sid)
+        except (LS.ServiceError, TimeoutError, OSError) as exc:
+            _say(f"{name} could not be moved here ({getattr(exc, 'message', exc)}); "
+                 "it opens in the service's view.")
+            return open_live(sid)
+        # The service lets go once its worker has saved and exited: the
+        # session leaves the running list (session.removed / ended).
+        deadline = _time.monotonic() + _TAKE_OVER_WAIT_S
+        while running_panel.running.summary(sid) and _time.monotonic() < deadline:
+            _time.sleep(0.2)
+        if running_panel.running.summary(sid) or not _saved_session(sid):
+            _say(f"{name} did not finish saving in time; open it again in a moment.")
+            return None
+        rec = open_session(where, sid, in_kernel=True)
+        if rec is not None:
+            _say(f"{name} now runs in this dashboard's chat; the terminal and the "
+                 "phone no longer have it.")
         return rec
 
     # -- open, close ----------------------------------------------------------
