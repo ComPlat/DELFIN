@@ -69,6 +69,31 @@ def stop_refresh_loops() -> int:
     return len(stops)
 
 
+def _self_running_html(*scripts: str) -> str:
+    """HTML that runs *scripts* when the browser shows it -- the agent
+    tab's own way (its chat tags): an <img> whose load fails runs its
+    onerror. Each script sits as raw text in an inert
+    ``<script type="text/x-delfin">`` beside it (raw text: no '<' in the
+    code is read as a tag), so nothing is escaped into an attribute. Each
+    guards itself against running twice and runs on its own, so one that
+    throws stops no other.
+
+    Why not only the init-js payload: a tab built after the page was out
+    sent its scripts as one block, and one that threw (MathJax) ended it.
+    """
+    out = []
+    for script in scripts:
+        body = str(script).replace("</script", "<\\/script")
+        out.append('<script type="text/x-delfin" class="delfin-sessions-js">'
+                   + body + "</script>")
+    out.append('<img src="" alt="" style="display:none" onerror="'
+               "this.parentNode.querySelectorAll('script.delfin-sessions-js')"
+               ".forEach(function(t){try{(0,eval)(t.textContent)}"
+               "catch(e){console.error('DELFIN sessions script',e)}});"
+               '">')
+    return "".join(out)
+
+
 def _register_init_js(ctx: Any, script: str) -> None:
     """Add ``script`` to a context's init-js payload, at most once per
     script. (Keyed on the context alone, the first script registered was
@@ -1850,7 +1875,9 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     sidebar = _classed(widgets.VBox(
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
          running_panel.widget, resume_dropdown, elsewhere_note, stop_all_btn,
-         complete_query, complete_result]),
+         complete_query, complete_result,
+         widgets.HTML(_self_running_html(_RENAME_KEYS_JS, _PATH_KEYS_JS,
+                                         _COMPLETE_JS))]),
         "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
     splitter_host = _classed(widgets.HBox([widgets.HTML("")]),
@@ -1864,9 +1891,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     # this runs after the shell is really on the page (the sidebar HTML
     # alone would render too early to find it).
     _register_init_js(ctx, _SPLITTER_INIT_JS)
-    _register_init_js(ctx, _RENAME_KEYS_JS)
-    _register_init_js(ctx, _PATH_KEYS_JS)
-    _register_init_js(ctx, _COMPLETE_JS)
+    # The keys of the list (rename, folder box) and the message box's
+    # suggestions run when the list is shown (_self_running_html).
 
     # -- lookup -------------------------------------------------------------
 

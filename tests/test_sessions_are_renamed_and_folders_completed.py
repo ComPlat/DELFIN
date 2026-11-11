@@ -54,8 +54,16 @@ def test_every_page_script_is_registered_not_only_the_first():
     AS._REGISTERED_INIT_JS.clear()
     sent = []
     ctx = types.SimpleNamespace(add_init_js=sent.append)
-    for js in (AS._SPLITTER_INIT_JS, AS._RENAME_KEYS_JS, AS._PATH_KEYS_JS,
-               AS._COMPLETE_JS, AS._RENAME_KEYS_JS):
+    for js in (AS._SPLITTER_INIT_JS, AS._RENAME_KEYS_JS, AS._SPLITTER_INIT_JS):
         AS._register_init_js(ctx, js)
-    assert sent == [AS._SPLITTER_INIT_JS, AS._RENAME_KEYS_JS,
-                    AS._PATH_KEYS_JS, AS._COMPLETE_JS]
+    assert sent == [AS._SPLITTER_INIT_JS, AS._RENAME_KEYS_JS]
+
+
+def test_the_list_runs_its_own_scripts_when_shown():
+    html = AS._self_running_html(AS._RENAME_KEYS_JS, AS._PATH_KEYS_JS,
+                                 AS._COMPLETE_JS)
+    assert html.count('<script type="text/x-delfin" class="delfin-sessions-js">') == 3
+    assert "onerror=" in html and "(0,eval)(t.textContent)" in html
+    assert "__delfinComplete" in html and "__delfinPathKeys" in html
+    import inspect
+    assert "_self_running_html(_RENAME_KEYS_JS, _PATH_KEYS_JS" in inspect.getsource(AS.create_tab)
