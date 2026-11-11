@@ -6926,7 +6926,7 @@ def _ends_with_a_question(text: str) -> bool:
 def _announces_an_action(text: str) -> bool:
     """True when an answer ENDS by saying what it is about to do.
 
-    The last sentence, not any sentence: "I'll read the lines" in the
+     The last sentence, not any sentence: "I'll read the lines" in the
     middle of a finished report is narration; at the very end, followed
     by nothing, it is a promise the turn did not keep. Never true for an
     answer that ends with a question -- that one is waiting on the user
@@ -6943,6 +6943,51 @@ def _announces_an_action(text: str) -> bool:
         if mark in last:
             last = last.rsplit(mark, 1)[-1]
     return bool(ANNOUNCES_ACTION_RE.search(last.strip()))
+
+
+#: The corrective user row for a promised-but-unmade tool call. The short
+#: wording the brief fixes on purpose: a large write_file is the usual
+#: reason the model stalled, so the row names parts up front.
+_PROMISED_CONT_TEXT = (
+    "No tool call arrived. Make the call now; if the file is large, "
+    "write it in parts.")
+
+#: Bounded corrective re-requests per turn for a promised tool call: one
+#: or two, never a loop. The field shape repeats ("the same run repeated
+#: this 6 times"), so the cap keeps a stalling model from consuming the
+#: round budget on promises alone.
+_PROMISED_CONT_MAX = 2
+
+#: Stop reason when the corrective budget is spent and the turn still
+#: ends on a promise: NOT end_turn ("done"), so a supervisor resumes it
+#: instead of treating the run as finished.
+_PROMISED_STOP_REASON = "promised_no_tool_call"
+
+
+def _promises_an_unmade_tool_call(text: str) -> bool:
+    """True when a final answer claims a tool call is happening NOW and
+    no tool call ran in that response.
+
+    Different from :func:`_announces_an_action`, which reads only the
+    LAST sentence and is fired by planning language ("I'll read ...").
+    The field shapes (harness main d44702503, 216 runs,
+    kit.deepseek-v4-flash) put the promise FIRST and declarative filler
+    last:
+
+        "I am executing the write_file tool call now -- creating
+        ``orca_scan_opi.py`` ... This is the actual tool invocation
+        being executed."
+
+    So the whole text is scanned, for the present-continuous/immediate
+    first-person claim plus the German present forms. Past reports
+    ("I wrote the file"), questions and plain answers do not match; the
+    caller supplies the no-tool-call fact.
+    """
+    from .german import PROMISES_TOOL_CALL_RE
+    tail = (text or "").strip()
+    if not tail or _ends_with_a_question(tail):
+        return False
+    return bool(PROMISES_TOOL_CALL_RE.search(tail))
 
 
 def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
@@ -14882,7 +14927,8 @@ _CONTINUE_TEXT = {
                    "write_file(..., mode=\"append\") -- or say in your "
                    "answer that it is not done."),
     "cut_call": ("[Continue] Your last tool call was cut at the output "
-                 "limit and did not run. Write a long file in parts: "
+                 "limit and did not run: the arguments were cut off at "
+                 "the output limit; write the file in smaller parts -- "
                  "write_file(path, <first part>), then write_file(path, "
                  "<next part>, mode=\"append\")."),
     "cut": ("[Continue] Your answer was cut at the output limit. Continue "
@@ -33944,6 +33990,10 @@ class OpenAIClient(_BaseClient):
         # Whether the announced-action continuation already fired this
         # turn; see the second auto-continue trigger.
         _announced_count = 0
+        # Bounded corrective re-requests for a PROMISED tool call that
+        # never came (shapes 1-4 in the field, harness main d44702503);
+        # see the corrective trigger below the announce continuation.
+        _promised_count = 0
         # The go-ahead and prose-choice triggers (go_ahead.py), once each
         # per turn, judged against the message that opened the turn and
         # every tool the turn called.
@@ -34932,10 +34982,10 @@ class OpenAIClient(_BaseClient):
                                                 "multi_edit", "apply_patch"):
                             result = json.dumps({"error": (
                                 f"invalid JSON in arguments for '{fn_name}': "
-                                f"{_args_parse_error}. The call was cut at "
-                                "the output limit and did NOT run; the same "
-                                "call cuts again. Write a long file in "
-                                "parts: write_file(path, <first part>), then "
+                                f"{_args_parse_error}. The arguments were "
+                                "cut off at the output limit; write the "
+                                "file in smaller parts: write_file(path, "
+                                "<first part>), then "
                                 "write_file(path, <next part>, "
                                 "mode=\"append\") for each further part."
                             )})
@@ -36097,6 +36147,48 @@ class OpenAIClient(_BaseClient):
             # 2026-10-20 (bug report davh 414e5a17): "Ich lese jetzt ...",
             # sent back once, read, announced the edit, and the turn ended --
             # turn after turn; the user saw "I'm doing it now" and nothing.
+            # Corrective trigger for a PROMISED tool call that never
+            # came. The four field shapes (harness main d44702503, 216
+            # runs on kit.deepseek-v4-flash, often right before a large
+            # write_file) end the turn with prose like "I am executing
+            # the write_file tool call now" and no tool call, so the run
+            # looks "done" with the task list untouched. PR #600 covers
+            # leaked tool-call MARKUP; this covers the prose promise.
+            # First, unlike the announce trigger below: the whole text is
+            # matched, not the last sentence, because the promise sits in
+            # the first sentence with declarative filler last. Second,
+            # unlike the announce trigger: it is gated on OPEN TASKS (the
+            # brief's condition), it does NOT need tool activity between
+            # rounds (the stalled model repeats the same sentence), and
+            # when the budget is spent the turn ends with a distinct
+            # stop_reason so a supervisor resumes it instead of a silent
+            # "done". Never after a tool ran in this response -- a tool
+            # result already answered the promise, and re-requesting
+            # would execute the step twice.
+            _promised_text = "".join(_text_chunks) if _text_chunks else ""
+            _promised_end_state = self._open_task_state()
+            _promised_fires = (
+                not _tool_calls
+                and _promised_count < _PROMISED_CONT_MAX
+                and _auto_cont_count < _AUTO_CONT_CAP
+                and not self._waiting_on_watched_jobs()
+                and _promised_end_state.get("state", "none")
+                in ("open", "unknown")
+                and _promises_an_unmade_tool_call(_promised_text))
+            if _promised_fires:
+                _promised_count += 1
+                _auto_cont_count += 1
+                if _promised_text.strip():
+                    api_messages.append(
+                        {"role": "assistant", "content": _promised_text})
+                api_messages.append({"role": "user",
+                                     "content": _PROMISED_CONT_TEXT})
+                yield StreamEvent(
+                    type="notice",
+                    text=("\n\n↻ promised a tool call → corrected: "
+                          + _PROMISED_CONT_TEXT + "\n"))
+                continue
+
             _announced = (_announced_count < _ANNOUNCE_CONT_MAX
                           and (_announced_count == 0 or _did_tools_since_cont)
                           and _auto_cont_count < _AUTO_CONT_CAP
@@ -36214,9 +36306,19 @@ class OpenAIClient(_BaseClient):
                                   text="\n\n" + _end_notice + "\n")
             _stop = finish_reason or "end_turn"
             if _stop in ("end_turn", "stop", ""):
-                _stop = {"open": "end_turn_open_tasks",
-                         "unknown": "end_turn_tasks_unknown"}.get(
-                             str(_end_state.get("state", "")), "end_turn")
+                # A promise that survived the corrective budget: the turn
+                # does not end "done" -- the supervisor sees WHY it ended
+                # and resumes it (the brief's clear stop_reason).
+                if (not _tool_calls
+                        and _promised_end_state.get("state", "none")
+                        in ("open", "unknown")
+                        and _promises_an_unmade_tool_call(
+                            "".join(_text_chunks) if _text_chunks else "")):
+                    _stop = _PROMISED_STOP_REASON
+                else:
+                    _stop = {"open": "end_turn_open_tasks",
+                             "unknown": "end_turn_tasks_unknown"}.get(
+                                 str(_end_state.get("state", "")), "end_turn")
             _uncommitted = _uncommitted_note(
                 getattr(self._permissions, "workspace", None))
             if _uncommitted:
