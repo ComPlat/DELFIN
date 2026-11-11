@@ -15,6 +15,11 @@ from pathlib import Path
 
 from . import client, launcher, rundir
 
+#: What a bare ``delfin-agent tui --resume`` (no id) stands for: the
+#: window opens the resume picker before any session (tui/src/entry.ts
+#: RESUME_PICK). No session id has this form.
+RESUME_PICK = ":pick"
+
 #: How long a service that does not answer gets to end after SIGTERM
 #: before SIGKILL: its sessions save within the service's own grace.
 UNANSWERING_TERM_WAIT_S = 45.0
@@ -41,6 +46,10 @@ def _start_settings(args: argparse.Namespace) -> dict:
                   for v in (getattr(args, name, None) or [])]
         if values:
             settings[key] = values
+    if settings.get("resume") == RESUME_PICK:
+        # `--resume` without an id: the picker first, nothing to resume yet.
+        del settings["resume"]
+        settings["pick"] = True
     return settings
 
 

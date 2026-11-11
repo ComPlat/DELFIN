@@ -4,8 +4,12 @@
  *
  *   DELFIN_TUI_SOCKET  the service's socket
  *   DELFIN_TUI_START   the first session's settings, as JSON (chat's flags)
+ *   DELFIN_TUI_ENTRY   optional: "continue" or "resume" (the picker), as
+ *                      the flags --continue and a bare --resume say
  *
- * It connects, starts the first session (or attaches to `resume`), and
+ * It connects, starts the first session (or attaches to `resume`, opens
+ * the folder's latest for `continue`, or the resume picker first:
+ * entry.ts), and
  * draws it inline: finished output goes into the terminal's own scrollback,
  * only the footer is live. Leaving the window leaves the sessions running.
  */
@@ -20,6 +24,7 @@ import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
 import { worktreeRetryOf } from "./commands"
+import { START_HINT, entryOf, settingsFor } from "./entry"
 import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
@@ -48,6 +53,10 @@ try {
 } catch {
   console.error("DELFIN_TUI_START is not JSON; starting with defaults")
 }
+// A new session, --continue, --resume <id>, or the picker first (entry.ts);
+// what the service is given carries none of the picker's markers.
+const entry = entryOf(start)
+start = settingsFor(start, entry)
 
 // DELFIN_TUI_DEBUG=<file>: when each startup step was reached (a window
 // that is slow to come up says where it waits).
@@ -648,6 +657,18 @@ const pins = Pins.load()
 const agentScreen = full || (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.env.STY ? "footer" : "alternate")) === "footer"
   ? undefined : createAgentScreen(renderer, view.queue)
 
+// `--resume` without an id: the picker comes first; what is picked is
+// opened, esc starts a new session as a plain start does.
+let pickedAtStart: (picked: { id: string; workspace: string } | null) => void = () => {}
+const startPick = entry.kind === "pick"
+  ? new Promise<{ id: string; workspace: string } | null>((resolve) => { pickedAtStart = resolve })
+  : null
+const resumeAtStart = startPick ? {
+  workspace: String(start.cwd ?? process.cwd()),
+  onPick: (id: string, workspace: string) => pickedAtStart({ id, workspace }),
+  onCancel: () => pickedAtStart(null),
+} : undefined
+
 // The window takes keys from the start: a session that is slow to start
 // (MCP servers, a long resume) can still be left with ctrl+d or ctrl+c.
 await render(() => (
@@ -658,29 +679,48 @@ await render(() => (
        onResume={(id, ws) => void switchTo(id, ws)}
        onNewSession={() => newSession()} onOpenItem={openItem} pins={pins} agentScreen={agentScreen} screen={screen}
        onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
-       onLines={(title, lines) => view.lines(title, lines)} />
+       onLines={(title, lines) => view.lines(title, lines)} resumeAtStart={resumeAtStart} />
 ), renderer)
 
 step("window rendered")
-store.update((d) => { d.starting = true })
-try {
-  await openFirst()
-} catch (error) {
-  if (quitting) {
-    // Left while it started: nothing to say (the session, if it started,
-    // runs on in the agent service).
-    leaveNow()
-  } else {
-    // Nothing to show: say why on a terminal that is the user's again.
-    connection.close()
-    renderer.destroy()
-    await Bun.sleep(50)
-    process.stderr.write(`The session could not start: ${(error as Error).message}\n`)
-    process.exit(3)
+// `--resume` without an id: the session picked is opened; esc -- or a pick
+// that cannot be opened (the note says why) -- leaves it to the plain
+// start below: a new session.
+if (startPick) {
+  const picked = await startPick
+  if (picked && !quitting) {
+    store.update((d) => { d.starting = true })
+    await switchTo(picked.id, picked.workspace)
+    store.update((d) => { d.starting = false })
+    step(current ? "picked session open" : "picked session not opened")
   }
-} finally {
-  store.update((d) => { d.starting = false })
-  step(current ? "session open" : "no session")
+}
+if (!current && !quitting) {
+  store.update((d) => { d.starting = true })
+  try {
+    await openFirst()
+    // A new session's first screen says how to get back to another one.
+    if (entry.kind !== "resume" && entry.kind !== "continue" && current) {
+      store.flush()
+      view.note(START_HINT)
+    }
+  } catch (error) {
+    if (quitting) {
+      // Left while it started: nothing to say (the session, if it started,
+      // runs on in the agent service).
+      leaveNow()
+    } else {
+      // Nothing to show: say why on a terminal that is the user's again.
+      connection.close()
+      renderer.destroy()
+      await Bun.sleep(50)
+      process.stderr.write(`The session could not start: ${(error as Error).message}\n`)
+      process.exit(3)
+    }
+  } finally {
+    store.update((d) => { d.starting = false })
+    step(current ? "session open" : "no session")
+  }
 }
 
 // After a reconnect: the session is attached again (a new service wakes it

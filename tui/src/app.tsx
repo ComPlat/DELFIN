@@ -29,6 +29,7 @@ import { History } from "./composer/history"
 import { ANSWER_PAUSE_MS, createApprovalUi, setFullPreviewKey } from "./footer/approval"
 import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
+import { resumeRowsOf } from "./entry"
 import { editPrompt } from "./composer/editor"
 import { keyTable, type Keymap } from "./keymap/keymap"
 import type { AttentionItem } from "./protocol/generated"
@@ -82,6 +83,11 @@ export interface AppProps {
   thinking?: () => boolean
   /** Lines of the window's own, into the scrollback (/keys). */
   onLines?: (title: string, lines: string[]) => void
+  /** `delfin-agent tui --resume` without an id: the resume picker opens
+   *  before any session, over the sessions of `workspace`. A pick is
+   *  handed to `onPick`; esc (or ctrl+c) to `onCancel` -- the window then
+   *  starts a new session, as a plain start does. */
+  resumeAtStart?: { workspace: string; onPick: (sessionId: string, workspace: string) => void; onCancel: () => void }
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
   /** The pause before a click answers a question or picks from a list
@@ -710,32 +716,30 @@ export function App(props: AppProps): JSX.Element {
       .filter((c) => c.value)
       .map((c) => ({ label: c.value, detail: c.detail, value: `${command} ${c.value}`, current: c.value === got.current }))
   }
-  const age = (secs: number) => {
-    const d = Math.max(0, Date.now() / 1000 - secs)
-    return d < 3600 ? `${Math.round(d / 60)}m ago` : d < 86400 ? `${Math.round(d / 3600)}h ago` : `${Math.round(d / 86400)}d ago`
-  }
   /** Where each listed session works (a saved one is started there). */
   const workspaces = new Map<string, string>()
-  /** The sessions running in the service first, then the saved ones of
-   *  this workspace (the resume picker, `/resume `'s menu). */
-  const resumeRows = (s: SessionState) => Promise.all([
+  /** The sessions the service runs first, then the sleeping and the saved
+   *  ones of `workspace`, each group newest first (entry.ts resumeRowsOf:
+   *  the resume picker, `/resume `'s menu). */
+  const resumeRows = (workspace: string, currentId: string) => Promise.all([
     props.client.request("sessions.list", {}).catch(() => ({ sessions: [] })),
-    props.client.request("sessions.past", { workspace: s.workspace, limit: 50 }),
+    props.client.request("sessions.past", { workspace, limit: 50 }),
   ]).then(([listed, past]) => {
-    const running = ((listed?.sessions ?? []) as any[]).map((r) => ({
-      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
-      detail: ["running here", r.state, r.model, String(r.sessionId).slice(0, 8)].filter(Boolean).join(" · "),
-      current: r.sessionId === s.id,
-    }))
-    const saved = ((past?.sessions ?? []) as any[]).filter((r) => !r.running).map((r) => ({
-      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
-      detail: [age(r.updatedAt), r.model, `${r.messages} messages`, String(r.sessionId).slice(0, 8)]
-        .filter(Boolean).join(" · "),
-      current: false,
-    }))
-    for (const r of [...running, ...saved]) workspaces.set(r.id, r.workspace)
-    return [...running, ...saved]
+    const rows = resumeRowsOf((listed?.sessions ?? []) as unknown[], (past?.sessions ?? []) as unknown[], currentId)
+    for (const r of rows) workspaces.set(r.id, r.workspace)
+    return rows
   })
+  /** The resume picker: type to filter (title, folder, id), ↑ ↓, enter
+   *  opens, esc closes. */
+  const openResumePicker = (workspace: string, currentId: string, title: string,
+                            onPick: (id: string, workspace: string) => void, onCancel?: () => void) => {
+    picker.open(title, resumeRows(workspace, currentId).then((rows) => rows.map((r) => ({
+      label: r.title, detail: r.detail, search: r.search, value: `${r.id}\t${r.workspace}`, current: r.current,
+    }))), (c) => {
+      const [id, ws] = c.value.split("\t")
+      if (id) onPick(id, ws ?? "")
+    }, undefined, onCancel)
+  }
   /** What may follow a command on the prompt: the window's own commands
    *  here, the session's from session.choices ("args"). */
   const argumentChoices = async (command: string): Promise<ArgumentChoices> => {
@@ -744,7 +748,7 @@ export function App(props: AppProps): JSX.Element {
     if (command === "/name") return { current: "", choices: [], usage: "/name [name]  (no name: folder and short id)" }
     if (command === "/resume") {
       if (!s) return { current: "", choices: [], usage: "" }
-      const rows = await resumeRows(s)
+      const rows = await resumeRows(s.workspace, s.id)
       return { current: s.id, usage: "/resume <session id>",
                choices: rows.map((r) => ({ value: r.id, label: r.title, detail: r.detail })) }
     }
@@ -775,14 +779,16 @@ export function App(props: AppProps): JSX.Element {
         })
         return
       case "resume":
-        picker.open("resume a session", resumeRows(s).then((rows) => rows.map((r) => ({
-          label: r.title, detail: r.detail, value: `${r.id}\t${r.workspace}`, current: r.current,
-        }))), (c) => {
-          const [id, workspace] = c.value.split("\t")
-          if (id && id !== sid()) props.onResume?.(id, workspace ?? "")
+        openResumePicker(s.workspace, s.id, "resume a session", (id, workspace) => {
+          if (id !== sid()) props.onResume?.(id, workspace)
         })
         return
     }
+  }
+  // `--resume` without an id: the picker before any session.
+  if (props.resumeAtStart) {
+    const at = props.resumeAtStart
+    openResumePicker(at.workspace, "", "resume a session · esc starts a new one", at.onPick, at.onCancel)
   }
   const openPalette = () => {
     const actions: Choice[] = [
