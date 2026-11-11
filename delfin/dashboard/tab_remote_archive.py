@@ -58,6 +58,7 @@ from .helpers import (
     disable_spellcheck, image_data_uri, neutralise_link_targets,
 )
 from . import text_view as _text_view
+from .select_state import replace_options as _replace_options
 from .input_processing import is_smiles, smiles_to_xyz_quick
 from .molecule_viewer import (
     DEFAULT_3DMOL_ZOOM,
@@ -2454,18 +2455,19 @@ def create_tab(ctx):
         state["filtered_entries"] = entries
         previous_values = set(_selected_relative_paths())
         if not entries:
-            file_list.options = [("(No matches)", "")]
-            file_list.value = ()
+            _replace_options(file_list, [("(No matches)", "")])
             state["selected_entry"] = None
             _update_buttons()
             return
-        file_list.options = [(_entry_label(entry), entry.get("relative_path", "")) for entry in entries]
         available_values = {entry.get("relative_path", "") for entry in entries}
         kept = tuple(value for value in previous_values if value in available_values)
-        if kept:
-            file_list.value = kept
-        else:
-            file_list.value = ()
+        # Labels and selection reach the browser together (select_state).
+        _replace_options(
+            file_list,
+            [(_entry_label(entry), entry.get("relative_path", "")) for entry in entries],
+            kept,
+        )
+        if not kept:
             state["selected_entry"] = None
         _update_buttons()
 
@@ -2496,8 +2498,7 @@ def create_tab(ctx):
         if not config:
             state["entries"] = []
             state["filtered_entries"] = []
-            file_list.options = [("(Configure Settings first)", "")]
-            file_list.value = ()
+            _replace_options(file_list, [("(Configure Settings first)", "")])
             _update_buttons()
             return
 
@@ -2516,8 +2517,7 @@ def create_tab(ctx):
         except Exception as exc:
             state["entries"] = []
             state["filtered_entries"] = []
-            file_list.options = [("(Remote directory unavailable)", "")]
-            file_list.value = ()
+            _replace_options(file_list, [("(Remote directory unavailable)", "")])
             _clear_preview("Could not load remote directory.")
             _set_status(html.escape(str(exc)), color="#d32f2f")
             _update_buttons()
