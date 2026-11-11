@@ -1528,6 +1528,64 @@ _AGENT_CSS = """\
     border: 1px solid #e5e7eb;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
+/* A delegated sub-agent as one card in the transcript. The bubble is the
+   chat's own .delfin-chat-msg (its 12 px corner, padding, margin); these
+   rules only dress the card's own rows. Full width like the system line:
+   a card that is a chat message keeps the chat's flow. */
+.delfin-delegate-card {
+    background: #ffffff;
+    color: #111827;
+    margin-right: auto;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
+}
+.delfin-delegate-card .delegate-head {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.delfin-delegate-card .delegate-state { font-weight: 600; }
+.delfin-delegate-card .delegate-title { font-weight: 600; }
+.delfin-delegate-card .delegate-type,
+.delfin-delegate-card .delegate-model,
+.delfin-delegate-card .delegate-elapsed {
+    font-size: 10px;
+    color: #6b7280;
+}
+.delfin-delegate-card .delegate-summary {
+    margin: 4px 0 2px 0;
+    font-size: 12px;
+    color: #374151;
+    white-space: pre-wrap;
+}
+.delfin-delegate-card .delegate-more pre {
+    font-size: 11px;
+    white-space: pre-wrap;
+    max-height: 18em;
+    overflow: auto;
+}
+.delfin-delegate-card .delegate-actions {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+.delfin-delegate-card .delegate-actions button {
+    font-size: 10px;
+    padding: 1px 8px;
+    cursor: pointer;
+}
+.delfin-delegate-card .delegate-state-word {
+    font-size: 10px;
+    color: #6b7280;
+}
+.delfin-delegate-running .delegate-state { color: #2563eb; }
+.delfin-delegate-done .delegate-state { color: #15803d; }
+.delfin-delegate-failed .delegate-state { color: #b91c1c; }
+.delfin-delegate-stopped .delegate-state { color: #6b7280; }
 .delfin-chat-system {
     background: #f3f4f6;
     margin: 4px 0;
@@ -7074,6 +7132,356 @@ def _render_subagent_pane_html(calls: list[dict]) -> str:
         + '<ul style="list-style:none;margin:0;padding:0;">'
         + "".join(rows) + '</ul></div>'
     )
+
+
+def _delegate_state_for(status: str) -> str:
+    """One of the four card states the transcript shows: running, done,
+    failed, stopped. Anything unknown runs as running — a card that shows
+    no state shows motion."""
+    s = str(status or "").strip().lower()
+    if s in ("done", "completed", "ok"):
+        return "done"
+    if s in ("failed", "error"):
+        return "failed"
+    if s in ("stopped", "cancelled", "canceled", "stopping"):
+        return "stopped"
+    return "running"
+
+
+_DELEGATE_STATE_META = {
+    "running": ("↻", "delfin-delegate-running", "running"),
+    "done": ("✓", "delfin-delegate-done", "done"),
+    "failed": ("✗", "delfin-delegate-failed", "failed"),
+    "stopped": ("⏹", "delfin-delegate-stopped", "stopped"),
+}
+
+
+def _delegate_elapsed_text(call: dict, now: float | None = None) -> str:
+    """How long the delegate has run, as seconds text.
+
+    The payload's own ``elapsed_s`` (round(self.elapsed_s, 2) in
+    subagents.py) wins once it is there; before that the card counts
+    from ``started_at``, so a running card shows live progress.
+    """
+    elapsed = call.get("elapsed_s")
+    if elapsed is None:
+        started = call.get("started_at")
+        try:
+            elapsed = (now if now is not None else time.time()) - float(started)
+        except (TypeError, ValueError):
+            elapsed = None
+    try:
+        elapsed = float(elapsed)
+    except (TypeError, ValueError):
+        return ""
+    if elapsed < 0 or elapsed != elapsed:       # a stale/absurd stamp
+        return ""
+    if elapsed >= 3600:
+        return f"{int(elapsed // 3600)}h{int((elapsed % 3600) // 60):02d}m"
+    return f"{int(elapsed + 0.5)}s"
+
+
+def _delegate_summary_lines(call: dict, *, max_lines: int = 3) -> str:
+    """The first lines of a delegate's report, for the card face.
+
+    The tool result is the payload the parent model gets (see
+    ``_subagent_report_text``); the first lines are the answer's head,
+    the rest goes behind "more" in the card's details fold. Nothing
+    shown here is a promise about what the report is worth — the
+    verification notice, when the payload carries one, stays in view.
+    """
+    output = call.get("output") or ""
+    if not output:
+        return ""
+    text = _subagent_report_text(str(output))
+    status = _delegate_state_for(call.get("status"))
+    if status == "failed":
+        return text.strip() or "the run failed"
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    return "\n".join(lines[:max_lines])
+
+
+def _render_delegate_card_html(call: dict, now: float | None = None) -> str:
+    """One delegated task as a card in the parent's transcript.
+
+    ``call`` is one entry of the same list the subagent pane renders
+    (``state["subagent_calls"]``), extended with ``sa_id``, ``model``,
+    ``started_at`` and ``elapsed_s`` from the delegate's payload. The
+    card reuses the chat bubble's own class (and through it the 12 px
+    corner the chat shows) — the layout of this chat is the layout of
+    the tab, and a second, simpler one is not wanted. Open and Stop
+    reach the page script through data attributes, the way the chat's
+    jump button does; the handlers live in _AGENT_PAGE_JS.
+    """
+    if not isinstance(call, dict):
+        return ""
+    sa_id = _html.escape(str(call.get("sa_id") or ""))
+    sub_type = _html.escape(str(call.get("subagent_type") or "agent"))
+    desc = _html.escape(str(call.get("description") or "")[:120])
+    model = _html.escape(str(call.get("model") or "")[:60])
+    state = _delegate_state_for(call.get("status"))
+    glyph, state_cls, state_word = _DELEGATE_STATE_META[state]
+    elapsed = _delegate_elapsed_text(call, now)
+
+    meta = [f'<span class="delegate-type">{sub_type}</span>']
+    if model:
+        meta.append(f'<span class="delegate-model">{model}</span>')
+    if elapsed:
+        meta.append(f'<span class="delegate-elapsed">{elapsed}</span>')
+    meta_html = "".join(f" {m}" for m in meta)
+
+    summary = _delegate_summary_lines(call)
+    if summary and state in ("done", "failed"):
+        esc = _html.escape(summary)
+        head, rest = summary.split("\n", 1) if "\n" in summary else (
+            summary, "")
+        face = f'<div class="delegate-summary">{_html.escape(head)}</div>'
+        if rest.strip():
+            face += (
+                '<details class="delegate-more">'
+                f'<summary>more</summary>'
+                f'<pre class="delegate-report">{_html.escape(summary)}</pre>'
+                '</details>'
+            )
+    elif summary:
+        face = (f'<div class="delegate-summary">'
+                f'{_html.escape(summary.splitlines()[0])}</div>')
+    else:
+        face = ""
+
+    # Open/Stop only where they mean something: a finished delegate has
+    # its transcript (Open), a running one has a Stop. The buttons are
+    # inert without the page script, which is also what the tests of the
+    # bridge assert on.
+    open_attr = f' data-delfin-delegate-open="{sa_id}"' if sa_id else ""
+    stop_attr = f' data-delfin-delegate-stop="{sa_id}"' if sa_id else ""
+    buttons = (
+        f'<button type="button" class="delegate-open"'
+        f'{open_attr}>Open</button>'
+        + (f'<button type="button" class="delegate-stop"'
+           f'{stop_attr}>Stop</button>' if state == "running" else "")
+    )
+    return (
+        f'<div class="delfin-chat-msg delfin-delegate-card '
+        f'{state_cls}">'
+        f'<div class="delegate-head">'
+        f'<span class="delegate-state">{_html.escape(glyph)}</span>'
+        f'<span class="delegate-title">{desc}</span>'
+        f'{meta_html}</div>'
+        f'{face}'
+        f'<div class="delegate-actions">{buttons}'
+        f'<span class="delegate-state-word">{_html.escape(state_word)}'
+        f'</span></div>'
+        f'</div>'
+    )
+
+
+def _delegate_payload_state(payload: dict, current: str) -> str:
+    """The card state a finished delegate's payload carries.
+
+    ``result`` and ``error`` are the payload's own fields (see
+    subagents.py's to_dict); an error is a failed run unless the entry
+    was already stopped, and a report is done.
+    """
+    if str(current) == "stopped":
+        return "stopped"
+    if str(payload.get("error") or "").strip():
+        return "failed"
+    if str(payload.get("result") or "").strip() or "result" in payload:
+        return "done"
+    return _delegate_state_for(current)
+
+
+def _emit_delegate_card(state: dict, call: dict) -> None:
+    """Put one delegate card in the transcript, in place.
+
+    The card is keyed by ``sa_id`` in ``state["chat_messages"]`` with
+    role ``delegate``: the first event for a delegate appends the card,
+    every later event for the SAME delegate rewrites that dict — no
+    second card per state refresh. A delegate without an id (the call
+    path before the engine answers) gets its own entry still: the id is
+    stitched in when the result arrives only when one unmatched card is
+    waiting, otherwise the entry stays the call's.
+
+    The pane's own list (``state["subagent_calls"]``) is NOT touched
+    here: the call and result paths append to it themselves, and the
+    Details-fold log keeps its current behaviour.
+    """
+    if not isinstance(state, dict) or not isinstance(call, dict):
+        return
+    msgs = state.setdefault("chat_messages", [])
+    sa_id = str(call.get("sa_id") or "")
+    if sa_id:
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and str(m.get("sa_id") or "") == sa_id):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
+    elif "sa_id" not in call:
+        # No id yet: an unmatched id-less call reuses the newest id-less
+        # running card rather than stacking a duplicate of itself.
+        for m in reversed(msgs):
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and not str(m.get("sa_id") or "")
+                    and _delegate_state_for(m.get("status")) == "running"):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
+    entry = dict(call)
+    msgs.append({"role": "delegate", **entry})
+    _refresh_chat_html_state(state)
+
+
+def _agent_payload_of(tool_output) -> dict | None:
+    """The delegate result payload, if the output is a JSON object."""
+    if isinstance(tool_output, dict):
+        return tool_output
+    if not isinstance(tool_output, str):
+        return None
+    try:
+        import json as _json
+        parsed = _json.loads(tool_output)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _on_tool_call_card(state: dict, tool_name, payload):
+    """The 'Agent' tool-call path, shared by the stream and the card API.
+
+    Appends the pane's own entry (the Details-fold log keeps it) and puts
+    the running card in the transcript. Returns the parsed call, or None
+    when this is not an Agent call.
+    """
+    if str(tool_name) != "Agent":
+        return None
+    parsed = payload if isinstance(payload, dict) else (
+        _agent_payload_of(payload) or {})
+    desc = str(parsed.get("description") or "")
+    prompt = str(parsed.get("prompt") or "")
+    sub_type = str(parsed.get("subagent_type") or "general-purpose")
+    state["subagent_calls"].append({
+        "subagent_type": sub_type,
+        "description": desc,
+        "prompt": prompt,
+        "status": "running",
+        "output": "",
+    })
+    # One card in the transcript where the delegation started; updated
+    # in place by later events.
+    _emit_delegate_card(state, {
+        "subagent_type": sub_type,
+        "description": desc,
+        "model": str(parsed.get("model") or ""),
+        "status": "running",
+        "started_at": time.time(),
+        "output": "",
+    })
+    return parsed
+
+
+def _on_tool_result_card(state: dict, tool_name, payload):
+    """The 'Agent' tool-result path, shared by the stream and the card API.
+
+    Marks the pane entry and the card of THAT delegate done/failed —
+    keyed by the ``sa_id`` the payload carries; two parallel delegates
+    must not collide into "first running wins". A non-JSON payload still
+    falls back to the first running entry (the historical behaviour).
+    """
+    if str(tool_name) != "Agent":
+        return None
+    text = payload if isinstance(payload, str) else ""
+    parsed = _agent_payload_of(payload)
+    if parsed is not None:
+        for entry in state["subagent_calls"]:
+            if entry.get("status") == "running":
+                entry["status"] = _delegate_payload_state(
+                    parsed, entry.get("status"))
+                entry["output"] = text
+                entry["elapsed_s"] = parsed.get("elapsed_s")
+                break
+        _emit_delegate_card(state, {
+            "sa_id": str(parsed.get("sa_id") or ""),
+            "status": _delegate_payload_state(parsed, "running"),
+            "elapsed_s": parsed.get("elapsed_s"),
+            "output": text,
+        })
+    else:
+        for entry in state["subagent_calls"]:
+            if entry.get("status") == "running":
+                entry["status"] = "done"
+                entry["output"] = text
+                break
+        _emit_delegate_card(state, {"output": text})
+    return parsed
+
+
+def _refresh_chat_html_state(state: dict) -> None:
+    """Refresh the chat from a module-level helper.
+
+    ``create_tab``'s own refresh reads the tab's widgets; the state
+    carries the widget so a helper outside the closure can ask for the
+    same repaint. Absent (a test state) it repaints nothing.
+    """
+    widget = state.get("_chat_html_widget")
+    render = state.get("_chat_html_render")
+    if render is not None:
+        render()
+    elif widget is not None:
+        try:
+            widget.value = _chat_value(
+                "\n".join(_msg_html(m) for m in _transcript_msgs(state)))
+        except Exception:
+            pass
+
+
+def _transcript_msgs(state: dict) -> list:
+    return [m for m in state.get("chat_messages", [])
+            if isinstance(m, dict)]
+
+
+def _msg_html(msg: dict) -> str:
+    """Standalone single-message render for the state-level refresh."""
+    role = str(msg.get("role") or "")
+    if role == "delegate":
+        return _render_delegate_card_html(msg)
+    content = str(msg.get("content") or "")
+    cls = "delfin-chat-system" if role == "system" else "delfin-chat-tool"
+    return (f'<div class="delfin-chat-msg {cls}">'
+            f'{_html.escape(content)}</div>')
+
+
+def _delegate_stop(state: dict, sa_id: str, workspace: str) -> str:
+    """Stop one running delegate, through the same path as the panel.
+
+    ``background_view.cancel(workspace, "agents", sa_id)`` is what the
+    Background panel's × runs; the card's Stop runs it unchanged, and
+    marks the card stopped so no refresh resurrects it as running.
+    """
+    from delfin.agent import background_view as _bgv
+    result = _bgv.cancel(workspace, "agents", str(sa_id or ""))
+    msgs = state.setdefault("chat_messages", [])
+    for m in msgs:
+        if (isinstance(m, dict) and m.get("role") == "delegate"
+                and str(m.get("sa_id") or "") == str(sa_id or "")):
+            if _delegate_state_for(m.get("status")) == "running":
+                m["status"] = "stopped"
+                _refresh_chat_html_state(state)
+            break
+    return result
+
+
+def _delegate_open(state: dict, sa_id: str, workspace: str) -> str:
+    """Open one delegate's own transcript, as the panel's ▸ does.
+
+    ``background_view.peek`` is the existing drill-in; its last lines
+    land in the chat as a system line, the way the panel shows them.
+    """
+    from delfin.agent import background_view as _bgv
+    return _bgv.peek(workspace, "agents", str(sa_id or ""))
 
 
 def _render_todo_pane_html(todos: list[dict]) -> str:
@@ -13073,6 +13481,11 @@ def create_tab(ctx):
                 f'<div class="delfin-chat-msg delfin-chat-tool">'
                 f'{msg["content"]}</div>'
             )
+        elif role == "delegate":
+            # One delegated sub-agent as a card. The card is a chat bubble
+            # of the same class every message renders as; the dict is the
+            # pane's own entry, so the Details-fold log stays untouched.
+            return _render_delegate_card_html(msg)
         elif role == "system":
             if isinstance(msg.get("shell"), dict):
                 # `!` output: preformatted and escaped, never markdown.
@@ -16081,6 +16494,24 @@ def create_tab(ctx):
                 "\nType `/agents stats` for lifetime cost/duration aggregates."
             )
             _append_system_message("\n".join(lines))
+            return True
+
+        # The delegate cards in the chat speak through the input line: a
+        # click on their Open / Stop lands here as a command, and runs
+        # the same paths the view chips and the Background panel use.
+        if cmd.startswith("/delegate-open ") or cmd.startswith("/delegate-stop "):
+            _verb, _sa = cmd.split(" ", 1)
+            _sa = _sa.strip()
+            if not _sa:
+                return True
+            if _verb == "/delegate-stop":
+                _result = _delegate_stop(state, _sa, _agent_workspace_path())
+                _append_system_message(f"⏹ {_result}" if _result else "⏹")
+                _refresh_subagent_panel()
+            else:
+                state["_view_agent"] = _sa
+                _refresh_chat_html()
+                _refresh_agent_view_chips()
             return True
 
         if cmd == "/skills" or cmd.startswith("/skills "):
@@ -21280,17 +21711,10 @@ def create_tab(ctx):
                         )
 
                     elif tool_name == "Agent":
+                        _on_tool_call_card(state, tool_name, parsed)
                         desc = parsed.get("description", "")
                         prompt = parsed.get("prompt", "")[:80]
                         sub_type = parsed.get("subagent_type", "general-purpose")
-                        # Append to subagent panel state and refresh widget.
-                        state["subagent_calls"].append({
-                            "subagent_type": sub_type,
-                            "description": desc,
-                            "prompt": parsed.get("prompt", ""),
-                            "status": "running",
-                            "output": "",
-                        })
                         _pane_html = _render_subagent_pane_html(state["subagent_calls"])
                         if _pane_html:
                             subagent_pane_html.value = _pane_html
@@ -21506,11 +21930,9 @@ def create_tab(ctx):
                     tool_name = _bare
                     # Subagent panel: mark the next running call as done.
                     if tool_name == "Agent":
-                        for entry in state["subagent_calls"]:
-                            if entry.get("status") == "running":
-                                entry["status"] = "done"
-                                entry["output"] = tool_output
-                                break
+                        # Mark the pane entry and the card of THAT delegate
+                        # (the shared path updates both, keyed by sa_id).
+                        _on_tool_result_card(state, tool_name, tool_output)
                         _pane_html = _render_subagent_pane_html(state["subagent_calls"])
                         if _pane_html:
                             subagent_pane_html.value = _pane_html
@@ -24570,6 +24992,41 @@ def create_tab(ctx):
 })();
 """
 
+    # Delegate cards in the chat: their Open / Stop buttons are plain HTML
+    # inside the transcript. One delegated click listener routes the card's
+    # data attributes through the input line (the same bridge the Ctrl+L
+    # /clear shortcut uses), where _handle_slash_command runs the same
+    # handlers the view chips (Open) and the Background panel (Stop) run.
+    _delegate_card_init_js = """
+(function() {
+  if (window.__delfinDelegateCards) return;
+  window.__delfinDelegateCards = true;
+  document.addEventListener('click', function(e) {
+      var card = e.target.closest ? e.target.closest('.delfin-delegate-card') : null;
+      if (!card) return;
+      var sa = null;
+      var open = e.target.closest('[data-delfin-delegate-open]');
+      if (open) sa = open.getAttribute('data-delfin-delegate-open');
+      var stop = e.target.closest('[data-delfin-delegate-stop]');
+      if (!sa && stop) sa = stop.getAttribute('data-delfin-delegate-stop');
+      if (!sa) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var verb = open ? '/delegate-open ' : '/delegate-stop ';
+      var ta = window.__delfinQ('.delfin-agent-input textarea');
+      if (!ta) return;
+      var nativeSet = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype, 'value').set;
+      nativeSet.call(ta, verb + sa);
+      ta.dispatchEvent(new Event('input', {bubbles: true}));
+      setTimeout(function() {
+          var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
+          if (sendBtn) sendBtn.click();
+      }, 50);
+  }, true);
+})();
+"""
+
     # Emit init-status banner for the initial /models fetch so the user
     # immediately knows whether the dropdown is showing live or fallback
     # data. Surfaces the API-key hint when the live fetch silently fell
@@ -24746,6 +25203,7 @@ def create_tab(ctx):
         .replace("__DELFIN_MERMAID_SRI__", _MERMAID_SRI))
     ctx.add_init_js(_mermaid_init_js)
     ctx.add_init_js(_enter_key_init_js)
+    ctx.add_init_js(_delegate_card_init_js)
 
     def _shutdown_tab(save: bool = True) -> None:
         """Close this session: save it, end its turn, stop its timers and
@@ -24861,6 +25319,15 @@ def create_tab(ctx):
         "refresh_chat": _refresh_chat_html,
         "chat_html": chat_html,
         "question_gate": _question_gate,
+        # Delegate cards in the parent's chat: thin accessors over the
+        # same state-pure helpers the tool-event paths call.
+        "emit_delegate_card": lambda call: _emit_delegate_card(state, call),
+        "on_tool_call": lambda tool_name, payload: _on_tool_call_card(
+            state, tool_name, payload),
+        "on_tool_result": lambda tool_name, payload: _on_tool_result_card(
+            state, tool_name, payload),
+        "stop_delegate_card": lambda sa_id: _delegate_stop(
+            state, sa_id, _agent_workspace_path),
     }
 
 
