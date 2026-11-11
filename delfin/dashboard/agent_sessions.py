@@ -70,11 +70,13 @@ def stop_refresh_loops() -> int:
 
 
 def _register_init_js(ctx: Any, script: str) -> None:
-    """Add ``script`` to a context's init-js payload, at most once."""
+    """Add ``script`` to a context's init-js payload, at most once per
+    script. (Keyed on the context alone, the first script registered was
+    the only one: the rename, folder and suggestion keys never arrived.)"""
     add = getattr(ctx, "add_init_js", None)
     if not callable(add):
         return
-    key = id(ctx)
+    key = (id(ctx), hash(script))
     if key in _REGISTERED_INIT_JS:
         return
     _REGISTERED_INIT_JS.add(key)

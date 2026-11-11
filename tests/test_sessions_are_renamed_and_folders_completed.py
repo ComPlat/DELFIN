@@ -47,3 +47,15 @@ def test_what_fits_the_typed_path_comes_first():
     i = src.index("def _show_suggestions")
     body = src[i:i + 1500]
     assert "fits + [c for c in choices if c not in fits]" in body
+
+
+def test_every_page_script_is_registered_not_only_the_first():
+    import types
+    AS._REGISTERED_INIT_JS.clear()
+    sent = []
+    ctx = types.SimpleNamespace(add_init_js=sent.append)
+    for js in (AS._SPLITTER_INIT_JS, AS._RENAME_KEYS_JS, AS._PATH_KEYS_JS,
+               AS._COMPLETE_JS, AS._RENAME_KEYS_JS):
+        AS._register_init_js(ctx, js)
+    assert sent == [AS._SPLITTER_INIT_JS, AS._RENAME_KEYS_JS,
+                    AS._PATH_KEYS_JS, AS._COMPLETE_JS]
