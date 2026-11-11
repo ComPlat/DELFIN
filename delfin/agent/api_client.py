@@ -33164,13 +33164,31 @@ class OpenAIClient(_BaseClient):
             # session on another backend asks its own model instead of
             # failing on every action.
             wire = self.model
-        resp = self.client.with_options(
-            timeout=_classifier_timeout_s(), max_retries=0,
-        ).chat.completions.create(
-            model=wire or self.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=120, stream=False)
-        return str(resp.choices[0].message.content or "")
+        t0 = time.monotonic()
+        outcome = "error"
+        try:
+            resp = self.client.with_options(
+                timeout=_classifier_timeout_s(), max_retries=0,
+            ).chat.completions.create(
+                model=wire or self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=120, stream=False)
+            outcome = "verdict"
+            return str(resp.choices[0].message.content or "")
+        finally:
+            # A request against the endpoint's quota like the turn's own:
+            # written beside them, marked, so the count can be split by what
+            # spent it (KIT: 2,000 requests a key a day, 2026-11-11).
+            session = getattr(self, "metrics_session", "")
+            if isinstance(session, str) and session:
+                try:
+                    from . import turn_metrics as _tm_cls
+                    _tm_cls.record_request(
+                        session, model=wire or self.model, purpose="classifier",
+                        total_ms=int((time.monotonic() - t0) * 1000),
+                        finish_reason=outcome)
+                except Exception:
+                    pass
 
     def _attach_classifier_runner(
         self, permissions: Optional["KitToolPermissions"],
