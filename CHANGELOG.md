@@ -20,7 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   >= 3.12, RDKit >= 2026.9.1). Molassembler 3.0.1: every stereoisomer, ten seeded
   distance-geometry conformers each; a dative SMILES is refused, not rewritten.
   MetalloGen: only its ORCA calculator (GFN2-xTB through ORCA), never Gaussian; one
-  m-SMILES per distinct donor arrangement. MANTA is unchanged.
+  m-SMILES per distinct donor arrangement (rotations x ligand automorphisms x identical
+  ligands; [Co(trien)Cl2]+ = 5), seeded, 7200 s limit with partial frames kept, `truncated`
+  when capped. Molassembler counts meso forms once. Every dependency pinned exactly, GitHub
+  archives held to SHA-256; no user site reaches a tool environment, on the cluster either.
+  MANTA is unchanged.
 
 ### Added — open ports are on screen and can be closed; a server never runs in the foreground
 

@@ -110,11 +110,12 @@ def cbatch_code_state() -> dict:
             "code_sha256": cbatch_code_sha256()}
 
 
-def cbatch_probe_env(python: str) -> dict:
+def cbatch_probe_env(python: str, nousersite: bool = False) -> dict:
     """Run tool_workers/env_probe.py with ``python``; {"error": ...} if that interpreter fails."""
     try:
         done = subprocess.run([python, str(WORKERS_DIR / "env_probe.py")], capture_output=True,
-                              text=True, timeout=300, env=cbatch_tool_child_env({}))
+                              text=True, timeout=300,
+                              env=cbatch_tool_child_env({}, nousersite=nousersite))
     except (OSError, subprocess.SubprocessError) as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
     if done.returncode != 0:
@@ -125,7 +126,16 @@ def cbatch_probe_env(python: str) -> dict:
         return {"error": "no JSON from env_probe: " + (done.stdout or "")[-300:]}
 
 
-def cbatch_tool_child_env(base) -> dict:
+def cbatch_tool_isolated(tool: str) -> bool:
+    """Whether *tool* lives in an environment of its own DELFIN's installer builds
+    (``external_builders.TOOLS[tool]['managed_env']``): epic-MACE, rxembed, Molassembler,
+    MetalloGen."""
+    from delfin.common import external_builders as eb
+
+    return bool(eb.TOOLS.get(tool, {}).get("managed_env"))
+
+
+def cbatch_tool_child_env(base, nousersite: bool = False) -> dict:
     """Environment of every tool process: the caller's, without anything that could make the
     tool's interpreter load foreign modules or libraries, single-threaded, fixed hash seed."""
     import os
@@ -137,6 +147,10 @@ def cbatch_tool_child_env(base) -> dict:
     # PYTHONNOUSERSITE is NOT forced here: the sbatch script exports it (a user site in $HOME
     # must not leak into a cluster build), while an interpreter that keeps packages in its user
     # site (a local reference env) must see them -- otherwise every build would fail on import.
+    # A tool with an environment of its own (cbatch_tool_isolated) gets it forced, as the
+    # dashboard / CONTROL build does: nothing of $HOME's user site may reach it.
+    if nousersite:
+        env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONHASHSEED"] = "0"
     for v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[v] = "1"
@@ -155,7 +169,7 @@ def cbatch_provenance(tool: str, tool_python: str, mode: str) -> dict:
     if tool == "manta":
         prov["construction_env"] = cbatch_construction_env(mode)
     else:
-        prov["tool_env"] = cbatch_probe_env(tool_python)
+        prov["tool_env"] = cbatch_probe_env(tool_python, nousersite=cbatch_tool_isolated(tool))
         prov["worker_sha256"] = {
             p.name: cbatch_sha256_file(p) for p in sorted(WORKERS_DIR.glob("*.py"))
             if p.name != "__init__.py"}

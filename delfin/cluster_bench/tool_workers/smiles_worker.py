@@ -49,7 +49,9 @@ def sw_run(tool, rec, work, mode):
     if tool in st.TAKES_SPEC:
         if rec.get("status") != "ok":
             return [], "convert:not_expressible:" + str(rec.get("bail_msg") or rec.get("bail")), {}
-        source, options = rec, {"geometries": mode}
+        # Each finished arrangement is appended there; a run killed at its limit keeps it.
+        source, options = rec, {"geometries": mode,
+                                "partial_xyz": os.path.join(work, "partial.xyz")}
     else:
         source, options = rec["smiles"], {}
     try:

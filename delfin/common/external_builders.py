@@ -159,6 +159,9 @@ TOOLS = {
         "spec_in_caller": True,
         "needs_orca": True,
         "energy_unit": "Eh, GFN2-xTB via ORCA",
+        # Every arrangement is relaxed with xTB through ORCA: minutes, not seconds.
+        "timeout": 7200,
+        "partial_frames": True,
     },
 }
 
@@ -816,18 +819,22 @@ def _smiles_tool_runner(key: str):
 
 
 def _worker(tool: str, request_path: str, result_path: str) -> int:
-    # rdkit before any tool: see the module docstring (libstdc++).  Molassembler's
-    # environment has no rdkit; it needs none.
+    # rdkit before any tool: see the module docstring (libstdc++).  Only Molassembler's
+    # environment has no rdkit, and it needs none; everywhere else a missing rdkit is an error.
     result = {"frames": [], "error": None}
     try:
-        try:
-            from rdkit import RDLogger  # noqa: F401
-            RDLogger.DisableLog("rdApp.*")
-        except ImportError:
-            pass
-        req = json.loads(Path(request_path).read_text())
         key = tool_key(tool)
         info = TOOLS[key]
+        if key == "molassembler":
+            try:
+                from rdkit import RDLogger  # noqa: F401
+                RDLogger.DisableLog("rdApp.*")
+            except ImportError:
+                pass
+        else:
+            from rdkit import RDLogger  # noqa: F401
+            RDLogger.DisableLog("rdApp.*")
+        req = json.loads(Path(request_path).read_text())
         import importlib.util
         if importlib.util.find_spec(info["module"]) is None or not _is_the_tool(key):
             result["error"] = not_installed_message(key, sys.executable)
@@ -885,8 +892,12 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     """Build *smiles* with *tool*; ``([(xyz_body, n_atoms, label), ...], error)``.
 
     Frames come back lowest energy first when the tool gives energies (it is
-    Architector's order anyway), else in the tool's order (epic-MACE: geometry
-    by geometry, lowest energy first within each).  *error* is ``None``
+    Architector's order anyway; a frame without an energy goes last), else in
+    the tool's order (epic-MACE: geometry by geometry, lowest energy first
+    within each).  The time limit is *timeout*, else
+    ``DELFIN_EXTERNAL_BUILDER_TIMEOUT``, else the tool's own (MetalloGen
+    7200 s), else 1800 s; MetalloGen writes each finished arrangement to a
+    partial xyz that a time-out keeps and names.  *error* is ``None``
     on success, else a message for the user.  *options* for Architector:
     ``{'mode': 'full'}`` (default: every isomer it finds) or ``'default'``
     (its own defaults, one structure per core geometry).  For epic-MACE:
@@ -936,7 +947,10 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         env.setdefault(var, "1")
     env.setdefault("OMP_STACKSIZE", "1G")
-    timeout = DEFAULT_TIMEOUT if timeout is None else float(timeout)
+    if timeout is None:
+        named = (os.environ.get("DELFIN_EXTERNAL_BUILDER_TIMEOUT") or "").strip()
+        timeout = float(named) if named else float(info.get("timeout", DEFAULT_TIMEOUT))
+    timeout = float(timeout)
 
     tmp = tempfile.mkdtemp(prefix=f"delfin_{key}_", dir=workdir)
     work = os.path.join(tmp, "work")
@@ -944,8 +958,12 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     request_path = os.path.join(tmp, "request.json")
     result_path = os.path.join(tmp, "result.json")
     log_path = os.path.join(tmp, "tool.log")
+    partial_path = os.path.join(tmp, "partial.xyz")
+    run_options = dict(options or {})
+    if info.get("partial_frames"):
+        run_options.setdefault("partial_xyz", partial_path)
     Path(request_path).write_text(json.dumps(
-        {"smiles": str(smiles).strip(), "work": work, "options": dict(options or {}),
+        {"smiles": str(smiles).strip(), "work": work, "options": run_options,
          "spec": spec}))
     cmd = [python, "-m", "delfin.common.external_builders", key, request_path, result_path]
     keep = os.environ.get("DELFIN_EXTERNAL_BUILDER_KEEP", "0") == "1"
@@ -961,6 +979,10 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
             except subprocess.TimeoutExpired:
                 from delfin.common.manta_build import kill_process_group
                 kill_process_group(proc)
+                if os.path.exists(partial_path) and os.path.getsize(partial_path):
+                    keep = True
+                    return [], (f"{info['display']} did not finish within {int(timeout)} s; "
+                                f"the arrangements it finished are kept in {partial_path}")
                 return [], f"{info['display']} did not finish within {int(timeout)} s"
         if not os.path.exists(result_path):
             tail = Path(log_path).read_text(errors="replace")[-600:]
@@ -974,8 +996,9 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
         if res.get("error") and not frames:
             return [], f"{info['display']}: {res['error']}"
         if (frames and not info.get("keep_order")
-                and all(f.get("energy") is not None for f in frames)):
-            frames = sorted(frames, key=lambda f: f["energy"])
+                and any(f.get("energy") is not None for f in frames)):
+            # Lowest energy first; a frame without an energy (a failed relaxation) last.
+            frames = sorted(frames, key=lambda f: (f.get("energy") is None, f.get("energy") or 0.0))
         out = []
         for i, f in enumerate(frames, start=1):
             e = f.get("energy")
@@ -993,7 +1016,9 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
 
 
 def build_first_xyz(tool: str, smiles: str, **kwargs):
-    """The first (lowest-energy) frame as an XYZ body, for the CONTROL pipeline."""
+    """The first frame as an XYZ body, for the CONTROL pipeline: the lowest-energy one when
+    the tool gives energies (Architector, MetalloGen), else the tool's first (epic-MACE: the
+    lowest of its first geometry; rxembed / Molassembler: first conformer of the first isomer)."""
     frames, error = build_frames(tool, smiles, **kwargs)
     if error:
         return None, error

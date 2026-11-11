@@ -200,8 +200,14 @@ $PY -m delfin cluster repeat-stats runs/mace_list     # identical / different / 
 MANTA and epic-MACE reproduce byte for byte in the same environment (epic-MACE exposes no random
 seed, so this is measured, not guaranteed); Architector and molSimplify can differ from run to run.
 Molassembler is seeded (42 + isomer index) and repeats in the same environment; rxembed uses its
-own default seed; MetalloGen samples its embeddings at random and relaxes them with xTB through ORCA,
-so its frames can differ between builds.
+own default seed; MetalloGen's random embeddings are seeded (`random` and `numpy.random` to
+42 + m-SMILES index), but its xTB relaxations through ORCA can differ in the last digits, so a
+near-duplicate conformer may fall either side of its 0.5 A clustering cut and the frame count of an
+arrangement can still change between builds. A MetalloGen system writes each finished arrangement
+to `partial.xyz` in its work directory, which a system stopped at its limit keeps; with
+`max_arrangements` (48 per geometry) reached, `_meta/<ID>.json` says `"truncated": true`.
+Molassembler counts every stereoisomer once (each leaf canonicalised, meso forms once), the same
+enumeration as the benchmark runner.
 
 ## 6. Output
 

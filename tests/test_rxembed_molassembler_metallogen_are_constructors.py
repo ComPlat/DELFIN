@@ -199,6 +199,18 @@ def test_the_ai_installer_builds_each_environment_with_its_pin(tmp_path):
         'EOS\n'
         'chmod 755 "$prefix/bin/python"\n')
     (fake / "micromamba").chmod(0o755)
+    # A stand-in download: the archive's bytes, recorded URL; the pinned digest is replaced
+    # by the digest of these bytes for the archive that is to pass, and kept for the one
+    # that is to be refused.
+    (fake / "curl").write_text(
+        '#!/bin/sh\n'
+        'echo "curl $*" >> "$LOGDIR/calls.log"\n'
+        'while [ $# -gt 0 ]; do [ "$1" = "-o" ] && dest="$2"; shift; done\n'
+        'printf "fake-archive" > "$dest"\n')
+    (fake / "curl").chmod(0o755)
+    import hashlib
+
+    good = hashlib.sha256(b"fake-archive").hexdigest()
     root = tmp_path / "ai_tools"
     root.mkdir()
     done = subprocess.run(
@@ -207,19 +219,30 @@ def test_the_ai_installer_builds_each_environment_with_its_pin(tmp_path):
         env={"PATH": os.pathsep.join([str(fake), "/usr/bin", "/bin"]), "HOME": str(tmp_path),
              "LOGDIR": str(tmp_path), "DELFIN_PYTHON": sys.executable,
              "DELFIN_AI_TOOLS_ROOT": str(root), "INSTALL_RXEMBED": "1",
-             "INSTALL_MOLASSEMBLER": "1", "INSTALL_METALLOGEN": "1"})
+             "INSTALL_MOLASSEMBLER": "1", "INSTALL_METALLOGEN": "1",
+             "RXEMBED_SHA256": good})
     said = done.stdout + done.stderr
     calls = (tmp_path / "calls.log").read_text()
+    assert "curl -fsSL -o" in calls
     assert "aligfellow/rxembed/archive/9c0ba5a6048bdbcba94450df5d6a68067bd250c8.tar.gz" in calls
-    assert "pip install --no-cache-dir scine-molassembler==3.0.1" in calls
-    assert ("pip install --no-cache-dir --no-deps https://github.com/kyunghoonlee777/MetalloGen/"
-            "archive/fa26e2adb996ed2256e528e1c97fbc1c363c0808.tar.gz") in calls
-    assert f"create -y -p {root}/.mamba_env/rxembed -c conda-forge --override-channels python=3.12" in calls
-    for tool, label in (("rxembed", "rxembed"), ("molassembler", "Molassembler"),
-                        ("metallogen", "MetalloGen")):
+    assert ("pip install --no-cache-dir numpy==2.2.2 pillow==11.1.0 rdkit==2026.9.1 "
+            "networkx==3.7 xyzgraph==1.7.0") in calls
+    assert f"pip install --no-cache-dir --no-deps {root}/.mamba_env/rxembed/rxembed-" in calls
+    assert ("pip install --no-cache-dir scine-utilities==10.1.0 numpy==2.4.6 scipy==1.17.1"
+            in calls)
+    assert "pip install --no-cache-dir --no-deps scine-molassembler==3.0.1" in calls
+    assert (f"create -y -p {root}/.mamba_env/rxembed -c conda-forge --override-channels "
+            "python=3.12.16 pip") in calls
+    assert ("python=3.11.18 rdkit=2026.09.2 numpy=2.4.6 scipy=1.17.1 cclib=1.8.1 pulp=3.3.2"
+            in calls)
+    for tool, label in (("rxembed", "rxembed"), ("molassembler", "Molassembler")):
         python = root / ".mamba_env" / tool / "bin" / "python"
         assert f"{label} installed: {python}" in said, said[-2000:]
         assert eb.managed_python(tool, {"DELFIN_AI_TOOLS_ROOT": str(root)}) == str(python)
+    # The stand-in is not the pinned MetalloGen archive: refused, never installed.
+    assert "is not the pinned 1a8a4f6a0223b7aa138b2eb0f57af4be6a84e056ed5c972bcbac2d6fdf3ab250" in said
+    assert "MetalloGen installed" not in said
+    assert "--no-deps https://github.com/kyunghoonlee777" not in calls
 
 
 # -- what each tool can be given, without the tool ---------------------------------------
@@ -236,8 +259,89 @@ def test_the_rotations_of_each_polyhedron():
 
 
 def _arrangements(smiles, geom):
-    arrs, _sites, _ligs = st.metallogen_arrangements(eb.split_complex_smiles(smiles), VECTORS[geom])
+    arrs, _sites, _ligs, truncated = st.metallogen_arrangements(
+        eb.split_complex_smiles(smiles), VECTORS[geom])
+    assert not truncated
     return len(arrs)
+
+
+def test_trien_dichloro_has_five_arrangements():
+    """[Co(trien)Cl2]+: cis-alpha, cis-beta (each Delta and Lambda) and trans.  The two
+    terminal and the two inner N of trien are exchanged by the ligand's own symmetry; naming
+    donors atom by atom counted 4."""
+    assert _arrangements("Cl[Co+]123(Cl)[NH2]CC[NH]1CC[NH]2CC[NH2]3", "6_octahedral") == 5
+
+
+def test_a_cap_on_the_arrangements_is_reported():
+    arrs, _s, _l, truncated = st.metallogen_arrangements(
+        eb.split_complex_smiles("Cl[Co+]123(Cl)[NH2]CC[NH]1CC[NH]2CC[NH2]3"), OCTAHEDRON, cap=2)
+    assert len(arrs) == 2 and truncated
+    report = {}
+    st.metallogen_jobs(eb.split_complex_smiles(CISPLATIN), {"max_arrangements": 1}, KNOWN,
+                       VECTORS, report)
+    assert report == {"truncated": True, "truncated_geometries": ["4_square_planar"]}
+
+
+@pytest.mark.parametrize("bad", ["/opt/my orca/orca", "/opt/orca;rm/orca", "/opt/$HOME/orca"])
+def test_metallogen_refuses_a_path_the_shell_would_split(bad, tmp_path):
+    with pytest.raises(st.NotExpressible, match="shell"):
+        st._mg_check_path("ORCA path", bad)
+    st._mg_check_path("working directory", str(tmp_path))      # an ordinary path passes
+
+
+def test_frames_without_an_energy_go_last(monkeypatch, tmp_path):
+    """The first frame is the lowest-energy one; a frame without an energy never comes first."""
+    import shutil
+
+    real = tmp_path / "result_source.json"
+    real.write_text(json.dumps({"frames": [
+        {"label": "a", "symbols": ["Zn"], "coords": [[0, 0, 0]], "energy": None},
+        {"label": "b", "symbols": ["Zn"], "coords": [[0, 0, 1]], "energy": -2.0},
+        {"label": "c", "symbols": ["Zn"], "coords": [[0, 0, 2]], "energy": -3.0}],
+        "error": None}))
+    fake = tmp_path / "python"
+    fake.write_text(f'#!/bin/sh\ncp {real} "$5"\n')
+    fake.chmod(0o755)
+    frames, error = eb.build_frames("metallogen", ZNCL4, python=str(fake),
+                                    options={"orca": shutil.which("sh")})
+    assert error is None
+    assert [label.split()[1] for _b, _n, label in frames] == ["c", "b", "a"]
+
+
+def test_each_tool_has_its_own_time_limit_and_metallogen_keeps_what_it_finished(
+        tmp_path, monkeypatch):
+    import shutil
+
+    monkeypatch.delenv("DELFIN_EXTERNAL_BUILDER_TIMEOUT", raising=False)
+    assert eb.TOOLS["metallogen"]["timeout"] == 7200
+    monkeypatch.setenv("DELFIN_EXTERNAL_BUILDER_KEEP", "0")
+    fake = tmp_path / "python"
+    # Writes one finished arrangement to the partial xyz it is told about, then hangs.
+    # ($4 is the request; the partial xyz the request names sits beside it.)
+    fake.write_text('#!/bin/sh\n'
+                    'grep -q partial_xyz "$4" || exit 3\n'
+                    'p="$(dirname "$4")/partial.xyz"\n'
+                    'printf "1\\nx\\nZn 0 0 0\\n" > "$p"\nsleep 30\n')
+    fake.chmod(0o755)
+    frames, error = eb.build_frames("metallogen", ZNCL4, python=str(fake), timeout=2,
+                                    workdir=str(tmp_path), options={"orca": shutil.which("sh")})
+    assert frames == [] and "did not finish within 2 s" in error
+    kept = error.split("kept in ", 1)[1].strip()
+    assert Path(kept).read_text().startswith("1\nx\nZn")
+
+
+def test_an_isolated_tool_gets_no_user_site_on_the_cluster():
+    from delfin.cluster_bench.provenance import cbatch_tool_child_env, cbatch_tool_isolated
+
+    for tool in NEW + ("mace",):
+        assert cbatch_tool_isolated(tool)
+    assert not cbatch_tool_isolated("architector") and not cbatch_tool_isolated("manta")
+    assert cbatch_tool_child_env({}, nousersite=True)["PYTHONNOUSERSITE"] == "1"
+
+
+def test_metallogen_seeds_each_m_smiles():
+    assert st.METALLOGEN_DEFAULTS["seed"] == 42
+    assert st.MOLASSEMBLER_MAX_LEAVES == 50000
 
 
 @pytest.mark.parametrize("smiles, geom, n", [
@@ -395,6 +499,14 @@ def test_molassembler_builds_every_frame_with_the_formula_of_the_smiles(smiles, 
         assert label.startswith("Molassembler iso0-conf")
     again, _ = eb.build_frames("molassembler", smiles)
     assert again == frames, "Molassembler is seeded: the same build twice is the same"
+
+
+def test_molassembler_counts_a_meso_form_once(monkeypatch):
+    """FC(Cl)C(F)Cl: (R,R), (S,S) and meso -- three, as the benchmark runner counts."""
+    monkeypatch.setenv("DELFIN_MOLASSEMBLER_PYTHON", _python_with("molassembler"))
+    frames, error = eb.build_frames("molassembler", "FC(Cl)C(F)Cl")
+    assert error is None, error
+    assert {label.split()[1].split("-")[0] for _b, _n, label in frames} == {"iso0", "iso1", "iso2"}
 
 
 def test_molassembler_through_its_environment_refuses_a_dative_smiles(monkeypatch):

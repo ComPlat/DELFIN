@@ -21,7 +21,9 @@ Molassembler (Sobez & Reiher, JCIM 2020, 60, 3884; scine-molassembler 3.0.1, BSD
     is taken.  Its SMILES reader does not parse dative bonds (``->``), so such a SMILES is not
     expressible; write the complex charge-separated.  Every stereoisomer is enumerated by assigning
     each unassigned atom and bond stereopermutator in turn (the molecule is copied after each
-    assignment because ranking can change); at most ``max_isomers`` (1000).  Each isomer gets
+    assignment because ranking can change); each leaf is canonicalised and kept only when no
+    earlier isomer compares equal (meso forms once), at most ``max_isomers`` (1000) distinct ones
+    and 50000 leaves -- the same enumeration as the paper benchmark's runner.  Each isomer gets
     ``dg.generate_ensemble(isomer, num_confs, seed + i, Configuration())``; coordinates come in Bohr
     and are converted to Angstrom.  Molassembler picks one polyhedron per centre from its graph
     model (Pt(II)/Pd(II) with four donors: tetrahedral).
@@ -33,11 +35,14 @@ BSD-3; pinned commit fa26e2ad)
     no Gaussian.  MetalloGen builds the one arrangement its m-SMILES writes (donor -> numbered
     site of a named geometry); the m-SMILES are written here from DELFIN's split of the SMILES,
     one per distinct arrangement of the donor sites on each geometry (proper rotations of the
-    polyhedron identify arrangements, mirror images are kept; donors of one ligand at most four
-    bonds apart never sit more than 135 degrees apart).  Each m-SMILES is built as MetalloGen's
-    command line builds it (``run.main``: its embedding scales, ``TMCGenerator.sample_conformer``,
-    Butina clustering at 0.5 A, final relaxation with the calculator, ``num_conformer`` cap);
-    energies are the calculator's (Hartree, GFN2-xTB).
+    polyhedron, automorphisms of each ligand and swaps of identical ligands identify
+    arrangements, mirror images are kept; donors of one ligand at most four bonds apart never sit
+    more than 135 degrees apart; at most ``max_arrangements`` per geometry, ``truncated`` says
+    when that cut).  Each m-SMILES is built as MetalloGen's command line builds it (``run.main``:
+    its embedding scales, ``TMCGenerator.sample_conformer``, Butina clustering at 0.5 A, final
+    relaxation with the calculator, ``num_conformer`` cap), with ``random`` and ``numpy.random``
+    seeded to ``seed + index`` first; energies are the calculator's (Hartree, GFN2-xTB).  Paths
+    with blanks or shell characters are refused: MetalloGen hands them to the shell unquoted.
 """
 
 from __future__ import annotations
@@ -56,7 +61,7 @@ BOHR_TO_ANGSTROM = 0.529177210903
 RXEMBED_DEFAULTS = {"n": None, "seed": None}
 MOLASSEMBLER_DEFAULTS = {"num_confs": 10, "max_isomers": 1000, "seed": 42}
 METALLOGEN_DEFAULTS = {"geometries": "common", "num_conformer": 10, "final_relax": 1,
-                       "max_arrangements": 48, "calculator": "orca"}
+                       "max_arrangements": 48, "calculator": "orca", "seed": 42}
 
 #: MetalloGen geometries (its globalvars names, typos included) per number of donor sites.
 #: ``common``: the polyhedra the other constructors build; ``all``: every one MetalloGen knows.
@@ -155,17 +160,36 @@ def _masm_unassigned(m):
     return None
 
 
-def _masm_enumerate(m, out, cap):
+#: Raw assignment leaves visited before giving up (duplicates included), as in the benchmark runner.
+MOLASSEMBLER_MAX_LEAVES = 50000
+
+
+def _masm_enumerate(m, out, cap, seen=None, leaves=None):
+    """Every distinct stereoisomer, depth-first (identical to the paper benchmark's mas_one.py).
+
+    Assigning stereopermutators one after another reaches the same isomer more than once (meso:
+    FC(Cl)C(F)Cl gave 4 instead of 3), so each leaf is canonicalised on a copy and kept only if no
+    earlier isomer compares equal; the cap counts distinct isomers.
+    """
+    if seen is None:
+        seen, leaves = [], [0]
     if len(out) >= cap:
         return
     u = _masm_unassigned(m)
     if u is None:
-        out.append(m)
+        leaves[0] += 1
+        if leaves[0] > MOLASSEMBLER_MAX_LEAVES:
+            raise NotExpressible("more than %d assignment leaves" % MOLASSEMBLER_MAX_LEAVES)
+        key = copy.copy(m)
+        key.canonicalize()
+        if not any(key == s for s in seen):
+            seen.append(key)
+            out.append(m)
         return
     for k in range(u[1]):
         c = copy.copy(m)
         c.assign_stereopermutator(u[0], k)
-        _masm_enumerate(c, out, cap)
+        _masm_enumerate(c, out, cap, seen, leaves)
         if len(out) >= cap:
             return
 
@@ -178,7 +202,7 @@ def run_molassembler(smiles, work, options=None):
 
     opts = dict(MOLASSEMBLER_DEFAULTS, **(options or {}))
     # The enumeration recurses once per stereopermutator.
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), 200000))
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 20000))
     try:
         mols = masm.io.experimental.from_smiles_multiple(smiles)
     except RuntimeError as exc:
@@ -265,9 +289,31 @@ def site_rotations(vectors, tol=1e-3):
     return sorted(perms)
 
 
+def _mg_group_perms(m, groups):
+    """The permutations of a ligand's donor sites that an automorphism of the ligand makes.
+
+    From ``GetSubstructMatches(mol, mol, uniquify=False, useChirality=False)``: each match maps
+    atom i onto match[i]; it is a symmetry of the bound ligand only when it maps every donor site
+    onto a donor site.  ``p[g]`` = the site group g goes to.  The identity is always among them.
+    """
+    index = {tuple(g): k for k, g in enumerate(groups)}
+    perms = {tuple(range(len(groups)))}
+    for match in m.GetSubstructMatches(m, uniquify=False, useChirality=False, maxMatches=100000):
+        p = []
+        for g in groups:
+            k = index.get(tuple(sorted(match[a] for a in g)))
+            if k is None:
+                break
+            p.append(k)
+        if len(p) == len(groups):
+            perms.add(tuple(p))
+    return sorted(perms)
+
+
 def metallogen_ligands(spec):
-    """The donor sites of the split: ``[(ligand index, [donor atoms]), ...]`` -- a hapto group
-    (donors of one ligand bonded to each other) is one site -- and per-ligand RDKit data."""
+    """The donor sites of the split: ``[(ligand index, [donor atoms], group index), ...]`` -- a
+    hapto group (donors of one ligand bonded to each other) is one site -- and per-ligand RDKit
+    data, with the donor-site permutations its automorphisms make (``gperms``)."""
     from rdkit import Chem
 
     sites, ligs = [], []
@@ -291,19 +337,20 @@ def metallogen_ligands(spec):
                         stack.append(nb.GetIdx())
             groups.append(sorted(comp))
         ligs.append({"mol": m, "smiles": Chem.MolToSmiles(m), "groups": groups,
-                     "ranks": list(Chem.CanonicalRankAtoms(m, breakTies=False)),
-                     "dist": Chem.GetDistanceMatrix(m)})
-        for g in groups:
-            sites.append((li, g))
+                     "gperms": _mg_group_perms(m, groups), "dist": Chem.GetDistanceMatrix(m)})
+        for gi, g in enumerate(groups):
+            sites.append((li, g, gi))
     return sites, ligs
 
 
-def _mg_canonical_key(assign, sites, ligs, perm):
-    """One donor-site -> polyhedron-site assignment, as seen after one rotation.
+def _mg_canonical_key(assign, sites, ligs, perm, gchoice):
+    """One donor-site -> polyhedron-site assignment, as seen after one rotation and one
+    automorphism per ligand.
 
-    ``assign[k]`` = polyhedron site of donor site k.  A site is named by its ligand, the symmetry
-    class of its donor atoms within the ligand, and the ligand instance; identical instances are
-    interchangeable, so an instance is numbered by where its first donor appears.
+    ``assign[k]`` = polyhedron site of donor site k; ``gchoice[li]`` = the donor-site permutation
+    of ligand li applied.  A polyhedron site is named by its ligand, the (permuted) donor site of
+    that ligand and the ligand instance; identical instances are interchangeable, so an instance
+    is numbered by where its first donor appears.
     """
     n = len(assign)
     at_site = [None] * n
@@ -311,20 +358,23 @@ def _mg_canonical_key(assign, sites, ligs, perm):
         at_site[perm[s]] = k
     inst, key = {}, []
     for s in range(n):
-        li, g = sites[at_site[s]]
+        li, _g, gi = sites[at_site[s]]
         name = ligs[li]["smiles"]
         if li not in inst:
             inst[li] = sum(1 for x in inst if ligs[x]["smiles"] == name)
-        key.append((name, tuple(sorted(ligs[li]["ranks"][a] for a in g)), inst[li]))
+        key.append((name, gchoice[li][gi], inst[li]))
     return tuple(key)
 
 
 def metallogen_arrangements(spec, vectors, cap=None):
     """Distinct assignments of the donor sites to the sites of one polyhedron.
 
-    ``([assign, ...], sites, ligs)`` with ``assign[k]`` = 0-based polyhedron site of donor site k
-    (order of :func:`metallogen_ligands`).  Donors of one ligand at most
+    ``([assign, ...], sites, ligs, truncated)`` with ``assign[k]`` = 0-based polyhedron site of
+    donor site k (order of :func:`metallogen_ligands`).  Two assignments are one arrangement when
+    a proper rotation of the polyhedron, an automorphism of each ligand and a swap of identical
+    ligands turn one into the other (mirror images stay apart).  Donors of one ligand at most
     ``CHELATE_TRANS_MAX_BONDS`` bonds apart never sit more than 135 degrees apart.
+    ``truncated`` is True when *cap* stopped the enumeration before a further distinct one.
     """
     sites, ligs = metallogen_ligands(spec)
     n = len(sites)
@@ -340,19 +390,21 @@ def metallogen_arrangements(spec, vectors, cap=None):
             if min(d[i][j] for i in sites[a][1] for j in sites[b][1]) <= CHELATE_TRANS_MAX_BONDS:
                 close.append((a, b))
     rots = site_rotations(v)
+    choices = list(itertools.product(*[lig["gperms"] for lig in ligs]))
     limit = math.cos(math.radians(135.0))
-    seen, out = set(), []
+    seen, out, truncated = set(), [], False
     for assign in itertools.permutations(range(n)):
         if any(_st_dot(v[assign[a]], v[assign[b]]) < limit for a, b in close):
             continue
-        key = min(_mg_canonical_key(assign, sites, ligs, p) for p in rots)
+        key = min(_mg_canonical_key(assign, sites, ligs, p, c) for p in rots for c in choices)
         if key in seen:
             continue
+        if cap and len(out) >= cap:
+            truncated = True
+            break
         seen.add(key)
         out.append(list(assign))
-        if cap and len(out) >= cap:
-            break
-    return out, sites, ligs
+    return out, sites, ligs, truncated
 
 
 def metallogen_msmiles(spec, geometry, assign, sites, ligs):
@@ -360,7 +412,7 @@ def metallogen_msmiles(spec, geometry, assign, sites, ligs):
     from rdkit import Chem
 
     per_lig = {}
-    for k, (li, g) in enumerate(sites):
+    for k, (li, g, _gi) in enumerate(sites):
         for a in g:
             per_lig.setdefault(li, {})[a] = assign[k] + 1
     ox = int(spec.get("metal_ox") or 0)
@@ -374,11 +426,13 @@ def metallogen_msmiles(spec, geometry, assign, sites, ligs):
     return "|".join(parts)
 
 
-def metallogen_jobs(spec, options=None, known=None, vectors=None):
+def metallogen_jobs(spec, options=None, known=None, vectors=None, report=None):
     """``[(geometry, arrangement index, m-SMILES), ...]`` for every geometry that fits.
 
     *known* / *vectors*: MetalloGen's ``CN_known_geometries_dict`` and
-    ``known_geometries_vector_dict`` (read from it in its environment).
+    ``known_geometries_vector_dict`` (read from it in its environment).  *report*, a dict, gets
+    ``truncated`` (whether ``max_arrangements`` cut any geometry short) and
+    ``truncated_geometries``.
     """
     opts = dict(METALLOGEN_DEFAULTS, **(options or {}))
     if opts["geometries"] not in METALLOGEN_GEOMS:
@@ -392,12 +446,17 @@ def metallogen_jobs(spec, options=None, known=None, vectors=None):
     if not geoms:
         raise NotExpressible("MetalloGen has no geometry for %d donor sites (a hapto ligand is "
                              "one site)" % n)
-    jobs = []
+    jobs, cut = [], []
     for geom in geoms:
-        arrs, sites, ligs = metallogen_arrangements(spec, vectors[geom],
-                                                    cap=int(opts["max_arrangements"]))
+        arrs, sites, ligs, truncated = metallogen_arrangements(
+            spec, vectors[geom], cap=int(opts["max_arrangements"]))
+        if truncated:
+            cut.append(geom)
         for k, assign in enumerate(arrs):
             jobs.append((geom, k, metallogen_msmiles(spec, geom, assign, sites, ligs)))
+    if report is not None:
+        report["truncated"] = bool(cut)
+        report["truncated_geometries"] = cut
     if not jobs:
         raise NotExpressible("no arrangement of the donors fits %s (a chelate cannot span "
                              "trans positions)" % ", ".join(geoms))
@@ -449,6 +508,29 @@ def _metallogen_one(msmiles, work, opts, orca):
     return out
 
 
+#: Characters MetalloGen's os.system() calls (``mkdir``, ``mv``, ``orca x.com > x.log``) would
+#: read as shell syntax; a path with one of them is refused instead of run.
+_SHELL_UNSAFE = set(" \t\n\r;&|$`'\"<>()*?![]{}#~\\")
+
+
+def _mg_check_path(what, path):
+    bad = sorted(set(str(path)) & _SHELL_UNSAFE)
+    if bad:
+        raise NotExpressible("MetalloGen passes the %s to the shell unquoted, and %r contains %s; "
+                             "use a path without blanks or shell characters"
+                             % (what, str(path), " ".join(repr(c) for c in bad)))
+
+
+def _mg_append_partial(path, frames):
+    """Append frames to a multi-frame xyz as soon as an arrangement is done (kept on a time-out)."""
+    with open(path, "a") as fh:
+        for f in frames:
+            fh.write("%d\n%s E=%s\n" % (len(f["symbols"]), f["label"],
+                                        "na" if f["energy"] is None else "%.6f" % f["energy"]))
+            for s, (x, y, z) in zip(f["symbols"], f["coords"]):
+                fh.write("%-2s %14.6f %14.6f %14.6f\n" % (s, x, y, z))
+
+
 def run_metallogen(spec, work, options=None):
     opts = dict(METALLOGEN_DEFAULTS, **(options or {}))
     if opts.get("calculator", "orca") != "orca":
@@ -459,23 +541,40 @@ def run_metallogen(spec, work, options=None):
         raise NotExpressible("MetalloGen's Gaussian-free route needs ORCA (orca and its "
                              "otool_xtb); no ORCA executable was found")
     orca = os.path.abspath(orca)
+    _mg_check_path("ORCA path", orca)
+    _mg_check_path("working directory", os.path.abspath(work))
     os.environ["PATH"] = os.path.dirname(orca) + os.pathsep + os.environ.get("PATH", "")
+    import random
+
+    import numpy as np
     from MetalloGen import globalvars as gv
 
-    jobs = metallogen_jobs(spec, opts, gv.CN_known_geometries_dict, gv.known_geometries_vector_dict)
+    report = {}
+    jobs = metallogen_jobs(spec, opts, gv.CN_known_geometries_dict,
+                           gv.known_geometries_vector_dict, report)
     frames, per = [], {}
-    for geom, k, msmiles in jobs:
+    for idx, (geom, k, msmiles) in enumerate(jobs):
         tag = "%s-arr%d" % (geom, k)
+        # MetalloGen draws its embeddings from random and numpy.random; one seed per m-SMILES
+        # makes the embeddings repeat (the xTB/ORCA relaxations can still differ in the last
+        # digits, so a frame count can change when a near-duplicate falls either side of the
+        # 0.5 A clustering cut-off).
+        random.seed(int(opts["seed"]) + idx)
+        np.random.seed(int(opts["seed"]) + idx)
         try:
             got = _metallogen_one(msmiles, os.path.join(work, tag), opts, orca)
         except (Exception, SystemExit) as exc:   # MetalloGen also exit()s
             per[tag] = "%s: %s" % (type(exc).__name__, str(exc)[:160])
             continue
         per[tag] = "%d conformers (%s)" % (len(got), msmiles)
-        for j, (syms, xyz, e) in enumerate(got):
-            frames.append({"label": "%s-conf%d" % (tag, j), "symbols": syms, "coords": xyz,
-                           "energy": e})
-    return frames, {"per_geometry": per, "m_smiles": [j[2] for j in jobs]}
+        done = [{"label": "%s-conf%d" % (tag, j), "symbols": syms, "coords": xyz, "energy": e}
+                for j, (syms, xyz, e) in enumerate(got)]
+        frames.extend(done)
+        if opts.get("partial_xyz") and done:
+            _mg_append_partial(opts["partial_xyz"], done)
+    return frames, {"per_geometry": per, "m_smiles": [j[2] for j in jobs],
+                    "truncated": report.get("truncated", False),
+                    "truncated_geometries": report.get("truncated_geometries", [])}
 
 
 #: Which runner takes the SMILES as written and which takes DELFIN's split (a spec).
