@@ -482,3 +482,12 @@ def test_crossref_retries_without_select_on_http_400(net, monkeypatch):
     recs = ss.search_crossref("spin", 3)
     assert len(urls) == 2 and "select=" not in urls[1]
     assert recs[0]["doi"] == "10.1063/1.464913"
+
+
+@pytest.mark.parametrize("author,stem", [
+    ("Jane Doe", "Doe"), ("Doe J", "Doe"), ("Doe JA", "Doe"), ("Doe, Jane", "Doe"),
+    ("Axel D. Becke", "Becke"),
+])
+def test_file_name_uses_the_surname(author, stem):
+    rec = {"authors": [author], "year": 2020, "title": "A title"}
+    assert ss.suggest_basename(rec) == f"{stem}2020_A_title"

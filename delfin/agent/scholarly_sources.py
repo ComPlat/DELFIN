@@ -958,7 +958,14 @@ def find_method_reference(name: str, *, max_results: int = 5,
 def suggest_basename(rec: dict) -> str:
     """``Author2021_First_title_words``: file-name safe, at most 70 chars."""
     first = (rec.get("authors") or ["Unknown"])[0]
-    last = first.split(",")[0].split()[-1] if first.split() else "Unknown"
+    if "," in first:                       # "Doe, Jane"
+        tokens = first.split(",")[0].split()
+    else:
+        tokens = first.split()
+        # Europe PMC / PubMed style "Doe J" or "Doe JA": surname first.
+        if len(tokens) > 1 and re.fullmatch(r"[A-Z]{1,3}\.?", tokens[-1]):
+            tokens = tokens[:1]
+    last = tokens[-1] if tokens else "Unknown"
     year = str(rec.get("year") or "nd")
     words = re.findall(r"[A-Za-z0-9]+", rec.get("title") or "")[:6]
     base = f"{last}{year}_" + "_".join(words)
