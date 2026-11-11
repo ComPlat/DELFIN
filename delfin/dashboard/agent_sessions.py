@@ -358,7 +358,7 @@ _COMPLETE_JS = """\
 (function () {
     if (window.__delfinComplete) return;
     window.__delfinComplete = true;
-    var st = {seq: 0, items: [], start: 0, at: -1, ta: null, timer: null, pop: null};
+    var st = {seq: 0, items: [], start: 0, at: -1, ta: null, timer: null, pop: null, lastRaw: null};
     function pop() {
         if (!st.pop) {
             st.pop = document.createElement('div');
@@ -456,11 +456,19 @@ _COMPLETE_JS = """\
     document.addEventListener('focusout', function (e) {
         if (e.target === st.ta) setTimeout(hide, 150);
     }, true);
-    new MutationObserver(function () {
+    // Only an answer that is new is shown. The popup itself changes the
+    // page, so an observer that re-rendered on any change fed on its own
+    // drawing and froze the page (measured 11.11.); mutations inside the
+    // popup are ignored and the same answer is never shown twice.
+    new MutationObserver(function (muts) {
+        if (st.pop && muts.every(function (m) { return st.pop.contains(m.target); })) return;
         var el = document.querySelector('.delfin-complete-result [data-json]');
         if (!el) return;
+        var raw = el.getAttribute('data-json');
+        if (raw === st.lastRaw) return;
+        st.lastRaw = raw;
         var data;
-        try { data = JSON.parse(el.getAttribute('data-json')); } catch (_e) { return; }
+        try { data = JSON.parse(raw); } catch (_e) { return; }
         if (!data || data.seq !== st.seq) return;
         st.items = data.items || []; st.start = data.start || 0; st.at = -1;
         render();
