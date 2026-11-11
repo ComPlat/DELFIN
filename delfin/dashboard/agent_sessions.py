@@ -251,6 +251,7 @@ _SIDEBAR_CSS = """<style>
     border-radius: 6px; background: #ffffff; }
 .delfin-path-suggest:empty { display: none; }
 .delfin-path-option { width: 100% !important; height: 24px !important;
+    flex: 0 0 24px !important; min-height: 24px;
     margin: 0 !important; padding: 0 8px !important; border: 0;
     background: transparent !important; text-align: left; font-size: 12px;
     line-height: 24px; color: #1f2937; white-space: nowrap; overflow: hidden;
