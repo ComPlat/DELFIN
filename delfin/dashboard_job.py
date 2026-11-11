@@ -174,10 +174,10 @@ def _squeue(runner: Callable | None = None) -> tuple:
 
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
     argv = [*_SQUEUE_HEAD, user, "-n", JOB_NAME, "-o", "%i|%T|%N|%L"]
-    out = scheduler_client.query("squeue", argv, runner=runner)
+    out = scheduler_client.query(scheduler_client.kind_of_argv(argv), argv, runner=runner)
     fresh = out is not scheduler_client.THROTTLED and out is not None
     if out is scheduler_client.THROTTLED:
-        out = scheduler_client.default_client.last_result("squeue", argv)
+        out = scheduler_client.default_client.last_result(scheduler_client.kind_of_argv(argv), argv)
     jobs = {}
     for line in str(out or "").splitlines():
         parts = line.strip().split("|")
