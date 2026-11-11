@@ -34,7 +34,7 @@ from delfin.agent.swarm import launch as _launch
 from delfin.agent.swarm import merge as _merge
 from delfin.agent.swarm import status as _status
 from delfin.agent.swarm import triage as _triage
-from delfin.agent.swarm.spec import SpecError, load_spec, validate_spec
+from delfin.agent.swarm.spec import SpecError, load_spec
 
 
 def available_actions(_report: dict[str, Any] | None = None) -> tuple[str, ...]:
@@ -522,6 +522,118 @@ def watched_rows_html(rows: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+def _ago(seconds: Any) -> str:
+    try:
+        s = float(seconds)
+    except (TypeError, ValueError):
+        return "-"
+    if s < 90:
+        return f"{int(s)}s"
+    if s < 5400:
+        return f"{int(s // 60)}m"
+    return f"{s / 3600:.1f}h"
+
+
+#: A session whose presence heartbeat (about once a minute) is older than
+#: this is not listed: its kernel or its job has ended.
+HEARTBEAT_STALE_S = 300.0
+
+#: The all-sessions view is read at most this often (the tab ticks every
+#: 5 s; the read is a directory of small files, kept rare on a login node).
+RUNNING_REFRESH_S = 30.0
+
+
+def running_session_rows(records: list[dict] | None = None, *,
+                         now: float | None = None,
+                         settings: dict | None = None,
+                         beats: dict | None = None) -> list[dict]:
+    """One row per open agent session of this user, on ANY host.
+
+    The Swarm Watch tab without a roster: a wave or swarm started by a
+    script (a SLURM job on a compute node) has no roster the dashboard
+    knows, and the tab showed nothing. The rows come from the presence
+    records in the shared HOME (``session_health.collect``), so sessions
+    on other nodes are listed with their host. Read-only.
+    """
+    import time as _time
+
+    from delfin.agent import session_health
+    if records is None:
+        try:
+            records = session_health.collect(with_git=False)
+        except Exception:
+            records = []
+    now = _time.time() if now is None else now
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = (load_settings() or {}).get("agent") or {}
+        except Exception:
+            settings = {}
+    if beats is None:
+        try:
+            from delfin.agent import session_presence
+            beats = {str(r.get("key") or ""): float(r.get("updated_at") or 0)
+                     for r in session_presence.open_sessions()}
+        except Exception:
+            beats = {}
+    rows = []
+    for rec in records or []:
+        if not isinstance(rec, dict):
+            continue
+        if not rec.get("host") and not rec.get("session_id"):
+            continue          # a pause flag with no session behind it
+        beat = beats.get(str(rec.get("name") or ""))
+        if beats and (beat is None or now - beat > HEARTBEAT_STALE_S):
+            continue          # its node stopped answering (a job that ended)
+        try:
+            verdict = session_health.classify(rec, now, settings).get(
+                "verdict") or ""
+        except Exception:
+            verdict = ""
+        last = rec.get("last_turn") if isinstance(rec.get("last_turn"), dict) \
+            else {}
+        rows.append({
+            "name": str(rec.get("name") or rec.get("session_id") or ""),
+            "host": str(rec.get("host") or "").split(".")[0],
+            "branch": str(rec.get("branch") or ""),
+            "model": str(last.get("model") or ""),
+            "state": verdict,
+            "idle": _ago(rec.get("idle_s")),
+            "approvals": len(rec.get("open_approvals") or []),
+            "inbox": int(rec.get("inbox") or 0),
+        })
+    rows.sort(key=lambda r: (r["host"], r["name"]))
+    return rows
+
+
+RUNNING_HEADER = ("<tr><td><b>session</b></td><td>host</td><td>branch</td>"
+                  "<td>model</td><td>state</td><td>last turn</td>"
+                  "<td>approvals</td><td>inbox</td></tr>")
+
+
+def running_rows_html(rows: list[dict[str, Any]]) -> list[str]:
+    """HTML rows for ``running_session_rows``; escaped, no controls."""
+    out: list[str] = []
+    for row in rows or []:
+        n_appr = int(row.get("approvals") or 0)
+        state = _html.escape(str(row.get("state") or ""))
+        flag = " color:#b91c1c;" if n_appr or "waiting" in state else ""
+        cells = [
+            f"<b>{_html.escape(str(row.get('name') or ''))}</b>",
+            _html.escape(str(row.get("host") or "")),
+            _html.escape(str(row.get("branch") or ""))[:60],
+            _html.escape(str(row.get("model") or "")),
+            f"<span style='{flag}'>{state}</span>",
+            _html.escape(str(row.get("idle") or "")) + " ago",
+            (f"<span style='color:#b91c1c'>{n_appr} open</span>" if n_appr
+             else "-"),
+            str(int(row.get("inbox") or 0)),
+        ]
+        out.append("<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")
+    return out
+
+
 def watched_feed_html(feed: list[dict[str, Any]]) -> list[str]:
     """One HTML string per ``member_feed`` entry, newest last.
 
@@ -596,8 +708,22 @@ def create_watch_tab(ctx: Any):
                 table_html.value = ("<table>" + header +
                                     "".join(rows) + "</table>")
             else:
-                table_html.value = ("<em>No swarm to watch. Set a swarm spec "
-                                    "or roster path on the session.</em>")
+                # No roster or spec: every open session of this user, on
+                # every node (a wave in a SLURM job included).
+                import time as _time
+                if _time.time() - state.get("_running_at", 0.0) >= RUNNING_REFRESH_S:
+                    state["_running"] = running_rows_html(running_session_rows())
+                    state["_running_at"] = _time.time()
+                running = state.get("_running") or []
+                if running:
+                    table_html.value = (
+                        "<div><b>All running sessions</b> (every node; set a "
+                        "roster or spec to watch one swarm)</div><table>"
+                        + RUNNING_HEADER + "".join(running) + "</table>")
+                else:
+                    table_html.value = ("<em>No session runs. Set a swarm "
+                                        "spec or roster path to watch one "
+                                        "swarm.</em>")
             status_html.value = ""
         except Exception as exc:  # a broken source must not kill the tab
             table_html.value = ""
@@ -628,7 +754,7 @@ def create_watch_tab(ctx: Any):
 
     refresh_btn = widgets.Button(description="Refresh", icon="refresh",
                                  button_style="info")
-    refresh_btn.on_click(lambda _b: _refresh())
+    refresh_btn.on_click(lambda _b: (state.__setitem__("_running_at", 0.0), _refresh()))
 
     click_row = widgets.HTML(
         "<em>Click a member in the table to open its live feed "
