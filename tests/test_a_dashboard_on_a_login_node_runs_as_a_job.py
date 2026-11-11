@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import subprocess
 import types
 
 import pytest
@@ -46,10 +45,10 @@ def _args(**kw):
 
 
 def _fake_sbatch(seen, jid="4711"):
-    def run(cmd, **kw):
+    def run(cmd, env):
         seen["cmd"] = cmd
-        seen["env"] = kw.get("env") or {}
-        return subprocess.CompletedProcess(cmd, 0, stdout=f"{jid}\n", stderr="")
+        seen["env"] = env or {}
+        return f"{jid}\n"
     return run
 
 
