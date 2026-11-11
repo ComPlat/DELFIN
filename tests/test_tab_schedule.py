@@ -188,3 +188,15 @@ def test_every_visible_tab_is_built_at_start(tmp_path):
     done = subprocess.run([sys.executable, "-c", code], capture_output=True,
                           text=True, env=child_env(tmp_path), timeout=600)
     assert done.returncode == 0, done.stderr[-1500:]
+
+
+def test_tabs_built_before_shown_wait_for_their_root():
+    """A tab built in the background (warm-up, or the agent tab's needs) has
+    no DOM until its first open; its bind script gave up after 4 s and the
+    splitter and the explorer's clicks stayed dead (11.11., Calculations)."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "delfin" / "dashboard"
+    calc = (root / "tab_calculations_browser.py").read_text(encoding="utf-8")
+    lit = (root / "tab_literature.py").read_text(encoding="utf-8")
+    assert "__delfinCalcRootWaits" in calc and "initCalcScopeBind(0)" in calc
+    assert "__delfinLitRootWaits" in lit and "initLitSplitter(0)" in lit

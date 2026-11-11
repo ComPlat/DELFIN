@@ -16282,10 +16282,24 @@ def create_tab(ctx):
                     }}, 100);
                     return;
                 }}
+                // Built before it is shown (the agent tab builds the tabs it
+                // drives; the dashboard warms it): the tab's DOM appears only
+                // on its first open. Giving up after 4 s left the splitter and
+                // the explorer's clicks unbound for good. Wait for THIS tab's
+                // root instead -- one observer per scope, gone once bound.
                 // No fallback to the first .calc-tab on the page: with three
-                // browsers open that is somebody else's tab, and binding this
-                // tab's splitter and upload target to it is worse than not
-                // binding at all.
+                // browsers open that is somebody else's tab.
+                var waits = (window.__delfinCalcRootWaits = window.__delfinCalcRootWaits || {{}});
+                if (!waits[scopeKey]) {{
+                    waits[scopeKey] = new MutationObserver(function() {{
+                        if (document.querySelector('.' + scopeKey)) {{
+                            waits[scopeKey].disconnect();
+                            delete waits[scopeKey];
+                            initCalcScopeBind(0);
+                        }}
+                    }});
+                    waits[scopeKey].observe(document.body, {{childList: true, subtree: true}});
+                }}
                 return;
             }}
             window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
