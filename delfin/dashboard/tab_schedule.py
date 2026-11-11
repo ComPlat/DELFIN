@@ -20,16 +20,23 @@ def first_visible_spec(specs):
     return None
 
 
-def startup_specs_to_build(specs):
+def startup_specs_to_build(specs, env=None):
     """The specs whose widget must exist before the page goes out.
 
     Input: the ordered visible specs (as ``_sorted_visible_specs`` returns
-    them). Output: the one spec the reader sees at startup, or [] when the
-    bar is empty. Every other visible spec is built lazily on first open by
-    :func:`open_spec`.
+    them). Output: every visible spec that can be built -- the person's
+    decision (11.11.): every tab is there at once, none is built on its
+    first click. ``DELFIN_DASHBOARD_LAZY=1`` builds only the first visible
+    one and the rest on first open (:func:`open_spec`), for a slow host.
     """
-    first = first_visible_spec(specs)
-    return [] if first is None else [first]
+    import os
+    env = os.environ if env is None else env
+    if str(env.get('DELFIN_DASHBOARD_LAZY', '')).strip().lower() in ('1', 'true', 'yes', 'on'):
+        first = first_visible_spec(specs)
+        return [] if first is None else [first]
+    return [spec for spec in specs
+            if spec.get('available') and not spec.get('fixed')
+            and (spec.get('widget') is not None or callable(spec.get('build')))]
 
 
 def open_spec(spec):

@@ -40,10 +40,21 @@ def specs(widgets):
     ], build_calls
 
 
-def test_startup_builds_only_the_first_visible_tab(specs):
+def test_startup_builds_every_visible_tab(specs):
+    """The person (11.11.): every tab is there at once, none waits for its
+    first click."""
     from delfin.dashboard import tab_schedule
     spec_list, build_calls = specs
-    startup = tab_schedule.startup_specs_to_build(spec_list)
+    startup = tab_schedule.startup_specs_to_build(spec_list, env={})
+    assert [s['id'] for s in startup] == ['submit', 'recalc', 'agent']
+    assert build_calls == []
+
+
+def test_lazy_startup_builds_only_the_first_visible_tab(specs):
+    from delfin.dashboard import tab_schedule
+    spec_list, build_calls = specs
+    startup = tab_schedule.startup_specs_to_build(
+        spec_list, env={'DELFIN_DASHBOARD_LAZY': '1'})
     assert [s['id'] for s in startup] == ['submit']
     assert build_calls == []
 
@@ -132,6 +143,47 @@ def test_every_visible_tab_is_on_the_bar_and_builds_on_its_first_open(tmp_path):
         "for refs in ('submit_refs', 'orca_builder_refs', 'recalc_refs',\n"
         "             'job_status_refs', 'calc_browser_refs'):\n"
         "    assert getattr(ctx, refs), ('the agent tab drives it', refs)\n"
+    )
+    # The lazy path (DELFIN_DASHBOARD_LAZY=1) still builds on first open,
+    # and the tab built then carries its own init scripts (self_running_html):
+    # sent as a Javascript output after the page was out, they never ran.
+    code += (
+        "built = bar.children[i]\n"
+        "found = []\n"
+        "def walk(w):\n"
+        "    if 'delfin-tab-js' in str(getattr(w, 'value', '')): found.append(w)\n"
+        "    for c in getattr(w, 'children', ()): walk(c)\n"
+        "walk(built)\n"
+        "assert found, 'the tab built on open carries no init scripts'\n"
+    )
+    env = dict(child_env(tmp_path), DELFIN_DASHBOARD_LAZY="1")
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, env=env, timeout=600)
+    assert done.returncode == 0, done.stderr[-1500:]
+
+
+def test_every_visible_tab_is_built_at_start(tmp_path):
+    """The default: the agent tab (and every other visible one) is built
+    before the page goes out, with its scripts."""
+    import subprocess
+    import sys
+
+    from conftest import child_env
+    code = (
+        "import ipywidgets as w\n"
+        "import delfin.dashboard as d\n"
+        "d.display = lambda *a, **k: None\n"
+        "tabs = []\n"
+        "init = w.Tab.__init__\n"
+        "def record(self, *a, **k):\n"
+        "    init(self, *a, **k)\n"
+        "    tabs.append(self)\n"
+        "w.Tab.__init__ = record\n"
+        "d.create_dashboard(backend='local')\n"
+        "bar = next(t for t in tabs if 'Submit Job' in t.titles)\n"
+        "for title in ('DELFIN Agent', 'Job Status', 'Calculations'):\n"
+        "    child = bar.children[bar.titles.index(title)]\n"
+        "    assert getattr(child, 'children', None), ('not built at start', title)\n"
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True,
                           text=True, env=child_env(tmp_path), timeout=600)
