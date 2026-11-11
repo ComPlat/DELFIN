@@ -556,9 +556,13 @@ export function App(props: AppProps): JSX.Element {
   const watch = createSwarmWatch({
     keymap: props.keymap,
     now: () => Date.now() / 1000,
+    // The envelope unwrapped here, like askTriage's: the request returns
+    // { rows: [...] } (protocol.py), the watch state holds the rows.
     askOverview: () => props.client.request("swarm.observe.overview",
-      watchSource ? { sourcePath: watchSource } : {}) as never,
-    askFeed: (name) => props.client.request("swarm.observe.feed", { session: name }) as never,
+      watchSource ? { sourcePath: watchSource } : {})
+      .then((r) => ((r as { rows?: unknown })?.rows ?? []) as never) as never,
+    askFeed: (name) => props.client.request("swarm.observe.feed", { session: name })
+      .then((r) => ((r as { entries?: unknown })?.entries ?? []) as never) as never,
     note: say,
     draft: () => composer.value(),
   })
@@ -1159,6 +1163,7 @@ export function App(props: AppProps): JSX.Element {
       onOfferClick={() => void clickOffer()}
       agents={agents}
       swarm={swarm}
+      watch={watch}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}
       others={others}
