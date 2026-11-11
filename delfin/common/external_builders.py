@@ -1,9 +1,22 @@
-"""Architector, molSimplify and epic-MACE as SMILES constructors, one definition per tool.
+"""Architector, molSimplify, epic-MACE, rxembed, Molassembler and MetalloGen as SMILES constructors.
 
-The dashboard (Submit Job and ORCA Builder, through the shared structure
-editor) and the CONTROL pipeline (``smiles_converter=ARCHITECTOR`` /
-``MOLSIMPLIFY`` / ``MACE``) all build through :func:`build_frames`, the same
-way the MANTA entry points all build through :mod:`delfin.common.manta_build`.
+One definition per tool.  The dashboard (Submit Job and ORCA Builder, through
+the shared structure editor) and the CONTROL pipeline (``smiles_converter=
+ARCHITECTOR`` / ``MOLSIMPLIFY`` / ``MACE`` / ``RXEMBED`` / ``MOLASSEMBLER`` /
+``METALLOGEN``) all build through :func:`build_frames`, the same way the MANTA
+entry points all build through :mod:`delfin.common.manta_build`.
+
+rxembed, Molassembler and MetalloGen run in environments of their own, too
+(rxembed needs Python >= 3.12 and RDKit >= 2026.9.1, which DELFIN's RDKit is
+not); their builds are defined once in
+:mod:`delfin.cluster_bench.tool_workers.smiles_tools`, which the worker here
+and the cluster batch worker both import.  rxembed and Molassembler take the
+SMILES as written; MetalloGen takes DELFIN's split (cut here, like epic-MACE's)
+and only its ORCA calculator is used (GFN2-xTB through ORCA; its default
+calculator needs Gaussian).  ``python -m delfin.installer --install rxembed``
+(``molassembler``, ``metallogen``) builds the environment;
+``DELFIN_RXEMBED_PYTHON`` / ``DELFIN_MOLASSEMBLER_PYTHON`` /
+``DELFIN_METALLOGEN_PYTHON`` point elsewhere.
 
 epic-MACE (Chernyshov & Pidko, J. Chem. Theory Comput. 2024, 20, 2313;
 github.com/EPiCs-group/epic-mace, GPL-3.0) is called as an external program in
@@ -116,7 +129,41 @@ TOOLS = {
         # tetrahedron are no ranking of the two.
         "keep_order": True,
     },
+    # Built by install_ai_tools.sh under the AI tools root, each in an environment of its own;
+    # the builds are delfin.cluster_bench.tool_workers.smiles_tools.
+    "rxembed": {
+        "display": "rxembed",
+        "module": "rxembed",
+        "python_env": "DELFIN_RXEMBED_PYTHON",
+        # Python >= 3.12 and RDKit >= 2026.9.1 (pinned GitHub commit 9c0ba5a6).
+        "managed_env": ".mamba_env/rxembed",
+        "install": "python -m delfin.installer --install rxembed",
+        "smiles_input": True,
+    },
+    "molassembler": {
+        "display": "Molassembler",
+        "module": "scine_molassembler",
+        "python_env": "DELFIN_MOLASSEMBLER_PYTHON",
+        # pip scine-molassembler 3.0.1 (Python 3.11).
+        "managed_env": ".mamba_env/molassembler",
+        "install": "python -m delfin.installer --install molassembler",
+        "smiles_input": True,
+    },
+    "metallogen": {
+        "display": "MetalloGen",
+        "module": "MetalloGen",
+        "python_env": "DELFIN_METALLOGEN_PYTHON",
+        # Python 3.11 + RDKit + numpy/scipy/cclib/pulp, pinned GitHub commit fa26e2ad.
+        "managed_env": ".mamba_env/metallogen",
+        "install": "python -m delfin.installer --install metallogen",
+        "spec_in_caller": True,
+        "needs_orca": True,
+        "energy_unit": "Eh, GFN2-xTB via ORCA",
+    },
 }
+
+#: Tools whose build is defined in delfin.cluster_bench.tool_workers.smiles_tools.
+SMILES_TOOLS = ("rxembed", "molassembler", "metallogen")
 
 #: epic-MACE settings, the same for the dashboard and for CONTROL.
 MACE_DEFAULTS = {"geometries": "extended", "num_confs": 10, "max_attempts": 10}
@@ -761,18 +808,49 @@ _RUNNERS = {"architector": _run_architector, "molsimplify": _run_molsimplify,
             "mace": _run_mace}
 
 
+def _smiles_tool_runner(key: str):
+    """The build of rxembed / Molassembler / MetalloGen (one definition, shared with the
+    cluster batch worker)."""
+    from delfin.cluster_bench.tool_workers import smiles_tools
+    return smiles_tools.RUNNERS[key], smiles_tools.NotExpressible
+
+
 def _worker(tool: str, request_path: str, result_path: str) -> int:
-    # rdkit before any tool: see the module docstring (libstdc++).
+    # rdkit before any tool: see the module docstring (libstdc++).  Molassembler's
+    # environment has no rdkit; it needs none.
     result = {"frames": [], "error": None}
     try:
-        from rdkit import RDLogger  # noqa: F401
-        RDLogger.DisableLog("rdApp.*")
+        try:
+            from rdkit import RDLogger  # noqa: F401
+            RDLogger.DisableLog("rdApp.*")
+        except ImportError:
+            pass
         req = json.loads(Path(request_path).read_text())
         key = tool_key(tool)
+        info = TOOLS[key]
         import importlib.util
-        if importlib.util.find_spec(TOOLS[key]["module"]) is None or not _is_the_tool(key):
+        if importlib.util.find_spec(info["module"]) is None or not _is_the_tool(key):
             result["error"] = not_installed_message(key, sys.executable)
             result["not_installed"] = True
+        elif key in SMILES_TOOLS:
+            runner, not_expressible = _smiles_tool_runner(key)
+            source = req["smiles"] if info.get("smiles_input") else req.get("spec")
+            if source is None:
+                source = split_complex_smiles(req["smiles"])
+            if not info.get("smiles_input"):
+                result["spec"] = source
+            try:
+                frames, extra = runner(source, req["work"], req.get("options") or {})
+            except not_expressible as exc:
+                frames, extra = [], {}
+                result["error"] = str(exc)
+                result["not_expressible"] = True
+            result.update(extra)
+            result["frames"] = frames
+            if not frames and not result["error"]:
+                detail = "; ".join(f"{k}: {v}" for k, v in extra.get("per_geometry", {}).items())
+                result["error"] = (f"{info['display']} returned no structure"
+                                   + (f" ({detail})" if detail else ""))
         else:
             # A spec cut by the caller (spec_in_caller) is taken as it is.
             spec = req.get("spec") or split_complex_smiles(req["smiles"])
@@ -813,7 +891,10 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     ``{'mode': 'full'}`` (default: every isomer it finds) or ``'default'``
     (its own defaults, one structure per core geometry).  For epic-MACE:
     :data:`MACE_DEFAULTS` (``geometries`` ``'extended'`` or ``'paper'``,
-    ``num_confs``, ``max_attempts``).
+    ``num_confs``, ``max_attempts``).  For rxembed, Molassembler and MetalloGen:
+    ``RXEMBED_DEFAULTS`` / ``MOLASSEMBLER_DEFAULTS`` / ``METALLOGEN_DEFAULTS``
+    of :mod:`delfin.cluster_bench.tool_workers.smiles_tools`; MetalloGen gets
+    the ORCA that DELFIN finds (``orca`` overrides it).
     """
     key = tool_key(tool)
     info = TOOLS[key]
@@ -822,6 +903,17 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
         import importlib.util
         if importlib.util.find_spec(info["module"]) is None:
             return [], not_installed_message(key, python)
+    if info.get("needs_orca") and not (options or {}).get("orca"):
+        try:
+            from delfin.qm_runtime import find_tool_executable
+            orca = find_tool_executable("orca")
+        except Exception:                                 # noqa: BLE001
+            orca = None
+        if not orca:
+            return [], (f"{info['display']} runs here only with its ORCA calculator (GFN2-xTB "
+                        "through ORCA; its default calculator needs Gaussian), and no ORCA "
+                        "executable was found. Install ORCA or put it on PATH.")
+        options = dict(options or {}, orca=str(orca))
     spec = None
     if info.get("spec_in_caller"):
         # Cut here, with DELFIN's RDKit; the tool's environment may carry an
@@ -889,7 +981,8 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
             e = f.get("energy")
             label = f"{info['display']} {f.get('label') or i}"
             if e is not None:
-                # Architector: its xTB energy in ASE units; epic-MACE: UFF.
+                # Architector: its xTB energy in ASE units; epic-MACE: UFF;
+                # MetalloGen: GFN2-xTB through ORCA, Hartree.
                 label += f" (E = {e:.4f} {info.get('energy_unit', 'eV')})"
             out.append((_xyz_body(f["symbols"], f["coords"]), len(f["symbols"]), label))
         return out, None

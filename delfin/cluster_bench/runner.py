@@ -245,6 +245,9 @@ def cbatch_tool_one(man, rid, specs, archive: Path, workroot: Path, logroot: Pat
     if tool == "mace":
         cmd = [cbatch_tool_python(man), str(WORKERS_DIR / "mace_worker.py"), rid, str(specs),
                str(archive), str(work), "--geoms", s["mode"]]
+    elif tool in ("rxembed", "molassembler", "metallogen"):
+        cmd = [cbatch_tool_python(man), str(WORKERS_DIR / "smiles_worker.py"), tool, rid,
+               str(specs), str(archive), str(work), "--mode", s["mode"]]
     else:
         cmd = [cbatch_tool_python(man), str(WORKERS_DIR / "bench_worker.py"), tool, rid, str(specs),
                str(archive), str(work), "--mode", s["mode"]]

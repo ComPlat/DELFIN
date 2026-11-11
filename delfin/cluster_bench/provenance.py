@@ -27,10 +27,19 @@ TOOLS = {
                     "mem": "80G", "shard_size": 250, "needs_specs": True},
     "mace": {"worker": "mace_worker.py", "mode": "paper", "workers": 48, "threads": 1,
              "mem": "80G", "shard_size": 250, "needs_specs": True},
+    # rxembed and Molassembler read the SMILES of the spec line as written; MetalloGen reads the
+    # spec and needs ORCA on the node (GFN2-xTB through ORCA).  tool_workers/smiles_worker.py.
+    "rxembed": {"worker": "smiles_worker.py", "mode": "default", "workers": 48, "threads": 1,
+                "mem": "80G", "shard_size": 250, "needs_specs": True},
+    "molassembler": {"worker": "smiles_worker.py", "mode": "default", "workers": 48, "threads": 1,
+                     "mem": "80G", "shard_size": 250, "needs_specs": True},
+    "metallogen": {"worker": "smiles_worker.py", "mode": "common", "workers": 48, "threads": 1,
+                   "mem": "80G", "shard_size": 50, "needs_specs": True},
 }
 
 MODES = {"manta": ("champion", "builder"), "architector": ("full", "default"),
-         "molsimplify": ("full",), "mace": ("paper", "extended")}
+         "molsimplify": ("full",), "mace": ("paper", "extended"),
+         "rxembed": ("default",), "molassembler": ("default",), "metallogen": ("common", "all")}
 
 
 def cbatch_sha256_file(path) -> str:
