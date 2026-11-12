@@ -215,7 +215,9 @@ def swarm_overview(source,
 
     steps_fn = steps_fn or _default_steps
     commits_fn = commits_fn or _default_commits
-    records = list(records or [])
+    # None means "read the real sessions" (the dashboard's Swarm tab and
+    # the TUI's /swarm watch pass nothing); an empty list stays empty.
+    records = _default_records() if records is None else list(records)
     now = now if now is not None else _time.time()
     rec_by_name = {str(r.get("name") or r.get("session_id") or ""): r
                    for r in records if isinstance(r, dict)}

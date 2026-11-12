@@ -68,6 +68,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from .context import DashboardContext
     from .helpers import (
         _append_js,
+        self_running_html,
         apply_branding,
         create_busy_css,
         create_page_css,
@@ -741,9 +742,20 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         except Exception:
             spec['widget'] = None
             return
-        fresh = '\n'.join(ctx.init_js_parts[already:])
-        if fresh.strip():
-            _append_js(ctx, fresh)
+        # The tab carries its own init scripts and runs them when it is
+        # shown (helpers.self_running_html). Sent as a Javascript output
+        # into ctx.js_output after the page was out, they never ran: every
+        # tab built on its first open lost its splitter, explorer clicks,
+        # upload and keys (Calculations, Remote Archive, ... since 09.11.).
+        parts = [p for p in ctx.init_js_parts[already:] if p and str(p).strip()]
+        if parts and spec.get('widget') is not None:
+            runner = widgets.HTML(self_running_html(*parts), layout=widgets.Layout(
+                width='0px', height='0px', margin='0', overflow='hidden'))
+            built = spec['widget']
+            if isinstance(built, widgets.Box):
+                built.children = tuple(built.children) + (runner,)
+            else:
+                spec['widget'] = widgets.VBox([built, runner])
 
     def _sorted_visible_specs():
         order, hidden = _resolve_tab_preferences()

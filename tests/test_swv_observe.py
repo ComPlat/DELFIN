@@ -251,3 +251,15 @@ def test_feed_steps_newest_last_with_result_status(audit_log):
     # the denial is present and marked as a refusal
     denied = [e for e in feed if e["kind"] == "refusal"]
     assert denied and "outside scope" in denied[0]["text"]
+
+
+def test_overview_without_records_reads_the_real_sessions(monkeypatch):
+    """The dashboard and the TUI call swarm_overview(source) with no records:
+    it must read the live sessions, not treat every member as missing (the
+    whole running wave showed 'no session')."""
+    monkeypatch.setattr(_observe, "_default_records",
+                        lambda: [_health_record("ops-1")])
+    rows = _observe.swarm_overview({"ops-1": {"package": "ops", "role": "builder"}},
+                                   steps_fn=lambda *a, **k: ([], 0),
+                                   commits_fn=lambda name: {})
+    assert rows[0]["state"] == "working"
