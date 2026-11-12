@@ -52,8 +52,11 @@ def main(argv: list[str] | None = None) -> int:
             "swarm is submitted as one SLURM job (at most "
             "8 member sessions per job): it checks the spec, says what "
             "will happen, asks, submits, and tells you how to watch and "
-            "stop it. Inside a job or on a workstation it creates one "
-            "worktree + branch per member, as before."))
+            "stop it. With --here (or hpc.swarm_on_login_node) the members "
+            "run on the login node instead, within its session cap, and "
+            "send every test and build to SLURM. Inside a job, on a "
+            "workstation or a private server it creates one worktree + "
+            "branch per member, as before."))
     p_start.add_argument("spec_file", nargs="?", default="",
                          metavar="SPEC",
                          help="Spec file to start from (default: "
@@ -64,7 +67,12 @@ def main(argv: list[str] | None = None) -> int:
                          help="Show exactly what would start; start nothing")
     p_start.add_argument("--job", action="store_true",
                          help="Submit it as a SLURM job of its own even "
-                              "inside a job (a login node always does)")
+                              "inside a job (a login node does by default)")
+    p_start.add_argument("--here", action="store_true",
+                         help="On a cluster login node: run the members "
+                              "here instead of as a job (or set "
+                              "hpc.swarm_on_login_node). Their tests, builds "
+                              "and calculations still go to SLURM.")
     p_start.add_argument("-y", "--yes", action="store_true",
                          help="Submit without asking (needed when no "
                               "terminal can answer)")
@@ -161,9 +169,21 @@ def _cmd_start(args: argparse.Namespace) -> int:
     except (SpecError, LaunchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    where = _job.route(prefer_job=bool(args.job))
+    if args.here and args.job:
+        print("ERROR: --here and --job contradict each other; give one.",
+              file=sys.stderr)
+        return 2
+    where = _job.route(prefer_job=bool(args.job), here=bool(args.here))
     if where == "job":
         return _start_as_job(args, spec_path)
+    if _job.host_kind() == "login_node":
+        why = _job.login_node_room(len(plan["members"]))
+        if why:
+            print(f"ERROR: {why}", file=sys.stderr)
+            return 1
+        print("Members run on this login node. Every test, build and "
+              "calculation they start goes to SLURM (enforced on a login "
+              "node).")
     if args.dry_run:
         print(render_dry_run(plan))
         print("Run the same command without --dry-run to start.")

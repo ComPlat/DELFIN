@@ -260,3 +260,33 @@ def _walk(widget):
     yield widget
     for child in getattr(widget, "children", ()) or ():
         yield from _walk(child)
+
+
+# --------------------------------------------------------------------------
+# Opt-in: members on a login node
+# --------------------------------------------------------------------------
+
+def test_a_login_node_submits_unless_the_person_allowed_members_there(monkeypatch):
+    monkeypatch.setattr(job, "host_kind", lambda env=None: "login_node")
+    monkeypatch.setattr(job, "_user_settings", lambda: {})
+    assert job.route({}) == "job"
+    assert job.route({}, here=True) == "here"
+    assert job.route({"DELFIN_SWARM_ON_LOGIN_NODE": "1"}) == "here"
+    monkeypatch.setattr(job, "_user_settings", lambda: {"hpc": {"swarm_on_login_node": True}})
+    assert job.route({}) == "here"
+    # The env says no even when the setting says yes.
+    assert job.route({"DELFIN_SWARM_ON_LOGIN_NODE": "0"}) == "job"
+
+
+def test_a_workstation_or_private_server_starts_here_without_asking(monkeypatch):
+    monkeypatch.setattr(job, "host_kind", lambda env=None: "workstation")
+    assert job.route({}) == "here"
+
+
+def test_members_on_a_login_node_stay_within_its_session_cap():
+    settings = {"hpc": {"login_node_sessions": 6}}
+    assert job.login_node_room(3, settings=settings, on_host=3) == ""
+    why = job.login_node_room(4, settings=settings, on_host=3)
+    assert "at most 6 run here" in why and "drop --here" in why
+    # Never above the per-job ceiling, whatever the setting says.
+    assert job.login_node_room(9, settings={"hpc": {"login_node_sessions": 50}}, on_host=0)

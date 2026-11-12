@@ -88,17 +88,81 @@ def host_kind(env: dict | None = None) -> str:
     return _host_kind(env)
 
 
-def route(env: dict | None = None, *, prefer_job: bool = False) -> str:
+#: Opt-in for members on a login node: env DELFIN_SWARM_ON_LOGIN_NODE=1, or
+#: the user setting hpc.swarm_on_login_node: true. Off by default.
+LOGIN_NODE_OPT_IN_ENV = "DELFIN_SWARM_ON_LOGIN_NODE"
+
+
+def _user_settings() -> dict:
+    try:
+        from delfin.hpc_guard import _read_user_settings
+        return _read_user_settings()
+    except Exception:
+        return {}
+
+
+def login_node_opt_in(env: dict | None = None,
+                      settings: dict | None = None) -> bool:
+    """Whether the person allowed swarm members on a cluster login node.
+
+    Off by default: a login node submits the swarm as a job. Allowed, the
+    members run there as interactive agent sessions do -- and, as those,
+    every test, build and calculation they start is sent to SLURM (the
+    login-node bash gate holds for every session on a login node)."""
+    env = os.environ if env is None else env
+    raw = str(env.get(LOGIN_NODE_OPT_IN_ENV, "")).strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    settings = _user_settings() if settings is None else settings
+    hpc = settings.get("hpc") if isinstance(settings, dict) else None
+    return (hpc or {}).get("swarm_on_login_node") is True
+
+
+def login_node_room(members: int, *, settings: dict | None = None,
+                    on_host: int | None = None) -> str:
+    """Why *members* more sessions may not open on this login node, or "".
+
+    The same cap as interactive sessions (hpc.login_node_sessions, at most
+    MAX_MEMBERS_PER_JOB): the login node's per-user memory limit is shared
+    by every session the person has there."""
+    settings = _user_settings() if settings is None else settings
+    hpc = settings.get("hpc") if isinstance(settings, dict) else None
+    try:
+        limit = int((hpc or {}).get("login_node_sessions") or MAX_MEMBERS_PER_JOB)
+    except (TypeError, ValueError):
+        limit = MAX_MEMBERS_PER_JOB
+    limit = max(1, min(MAX_MEMBERS_PER_JOB, limit))
+    if on_host is None:
+        try:
+            import socket
+            from delfin.agent import session_presence
+            me = socket.gethostname().split(".")[0]
+            on_host = sum(1 for r in session_presence.open_sessions()
+                          if str(r.get("host") or "").split(".")[0] == me)
+        except Exception:
+            on_host = 0
+    if on_host + members <= limit:
+        return ""
+    return (f"{members} member session{'s' if members != 1 else ''} would make "
+            f"{on_host + members} agent sessions on this login node; at most "
+            f"{limit} run here (hpc.login_node_sessions). Start it as a SLURM "
+            "job instead (drop --here), or end sessions first.")
+
+
+def route(env: dict | None = None, *, prefer_job: bool = False,
+          here: bool = False) -> str:
     """``"job"`` when the swarm is submitted as a SLURM job, ``"here"`` when
     it starts in this process as before.
 
-    A login node always submits: the members must never run there. Inside
-    a job (a dashboard job, an interactive srun) the start stays where it
-    is unless *prefer_job* asks for a job of its own and sbatch is here.
-    A workstation (no scheduler) always starts here."""
+    A login node submits, unless the person allowed members there
+    (*here*, or :func:`login_node_opt_in`); their tests and builds then
+    still go to SLURM. Inside a job (a dashboard job, an interactive srun)
+    the start stays where it is unless *prefer_job* asks for a job of its
+    own and sbatch is here. A workstation or a private server (no
+    scheduler, or ``hpc.host_kind`` naming it) always starts here."""
     kind = host_kind(env)
     if kind == "login_node":
-        return "job"
+        return "here" if (here or login_node_opt_in(env)) else "job"
     if prefer_job and kind == "slurm_job" and shutil.which(_SBATCH):
         return "job"
     return "here"
@@ -279,6 +343,15 @@ def preflight(spec_text: str, spec_path: Path | str, *,
     out["members"] = [m["name"] for m in members]
     out["goal"] = plan["goal"]
     out["spacing_s"] = plan["start_spacing_s"]
+    if out["route"] == "here" and host_kind(env) == "login_node":
+        # Allowed on this login node (hpc.swarm_on_login_node): within the
+        # session cap, and every test and build still goes to SLURM.
+        why = login_node_room(len(members), settings=settings)
+        if why:
+            errors.append(why)
+        else:
+            warnings.append("The members run on this login node; every test, "
+                            "build and calculation they start goes to SLURM.")
     try:
         spacing = float(plan["start_spacing_s"])
         if spacing < 0:
