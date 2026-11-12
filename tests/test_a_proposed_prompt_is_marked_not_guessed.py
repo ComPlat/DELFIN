@@ -129,7 +129,10 @@ def test_tab_still_only_fills_and_never_sends():
     from delfin.dashboard import tab_agent as T
 
     src = inspect.getsource(T)
-    branch = src.split("e.key === 'Tab'")[1].split("if (e.key ===")[0]
+    # The Tab handler alone: up to the next key branch or the end of its
+    # listener, whichever comes first (a helper may follow the listener).
+    rest = src.split("e.key === 'Tab'")[1]
+    branch = min((rest.split(m)[0] for m in ("if (e.key ===", "}, true);")), key=len)
     assert "placeholder" in branch
     assert "send-row" not in branch
 
