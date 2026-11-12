@@ -22,6 +22,22 @@ object protocol:
     retained(topic) -> (payload, ts) | None   the device's last state (readback)
     available(topic) -> bool            the (LWT) availability state
     close() -> None
+    wait_for(topics, timeout_s) -> bool       optional: until each topic has
+                                              delivered its retained message
+    wait_newer(topic, since, timeout_s) -> bool  optional: until ``topic``
+                                              reports after ``since``
+
+Connection lifetime: one broker connection per driver operation (read,
+write, arm, disarm, health), opened, subscribed, settled and closed again.
+The retained availability and state arrive asynchronously after the
+subscribe, so every operation first waits (``address.settle_s``, default
+3 s) until they are there; a read that came before them saw a device as
+offline and a write was refused, so an e-stop could not switch a reachable
+relay off. A write waits (same bound) until the device reports its state
+after the command, so the kernel's readback sees the device's answer and
+not the value from before. Connections are not kept between operations:
+nothing in the kernel closes a driver, and a connection per call that is
+never closed leaves a socket and a network thread behind every lab call.
 
 Topics from the manifest (the address is flat; the schema forbids nested
 addresses and inline secrets)::
@@ -63,7 +79,10 @@ dead-man and a hardware watchdog relay (design doc, section "Dead-man").
 
 from __future__ import annotations
 
+import contextlib
+import itertools
 import json
+import os
 import time
 from typing import Any, Callable, Optional
 
@@ -91,6 +110,8 @@ broker_factory: Callable[..., Any] = _build_real_broker
 credentials: Callable[[str], str] = _credential
 
 _QOS = 1
+_SETTLE_S = 3.0
+_CONN_IDS = itertools.count(1)
 _CMD = "/cmd/"
 _STATE = "/state/"
 _AVAIL = "/availability"
@@ -110,6 +131,13 @@ def _state_topic(device: Any, channel: str) -> str:
 
 def _avail_topic(device: Any) -> str:
     return f"{_addr(device, 'topic_base', '')}{_AVAIL}"
+
+
+def _settle_s(device: Any) -> float:
+    try:
+        return max(0.0, min(30.0, float(_addr(device, "settle_s", _SETTLE_S))))
+    except (TypeError, ValueError):
+        return _SETTLE_S
 
 
 def _readable_channels(device: Any):
@@ -163,7 +191,9 @@ class _PahoBroker:
                 f"{self._extra!r} extra (pip install 'delfin-complat[{self._extra}]')"
             ) from exc
         self._client = mqtt_client.Client(
-            client_id=f"delfin-{device.id}", protocol=mqtt_client.MQTTv311)
+            mqtt_client.CallbackAPIVersion.VERSION2,
+            client_id=f"delfin-{device.id}-{os.getpid()}-{next(_CONN_IDS)}",
+            protocol=mqtt_client.MQTTv311)
         # in-flight QoS 1 allows one unacknowledged message: retries are the
         # client's buffered queue, never re-published by this driver
         self._client.max_inflight_messages_set(1)
@@ -185,10 +215,16 @@ class _PahoBroker:
         self._last_err: Optional[str] = None
 
     # -- paho callbacks -------------------------------------------------------
-    def _on_connect(self, _c, _u, _f, rc, _p=None):
-        self._connected = rc == 0
+    def _on_connect(self, _c, _u, _flags, reason_code, _props=None):
+        if getattr(reason_code, "is_failure", reason_code != 0):
+            # a refused login (bad credentials, not authorised) ends the
+            # wait at once; the reason never contains the password
+            self._last_err = str(reason_code)
+            self._connected = False
+        else:
+            self._connected = True
 
-    def _on_disconnect(self, _c, _u, _rc):
+    def _on_disconnect(self, _c, _u, _flags=None, _rc=None, _props=None):
         self._connected = False
 
     def _on_message(self, _c, _u, msg):
@@ -207,9 +243,11 @@ class _PahoBroker:
             # QoS 1 CONNACK: give the broker a moment (timeout on the call)
             _wait(lambda: self._connected or self._last_err, timeout_s=10.0)
             if not self._connected:
+                why = f" ({self._last_err})" if self._last_err else ""
+                self.close()
                 raise DriverError(
                     f"could not connect to the MQTT broker at "
-                    f"{self._broker_host}:{self._broker_port}")
+                    f"{self._broker_host}:{self._broker_port}{why}")
         except DriverError:
             raise
         except Exception as exc:
@@ -229,6 +267,14 @@ class _PahoBroker:
         except Exception as exc:
             raise DriverError(f"MQTT publish to {topic} failed: {exc}") from exc
         return f"mqtt-{info.mid}"
+
+    def wait_for(self, topics, timeout_s: float) -> bool:
+        return _wait(lambda: all(t in self._retained for t in topics),
+                     timeout_s=timeout_s)
+
+    def wait_newer(self, topic: str, since: float, timeout_s: float) -> bool:
+        return _wait(lambda: self._stamp.get(topic, 0.0) > since,
+                     timeout_s=timeout_s)
 
     def retained(self, topic: str):
         if topic in self._retained:
@@ -274,17 +320,33 @@ class MqttDriver(Driver):
         self._transport_factory = transport_factory or broker_factory
         self._transports: dict[str, Any] = {}
 
-    def _transport(self, device: Any) -> Any:
-        """One connected (open + subscribed) transport per device."""
-        t = self._transports.get(device.id)
-        if t is None:
-            t = self._transport_arg or self._transport_factory(device)
+    @contextlib.contextmanager
+    def _transport(self, device: Any, *, settle_state: bool = True):
+        """A connected, subscribed and settled transport for one operation.
+
+        An injected transport is the caller's and is not closed; a built
+        one is closed when the operation ends.
+        """
+        t = self._transport_arg or self._transport_factory(device)
+        try:
             t.open()
             for ch in _readable_channels(device):
                 t.subscribe(_state_topic(device, ch), _QOS)
             t.subscribe(_avail_topic(device), _QOS)
-            self._transports[device.id] = t
-        return t
+            wait_for = getattr(t, "wait_for", None)
+            if wait_for is not None:
+                topics = [_avail_topic(device)]
+                if settle_state:
+                    topics += [_state_topic(device, ch)
+                               for ch in _readable_channels(device)]
+                wait_for(topics, _settle_s(device))
+            yield t
+        finally:
+            if self._transport_arg is None:
+                try:
+                    t.close()
+                except Exception:
+                    pass
 
     # -- credentials, resolved by reference only ------------------------------
     def credentials_for(self, device: Any) -> dict:
@@ -293,30 +355,40 @@ class MqttDriver(Driver):
 
     # -- the driver interface ---------------------------------------------------
     def read(self, device: Any) -> dict:
-        t = self._transport(device)
-        if not t.available(_avail_topic(device)):
-            raise DriverError(
-                f"{device.id} is offline (its availability/LWT topic does "
-                "not report it online); its state is unknown and it is "
-                "treated as failed closed")
-        out: dict[str, Reading] = {}
-        for ch in _readable_channels(device):
-            got = t.retained(_state_topic(device, ch))
-            if got is None:
+        with self._transport(device) as t:
+            if not t.available(_avail_topic(device)):
                 raise DriverError(
-                    f"{device.id}.{ch} has not reported a state ({_state_topic(device, ch)})")
-            payload, ts = got
-            spec = device.channel(ch)
-            out[ch] = Reading(payload, spec.unit if spec else None,
-                              float(ts))
-        return out
+                    f"{device.id} is offline (its availability/LWT topic does "
+                    "not report it online); its state is unknown and it is "
+                    "treated as failed closed")
+            out: dict[str, Reading] = {}
+            for ch in _readable_channels(device):
+                got = t.retained(_state_topic(device, ch))
+                if got is None:
+                    raise DriverError(
+                        f"{device.id}.{ch} has not reported a state ({_state_topic(device, ch)})")
+                payload, ts = got
+                spec = device.channel(ch)
+                out[ch] = Reading(payload, spec.unit if spec else None,
+                                  float(ts))
+            return out
 
     def write(self, device: Any, channel: str, value: Any) -> str:
-        t = self._transport(device)
-        if not t.available(_avail_topic(device)):
-            raise DriverError(
-                f"{device.id} is offline; the command was not sent")
-        return t.publish(_cmd_topic(device, channel), str(value), _QOS)
+        with self._transport(device, settle_state=False) as t:
+            if not t.available(_avail_topic(device)):
+                raise DriverError(
+                    f"{device.id} is offline; the command was not sent")
+            state = _state_topic(device, channel)
+            got = t.retained(state)
+            since = got[1] if got else 0.0
+            mid = t.publish(_cmd_topic(device, channel), str(value), _QOS)
+            wait_newer = getattr(t, "wait_newer", None)
+            if wait_newer is not None:
+                # the device's answer, so the kernel's readback is not the
+                # value from before the command; no answer is left to the
+                # readback to judge
+                wait_newer(state, since, _settle_s(device))
+            return mid
 
     def arm_watchdog(self, device: Any, seconds: float) -> bool:
         arm_topic = _addr(device, "arm_topic")
@@ -324,22 +396,21 @@ class MqttDriver(Driver):
             return False
         # the firmware's timer command: ``arm_topic`` receives the deadline
         # in whole seconds (Tasmota ``PulseTime`` and friends)
-        self._transport(device).publish(arm_topic, str(int(seconds)), _QOS)
+        with self._transport(device, settle_state=False) as t:
+            t.publish(arm_topic, str(int(seconds)), _QOS)
         return True
 
     def disarm_watchdog(self, device: Any) -> None:
         arm_topic = _addr(device, "arm_topic")
         if arm_topic:
-            self._transport(device).publish(arm_topic, "0", _QOS)
+            with self._transport(device, settle_state=False) as t:
+                t.publish(arm_topic, "0", _QOS)
 
     def health(self, device: Any) -> Health:
         try:
-            t = self._transport(device)
-            if not t.available(_avail_topic(device)):
-                return Health(False, f"{device.id} offline")
-            return Health(True, "online")
+            with self._transport(device, settle_state=False) as t:
+                if not t.available(_avail_topic(device)):
+                    return Health(False, f"{device.id} offline")
+                return Health(True, "online")
         except Exception as exc:
             return Health(False, str(exc))
-
-
-

@@ -163,8 +163,8 @@ pdf = [
 # driver imports paho lazily and does not trip on a missing library -- a real
 # MQTT device simply cannot be reached, and the driver's error names this
 # extra. Tests never need it: the driver is exercised against an in-process
-# fake broker. paho-mqtt is Eclipse Public License 2.0, a permissive licence
-# (see scratch/LICENSE_NOTES.md for the record).
+# fake broker. paho-mqtt is dual-licensed EPL-2.0 / EDL-1.0 (BSD-3-Clause)
+# and used under EDL-1.0 (THIRD_PARTY_NOTICES.md).
 lab-mqtt = [
     "paho-mqtt>=2.0,<3",
 ]

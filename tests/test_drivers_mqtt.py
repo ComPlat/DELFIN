@@ -314,3 +314,100 @@ def test_a_write_impossible_without_kernel_set_is_not_in_the_tool_surface():
     src = inspect.getsource(tools)
     assert "kernel.set(" in src
     assert ".publish(" not in src and "write_to" not in src
+
+
+# -- connection per operation, settled before use -------------------------------
+
+class _LateBroker(FakeBroker):
+    """A broker whose retained messages arrive only after the subscribe, as
+    on a real connection: ``wait_for`` is what delivers them."""
+
+    def __init__(self, clock):
+        super().__init__(clock)
+        self.pending: dict[str, str] = {"lab/relay1/availability": "online",
+                                        "lab/relay1/state/power": "off"}
+        self.delivered: dict[str, str] = {}
+        self.closed = 0
+        self.waited: list = []
+
+    def wait_for(self, topics, timeout_s):
+        self.waited.append(("for", tuple(topics), timeout_s))
+        self.delivered.update(self.pending)
+        for t, v in self.pending.items():
+            if "/state/" in t and t not in self._retained:
+                self._retained[t], self._stamp[t] = v, self.clock()
+        return True
+
+    def wait_newer(self, topic, since, timeout_s):
+        self.waited.append(("newer", topic, since))
+        return self._stamp.get(topic, 0.0) > since
+
+    def available(self, topic):
+        return self.delivered.get(topic) == "online" and super().available(topic)
+
+    def close(self):
+        self.closed += 1
+
+
+def test_a_read_waits_for_the_retained_availability_and_state():
+    """Before the wait, the device looked offline and every write was
+    refused, so an e-stop could not switch a reachable relay off."""
+    clock = _Clock()
+    fake = _LateBroker(clock)
+    drv = mqtt.MqttDriver(clock=clock, transport_factory=lambda device: fake)
+    assert drv.read(_relay1())["power"].value == "off"
+    kind, topics, timeout = fake.waited[0]
+    assert kind == "for" and "lab/relay1/availability" in topics
+    assert "lab/relay1/state/power" in topics and timeout == mqtt._SETTLE_S
+
+
+def test_a_write_waits_for_the_devices_answer():
+    clock = _Clock()
+    fake = _LateBroker(clock)
+    drv = mqtt.MqttDriver(clock=clock, transport_factory=lambda device: fake)
+    drv.read(_relay1())
+    clock.advance(1)
+    drv.write(_relay1(), "power", "on")
+    assert ("newer", "lab/relay1/state/power", 1000.0) in fake.waited
+    assert fake.retained("lab/relay1/state/power")[0] == "on"
+
+
+def test_every_operation_closes_the_connection_it_built():
+    clock = _Clock()
+    fake = _LateBroker(clock)
+    drv = mqtt.MqttDriver(clock=clock, transport_factory=lambda device: fake)
+    d = _relay1()
+    drv.read(d)
+    drv.write(d, "power", "on")
+    drv.health(d)
+    assert fake.closed == 3
+
+
+def test_an_injected_transport_is_not_closed():
+    clock = _Clock()
+    fake = _LateBroker(clock)
+    drv = mqtt.MqttDriver(clock=clock, transport=fake)
+    drv.read(_relay1())
+    assert fake.closed == 0
+
+
+def test_a_refused_login_is_reported_at_once_without_the_password(monkeypatch):
+    """paho reports a refused login in on_connect; the wait ends there."""
+    broker = mqtt._PahoBroker.__new__(mqtt._PahoBroker)
+    broker._last_err = None
+    broker._connected = False
+
+    class _Code:
+        is_failure = True
+
+        def __str__(self):
+            return "Not authorized"
+
+    broker._on_connect(None, None, None, _Code())
+    assert broker._connected is False and broker._last_err == "Not authorized"
+
+    class _Ok:
+        is_failure = False
+
+    broker._on_connect(None, None, None, _Ok())
+    assert broker._connected is True
