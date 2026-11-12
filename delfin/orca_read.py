@@ -929,8 +929,14 @@ def _json_find_d_tensor(node: Any, depth: int = 0) -> Optional[dict]:
         return None
     if isinstance(node, dict):
         lo = {k.lower(): v for k, v in node.items()}
-        if "d_tensor" in lo and isinstance(lo["d_tensor"], dict):
-            return lo["d_tensor"]
+        if "d_tensor" in lo:
+            rec = lo["d_tensor"]
+            # ORCA 6.1.1 writes Geometries[i].D_Tensor as a *list* of
+            # records (real run); the first record is read.
+            if isinstance(rec, list):
+                rec = next((r for r in rec if isinstance(r, dict)), None)
+            if isinstance(rec, dict):
+                return rec
         if ("d" in lo and "e" in lo
                 and _coerce_float(lo["d"]) is not None
                 and _coerce_float(lo["e"]) is not None):
@@ -1001,36 +1007,45 @@ def read_zfs_parameters(work_dir: Union[str, Path],
     return _json_loads_d_tensor(text)
 
 
-# section markers: the SOC-TDDFT spectrum mirrors ROCIS (manual: tddft.txt
-# "Spin-orbit coupling" -- "similarly to what is done in ROCIS"; rocis.txt
-# documents the .out table verbatim).
+# section marker of the SOC-corrected spectrum a ``%tddft soc true`` run
+# prints (ORCA 6.1.1, checked against a real run): the transitions from the
+# SOC ground state, one row each, in the layout
+#   ``  0-1.0A  ->  4-3.0A    2.5000   20164.0   495.9   0.000001000  ...``
+# i.e. initial state-multiplicity-irrep, ``->``, final state-multiplicity-
+# irrep, energy in eV, energy in cm-1, wavelength in nm, fosc(D2), then the
+# transition dipole columns.  The multiplicity label is the dominant spin
+# component of the SOC-mixed state.
 _SOC_SPECTRUM_RE = re.compile(
     r"SOC\s+CORRECTED\s+ABSORPTION\s+SPECTRUM\s+VIA\s+TRANSITION"
     r"\s+ELECTRIC\s+DIPOLE\s+MOMENTS",
     re.IGNORECASE,
 )
+_NUM = r"([-+]?\d+\.\d*(?:[eE][-+]?\d+)?)"
 _SOC_STATE_RE = re.compile(
-    r"^\s*State\s+(\d+):\s+([-+]?\d+\.\d+)\s+cm\*\*-1\s+"
-    r"([-+]?\d+\.\d+)\s+eV",
-    re.IGNORECASE,
+    r"^\s*(\d+)-(\d+(?:\.\d+)?)(\S*)\s+->\s+(\d+)-(\d+(?:\.\d+)?)(\S*)"
+    r"\s+" + _NUM + r"\s+" + _NUM + r"\s+" + _NUM + r"\s+" + _NUM
 )
 
 
 @dataclass
 class SocState:
-    """One SOC-corrected TD-DFT excited state (transition)."""
+    """One SOC-corrected TD-DFT transition from the SOC ground state."""
 
-    states: int                     # the state list index (0-based)
-    e_cm1: float                    # transition energy, cm**-1
+    states: int                     # final SOC state index (ground = 0)
+    e_cm1: float                    # transition energy, cm-1
     e_eV: float                     # transition energy, eV
+    wavelength_nm: Optional[float] = None
+    fosc: Optional[float] = None    # oscillator strength (electric dipole)
+    mult: Optional[float] = None    # dominant spin multiplicity label
+    initial_state: int = 0
 
     @property
     def unit(self) -> tuple[str, str]:
-        return (ZFS_CM1 + "(cm**-1)", "eV")
+        return ("cm-1", "eV")
 
 
 def _parse_soc_states(text: str) -> list[SocState]:
-    """SOC transitions from the SOC-TDDFT ``.out`` text section."""
+    """SOC transitions from the SOC-TDDFT ``.out`` electric-dipole table."""
     states: list[SocState] = []
     started = False
     for line in text.splitlines():
@@ -1040,10 +1055,17 @@ def _parse_soc_states(text: str) -> list[SocState]:
             continue
         m = _SOC_STATE_RE.match(line)
         if m:
-            states.append(SocState(int(m.group(1)), float(m.group(2)),
-                                   float(m.group(3))))
-        elif states and line.strip() and "State" not in line:
-            break  # section ended
+            states.append(SocState(
+                states=int(m.group(4)),
+                e_cm1=float(m.group(8)),
+                e_eV=float(m.group(7)),
+                wavelength_nm=float(m.group(9)),
+                fosc=float(m.group(10)),
+                mult=float(m.group(5)),
+                initial_state=int(m.group(1)),
+            ))
+        elif states and line.strip():
+            break  # the rule closing the table: section ended
     return states
 
 
@@ -1052,9 +1074,9 @@ def read_soc_states(work_dir: Union[str, Path],
     """SOC-corrected TD-DFT excited states read from the ``.out`` text.
 
     Anchors on the ``SOC CORRECTED ABSORPTION SPECTRUM VIA TRANSITION
-    ELECTRIC DIPOLE MOMENTS`` section (mirrors ROCIS, manual rocis.txt;
-    SOC-TDDFT reuses it per tddft.txt) and reads ``State N:  <E> cm**-1
-    <E> eV`` rows from it.  Returns ``[]`` when the section is absent.
+    ELECTRIC DIPOLE MOMENTS`` section and reads its transition rows
+    (``0-1.0A -> N-3.0A  <eV>  <cm-1>  <nm>  <fosc> ...``, the layout of a
+    real ORCA 6.1.1 run).  Returns ``[]`` when the section is absent.
     Never raises.
     """
     out_path = Path(work_dir) / f"{base_name}.out"

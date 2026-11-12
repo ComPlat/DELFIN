@@ -486,8 +486,9 @@ def _write_input(inp: Any, *, wdir: Path, base_name: str,
     return path
 
 
-def _read_output(wdir: Path, base_name: str) -> Any:
-    """Return OPI's parsed output handle for the finished run's ``.out``.
+def _read_output_with_reason(wdir: Path, base_name: str) -> tuple:
+    """``(out, reason)``: OPI's parsed output handle for the finished run, or
+    ``None`` plus the reason OPI could not parse it.
 
     OPI's ``Output`` takes the run's base name and working directory and
     reads ``<base_name>.out`` (plus the property JSON when present) from
@@ -497,9 +498,28 @@ def _read_output(wdir: Path, base_name: str) -> Any:
     try:
         out = Output(basename=base_name, working_dir=wdir)
         out.parse()
-    except Exception:  # noqa: BLE001 - the caller treats None as a failed run
-        return None
-    return out
+    except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+        first = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+        return None, f"OPI could not parse the output ({type(exc).__name__}: {first})"
+    return out, None
+
+
+def _read_output(wdir: Path, base_name: str) -> Any:
+    """OPI's parsed output handle, or ``None`` when OPI cannot parse it."""
+    return _read_output_with_reason(wdir, base_name)[0]
+
+
+def _terminated_normally(wdir: Path, base_name: str) -> bool:
+    """DELFIN's own text check for ORCA's normal-termination marker.
+
+    The ZFS and SOC-TDDFT readers do not need OPI's parsed model (D/E come
+    from the property JSON, the SOC states from the ``.out`` table), and
+    OPI 2.0.0's property model rejects the property JSON of a real ORCA
+    6.1.1 ``%tddft soc true`` run (SOC states carry multiplicity 0), so
+    gating on OPI's parse would fail a run that ended normally."""
+    from delfin.orca_read import _terminated_normally_text
+
+    return _terminated_normally_text(wdir / f"{base_name}.out")
 
 
 # ---------------------------------------------------------------------------
@@ -511,13 +531,15 @@ def _read_output(wdir: Path, base_name: str) -> Any:
 def read_rel_sp_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
     """Parse a finished scalar-relativistic single-point run into
     :class:`OrcaRelSpinResult` (final energy via OPI's parsed output)."""
-    out = _read_output(wdir, base_name)
+    out, reason = _read_output_with_reason(wdir, base_name)
     ok = terminated = out is not None and getattr(
         out, "terminated_normally", lambda: False
     )()
     energy = None
     if ok:
         energy = out.get_final_energy()
+    elif reason is None:
+        reason = "ORCA did not terminate normally"
     return OrcaRelSpinResult(
         ok=ok,
         work_dir=wdir,
@@ -526,6 +548,7 @@ def read_rel_sp_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
         terminated_normally=terminated,
         meaningful=ok and energy is not None,
         energy_Eh=energy if ok else None,
+        error=reason,
     )
 
 
@@ -632,14 +655,11 @@ def read_zfs_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
     cm^-1 via delfin.orca_read)."""
     from delfin.orca_read import read_zfs_parameters
 
-    out = _read_output(wdir, base_name)
-    ok = out is not None and getattr(
-        out, "terminated_normally", lambda: False
-    )()
-    if not ok:
+    if not _terminated_normally(wdir, base_name):
         return OrcaRelSpinResult(ok=False, work_dir=wdir,
                                  output_file=wdir / f"{base_name}.out",
-                                 job="zfs")
+                                 job="zfs", terminated_normally=False,
+                                 error="ORCA did not terminate normally")
     z = read_zfs_parameters(wdir, base_name)
     if z is None:
         return OrcaRelSpinResult(ok=True, work_dir=wdir,
@@ -756,14 +776,11 @@ def read_soc_tddft_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
     (``soc_states`` via delfin.orca_read)."""
     from delfin.orca_read import read_soc_states
 
-    out = _read_output(wdir, base_name)
-    ok = out is not None and getattr(
-        out, "terminated_normally", lambda: False
-    )()
-    if not ok:
+    if not _terminated_normally(wdir, base_name):
         return OrcaRelSpinResult(ok=False, work_dir=wdir,
                                  output_file=wdir / f"{base_name}.out",
-                                 job="soc_tddft")
+                                 job="soc_tddft", terminated_normally=False,
+                                 error="ORCA did not terminate normally")
     states = read_soc_states(wdir, base_name)
     return OrcaRelSpinResult(
         ok=True,
@@ -773,6 +790,7 @@ def read_soc_tddft_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
         terminated_normally=True,
         meaningful=bool(states),
         soc_states=tuple(states) if states else None,
+        error=None if states else "no SOC-corrected spectrum table in the output",
     )
 
 
@@ -1032,7 +1050,9 @@ class OrcaRelSpinOpiAdapter(StepAdapter):
             "zfs_E_cm1": result.zfs_E_cm1,
             "zfs_E_over_D": result.zfs_E_over_D,
             "soc_states": [
-                {"states": s.states, "e_cm1": s.e_cm1, "e_eV": s.e_eV}
+                {"states": s.states, "e_cm1": s.e_cm1, "e_eV": s.e_eV,
+                 "wavelength_nm": s.wavelength_nm, "fosc": s.fosc,
+                 "mult": s.mult}
                 for s in (result.soc_states or ())
             ],
             "work_dir": str(result.work_dir),

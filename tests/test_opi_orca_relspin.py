@@ -354,11 +354,16 @@ class TestReadZfsParameters:
         assert read_zfs_parameters(tmp_path, "nothere") is None
 
 
+# Layout of a real ORCA 6.1.1 ``%tddft soc true`` run; numbers invented.
 SOC_OUT = """# SYNTHETIC test fixture written for DELFIN -- not ORCA output
 
-SOC CORRECTED ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS
-State           1:    12345.67 cm**-1         1.530 eV
-State           2:    23456.78 cm**-1         2.909 eV
+      SOC CORRECTED ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS
+      Transition         Energy     Energy  Wavelength fosc(D2)      D2       |DX|      |DY|      |DZ|
+                          (eV)      (cm-1)    (nm)                 (au**2)    (au)      (au)      (au)
+  0-1.0A  ->  1-3.0A    1.530000   12340.3   810.4   0.000000010   0.00000   0.00000   0.00010   0.00000
+  0-1.0A  ->  2-1.0A    2.909000   23462.6   426.2   0.020000000   0.10000   0.00000   0.31623   0.00000
+
+                             ****ORCA TERMINATED NORMALLY****
 """
 
 
@@ -369,9 +374,10 @@ class TestReadSocStates:
         (tmp_path / "soc_he.out").write_text(SOC_OUT)
         states = read_soc_states(tmp_path, "soc_he")
         assert len(states) == 2
-        assert states[0].e_cm1 == pytest.approx(12345.67)
+        assert states[0].e_cm1 == pytest.approx(12340.3)
         assert states[0].e_eV == pytest.approx(1.530)
-        assert states[1].e_cm1 == pytest.approx(23456.78)
+        assert states[1].e_cm1 == pytest.approx(23462.6)
+        assert states[1].fosc == pytest.approx(0.02)
 
     def test_missing_out_gives_empty_list(self, tmp_path):
         from delfin.orca_read import read_soc_states
@@ -555,3 +561,61 @@ class TestLiveRunFindings:
             **_JOB_KWARGS[job])
         assert "stop: no ORCA" in (res.error or ""), res.error
         assert "!b3lyp" in (tmp_path / f"{job}.inp").read_text().lower()
+
+    @staticmethod
+    def _opi_rejected_jsons(tmp_path, base):
+        # A property JSON OPI 2.0.0's typed model rejects, as it rejects the
+        # real ORCA 6.1.1 SOC-TDDFT one (SOC states carry multiplicity 0),
+        # plus a gbw JSON so OPI never shells out to orca_2json.
+        prop = {"Geometries": [{"Energy": [
+            {"Method": "TDA/CIS", "Mult": [1, 3, 0]}]}]}
+        (tmp_path / f"{base}.property.json").write_text(json.dumps(prop))
+        (tmp_path / f"{base}.json").write_text("{}")
+
+    def test_soc_tddft_result_does_not_depend_on_opis_property_model(
+            self, tmp_path):
+        from delfin.tools.adapters.orca_relspin_opi import read_soc_tddft_result
+
+        (tmp_path / "soc.out").write_text(SOC_OUT)
+        self._opi_rejected_jsons(tmp_path, "soc")
+        res = read_soc_tddft_result(tmp_path, "soc")
+        assert res.ok and res.terminated_normally and res.meaningful, res
+        assert [s.states for s in res.soc_states] == [1, 2]
+
+    def test_zfs_result_does_not_depend_on_opis_property_model(self, tmp_path):
+        (tmp_path / "z.out").write_text(
+            "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+            "                             ****ORCA TERMINATED NORMALLY****\n")
+        self._opi_rejected_jsons(tmp_path, "z")
+        prop = json.loads((tmp_path / "z.property.json").read_text())
+        prop["Geometries"][0]["D_Tensor"] = [{"D": 2.0, "E": 0.2, "Mult": 3}]
+        (tmp_path / "z.property.json").write_text(json.dumps(prop))
+        res = read_zfs_result(tmp_path, "z")
+        assert res.ok and res.meaningful, res
+        assert res.zfs_D_cm1 == pytest.approx(2.0)
+        assert res.zfs_E_over_D == pytest.approx(0.1)
+
+    def test_a_failed_rel_sp_read_says_why(self, tmp_path):
+        (tmp_path / "j.out").write_text(
+            "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n")
+        self._opi_rejected_jsons(tmp_path, "j")
+        res = read_rel_sp_result(tmp_path, "j")
+        assert res.ok is False
+        assert res.error, "a failed read must carry its reason"
+
+    def test_execute_reports_fosc_and_spin_label_of_each_soc_state(
+            self, tmp_path, monkeypatch):
+        import delfin.tools.adapters.orca_relspin_opi as mod
+
+        def fake_launch(wdir, base):
+            (wdir / f"{base}.out").write_text(SOC_OUT)
+            TestLiveRunFindings._opi_rejected_jsons(wdir, base)
+            return None
+        monkeypatch.setattr(mod, "_launch", fake_launch)
+        res = OrcaRelSpinOpiAdapter().execute(
+            tmp_path, cores=1, job="soc_tddft", functional="B3LYP",
+            **_JOB_KWARGS["soc_tddft"])
+        assert res.ok, res.error
+        first = res.data["soc_states"][1]
+        assert first["fosc"] == pytest.approx(0.02)
+        assert first["mult"] == pytest.approx(1.0)
