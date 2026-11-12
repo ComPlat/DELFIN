@@ -112,6 +112,14 @@ def run_args(args: argparse.Namespace) -> int:
     return 2
 
 
+def _no_spec(path: str) -> int:
+    """A missing spec is said, with the command that writes one -- not a
+    FileNotFoundError traceback."""
+    print(f"ERROR: no swarm spec at {path}. `delfin-agent swarm init` "
+          "writes an example to edit (or pass --spec FILE).", file=sys.stderr)
+    return 1
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     from .swarm.launch import LaunchError, write_example_spec
 
@@ -134,6 +142,8 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     try:
         spec = load_spec(args.spec)
         validate_ok = plan_launch(spec)
+    except FileNotFoundError:
+        return _no_spec(args.spec)
     except (SpecError, LaunchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -177,6 +187,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
     try:
         spec = load_spec(args.spec)
+    except FileNotFoundError:
+        return _no_spec(args.spec)
     except SpecError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

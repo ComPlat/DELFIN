@@ -93,3 +93,13 @@ def test_main_with_an_argv_list_still_works(swarm_repo, capsys):
     assert cli_swarm.main(["status", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["packages"]
     assert cli_swarm.main([]) == 0
+
+
+@pytest.mark.parametrize("argv", [["status"], ["plan", "goal"]])
+def test_a_missing_spec_is_said_not_a_traceback(tmp_path, monkeypatch,
+                                                capsys, argv):
+    monkeypatch.chdir(tmp_path)
+    assert cli_swarm.main(argv) == 1
+    err = capsys.readouterr().err
+    assert "no swarm spec at swarm.yaml" in err
+    assert "delfin-agent swarm init" in err
