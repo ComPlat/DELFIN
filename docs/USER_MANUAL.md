@@ -1340,11 +1340,11 @@ and permissions — so a session is usually several agents, not one.
 ### How to get into a running session
 
 Sessions live in your agent service, not in a window: the dashboard, the terminal and the phone are views on the same one, at the same time.
-- **Dashboard:** the sidebar's *Running sessions* lists every session of your service (any folder, started anywhere); one click opens it — its recent turns, then live. The pencil renames it. *×* closes only the view; *End session…* (with a confirmation) ends it.
+- **Dashboard:** the sidebar's *Running sessions* lists every session of your service (any folder, started anywhere). One click on a session that is done or asleep moves it into the dashboard: the service saves and ends it, and the agent tab's full chat continues the same session with its whole history. A session that is working or waiting for an answer is not interrupted; it opens in the service's view, its recent turns, then live. The pencil renames it. *×* closes only the view; *End session…* (with a confirmation) ends it.
 - **Terminal:** `delfin-agent tui`, then **←** on an empty prompt for the agent view, **↑ ↓** to a session, **Enter** to open it. `/name NAME` (or F2 / ctrl+r in the agent view) renames it.
 - **Phone:** `hol` in the messenger chat.
 
-An approval may be answered in any of them; the first answer counts, and every window shows which one gave it. Names are kept by the service (at most 50 characters; empty: folder and short id). A session started in the dashboard runs in the dashboard's kernel by default, with the agent tab's full chat; the terminal and the phone cannot open it. Sessions of a running service (started in the terminal or on the phone) are still listed under *Running sessions* and open from there. `DELFIN_DASHBOARD_SESSIONS=service` (or `agent.dashboard_sessions: "service"` in the settings) starts dashboard sessions in the service instead; their view does not yet have all of the chat's controls.
+An approval may be answered in any of them; the first answer counts, and every window shows which one gave it. Names are kept by the service (at most 50 characters; empty: folder and short id). A session started in the dashboard runs in the dashboard's kernel by default, with the agent tab's full chat; the terminal and the phone cannot open it. Sessions of a running service (started in the terminal or on the phone) are still listed under *Running sessions* and open from there. Once a finished session has moved into the dashboard, the terminal and the phone no longer have it, and the page says so. If the service has not saved and released it within 20 s, the page says so and nothing opens; click it again a moment later. `DELFIN_DASHBOARD_SESSIONS=service` (or `agent.dashboard_sessions: "service"` in the settings) starts dashboard sessions in the service instead; their view does not yet have all of the chat's controls.
 
 ### Starting it
 
@@ -1357,6 +1357,8 @@ delfin-agent doctor              # models, keys, sandbox, MCP servers
 ```
 
 In the dashboard: the **DELFIN Agent** tab. Model, mode and permission level are chosen per session.
+
+The message is written in one rounded box at the bottom of the tab. The text field is at the top of the box. Below it, from left to right: `/` (browse the slash commands), **Files** (attach files; they land in the workspace's `.delfin/uploads`), the permission chip (with a shield icon), the model chip, the effort chip, the KIT mode button (shown when the session has KIT permission modes), and the round **Send** button with an arrow at the lower right. Enter also sends. The chips change the same settings as before; mode, provider, auto, stop, the git buttons and the bug report stay in the header above the chat.
 
 ### Modes
 
@@ -1383,6 +1385,12 @@ Switch with `/mode`. Older mode names (`quick`, `reviewed`, `tdd`, `cluster`, `f
 Choose with `--provider` / `--model` or `/model`. Without `--provider` and without a provider in the settings file, a model id that names its provider chooses it (`kit.` / `azure.` → kit, `name:tag` → ollama, `gpt-` / `o1` / `o3` / `o4` → openai, `claude` → claude) and the start notes say so; `--provider` always wins. DELFIN detects each model's real context window and its tool, vision and reasoning support — live from the endpoint where that is possible, otherwise from a built-in table — and sizes context management to it. For Ollama it sends the matching `num_ctx`, so a local model is not silently capped.
 
 **A model that cannot call tools is refused.** Every non-trivial action is a tool call, so such a model could only talk. Small models automatically get a shorter prompt and a reduced tool surface.
+
+### KIT quotas
+
+KIT limits each API key to 6 million tokens an hour, 50 million tokens a day and 2,000 requests a day; the daily counts reset at 00:00 UTC. These limits are KIT's, not DELFIN's. When a key is over a limit, KIT answers with HTTP 429 and its message names the time the limit resets. DELFIN treats a 429 like other temporary endpoint errors: it retries the round up to seven times with growing pauses (about eight minutes in total), then ends the turn with the endpoint's message in the error.
+
+Every request counts, not only the turn's own: the action watcher (below) sends its own requests, and on KIT an allow needs a second model family, which is a second request. A bug report's request list counts the watcher's requests separately from the turn's.
 
 ### API keys
 
@@ -1454,6 +1462,8 @@ Not covered: a program that can read the DELFIN process's memory (on Linux, `ker
 ### The action watcher
 
 Behind the rules, a small model gives a second opinion on actions the rules allowed without anyone seeing them: everything under `bypassPermissions`, messages to other agents and network calls in every mode, and — when nobody can be asked (`delfin agent run`, `chat -p`, the scheduler) — every auto-allowed action that leaves the workspace, such as `git fetch`. It can only add friction: ask you, or refuse with its reason. Plain reads never reach it. Its state — on or off, model, scope, last failure — is in the start banner and in `/status`.
+
+On KIT the watcher picks its model from the models the endpoint serves, the fastest of its lineup first. A refusal or a question from that model stands at once; an allow is only accepted after a model of a second family also allows it. When the process does not yet know the served models, they are fetched once as the session starts, so this also holds in a fresh headless run. When `agent.classifier.model` is set explicitly, that model decides alone. When the endpoint serves only one family, its model decides alone.
 
 When the watcher's model fails (one retry on an error, none on a timeout), an action that leaves the workspace is asked about, or held when nobody can be asked; reading, commands on the auto-allow list and writing inside the workspace go on, so a long unattended run keeps working. After three failures in a row the watcher is reported down, and its model is re-tried at most once a minute until it answers again.
 
@@ -2141,7 +2151,7 @@ A prompt piped to `delfin-agent --output-format stream-json` on stdin works like
 | `wait` | `text` | The endpoint has not answered yet ("waiting for the model … Ns"). Each one replaces the one before |
 | `permission_request` | `request_id`, `tool`, `shown`, `preview`, `answered_by`, `mode`, `approvals_dir` | A step is waiting for a person (`--supervised` only). `answered_by` is always `"human"`: the line says who decides, it does not ask the driver to. `request_id` is the id `delfin-agent approvals` shows; `approvals_dir` is `true` when the question is in the approvals directory; `shown` is the command or path, `preview` what the person sees |
 | `permission_denied` | `tool`, `reason_code`, `needs_approval`, `text` | The permission gate refused a call. `reason_code` is stable (below); `needs_approval` is `true` when a person could have allowed it; `text` is the gate's own sentence |
-| `result` | `schema_version`, `stop_reason`, `denials`, `files_changed`, `text`, `tool_calls`, `input_tokens`, `output_tokens`, `error`, `session_id` | Always the last line. `--output-format json` prints the same object without `type` |
+| `result` | `schema_version`, `stop_reason`, `denials`, `files_changed`, `text`, `tool_calls`, `input_tokens`, `output_tokens`, `error`, `model_switches`, `session_id` | Always the last line. `--output-format json` prints the same object without `type` |
 
 Credential-looking values in `shown`, `preview` and `text` are masked the way the approval prompt masks them (`TOKEN=<redacted>`).
 
@@ -2152,6 +2162,7 @@ Credential-looking values in `shown`, `preview` and `text` are masked the way th
 | `denials` | Every refusal of the turn in order, `[{"tool": ..., "reason_code": ...}]`, including one the model then worked around |
 | `files_changed` | Files the write tools (`write_file`, `edit_file`, `apply_patch`, the document writers) changed, relative to the workspace. A file a shell command wrote is not listed |
 | `error` | Empty unless the turn failed |
+| `model_switches` | The models the turn left, in order, `[{"before": ..., "after": ..., "reason": ...}]`; `reason` is `model not found` or `model unavailable` (KIT did not serve the model and the session continued on another). `[]` when the turn stayed on one model |
 
 | State | How to tell |
 |-------|-------------|
@@ -2231,6 +2242,10 @@ else:
 ```
 
 The `wait` timeout covers only the time after the stream ended; a driver that must bound the whole run reads the lines in a thread, or kills the process group from a timer.
+
+### Checking the agent tab in a real page (contributors)
+
+The unit tests do not render the dashboard. A change to the agent tab, its sidebar or the agent service it talks to is checked with `scripts/page_check.py`: it starts the real dashboard against a scripted model, drives the agent tab in headless Chromium, writes `record.json`, screenshots and logs to `--out DIR`, and ends everything it started. `--scenario composer` sends one prompt and checks that the reply appears; `--scenario service-session` checks that a session of a private agent service is listed under *Running sessions*. Exit code 0 means pass, 1 means it ran and failed, 2 is a usage error. Requirements, options and the record's fields are in [Real-page check of the agent tab](page_check.md).
 
 ---
 
