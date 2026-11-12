@@ -1135,7 +1135,6 @@ class Bridge:
         listing = await self._request("sessions.list")
         rows = listing.get("sessions") or []
         items = []
-        seen: dict[str, tuple] = {}
         for row in rows:
             sid = str(row.get("sessionId") or row.get("id") or "")
             title = self._redactor().text(_truncate(str(row.get("title") or "")))

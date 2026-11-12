@@ -128,6 +128,36 @@ def parse_sync(args):
     return 'usage', ''
 
 
+#: Where the Pi provisioning (scripts/pi/pi_messenger.sh) puts the bridge's
+#: socket; a session process has no DELFIN_MESSENGER_SOCKET of its own.
+PROVISIONED_SOCKET = '/run/delfin-messenger-bridge/messenger.sock'
+
+NOT_RUNNING = (' But the messenger is not running on this machine (no bridge socket): '
+               'nothing reaches the phone until it runs.')
+
+
+def messenger_running() -> bool:
+    """Whether a messenger bridge serves on this machine: its socket exists
+    (the explicit DELFIN_MESSENGER_SOCKET, the provisioned path, or the
+    per-user default). The unit removes the socket's directory when the
+    bridge stops, so a bridge that crashes or never started has none.
+    Never raises."""
+    candidates = [os.environ.get('DELFIN_MESSENGER_SOCKET', ''), PROVISIONED_SOCKET]
+    try:
+        from delfin.messenger.bridge_client import default_socket_path
+        candidates.append(str(default_socket_path()))
+    except Exception:
+        pass
+    import stat
+    for path in filter(None, candidates):
+        try:
+            if stat.S_ISSOCK(os.stat(path).st_mode):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def configure(sid, args='', *, endpoint=None, directory=None, by='session', phone=''):
     """``/sync`` [on | off | status | NAME]: switch or report. ``NAME``
     switches on like ``on``; naming the session is the caller's (the
@@ -148,7 +178,8 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
         text = 'SimpleX for this session: ' + ('on' if old.get('enabled') is True else 'off')
         if old.get('by') == 'phone' and old.get('phone'):
             text += ' (from the phone ' + str(old['phone'])[:40] + ')'
-        return text + '.'
+        return text + '.' + ('' if old.get('enabled') is not True or messenger_running()
+                             else NOT_RUNNING)
     from delfin.agent.state_paths import write_text_atomic
     old = record(sid, directory=directory)
     on = args != 'off'
@@ -165,6 +196,11 @@ def configure(sid, args='', *, endpoint=None, directory=None, by='session', phon
     write_text_atomic(_path(sid, directory), json.dumps(value))
     if not on:
         return 'SimpleX switched off for this session. No more messages or phone approvals.'
+    if by != 'phone' and not messenger_running():
+        # Said, not refused: the record stands and the session reaches the
+        # phone as soon as the messenger runs (a bridge that crash-looped
+        # left /sync saying "on" while nothing arrived).
+        return 'SimpleX switched on for this session.' + NOT_RUNNING
     return 'SimpleX switched on for this session. The messenger invites you to its chat.'
 
 
@@ -222,7 +258,6 @@ class LocalSession:
         self.sid = sid
         directory = rundir.ensure_runtime_dir()
         self.path = directory / ('msg-' + secrets.token_hex(8) + '.sock')
-        parent = self
         class Handler(socketserver.StreamRequestHandler):
             def handle(self):
                 if rundir.peer_uid(self.request) != os.getuid():
