@@ -20,6 +20,10 @@ also permits 3.10, but nothing verifies it — do not rely on it.
 
 ## Before you open a pull request
 
+- **Run the secret guard.** `python scripts/secret_guard.py --staged`
+  checks your staged diff; CI scans the whole tracked tree
+  (`tests/test_no_secrets_are_committed.py`). Allow markers are inline
+  only, with a reason. See SECRET_GUARD.md.
 - **Run the fast suite.** `pytest -q -m "not slow"` is the core of the merge
   gate; the full list of required checks is in
   [docs/MAIN_PROTECTION.md](docs/MAIN_PROTECTION.md).
@@ -41,7 +45,9 @@ also permits 3.10, but nothing verifies it — do not rely on it.
   CREST are driven, run it. Unit tests do not catch that ORCA looks for a
   restart file in its working directory rather than next to the input, or that
   it words an out-of-memory abort differently than the pattern expected. Both
-  were found by running, not by reading.
+  were found by running, not by reading. For the dashboard's agent tab,
+  `scripts/page_check.py` renders the real page in headless Chromium
+  against a scripted model ([docs/page_check.md](docs/page_check.md)).
 - **Add the test that would have caught it.** Name it after the behaviour it
   protects, not after the function it calls.
 - **If you change what an input looks like, say so in the diff.** The inputs

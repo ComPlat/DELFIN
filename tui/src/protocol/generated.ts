@@ -50,6 +50,7 @@ export interface PermissionReplyParams {
   "persist"?: boolean | null
   "text"?: string | null
   "command"?: string | null
+  "client"?: string | null
 }
 export interface SessionCommandsParams {}
 export interface SessionCompletePathParams {
@@ -157,6 +158,7 @@ export interface SessionInfoEvent {
   "workspace": string
   "provider": string
   "model": string
+  "effort"?: string | null
   "mode": string
   "approval": string
   "title"?: string | null
@@ -176,6 +178,7 @@ export interface SessionUpdatedEvent {
   "approval"?: string | null
   "model"?: string | null
   "effort"?: string | null
+  "mode"?: string | null
   "title"?: string | null
   "tasks"?: Record<string, unknown>[] | null
   "bypassBlocked"?: string | null
@@ -360,6 +363,7 @@ export interface PermissionResolvedEvent {
   "requestId": string
   "decision": string
   "by": string
+  "client"?: string | null
   "type": "permission.resolved"
   "session": string
   "ts": number
@@ -428,6 +432,7 @@ export interface SessionCreateParams {
   "briefTitle"?: string | null
   "worktree"?: boolean | null
   "initProject"?: boolean | null
+  "untitled"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
@@ -514,6 +519,14 @@ export interface SwarmTriageAnswerParams {
   "item": Record<string, unknown>
   "answer": string
 }
+export interface SwarmObserveOverviewParams {
+  "source"?: Record<string, unknown> | null
+  "sourcePath"?: string | null
+}
+export interface SwarmObserveFeedParams {
+  "session": string
+  "since"?: number | null
+}
 export interface ServiceRequests {
   "hello": HelloParams
   "sessions.list": SessionsListParams
@@ -542,6 +555,8 @@ export interface ServiceRequests {
   "swarm.resume": SwarmResumeParams
   "swarm.triage.list": SwarmTriageListParams
   "swarm.triage.answer": SwarmTriageAnswerParams
+  "swarm.observe.overview": SwarmObserveOverviewParams
+  "swarm.observe.feed": SwarmObserveFeedParams
 }
 export interface HelloResult {
   "protocolVersion": number
@@ -658,6 +673,12 @@ export interface SwarmTriageAnswerResult {
   "item_id"?: string | null
   "logged"?: string | null
 }
+export interface SwarmObserveOverviewResult {
+  "rows": Record<string, unknown>[]
+}
+export interface SwarmObserveFeedResult {
+  "entries": Record<string, unknown>[]
+}
 export interface ServiceResults {
   "hello": HelloResult
   "sessions.list": SessionsListResult
@@ -682,6 +703,8 @@ export interface ServiceResults {
   "swarm.resume": SwarmResumeResult
   "swarm.triage.list": SwarmTriageListResult
   "swarm.triage.answer": SwarmTriageAnswerResult
+  "swarm.observe.overview": SwarmObserveOverviewResult
+  "swarm.observe.feed": SwarmObserveFeedResult
 }
 export interface SessionSummaryEvent {
   "summary": Record<string, unknown>
@@ -734,6 +757,8 @@ export interface SessionSummary {
   "activity"?: string | null
   "waiting"?: string | null
   "answer"?: string | null
+  "name"?: string | null
+  "lastInput"?: number | null
 }
 
 export interface AttentionItem {

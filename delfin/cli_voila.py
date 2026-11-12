@@ -763,6 +763,42 @@ def _prepare_login_template_dir() -> str | None:
         return None
 
 
+#: The dashboard's own Voila page template (``voila_assets/jupyter_data/
+#: nbconvert/templates/delfin``): Voila's ``lab`` template without the two
+#: Font Awesome stylesheets it links from a CDN, which the page CSP refuses.
+#: Font Awesome itself is bundled in Voila's ``voila-style.js`` and served
+#: from the dashboard's own origin.
+PAGE_TEMPLATE = "delfin"
+
+
+def _page_template_args(env: dict) -> list[str]:
+    """Select the dashboard's page template; return the server arguments.
+
+    Voila finds templates only in the Jupyter data directories, so the
+    shipped data directory is put first on ``JUPYTER_PATH`` in *env* (an
+    existing ``JUPYTER_PATH`` is kept behind it). The template lives under
+    ``nbconvert/templates``, which Voila searches too, and not under
+    ``voila/``: Voila takes its data directory (the themes) from the first
+    ``voila`` directory on the path, and that must stay its own.
+
+    Returns ``[]`` (Voila's ``lab`` template, as before) when the shipped
+    directory cannot be found as a real directory.
+    """
+    try:
+        root = Path(str(importlib.resources.files("delfin.voila_assets")
+                        .joinpath("jupyter_data")))
+    except Exception:
+        return []
+    if not (root / "nbconvert" / "templates" / PAGE_TEMPLATE
+            / "index.html.j2").is_file():
+        return []
+    existing = env.get("JUPYTER_PATH", "")
+    parts = [str(root)] + [p for p in existing.split(os.pathsep)
+                           if p and p != str(root)]
+    env["JUPYTER_PATH"] = os.pathsep.join(parts)
+    return [f"--VoilaConfiguration.template={PAGE_TEMPLATE}"]
+
+
 def _prepare_published_dir() -> str | None:
     """Create the one directory the server publishes, and return it.
 
@@ -1023,13 +1059,43 @@ def main(argv=None):
             "connection costs nothing. Prints how to come back."
         ),
     )
+    parser.add_argument(
+        "--list", action="store_true",
+        help="List your dashboard jobs (node, time left, kept sessions).")
+    parser.add_argument(
+        "--attach", nargs="?", const="latest", default=None, metavar="JOB",
+        help="Reconnect to a running dashboard job (the newest without JOB).")
+    parser.add_argument(
+        "--stop", nargs="?", const="latest", default=None, metavar="JOB",
+        help="End a dashboard job (JOB, or 'all').")
+    parser.add_argument(
+        "--job", action="store_true",
+        help=("Run the dashboard as a SLURM job on a compute node and tunnel "
+              "to it (reconnects to a running one). For more than the one "
+              "agent session a login node allows."))
+    parser.add_argument(
+        "--new", action="store_true",
+        help="With --job: start another dashboard job although one runs.")
     args = parser.parse_args(argv)
+    if (args.job or args.list or args.attach is not None
+            or args.stop is not None):
+        # A dashboard in a SLURM job (issue #640): any number of agent
+        # sessions, reached through a tunnel, managed by these flags. On a
+        # login node the dashboard itself runs here as before, with ONE
+        # agent session (agent_sessions.login_node_refusal) whose tests and
+        # builds go to SLURM.
+        from delfin import dashboard_job
+        return dashboard_job.main(
+            args, list(argv) if argv is not None else sys.argv[1:])
     if getattr(args, "keep", False):
-        _rc = _reexec_under_tmux(argv)
-        if _rc is not None:
-            return _rc
-        # Inside tmux now (or tmux was unavailable and we said so): the
-        # sessions this dashboard opens arm themselves.
+        # tmux keeps a TERMINAL's dashboard alive; a batch job has no
+        # terminal and outlives everything already.
+        if sys.stdin.isatty():
+            _rc = _reexec_under_tmux(argv)
+            if _rc is not None:
+                return _rc
+        # Inside tmux now (or tmux was unavailable and we said so, or a
+        # batch job): the sessions this dashboard opens arm themselves.
         os.environ["DELFIN_KEEP_SESSIONS"] = "1"
     # This process carries the user's environment, which may hold an
     # exported provider key; the commands the dashboard runs are processes
@@ -1135,9 +1201,12 @@ def main(argv=None):
     if args.no_token:
         print(_refuse_insecure_no_token(args.ip), file=sys.stderr)
         sys.exit(2)
-    elif args.token:
+    elif args.token or os.environ.get("DELFIN_VOILA_TOKEN"):
+        # DELFIN_VOILA_TOKEN: set by a dashboard job's launcher, so the token
+        # is in no command line; not passed on to the kernels.
         try:
-            _token = _validate_access_token(args.token)
+            _token = _validate_access_token(
+                args.token or os.environ.pop("DELFIN_VOILA_TOKEN"))
         except ValueError as exc:
             print(f"Error: insecure --token: {exc}.", file=sys.stderr)
             sys.exit(2)
@@ -1386,6 +1455,10 @@ def main(argv=None):
         cmd.append(
             "--ServerApp.extra_template_paths=" + json.dumps([_login_dir])
         )
+
+    # The page template: Voila's lab template without its CDN links to
+    # Font Awesome (refused by the page CSP; the font is bundled locally).
+    cmd.extend(_page_template_args(env))
 
     # The drawing editor, published from where it is kept instead of being
     # copied into the directory the dashboard was started in. The dashboard

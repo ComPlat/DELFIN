@@ -21,7 +21,9 @@ from pathlib import Path
 import pytest
 
 from _lab_support import (FakeClock, call, lab_fixture,  # noqa: F401
-                          prepare_heating, sim)
+                           prepare_heating, sim)
+
+from conftest import child_env
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -61,7 +63,7 @@ def test_missed_heartbeat_goes_safe(lab):
     assert out["code"] == "latched"       # stays down until a person clears
 
 
-def test_killed_agent_mid_action_goes_safe(lab):
+def test_killed_agent_mid_action_goes_safe(lab, tmp_path):
     child = textwrap.dedent("""
         import sys, time
         from delfin.lab import approvals
@@ -79,7 +81,7 @@ def test_killed_agent_mid_action_goes_safe(lab):
     """)
     proc = subprocess.Popen([sys.executable, "-c", child], cwd=str(REPO),
                             stdout=subprocess.PIPE, text=True,
-                            env=dict(os.environ))
+                            env=child_env(tmp_path))
     try:
         assert proc.stdout.readline().strip() == "heating"
         from delfin.lab import watchdog
@@ -112,7 +114,7 @@ def test_device_side_watchdog_holds_without_any_process(lab):
     assert probe.read(hp)["power"].value == "off"
 
 
-def test_estop_while_the_agent_is_busy(lab):
+def test_estop_while_the_agent_is_busy(lab, tmp_path):
     prepare_heating(lab)
     stop = threading.Event()
     seen = []
@@ -133,7 +135,7 @@ def test_estop_while_the_agent_is_busy(lab):
         res = subprocess.run(
             [sys.executable, "-m", "delfin.agent.cli", "lab", "estop",
              "--reason", "test"], cwd=str(REPO), capture_output=True,
-            text=True, timeout=120, env=dict(os.environ))
+            text=True, timeout=120, env=child_env(tmp_path))
         assert res.returncode == 0, res.stderr + res.stdout
         n = len(seen)
         deadline = time.time() + 10
@@ -160,16 +162,16 @@ def test_writes_blocked_after_estop_until_cleared(lab):
                                  "value": "on"})["ok"]
 
 
-def test_estop_clear_refused_inside_an_agent_session(lab, monkeypatch):
+def test_estop_clear_refused_inside_an_agent_session(lab, monkeypatch, tmp_path):
     from delfin.lab import estop
     call(lab, "lab_estop", {})
     monkeypatch.setenv("DELFIN_AGENT_SESSION", "12345")
     with pytest.raises(estop.EstopError):
         estop.clear()
     res = subprocess.run([sys.executable, "-m", "delfin.agent.cli", "lab",
-                          "estop", "--clear"], cwd=str(REPO),
-                         capture_output=True, text=True, timeout=120,
-                         env=dict(os.environ))
+                           "estop", "--clear"], cwd=str(REPO),
+                          capture_output=True, text=True, timeout=120,
+                          env=child_env(tmp_path))
     assert res.returncode != 0 and "person" in res.stderr
     monkeypatch.delenv("DELFIN_AGENT_SESSION")
     assert estop.clear()["cleared"] is True         # control
@@ -201,3 +203,22 @@ def test_the_estop_daemon_reasserts_the_safe_state(lab):
     with store.locked_json("sim_world.json") as w:
         w["devices"]["lamp"]["values"]["power"] = "on"
     assert watchdog.enforce_estop(_kernel()) == []   # control: no stop, no action
+
+
+def test_a_module_estop_naming_no_module_is_refused_not_reported_ok(lab):
+    """A misspelled module scope stopped nothing and still answered ok, so a
+    hazardous write went through afterwards (review wave33/rv1, F1). It is
+    refused now, before any flag is written; the real module stays the
+    control."""
+    out = call(lab, "lab_estop", {"module": "syntehsis"})
+    assert out["ok"] is False and out["code"] == "unknown_module"
+    assert "synthesis" in out["known"]
+    # Nothing was latched: the analysis lamp still switches.
+    assert call(lab, "lab_set", {"device": "lamp", "channel": "power",
+                                 "value": "on"})["ok"]
+    # Control: the real module name stops its devices.
+    out = call(lab, "lab_estop", {"module": "synthesis"})
+    assert out["scope"] == "synthesis"
+    out = call(lab, "lab_set", {"device": "stirrer", "channel": "power",
+                                "value": "on"})
+    assert out["code"] == "estop"

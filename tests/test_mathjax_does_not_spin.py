@@ -83,3 +83,21 @@ def test_the_setting_is_valid_json_tornado_can_read():
     # check: test_the_dashboard_serves_files_only_to_its_owner).
     assert payload['mathjax_url'].startswith('/')
     assert payload['mathjax_url'].endswith('.js')
+
+
+def test_the_stand_in_answers_every_call_the_page_makes():
+    """The page's MathJax 2 typesetter calls these on the script it loaded.
+    An empty script left each of them to throw "MathJax is not defined" into
+    the console on every load; the stand-in answers them and typesets
+    nothing."""
+    from delfin.dashboard.web_security import NO_TYPESETTING_JS
+
+    for call in ('Config:', 'Configured:', 'Queue:', 'StartupHook:',
+                 'typeset =', 'typesetPromise ='):
+        assert call in NO_TYPESETTING_JS, call
+    # A MathJax already on the page is kept, never replaced.
+    assert 'w.MathJax || (w.MathJax = {})' in NO_TYPESETTING_JS
+    assert 'if (!m.Hub)' in NO_TYPESETTING_JS
+    # Nothing is fetched: it stays a stand-in, not a loader.
+    for loader in ('createElement', 'src', 'http', 'import('):
+        assert loader not in NO_TYPESETTING_JS, loader

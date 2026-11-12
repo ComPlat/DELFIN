@@ -218,7 +218,7 @@ class OrcaBasisSolvOpiAdapter(StepAdapter):
                 work_dir,
                 start,
                 error="; ".join(errors),
-                error_kind=ErrorKind.INVALID_PARAM,
+                error_kind=ErrorKind.TOOL_FAILED,
             )
         if inp_path is None or not inp_path.is_file():
             return self._make_result(

@@ -35,7 +35,8 @@ from pathlib import Path
 from delfin.cluster_bench.prepare import cbatch_chunk_dir, cbatch_load_manifest, cbatch_shard_rows
 from delfin.cluster_bench.provenance import (HERE, REPO_ROOT, WORKERS_DIR, cbatch_effective_timeout,
                                              cbatch_provenance, cbatch_provenance_mismatch,
-                                             cbatch_sha256_file, cbatch_tool_child_env)
+                                             cbatch_sha256_file, cbatch_tool_child_env,
+                                             cbatch_tool_isolated)
 
 _SANITISE_PREFIXES = ("DELFIN_",)
 _SANITISE_KEYS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
@@ -245,10 +246,13 @@ def cbatch_tool_one(man, rid, specs, archive: Path, workroot: Path, logroot: Pat
     if tool == "mace":
         cmd = [cbatch_tool_python(man), str(WORKERS_DIR / "mace_worker.py"), rid, str(specs),
                str(archive), str(work), "--geoms", s["mode"]]
+    elif tool in ("rxembed", "molassembler", "metallogen"):
+        cmd = [cbatch_tool_python(man), str(WORKERS_DIR / "smiles_worker.py"), tool, rid,
+               str(specs), str(archive), str(work), "--mode", s["mode"]]
     else:
         cmd = [cbatch_tool_python(man), str(WORKERS_DIR / "bench_worker.py"), tool, rid, str(specs),
                str(archive), str(work), "--mode", s["mode"]]
-    env = cbatch_tool_child_env({})
+    env = cbatch_tool_child_env({}, nousersite=cbatch_tool_isolated(tool))
     t0 = time.time()
     killed = {"v": False}
     with open(logroot / f"{rid}.log", "w") as log:

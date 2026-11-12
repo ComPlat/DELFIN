@@ -21,6 +21,8 @@ import pytest
 
 from _lab_support import call, lab_fixture, sim  # noqa: F401
 
+from conftest import child_env
+
 REPO = Path(__file__).resolve().parents[1]
 LAB_TOOLS = {"lab_devices", "lab_read", "lab_set", "lab_plan_check",
              "lab_estop"}
@@ -113,7 +115,7 @@ def test_the_shell_tool_refuses_an_approval(lab):
     assert "blocked" in text or "operator" in text, out
 
 
-def test_an_agent_process_cannot_approve(lab, monkeypatch):
+def test_an_agent_process_cannot_approve(lab, monkeypatch, tmp_path):
     prep = call(lab, "lab_set", {"device": "pump", "channel": "flow",
                                  "value": 1, "unit": "mL/min"})
     # pump needs the hood: the request is filed only once the interlock holds
@@ -123,16 +125,15 @@ def test_an_agent_process_cannot_approve(lab, monkeypatch):
     rid = call(lab, "lab_set", {"device": "pump", "channel": "flow",
                                 "value": 1, "unit": "mL/min"})[
         "approval_request"]
-    env = dict(os.environ, DELFIN_AGENT_SESSION="4242")
+    env = {**child_env(tmp_path), "DELFIN_AGENT_SESSION": "4242"}
     res = subprocess.run([sys.executable, "-m", "delfin.agent.cli", "lab",
-                          "approve", rid], cwd=str(REPO), env=env,
-                         capture_output=True, text=True, timeout=120)
+                           "approve", rid], cwd=str(REPO), env=env,
+                          capture_output=True, text=True, timeout=120)
     assert res.returncode != 0 and "person" in res.stderr
     res = subprocess.run([sys.executable, "-m", "delfin.agent.cli", "lab",
-                          "approve", rid], cwd=str(REPO),
-                         env={k: v for k, v in os.environ.items()
-                              if k != "DELFIN_AGENT_SESSION"},
-                         capture_output=True, text=True, timeout=120)
+                           "approve", rid], cwd=str(REPO),
+                          env=child_env(tmp_path),
+                          capture_output=True, text=True, timeout=120)
     assert res.returncode == 0, res.stderr               # control: a person
 
 

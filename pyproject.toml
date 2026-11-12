@@ -410,8 +410,8 @@ include = ["delfin*"]
 "delfin.notebooks" = ["*.ipynb"]
 # The simulated demo lab: the smoke check and the tests load it as data.
 "delfin.lab" = ["examples/*.yaml"]
-"delfin.manta" = ["*.md"]
-"delfin.voila_assets" = ["login_templates/*.html"]
+"delfin.manta" = ["*.md", "data/*.tsv", "data/*.json"]
+"delfin.voila_assets" = ["login_templates/*.html", "jupyter_data/nbconvert/templates/delfin/*"]
 
 # Whatever an installer left in the source tree stays out of the wheel even
 # when MANIFEST.in would let it in (MANIFEST.in prunes the same directories
