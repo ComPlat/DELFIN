@@ -158,6 +158,16 @@ pymol = [
 pdf = [
     "pymupdf>=1.24,<2",
 ]
+# The MQTT transport behind the lab device driver delfin/lab/drivers/mqtt.py
+# (delfin/lab: the safety kernel and its real-device drivers). Optional: the
+# driver imports paho lazily and does not trip on a missing library -- a real
+# MQTT device simply cannot be reached, and the driver's error names this
+# extra. Tests never need it: the driver is exercised against an in-process
+# fake broker. paho-mqtt is dual-licensed EPL-2.0 / EDL-1.0 (BSD-3-Clause)
+# and used under EDL-1.0 (THIRD_PARTY_NOTICES.md).
+lab-mqtt = [
+    "paho-mqtt>=2.0,<3",
+]
 # API keys in the operating system's credential store (macOS Keychain,
 # Secret Service, Windows Credential Manager) instead of the 0600 file
 # ~/.delfin/credentials.json (delfin/agent/credentials.py). Optional: on a
@@ -173,6 +183,17 @@ keyring = [
 # fetches the browser once.
 browser = [
     "playwright>=1.40,<2",
+]
+# The OPC UA LADS device driver (delfin/lab/drivers/opcua_lads.py): an
+# instrument facing the OPC Foundation LADS companion spec (OPC 30500) is
+# reached over OPC UA with SignAndEncrypt. opcua-asyncio (asyncua) is
+# "GNU Lesser General Public License v3.0 or later" -- LGPL, not GPL/AGPL,
+# and so compatible with DELFIN's own license. It stays an OPTIONAL extra,
+# like pymupdf above, so whoever installs a LADS device takes it on by
+# choice: the driver imports asyncua lazily and works against an in-process
+# transport for everything else, and the test suite never needs it.
+lab-opcua = [
+    "asyncua>=1.0,<2",
 ]
 csp = [
     "mpi4py",

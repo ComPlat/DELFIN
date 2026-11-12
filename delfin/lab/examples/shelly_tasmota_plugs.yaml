@@ -1,0 +1,56 @@
+# Two LAN smart plugs driven through real HTTP drivers: a Shelly Gen2
+# (RPC over HTTP, driver "shelly_rpc") and a Tasmota (driver "tasmota").
+# Copy to <lab_dir>/manifest.yaml, review, then pin it:
+#   delfin-agent lab manifest pin
+#
+# Both devices are LAN-only: the driver speaks plain HTTP to address.host on
+# the local network and never contacts a cloud service. Credentials are only
+# ever by reference: address.secret_ref names a value in DELFIN's secret store
+# ("delfin-agent secret set <name> user:password") -- never an inline password.
+# uses 192.0.2.x (RFC 5737 documentation range) and example.invalid hosts.
+lab_manifest: 1
+installation: plug-lab
+version: 1
+nodes:
+  - id: edge
+    description: edge controller serving the two plugs
+modules:
+  - id: plugs
+    node: edge
+    min_level: benign
+    positions: [P1]
+    devices:
+      - id: reactor_heater
+        driver: shelly_rpc
+        model: shelly_plus_plug_s
+        # HTTP digest (SHA-256) for the Shelly; the cred holds "admin:password"
+        # or just the password
+        address: {host: 192.0.2.10, port: 80, slot: 0,
+                   secret_ref: cred:shelly-reactor}
+        stale_after_s: 5
+        deadman_s: 30
+        reads:
+          output: {states: [on, off]}
+          apower: {unit: W}
+        writes:
+          power: {states: [on, off], level: hazardous, readback: output}
+        safe_state: {power: off}
+        device_watchdog: true
+        interlocks:
+          - when: "reactor_heater.power == on"
+            requires: "reactor_stirrer.power == on"
+      - id: reactor_stirrer
+        driver: tasmota
+        model: tasmota_plug
+        # Tasmota web password by reference (sent as the /cm user/password
+        # query, never logged); omit secret_ref for an open LAN
+        address: {host: 192.0.2.11, port: 80,
+                   secret_ref: cred:tasmota-stirrer}
+        stale_after_s: 5
+        deadman_s: 30
+        reads:
+          power: {states: [on, off]}
+        writes:
+          power: {states: [on, off], level: benign, readback: power}
+        safe_state: {power: off}
+        device_watchdog: true
