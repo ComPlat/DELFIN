@@ -3,10 +3,10 @@
 Manual 4.1.10 (structurereactivity/optimizations.txt, "Optimizing with
 External Methods") writes ``Ext_Params "optional command line arguments"``.
 Measured with ORCA 6.1.1 on an input written by the OPI path: the
-unquoted line ``Ext_Params --backend uma --device cpu`` is refused by the
+unquoted line ``Ext_Params --device cpu`` is refused by the
 parser ("Invalid assignment in METHOD block ... Last token : -"); the
 quoted line is accepted and ORCA calls ``<ProgExt> <base>_EXT.extinp.tmp
---backend uma --device cpu``.  The plain-text fallback always quoted it;
+--device cpu``.  The plain-text fallback always quoted it;
 the OPI path must write the same line.
 
 Input: water through both ExtOpt builders (orca_extopt, orca_mlips).
@@ -35,7 +35,7 @@ def _ext_params_values(text: str) -> list[str]:
 def test_orca_mlips_writes_ext_params_quoted(tmp_path):
     inp = build_orca_mlips_input("opt", elements=WATER[0], coordinates=WATER[1],
                                  work_dir=tmp_path)
-    assert _ext_params_values(inp.read_text()) == ['"--backend uma --device cpu"']
+    assert _ext_params_values(inp.read_text()) == ['"--device cpu"']
 
 
 def test_delfin_wrapper_writes_ext_params_quoted(tmp_path):

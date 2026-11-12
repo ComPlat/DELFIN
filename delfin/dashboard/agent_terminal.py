@@ -36,11 +36,6 @@ import os
 import re
 from typing import Any
 
-try:
-    from jupyter_server_terminals.terminalmanager import TerminalManager
-except ImportError:  # the tab imports this module; it must load without it
-    TerminalManager = object  # type: ignore[assignment,misc]
-
 ARGV_ENV = "DELFIN_AGENT_TERMINAL_ARGV"
 CWD_ENV = "DELFIN_AGENT_TERMINAL_CWD"
 ENABLED_ENV = "DELFIN_AGENT_TERMINAL"
@@ -97,57 +92,95 @@ def configured_cwd() -> str:
     return cwd if cwd and os.path.isdir(cwd) else os.path.expanduser("~")
 
 
-class OneCommandTerminalManager(TerminalManager):
-    """Terminal manager whose terminals are always the configured CLI."""
+def _manager_class():
+    """Define the manager on its base, imported on first use.
 
-    def __init__(self, **kwargs: Any) -> None:
-        if TerminalManager is object:
-            raise RuntimeError("jupyter_server_terminals is not installed")
-        kwargs.pop("shell_command", None)
-        kwargs["max_terminals"] = MAX_TERMINALS
-        argv = configured_argv()
-        if not argv:
-            raise RuntimeError(
-                f"{ARGV_ENV} is not set to an absolute, allowed command; "
-                "the agent terminal stays off rather than fall back to a "
-                "shell.")
-        super().__init__(shell_command=argv, **kwargs)
-        self._delfin_argv = argv
-        self._delfin_cwd = configured_cwd()
+    The base, ``jupyter_server_terminals``' ``TerminalManager``, pulls in
+    the whole Jupyter server (about two seconds of imports). Only the
+    server process that runs the terminals needs it; the dashboard kernel
+    imports this module for the tab's flags and page script, so the base
+    is not imported there. Without the package the base is ``object`` and
+    the manager refuses to start.
+    """
+    try:
+        from jupyter_server_terminals.terminalmanager import TerminalManager
+    except ImportError:  # the tab imports this module; it must load without it
+        TerminalManager = object  # type: ignore[assignment,misc]
 
-    def new_terminal(self, **kwargs: Any):
-        safe: dict[str, Any] = {}
-        for key in _SIZE_KEYS:
-            value = kwargs.get(key)
-            if isinstance(value, int) and 0 <= value <= 10_000:
-                safe[key] = value
-        return super().new_terminal(
-            shell_command=list(self._delfin_argv),
-            cwd=self._delfin_cwd, **safe)
+    class OneCommandTerminalManager(TerminalManager):
+        """Terminal manager whose terminals are always the configured CLI."""
 
-    def new_named_terminal(self, **kwargs: Any):
-        # terminado checks max_terminals only on the websocket route
-        # (get_terminal); POST /api/terminals reaches this method directly
-        # and was unbounded.
-        if len(self.terminals) >= MAX_TERMINALS:
-            from terminado.management import MaxTerminalsReached
-            raise MaxTerminalsReached(MAX_TERMINALS)
-        # The name is the only other field kept: a URL segment, never part
-        # of the process. A taken name is not reused -- that would replace
-        # a running terminal under the same route.
-        name = kwargs.get("name")
-        keep = {k: v for k, v in kwargs.items() if k in _SIZE_KEYS}
-        if (isinstance(name, str) and name.isalnum() and len(name) <= 32
-                and name not in self.terminals):
-            keep["name"] = name
-        return super().new_named_terminal(**keep)
+        def __init__(self, **kwargs: Any) -> None:
+            if TerminalManager is object:
+                raise RuntimeError("jupyter_server_terminals is not installed")
+            kwargs.pop("shell_command", None)
+            kwargs["max_terminals"] = MAX_TERMINALS
+            argv = configured_argv()
+            if not argv:
+                raise RuntimeError(
+                    f"{ARGV_ENV} is not set to an absolute, allowed command; "
+                    "the agent terminal stays off rather than fall back to a "
+                    "shell.")
+            super().__init__(shell_command=argv, **kwargs)
+            self._delfin_argv = argv
+            self._delfin_cwd = configured_cwd()
 
-    def make_term_env(self, *args: Any, **kwargs: Any) -> dict[str, str]:
-        kwargs.pop("extra_env", None)
-        env = super().make_term_env(*args, **kwargs)
-        for key in _DROP_ENV:
-            env.pop(key, None)
-        return env
+        def new_terminal(self, **kwargs: Any):
+            safe: dict[str, Any] = {}
+            for key in _SIZE_KEYS:
+                value = kwargs.get(key)
+                if isinstance(value, int) and 0 <= value <= 10_000:
+                    safe[key] = value
+            return super().new_terminal(
+                shell_command=list(self._delfin_argv),
+                cwd=self._delfin_cwd, **safe)
+
+        def new_named_terminal(self, **kwargs: Any):
+            # terminado checks max_terminals only on the websocket route
+            # (get_terminal); POST /api/terminals reaches this method directly
+            # and was unbounded.
+            if len(self.terminals) >= MAX_TERMINALS:
+                from terminado.management import MaxTerminalsReached
+                raise MaxTerminalsReached(MAX_TERMINALS)
+            # The name is the only other field kept: a URL segment, never part
+            # of the process. A taken name is not reused -- that would replace
+            # a running terminal under the same route.
+            name = kwargs.get("name")
+            keep = {k: v for k, v in kwargs.items() if k in _SIZE_KEYS}
+            if (isinstance(name, str) and name.isalnum() and len(name) <= 32
+                    and name not in self.terminals):
+                keep["name"] = name
+            return super().new_named_terminal(**keep)
+
+        def make_term_env(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+            kwargs.pop("extra_env", None)
+            env = super().make_term_env(*args, **kwargs)
+            for key in _DROP_ENV:
+                env.pop(key, None)
+            return env
+
+    # The name the launcher's dotted path and the server's logs use.
+    OneCommandTerminalManager.__qualname__ = "OneCommandTerminalManager"
+    return TerminalManager, OneCommandTerminalManager
+
+
+#: Filled by the first ``agent_terminal.OneCommandTerminalManager`` (or
+#: ``.TerminalManager``) lookup; a reload of this module starts it empty.
+_CLASSES: dict[str, Any] = {}
+
+
+def __getattr__(name: str) -> Any:
+    """``OneCommandTerminalManager`` and ``TerminalManager`` on first use
+    (PEP 562), so the dotted name the launcher hands the server
+    (``delfin.dashboard.agent_terminal.OneCommandTerminalManager``)
+    resolves as before."""
+    if name in ("OneCommandTerminalManager", "TerminalManager"):
+        if not _CLASSES:
+            base, manager = _manager_class()
+            _CLASSES["TerminalManager"] = base
+            _CLASSES["OneCommandTerminalManager"] = manager
+        return _CLASSES[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # -- the browser side -----------------------------------------------------------

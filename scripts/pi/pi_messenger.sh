@@ -356,9 +356,14 @@ User=${SERVICE_USER}
 # socket, nothing else of this process. Not a RuntimeDirectory=: systemd
 # chowns one of those to User=/Group= again when it sets up ExecStart, after
 # an ExecStartPre=+ chgrp, so the gateway lost the directory on every start.
-ExecStartPre=+/bin/rm -rf /run/delfin-messenger-bridge
+# The directory itself is kept between starts: ReadWritePaths= below binds it
+# into the unit's mount namespace, and an rm -rf of it then failed with
+# "Device or resource busy" on every start (measured on the Pi, 2026-11-12).
+# install -d sets owner, group and mode on an existing directory as well;
+# only a stale socket is removed.
 ExecStartPre=+/usr/bin/install -d -m 2750 -o ${SERVICE_USER} -g ${GW_USER} /run/delfin-messenger-bridge
-ExecStopPost=+/bin/rm -rf /run/delfin-messenger-bridge
+ExecStartPre=+/bin/rm -f /run/delfin-messenger-bridge/messenger.sock
+ExecStopPost=+/bin/rm -f /run/delfin-messenger-bridge/messenger.sock
 Environment=DELFIN_MESSENGER_PEER_UID=$(id -u "${GW_USER}")
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
 $(phone_env)
@@ -369,8 +374,11 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
 # Files from the phone land in a session's workspace, sessions it starts
-# get a folder, /sync records live in ~/.delfin: the service home only.
-ReadWritePaths=${SERVICE_HOME}
+# get a folder, /sync records live in ~/.delfin: the service home. And the
+# socket's own directory: ProtectSystem=strict makes /run read-only, and
+# without it bind() failed with "Read-only file system" (the RuntimeDirectory=
+# this replaced had made it writable as a side effect).
+ReadWritePaths=${SERVICE_HOME} -/run/delfin-messenger-bridge
 # The agent service socket is in the host's private per-user /tmp directory.
 PrivateTmp=no
 PrivateDevices=yes

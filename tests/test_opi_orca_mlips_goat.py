@@ -11,7 +11,7 @@ calc_numfreq, Hess_Filename).
 Measured once with ORCA 6.1.1 (parser check, not part of this suite): a
 GOAT input written by this builder, with ProgExt pointed at a stub that
 exits at the first call, was read without a refusal, entered GOAT and
-called the stub as ``<stub> <base>_EXT.extinp.tmp --backend uma --device
+called the stub as ``<stub> <base>_EXT.extinp.tmp --device
 cpu`` with NCores from %pal.
 
 py3.12 OPI venv only (skipped without ``opi``).
@@ -53,7 +53,7 @@ def test_goat_input_has_goat_extopt_and_progext(tmp_path):
     low = text.lower()
     assert "!goat" in low and "!extopt" in low
     assert 'progext "orca-mlips-uma"' in low
-    assert 'Ext_Params "--backend uma --device cpu"' in text
+    assert 'Ext_Params "--device cpu"' in text
     assert "*xyzfile 0 1 extopt.xyz" in text
     assert "%goat" not in low  # nothing given -> every option at ORCA's default
 

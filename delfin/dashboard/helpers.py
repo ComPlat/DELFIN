@@ -316,6 +316,10 @@ def create_busy_css():
     )
 
 
+#: The class on the dashboard's top-level Tab widget (create_page_css).
+DASHBOARD_TABS_CLASS = 'delfin-dashboard-tabs'
+
+
 def create_page_css():
     """Return an HTML widget with the page-level layout CSS.
 
@@ -337,8 +341,98 @@ def create_page_css():
         "margin-top: 0 !important; margin-bottom: 0 !important; }"
         # JupyterLab puts a 4px gap above each output area.
         "#rendered_cells .jp-Cell-outputWrapper { margin-top: 0 !important; }"
+        # An inactive tab's label is the theme's primary text colour, as in
+        # JupyterLab's own tab bars. The widgets' secondary colour on the
+        # bar's grey falls below the 4.5:1 contrast WCAG AA asks of text.
+        ".jupyter-widgets.jupyter-widget-tab > .lm-TabBar "
+        ".lm-TabBar-tab:not(.lm-mod-current) { "
+        "color: var(--jp-ui-font-color1); }"
+        # The dashboard's own tab bar (DASHBOARD_TABS_CLASS) wraps onto a
+        # further row instead of cutting labels short: every tab is as wide
+        # as its name. With many tabs on a laptop the widgets' default
+        # (tabs shrink to fit, labels clipped) showed "Submit Jo".
+        f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} "
+        "> .lm-TabBar > .lm-TabBar-content { flex-wrap: wrap; }"
+        f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} "
+        "> .lm-TabBar .lm-TabBar-tab { flex: 0 0 auto; }"
+        f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} "
+        "> .lm-TabBar .lm-TabBar-tabLabel { overflow: visible; }"
         "</style>"
     )
+
+
+def name_page_controls(ctx):
+    """Give the page's unnamed controls an accessible name, and tabs a tooltip.
+
+    A widget's description is a ``<label>`` beside the control, and only the
+    dropdown links it to its ``<select>`` -- and then only when the
+    description is not empty. A slider's handle (``role="slider"``) is never
+    linked to anything. Screen readers announced them as "combo box" and
+    "slider" with no name, and an accessibility check (axe, WCAG 2 AA)
+    flagged both. Each control without an ``aria-label`` takes the words its
+    widget shows: the description, else the widget's tooltip.
+
+    A tab bar clips a long name, and the widgets give a tab no tooltip. Each
+    tab gets its full name as ``title``, as JupyterLab's tabs have; a tab
+    renamed in place gets it again when the pointer or the focus reaches it.
+
+    It works on what is added to the page as it is added (one observer, no
+    timer), so a tab built on its first open is covered like the first one.
+    """
+    script = """
+    (function() {
+        if (window.__delfinControlNames) return;
+        window.__delfinControlNames = true;
+        var CONTROLS = 'select:not([aria-label]):not([aria-labelledby]), '
+            + '.noUi-handle:not([aria-label]):not([aria-labelledby])';
+        var WIDGET = '.widget-slider, .widget-dropdown, .widget-select, .jupyter-widgets';
+        var TAB = '.lm-TabBar-tab';
+        function words(el) {
+            var widget = el.closest(WIDGET), label = null;
+            if (widget) {
+                for (var i = 0; i < widget.children.length; i++) {
+                    if (widget.children[i].classList.contains('widget-label')) {
+                        label = widget.children[i];
+                        break;
+                    }
+                }
+            }
+            var shown = label ? (label.textContent || '').trim().replace(/:$/, '') : '';
+            return shown || (label && label.title) || el.getAttribute('title')
+                || (widget && widget.getAttribute('title')) || '';
+        }
+        function nameControl(el) {
+            var name = words(el);
+            if (name) el.setAttribute('aria-label', name);
+        }
+        function titleTab(tab) {
+            var label = tab.querySelector('.lm-TabBar-tabLabel');
+            var name = label ? (label.textContent || '').trim() : '';
+            if (name && tab.getAttribute('title') !== name) tab.setAttribute('title', name);
+        }
+        function scan(root) {
+            if (!root || root.nodeType !== 1) return;
+            if (root.matches(CONTROLS)) nameControl(root);
+            if (root.matches(TAB)) titleTab(root);
+            root.querySelectorAll(CONTROLS).forEach(nameControl);
+            root.querySelectorAll(TAB).forEach(titleTab);
+        }
+        scan(document.body);
+        new MutationObserver(function(records) {
+            for (var i = 0; i < records.length; i++) {
+                var added = records[i].addedNodes;
+                for (var j = 0; j < added.length; j++) scan(added[j]);
+            }
+        }).observe(document.body, {childList: true, subtree: true});
+        function refresh(ev) {
+            var tab = ev.target && ev.target.closest && ev.target.closest(TAB);
+            if (tab) titleTab(tab);
+        }
+        document.addEventListener('pointerover', refresh, {capture: true, passive: true});
+        document.addEventListener('focusin', refresh, true);
+    })();
+    """
+    ctx.add_init_js(script)
 
 
 def create_time_limit_widgets(style=None):
@@ -411,6 +505,38 @@ def parse_time_to_seconds(time_str):
         return 48 * 3600
 
 
+def self_running_html(*scripts):
+    """HTML that runs *scripts* when the browser shows it.
+
+    Each script sits as raw text in an inert ``<script type="text/x-delfin">``
+    (raw text: no '<' in the code is read as a tag) and an <img> whose load
+    fails runs each one on its own through its onerror -- the way the agent
+    tab's chat tags run their code. One script that throws stops no other.
+
+    For a tab built after the page went out: its init scripts were sent as a
+    Javascript output into the shared JS output widget, and since tabs build
+    on first open (09.11.) those outputs were never executed -- measured: the
+    Calculations tab's resolvers stayed undefined, its splitter and explorer
+    were never bound.
+    """
+    out = []
+    for script in scripts:
+        if not script or not str(script).strip():
+            continue
+        body = str(script).replace("</script", "<\\/script")
+        out.append('<script type="text/x-delfin" class="delfin-tab-js">'
+                   + body + "</script>")
+    if not out:
+        return ""
+    out.append('<img src="" alt="" style="display:none" onerror="'
+               "this.parentNode.querySelectorAll('script.delfin-tab-js')"
+               ".forEach(function(t){try{(0,eval)(t.textContent)}"
+               "catch(e){console.error('DELFIN tab script',e)}});"
+               "this.remove();"
+               '">')
+    return "".join(out)
+
+
 def _append_js(ctx, script):
     """Append JavaScript to the shared output without clearing prior JS."""
     if not script:
@@ -437,17 +563,24 @@ def disable_spellcheck(ctx, class_name='delfin-nospell'):
             if (!el) return;
             const tag = (el.tagName || '').toUpperCase();
             if (tag !== 'TEXTAREA' && tag !== 'INPUT') return;
-            el.setAttribute('spellcheck', 'false');
-            el.spellcheck = false;
-            el.setAttribute('autocorrect', 'off');
-            el.setAttribute('autocapitalize', 'off');
-            el.setAttribute('autocomplete', 'off');
-            el.setAttribute('data-gramm', 'false');
-            el.setAttribute('data-gramm_editor', 'false');
-            el.setAttribute('data-enable-grammarly', 'false');
-            el.setAttribute('data-lt-active', 'false');
-            el.setAttribute('data-grammarly', 'false');
-            el.setAttribute('data-ms-editor', 'false');
+            // Set an attribute only when it differs: the observer below
+            // watches these attributes, and setAttribute writes a mutation
+            // record even for the value already there -- unguarded, one
+            // change elsewhere fed the observer its own writes forever and
+            // froze the page (the Calculations tab, built on first open).
+            function put(name, value) {{
+                if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+            }}
+            put('spellcheck', 'false');
+            put('autocorrect', 'off');
+            put('autocapitalize', 'off');
+            put('autocomplete', 'off');
+            put('data-gramm', 'false');
+            put('data-gramm_editor', 'false');
+            put('data-enable-grammarly', 'false');
+            put('data-lt-active', 'false');
+            put('data-grammarly', 'false');
+            put('data-ms-editor', 'false');
             if (!el.hasAttribute('lang')) el.setAttribute('lang', '');
         }}
         function scan(root) {{

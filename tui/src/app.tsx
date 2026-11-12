@@ -16,8 +16,11 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead } from "./commands"
+import { existsSync } from "node:fs"
+import { WINDOW_COMMANDS, WINDOW_ONLY_NAMES, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead,
+         unknownCommandNote, unknownCommandOf } from "./commands"
 import { createSwarmView } from "./swarm/view"
+import { createSwarmWatch } from "./swarm/watch"
 import type { ArgumentChoices } from "./composer/complete"
 import { CLICK_PAUSE_MS } from "./mouse"
 import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
@@ -28,6 +31,7 @@ import { History } from "./composer/history"
 import { ANSWER_PAUSE_MS, createApprovalUi, setFullPreviewKey } from "./footer/approval"
 import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
+import { resumeRowsOf } from "./entry"
 import { editPrompt } from "./composer/editor"
 import { keyTable, type Keymap } from "./keymap/keymap"
 import type { AttentionItem } from "./protocol/generated"
@@ -81,6 +85,11 @@ export interface AppProps {
   thinking?: () => boolean
   /** Lines of the window's own, into the scrollback (/keys). */
   onLines?: (title: string, lines: string[]) => void
+  /** `delfin-agent tui --resume` without an id: the resume picker opens
+   *  before any session, over the sessions of `workspace`. A pick is
+   *  handed to `onPick`; esc (or ctrl+c) to `onCancel` -- the window then
+   *  starts a new session, as a plain start does. */
+  resumeAtStart?: { workspace: string; onPick: (sessionId: string, workspace: string) => void; onCancel: () => void }
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
   /** The pause before a click answers a question or picks from a list
@@ -155,6 +164,43 @@ export function App(props: AppProps): JSX.Element {
     }
   }
   const sid = () => store.state.current ?? ""
+
+  // -- unknown /commands: answered here, never sent ------------------------------
+  /** The command names the session listed last (session.commands), per
+   *  session, asked again after a minute (a skill or a user command added
+   *  meanwhile). */
+  const commandNames = new Map<string, { at: number; names: string[] }>()
+  /** Every command `id` knows, or null when the session cannot say (a
+   *  service that does not answer session.commands, an empty list): then
+   *  nothing is judged and the line goes out as before. */
+  const knownCommands = async (id: string): Promise<string[] | null> => {
+    const hit = commandNames.get(id)
+    if (hit && Date.now() - hit.at < 60_000) return hit.names
+    let listedNames: string[] = []
+    try {
+      const got = await props.client.request("session.commands", { sessionId: id })
+      listedNames = ((got?.commands ?? []) as { name?: unknown }[]).map((c) => String(c?.name ?? "")).filter(Boolean)
+    } catch {
+      return null
+    }
+    if (!listedNames.length) return null
+    const names = [...new Set([...WINDOW_COMMANDS.map((c) => c.name), ...WINDOW_ONLY_NAMES, ...listedNames])]
+    commandNames.set(id, { at: Date.now(), names })
+    return names
+  }
+  /** True when `text` is an unknown /command for session `id`: said in the
+   *  window (with the command it was probably meant to be), never sent --
+   *  the line stays in the prompt to be put right. A path ("/home/…")
+   *  is no command and goes out. */
+  const refusedAsUnknown = async (text: string, id: string): Promise<boolean> => {
+    if (!text.trim().startsWith("/") || !id) return false
+    const known = await knownCommands(id)
+    if (!known) return false
+    const unknown = unknownCommandOf(text, known, existsSync)
+    if (!unknown) return false
+    say(unknownCommandNote(unknown))
+    return true
+  }
 
   // -- full screen: scrolling and copying ----------------------------------------
   let scrollBox: ScrollBoxRenderable | null = null
@@ -319,6 +365,11 @@ export function App(props: AppProps): JSX.Element {
       if (body) return Boolean(await swarm.newSwarm(body))
       return true
     }
+    if (watchOpen()) {
+      // The read-only watch accepts no input into a member session: a
+      // typed line while it is open is consumed, never delivered.
+      return true
+    }
     return deliver(text, how, shown)
   }
 
@@ -363,6 +414,21 @@ export function App(props: AppProps): JSX.Element {
       void swarm.open()
       return true
     }
+    // /swarm watch <source> (package SWV, phase 2b): the read-only watch.
+    // The source is the file that names the members -- a roster (name ->
+    // package/role) or a swarm.yaml spec; there is no default swarm, so a
+    // bare /swarm watch says what to pass. The watch never accepts input
+    // into a member session.
+    if (/^\/swarm watch(?:\s+(\S+))?$/.test(text.trim()) && !how) {
+      const m = /^\/swarm watch(?:\s+(\S+))?$/.exec(text.trim())
+      if (!m?.[1]) {
+        say("usage: /swarm watch <roster.json | swarm.yaml> -- the file that names the members")
+        return true
+      }
+      watchSource = m[1]
+      void watch.open()
+      return true
+    }
       // Also with the key that steers: a rename is the window's, never the turn's.
       const named = naming(text)
       if (named !== null) return rename(sid(), named.title, named.exact)
@@ -381,9 +447,13 @@ export function App(props: AppProps): JSX.Element {
         picker.open("merge back a session worktree", rows, (c) => void mergeWorktreeBack(c.value))
         return true
       }
+    // An unknown /command is answered here and never sent (a paid turn
+    // about a typo); with the key that steers too. The line stays.
+    const target = sid()
+    if (await refusedAsUnknown(text, target)) return false
     // The session strips the text it shows, as a typed line is stripped.
     if (shown) props.sentAs?.set(text.trim(), shown)
-    const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
+    const result = await call("session.prompt", how ? { sessionId: target, text, how } : { sessionId: target, text })
     return result !== undefined
   }
 
@@ -440,11 +510,24 @@ export function App(props: AppProps): JSX.Element {
       if (await call("session.message", { key: row.id, text })) say(`sent to ${row.name}`)
       return
     }
+    // An unknown /command is not sent to that session either; the line
+    // comes back into the prompt.
+    if (await refusedAsUnknown(text, row.id)) {
+      composer.setText(composer.value() ? `${composer.value()}\n${text}` : text)
+      return
+    }
     const result = await call("session.prompt", { sessionId: row.id, text })
     if (!result) return
     say(result.queued ? `queued for ${row.name}: it goes out when its turn ends` : `sent to ${row.name}`)
   }
   const startNew = async (text: string) => {
+    // An unknown /command starts no session (judged by the commands of the
+    // session in view: the builtins are every session's).
+    if (await refusedAsUnknown(text, sid())) {
+      agents.open()
+      composer.setText(composer.value() ? `${composer.value()}\n${text}` : text)
+      return
+    }
     if (store.state.starting) {
       // The first session is still starting: this one follows it (the
       // window then shows this one, the latest asked for).
@@ -528,6 +611,28 @@ export function App(props: AppProps): JSX.Element {
     draft: () => composer.value(),
   })
   const swarmOpen = () => swarm.state.open
+  // The read-only /swarm watch (package SWV, phase 2b): a table of one
+  // row per member, Enter opens a member's live feed, Esc back. It only
+  // asks the observe.* requests; there is never an input into a member
+  // session. It reuses the submit + key routing below like the swarm
+  // view, but has no composer input of its own.
+  // The roster / spec path given to /swarm watch (the read-only watch
+  // target, package SWV phase 2b). Never touches session state.
+  let watchSource: string | undefined
+  // The service answers {rows} and {entries}; the watch takes the lists.
+  const watch = createSwarmWatch({
+    keymap: props.keymap,
+    now: () => Date.now() / 1000,
+    // The envelope unwrapped here, like askTriage's: the request returns
+    // { rows: [...] } (protocol.py), the watch state holds the rows.
+    askOverview: () => props.client.request("swarm.observe.overview",
+      { sourcePath: watchSource }).then((r) => (r as any)?.rows ?? []) as never,
+    askFeed: (name) => props.client.request("swarm.observe.feed", { session: name })
+      .then((r) => (r as any)?.entries ?? []) as never,
+    note: say,
+    draft: () => composer.value(),
+  })
+  const watchOpen = () => watch.state.open
   // The alternate screen, while the view is open.
   createEffect(() => {
     if (!props.agentScreen) return
@@ -669,32 +774,30 @@ export function App(props: AppProps): JSX.Element {
       .filter((c) => c.value)
       .map((c) => ({ label: c.value, detail: c.detail, value: `${command} ${c.value}`, current: c.value === got.current }))
   }
-  const age = (secs: number) => {
-    const d = Math.max(0, Date.now() / 1000 - secs)
-    return d < 3600 ? `${Math.round(d / 60)}m ago` : d < 86400 ? `${Math.round(d / 3600)}h ago` : `${Math.round(d / 86400)}d ago`
-  }
   /** Where each listed session works (a saved one is started there). */
   const workspaces = new Map<string, string>()
-  /** The sessions running in the service first, then the saved ones of
-   *  this workspace (the resume picker, `/resume `'s menu). */
-  const resumeRows = (s: SessionState) => Promise.all([
+  /** The sessions the service runs first, then the sleeping and the saved
+   *  ones of `workspace`, each group newest first (entry.ts resumeRowsOf:
+   *  the resume picker, `/resume `'s menu). */
+  const resumeRows = (workspace: string, currentId: string) => Promise.all([
     props.client.request("sessions.list", {}).catch(() => ({ sessions: [] })),
-    props.client.request("sessions.past", { workspace: s.workspace, limit: 50 }),
+    props.client.request("sessions.past", { workspace, limit: 50 }),
   ]).then(([listed, past]) => {
-    const running = ((listed?.sessions ?? []) as any[]).map((r) => ({
-      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
-      detail: ["running here", r.state, r.model, String(r.sessionId).slice(0, 8)].filter(Boolean).join(" · "),
-      current: r.sessionId === s.id,
-    }))
-    const saved = ((past?.sessions ?? []) as any[]).filter((r) => !r.running).map((r) => ({
-      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
-      detail: [age(r.updatedAt), r.model, `${r.messages} messages`, String(r.sessionId).slice(0, 8)]
-        .filter(Boolean).join(" · "),
-      current: false,
-    }))
-    for (const r of [...running, ...saved]) workspaces.set(r.id, r.workspace)
-    return [...running, ...saved]
+    const rows = resumeRowsOf((listed?.sessions ?? []) as unknown[], (past?.sessions ?? []) as unknown[], currentId)
+    for (const r of rows) workspaces.set(r.id, r.workspace)
+    return rows
   })
+  /** The resume picker: type to filter (title, folder, id), ↑ ↓, enter
+   *  opens, esc closes. */
+  const openResumePicker = (workspace: string, currentId: string, title: string,
+                            onPick: (id: string, workspace: string) => void, onCancel?: () => void) => {
+    picker.open(title, resumeRows(workspace, currentId).then((rows) => rows.map((r) => ({
+      label: r.title, detail: r.detail, search: r.search, value: `${r.id}\t${r.workspace}`, current: r.current,
+    }))), (c) => {
+      const [id, ws] = c.value.split("\t")
+      if (id) onPick(id, ws ?? "")
+    }, undefined, onCancel)
+  }
   /** What may follow a command on the prompt: the window's own commands
    *  here, the session's from session.choices ("args"). */
   const argumentChoices = async (command: string): Promise<ArgumentChoices> => {
@@ -703,7 +806,7 @@ export function App(props: AppProps): JSX.Element {
     if (command === "/name") return { current: "", choices: [], usage: "/name [name]  (no name: folder and short id)" }
     if (command === "/resume") {
       if (!s) return { current: "", choices: [], usage: "" }
-      const rows = await resumeRows(s)
+      const rows = await resumeRows(s.workspace, s.id)
       return { current: s.id, usage: "/resume <session id>",
                choices: rows.map((r) => ({ value: r.id, label: r.title, detail: r.detail })) }
     }
@@ -734,14 +837,16 @@ export function App(props: AppProps): JSX.Element {
         })
         return
       case "resume":
-        picker.open("resume a session", resumeRows(s).then((rows) => rows.map((r) => ({
-          label: r.title, detail: r.detail, value: `${r.id}\t${r.workspace}`, current: r.current,
-        }))), (c) => {
-          const [id, workspace] = c.value.split("\t")
-          if (id && id !== sid()) props.onResume?.(id, workspace ?? "")
+        openResumePicker(s.workspace, s.id, "resume a session", (id, workspace) => {
+          if (id !== sid()) props.onResume?.(id, workspace)
         })
         return
     }
+  }
+  // `--resume` without an id: the picker before any session.
+  if (props.resumeAtStart) {
+    const at = props.resumeAtStart
+    openResumePicker(at.workspace, "", "resume a session · esc starts a new one", at.onPick, at.onCancel)
   }
   const openPalette = () => {
     const actions: Choice[] = [
@@ -973,6 +1078,24 @@ export function App(props: AppProps): JSX.Element {
       if (swarm.handleKey(key) || composer.handleKey(key)) key.preventDefault()
       return
     }
+    if (watchOpen()) {
+      // The read-only /swarm watch (phase 2b): ctrl+c / quit close or
+      // leave like the command view, then the view's own keys (Enter on
+      // a member -> live feed, Esc back, table keys in the footer). No
+      // composer input: there is never an input box into a member.
+      if (key.ctrl && key.name === "c" && !composer.search()) {
+        key.preventDefault()
+        watch.close()
+        return
+      }
+      if (km.matches("quit", key) && !draft()) {
+        key.preventDefault()
+        props.onQuit()
+        return
+      }
+      if (watch.handleKey(key)) key.preventDefault()
+      return
+    }
     if (offer() && !asked && takeOffer(key)) {
       key.preventDefault()
       return
@@ -1106,6 +1229,7 @@ export function App(props: AppProps): JSX.Element {
       onOfferClick={() => void clickOffer()}
       agents={agents}
       swarm={swarm}
+      watch={watch}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}
       others={others}

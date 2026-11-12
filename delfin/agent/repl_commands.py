@@ -2141,7 +2141,7 @@ BUILTINS: dict[str, ReplCommand] = {
                     _keys),
         ReplCommand("/editor", "session", "Write the next prompt in "
                     "$VISUAL or $EDITOR", _editor, True),
-        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status", _sync, True),
+        ReplCommand("/sync", "session", "SimpleX for this session: on|off|status", _sync, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
         ReplCommand("/usage", "session", "Token and cost detail, with the rate",

@@ -1,0 +1,340 @@
+"""Check a finished MLIP GOAT (orca-mlips) run end to end (package A4).
+
+The operator submits a GOAT job through DELFIN's ExtOpt path
+(``delfin.mlp_tools.extopt_submit.plan_extopt_job`` /
+``submit_extopt_job``), which writes the ORCA input, the sbatch script,
+the ``<base>.finalensemble.xyz``, ``<base>.globalminimum.xyz`` and
+``<base>.out`` files.  This module verifies, from the run directory
+alone, that the run actually finished and produced a usable conformer
+ensemble -- the check that was missing for #556 (GOAT through
+orca-mlips was tested with rendered scripts only, never on a finished
+run).
+
+What it does NOT do: it does not certify the ensemble as a final result.
+MLIP energies are a pre-screen, never a final number (mlp-method skill;
+``read_mlips_goat`` sets ``energy_source=mlip`` and ``final=False``).  A
+DFT re-ranking of the lowest conformers decides.  This checker reports
+whether the run *completed* and the ensemble *exists and is well-formed*;
+it leaves the physical verdict to the DFT follow-up.
+"""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Optional
+
+from delfin.mlp_tools.orca_mlips import goat_output_files, read_mlips_goat
+from delfin.tools.adapters.orca_goat_opi import _failure_lines
+
+#: The marker ORCA prints when a run ends cleanly.
+_TERMINATED_MARK = "****ORCA TERMINATED NORMALLY****"
+
+_DEFAULT_BASE = "extopt"
+
+#: Recognised job-failure shapes observed on live GOAT runs (operator,
+#: ethanol jobs 8372365/8372398/8372530, tails under .gate/a4_job/live_runs/).
+#: Each is ``(substring, category)``.  A substring found in any job-log file
+#: (job stderr ``*.err`` or the ORCA ``.out``) makes the checker report the
+#: run as failed and NAME which failure it was, instead of only saying the
+#: run did not end with the termination marker.
+_JOB_FAILURES = (
+    ("There are not enough slots",        "mpi"),
+    ("not enough slots available",        "mpi"),      # Open MPI slot exhaustion
+    ('Error (ORCA_MAIN):',                "orca_main"),
+    ('ERROR: File "orca-mlips-',          "progext"),  # ProgExt executable not found
+    ("ORCA finished by error termination", "orca_util"),
+    ("aborting the run",                  "abort"),
+    ("Error (ORCA/EXT): external program failed", "external_exit"),  # MLIP prog non-zero exit
+    ("error: unrecognized arguments",     "external_exit"),
+)
+
+
+def check_goat_e2e(
+    run_dir: Path | str,
+    *,
+    base_name: str = _DEFAULT_BASE,
+) -> dict:
+    """Verify one finished MLIP GOAT run directory.
+
+    ``run_dir``: the job working directory; ``base_name``: the job-name
+    stem (default "extopt", the GOAT builder's ``_BASE_NAME``).  Reads
+    the files ``goat_output_files(base_name)`` names; the ORCA output also
+    as ``output_<base>.out``, the name the CONTROL path writes it under.
+    Returns a dict:
+
+    ``ok``              -- whether every hard check passed;
+    ``findings``        -- ``(dict, ...)``, one per failed or advisory
+                           check, each with ``message``;
+    ``terminated_normally`` -- the ``.out`` ended with the ORCA
+                           termination marker and carries no failure
+                           line (``None`` when ``.out`` is absent);
+    ``n_conformers``, ``ensemble_file``, ``global_minimum_file``,
+    ``energies_eh``, ``energies_kcal_mol``, ``structures``, ``n_atoms``
+                           -- the ensemble as ``read_mlips_goat`` reads it
+                           plus ``n_atoms`` (the first frame's size), or
+                           ``None``/empty when the ensemble is missing.
+    """
+    run_dir = Path(run_dir)
+    files = goat_output_files(base_name)
+    out_path = run_dir / files["output"]
+    control_out = run_dir / f"output_{base_name}.out"
+    if not out_path.is_file() and control_out.is_file():
+        # The CONTROL path (global_opt_method=mlip:*, delfin/xtb_crest.py)
+        # writes ORCA's output as output_XTB_GOAT.out next to XTB_GOAT.inp;
+        # without this the checker could not read the run the workflow made.
+        out_path = control_out
+
+    # --- ensemble + global minimum through the real reader ----------------
+    # F1/F2 (reviewer s13): read_goat_ensemble raises ValueError when a
+    # frame comment carries no energy or the ensemble mixes the '<E>
+    # converged=true' and 'Energy <x>' forms.  The checker must not crash
+    # on such a run -- it exists to flag it -- so fall back to the empty
+    # ensemble shape read_goat_ensemble returns for an absent ensemble and
+    # surface the parser's message as an error finding.
+    try:
+        goat = read_mlips_goat(run_dir, base_name)
+    except ValueError as exc:
+        goat = {
+            "energies_eh": (), "energies_kcal_mol": (), "structures": (),
+            "ensemble_file": None, "global_minimum_file": None,
+            "n_conformers": 0,
+        }
+        goat["parse_error"] = str(exc)
+    goat["ok"] = False  # filled below
+    findings: list[dict] = []
+
+    # A malformed ensemble (no-energy frame / mixed comment forms) is not a
+    # usable ensemble: surface the parser's ValueError as an error finding.
+    if "parse_error" in goat:
+        findings.append(_finding(
+            "error",
+            "the final ensemble could not be read: "
+            f"{goat['parse_error']}",
+        ))
+
+    # --- termination: the .out ended cleanly -------------------------------
+    terminated: Optional[bool] = None
+    if out_path.is_file():
+        text = out_path.read_text(errors="replace")
+        n_fail = len(_failure_lines(out_path))
+        terminated = _TERMINATED_MARK in text and n_fail == 0
+        if _TERMINATED_MARK not in text:
+            findings.append(_finding(
+                "error",
+                f"{out_path.name} does not end with the ORCA "
+                f"termination marker ({_TERMINATED_MARK!r}); the run did "
+                "not finish cleanly",
+            ))
+        if n_fail:
+            findings.append(_finding(
+                "error",
+                f"{out_path.name} carries {n_fail} failure line(s) "
+                "(SCF NOT CONVERGED / ERROR / FATAL / aborted / ...); the "
+                "run aborted before finishing",
+            ))
+    else:
+        findings.append(_finding(
+            "error", f"{out_path.name} is missing; no ORCA output at all"))
+    goat["terminated_normally"] = terminated
+
+    # --- job-log failures: name WHICH failure ended the run (D2-D4) --------
+    # A run can end without the termination marker for a specific reason
+    # (Open MPI slot exhaustion, an ORCA_MAIN input-check abort, an external
+    # MLIP program not found / rejected, ...).  Surface that reason rather
+    # than only "does not end with the termination marker".
+    #
+    # Scope: only THIS run's own job-log files are read -- the ORCA .out and
+    # the job's stderr (SLURM writes "<jobname>_<jobid>.err", matching the
+    # base name stem).  A co-located foreign *.err (another job, an OCCUPIER
+    # or xTB diagnostic dropped next to a finished GOAT run) is NOT this run's
+    # log, so a bare deny-list word in it must not flip the verdict (H01).
+    own_err = [
+        p for p in sorted(run_dir.glob(f"{base_name}*.err"))
+    ]
+    job_log = "".join(
+        p.read_text(errors="replace") for p in own_err
+    )
+    if out_path.is_file():
+        job_log += out_path.read_text(errors="replace")
+    for needle, category in _JOB_FAILURES:
+        if needle in job_log and not any(
+            needle in f.get("message", "") for f in findings
+        ):
+            findings.append(_finding(
+                "error",
+                f"job log shows a {category} failure: {needle!r} -- the run "
+                "did not finish a usable GOAT ensemble",
+            ))
+
+    # --- the ensemble exists and is non-empty ------------------------------
+    n_conf = goat["n_conformers"]
+    if goat["ensemble_file"] is None:
+        findings.append(_finding(
+            "error",
+            f"{files['finalensemble']} is missing; GOAT produced no final "
+            "ensemble (the run did not get as far as writing it)",
+        ))
+    elif n_conf == 0:
+        findings.append(_finding(
+            "error",
+            f"{files['finalensemble']} holds no conformer frame; the "
+            "ensemble is empty",
+        ))
+
+    # --- the global minimum is present -------------------------------------
+    if goat["global_minimum_file"] is None:
+        findings.append(_finding(
+            "error",
+            f"{files['global_minimum']} is missing; GOAT's global minimum "
+            "was not written",
+        ))
+
+    # --- energies finite (advisory unless any is non-finite) ---------------
+    eh = goat.get("energies_eh") or ()
+    if len(eh) != n_conf:
+        findings.append(_finding(
+            "warn",
+            f"ensemble energy count ({len(eh)}) does not match the conformer "
+            f"count ({n_conf}); energies cannot be trusted",
+        ))
+    nonfinite = [i + 1 for i, e in enumerate(eh) if not math.isfinite(e)]
+    if nonfinite:
+        findings.append(_finding(
+            "error",
+            f"ensemble energy of frame(s) {nonfinite} is not a finite "
+            "number (NaN/Inf); the MLIP screen produced a non-physical "
+            "value",
+        ))
+
+    # --- energies sorted (GOAT writes the lowest conformer first) -----------
+    sorted_eh = _is_sorted(eh)
+    goat["energies_sorted"] = sorted_eh
+    if len(eh) > 1 and not sorted_eh:
+        findings.append(_finding(
+            "warn",
+            "ensemble energies are not sorted (the lowest conformer must "
+            "come first); the ensemble order does not reflect GOAT's energy "
+            "ranking",
+        ))
+
+    # --- the MLIP server ran on the GPU (log evidence, not assumption) -----
+    gpu_hint = _gpu_evidence(run_dir)
+    goat["gpu_evidence"] = gpu_hint
+    if gpu_hint is None:
+        findings.append(_finding(
+            "warn",
+            "no GPU evidence (CUDA/device line) in any log of the job "
+            "directory; the MLIP server's use of a GPU is not shown by the "
+            "logs -- check the scheduler's sstat for the job",
+        ))
+
+    # --- wall time recorded from the ORCA .out timing line ------------------
+    goat["walltime_s"] = _parse_walltime(out_path)
+
+    # --- no stale ORCA/MLIP process marker in the job directory ------------
+    stale = _stale_run_markers(run_dir)
+    if stale:
+        findings.append(_finding(
+            "warn",
+            f"live-run marker file(s) still present: {sorted(stale)}. A "
+            "previously submitted job may still be running or was killed "
+            "without removing its marker; check the scheduler before "
+            "trusting this result",
+        ))
+
+    hard = [f for f in findings if f.get("level") == "error"]
+    goat["ok"] = not hard
+    goat["findings"] = tuple(findings)
+    goat["n_atoms"] = _frame_size(goat.get("structures"))
+    goat["has_ensemble"] = n_conf > 0
+    goat["energy_source"] = "mlip"
+    goat["final"] = False
+    return goat
+
+
+def _finding(level: str, message: str) -> dict:
+    return {"level": level, "message": message}
+
+
+def _is_sorted(values: tuple[float, ...]) -> bool:
+    """True when every adjacent pair is non-decreasing; a single energy
+    value or an empty ensemble is vacuously sorted."""
+    return all(a <= b for a, b in zip(values, values[1:]))
+
+
+_GPU_MARKERS = ("cuda", "a100", "a6000", "titan", "rtx", "nvidia-smi")
+
+
+def _gpu_evidence(run_dir: Path) -> Optional[str]:
+    """The first log line in the job directory that shows a GPU device.
+
+    Scans every ``*.log`` and ``*.out`` file for a line carrying a
+    CUDA/GPU marker (device=cuda, an NVIDIA card name, or an nvidia-smi
+    call).  Absence is NOT proof the MLIP ran on CPU (the server may log
+    elsewhere); it is reported as a warning, never as an error -- the
+    GPU verdict for the job is the scheduler's sstat, not this heuristic.
+    """
+    if not run_dir.is_dir():
+        return None
+    for p in sorted(run_dir.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in (".log", ".out"):
+            continue
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            ll = line.lower()
+            if any(m in ll for m in _GPU_MARKERS):
+                return line.strip()
+    return None
+
+
+def _parse_walltime(out_path: Path) -> Optional[float]:
+    """Wall-clock seconds from ORCA's final 'TOTAL RUN TIME' line (ORCA 6),
+    else a 'Total Job Time (sec): N' line.
+
+    ``None`` when the .out is absent or carries neither line.
+    """
+    if not out_path.is_file():
+        return None
+    import re
+
+    text = out_path.read_text(errors="replace")
+    # ORCA 6.1.1 ends with "TOTAL RUN TIME: 0 days 0 hours 9 minutes 28
+    # seconds 822 msec" and prints no "Total Job Time" line (measured on a
+    # finished MLIP GOAT run); the walltime was then reported as missing.
+    run_time = re.findall(
+        r"TOTAL RUN TIME:\s*(\d+)\s*days?\s+(\d+)\s*hours?\s+(\d+)\s*minutes?\s+"
+        r"(\d+)\s*seconds?\s+(\d+)\s*msec", text)
+    if run_time:
+        d, h, m, s, ms = (int(x) for x in run_time[-1])
+        return d * 86400 + h * 3600 + m * 60 + s + ms / 1000.0
+    for line in text.splitlines():
+        if "total job time" in line.lower():
+            rest = line.split("sec", 1)[-1]
+            digits = "".join(c for c in rest if c.isdigit() or c == ".")
+            try:
+                return float(digits)
+            except ValueError:
+                return None
+    return None
+
+
+def _frame_size(structures) -> Optional[int]:
+    if not structures:
+        return None
+    return len(structures[0])
+
+
+def _stale_run_markers(run_dir: Path) -> tuple[str, ...]:
+    """Names of live-run marker files still present in the job directory.
+
+    A submitted job leaves the scheduler's ``<job>_<jobid>.out`` /
+    ``.err`` and, for a job still running, a ``.pid`` lock written by the
+    DELFIN-side runner.  A finished job removes its ``.pid`` lock on
+    exit; one whose lock is still there has not cleaned up.
+    """
+    names = sorted(p.name for p in run_dir.iterdir() if p.is_file())
+    return tuple(n for n in names if n.endswith(".pid"))

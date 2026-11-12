@@ -46,6 +46,7 @@ import os
 from typing import Any
 
 from delfin import api as delfin_api
+from delfin import structure_edit
 
 
 # ---------------------------------------------------------------------------
@@ -2016,6 +2017,13 @@ def tool_geometry_align_rmsd(mobile_xyz: str, reference_xyz: str) -> str:
     return _dumps(delfin_api.geometry_align_rmsd(mobile_xyz, reference_xyz))
 
 
+def tool_frame_lineage(stage_dirs: list, rmsd_tol: float = 1e-3,
+                       conn_required: bool = True) -> str:
+    """Match pipeline-stage frames by geometry (never by index): lineage."""
+    return _dumps(delfin_api.frame_lineage(stage_dirs, rmsd_tol=rmsd_tol,
+                                           conn_required=conn_required))
+
+
 def tool_geometry_merge(fragments: list) -> str:
     """Concatenate xyz fragments into one structure (earlier atoms first)."""
     return _dumps(delfin_api.geometry_merge(fragments))
@@ -2041,6 +2049,37 @@ def tool_geometry_write_orca_block(xyz: str, charge: int = 0,
     """Serialise an xyz block as an ORCA coordinate block."""
     return _dumps(delfin_api.geometry_write_orca_block(xyz, charge,
                                                        multiplicity))
+
+
+def tool_geometry_renumber(xyz: str, reference_xyz: str) -> str:
+    """Renumber ``xyz`` onto ``reference_xyz`` atom order (atom_mapping).
+
+    Returns the reordered xyz block, the renumbering table and checks. The
+    tool writes nothing to disk: the caller (the structure expert) writes the
+    NEW file with ``write_file``, whose gate refuses overwriting. A formula
+    mismatch surfaces as an error, never silently.
+    """
+    return _dumps(structure_edit.renumber_to_reference(xyz, reference_xyz))
+
+
+def tool_geometry_fix_hydrogens(xyz: str) -> str:
+    """Add missing coordinating / implicit hydrogens to an xyz structure.
+
+    Only adds hydrogens (never removes); placement uses DELFIN's covalent
+    radii and connectivity. Returns the corrected xyz block and a diff; the
+    tool writes nothing to disk (the expert writes the NEW file via
+    ``write_file``, whose gate refuses overwriting).
+    """
+    return _dumps(structure_edit.fix_hydrogens(xyz))
+
+
+def tool_geometry_diff(xyz: str, reference_xyz: str) -> str:
+    """Per-atom diff of ``xyz`` against ``reference_xyz`` plus checks.
+
+    Reports changed elements, moved atoms, composition equality and
+    charge/multiplicity consistency.
+    """
+    return _dumps(structure_edit.structure_diff(xyz, reference_xyz))
 
 
 # ---------------------------------------------------------------------------
@@ -2104,11 +2143,16 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="geometry_replace_ligand")(_safe("geometry_replace_ligand", tool_geometry_replace_ligand))
     mcp.tool(name="geometry_mirror")(_safe("geometry_mirror", tool_geometry_mirror))
     mcp.tool(name="geometry_align_rmsd")(_safe("geometry_align_rmsd", tool_geometry_align_rmsd))
+    mcp.tool(name="frame_lineage")(_safe("frame_lineage", tool_frame_lineage))
     mcp.tool(name="geometry_merge")(_safe("geometry_merge", tool_geometry_merge))
     mcp.tool(name="geometry_freeze")(_safe("geometry_freeze", tool_geometry_freeze))
     mcp.tool(name="geometry_constraints_block")(_safe("geometry_constraints_block", tool_geometry_constraints_block))
     mcp.tool(name="geometry_build_smiles")(_safe("geometry_build_smiles", tool_geometry_build_smiles))
     mcp.tool(name="geometry_write_orca_block")(_safe("geometry_write_orca_block", tool_geometry_write_orca_block))
+    # XE1 — structure department (renumber / fix H / diff, over structure_edit)
+    mcp.tool(name="geometry_renumber")(_safe("geometry_renumber", tool_geometry_renumber))
+    mcp.tool(name="geometry_fix_hydrogens")(_safe("geometry_fix_hydrogens", tool_geometry_fix_hydrogens))
+    mcp.tool(name="geometry_diff")(_safe("geometry_diff", tool_geometry_diff))
     # Imaginary-frequency + functional-comparison helpers
     mcp.tool(name="extract_imaginary_frequencies")(_safe("extract_imaginary_frequencies", tool_extract_imaginary_frequencies))
     mcp.tool(name="compare_calculations")(_safe("compare_calculations", tool_compare_calculations))

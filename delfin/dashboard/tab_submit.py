@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 
 import ipywidgets as widgets
-import py3Dmol
 from IPython import get_ipython
 from IPython.display import clear_output
 
@@ -25,7 +24,18 @@ from delfin.config import (
     get_occupier_hints,
     get_orca_override_hints,
 )
-from delfin.smiles_converter import contains_metal
+def _input_processing():
+    """Import .input_processing on first use.
+
+    That module pulls in delfin.smiles_converter and, through it,
+    delfin.manta.ml_tables, whose module level ``import stk`` costs seconds
+    of every process start. The Submit tab is built before the first paint,
+    so its module load must not pay for a SMILES engine the reader may not
+    use in the whole session.
+    """
+    from . import input_processing
+    return input_processing
+
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
@@ -40,12 +50,6 @@ from .molecule_viewer import (
     apply_molecule_view_style, structure_viewer_fullscreen_bootstrap_js,
     structure_viewer_fullscreen_css, structure_viewer_fullscreen_kind_js,
     submit_manip_bootstrap_js, submit_manip_version,
-)
-from .input_processing import (
-    smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
-    append_hapto_previews_to_isomers,
-    smiles_to_xyz_isomers, is_smiles,
-    clean_input_data, parse_resource_settings,
 )
 
 
@@ -84,7 +88,8 @@ def create_tab(ctx):
     Returns ``(tab_widget, refs_dict)``.
     """
     SUBMIT_MOL_HEIGHT = 650
-    SMILES_CONVERTER_PLACEHOLDERS = ('[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]',
+    SMILES_CONVERTER_PLACEHOLDERS = ('[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]',
+                                    '[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]',
                                     '[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]',
                                     '[QUICK|NORMAL|MANTA|ARCHITECTOR]')
     main_io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
@@ -188,7 +193,8 @@ def create_tab(ctx):
         style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
     )
     only_goat_smiles_converter = widgets.Dropdown(
-        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'],
+        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE',
+                 'RXEMBED', 'MOLASSEMBLER', 'METALLOGEN'],
         value='QUICK', description='Converter:', style=COMMON_STYLE,
         layout=widgets.Layout(width='220px'),
     )
@@ -350,6 +356,9 @@ def create_tab(ctx):
     architector_button = _editor.architector_button
     molsimplify_button = _editor.molsimplify_button
     mace_button = _editor.mace_button
+    rxembed_button = _editor.rxembed_button
+    molassembler_button = _editor.molassembler_button
+    metallogen_button = _editor.metallogen_button
     xyz_copy_btn = _editor.xyz_copy_btn
     xyz_copy_status = _editor.xyz_copy_status
     isomer_nav_row = _editor.isomer_nav_row
@@ -387,7 +396,7 @@ def create_tab(ctx):
             # has already reflected the new coordinates. Update state/copy only.
             raw = coords_widget.value.strip()
             if raw:
-                cleaned_data, input_type = clean_input_data(raw)
+                cleaned_data, input_type = _input_processing().clean_input_data(raw)
                 if input_type != 'smiles':
                     lines = [l for l in cleaned_data.split('\n') if l.strip()]
                     xyz_data = (
@@ -456,7 +465,7 @@ def create_tab(ctx):
             xyz_copy_status.value = ''
             return
 
-        cleaned_data, input_type = clean_input_data(raw_input)
+        cleaned_data, input_type = _input_processing().clean_input_data(raw_input)
 
         if input_type == 'smiles':
             state['converted_xyz_cache'] = {'smiles': None, 'xyz': None}
@@ -491,12 +500,12 @@ def create_tab(ctx):
                 print('Error: Please enter a SMILES string in the input box.')
                 return
 
-            cleaned_data, input_type = clean_input_data(raw_input)
+            cleaned_data, input_type = _input_processing().clean_input_data(raw_input)
             if input_type != 'smiles':
                 print('Error: Input must be a SMILES string for BUILD COMPLEX.')
                 return
 
-            if not contains_metal(cleaned_data):
+            if not _input_processing().contains_metal(cleaned_data):
                 print('Error: SMILES does not contain a metal atom.')
                 return
 
@@ -601,7 +610,7 @@ def create_tab(ctx):
                 print('Error: Job name contains only invalid characters!')
                 return
 
-            cleaned_data, input_type = clean_input_data(raw_input_value)
+            cleaned_data, input_type = _input_processing().clean_input_data(raw_input_value)
 
             job_dir = ctx.calc_dir / safe_job_name
             try:
@@ -856,7 +865,7 @@ def create_tab(ctx):
             if not raw_input:
                 print('Error: Please enter a SMILES string in the input box.')
                 return
-            cleaned_data, input_type = clean_input_data(raw_input)
+            cleaned_data, input_type = _input_processing().clean_input_data(raw_input)
             if input_type != 'smiles':
                 print('Error: Input must be a SMILES string for GUPPY submission.')
                 return
@@ -984,7 +993,8 @@ def create_tab(ctx):
         if not text or text in SMILES_CONVERTER_PLACEHOLDERS:
             return ''
         normalized = text.upper()
-        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'}:
+        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE',
+                          'RXEMBED', 'MOLASSEMBLER', 'METALLOGEN'}:
             return normalized
         return ''
 
@@ -998,7 +1008,7 @@ def create_tab(ctx):
         if not raw_input:
             return False
         try:
-            cleaned_data, input_type = clean_input_data(raw_input)
+            cleaned_data, input_type = _input_processing().clean_input_data(raw_input)
         except Exception:  # noqa: BLE001
             return False
         return input_type == 'smiles' and bool(cleaned_data.strip())
@@ -1036,7 +1046,7 @@ def create_tab(ctx):
         annotated with it for charge auto-fill, but input.txt carries the
         XYZ coordinates the user is actually looking at.
         """
-        input_content, input_type = clean_input_data(raw_input)
+        input_content, input_type = _input_processing().clean_input_data(raw_input)
         cached_smiles = str((cache or {}).get('smiles') or '').strip() or None
 
         if input_type == 'smiles':
@@ -1302,7 +1312,7 @@ def create_tab(ctx):
                 try:
                     if entry['input_kind'] == 'smiles':
                         smi = entry['input_raw']
-                        xyz_string, num_atoms, method, error = smiles_to_xyz_quick(smi)
+                        xyz_string, num_atoms, method, error = _input_processing().smiles_to_xyz_quick(smi)
                         if error:
                             preview_payload = {'error': error}
                         else:
@@ -1512,7 +1522,7 @@ def create_tab(ctx):
                     encoding='utf-8',
                 )
 
-                pal, maxcore = parse_resource_settings(control_content)
+                pal, maxcore = _input_processing().parse_resource_settings(control_content)
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name, mode=mode,
@@ -1649,7 +1659,7 @@ def create_tab(ctx):
                 _keep_the_drawing(job_dir, submit_smiles or (
                     input_content.strip() if input_type == 'smiles' else ''))
 
-                pal, maxcore = parse_resource_settings(control_content)
+                pal, maxcore = _input_processing().parse_resource_settings(control_content)
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name, mode=mode,
@@ -1984,7 +1994,7 @@ def create_tab(ctx):
                 (job_dir / 'CONTROL.txt').write_text(control_content)
                 (job_dir / 'input.txt').write_text(input_content)
 
-                pal, maxcore = parse_resource_settings(control_content)
+                pal, maxcore = _input_processing().parse_resource_settings(control_content)
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name,
                     mode='delfin-co2-chain',
@@ -2059,7 +2069,8 @@ def create_tab(ctx):
         manta_settings_row,
         # MANTA button sits directly UNDER its settings; the external
         # metal-complex constructors stand beside it as equals.
-        widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button],
+        widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button,
+                      rxembed_button, molassembler_button, metallogen_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),

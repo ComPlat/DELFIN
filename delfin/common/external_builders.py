@@ -1,9 +1,22 @@
-"""Architector, molSimplify and epic-MACE as SMILES constructors, one definition per tool.
+"""Architector, molSimplify, epic-MACE, rxembed, Molassembler and MetalloGen as SMILES constructors.
 
-The dashboard (Submit Job and ORCA Builder, through the shared structure
-editor) and the CONTROL pipeline (``smiles_converter=ARCHITECTOR`` /
-``MOLSIMPLIFY`` / ``MACE``) all build through :func:`build_frames`, the same
-way the MANTA entry points all build through :mod:`delfin.common.manta_build`.
+One definition per tool.  The dashboard (Submit Job and ORCA Builder, through
+the shared structure editor) and the CONTROL pipeline (``smiles_converter=
+ARCHITECTOR`` / ``MOLSIMPLIFY`` / ``MACE`` / ``RXEMBED`` / ``MOLASSEMBLER`` /
+``METALLOGEN``) all build through :func:`build_frames`, the same way the MANTA
+entry points all build through :mod:`delfin.common.manta_build`.
+
+rxembed, Molassembler and MetalloGen run in environments of their own, too
+(rxembed needs Python >= 3.12 and RDKit >= 2026.9.1, which DELFIN's RDKit is
+not); their builds are defined once in
+:mod:`delfin.cluster_bench.tool_workers.smiles_tools`, which the worker here
+and the cluster batch worker both import.  rxembed and Molassembler take the
+SMILES as written; MetalloGen takes DELFIN's split (cut here, like epic-MACE's)
+and only its ORCA calculator is used (GFN2-xTB through ORCA; its default
+calculator needs Gaussian).  ``python -m delfin.installer --install rxembed``
+(``molassembler``, ``metallogen``) builds the environment;
+``DELFIN_RXEMBED_PYTHON`` / ``DELFIN_MOLASSEMBLER_PYTHON`` /
+``DELFIN_METALLOGEN_PYTHON`` point elsewhere.
 
 epic-MACE (Chernyshov & Pidko, J. Chem. Theory Comput. 2024, 20, 2313;
 github.com/EPiCs-group/epic-mace, GPL-3.0) is called as an external program in
@@ -116,7 +129,66 @@ TOOLS = {
         # tetrahedron are no ranking of the two.
         "keep_order": True,
     },
+    # Built by install_ai_tools.sh under the AI tools root, each in an environment of its own;
+    # the builds are delfin.cluster_bench.tool_workers.smiles_tools.
+    "rxembed": {
+        "display": "rxembed",
+        "module": "rxembed",
+        "python_env": "DELFIN_RXEMBED_PYTHON",
+        # Python >= 3.12 and RDKit >= 2026.9.1 (pinned GitHub commit 9c0ba5a6).
+        "managed_env": ".mamba_env/rxembed",
+        "install": "python -m delfin.installer --install rxembed",
+        "smiles_input": True,
+    },
+    "molassembler": {
+        "display": "Molassembler",
+        "module": "scine_molassembler",
+        "python_env": "DELFIN_MOLASSEMBLER_PYTHON",
+        # pip scine-molassembler 3.0.1 (Python 3.11).
+        "managed_env": ".mamba_env/molassembler",
+        "install": "python -m delfin.installer --install molassembler",
+        "smiles_input": True,
+    },
+    "metallogen": {
+        "display": "MetalloGen",
+        "module": "MetalloGen",
+        "python_env": "DELFIN_METALLOGEN_PYTHON",
+        # Python 3.11 + RDKit + numpy/scipy/cclib/pulp, pinned GitHub commit fa26e2ad.
+        "managed_env": ".mamba_env/metallogen",
+        "install": "python -m delfin.installer --install metallogen",
+        "spec_in_caller": True,
+        "needs_orca": True,
+        "energy_unit": "Eh, GFN2-xTB via ORCA",
+        # Every arrangement is relaxed with xTB through ORCA: minutes, not seconds.
+        "timeout": 7200,
+        "partial_frames": True,
+    },
 }
+
+#: Programs that live in an environment of their own the installer builds under
+#: the same root, the same way, but are not structure builders: build_frames
+#: does not know them (tool_key refuses them); managed_python / tool_python /
+#: own_env do.
+PROGRAMS = {
+    # orca-mlips (MIT), the program ORCA's ExtOpt starts as ProgExt
+    # (delfin/mlp_tools/orca_mlips.py): a CUDA build of PyTorch and the aimnet2
+    # (MIT) and orb (Apache-2.0) plugins, whose pins DELFIN's own environment
+    # cannot hold. install_ai_tools.sh (INSTALL_ORCA_MLIPS) builds it; ExtOpt
+    # then names the absolute <env>/bin/orca-mlips-<backend>, which a compute
+    # node finds without any PATH set up. Its package is orca_mlips_plugins, so
+    # it is found by its distribution, orca-mlips.
+    "orca_mlips": {
+        "display": "orca-mlips",
+        "module": "orca_mlips_plugins",
+        "dist": "orca-mlips",
+        "python_env": "DELFIN_ORCA_MLIPS_PYTHON",
+        "managed_env": ".mamba_env/orca_mlips",
+        "install": "python -m delfin.installer --install orca-mlips",
+    },
+}
+
+#: Tools whose build is defined in delfin.cluster_bench.tool_workers.smiles_tools.
+SMILES_TOOLS = ("rxembed", "molassembler", "metallogen")
 
 #: epic-MACE settings, the same for the dashboard and for CONTROL.
 MACE_DEFAULTS = {"geometries": "extended", "num_confs": 10, "max_attempts": 10}
@@ -151,6 +223,14 @@ def tool_key(tool: str) -> str:
     return key
 
 
+def own_env(tool: str) -> dict:
+    """The entry of a builder (:data:`TOOLS`) or a program (:data:`PROGRAMS`)."""
+    key = str(tool or "").strip().lower()
+    if key in PROGRAMS:
+        return PROGRAMS[key]
+    return TOOLS[tool_key(key)]
+
+
 def managed_python(tool: str, environ=None):
     """The interpreter of the environment DELFIN's installer builds for *tool*.
 
@@ -158,7 +238,7 @@ def managed_python(tool: str, environ=None):
     ``DELFIN_AI_TOOLS_ROOT``, else ``~/.delfin/ai_tools``, where the installer
     puts it), or ``None`` when the tool has no environment of its own.
     """
-    rel = TOOLS[tool_key(tool)].get("managed_env")
+    rel = own_env(tool).get("managed_env")
     if not rel:
         return None
     env = os.environ if environ is None else environ
@@ -174,7 +254,7 @@ def tool_python(tool: str, environ=None) -> str:
     one.
     """
     env = os.environ if environ is None else environ
-    named = (env.get(TOOLS[tool_key(tool)]["python_env"]) or "").strip()
+    named = (env.get(own_env(tool)["python_env"]) or "").strip()
     if named:
         return named
     managed = managed_python(tool, env)
@@ -761,18 +841,53 @@ _RUNNERS = {"architector": _run_architector, "molsimplify": _run_molsimplify,
             "mace": _run_mace}
 
 
+def _smiles_tool_runner(key: str):
+    """The build of rxembed / Molassembler / MetalloGen (one definition, shared with the
+    cluster batch worker)."""
+    from delfin.cluster_bench.tool_workers import smiles_tools
+    return smiles_tools.RUNNERS[key], smiles_tools.NotExpressible
+
+
 def _worker(tool: str, request_path: str, result_path: str) -> int:
-    # rdkit before any tool: see the module docstring (libstdc++).
+    # rdkit before any tool: see the module docstring (libstdc++).  Only Molassembler's
+    # environment has no rdkit, and it needs none; everywhere else a missing rdkit is an error.
     result = {"frames": [], "error": None}
     try:
-        from rdkit import RDLogger  # noqa: F401
-        RDLogger.DisableLog("rdApp.*")
-        req = json.loads(Path(request_path).read_text())
         key = tool_key(tool)
+        info = TOOLS[key]
+        if key == "molassembler":
+            try:
+                from rdkit import RDLogger  # noqa: F401
+                RDLogger.DisableLog("rdApp.*")
+            except ImportError:
+                pass
+        else:
+            from rdkit import RDLogger  # noqa: F401
+            RDLogger.DisableLog("rdApp.*")
+        req = json.loads(Path(request_path).read_text())
         import importlib.util
-        if importlib.util.find_spec(TOOLS[key]["module"]) is None or not _is_the_tool(key):
+        if importlib.util.find_spec(info["module"]) is None or not _is_the_tool(key):
             result["error"] = not_installed_message(key, sys.executable)
             result["not_installed"] = True
+        elif key in SMILES_TOOLS:
+            runner, not_expressible = _smiles_tool_runner(key)
+            source = req["smiles"] if info.get("smiles_input") else req.get("spec")
+            if source is None:
+                source = split_complex_smiles(req["smiles"])
+            if not info.get("smiles_input"):
+                result["spec"] = source
+            try:
+                frames, extra = runner(source, req["work"], req.get("options") or {})
+            except not_expressible as exc:
+                frames, extra = [], {}
+                result["error"] = str(exc)
+                result["not_expressible"] = True
+            result.update(extra)
+            result["frames"] = frames
+            if not frames and not result["error"]:
+                detail = "; ".join(f"{k}: {v}" for k, v in extra.get("per_geometry", {}).items())
+                result["error"] = (f"{info['display']} returned no structure"
+                                   + (f" ({detail})" if detail else ""))
         else:
             # A spec cut by the caller (spec_in_caller) is taken as it is.
             spec = req.get("spec") or split_complex_smiles(req["smiles"])
@@ -807,13 +922,20 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     """Build *smiles* with *tool*; ``([(xyz_body, n_atoms, label), ...], error)``.
 
     Frames come back lowest energy first when the tool gives energies (it is
-    Architector's order anyway), else in the tool's order (epic-MACE: geometry
-    by geometry, lowest energy first within each).  *error* is ``None``
+    Architector's order anyway; a frame without an energy goes last), else in
+    the tool's order (epic-MACE: geometry by geometry, lowest energy first
+    within each).  The time limit is *timeout*, else
+    ``DELFIN_EXTERNAL_BUILDER_TIMEOUT``, else the tool's own (MetalloGen
+    7200 s), else 1800 s; MetalloGen writes each finished arrangement to a
+    partial xyz that a time-out keeps and names.  *error* is ``None``
     on success, else a message for the user.  *options* for Architector:
     ``{'mode': 'full'}`` (default: every isomer it finds) or ``'default'``
     (its own defaults, one structure per core geometry).  For epic-MACE:
     :data:`MACE_DEFAULTS` (``geometries`` ``'extended'`` or ``'paper'``,
-    ``num_confs``, ``max_attempts``).
+    ``num_confs``, ``max_attempts``).  For rxembed, Molassembler and MetalloGen:
+    ``RXEMBED_DEFAULTS`` / ``MOLASSEMBLER_DEFAULTS`` / ``METALLOGEN_DEFAULTS``
+    of :mod:`delfin.cluster_bench.tool_workers.smiles_tools`; MetalloGen gets
+    the ORCA that DELFIN finds (``orca`` overrides it).
     """
     key = tool_key(tool)
     info = TOOLS[key]
@@ -822,6 +944,17 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
         import importlib.util
         if importlib.util.find_spec(info["module"]) is None:
             return [], not_installed_message(key, python)
+    if info.get("needs_orca") and not (options or {}).get("orca"):
+        try:
+            from delfin.qm_runtime import find_tool_executable
+            orca = find_tool_executable("orca")
+        except Exception:                                 # noqa: BLE001
+            orca = None
+        if not orca:
+            return [], (f"{info['display']} runs here only with its ORCA calculator (GFN2-xTB "
+                        "through ORCA; its default calculator needs Gaussian), and no ORCA "
+                        "executable was found. Install ORCA or put it on PATH.")
+        options = dict(options or {}, orca=str(orca))
     spec = None
     if info.get("spec_in_caller"):
         # Cut here, with DELFIN's RDKit; the tool's environment may carry an
@@ -844,7 +977,10 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         env.setdefault(var, "1")
     env.setdefault("OMP_STACKSIZE", "1G")
-    timeout = DEFAULT_TIMEOUT if timeout is None else float(timeout)
+    if timeout is None:
+        named = (os.environ.get("DELFIN_EXTERNAL_BUILDER_TIMEOUT") or "").strip()
+        timeout = float(named) if named else float(info.get("timeout", DEFAULT_TIMEOUT))
+    timeout = float(timeout)
 
     tmp = tempfile.mkdtemp(prefix=f"delfin_{key}_", dir=workdir)
     work = os.path.join(tmp, "work")
@@ -852,8 +988,12 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
     request_path = os.path.join(tmp, "request.json")
     result_path = os.path.join(tmp, "result.json")
     log_path = os.path.join(tmp, "tool.log")
+    partial_path = os.path.join(tmp, "partial.xyz")
+    run_options = dict(options or {})
+    if info.get("partial_frames"):
+        run_options.setdefault("partial_xyz", partial_path)
     Path(request_path).write_text(json.dumps(
-        {"smiles": str(smiles).strip(), "work": work, "options": dict(options or {}),
+        {"smiles": str(smiles).strip(), "work": work, "options": run_options,
          "spec": spec}))
     cmd = [python, "-m", "delfin.common.external_builders", key, request_path, result_path]
     keep = os.environ.get("DELFIN_EXTERNAL_BUILDER_KEEP", "0") == "1"
@@ -869,6 +1009,10 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
             except subprocess.TimeoutExpired:
                 from delfin.common.manta_build import kill_process_group
                 kill_process_group(proc)
+                if os.path.exists(partial_path) and os.path.getsize(partial_path):
+                    keep = True
+                    return [], (f"{info['display']} did not finish within {int(timeout)} s; "
+                                f"the arrangements it finished are kept in {partial_path}")
                 return [], f"{info['display']} did not finish within {int(timeout)} s"
         if not os.path.exists(result_path):
             tail = Path(log_path).read_text(errors="replace")[-600:]
@@ -882,14 +1026,16 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
         if res.get("error") and not frames:
             return [], f"{info['display']}: {res['error']}"
         if (frames and not info.get("keep_order")
-                and all(f.get("energy") is not None for f in frames)):
-            frames = sorted(frames, key=lambda f: f["energy"])
+                and any(f.get("energy") is not None for f in frames)):
+            # Lowest energy first; a frame without an energy (a failed relaxation) last.
+            frames = sorted(frames, key=lambda f: (f.get("energy") is None, f.get("energy") or 0.0))
         out = []
         for i, f in enumerate(frames, start=1):
             e = f.get("energy")
             label = f"{info['display']} {f.get('label') or i}"
             if e is not None:
-                # Architector: its xTB energy in ASE units; epic-MACE: UFF.
+                # Architector: its xTB energy in ASE units; epic-MACE: UFF;
+                # MetalloGen: GFN2-xTB through ORCA, Hartree.
                 label += f" (E = {e:.4f} {info.get('energy_unit', 'eV')})"
             out.append((_xyz_body(f["symbols"], f["coords"]), len(f["symbols"]), label))
         return out, None
@@ -900,7 +1046,9 @@ def build_frames(tool: str, smiles: str, *, options=None, python=None,
 
 
 def build_first_xyz(tool: str, smiles: str, **kwargs):
-    """The first (lowest-energy) frame as an XYZ body, for the CONTROL pipeline."""
+    """The first frame as an XYZ body, for the CONTROL pipeline: the lowest-energy one when
+    the tool gives energies (Architector, MetalloGen), else the tool's first (epic-MACE: the
+    lowest of its first geometry; rxembed / Molassembler: first conformer of the first isomer)."""
     frames, error = build_frames(tool, smiles, **kwargs)
     if error:
         return None, error

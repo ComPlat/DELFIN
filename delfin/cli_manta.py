@@ -397,10 +397,31 @@ _CHAMPION_FLAGS = (
     # 3689 -> 3830, hard frames at equal frame count 57251 -> 56076, probe-severe frames
     # 26.0 % -> 18.1 %.  First emitted frame defective (geometry audit): 47.6 % -> 27.1 % of the
     # systems.  The three fixes off: 5826/5827 byte-identical with the unfixed construction.
+    # NOTE: both arms of this A/B were built with a development-stage CSD table that was later found
+    # to contain families of the 6000 pool and of a held-out set (leaky); the numbers above are not
+    # evidence and are not reported in the paper, which re-measures the landing with the shipped tables.
     "ML_TARGETS_BV", "ML_TARGETS_BV_EMBED", "ML_TARGETS_BV_HISTORIC",
     "CN5_BOTH", "UNION", "AROM_PLANARIZE_CARRY_H", "RING_SNAP_KEEP_LENGTH",
     "TEMPLATE_COMPRESSED_RESEAT", "TEMPLATE_COMPRESSED_CONJ", "SP3_PYRAMIDAL_SEAT",
     "BV_EMBED_GEOM", "CONF_CACHE_ATOM_ORDER",
+    # LANDING 10 (2026-11-07, AB:l9b_csd vs l10a_csd): bond orders and the one-substituent donor seat.
+    # Open Babel's UFF read the bare xyz with the metal in it and guessed bond orders; the metal-donor
+    # bond filled the donor valence, so the double bond next to a donor was typed single and stretched
+    # (C=N 1.45 instead of 1.27 A, C=O 1.39 instead of 1.22, coordinated pyridines alternating).
+    # OB_KEKULE_ORDERS hands every non-metal bond its template Kekule order and aromaticity
+    # (openbabel_optimize._apply_template_kekule_orders); FLATTEN_P3_PYRAMIDAL keeps a period-3+
+    # atom with three or more sigma partners (sulfoxide S) out of the sp2 flattening.
+    # ORIENT_ONE_SUB_LP adds, next to every legacy frame with a monodentate one-substituent donor, a
+    # sibling seated by the donor's hybridisation instead of M-D-X 180 degrees; a sibling enters only
+    # if it is no worse than its primary in any defect class.
+    # 6000-pool A/B, 5226 held-out systems, canonical frame order for both arms: valid 4157 -> 4230
+    # (18 lost / 91 gained), crystal isomer built 3477 -> 3543 (55 / 121), isomers built
+    # 8159 -> 8328, clean distinct frames 24838 -> 28025, systems with >= 1 clean distinct frame
+    # 3841 -> 3948, hard frames at equal frame count 27630 -> 26790 (raw) and 20078 -> 19353
+    # (distinct), probe-severe frames 18.2 % -> 16.2 %.
+    # NOTE: as for landing 9, both arms were built with the leaky development-stage CSD table;
+    # the numbers above are not evidence (the paper reports the re-measurement with the shipped tables).
+    "OB_KEKULE_ORDERS", "FLATTEN_P3_PYRAMIDAL", "ORIENT_ONE_SUB_LP",
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
