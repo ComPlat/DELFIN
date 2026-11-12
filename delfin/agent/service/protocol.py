@@ -483,7 +483,9 @@ ATTENTION_ITEM: dict[str, str] = {
     "name": "string", "text": "string", "detail": "string", "workspace": "string",
     "host": "string", "sessionId": "string", "sessionTitle": "string?",
     "sessionOpen": "boolean?", "sessionSaved": "boolean?", "createdAt": "number",
-    "options": "[string]", "job": "object?", "cluster": "string?"}
+    "options": "[string]", "job": "object?", "cluster": "string?",
+    # A cluster_add item's (an agent's proposal): the add form's fields.
+    "proposal": "object?"}
 
 #: The fields of a session summary (session.summary, sessions.list). The
 #: last five say what the session is about in a few words, for the agent

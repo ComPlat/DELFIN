@@ -31,6 +31,7 @@ import { TextAttributes, infoStringToFiletype, type CliRenderer, type Renderable
          type SyntaxStyle } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor, type JSX } from "solid-js"
 import { AgentViewPanel, agentHelp, takesAnswer, type AgentView } from "../agents/view"
+import { AddView, addHelp, type AddForm } from "../clusters/add"
 import { LoginView, loginHelp, type Login } from "../clusters/login"
 import { ClustersPanel, clustersHelp, type ClustersView } from "../clusters/view"
 import { SwarmPanel, type SwarmView } from "../swarm/panel"
@@ -78,6 +79,8 @@ export interface FooterProps {
   clusters?: ClustersView
   /** The masked login field, while it is open. */
   login?: Login
+  /** The add form of /clusters, while it is open. */
+  addForm?: AddForm
   /** The swarm view (SW2b); while open it has the footer. */
   swarm?: SwarmView
   /** The read-only /swarm watch (package SWV, phase 2b); while open it
@@ -240,8 +243,8 @@ export function Footer(props: FooterProps): JSX.Element {
   const screenOpen = () => Boolean(props.clusters?.state.open)
   /** The view or a screen: the window's rows and live area make way. */
   const panelOpen = () => viewOpen() || screenOpen()
-  /** The login field's rows (a box over the prompt, like a picker). */
-  const loginRows = () => props.login?.height() ?? 0
+  /** The login field's rows and the add form's (boxes over the prompt, like a picker). */
+  const loginRows = () => (props.login?.height() ?? 0) + (props.addForm?.height() ?? 0)
   let timer: ReturnType<typeof setInterval> | undefined
   createEffect(() => {
     const running = Boolean(props.session()?.turn) || viewOpen()
@@ -458,6 +461,9 @@ export function Footer(props: FooterProps): JSX.Element {
       <Show when={props.login?.state.open}>
         <LoginView login={props.login!} theme={t} width={cols} />
       </Show>
+      <Show when={props.addForm?.state.open}>
+        <AddView form={props.addForm!} theme={t} width={cols} />
+      </Show>
       <text flexShrink={0} wrapMode="none">
         <span style={{ fg: ruleTone() }}>{topRule().head}</span>
         <span style={{ fg: t().shell, bold: true }}>{topRule().mode}</span>
@@ -568,8 +574,12 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
     if (props.login?.state.open) {
       return { lead: fit("  " + loginHelp(props.login), room), posture: null, rest: "", agents: "" }
     }
+    if (props.addForm?.state.open) {
+      return { lead: fit("  " + addHelp(props.addForm), room), posture: null, rest: "", agents: "" }
+    }
     if (props.clusters?.state.open) {
-      return { lead: fit("  " + clustersHelp(props.clusters, props.cols() - 3), room), posture: null, rest: "", agents: "" }
+      const keys = { add: props.keymap.label("clustersAdd"), remove: props.keymap.label("clustersRemove") }
+      return { lead: fit("  " + clustersHelp(props.clusters, props.cols() - 3, keys), room), posture: null, rest: "", agents: "" }
     }
     if (props.agents?.state.open) {
       return { lead: fit("  " + agentHelp(props.agents, props.keymap, props.cols() - 3), room), posture: null, rest: "",

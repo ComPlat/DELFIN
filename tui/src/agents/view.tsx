@@ -451,9 +451,9 @@ export function createAgentView(deps: AgentViewDeps): AgentView {
       deps.say("that item is not in the list any more (answered or dismissed elsewhere)")
       return false
     }
-    if (row.item?.kind === "login") {
-      // Never an answer (it would reach a model): the login field opens,
-      // and the text stays in the box.
+    if (row.item?.kind === "login" || row.item?.kind === "addCluster") {
+      // Never an answer (it would reach a model): the login field or the
+      // add form opens, and the text stays in the box.
       deps.openItem(row.item)
       return false
     }

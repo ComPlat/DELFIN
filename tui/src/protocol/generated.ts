@@ -896,6 +896,7 @@ export interface AttentionItem {
   "options": string[]
   "job"?: Record<string, unknown> | null
   "cluster"?: string | null
+  "proposal"?: Record<string, unknown> | null
 }
 
 /** Every event a window can receive: a session's own, and the service's. */

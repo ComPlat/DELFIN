@@ -204,6 +204,7 @@ export function attentionItems(raw: unknown): AttentionItem[] {
       options: Array.isArray(r.options) ? r.options.map(str) : [],
       job: r.job && typeof r.job === "object" ? r.job as Record<string, unknown> : null,
       cluster: str(r.cluster),
+      proposal: proposalOf(r.proposal),
     })
   }
   return out
@@ -222,6 +223,23 @@ export function newSession(id: string, info: Record<string, unknown> = {}): Sess
 
 function str(value: unknown): string {
   return typeof value === "string" ? value : value == null ? "" : String(value)
+}
+
+/** The fields an agent proposed for a cluster (a cluster_add item). */
+export type ItemProposal = {
+  name: string
+  preset: string
+  user: string
+  host: string
+  partition: string
+}
+
+/** A cluster_add item's fields (an agent's proposal), as plain short lines. */
+function proposalOf(raw: unknown): ItemProposal | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  const one = (v: unknown) => oneLine(str(v), 120)
+  return { name: one(r.name), preset: one(r.preset), user: one(r.user), host: one(r.host), partition: one(r.partition) }
 }
 
 export function applyInfo(s: SessionState, info: Record<string, unknown>): void {
