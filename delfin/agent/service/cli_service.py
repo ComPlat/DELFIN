@@ -262,7 +262,8 @@ def cmd_service(args: argparse.Namespace) -> int:
                         all_idle=bool(getattr(args, "all_idle", False)),
                         yes=bool(getattr(args, "yes", False)),
                         after_turn=bool(getattr(args, "after_turn", False)))
-        return _service(action, as_json=bool(getattr(args, "json", False)))
+        return _service(action, as_json=bool(getattr(args, "json", False)),
+                        yes=bool(getattr(args, "yes", False)))
     except client.ServiceError as exc:
         # Refused (this shell is an agent session's own: watch only), or
         # the service went away in between: said, not a traceback.
@@ -286,7 +287,7 @@ def _refused_inside_an_agent(action: str) -> bool:
     return True
 
 
-def _service(action: str, *, as_json: bool = False) -> int:
+def _service(action: str, *, as_json: bool = False, yes: bool = False) -> int:
     if action in ("stop", "restart") and _refused_inside_an_agent(action):
         return 1
     hello, why = client.probe()
@@ -302,6 +303,8 @@ def _service(action: str, *, as_json: bool = False) -> int:
             print(f"an agent service runs on {rundir.hostname()} (pid {pid}), "
                   f"but {launcher.why_in_words(why)}")
             if action in ("stop", "restart"):
+                if not yes and _interactive() and not _confirm_unanswering(pid, action):
+                    return 1
                 code = _stop_unanswering(pid)
                 return _start_again() if action == "restart" and code == 0 else code
             print("  `delfin-agent service stop` ends it (its sessions save)")
@@ -315,6 +318,10 @@ def _service(action: str, *, as_json: bool = False) -> int:
                   "log in there to reach its sessions")
         return 0 if action == "status" else 1
     if action in ("stop", "restart"):
+        if not yes:
+            refused = _stop_asked(action)
+            if refused is not None:
+                return refused
         code = _stop(restart=action == "restart")
         return _start_again() if action == "restart" and code == 0 else code
     with client.ServiceClient(client="delfin-agent service") as svc:
@@ -474,6 +481,75 @@ def _confirm(chosen: list[dict], *, after_turn: bool = False) -> bool:
     if answer.strip().lower() in ("y", "yes"):
         return True
     print("nothing ended")
+    return False
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _stop_asked(action: str) -> int | None:
+    """`service stop|restart` without ``--yes``: None to go on, else the
+    exit code. It ends every session of the service, as `service end`
+    ends one, so on a terminal it asks first (y/N), like `end` and
+    `stop-all`. Without a terminal it refuses only when a session works
+    or waits for you -- the turn that would be stopped is what is lost;
+    idle ones are saved and offered again, which scripts rely on. Nothing
+    to end (no session, or only sleeping ones): nothing to ask."""
+    with client.ServiceClient(client="delfin-agent service") as svc:
+        rows, _status = _session_rows(svc)
+    live = [r for r in rows if r["state"] != "sleeping"]
+    if not live:
+        return None
+    if not _interactive():
+        busy = [r for r in live if r["state"] in ("working", "waiting for you")]
+        if not busy:
+            return None
+        n = len(busy)
+        print(f"ERROR: not asked: this is no terminal, and {n} session"
+              f"{'s' * (n != 1)} {'work or wait' if n != 1 else 'works or waits'} "
+              f"for you; `--yes` {action}s without asking", file=sys.stderr)
+        return 2
+    return None if _confirm_stop(live, restart=action == "restart") else 1
+
+
+def _confirm_stop(live: list[dict], *, restart: bool) -> bool:
+    """y/N on the terminal before the service stops: each session that
+    ends, what that stops, and whether it is saved (as `_confirm`)."""
+    notes = {"working": " -- it works now: its turn is stopped at its next safe point",
+             "waiting for you": " -- it waits for you: its open question is refused "
+                                "and its turn is stopped"}
+    for r in live:
+        unsaved = " (not saved)" if not r["saves"] else ""
+        print(f"  {r['id'][:8]}  {r['title'][:40]}  ({r['state']}){unsaved}{notes.get(r['state'], '')}")
+    n = len(live)
+    sessions = "its session" if n == 1 else f"its {n} sessions"
+    kept = ("the next service offers them again" if restart
+            else "they are saved and can be resumed")
+    if not all(r["saves"] for r in live):
+        kept += " (those marked (not saved) are not)"
+    try:
+        answer = input(f"{'Restart' if restart else 'Stop'} the agent service? "
+                       f"It ends {sessions}; {kept}. [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    print("nothing stopped")
+    return False
+
+
+def _confirm_unanswering(pid: int, action: str) -> bool:
+    """y/N before a service that does not answer is ended by signal: its
+    sessions cannot be listed, only said to end and save."""
+    try:
+        answer = input(f"End it by signal (pid {pid}){' and start it again' if action == 'restart' else ''}? "
+                       "Its sessions end and save; a running turn is stopped. [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    print("nothing stopped")
     return False
 
 
