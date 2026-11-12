@@ -467,6 +467,8 @@ points of layers 1 to 4:
   settings and `DELFIN_CLASSIFIER`;
 - `audit_log`: a copy of every audit line to the administrator's
   destination.
+- `clusters`: which HPC clusters DELFIN may use, whether it installs
+  itself there, and a batch's core-hour ceiling (see "HPC clusters").
 
 A file is trusted when it and every directory above it are owned by root
 or by the account that installed the package and none is group- or
@@ -655,6 +657,95 @@ uploaded files are owner-only (0600), and where an upload replaces a file
 and renamed over it, so a link at that name is replaced, not followed. The
 Calculations browser does not enter a folder, or open a file, whose real
 path is outside its root (`DELFIN_BROWSER_FOLLOW_LINKS` = 1 allows it).
+
+## HPC clusters
+
+DELFIN running on a user's PC can send calculations to an HPC cluster
+(`delfin.remote.jobs` and the rest of DELFIN's remote package, the cluster
+tools in `cluster_tools`). What this adds
+to protect is the user's login on the cluster: whoever can use it runs
+commands, reads files and spends compute budget as that user. How a person
+uses it is in the [User Manual](USER_MANUAL.md#from-your-pc-running-jobs-on-a-cluster).
+
+**Who holds the login.** cluster-tunnel (ctun) keeps one logged-in ssh
+master per cluster on the PC. Only DELFIN's own process uses it: the agent
+service and the job watcher (`delfin.remote.connection`, which refuses
+inside an agent session, `DELFIN_AGENT_SESSION`). The password and OTP are
+typed into the window's masked field and go out in one cluster.login
+request that the service hands to ctun's login. They reach no session
+worker, event, log, input history or error text, and an agent session
+cannot send the request: cluster.login, cluster.add, cluster.pin and
+cluster.remove are taken only from a window
+(`delfin.agent.service.supervisor.ACTING`).
+
+**The pinned host key.** A cluster is used only once ctun has pinned its
+host key (`delfin.remote.clusters.load` reports it as a problem
+otherwise). The logged-in master is the user's whole identity on the
+cluster, and a key accepted on first contact could be anyone's. Adding a
+cluster in the window pins a preset's key only when the server presents
+exactly the fingerprint its operators publish; any other key is shown to
+the person, who pins exactly the key shown or nothing.
+
+**What the agent may do.** Seven tools, advertised only while a cluster is
+configured (`api_client._CLUSTER_TOOL_NAMES`):
+
+- *Unasked:* the status, and reading DELFIN's work dir on the cluster.
+- *Asked every time, in every mode, `bypassPermissions` included:*
+  submitting, cancelling, uploading, every `cluster_run` command, and
+  reading or fetching outside the work dir. With nobody to ask the call is
+  refused; a refusal is not asked again in the session.
+- *Never:* `~/.ssh`, `~/.config`, the shell histories, names the secret
+  deny list knows (`cluster_tools._PRIVATE`, `cluster_tools._KEYS`) and
+  other users' homes, judged where a path really leads. A fetch brings no
+  link along; an upload stays in the work dir and takes no link, secret or
+  DELFIN state off the PC.
+- **`cluster_run` cannot submit or cancel.** `sbatch`, `srun`, `salloc`,
+  `scancel` and the cluster's guard commands are refused
+  (`cluster_tools._SUBMIT`, `cluster_tools._CANCEL`), also inside
+  `bash -c`, after `env`, `timeout` or `xargs` and in `$(...)`, and pointed
+  to `cluster_submit` and `cluster_cancel`. It also passes the bash gate's
+  deny patterns and the user's deny rules.
+- **A batch is approved as a whole and runs as approved.** `cluster_submit`
+  checks folders, partition, budget and the managed ceiling before the one
+  dialog, and the files and budget again before the first `sbatch`.
+  Exactly the counted files are uploaded. When the cluster first needs an
+  install, the approved batch is kept and submitted later by the job
+  watcher without a second question, after the same checks again; when
+  they fail, nothing is submitted.
+- **The agent can only propose a cluster.** `cluster_tools.propose` leaves
+  a NEEDS YOU item that opens the add form filled in; the person sends it.
+  It writes neither ctun's config nor DELFIN's settings.
+
+Everything that comes back from a cluster reaches the model fenced as
+untrusted text (`cluster_tools._fenced`). Every change on a cluster and
+every refused command is written to the audit log.
+
+**Masks and deny lists.** ctun's config and cache directories
+(`state_dirs` of DELFIN's remote package) are masked in every cage and denied to every
+file tool, at their real place, and created at once so nothing can be
+planted there. They hold the control sockets of the logged-in masters and
+the ssh options DELFIN's own process runs with: a `ProxyCommand` written
+there would run outside every cage. The read gate judges where a path
+really lies, so a granted `~/.config` does not open them. DELFIN's
+settings file, which names the clusters, is denied to the agent's file
+tools as well.
+
+**The managed policy.** The `clusters` block of a managed policy can keep
+a cluster out (`allowed`), turn automatic installs off (`auto_install`)
+and cap a batch's core-hours (`max_core_hours_per_batch`); each is a
+ceiling, as described in section 6.
+
+**The login node's share.** A cluster's login node is shared by every user
+of the machine; in November 2026 an account was suspended after DELFIN
+processes filled one (upstream issue 640). Two rules hold since then. On a
+login node, DELFIN's heavy parts start only inside a Slurm job, and a
+watcher stops a DELFIN process that keeps the user above
+`delfin.hpc_guard.LOGIN_CORE_BUDGET` cores (`delfin.hpc_guard.watch`).
+DELFIN's own install on a cluster, the one part that runs on the login
+node, builds on `delfin.remote.install.INSTALL_CORES` core (the budget less
+one for the person's own work) under `nice -n 19`, with one BLAS and
+OpenMP thread. An install the watcher stopped anyway is reported as
+stopped and its batch is not submitted.
 
 ## What each layer guarantees on which host
 
