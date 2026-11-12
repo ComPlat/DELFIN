@@ -9,7 +9,12 @@ Rules enforced here (the operator's own swarm practice, made declarative):
 - no owned glob may cover a protected path (the safety frame is not a
   deliverable): see PROTECTED_GLOBS;
 - the spec may not exceed the session limit;
-- roles are a closed vocabulary: builder, reviewer, qs.
+- roles are a closed vocabulary: builder, reviewer, qs;
+- an owned entry is a path or path glob relative to the repository root
+  (``notes/**``, ``NOTES.md``): never absolute, never through ``..``;
+- ``permission_mode`` per package is one of MEMBER_MODES: the person
+  names the trust a package's members start with, and bypass is never
+  one of them.
 """
 
 from __future__ import annotations
@@ -55,6 +60,15 @@ PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/mcp_client.py",
     "delfin/agent/mcp_editor.py",
 )
+
+#: Permission modes a package may give its members (``permission_mode``).
+#: In a swarm job nobody sits at a member's terminal, so a builder that
+#: asks before every write of its own files stalls until the time limit;
+#: acceptEdits is safe for it because the owned scope is a hard limit in
+#: the permission gate (a write outside it is refused in every mode).
+#: bypassPermissions is never one: it would lift the asking for commands
+#: too, and nobody reads them.
+MEMBER_MODES: tuple[str, ...] = ("default", "acceptEdits", "plan")
 
 #: Upper bound on members per swarm. Each member is a paid session with a
 #: worktree; more than this stops being a swarm and becomes a queue.
@@ -117,6 +131,46 @@ def _check_protected(glob: str, pkg: str) -> None:
                 f"deliverable")
 
 
+def _check_owned(glob: Any, pkg: str) -> None:
+    """An owned entry is a relative path or path glob inside the repo."""
+    if not isinstance(glob, str) or not glob.strip() or glob != glob.strip():
+        raise SpecError(
+            f"package '{pkg}': owned entry {glob!r} is not a path or path "
+            f"glob (e.g. notes/** or NOTES.md)")
+    if glob.startswith(("/", "~")) or "\\" in glob or \
+            (len(glob) > 1 and glob[1] == ":"):
+        raise SpecError(
+            f"package '{pkg}': owned entry '{glob}' is absolute; owned "
+            f"paths are relative to the repository root (e.g. notes/** or "
+            f"NOTES.md)")
+    segments = glob.split("/")
+    if ".." in segments:
+        raise SpecError(
+            f"package '{pkg}': owned entry '{glob}' uses '..' -- a write "
+            f"scope never leaves the repository")
+    # A trailing '/' (``delfin/agent/``) has always been accepted; an empty
+    # segment inside (``a//b``) or a '.' one is a typo, not a scope.
+    if "." in segments or "" in segments[:-1]:
+        raise SpecError(
+            f"package '{pkg}': owned entry '{glob}' has an empty or '.' "
+            f"segment; write it plainly (a folder is folder/**)")
+
+
+def _check_mode(mode: Any, pkg: str) -> None:
+    if mode is None or mode in MEMBER_MODES:
+        return
+    if "bypass" in str(mode).lower():
+        raise SpecError(
+            f"package '{pkg}': permission_mode '{mode}' is refused -- a "
+            f"swarm member never runs in bypass. Nobody sits at its "
+            f"terminal to see what it runs. Use acceptEdits: it writes the "
+            f"package's owned files without asking, and anything outside "
+            f"them stays refused.")
+    raise SpecError(
+        f"package '{pkg}': permission_mode {mode!r} is not one of "
+        f"{', '.join(MEMBER_MODES)}")
+
+
 def validate_spec(spec: dict[str, Any]) -> None:
     """Validate a parsed swarm spec in place; raise SpecError on any rule."""
     if not spec.get("goal"):
@@ -162,12 +216,11 @@ def validate_spec(spec: dict[str, Any]) -> None:
                 f"package '{name}': missing 'owned' (a non-empty list of "
                 f"write globs)")
         for glob in owned:
-            if not isinstance(glob, str) or "*" not in glob and "/" not in glob:
-                raise SpecError(
-                    f"package '{name}': owned glob '{glob}' is not a path "
-                    f"glob")
+            _check_owned(glob, name)
             _check_protected(glob, name)
             scopes.append((name, glob))
+
+        _check_mode(pkg.get("permission_mode"), name)
 
         roles = pkg.get("roles")
         if roles is None:

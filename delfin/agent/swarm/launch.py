@@ -56,6 +56,7 @@ def plan_members(spec: dict[str, Any]) -> list[dict[str, Any]]:
     for pkg in spec["packages"]:
         roles = pkg.get("roles") or {"builder": True}
         for role in roles:
+            mode = member_mode(pkg, role)
             name = f"{pkg['name']}-{role}"
             branch = f"swarm/{pkg['name']}-{role}"
             worktree = f"{WORKTREE_DIR}/{pkg['name']}-{role}"
@@ -68,7 +69,7 @@ def plan_members(spec: dict[str, Any]) -> list[dict[str, Any]]:
                 "owned": list(pkg["owned"]),
                 "task": pkg.get("task", ""),
                 "goal": spec["goal"],
-                "permission_mode": "default",
+                "permission_mode": mode,
                 "role_prompt": f"delfin/agent/swarm/prompts/{role}.md",
                 "prompt_text": _prompts.render(role, {
                     "goal": spec["goal"],
@@ -82,19 +83,41 @@ def plan_members(spec: dict[str, Any]) -> list[dict[str, Any]]:
     return members
 
 
+def member_mode(pkg: dict[str, Any], role: str) -> str:
+    """The permission mode a member of *pkg* in *role* starts in.
+
+    The package's ``permission_mode`` (the person's decision, validated
+    by the spec: never bypass) applies to its builder, the member that
+    writes the owned files. Reviewer and QS read and run; they stay at
+    ``default`` unless the package says ``plan``, which holds for all.
+    Without the key every member starts at ``default``.
+    """
+    mode = str(pkg.get("permission_mode") or "default")
+    if role == "builder" or mode == "plan":
+        return mode
+    return "default"
+
+
 def plan_launch(spec: dict[str, Any]) -> dict[str, Any]:
     """The full launch plan: members + start order + what the user sees."""
     members = plan_members(spec)
+    # The example spec (and the help) put both under ``limits:``; a
+    # top-level key still wins, as before.
+    limits = spec.get("limits") if isinstance(spec.get("limits"), dict) \
+        else {}
     return {
         "goal": spec["goal"],
         "members": members,
-        "start_spacing_s": spec.get("start_spacing_s", 15),
-        "memory_gate": spec.get("memory_gate", True),
+        "start_spacing_s": spec.get("start_spacing_s",
+                                    limits.get("start_spacing_s", 15)),
+        "memory_gate": spec.get("memory_gate",
+                                limits.get("memory_gate", True)),
         "dry_run": True,
     }
 
 
-def start_members(spec: dict[str, Any], *, execute: bool = False) -> dict:
+def start_members(spec: dict[str, Any], *, execute: bool = False,
+                  repo: Path | str | None = None) -> dict:
     """Start the swarm: one worktree + branch per member.
 
     The default refuses: starting paid sessions must be a deliberate act
@@ -108,7 +131,19 @@ def start_members(spec: dict[str, Any], *, execute: bool = False) -> dict:
         raise LaunchError(
             "refusing to start without execute=True -- pass --dry-run to "
             "see the plan, or execute to start it")
-    repo = Path.cwd()
+    # Never on a shared login node (issue #640): there a swarm is
+    # submitted as a SLURM job (delfin.agent.swarm.job) and its job body
+    # calls this on the compute node.
+    from delfin.hpc_guard import on_login_node
+    if on_login_node():
+        raise LaunchError(
+            "a swarm does not start on a login node: it runs as a SLURM "
+            "job. Start it with `delfin-agent swarm start [swarm.yaml]` or "
+            "the Start button in the dashboard's Swarm tab; both submit "
+            "the job for you.")
+    # The repository the worktrees go into: the caller's (the dashboard
+    # passes the spec's repository), else the working directory as before.
+    repo = Path(repo) if repo else Path.cwd()
     started = []
     for member in plan["members"]:
         wt_path = repo / member["worktree"]
@@ -141,7 +176,7 @@ def render_dry_run(plan: dict[str, Any]) -> str:
                      f"(never bypass)")
         lines.append(f"    task: {m['task']}")
         lines.append("")
-    lines.append("Nothing started (dry run). Pass --execute to start.")
+    lines.append("Nothing started (dry run).")
     return "\n".join(lines)
 
 
@@ -161,6 +196,7 @@ limits:
 packages:
   - name: core
     owned: ["delfin/agent/swarm/**"]   # write scope, enforced by the gate
+    permission_mode: acceptEdits   # builder writes its owned files unasked; never bypass
     task: |
       Build the swarm core package. Red test first; commit per thought.
     roles:
@@ -168,6 +204,7 @@ packages:
       reviewer: true
   - name: ui
     owned: ["delfin/agent/dashboard/**"]
+    permission_mode: acceptEdits   # builder writes its owned files unasked; never bypass
     task: |
       Build the dashboard view on the status API.
     roles:
@@ -197,8 +234,10 @@ def write_member_settings(member: dict[str, Any], repo_dir: Path,
     - ``write_allow_globs`` is narrowed to the member's owned scope
       INTERSECTED with whatever is already there (never widened); a fresh
       member gets exactly its owned scope,
-    - the permission mode is never written as bypass (the member starts at
-      the default mode -- only the person grants more trust),
+    - the permission mode is never written as bypass: the member starts
+      in the mode the person named for its package in the spec
+      (``permission_mode``, see :func:`member_mode`), else ``default`` --
+      only the person grants more trust,
     - an unknown role is refused before anything is written.
 
     The role policy comes from :func:`delfin.agent.swarm.policy` so a
