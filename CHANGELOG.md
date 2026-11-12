@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Such an install is never removed as unused, and the next batch the person
   approves for that commit ends it and starts the install again (on a login
   node only a job may resume a stopped process).
+- **`/jobs` shows a batch that waits for its install** as a `BATCH` row of
+  its cluster, before the cluster's Slurm jobs: installing (and for how
+  long), installed and about to go in, stopped by hpc_guard, failed, or
+  waiting for a login. `space` shows the approved jobs, the commit and the
+  install log's last lines. Once the watcher has settled the batch, the row
+  goes: its jobs, or NEEDS YOU, say what became of it.
 
 ### Added — a cluster is added in the window, and an agent can only propose one
 

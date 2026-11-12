@@ -28,8 +28,9 @@ Semantics:
   sub-agents and wake-ups, one group per session; the jobs DELFIN's job
   monitor watches; the user's active jobs on each logged-in cluster, all of
   them (also those submitted by hand), asked at most twice a minute per
-  cluster. A source that cannot be read is named in ``errors``, never shown
-  as empty.
+  cluster, after the batches that wait there for an install (also on a
+  cluster nobody is logged in to: they wait for the login). A source that
+  cannot be read is named in ``errors``, never shown as empty.
 * Everything shown comes from places other processes write (a cluster's job
   names, a watch file in a workspace), so every string is cut to one line
   of printable characters: no escape sequence reaches the terminal.
@@ -256,26 +257,138 @@ def _cluster_groups(settings: Optional[dict], errors: list[str]) -> list[dict]:
     except Exception as exc:  # noqa: BLE001
         errors.append(clean(f"the clusters could not be read: {exc}", 200))
         return out
+    waiting = _waiting_batches(errors)
     for name, cluster in listed.items():
-        if not cluster.usable:
+        batches = waiting.get(name, [])
+        if not cluster.usable and not batches:
             continue
+        conn, listing = None, []
         try:
-            conn = connection.connect(name, settings=settings)
-            if not conn.is_live():
-                continue
-            listing = _cached(("jobs", name), JOBS_PROBE_S, conn.jobs)
+            if cluster.usable:
+                conn = connection.connect(name, settings=settings)
+                if not conn.is_live():
+                    conn = None
+                else:
+                    listing = _cached(("jobs", name), JOBS_PROBE_S, conn.jobs)
         except RemoteError as exc:
             errors.append(clean(f"{name}: {exc.code}: {exc}", 200))
+            conn, listing = None, []
+            if not batches:
+                continue
+        if conn is None and not batches:
             continue
-        rows = [{"id": clean(j.jobid, 32), "kind": clean(j.partition, 24),
-                 "label": clean(j.name, 120), "state": clean(j.state, 24),
-                 "detail": clean(f"{j.elapsed} of {j.timelimit} · {j.nodes} node(s)", 80)}
-                for j in listing if getattr(j, "source", "") == "active"]
+        rows = [_batch_row(name, entry, conn) for entry in batches]
+        rows += [{"id": clean(j.jobid, 32), "kind": clean(j.partition, 24),
+                  "label": clean(j.name, 120), "state": clean(j.state, 24),
+                  "detail": clean(f"{j.elapsed} of {j.timelimit} · {j.nodes} node(s)", 80)}
+                 for j in listing if getattr(j, "source", "") == "active"]
         finished = sum(1 for j in listing if getattr(j, "source", "") != "active")
         out.append({"source": "cluster", "cluster": clean(name, 64),
                     "title": clean(f"{name} ({cluster.target})", 120), "rows": rows,
                     "finished": finished})
     return out
+
+
+# --- batches that wait for their install ---------------------------------------------
+#
+# What cluster_submit kept because the cluster did not have the PC's commit
+# yet (delfin.remote.jobs.queue_after_install): a row in its cluster's group
+# until the job watcher has submitted it -- then its Slurm jobs take its
+# place -- or settled it as not submitted, which NEEDS YOU reports. A row's
+# id is "batch-<id>", which job.detail takes as a batch, never as a Slurm id.
+
+BATCH_PREFIX = "batch-"
+_BATCH_ID = re.compile(r"batch-[0-9a-f]{4,32}")
+
+#: An install's state, as the row says it: (state word, what the detail says).
+_INSTALL_LOOK = {
+    "running": ("INSTALLING", "installing {sha} ({minutes} min)"),
+    "complete": ("SUBMITTING", "{sha} installed; it goes in at the watcher's next look"),
+    "stopped": ("STOPPED", "the install of {sha} was stopped (hpc_guard); not submitted"),
+}
+
+
+def _waiting_batches(errors: list[str]) -> dict[str, list[dict]]:
+    """The kept batches still waiting, per cluster, oldest first."""
+    try:
+        from delfin.remote import jobs as remote_jobs
+        out: dict[str, list[dict]] = {}
+        for entry in remote_jobs.pending():
+            out.setdefault(str(entry.get("cluster") or ""), []).append(entry)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        errors.append(clean(f"the batches waiting for an install could not be read: {exc}", 200))
+        return {}
+
+
+def _install_state(name: str, conn, sha: str) -> str:
+    """complete | running | stopped | failed | ..., asked at most once per probe
+    interval; "" when it could not be asked."""
+    from delfin.remote import install
+    from delfin.remote.errors import RemoteError
+    try:
+        return _cached((f"install:{sha}", name), JOBS_PROBE_S, lambda: install.state(conn, sha))
+    except RemoteError:
+        return ""
+
+
+def _batch_row(name: str, entry: dict, conn) -> dict:
+    sha = str(entry.get("commit") or "")[:8]
+    count = len(entry.get("jobs") or [])
+    label = f"waiting for install · {count} job{'' if count == 1 else 's'}"
+    minutes = max(0, int((time.time() - float(entry.get("queued_at") or time.time())) // 60))
+    if conn is None:
+        state, detail = "LOGIN", f"waits for a login to {name}, then for the install of {sha}"
+    else:
+        current = _install_state(name, conn, str(entry.get("commit") or ""))
+        if not current:
+            state, detail = "", f"the install of {sha} could not be asked"
+        elif current in _INSTALL_LOOK:
+            state, text = _INSTALL_LOOK[current]
+            detail = text.format(sha=sha, minutes=minutes)
+        else:
+            state, detail = "FAILED", f"the install of {sha} {current}; not submitted"
+    return {"id": clean(BATCH_PREFIX + str(entry.get("id") or ""), 40), "kind": "BATCH",
+            "label": clean(label, 120), "state": state, "detail": clean(detail, 160)}
+
+
+def _batch_detail(name: str, row_id: str, settings: Optional[dict]) -> dict:
+    """A waiting batch's details: the approved jobs, the commit, the install's
+    state and the last lines of its log (when the cluster is logged in)."""
+    from delfin.remote import connection
+    from delfin.remote import install
+    from delfin.remote import jobs as remote_jobs
+    from delfin.remote.errors import RemoteError
+
+    if not _BATCH_ID.fullmatch(row_id):
+        return {"sections": [], "error": "not a batch"}
+    entry = next((e for e in remote_jobs.pending(cluster=name)
+                  if BATCH_PREFIX + str(e.get("id") or "") == row_id), None)
+    if entry is None:
+        return {"sections": [], "error": "that batch no longer waits: see its jobs, or NEEDS YOU"}
+    sha = str(entry.get("commit") or "")
+    jobs = (entry.get("batch") or {}).get("jobs") or []
+    state, tail = "", []
+    try:
+        conn = connection.connect(name, settings=settings)
+        if conn.is_live():
+            state = install.state(conn, sha)
+            tail = (install.log_tail(conn, sha) or "").splitlines()[-TAIL_LINES:]
+        else:
+            state = "waits for a login"
+    except RemoteError as exc:
+        state = f"not asked: {exc.code}"
+    sections = [
+        _section("Batch", [("Cluster", name), ("Commit", sha[:12]), ("Install", state),
+                           ("Waiting since", _when(entry.get("queued_at"))),
+                           ("Jobs", str(len(jobs)))]),
+        _section("Approved jobs", lines=[
+            f"{j.get('folder', '')} · {j.get('cores', '?')} cores · {j.get('mem_mb', '?')} MB"
+            f" · {j.get('time', '?')}" for j in jobs] or ["(none)"]),
+    ]
+    if tail:
+        sections.append(_section(f"Install log, last {TAIL_LINES} lines", lines=tail))
+    return {"sections": sections, "error": None}
 
 
 # --- details: what Space on an entry shows -------------------------------------------
@@ -432,7 +545,8 @@ def job_detail(params: dict, sessions: Iterable[dict], *,
 
     ``source`` cluster: ``cluster`` and ``id``, which must be one of the
     user's active jobs there -- Slurm's facts, where it runs, and its
-    output's tail. ``source`` agent: ``session`` (an id this service runs:
+    output's tail -- or a batch waiting there for its install
+    (``batch-<id>``): its approved jobs, the commit and the install's log. ``source`` agent: ``session`` (an id this service runs:
     its workspace is looked up here, never taken from the window), ``group``
     and ``id`` -- the background item's output tail. ``source`` monitor:
     the watch entry."""
@@ -440,6 +554,9 @@ def job_detail(params: dict, sessions: Iterable[dict], *,
     job_id = str(params.get("id") or "")
     if source == "cluster":
         name = str(params.get("cluster") or "")
+        if job_id.startswith(BATCH_PREFIX):
+            return _cached(("batch", f"{name}:{job_id}"), DETAIL_S,
+                           lambda: _batch_detail(name, job_id, settings))
         return _cached(("job", f"{name}:{job_id}"), DETAIL_S,
                        lambda: _cluster_job_detail(name, job_id, settings))
     if source == "agent":
