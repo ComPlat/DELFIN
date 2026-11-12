@@ -1422,6 +1422,11 @@ class AgentEngine:
             "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
+            # The endpoint's hourly token quota, when a quota 429 was seen
+            # (tokens): a person reads how close the key is to the reset.
+            "quota_tokens_used": getattr(self.client, "quota_tokens_used", None),
+            "quota_tokens_limit": getattr(
+                self.client, "quota_tokens_limit", None),
             # The model second opinion: switch, model, scope, last failure.
             "watcher": self._watcher_status(),
         }

@@ -561,6 +561,8 @@ export function App(props: AppProps): JSX.Element {
   const watch = createSwarmWatch({
     keymap: props.keymap,
     now: () => Date.now() / 1000,
+    // The envelope unwrapped here, like askTriage's: the request returns
+    // { rows: [...] } (protocol.py), the watch state holds the rows.
     askOverview: () => props.client.request("swarm.observe.overview",
       { sourcePath: watchSource }).then((r) => (r as any)?.rows ?? []) as never,
     askFeed: (name) => props.client.request("swarm.observe.feed", { session: name })
@@ -1165,6 +1167,7 @@ export function App(props: AppProps): JSX.Element {
       onOfferClick={() => void clickOffer()}
       agents={agents}
       swarm={swarm}
+      watch={watch}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}
       others={others}

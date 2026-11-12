@@ -1031,10 +1031,12 @@ _CHAT_MORPH_JS = (
     "if(shown.getAttribute(a.name)!==a.value)shown.setAttribute(a.name,a.value);});"
     "var want=Array.from(fresh.childNodes).filter(function(n){"
     "return n.nodeType===1||(n.nodeType===3&&n.data.trim());});"
-    "var keys=want.map(function(n){"
-    "return n.nodeType===1?n.outerHTML:'#'+n.data;});"
+    "var keys=want.map(function(n){return key(n);});"
     "var have=Array.from(shown.childNodes);var p=0;"
-    "function key(n){return n.nodeType===1?n.outerHTML:'#'+n.data;}"
+    "function key(n){if(n.nodeType!==1)return '#'+n.data;"
+    "if(n.classList&&n.classList.contains('delfin-chat-turn-steps')){"
+    "var c=n.cloneNode(true);c.removeAttribute('open');return c.outerHTML;}"
+    "return n.outerHTML;}"
     "function stamp(n){n.__delfinKey=key(n);"
     "Array.from(n.childNodes).forEach(function(c){c.__delfinKey=key(c);});return n;}"
     "while(p<want.length&&p<have.length){"
@@ -1511,6 +1513,20 @@ _AGENT_CSS = """\
 .delfin-chat-tool + .delfin-chat-tool {
     margin-top: 4px;
 }
+/* A finished turn's folded steps: same card base as every message (the
+   element itself carries .delfin-chat-msg), only the one-line summary
+   row is styled here -- same muted tone the chat uses for its meta
+   text, same cursor affordance any expandable row has. */
+.delfin-chat-turn-steps > summary {
+    cursor: pointer;
+    color: var(--delfin-chat-muted, #64748b);
+    font-size: 12px;
+    line-height: 1.5;
+    user-select: none;
+}
+.delfin-chat-turn-steps > summary::marker {
+    color: var(--delfin-chat-muted, #64748b);
+}
 .delfin-chat-user {
     background: #e8f0fe;
     /* The background is fixed, so the text colour is too: inherited, it
@@ -1528,6 +1544,64 @@ _AGENT_CSS = """\
     border: 1px solid #e5e7eb;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
+/* A delegated sub-agent as one card in the transcript. The bubble is the
+   chat's own .delfin-chat-msg (its 12 px corner, padding, margin); these
+   rules only dress the card's own rows. Full width like the system line:
+   a card that is a chat message keeps the chat's flow. */
+.delfin-delegate-card {
+    background: #ffffff;
+    color: #111827;
+    margin-right: auto;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
+}
+.delfin-delegate-card .delegate-head {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.delfin-delegate-card .delegate-state { font-weight: 600; }
+.delfin-delegate-card .delegate-title { font-weight: 600; }
+.delfin-delegate-card .delegate-type,
+.delfin-delegate-card .delegate-model,
+.delfin-delegate-card .delegate-elapsed {
+    font-size: 10px;
+    color: #6b7280;
+}
+.delfin-delegate-card .delegate-summary {
+    margin: 4px 0 2px 0;
+    font-size: 12px;
+    color: #374151;
+    white-space: pre-wrap;
+}
+.delfin-delegate-card .delegate-more pre {
+    font-size: 11px;
+    white-space: pre-wrap;
+    max-height: 18em;
+    overflow: auto;
+}
+.delfin-delegate-card .delegate-actions {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+.delfin-delegate-card .delegate-actions button {
+    font-size: 10px;
+    padding: 1px 8px;
+    cursor: pointer;
+}
+.delfin-delegate-card .delegate-state-word {
+    font-size: 10px;
+    color: #6b7280;
+}
+.delfin-delegate-running .delegate-state { color: #2563eb; }
+.delfin-delegate-done .delegate-state { color: #15803d; }
+.delfin-delegate-failed .delegate-state { color: #b91c1c; }
+.delfin-delegate-stopped .delegate-state { color: #6b7280; }
 .delfin-chat-system {
     background: #f3f4f6;
     margin: 4px 0;
@@ -2886,6 +2960,7 @@ _BUILTIN_SLASH_PREFIXES = frozenset({
     "/trace", "/loop", "/auto",
     "/undo-file", "/profile", "/skill", "/tools",
     "/memory", "/share", "/unshare", "/lessons", "/swarm", "/knowledge",
+    "/delegate-open", "/delegate-stop",
 })
 
 
@@ -3040,6 +3115,120 @@ def _assistant_turn_is_wordless(msg: dict) -> bool:
     drifting apart is how an empty box ends up before every tool line.
     """
     return not str(msg.get("content") or "").strip()
+
+
+def _format_fold_time(duration_s) -> str:
+    """The fold line's wall time: ``12.4`` -> ``12s``, ``65`` -> ``1m 05s``.
+
+    Past a minute the minutes and seconds go in their own groups, seconds
+    zero-padded to two, so a minute and five seconds does not read as
+    "1m 5s" (which looks like a typo of 15s). Hours are not folded to
+    minutes: a turn that ran 1h 04m keeps the hour visible.
+    """
+    try:
+        seconds = int(round(float(duration_s)))
+    except (TypeError, ValueError, OverflowError):
+        seconds = 0
+    if seconds < 0:
+        seconds = 0
+    elif seconds == 0 and duration_s:
+        # A turn that ran at all took time: 0.5s must not read as 0s.
+        seconds = 1
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m {sec:02d}s"
+
+
+def _render_turn_fold_line(duration_s, outcome: str) -> str:
+    """The one-line fold summary text for a finished turn.
+
+    ``Worked for 12s`` when the turn ended well; ``Stopped after 40s``
+    when it was stopped or ended in an error -- the same wording the
+    end-of-turn summary line uses (``delfin.agent.turn_summary``), so the
+    transcript does not say success and failure in two dialects.
+    """
+    duration = _format_fold_time(duration_s)
+    outcome = str(outcome or "").strip().lower()
+    if outcome in ("ok", "success", "done", ""):
+        return f"Worked for {duration}"
+    return f"Stopped after {duration}"
+
+
+def _render_transcript(msgs, render_single):
+    """Render the transcript, folding finished turns' steps.
+
+    Input: *msgs*, the chat_messages list; *render_single*, the per-message
+    renderer (a closure over the tab's state). Output: the list of HTML
+    parts, one per top-level transcript node, in order.
+
+    Semantics: while a turn runs no message carries a ``turn_fold`` meta,
+    so every message renders on its own exactly as before. A message with
+    ``turn_fold`` ends a turn: the tool and thinking steps since the
+    turn's user message fold behind one native <details>/<summary> line
+    ("Worked for 12s"; "Stopped after 40s" for an error or stopped turn,
+    which stays unfolded). The ending answer itself stays visible below
+    the fold line. Rejected alternative: rendering the fold inside
+    _render_single_msg -- the fold spans several messages, so the grouping
+    must see the whole turn.
+
+    The fold element carries class ``delfin-chat-msg delfin-chat-turn-steps``
+    (the chat's own card base, one 12 px corner) so the chat's layout rules
+    apply unchanged.
+    """
+    def is_step(msg):
+        return msg.get("role") in ("tool", "thinking")
+
+    parts = []
+    i = 0
+    n = len(msgs)
+    while i < n:
+        msg = msgs[i]
+        if not (is_step(msg) or i + 1 < n and is_step(msg)):
+            parts.append(render_single(msg))
+            i += 1
+            continue
+        # A run of steps: check whether it ends in a turn_fold-marked
+        # message (the fold's boundary), otherwise render live as today.
+        # System notices (a retry line, a model switch) inside the turn
+        # belong to its steps; a turn that ends in an error ends on one.
+        j = i
+        while j < n and not msgs[j].get("turn_fold") and (
+                is_step(msgs[j]) or msgs[j].get("role") == "system"
+                or (msgs[j].get("role") == "assistant"
+                    and _assistant_turn_is_wordless(msgs[j]))):
+            j += 1
+        if j == i:
+            # The step itself ends the turn: nothing to fold before it.
+            parts.append(render_single(msg))
+            i += 1
+            continue
+        if j < n and msgs[j].get("turn_fold"):
+            fold = msgs[j]["turn_fold"] or {}
+            folded = [render_single(m) for m in msgs[i:j]]
+            line = _render_turn_fold_line(fold.get("duration_s"),
+                                          fold.get("outcome"))
+            stopped = str(fold.get("outcome") or "").strip().lower() not in (
+                "ok", "success", "done", "")
+            attrs = " open" if stopped else ""
+            parts.append(
+                f'<details class="delfin-chat-msg delfin-chat-turn-steps"'
+                f'{attrs}><summary>{_html.escape(line)}</summary>'
+                + "".join(folded) + "</details>")
+            parts.append(render_single(msgs[j]))
+            i = j + 1
+            continue
+        # No fold: render each message on its own, as before.
+        while i < j:
+            parts.append(render_single(msgs[i]))
+            i += 1
+        if i < n and msgs[i].get("role") == "assistant":
+            parts.append(render_single(msgs[i]))
+            i += 1
+    return parts
 
 
 # The diagram renderer. Pinned to an exact version and to the bytes of that
@@ -7074,6 +7263,402 @@ def _render_subagent_pane_html(calls: list[dict]) -> str:
         + '<ul style="list-style:none;margin:0;padding:0;">'
         + "".join(rows) + '</ul></div>'
     )
+
+
+#: The tool names a delegation reaches the tab under: ``Agent`` on the
+#: Anthropic path, ``subagent`` on DELFIN's own (KIT/OpenAI) path, the
+#: namespace already stripped.
+_DELEGATE_TOOLS = frozenset({"Agent", "subagent"})
+
+
+def _delegate_state_for(status: str) -> str:
+    """One of the four card states the transcript shows: running, done,
+    failed, stopped. Anything unknown runs as running — a card that shows
+    no state shows motion."""
+    s = str(status or "").strip().lower()
+    if s in ("done", "completed", "ok"):
+        return "done"
+    if s in ("failed", "error"):
+        return "failed"
+    if s in ("stopped", "cancelled", "canceled", "stopping"):
+        return "stopped"
+    return "running"
+
+
+_DELEGATE_STATE_META = {
+    "running": ("↻", "delfin-delegate-running", "running"),
+    "done": ("✓", "delfin-delegate-done", "done"),
+    "failed": ("✗", "delfin-delegate-failed", "failed"),
+    "stopped": ("⏹", "delfin-delegate-stopped", "stopped"),
+}
+
+
+def _delegate_elapsed_text(call: dict, now: float | None = None) -> str:
+    """How long the delegate has run, as seconds text.
+
+    The payload's own ``elapsed_s`` (round(self.elapsed_s, 2) in
+    subagents.py) wins once it is there; before that the card counts
+    from ``started_at``, so a running card shows live progress.
+    """
+    elapsed = call.get("elapsed_s")
+    if elapsed is None:
+        started = call.get("started_at")
+        try:
+            elapsed = (now if now is not None else time.time()) - float(started)
+        except (TypeError, ValueError):
+            elapsed = None
+    try:
+        elapsed = float(elapsed)
+    except (TypeError, ValueError):
+        return ""
+    if elapsed < 0 or elapsed != elapsed:       # a stale/absurd stamp
+        return ""
+    if elapsed >= 3600:
+        return f"{int(elapsed // 3600)}h{int((elapsed % 3600) // 60):02d}m"
+    return f"{int(elapsed + 0.5)}s"
+
+
+def _delegate_summary_lines(call: dict, *, max_lines: int = 3) -> str:
+    """The first lines of a delegate's report, for the card face.
+
+    The tool result is the payload the parent model gets (see
+    ``_subagent_report_text``); the first lines are the answer's head,
+    the rest goes behind "more" in the card's details fold. Nothing
+    shown here is a promise about what the report is worth — the
+    verification notice, when the payload carries one, stays in view.
+    """
+    output = call.get("output") or ""
+    status = _delegate_state_for(call.get("status"))
+    if not output or status == "running":
+        # A running delegate has no report yet; what came back so far is
+        # the start notice ("started_in_background"), not a summary.
+        return ""
+    text = _subagent_report_text(str(output))
+    if status == "failed":
+        return text.strip() or "the run failed"
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    return "\n".join(lines[:max_lines])
+
+
+def _render_delegate_card_html(call: dict, now: float | None = None) -> str:
+    """One delegated task as a card in the parent's transcript.
+
+    ``call`` is one entry of the same list the subagent pane renders
+    (``state["subagent_calls"]``), extended with ``sa_id``, ``model``,
+    ``started_at`` and ``elapsed_s`` from the delegate's payload. The
+    card reuses the chat bubble's own class (and through it the 12 px
+    corner the chat shows) — the layout of this chat is the layout of
+    the tab, and a second, simpler one is not wanted. Open and Stop
+    reach the page script through data attributes, the way the chat's
+    jump button does; the handlers live in _AGENT_PAGE_JS.
+    """
+    if not isinstance(call, dict):
+        return ""
+    sa_id = _html.escape(str(call.get("sa_id") or ""))
+    sub_type = _html.escape(str(call.get("subagent_type") or "agent"))
+    desc = _html.escape(str(call.get("description") or "")[:120])
+    model = _html.escape(str(call.get("model") or "")[:60])
+    state = _delegate_state_for(call.get("status"))
+    if state == "running" and call.get("background") and sa_id:
+        # A background delegate reports through a later turn, not this
+        # card's call; once it is no longer in the running register the
+        # card stops offering Stop.
+        try:
+            from delfin.agent import subagents as _sa
+            if str(call.get("sa_id")) not in (_sa.read_running() or {}):
+                state = "done"
+        except Exception:
+            pass
+    glyph, state_cls, state_word = _DELEGATE_STATE_META[state]
+    elapsed = _delegate_elapsed_text(call, now)
+
+    meta = [f'<span class="delegate-type">{sub_type}</span>']
+    if model:
+        meta.append(f'<span class="delegate-model">{model}</span>')
+    if elapsed:
+        meta.append(f'<span class="delegate-elapsed">{elapsed}</span>')
+    meta_html = "".join(f" {m}" for m in meta)
+
+    summary = _delegate_summary_lines(call)
+    if summary and state in ("done", "failed"):
+        esc = _html.escape(summary)
+        head, rest = summary.split("\n", 1) if "\n" in summary else (
+            summary, "")
+        face = f'<div class="delegate-summary">{_html.escape(head)}</div>'
+        if rest.strip():
+            face += (
+                '<details class="delegate-more">'
+                f'<summary>more</summary>'
+                f'<pre class="delegate-report">{_html.escape(summary)}</pre>'
+                '</details>'
+            )
+    elif summary:
+        face = (f'<div class="delegate-summary">'
+                f'{_html.escape(summary.splitlines()[0])}</div>')
+    else:
+        face = ""
+
+    # Open/Stop only where they mean something: a finished delegate has
+    # its transcript (Open), a running one has a Stop. The buttons are
+    # inert without the page script, which is also what the tests of the
+    # bridge assert on.
+    open_attr = f' data-delfin-delegate-open="{sa_id}"' if sa_id else ""
+    stop_attr = f' data-delfin-delegate-stop="{sa_id}"' if sa_id else ""
+    buttons = (
+        f'<button type="button" class="delegate-open"'
+        f'{open_attr}>Open</button>'
+        + (f'<button type="button" class="delegate-stop"'
+           f'{stop_attr}>Stop</button>' if state == "running" else "")
+    )
+    return (
+        f'<div class="delfin-chat-msg delfin-delegate-card '
+        f'{state_cls}">'
+        f'<div class="delegate-head">'
+        f'<span class="delegate-state">{_html.escape(glyph)}</span>'
+        f'<span class="delegate-title">{desc}</span>'
+        f'{meta_html}</div>'
+        f'{face}'
+        f'<div class="delegate-actions">{buttons}'
+        f'<span class="delegate-state-word">{_html.escape(state_word)}'
+        f'</span></div>'
+        f'</div>'
+    )
+
+
+def _delegate_payload_state(payload: dict, current: str) -> str:
+    """The card state a finished delegate's payload carries.
+
+    ``result`` and ``error`` are the payload's own fields (see
+    subagents.py's to_dict); an error is a failed run unless the entry
+    was already stopped, and a report is done.
+    """
+    if str(current) == "stopped":
+        return "stopped"
+    if str(payload.get("error") or "").strip():
+        return "failed"
+    if str(payload.get("result") or "").strip() or "result" in payload:
+        return "done"
+    return _delegate_state_for(current)
+
+
+def _emit_delegate_card(state: dict, call: dict) -> None:
+    """Put one delegate card in the transcript, in place.
+
+    The card is keyed by ``sa_id`` in ``state["chat_messages"]`` with
+    role ``delegate``: the first event for a delegate appends the card,
+    every later event for the SAME delegate rewrites that dict — no
+    second card per state refresh. A delegate without an id (the call
+    path before the engine answers) gets its own entry still: the id is
+    stitched in when the result arrives only when one unmatched card is
+    waiting, otherwise the entry stays the call's.
+
+    The pane's own list (``state["subagent_calls"]``) is NOT touched
+    here: the call and result paths append to it themselves, and the
+    Details-fold log keeps its current behaviour.
+    """
+    if not isinstance(state, dict) or not isinstance(call, dict):
+        return
+    msgs = state.setdefault("chat_messages", [])
+    sa_id = str(call.get("sa_id") or "")
+    if sa_id:
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and str(m.get("sa_id") or "") == sa_id):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
+        # The call's card has no id yet (the id comes with the result):
+        # the result takes over the oldest id-less running card -- the
+        # calls of one round finish in the order they were made.
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and not str(m.get("sa_id") or "")
+                    and _delegate_state_for(m.get("status")) == "running"):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
+    elif "sa_id" not in call:
+        # No id yet: an unmatched id-less call reuses the newest id-less
+        # running card rather than stacking a duplicate of itself.
+        for m in reversed(msgs):
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and not str(m.get("sa_id") or "")
+                    and _delegate_state_for(m.get("status")) == "running"):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
+    entry = dict(call)
+    msgs.append({"role": "delegate", **entry})
+    _refresh_chat_html_state(state)
+
+
+def _agent_payload_of(tool_output) -> dict | None:
+    """The delegate result payload, if the output is a JSON object."""
+    if isinstance(tool_output, dict):
+        return tool_output
+    if not isinstance(tool_output, str):
+        return None
+    try:
+        import json as _json
+        parsed = _json.loads(tool_output)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _on_tool_call_card(state: dict, tool_name, payload):
+    """The 'Agent' tool-call path, shared by the stream and the card API.
+
+    Appends the pane's own entry (the Details-fold log keeps it) and puts
+    the running card in the transcript. Returns the parsed call, or None
+    when this is not an Agent call.
+    """
+    if str(tool_name) not in _DELEGATE_TOOLS:
+        return None
+    parsed = payload if isinstance(payload, dict) else (
+        _agent_payload_of(payload) or {})
+    desc = str(parsed.get("description") or "")
+    prompt = str(parsed.get("prompt") or "")
+    sub_type = str(parsed.get("subagent_type") or "general-purpose")
+    state["subagent_calls"].append({
+        "subagent_type": sub_type,
+        "description": desc,
+        "prompt": prompt,
+        "status": "running",
+        "output": "",
+    })
+    # One card in the transcript where the delegation started; updated
+    # in place by later events.
+    _emit_delegate_card(state, {
+        "subagent_type": sub_type,
+        "description": desc,
+        "model": str(parsed.get("model") or ""),
+        "status": "running",
+        "started_at": time.time(),
+        "output": "",
+    })
+    return parsed
+
+
+def _on_tool_result_card(state: dict, tool_name, payload):
+    """The 'Agent' tool-result path, shared by the stream and the card API.
+
+    Marks the pane entry and the card of THAT delegate done/failed —
+    keyed by the ``sa_id`` the payload carries; two parallel delegates
+    must not collide into "first running wins". A non-JSON payload still
+    falls back to the first running entry (the historical behaviour).
+    """
+    if str(tool_name) == "subagent_result":
+        # A background delegate's report, collected later: it updates the
+        # card that already carries the id and never adds one.
+        parsed = _agent_payload_of(payload)
+        sa = str((parsed or {}).get("sa_id") or "")
+        if parsed is not None and sa and any(
+                isinstance(m, dict) and m.get("role") == "delegate"
+                and str(m.get("sa_id") or "") == sa
+                for m in state.get("chat_messages", [])):
+            _emit_delegate_card(state, {
+                "sa_id": sa,
+                "status": _delegate_payload_state(parsed, "running"),
+                "elapsed_s": parsed.get("elapsed_s"),
+                "output": payload if isinstance(payload, str) else ""})
+        return parsed
+    if str(tool_name) not in _DELEGATE_TOOLS:
+        return None
+    text = payload if isinstance(payload, str) else ""
+    parsed = _agent_payload_of(payload)
+    if parsed is not None:
+        for entry in state["subagent_calls"]:
+            if entry.get("status") == "running":
+                entry["status"] = _delegate_payload_state(
+                    parsed, entry.get("status"))
+                entry["output"] = text
+                entry["elapsed_s"] = parsed.get("elapsed_s")
+                break
+        _emit_delegate_card(state, {
+            "sa_id": str(parsed.get("sa_id") or ""),
+            "status": _delegate_payload_state(parsed, "running"),
+            "background": parsed.get("status") == "started_in_background",
+            "elapsed_s": parsed.get("elapsed_s"),
+            "output": text,
+        })
+    else:
+        for entry in state["subagent_calls"]:
+            if entry.get("status") == "running":
+                entry["status"] = "done"
+                entry["output"] = text
+                break
+        # A report that is not one JSON object (a verification note
+        # ahead of it, a plain-text runner) still finished the call.
+        _emit_delegate_card(state, {"output": text, "status": "done"})
+    return parsed
+
+
+def _refresh_chat_html_state(state: dict) -> None:
+    """Refresh the chat from a module-level helper.
+
+    ``create_tab``'s own refresh reads the tab's widgets; the state
+    carries the widget so a helper outside the closure can ask for the
+    same repaint. Absent (a test state) it repaints nothing.
+    """
+    widget = state.get("_chat_html_widget")
+    render = state.get("_chat_html_render")
+    if render is not None:
+        render()
+    elif widget is not None:
+        try:
+            widget.value = _chat_value(
+                "\n".join(_msg_html(m) for m in _transcript_msgs(state)))
+        except Exception:
+            pass
+
+
+def _transcript_msgs(state: dict) -> list:
+    return [m for m in state.get("chat_messages", [])
+            if isinstance(m, dict)]
+
+
+def _msg_html(msg: dict) -> str:
+    """Standalone single-message render for the state-level refresh."""
+    role = str(msg.get("role") or "")
+    if role == "delegate":
+        return _render_delegate_card_html(msg)
+    content = str(msg.get("content") or "")
+    cls = "delfin-chat-system" if role == "system" else "delfin-chat-tool"
+    return (f'<div class="delfin-chat-msg {cls}">'
+            f'{_html.escape(content)}</div>')
+
+
+def _delegate_stop(state: dict, sa_id: str, workspace: str) -> str:
+    """Stop one running delegate, through the same path as the panel.
+
+    ``background_view.cancel(workspace, "agents", sa_id)`` is what the
+    Background panel's × runs; the card's Stop runs it unchanged, and
+    marks the card stopped so no refresh resurrects it as running.
+    """
+    from delfin.agent import background_view as _bgv
+    result = _bgv.cancel(workspace, "agents", str(sa_id or ""))
+    msgs = state.setdefault("chat_messages", [])
+    for m in msgs:
+        if (isinstance(m, dict) and m.get("role") == "delegate"
+                and str(m.get("sa_id") or "") == str(sa_id or "")):
+            if _delegate_state_for(m.get("status")) == "running":
+                m["status"] = "stopped"
+                _refresh_chat_html_state(state)
+            break
+    return result
+
+
+def _delegate_open(state: dict, sa_id: str, workspace: str) -> str:
+    """Open one delegate's own transcript, as the panel's ▸ does.
+
+    ``background_view.peek`` is the existing drill-in; its last lines
+    land in the chat as a system line, the way the panel shows them.
+    """
+    from delfin.agent import background_view as _bgv
+    return _bgv.peek(workspace, "agents", str(sa_id or ""))
 
 
 def _render_todo_pane_html(todos: list[dict]) -> str:
@@ -13113,6 +13698,11 @@ def create_tab(ctx):
                 f'<div class="delfin-chat-msg delfin-chat-tool">'
                 f'{msg["content"]}</div>'
             )
+        elif role == "delegate":
+            # One delegated sub-agent as a card. The card is a chat bubble
+            # of the same class every message renders as; the dict is the
+            # pane's own entry, so the Details-fold log stays untouched.
+            return _render_delegate_card_html(msg)
         elif role == "system":
             if isinstance(msg.get("shell"), dict):
                 # `!` output: preformatted and escaped, never markdown.
@@ -13244,7 +13834,10 @@ def create_tab(ctx):
 
         # Fast path: during streaming, only re-render the last message.
         # The prefix (all messages before the last) is cached.
-        if streaming and n > 1 and _html_cache["prefix_count"] == n - 1:
+        # Not for a turn's last message: it carries the fold, which spans
+        # the messages before it, so the cached prefix is stale.
+        if (streaming and n > 1 and _html_cache["prefix_count"] == n - 1
+                and not msgs[-1].get("turn_fold")):
             last_html = _render_single_msg(msgs[-1])
             chat_html.value = _chat_value(
                 _CHAT_OPEN
@@ -13255,10 +13848,13 @@ def create_tab(ctx):
             )
             return
 
-        # Full rebuild: render all messages and cache the prefix
-        parts = []
-        for msg in msgs:
-            parts.append(_render_single_msg(msg))
+        # Full rebuild: render all messages and cache the prefix.
+        # A message that carries a ``turn_fold`` meta ends a turn: the
+        # tool and thinking steps between the turn's user message and it
+        # fold behind one summary line (see _render_turn_fold_line).
+        # While a turn runs no message carries the meta, so the steps
+        # render live exactly as before.
+        parts = _render_transcript(msgs, _render_single_msg)
 
         # Cache everything except the last message
         if n > 1:
@@ -16159,6 +16755,24 @@ def create_tab(ctx):
                 "\nType `/agents stats` for lifetime cost/duration aggregates."
             )
             _append_system_message("\n".join(lines))
+            return True
+
+        # The delegate cards in the chat speak through the input line: a
+        # click on their Open / Stop lands here as a command, and runs
+        # the same paths the view chips and the Background panel use.
+        if cmd.startswith("/delegate-open ") or cmd.startswith("/delegate-stop "):
+            _verb, _sa = cmd.split(" ", 1)
+            _sa = _sa.strip()
+            if not _sa:
+                return True
+            if _verb == "/delegate-stop":
+                _result = _delegate_stop(state, _sa, _agent_workspace_path())
+                _append_system_message(f"⏹ {_result}" if _result else "⏹")
+                _refresh_subagent_panel()
+            else:
+                state["_view_agent"] = _sa
+                _refresh_chat_html()
+                _refresh_agent_view_chips()
             return True
 
         if cmd == "/skills" or cmd.startswith("/skills "):
@@ -21357,18 +21971,11 @@ def create_tab(ctx):
                             f'<span class="tool-name">$</span> {_e(cmd)}'
                         )
 
-                    elif tool_name == "Agent":
+                    elif tool_name in _DELEGATE_TOOLS:
+                        _on_tool_call_card(state, tool_name, parsed)
                         desc = parsed.get("description", "")
                         prompt = parsed.get("prompt", "")[:80]
                         sub_type = parsed.get("subagent_type", "general-purpose")
-                        # Append to subagent panel state and refresh widget.
-                        state["subagent_calls"].append({
-                            "subagent_type": sub_type,
-                            "description": desc,
-                            "prompt": parsed.get("prompt", ""),
-                            "status": "running",
-                            "output": "",
-                        })
                         _pane_html = _render_subagent_pane_html(state["subagent_calls"])
                         if _pane_html:
                             subagent_pane_html.value = _pane_html
@@ -21583,12 +22190,12 @@ def create_tab(ctx):
                         return
                     tool_name = _bare
                     # Subagent panel: mark the next running call as done.
-                    if tool_name == "Agent":
-                        for entry in state["subagent_calls"]:
-                            if entry.get("status") == "running":
-                                entry["status"] = "done"
-                                entry["output"] = tool_output
-                                break
+                    if tool_name == "subagent_result":
+                        _on_tool_result_card(state, tool_name, tool_output)
+                    if tool_name in _DELEGATE_TOOLS:
+                        # Mark the pane entry and the card of THAT delegate
+                        # (the shared path updates both, keyed by sa_id).
+                        _on_tool_result_card(state, tool_name, tool_output)
                         _pane_html = _render_subagent_pane_html(state["subagent_calls"])
                         if _pane_html:
                             subagent_pane_html.value = _pane_html
@@ -22204,11 +22811,12 @@ def create_tab(ctx):
                         _rj = len(_bj.running_jobs_for_workspace(_ws))
                         _outcome = ("stopped" if getattr(
                             engine, "_stop_requested", False) else "ok")
+                        _dur = (time.monotonic()
+                                - float(state.get(
+                                    "_turn_started_monotonic")
+                                or time.monotonic()))
                         _summary_line = format_turn_summary(
-                            duration_s=(time.monotonic()
-                                        - float(state.get(
-                                            "_turn_started_monotonic")
-                                        or time.monotonic())),
+                            duration_s=_dur,
                             ended_at=_datetime.datetime.now().astimezone(),
                             outcome=_outcome,
                             running_jobs=_rj,
@@ -22219,12 +22827,20 @@ def create_tab(ctx):
                                 == "assistant"):
                             _meta = dict(state["chat_messages"][-1])
                             _meta["turn_summary"] = _summary_line
+                            _meta["turn_fold"] = {"duration_s": _dur,
+                                                  "outcome": _outcome}
                             state["chat_messages"][-1] = _meta
                         else:
                             _meta = {"role": "assistant", "content": "",
                                      "role_label": role_label,
-                                     "turn_summary": _summary_line}
+                                     "turn_summary": _summary_line,
+                                     "turn_fold": {"duration_s": _dur,
+                                                   "outcome": _outcome}}
                             state["chat_messages"].append(_meta)
+                        # The fold spans the turn's earlier messages: draw
+                        # it now, not on the next event (a finished turn
+                        # has none).
+                        _refresh_chat_html()
                     except Exception:
                         pass
 
@@ -23300,6 +23916,24 @@ def create_tab(ctx):
                     )
                 else:
                     _append_system_message(f"Error: {error_text}")
+                # The turn ended in an error: its steps fold too, but
+                # stay unfolded and say so ("Stopped after Ns"), the
+                # same wording the summary line uses.
+                try:
+                    _emsgs = state["chat_messages"]
+                    if _emsgs:
+                        _emsgs[-1] = dict(_emsgs[-1])
+                        _emsgs[-1]["turn_fold"] = {
+                            "duration_s": (
+                                time.monotonic()
+                                - float(state.get(
+                                    "_turn_started_monotonic")
+                                    or time.monotonic())),
+                            "outcome": "error",
+                        }
+                        _refresh_chat_html()
+                except Exception:
+                    pass
             finally:
                 # Restore the user's model after a routed turn so the
                 # dropdown stays the source of truth for the next send.
@@ -24648,6 +25282,52 @@ def create_tab(ctx):
 })();
 """
 
+    # Delegate cards in the chat: their Open / Stop buttons are plain HTML
+    # inside the transcript. One delegated click listener routes the card's
+    # data attributes through the input line (the same bridge the Ctrl+L
+    # /clear shortcut uses), where _handle_slash_command runs the same
+    # handlers the view chips (Open) and the Background panel (Stop) run.
+    _delegate_card_init_js = """
+(function() {
+  if (window.__delfinDelegateCards) return;
+  window.__delfinDelegateCards = true;
+  // The press decides, not the click: the composer gives up its focus on
+  // mousedown and shrinks, the transcript moves under the pointer, and the
+  // mouseup lands on the card's title -- the click event then targets the
+  // card, not the button (measured in the real page). A keyboard
+  // activation has no press and arrives as a click with detail 0.
+  function act(e) {
+      var card = e.target.closest ? e.target.closest('.delfin-delegate-card') : null;
+      if (!card) return;
+      var sa = null;
+      var open = e.target.closest('[data-delfin-delegate-open]');
+      if (open) sa = open.getAttribute('data-delfin-delegate-open');
+      var stop = e.target.closest('[data-delfin-delegate-stop]');
+      if (!sa && stop) sa = stop.getAttribute('data-delfin-delegate-stop');
+      if (!sa) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var verb = open ? '/delegate-open ' : '/delegate-stop ';
+      var ta = window.__delfinQ('.delfin-agent-input textarea');
+      if (!ta) return;
+      var nativeSet = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype, 'value').set;
+      nativeSet.call(ta, verb + sa);
+      ta.dispatchEvent(new Event('input', {bubbles: true}));
+      setTimeout(function() {
+          var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
+          if (sendBtn) sendBtn.click();
+      }, 50);
+  }
+  document.addEventListener('mousedown', function(e) {
+      if (e.button === 0) act(e);
+  }, true);
+  document.addEventListener('click', function(e) {
+      if (e.detail === 0) act(e);
+  }, true);
+})();
+"""
+
     # Emit init-status banner for the initial /models fetch so the user
     # immediately knows whether the dropdown is showing live or fallback
     # data. Surfaces the API-key hint when the live fetch silently fell
@@ -24824,6 +25504,7 @@ def create_tab(ctx):
         .replace("__DELFIN_MERMAID_SRI__", _MERMAID_SRI))
     ctx.add_init_js(_mermaid_init_js)
     ctx.add_init_js(_enter_key_init_js)
+    ctx.add_init_js(_delegate_card_init_js)
 
     def _shutdown_tab(save: bool = True) -> None:
         """Close this session: save it, end its turn, stop its timers and
@@ -24939,6 +25620,15 @@ def create_tab(ctx):
         "refresh_chat": _refresh_chat_html,
         "chat_html": chat_html,
         "question_gate": _question_gate,
+        # Delegate cards in the parent's chat: thin accessors over the
+        # same state-pure helpers the tool-event paths call.
+        "emit_delegate_card": lambda call: _emit_delegate_card(state, call),
+        "on_tool_call": lambda tool_name, payload: _on_tool_call_card(
+            state, tool_name, payload),
+        "on_tool_result": lambda tool_name, payload: _on_tool_result_card(
+            state, tool_name, payload),
+        "stop_delegate_card": lambda sa_id: _delegate_stop(
+            state, sa_id, _agent_workspace_path()),
     }
 
 

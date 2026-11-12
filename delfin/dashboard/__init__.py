@@ -67,6 +67,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
     from .helpers import (
+        DASHBOARD_TABS_CLASS,
         _append_js,
         self_running_html,
         apply_branding,
@@ -76,6 +77,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         disable_spellcheck_global,
         hand_over_tabs,
         keep_scroll_position,
+        name_page_controls,
     )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
 
@@ -644,6 +646,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             spec['widget'] = tab8
             break
 
+    # Unnamed selects and slider handles take their widget's words as an
+    # accessible name; every tab takes its full name as a tooltip.
+    name_page_controls(ctx)
+
     # Every tab's startup script goes out in ONE ctx.run_js() call: run_js
     # clears its output first, so a second call would wipe the first tab's
     # script before the browser ever executed it.
@@ -665,7 +671,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # Without the bundle no viewer can draw (there is no network fallback),
     # so a broken installation says so in the browser console.
     from delfin.dashboard.login_session import keepalive_js as _keepalive_js
-    _calc_init = '\n'.join([
+    _startup_parts = [
         vendored_3dmol_js() or (
             'console.error("DELFIN: the bundled 3Dmol '
             '(delfin/dashboard/static/3Dmol-min.js) is missing from this '
@@ -675,9 +681,22 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         _keepalive_js(),
         RIGHT_MOUSE_TRANSLATE_PATCH_JS,
         *ctx.init_js_parts,
-    ])
+    ]
+    _calc_init = '\n'.join(_startup_parts)
+    # The page's startup script runs from the page itself (an element in the
+    # body, helpers.self_running_html), not from ctx.js_output: run_js
+    # clears that output before it writes, and with every tab built at
+    # start a tab's own run_js (Remote Archive's preview reset) cleared the
+    # startup script before the browser ran it -- no 3Dmol (no molecule
+    # viewer drew), no login keep-alive (measured in a real browser,
+    # 11.11.). Kept in page_scripts for a resumed window as before.
+    _startup_runner = None
     if _calc_init.strip():
-        ctx.keep_js(_calc_init)
+        ctx.page_scripts.append(_calc_init)
+        _startup_runner = widgets.HTML(
+            self_running_html(*_startup_parts),
+            layout=widgets.Layout(width='0px', height='0px', margin='0',
+                                  overflow='hidden'))
 
     def _resolve_tab_preferences():
         specs = ctx.tab_specs or []
@@ -850,6 +869,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         selected_index = titles.index(selected_title) if selected_title in titles else None
         if ctx.tabs_widget is None:
             ctx.tabs_widget = widgets.Tab(children=children)
+            ctx.tabs_widget.add_class(DASHBOARD_TABS_CLASS)
             for i, title in enumerate(titles):
                 ctx.tabs_widget.set_title(i, title)
             if selected_index is not None:
@@ -989,11 +1009,32 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         rollback_delfin_btn.disabled = lock_present
         _draw_hint()
 
-    refresh_git_status_label()
     if branch_panel is not None:
         branch_panel.on_change = refresh_git_status_label
         branch_panel.on_more_closed(rollback_confirm.cancel)
-        branch_panel.refresh()
+
+    def _first_header_read():
+        """The git hint and the branch list, read once beside the page.
+
+        Both are git reads (a branch list of a few hundred branches takes
+        seconds on a cluster file system); the page does not wait for
+        them. Until they land the hint shows its placeholder and the
+        branch menu reads the list again when it is opened. Pull and
+        roll back check the checkout themselves on the click.
+        """
+        try:
+            refresh_git_status_label()
+        except Exception:
+            pass
+        if branch_panel is not None:
+            try:
+                branch_panel.refresh()
+            except Exception:
+                pass
+
+    threading.Thread(target=_first_header_read, daemon=True,
+                     name='delfin-header-first-read').start()
+    if branch_panel is not None:
         branch_panel.start_polling(10.0)
 
     def handle_pull_delfin(button=None):
@@ -1090,6 +1131,19 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     _append_js(ctx, _keys)
 
     # -- display -----------------------------------------------------------
+    class _PageRoot(widgets.VBox):
+        """One of the page's two root boxes, with a short plain-text form.
+
+        display() asks every object for its text/plain form beside the
+        widget view; a widget's default is the repr of its whole tree,
+        every tab's widgets and the startup scripts included -- built on
+        every display and then cut to 110 characters. The page shows the
+        widget view, never that text.
+        """
+
+        def __repr__(self):
+            return f'{type(self).__name__}(DELFIN dashboard)'
+
     title_html = (
         '<div style="display:flex; align-items:center; gap:8px;">'
         + (
@@ -1150,7 +1204,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + ([branch_panel.row] if branch_panel is not None else []),
         [busy_indicator, ctx.agent_status_html],
         _status_group)
-    _header_root = widgets.VBox(([_returning] if _returning else [])
+    _header_root = _PageRoot(([_returning] if _returning else [])
                                 + ([_closing_beacon] if _closing_beacon else [])
                                 + [
         busy_css,
@@ -1162,7 +1216,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + ([branch_panel.box] if branch_panel is not None else []),
         layout=widgets.Layout(width='100%'))
     _header_root.add_class('delfin-hdr')
-    _body_root = widgets.VBox([js_output, tabs])
+    _body_root = _PageRoot(
+        [js_output] + ([_startup_runner] if _startup_runner is not None else [])
+        + [tabs])
 
     # The two roots are kept before they are shown, not after.
     #

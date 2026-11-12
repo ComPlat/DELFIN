@@ -1,0 +1,64 @@
+# Example: real MQTT devices (Tasmota-style firmware) behind the safety
+# kernel. Copy to <lab_dir>/manifest.yaml, review, then pin:
+#   delfin-agent lab manifest pin
+# The broker host is 192.0.2.50 -- a private, non-routable placeholder.
+# Secrets are referenced by name (cred:<name>) and resolved from DELFIN's
+# store at driver start; nothing secret is inline.
+lab_manifest: 1
+installation: mqtt-lab
+version: 1
+nodes:
+  - id: edge_synth
+    description: synthesis module controller
+modules:
+  - id: synthesis
+    node: edge_synth
+    min_level: benign
+    devices:
+      # A plain Tasmota relay. Writes go to {topic_base}/cmd/power (QoS 1,
+      # not retained); the device reports its state on
+      # {topic_base}/state/power (retained); availability (LWT) is on
+      # {topic_base}/availability. The firmware has no elapsed-time feature
+      # wired up, so device_watchdog is false: safety comes from the kernel
+      # dead-man and a hardware watchdog relay.
+      - id: bench_lamp
+        driver: mqtt
+        model: tasmota-relay
+        address:
+          host: 192.0.2.50
+          port: 8883
+          tls: true
+          tls_ca: /etc/delfin/certs/ca.pem
+          topic_base: bench/lamp
+          secret_ref: cred:tasmota_1
+        stale_after_s: 5
+        deadman_s: 30
+        device_watchdog: false
+        reads:
+          power: {states: [on, off]}
+        writes:
+          power: {states: [on, off], level: benign}
+        safe_state: {power: off}
+      # A Tasmota relay with a device-side timer (PulseTime) reached through
+      # address.arm_topic: arm_watchdog publishes the whole-second deadline
+      # there, and the device returns to its safe state unless re-armed.
+      - id: heater_relay
+        driver: mqtt
+        model: tasmota-relay
+        address:
+          host: 192.0.2.50
+          port: 8883
+          topic_base: bench/heater
+          secret_ref: cred:tasmota_2
+          arm_topic: bench/heater/arm
+        stale_after_s: 5
+        deadman_s: 30
+        device_watchdog: true
+        reads:
+          power: {states: [on, off]}
+        writes:
+          power: {states: [on, off], level: hazardous}
+        safe_state: {power: off}
+        interlocks:
+          - when: "heater_relay.power == on"
+            requires: "bench_lamp.power == on"
