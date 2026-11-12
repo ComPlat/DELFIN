@@ -30,41 +30,56 @@ class _FakeValue:
 
 
 class _FakeDirection:
+    AS_IS = "as-is"
     OUTPUT = "output"
     INPUT = "input"
 
 
-class _FakeRequest:
-    def __init__(self, config):
-        self.config = config
-        self.values = {off: (s.output_value if s.output_value is not None
-                             else _FakeValue.INACTIVE)
-                       for off, s in config.items()}
-        self.fail = False          # raise on the next call (transport error)
-        self.hang = False          # block forever (timeout test)
-        self.stuck = None          # get_value over-ride to simulate a stuck line
-        self.closed = False
-        self.writes = []           # (offset, value) recorded on set_value
+class _World:
+    """The chip as the kernel keeps it (measured on a Pi 5, RP1): a released
+    output keeps its direction and value, ``AS_IS`` changes neither, and a
+    line held by one request is EBUSY for every other request."""
 
-    def set_value(self, offset, value):
-        if self.hang:
-            threading.Event().wait()
-        if self.fail:
-            raise OSError("gpio transport error (fake)")
-        self.writes.append((offset, value))
-        self.values[offset] = value
+    def __init__(self):
+        self.direction = {}            # offset -> "input" | "output"
+        self.level = {}                # offset -> physical 0/1
+        self.held = set()
+        self.fail = False              # every call raises (transport error)
+        self.hang = False              # every call blocks (timeout test)
+        self.stuck = None              # physical level a read reports
+
+    def phys(self, logical, active_low):
+        return logical ^ int(bool(active_low))
+
+
+class _FakeRequest:
+    def __init__(self, world, config):
+        self.world, self.config = world, config
+        self.writes = []
+        self.released = False
+        for off, st in config.items():
+            if st.direction == _FakeDirection.OUTPUT:
+                world.direction[off] = "output"
+                world.level[off] = world.phys(
+                    st.output_value or _FakeValue.INACTIVE, st.active_low)
+                self.writes.append((off, st.output_value))
+            elif st.direction == _FakeDirection.INPUT:
+                world.direction[off] = "input"
+            world.direction.setdefault(off, "input")
+            world.level.setdefault(off, 0)
 
     def get_value(self, offset):
-        if self.hang:
+        w = self.world
+        if w.hang:
             threading.Event().wait()
-        if self.fail:
+        if w.fail:
             raise OSError("gpio transport error (fake)")
-        if self.stuck is not None:
-            return self.stuck
-        return self.values[offset]
+        level = w.stuck if w.stuck is not None else w.level[offset]
+        return level ^ int(bool(self.config[offset].active_low))
 
-    def close(self):
-        self.closed = True
+    def release(self):
+        self.released = True
+        self.world.held -= set(self.config)
 
 
 class _FakeSettings:
@@ -75,25 +90,38 @@ class _FakeSettings:
         self.output_value = output_value
 
 
+class _LineInfo:
+    def __init__(self, direction):
+        self.direction = direction
+
+
 class _FakeChip:
     registry = {"pinctrl-rp1": ("/dev/gpiochip0", "/dev/gpiochip1")}
 
     def __init__(self, path: str):
         self.path = path
-        self.closed = False
 
-    def get_label(self) -> str:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_info(self):
         for label, paths in self.registry.items():
             if self.path in paths:
-                return label
+                return type("Info", (), {"label": label})()
         raise OSError(f"no such chip {self.path!r} (fake)")
 
-    def close(self):
-        self.closed = True
+    def get_line_info(self, offset):
+        d = _FakeGpiod.world.direction.get(offset, "input")
+        return _LineInfo(_FakeDirection.OUTPUT if d == "output"
+                         else _FakeDirection.INPUT)
 
 
 class _FakeGpiod:
     requests = []
+    world = _World()
 
     class line:
         Direction = _FakeDirection
@@ -111,13 +139,23 @@ class _FakeGpiod:
 
     @classmethod
     def request_lines(cls, path, consumer=None, config=None):
-        req = _FakeRequest(config or {})
+        import errno
+        w = cls.world
+        if w.hang:
+            threading.Event().wait()
+        if w.fail:
+            raise OSError("gpio transport error (fake)")
+        if set(config or {}) & w.held:
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        req = _FakeRequest(w, config or {})
+        w.held |= set(config or {})
         cls.requests.append((path, consumer, config or {}, req))
         return req
 
     @classmethod
     def clear(cls):
         cls.requests = []
+        cls.world = _World()
 
 
 def _install_fake_gpiod():
@@ -220,7 +258,51 @@ def test_driver_requests_only_declared_lines(driver, gpio_world):
     settings = config[17]
     assert settings.direction == _FakeDirection.OUTPUT
     assert settings.active_low is True        # active-low relay honoured
-    assert settings.output_value == _FakeValue.INACTIVE  # de-energise-to-trip
+    assert settings.output_value == _FakeValue.ACTIVE   # the commanded value
+
+
+def test_an_undriven_relay_line_is_taken_over_in_its_safe_state(driver,
+                                                                 gpio_world):
+    """A line nobody drove since boot is an input; its level says nothing
+    about the relay. Measured: an active-low heater on such a line read
+    "on". The first read takes it over as an output at the safe value."""
+    m, fake = gpio_world
+    assert driver.read(m.devices["heater"])["power"].value == "off"
+    path, consumer, config, req = fake.requests[-1]
+    assert config[17].direction == _FakeDirection.OUTPUT
+    assert config[17].output_value == _FakeValue.INACTIVE
+    assert fake.world.level[17] == 1          # active-low: de-energised HIGH
+
+
+def test_a_read_never_switches_an_output(driver, gpio_world):
+    m, fake = gpio_world
+    driver.write(m.devices["heater"], "power", "on")
+    assert driver.read(m.devices["heater"])["power"].value == "on"
+    path, consumer, config, req = fake.requests[-1]
+    assert config[17].direction == _FakeDirection.AS_IS
+
+
+def test_no_line_is_held_between_operations(driver, gpio_world):
+    """Another process (the e-stop and dead-man daemons) must be able to
+    take the line at any time: held, it gets EBUSY."""
+    m, fake = gpio_world
+    driver.write(m.devices["heater"], "power", "on")
+    driver.read(m.devices["heater"])
+    assert fake.world.held == set()
+    assert all(r.released for *_x, r in fake.requests)
+    other = GpioDriver(chip_label="pinctrl-rp1", timeout_s=0.5,
+                       clock=lambda: 0.0)
+    other.write(m.devices["heater"], "power", "off")   # a second process
+    assert driver.read(m.devices["heater"])["power"].value == "off"
+
+
+def test_a_busy_line_is_retried_then_fails_closed(driver, gpio_world):
+    m, fake = gpio_world
+    fake.world.held.add(17)                   # another process holds it
+    patient = GpioDriver(chip_label="pinctrl-rp1", timeout_s=5.0,
+                         clock=lambda: 0.0)
+    with pytest.raises(DriverError, match="busy"):
+        patient.write(m.devices["heater"], "power", "on")
 
 
 def test_driver_maps_active_low_to_the_physical_line(driver, gpio_world):
@@ -230,17 +312,16 @@ def test_driver_maps_active_low_to_the_physical_line(driver, gpio_world):
     # the driver hands the logical value to the request; the physical
     # inversion is done by libgpiod via LineSettings(active_low=True)
     assert req.writes[-1] == (17, _FakeValue.ACTIVE)
+    assert fake.world.level[17] == 0          # active-low: energised LOW
 
 
 def test_driver_reads_the_input_device(driver, gpio_world):
     m, fake = gpio_world
     inp = m.devices["overtemp"]
-    # the first read opens the request for the input line
     driver.read(inp)
     path, consumer, config, req = fake.requests[-1]
     assert set(config) == {22} and config[22].direction == _FakeDirection.INPUT
-    # pre-set the line value so the read reflects the device state
-    req.values[22] = _FakeValue.ACTIVE
+    fake.world.level[22] = 1                  # the switch closes
     assert driver.read(inp)["power"].value == "on"
 
 
@@ -276,14 +357,12 @@ def test_driver_reports_no_device_side_timer(driver, gpio_world):
     driver.disarm_watchdog(device)                    # a no-op, never raises
 
 
-def test_driver_releases_lines_on_close(driver, gpio_world):
+def test_driver_close_is_harmless(driver, gpio_world):
     m, fake = gpio_world
     driver.write(m.devices["heater"], "power", "on")
-    path, consumer, config, req = fake.requests[-1]
-    assert req.closed is False
     driver.close()
-    assert req.closed is True                          # released on exit
     driver.close()                                     # safe to call again
+    assert fake.world.held == set()
 
 
 def test_driver_reports_health(driver, gpio_world):
@@ -291,8 +370,7 @@ def test_driver_reports_health(driver, gpio_world):
     health = driver.health(m.devices["heater"])
     assert health.ok is True
     # a transport failure is reported, never swallowed
-    for p, c, cfg, r in fake.requests:
-        r.fail = True
+    fake.world.fail = True
     broken = driver.health(m.devices["heater"])
     assert broken.ok is False
 
@@ -303,16 +381,8 @@ def test_driver_timeout_fails_closed(driver):
     import tempfile
     import os
 
-    class Hanger(_FakeGpiod):
-        @classmethod
-        def request_lines(cls, path, consumer=None, config=None):
-            req = _FakeRequest(config or {})
-            req.hang = True
-            cls.requests.append((path, consumer, config or {}, req))
-            return req
-
-    sys.modules["gpiod"] = Hanger
-    Hanger.clear()
+    _install_fake_gpiod()
+    _FakeGpiod.world.hang = True
     slow = GpioDriver(chip_label="pinctrl-rp1", device_dir="/dev",
                       timeout_s=0.05, clock=lambda: 0.0)
     with tempfile.NamedTemporaryFile("w", suffix=".yaml",
@@ -352,8 +422,7 @@ def test_kernel_transport_error_puts_device_safe_and_latched(gpio_world):
     out = k.set(_actor(), "heater", "power", "off")
     assert out["ok"] is True
     # make the fake fail on the next write: the kernel must fail closed
-    for p, c, cfg, r in fake.requests:
-        r.fail = True
+    fake.world.fail = True
     out = k.set(_actor(), "heater", "power", "on")
     assert out["ok"] is False
     assert out["code"] == "driver_error"
@@ -372,9 +441,8 @@ def test_kernel_readback_mismatch_latches(gpio_world):
     # the first write opens the request and succeeds (echoes "on")
     out = k.set(_actor(), "heater", "power", "on")
     assert out["ok"] is True and out["readback"] == "on"
-    # make the line stuck "off": ready to verify, the device says it is off
-    for p, c, cfg, r in fake.requests:
-        r.stuck = _FakeValue.INACTIVE
+    # the line is stuck high: with active-low that reads "off"
+    fake.world.stuck = 1
     out2 = k.set(_actor(), "heater", "power", "on")
     assert out2["code"] == "readback_mismatch"
     snap = _snapshot()
@@ -390,9 +458,8 @@ def test_kernel_does_not_arm_a_device_timer_on_gpio(gpio_world):
     # the fake would fail closed if arm_watchdog ever ran
     k = Kernel(m, clock=FakeClock(100.0))
     k.set(_actor(), "heater", "power", "on")
-    for p, c, cfg, r in fake.requests:
-        r.fail = True
-    n = k.heartbeat(_actor())                 # rearms nothing for gpio
+    fake.world.fail = True
+    assert k.heartbeat(_actor()) >= 0         # rearms nothing for gpio
     snap = _snapshot()
     assert "heater" not in snap["latched"]    # no arm attempted -> no failure
 
@@ -425,7 +492,8 @@ def test_lab_set_only_reaches_the_driver_through_kernel_set(gpio_world,
     # the tool went through Kernel.set (it recorded the call) ...
     assert calls, "lab_set never called Kernel.set -- that is a bypass"
     # ... and the fake driver never saw a direct write
-    assert all(len(r.writes) == 0 for _, _, _, r in fake.requests)
+    assert all(not any(v == _FakeValue.ACTIVE for _o, v in r.writes)
+               for _, _, _, r in fake.requests)
 
 
 # small helpers ------------------------------------------------------------- #

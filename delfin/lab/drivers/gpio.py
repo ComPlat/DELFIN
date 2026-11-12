@@ -3,9 +3,19 @@
 The Pi 5's 40-pin header sits on the RP1 chip. RPi.GPIO does not work there
 (kernel PR #6144 moved the lines from gpiochip4 to gpiochip0), so this
 driver uses libgpiod v2 (the ``gpiod`` package on PyPI, ``request_lines`` /
-``LineSettings``). It finds the chip by its label ``pinctrl-rp1`` and never
-by number, requests only the lines the manifest declares, and releases them
-when the request goes out of scope.
+``LineSettings``). It finds the chip by its label ``pinctrl-rp1``
+(``Chip.get_info().label``) and never by number, and requests only the lines
+the manifest declares.
+
+One request per operation, released at once. Measured on a Pi 5: a released
+output line keeps its direction and value, a new request with direction
+``AS_IS`` reads it unchanged, and while one process holds a line every other
+request for it fails with EBUSY. So a read requests outputs ``AS_IS`` (a read
+never switches anything) and inputs as ``INPUT``; a write requests the line
+as ``OUTPUT`` with the commanded value. Holding the request for the life of
+the driver instead would lock the e-stop and dead-man daemons (other
+processes) out of the very line they must switch off, and a fresh output
+request with a default value would switch a running load off on every read.
 
 Safety rule inherited from :mod:`delfin.lab.drivers.base`: this driver never
 decides whether an action is allowed -- the kernel does. It reports what the
@@ -42,6 +52,7 @@ secret is already refused by the manifest validator.
 
 from __future__ import annotations
 
+import errno
 import threading
 import time
 from glob import iglob
@@ -52,6 +63,8 @@ from .base import (Driver, DriverCapabilities, DriverError, Health,  # noqa: F40
 
 DEFAULT_CHIP_LABEL = "pinctrl-rp1"
 DEFAULT_TIMEOUT_S = 2.0
+_BUSY_TRIES = 4
+_BUSY_WAIT_S = 0.05
 
 #: The ``[lab]`` pyproject extra a user must install for this driver.
 EXTRA = "lab-gpio"
@@ -77,26 +90,6 @@ def _logical_value(state: Any) -> bool:
                       f"{state!r} to a line level")
 
 
-class _ChipRequest:
-    """One held line request per device, released on close."""
-
-    __slots__ = ("request", "offsets", "lock")
-
-    def __init__(self, request, offsets: dict):
-        # offsets: line offset -> logical value name ("power") for readback
-        self.request = request
-        self.offsets = offsets
-        self.lock = threading.Lock()
-
-    def close(self) -> None:
-        with self.lock:
-            if self.request is not None:
-                try:
-                    self.request.close()
-                finally:
-                    self.request = None
-
-
 class GpioDriver(Driver):
     name = "gpiod"
     capabilities = DriverCapabilities(device_watchdog=False, readback=True,
@@ -111,7 +104,7 @@ class GpioDriver(Driver):
         self.timeout_s = float(timeout_s)
         self.clock = clock
         self._gpiod: Optional[Any] = None
-        self._opens: dict = {}        # device.id -> _ChipRequest
+        self._chip_path: Optional[str] = None
         self._init_lock = threading.Lock()
         self._io_lock = threading.Lock()  # serialise chip access per driver
 
@@ -138,29 +131,26 @@ class GpioDriver(Driver):
         Scan ``/dev/gpiochip*`` and open each, matching by label. Raise
         ``DriverError`` (fail closed) when none matches.
         """
+        if self._chip_path is not None:
+            return self._chip_path
         gpiod = self._gpiod_module()
         pattern = self.device_dir.rstrip("/") + "/gpiochip*"
         for path in sorted(iglob(pattern)):
-            chip = None
             try:
-                chip = gpiod.Chip(path)
-                if chip.get_label() == self.chip_label:
-                    return path
+                with gpiod.Chip(path) as chip:
+                    label = chip.get_info().label
             except Exception:
                 # one unreachable chip must not stop the search; the error is
                 # surfaced at request time if it was the one we needed
                 continue
-            finally:
-                if chip is not None:
-                    try:
-                        chip.close()
-                    except Exception:
-                        pass
+            if label == self.chip_label:
+                self._chip_path = path
+                return path
         raise DriverError(f"no {self.chip_label!r} gpio chip under "
                           f"{self.device_dir!r} (is the agent user in the "
                           f"gpio group?)")
 
-    def _line_offsets(self, device) -> dict:
+    def _line_offsets(self, device) -> tuple:
         """address: {channel: offset, <channel>_active_low: bool, ...}."""
         addr = device.address or {}
         offsets: dict = {}
@@ -182,38 +172,46 @@ class GpioDriver(Driver):
             active_low[ch] = al
         return offsets, active_low
 
-    def _request(self, device):
-        """Open (once, held for the process) the line request for ``device``."""
-        req = self._opens.get(device.id)
-        if req is not None:
-            return req
+    def _directions(self, offsets: dict) -> dict:
+        """offset -> the line's current direction (no request needed)."""
         gpiod = self._gpiod_module()
-        dline = self._gpiod_line
-        offsets, active_low = self._line_offsets(device)
-        with self._init_lock:
-            req = self._opens.get(device.id)
-            if req is not None:
-                return req
-            path = self._find_chip_path()
-            config = {}
-            for ch, off in offsets.items():
-                direction = (dline.Direction.INPUT if ch in device.reads
-                             else dline.Direction.OUTPUT)
-                # de-energise-to-trip: a fresh output line starts "off"
-                settings = gpiod.LineSettings(
-                    direction=direction,
-                    active_low=bool(active_low[ch]),
-                    output_value=dline.Value.INACTIVE,
-                )
-                config[off] = settings
-            try:
-                request = gpiod.request_lines(path, consumer="delfin-lab",
-                                              config=config)
-            except Exception as exc:
-                raise DriverError(f"{device.id}: cannot request its lines on "
-                                  f"{path!r}: {exc}") from exc
-            self._opens[device.id] = _ChipRequest(request, offsets)
-        return self._opens[device.id]
+        path = self._find_chip_path()
+
+        def op():
+            with gpiod.Chip(path) as chip:
+                return {off: chip.get_line_info(off).direction
+                        for off in offsets.values()}
+        return self._closed(op)
+
+    def _with_lines(self, device, config: dict, fn):
+        """Request ``config`` (offset -> LineSettings), run ``fn(request)``,
+        release. EBUSY (another process holds a line for its own short
+        operation) is retried a few times before it fails closed."""
+        gpiod = self._gpiod_module()
+        path = self._find_chip_path()
+
+        def op():
+            last = None
+            for attempt in range(_BUSY_TRIES):
+                try:
+                    request = gpiod.request_lines(path, consumer="delfin-lab",
+                                                  config=config)
+                except OSError as exc:
+                    if getattr(exc, "errno", None) == errno.EBUSY:
+                        last = exc
+                        if attempt + 1 < _BUSY_TRIES:
+                            time.sleep(_BUSY_WAIT_S * (attempt + 1))
+                        continue
+                    raise
+                try:
+                    return fn(request)
+                finally:
+                    request.release()
+            raise last
+        try:
+            return self._closed(op)
+        except DriverError as exc:
+            raise DriverError(f"{device.id}: {exc}") from None
 
     def _closed(self, fn, *args):
         """Run a gpiod call with the driver's timeout; a hang becomes an error.
@@ -244,30 +242,60 @@ class GpioDriver(Driver):
     # -- the interface --------------------------------------------------------
 
     def read(self, device) -> dict:
+        gpiod = self._gpiod_module()
+        dline = self._gpiod_line
+        offsets, active_low = self._line_offsets(device)
+        directions = self._directions(offsets)
+        config = {}
+        for ch, off in offsets.items():
+            al = bool(active_low[ch])
+            if ch in device.reads and ch not in device.writes:
+                config[off] = gpiod.LineSettings(
+                    direction=dline.Direction.INPUT, active_low=al)
+            elif directions.get(off) == dline.Direction.OUTPUT:
+                # an output is read as it stands: a read never drives it
+                config[off] = gpiod.LineSettings(
+                    direction=dline.Direction.AS_IS, active_low=al)
+            else:
+                # A write line nobody has driven since boot is an input whose
+                # level says nothing about the relay. It is taken over in the
+                # device's safe state (de-energise-to-trip), then read.
+                safe = (dline.Value.ACTIVE
+                        if _logical_value(device.safe_state.get(ch, "off"))
+                        else dline.Value.INACTIVE)
+                config[off] = gpiod.LineSettings(
+                    direction=dline.Direction.OUTPUT, active_low=al,
+                    output_value=safe)
         with self._io_lock:
-            creq = self._request(device)
-            out = {}
-            for ch, off in creq.offsets.items():
-                val = self._closed(creq.request.get_value, off)
-                on = bool(val == self._gpiod_line.Value.ACTIVE)
-                spec = device.channel(ch)
-                out[ch] = Reading("on" if on else "off",
-                                  spec.unit if spec else None,
-                                  float(self.clock()))
-            return out
+            values = self._with_lines(
+                device, config,
+                lambda req: {ch: req.get_value(off)
+                             for ch, off in offsets.items()})
+        out = {}
+        for ch, val in values.items():
+            on = bool(val == dline.Value.ACTIVE)
+            spec = device.channel(ch)
+            out[ch] = Reading("on" if on else "off",
+                              spec.unit if spec else None,
+                              float(self.clock()))
+        return out
 
     def write(self, device, channel: str, value: Any) -> str:
+        gpiod = self._gpiod_module()
+        dline = self._gpiod_line
+        offsets, active_low = self._line_offsets(device)
+        if channel not in offsets or channel not in device.writes:
+            raise DriverError(f"{device.id} has no writable gpio line for "
+                              f"channel {channel!r}")
+        level = (dline.Value.ACTIVE if _logical_value(value)
+                 else dline.Value.INACTIVE)
+        off = offsets[channel]
+        config = {off: gpiod.LineSettings(
+            direction=dline.Direction.OUTPUT,
+            active_low=bool(active_low[channel]), output_value=level)}
         with self._io_lock:
-            creq = self._request(device)
-            offsets = creq.offsets
-            if channel not in offsets:
-                raise DriverError(f"{device.id} has no gpio line for "
-                                  f"channel {channel!r}")
-            logical = _logical_value(value)
-            level = (self._gpiod_line.Value.ACTIVE if logical
-                     else self._gpiod_line.Value.INACTIVE)
-            self._closed(creq.request.set_value, offsets[channel], level)
-            return f"gpio-{device.id}-{offsets[channel]}"
+            self._with_lines(device, config, lambda req: None)
+        return f"gpio-{device.id}-{off}"
 
     def arm_watchdog(self, device, seconds: float) -> bool:
         # A GPIO line keeps its value while the chip is powered; there is no
@@ -280,25 +308,11 @@ class GpioDriver(Driver):
 
     def health(self, device) -> Health:
         try:
-            with self._io_lock:
-                creq = self._request(device)
-                off = next(iter(creq.offsets.values()))
-                self._closed(creq.request.get_value, off)
+            self.read(device)
             return Health(True, f"{self.chip_label} readback ok")
         except Exception as exc:
             return Health(False, str(exc))
 
-    # -- release --------------------------------------------------------------
-
     def close(self) -> None:
-        """Release every held line request (safe to call more than once)."""
-        with self._init_lock:
-            opens, self._opens = self._opens, {}
-        for creq in opens.values():
-            creq.close()
-
-    def __del__(self):
-        try:
-            self.close()
-        except Exception:
-            pass
+        """Nothing is held between operations; kept for callers."""
+        return None
