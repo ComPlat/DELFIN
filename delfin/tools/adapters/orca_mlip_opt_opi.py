@@ -51,7 +51,7 @@ from delfin.tools._types import ErrorKind, StepResult, StepStatus
 log = get_logger(__name__)
 
 # The two job kinds this Opt block drives: a plain ``! Opt ExtOpt`` and a
-# combined ``! Opt Freq ExtOpt``.  Other ExtOpt run types (GOAT, NEB, IRC,
+# combined ``! Opt NumFreq ExtOpt``.  Other ExtOpt run types (GOAT, NEB, IRC,
 # scan) belong to their own blocks.
 _OPT_RUN_TYPES = ("opt", "opt_freq")
 
@@ -168,12 +168,13 @@ def build_mlip_opt_input(
     is written.  Otherwise the input is delegated to
     :func:`~delfin.mlp_tools.orca_mlips.build_orca_mlips_input`, which writes
     the ``%method ProgExt / Ext_Params`` block with OPI's typed objects and
-    the ``! Opt ExtOpt`` (or ``! Opt Freq ExtOpt``) simple-keyword line.
+    the ``! Opt ExtOpt`` (or ``! Opt NumFreq ExtOpt``) simple-keyword line.
 
-    ``run_type="opt_freq"`` builds the combined ``! Opt Freq ExtOpt`` run; the
-    frequency block's Hessian is read back from the MLIP's dumped Hessian
-    exactly as the shared builder's ``freq`` (``two_step``) route does
-    (``%geom inhess Read``), driven by ``hessian="two_step"``.
+    ``run_type="opt_freq"`` builds the combined ``! Opt NumFreq ExtOpt`` run:
+    the frequencies are the finite difference of the MLIP gradients.  An
+    analytical ``Freq`` is not run by ORCA 6.1.1 with ``ExtOpt`` (the job
+    ends after the optimisation and terminates normally), so it is not
+    written.
     """
     work_dir = Path(work_dir)
     errors = validate_mlip_opt(
@@ -192,7 +193,13 @@ def build_mlip_opt_input(
 
     rt = str(run_type).strip().lower()
     if rt == "opt_freq":
-        keywords = ("Freq",) if "freq" not in {k.lower() for k in extra_keywords} else ()
+        # NumFreq, not Freq: ORCA 6.1.1 runs "! Opt Freq ExtOpt" as an
+        # optimisation only -- no frequency block, no warning, normal
+        # termination (measured on ethanol with orca-mlips-aimnet2).  The
+        # Hessian of an external method is the finite difference of its
+        # gradients (NumFreq), the one frequency route ExtOpt runs.
+        given = {k.lower() for k in extra_keywords}
+        keywords = ("NumFreq",) if not given & {"freq", "numfreq"} else ()
         extra_keywords = tuple(extra_keywords) + keywords
     return build_orca_mlips_input(
         "opt",
@@ -268,6 +275,8 @@ def read_mlip_opt(work_dir: Path | str, *, base_name: str = "extopt") -> dict:
 
     terminated = "ORCA TERMINATED NORMALLY" in out_text
     geom_converged = "THE OPTIMIZATION HAS CONVERGED" in out_text
+    # The frequency block ORCA prints after a (Num)Freq run.
+    frequencies = "VIBRATIONAL FREQUENCIES" in out_text
 
     energy_Eh: Optional[float] = None
     energy_unit = "Eh"
@@ -296,6 +305,7 @@ def read_mlip_opt(work_dir: Path | str, *, base_name: str = "extopt") -> dict:
         "energy_unit": energy_unit,
         "geometry": geometry,
         "geometry_converged": geom_converged,
+        "frequencies_present": frequencies,
         "terminated_normally": terminated,
         "error": error,
     }
@@ -397,24 +407,31 @@ class OrcaMlipOptOpiAdapter(StepAdapter):
             working_dir=work_dir,
         )
         res = read_mlip_opt(work_dir, base_name=base_name)
+        done = bool(ok and res.get("terminated_normally"))
+        if (done and str(run_type).strip().lower() == "opt_freq"
+                and not res.get("frequencies_present")):
+            # Asked for frequencies and the output has none: not a success.
+            done = False
+            res["error"] = ("frequencies were requested (opt_freq) and the output "
+                            "holds no VIBRATIONAL FREQUENCIES block")
 
         return self._make_result(
             self.name,
-            StepStatus.SUCCESS if ok and res.get("terminated_normally")
-            else StepStatus.FAILED,
+            StepStatus.SUCCESS if done else StepStatus.FAILED,
             work_dir,
             start,
             output_file=out_path,
             data={
-                "meaningful": bool(res.get("terminated_normally")),
+                "meaningful": done,
                 "energy_Eh": res.get("energy_Eh"),
                 "energy_unit": res.get("energy_unit"),
                 "geometry": str(res.get("geometry")),
                 "geometry_converged": res.get("geometry_converged"),
+                "frequencies_present": res.get("frequencies_present"),
                 "terminated_normally": res.get("terminated_normally"),
             },
             error=res.get("error"),
-            error_kind=(ErrorKind.NONE if res.get("terminated_normally")
+            error_kind=(ErrorKind.NONE if done
                         else ErrorKind.CONVERGENCE if res.get("geometry_converged") is False
                         else ErrorKind.TOOL_FAILED),
         )

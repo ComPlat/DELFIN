@@ -56,7 +56,7 @@ class TestBuildValidation:
         assert "opt" in tokens
         assert "extopt" in tokens
         assert 'progext "orca-mlips-uma"' in text
-        assert "--backend uma --device cpu" in text
+        assert "--device cpu" in text
         assert "*xyzfile 0 1 extopt.xyz" in text
 
     def test_build_sets_charge_mult(self, tmp_path):
@@ -190,7 +190,7 @@ class TestResultReading:
         "! Opt ExtOpt\n"
         "%method\n"
         '  ProgExt "orca-mlips-uma"\n'
-        '  Ext_Params "--backend uma --device cpu"\n'
+        '  Ext_Params "--device cpu"\n'
         "end\n"
         "* xyzfile 0 1 extopt.xyz\n"
     )

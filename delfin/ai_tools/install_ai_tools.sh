@@ -30,6 +30,8 @@ set -euo pipefail
 #   INSTALL_RXEMBED              (default: 0)  rxembed, own environment (Python 3.12, RDKit 2026.9)
 #   INSTALL_MOLASSEMBLER         (default: 0)  Molassembler, own environment (Python 3.11)
 #   INSTALL_METALLOGEN           (default: 0)  MetalloGen, own environment (Python 3.11; needs ORCA)
+#   INSTALL_ORCA_MLIPS           (default: 0)  orca-mlips (ORCA ExtOpt MLIPs: AIMNet2, ORB), own
+#                                              environment (Python 3.12, CUDA PyTorch)
 #   INSTALL_PLOTLY               (default: 0)  plotly
 #   INSTALL_ALL                  (default: 0)  Install everything
 #   FORCE_REINSTALL              (default: 0)  Force reinstall
@@ -59,6 +61,7 @@ INSTALL_EPIC_MACE="${INSTALL_EPIC_MACE:-${INSTALL_ALL}}"
 INSTALL_RXEMBED="${INSTALL_RXEMBED:-${INSTALL_ALL}}"
 INSTALL_MOLASSEMBLER="${INSTALL_MOLASSEMBLER:-${INSTALL_ALL}}"
 INSTALL_METALLOGEN="${INSTALL_METALLOGEN:-${INSTALL_ALL}}"
+INSTALL_ORCA_MLIPS="${INSTALL_ORCA_MLIPS:-${INSTALL_ALL}}"
 INSTALL_PLOTLY="${INSTALL_PLOTLY:-${INSTALL_ALL}}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
@@ -169,8 +172,10 @@ EPIC_MACE_CONDA_SPECS="${EPIC_MACE_CONDA_SPECS:-python=3.7 rdkit=2020.09.5 numpy
 
 epic_mace_python() {
   # The environment's own interpreter, untouched by DELFIN's PYTHONPATH or a
-  # user site of another Python version.
-  env -u PYTHONPATH PYTHONNOUSERSITE=1 "$@"
+  # user site of another Python version. Nor is its pip held to DELFIN's own
+  # pins (PIP_CONSTRAINT, set for DELFIN's environment by delfin.installer):
+  # an environment of its own exists because those pins cannot hold the tool.
+  env -u PYTHONPATH -u PIP_CONSTRAINT PYTHONNOUSERSITE=1 "$@"
 }
 
 install_epic_mace() {
@@ -336,6 +341,28 @@ install_smiles_tools() {
     "${METALLOGEN_CONDA_SPECS}" "${METALLOGEN_PIP_DEPS}" "${METALLOGEN_URL}" "${METALLOGEN_SHA256}"
 }
 
+# orca-mlips (MIT), the program ORCA's ExtOpt starts as ProgExt for an MLIP GOAT
+# or optimisation (delfin/mlp_tools/orca_mlips.py), in an environment of its own:
+# it needs a CUDA build of PyTorch, and its MLIP stacks pin numpy and friends
+# beyond what DELFIN's own environment holds. Only the two plugins whose weights
+# are licence-clean for any use go in: aimnet2 (MIT) and orb (Apache-2.0); the
+# uma (gated) and mace (non-commercial) plugins are not installed here.
+# ExtOpt names ${ROOT}/.mamba_env/orca_mlips/bin/orca-mlips-<backend> by its
+# absolute path, so a compute node needs nothing on its PATH;
+# DELFIN_ORCA_MLIPS_PYTHON points DELFIN at another environment.
+# Every version is exact, as resolved by pip for orca-mlips[aimnet2,orb]==1.3.0:
+# aimnet 0.2.6 needs nvalchemi-toolkit-ops >= 0.4.1, which orb-models 0.7 excludes,
+# so orb-models is the newest release that installs beside it. The PyPI torch
+# wheel is the CUDA build (it runs on the CPU where a job has no GPU).
+ORCA_MLIPS_SPEC="${ORCA_MLIPS_SPEC:-orca-mlips==1.3.0}"
+ORCA_MLIPS_CONDA_SPECS="${ORCA_MLIPS_CONDA_SPECS:-python=3.12.16 pip}"
+ORCA_MLIPS_PIP_DEPS="${ORCA_MLIPS_PIP_DEPS:-torch==2.15.0 aimnet==0.2.6 orb-models==0.5.5 ase==3.29.0 numpy==2.4.6}"
+
+install_orca_mlips() {
+  install_own_env INSTALL_ORCA_MLIPS orca-mlips orca_mlips orca_mlips_plugins \
+    "${ORCA_MLIPS_CONDA_SPECS}" "${ORCA_MLIPS_PIP_DEPS}" "${ORCA_MLIPS_SPEC}" ""
+}
+
 # ---------------------------------------------------------------------------
 main() {
   local python_bin
@@ -373,6 +400,7 @@ main() {
   pip_install "${python_bin}" INSTALL_ARCHITECTOR "architector"  architector
   install_epic_mace
   install_smiles_tools
+  install_orca_mlips
 
   # Visualization
   pip_install "${python_bin}" INSTALL_PLOTLY "plotly" plotly
@@ -413,7 +441,7 @@ main() {
     printf "  %-24s %s\n" "epic-MACE" "not installed"
   fi
   for env_label in "rxembed:rxembed:rxembed" "molassembler:scine_molassembler:Molassembler" \
-      "metallogen:MetalloGen:MetalloGen"; do
+      "metallogen:MetalloGen:MetalloGen" "orca_mlips:orca_mlips_plugins:orca-mlips"; do
     local env_name="${env_label%%:*}" rest="${env_label#*:}"
     local env_module="${rest%%:*}" env_shown="${rest#*:}"
     if [ -x "${ROOT}/.mamba_env/${env_name}/bin/python" ] \
