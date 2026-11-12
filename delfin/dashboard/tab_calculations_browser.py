@@ -51,6 +51,7 @@ from . import text_view as _text_view
 from . import upload_limits as _upload_limits
 from .constants import CALC_SEARCH_OPTIONS
 from .energy_labels import format_xyz_comment_label
+from .select_state import replace_options as _replace_options
 from .helpers import (
     disable_spellcheck,
     image_data_uri,
@@ -4859,9 +4860,9 @@ def create_tab(ctx):
             "if(el) window._batchScrollTop=el.scrollTop;"
         )
         # Force a real widget rerender so changed labels (⬜ -> ✅) become visible.
-        calc_xyz_batch_select.options = ()
-        calc_xyz_batch_select.value = ()
-        calc_xyz_batch_select.options = tuple(candidates)
+        # Each step reaches the browser as one state (labels and selection
+        # together), so it never holds a selection outside the list.
+        _replace_options(calc_xyz_batch_select, ())
         kept = tuple(value for _label, value in candidates if value in previous_selection)
         selected_value = ''
         selected_path = _calc_selected_item_path()
@@ -4872,11 +4873,12 @@ def create_tab(ctx):
             except Exception:
                 selected_value = ''
         if kept:
-            calc_xyz_batch_select.value = kept
+            new_value = kept
         elif selected_value and any(value == selected_value for _label, value in candidates):
-            calc_xyz_batch_select.value = (selected_value,)
+            new_value = (selected_value,)
         else:
-            calc_xyz_batch_select.value = ()
+            new_value = ()
+        _replace_options(calc_xyz_batch_select, tuple(candidates), new_value)
         current_rel = state.get('xyz_batch_path') or ''
         display_rel = f'/{current_rel}' if current_rel else '/'
         marked_count = len(state.get('xyz_batch_marked_paths') or [])
@@ -8631,7 +8633,7 @@ def create_tab(ctx):
         state['file_chunk_start'] = 0
         state['file_chunk_end'] = 0
         state['chunk_dom_initialized'] = False
-        calc_file_list.options = []
+        _replace_options(calc_file_list, [])
         # No file is on screen once the listing is rebuilt, so the actions of
         # the one that was must not stay in the dropdown.
         state['open_label'] = ''
@@ -8676,7 +8678,7 @@ def create_tab(ctx):
 
         current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
         if not current_dir.exists():
-            calc_file_list.options = ['(Folder not found)']
+            _replace_options(calc_file_list, ['(Folder not found)'])
             return
 
         items = []
@@ -8787,7 +8789,7 @@ def create_tab(ctx):
             items = ['(Permission denied)']
 
         state['all_items'] = items if items else ['(Empty folder)']
-        calc_file_list.options = state['all_items']
+        _replace_options(calc_file_list, state['all_items'])
         calc_update_path_display()
         calc_update_report_btn()
         calc_update_download_btn()
@@ -8796,11 +8798,11 @@ def create_tab(ctx):
     def calc_filter_file_list(change=None):
         query = calc_folder_search.value.strip().lower()
         if not query:
-            calc_file_list.options = state['all_items']
+            _replace_options(calc_file_list, state['all_items'])
         else:
             filtered = [item for item in state['all_items'] if query in item.lower()]
             result = filtered if filtered else ['(No matches)']
-            calc_file_list.options = result
+            _replace_options(calc_file_list, result)
 
     # -- recalc helpers -----------------------------------------------------
     def calc_reset_recalc_state():
@@ -14731,7 +14733,7 @@ def create_tab(ctx):
     if ctx.calc_dir.exists():
         calc_list_directory()
     else:
-        calc_file_list.options = ['(calc folder not found)']
+        _replace_options(calc_file_list, ['(calc folder not found)'])
 
     _explorer_interactions_js = r"""
     (function(){

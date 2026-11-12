@@ -763,6 +763,42 @@ def _prepare_login_template_dir() -> str | None:
         return None
 
 
+#: The dashboard's own Voila page template (``voila_assets/jupyter_data/
+#: nbconvert/templates/delfin``): Voila's ``lab`` template without the two
+#: Font Awesome stylesheets it links from a CDN, which the page CSP refuses.
+#: Font Awesome itself is bundled in Voila's ``voila-style.js`` and served
+#: from the dashboard's own origin.
+PAGE_TEMPLATE = "delfin"
+
+
+def _page_template_args(env: dict) -> list[str]:
+    """Select the dashboard's page template; return the server arguments.
+
+    Voila finds templates only in the Jupyter data directories, so the
+    shipped data directory is put first on ``JUPYTER_PATH`` in *env* (an
+    existing ``JUPYTER_PATH`` is kept behind it). The template lives under
+    ``nbconvert/templates``, which Voila searches too, and not under
+    ``voila/``: Voila takes its data directory (the themes) from the first
+    ``voila`` directory on the path, and that must stay its own.
+
+    Returns ``[]`` (Voila's ``lab`` template, as before) when the shipped
+    directory cannot be found as a real directory.
+    """
+    try:
+        root = Path(str(importlib.resources.files("delfin.voila_assets")
+                        .joinpath("jupyter_data")))
+    except Exception:
+        return []
+    if not (root / "nbconvert" / "templates" / PAGE_TEMPLATE
+            / "index.html.j2").is_file():
+        return []
+    existing = env.get("JUPYTER_PATH", "")
+    parts = [str(root)] + [p for p in existing.split(os.pathsep)
+                           if p and p != str(root)]
+    env["JUPYTER_PATH"] = os.pathsep.join(parts)
+    return [f"--VoilaConfiguration.template={PAGE_TEMPLATE}"]
+
+
 def _prepare_published_dir() -> str | None:
     """Create the one directory the server publishes, and return it.
 
@@ -1419,6 +1455,10 @@ def main(argv=None):
         cmd.append(
             "--ServerApp.extra_template_paths=" + json.dumps([_login_dir])
         )
+
+    # The page template: Voila's lab template without its CDN links to
+    # Font Awesome (refused by the page CSP; the font is bundled locally).
+    cmd.extend(_page_template_args(env))
 
     # The drawing editor, published from where it is kept instead of being
     # copied into the directory the dashboard was started in. The dashboard
