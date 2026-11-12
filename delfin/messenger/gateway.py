@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import os
+import json
 import re
 import secrets
 import sys
@@ -134,6 +135,23 @@ async def _best_effort(what, call):
         await call
     except Exception as exc:  # noqa: BLE001
         print(f'[gateway] {what}: {type(exc).__name__}', file=sys.stderr, flush=True)
+
+
+#: Daemon events that end a file transfer or report a failed command. The
+#: gateway ignored them: a voice message whose download failed left no
+#: trace, and the phone waited forever.
+_DAEMON_ERRORS = {'chatError', 'rcvFileError', 'rcvFileSndCancelled', 'rcvFileWarning'}
+
+
+def _log_daemon_error(event):
+    """One line per daemon error: its type and the error's kind and text
+    (masked; a path, never a message text, which the daemon does not echo
+    in an error)."""
+    err = event.get('chatError') or event.get('agentError') or event.get('rcvFileError') or {}
+    kind = (err.get('errorType') or {}).get('type') or err.get('type') or '?'
+    text = str((err.get('errorType') or {}).get('message') or err.get('message') or '')
+    print(f"[gateway] daemon {event.get('type')}: {kind} {pairing.mask(text)[:300]}".rstrip(),
+          file=sys.stderr, flush=True)
 
 
 def _log_media_failure(task):
@@ -1713,6 +1731,24 @@ class Rooms:
             return echo + '\n' + t("Say yes by typing; voice doesn't approve.")
         return echo + '\n' + t('No clear answer, nothing approved. Type "yes" to approve.')
 
+    async def _attachment_failed(self, event):
+        """A daemon error while a received attachment is open: the chats
+        waiting for one hear that it did not arrive (the daemon's error does
+        not name its file, so every open transfer is told and closed)."""
+        open_ = getattr(self, '_incoming_files', {})
+        if not open_ or event.get('type') == 'rcvFileWarning':
+            return
+        if event.get('type') == 'chatError' and not re.search(
+                r'file|xftp|rename', json.dumps(event.get('chatError') or {}), re.I):
+            return                          # some other command's error
+        chats = {chat for chat, _mid, _fid in open_}
+        self._incoming_files = {}
+        for chat in chats:
+            try:
+                await self.send(chat, t('The attachment could not be received. Please send it again.'))
+            except Exception:  # noqa: BLE001
+                pass
+
     async def handle_file(self, message, room):
         from .media import MAX_FILE, CHUNK, filename, transcribe
         import base64
@@ -2301,6 +2337,10 @@ class Rooms:
         media_tasks = set()
         try:
             async for event in self.daemon.events():
+                if event.get('type') in _DAEMON_ERRORS:
+                    _log_daemon_error(event)
+                    await self._attachment_failed(event)
+                    continue
                 if simplex.new_contact_id(event):
                     try:
                         await self.contact_connected(event)

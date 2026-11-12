@@ -153,3 +153,35 @@ def test_a_failed_attachment_task_is_logged_by_type(capsys):
     asyncio.run(run())
     err = capsys.readouterr().err
     assert '[gateway] attachment: RuntimeError' in err and 'secret' not in err
+
+
+def test_a_failed_download_is_logged_and_told(capsys):
+    """The daemon's error for a failed download was ignored: the voice
+    message waited forever. It is logged (type, kind, masked text) and the
+    chat waiting for the attachment hears it did not arrive."""
+    import asyncio
+    from delfin.messenger import gateway
+
+    sent = []
+
+    class Rooms:
+        _incoming_files = {('#10', '5', '1'): {'path': None, 'time': 0.0}}
+
+        async def send(self, chat, text):
+            sent.append((chat, text))
+
+    event = {'type': 'chatError', 'chatError': {'type': 'error', 'errorType': {
+        'type': 'exception', 'message': "renameFile: rename '/tmp/x/xftp.decrypted' to '/var/x': "
+                                        "unsupported operation (Invalid cross-device link)"}}}
+    gateway._log_daemon_error(event)
+    asyncio.run(gateway.Rooms._attachment_failed(Rooms(), event))
+    assert 'daemon chatError: exception renameFile' in capsys.readouterr().err
+    assert sent and sent[0][0] == '#10'
+
+    other = {'type': 'chatError', 'chatError': {'type': 'error', 'errorType': {
+        'type': 'groupNotFound', 'message': ''}}}
+    rooms = Rooms()
+    rooms._incoming_files = {('#10', '6', '2'): {}}
+    sent.clear()
+    asyncio.run(gateway.Rooms._attachment_failed(rooms, other))
+    assert not sent and rooms._incoming_files

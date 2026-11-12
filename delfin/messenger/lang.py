@@ -463,6 +463,8 @@ DE = {
     'Not done: unclear for which person.': 'Nicht ausgeführt: unklar, für welche Person.',
     "Tap /'{yes} {token}' or /'{no} {token}', or reply *yes* / *no* on the card.":
     "Tippe /'{yes} {token}' oder /'{no} {token}', oder antworte auf der Karte mit *ja* / *nein*.",
+    'The attachment could not be received. Please send it again.':
+    'Der Anhang kam nicht an. Bitte noch einmal senden.',
     'new NAME: task starts a new session on the phone.':
     'neu NAME: Aufgabe startet eine neue Sitzung auf dem Handy.',
     'No running sessions. new NAME starts one.': 'Keine laufenden Sitzungen. neu NAME startet eine.',

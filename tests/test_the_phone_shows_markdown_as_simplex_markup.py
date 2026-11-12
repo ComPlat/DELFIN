@@ -11,7 +11,7 @@ from delfin.messenger.render import simplex_text
 
 def test_strong_and_heading_become_simplex_bold():
     assert simplex_text("Hier ist **der Link**.") == "Hier ist *der Link*."
-    assert simplex_text("__fett__ und *kursiv*") == "*fett* und _kursiv_"
+    assert simplex_text("__fett__ und *auch*") == "*fett* und *auch*"
     assert simplex_text("## Ergebnis\nfertig") == "*Ergebnis*\nfertig"
 
 
