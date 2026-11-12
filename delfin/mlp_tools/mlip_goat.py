@@ -16,9 +16,10 @@ gives 40 workers).  With orca-mlips each worker ended up with a model of its
 own on the GPU: 40 ran the GPU out of memory (CUDA allocation failures, the
 job OOM-killed), 8 ran.  So orca-mlips GOAT is capped at
 :func:`orca_mlips_worker_cap` workers -- 8, fewer on a small GPU -- written as
-``%goat nworkers``; PAL itself is left as it is.  With OET the workers are
-not capped: they queue on one server, whose model processes
-(:func:`oet_server_processes`) are what the GPU memory has to hold.
+``%goat nworkers``; PAL itself is left as it is.  With OET each request
+names its cores and the server refuses one larger than its process count,
+which the initial optimisation (all of %pal) is: so %pal nprocs, the workers
+and the server's model processes are one number, :func:`oet_default_workers`.
 ``goat_max_workers`` in CONTROL overrides the worker count (a positive
 multiple of 4, ORCA's rule).
 """
@@ -37,8 +38,9 @@ PROVIDERS = ("auto", "oet", "orca-mlips")
 GIB_PER_MODEL = 5.0
 #: orca-mlips: measured upper bound of workers (one model each) that ran.
 ORCA_MLIPS_MAX_WORKERS = 8
-#: OET: upper bound of model processes in the one server.
-OET_MAX_PROCESSES = 8
+#: OET: GOAT workers (= server model processes) when nothing else is said;
+#: see the measurements in docs/MLIP_GOAT_GPU.md.
+OET_DEFAULT_WORKERS = 8
 #: Assumed when the GPU's memory cannot be read.
 DEFAULT_GPU_GIB = 40.0
 
@@ -73,9 +75,13 @@ def orca_mlips_worker_cap(gpu_gib: float) -> int:
     return max(4, cap - cap % 4)
 
 
-def oet_server_processes(workers: int, gpu_gib: float) -> int:
-    """Model processes of the one OET server: no more than the GPU holds or workers need."""
-    return max(1, min(OET_MAX_PROCESSES, _models_that_fit(gpu_gib), int(workers)))
+def oet_default_workers(pal: int, gpu_gib: float) -> int:
+    """GOAT workers = model processes of an OET GOAT: the measured best, within PAL and the GPU.
+
+    A multiple of 4 (GOAT spreads its workers over 4 temperatures), at least 4.
+    """
+    w = min(OET_DEFAULT_WORKERS, int(pal), _models_that_fit(gpu_gib))
+    return max(4, w - w % 4)
 
 
 def default_goat_workers(pal: int) -> int:
@@ -90,6 +96,7 @@ class GoatPlan:
     workers: int             # how many workers run
     server_processes: int    # OET model processes (1 for orca-mlips: per worker)
     reason: str
+    nprocs: Optional[int] = None  # %pal nprocs written, None = PAL
 
 
 def choose_provider(backend: str, forced: str = "auto", *, oet_info: Optional[dict] = None,
@@ -125,7 +132,6 @@ def choose_provider(backend: str, forced: str = "auto", *, oet_info: Optional[di
 
 def plan_goat(backend: str, pal: int, *, forced: str = "auto",
               max_workers: Optional[int] = None, gpu_gib: Optional[float] = None,
-              server_processes: Optional[int] = None,
               oet_info: Optional[dict] = None, mlips_info: Optional[dict] = None) -> GoatPlan:
     """Provider, workers and server processes of one MLIP GOAT."""
     provider, why = choose_provider(backend, forced, oet_info=oet_info, mlips_info=mlips_info)
@@ -147,17 +153,19 @@ def plan_goat(backend: str, pal: int, *, forced: str = "auto",
         else:
             nworkers, reason = None, why
         return GoatPlan(provider, nworkers, nworkers or natural, 1, reason)
-    nworkers = int(max_workers) if max_workers is not None else None
-    workers = nworkers or natural
-    # A worker's request asks for its share of %pal (NCores); the server's
-    # -n is also its core budget, so it must cover one request.
-    per_request = max(1, natural // workers)
-    if server_processes is not None:
-        processes = max(per_request, int(server_processes))
-        source = "mlip_server_processes from CONTROL"
+    # orca-external-tools: every request names its cores (NCores, ORCA's %pal
+    # share) and the server refuses one larger than its -n -- the initial
+    # optimisation asks for all of %pal nprocs ("Requested 32 cores but only 8
+    # total available", measured). The server's -n is also its number of
+    # model processes. So %pal nprocs, GOAT's workers (one process each) and
+    # the server's model processes are one number W; the job keeps its PAL
+    # cores, ORCA uses W of them -- the model runs on the GPU, not on them.
+    if max_workers is not None:
+        workers = int(max_workers)
+        source = "goat_max_workers from CONTROL"
     else:
-        processes = max(per_request, oet_server_processes(workers, gib))
-        source = f"{gib:.0f} GiB GPU"
-    return GoatPlan("oet", nworkers, workers, processes,
-                    f"{why}; {workers} workers share one server with {processes} model "
-                    f"processes ({source})")
+        workers = oet_default_workers(pal, gib)
+        source = f"measured default for a {gib:.0f} GiB GPU (OET_DEFAULT_WORKERS)"
+    return GoatPlan("oet", None, workers, workers,
+                    f"{why}; {workers} GOAT workers (%pal nprocs {workers}) on one server "
+                    f"with {workers} model processes, {source}", nprocs=workers)

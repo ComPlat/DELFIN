@@ -351,14 +351,8 @@
       "read_by": "delfin/xtb_crest.py _xtb_goat_mlip; delfin/mlp_tools/mlip_goat.py choose_provider."
     },
     "goat_max_workers": {
-      "meaning": "Number of GOAT workers (%goat nworkers) of an MLIP GOAT. Empty: orca-external-tools runs %pal workers on its one server; orca-mlips is capped (8 on a large GPU, fewer on a small one) because it loads one model per worker -- 40 workers ran a GPU out of memory. PAL is not changed.",
+      "meaning": "Number of GOAT workers of an MLIP GOAT. Empty: DELFIN's measured default (delfin/mlp_tools/mlip_goat.py). orca-mlips: %goat nworkers, capped at 8 on a large GPU because it loads one model per worker (40 workers ran a GPU out of memory); PAL is not changed. orca-external-tools: %pal nprocs, the workers and the server's model processes are this one number, because the server refuses a request for more cores than it has processes (the initial optimisation asks for all of %pal).",
       "valid_values": "empty | a positive multiple of 4 (_as_goat_max_workers)",
-      "default": "",
-      "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat."
-    },
-    "mlip_server_processes": {
-      "meaning": "Model processes of the orca-external-tools server that serves every GOAT worker of an MLIP GOAT; each holds one model on the GPU. Empty: DELFIN's measured default for the GPU the job runs on (delfin/mlp_tools/mlip_goat.py).",
-      "valid_values": "empty | 1..64 (_as_mlip_server_processes)",
       "default": "",
       "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat."
     },

@@ -1188,20 +1188,6 @@ def _as_goat_max_workers(value: Any) -> "int | None":
     return number
 
 
-def _as_mlip_server_processes(value: Any) -> "int | None":
-    """Model processes of the orca-external-tools server: empty = DELFIN's choice, else 1..64."""
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        number = int(text)
-    except ValueError:
-        raise ValueError("must be a whole number from 1 to 64") from None
-    if not 1 <= number <= 64:
-        raise ValueError("must be a whole number from 1 to 64")
-    return number
-
-
 def _valid_global_opt_mlip(validated: Mapping[str, Any]) -> str:
     """``mlip:<plugin>`` when the value passed its field check, else ""."""
     try:
@@ -2387,14 +2373,9 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
                    "oet or orca-mlips forces one."),
     FieldSpec("goat_max_workers", _as_goat_max_workers, default=None, allow_none=True,
               help="GOAT workers of an MLIP GOAT (a multiple of 4). Empty: "
-                   "orca-external-tools runs %pal workers on one server; "
-                   "orca-mlips is capped (8 on a large GPU) because it loads "
-                   "one model per worker."),
-    FieldSpec("mlip_server_processes", _as_mlip_server_processes, default=None,
-              allow_none=True,
-              help="Model processes of the orca-external-tools server of an MLIP "
-                   "GOAT (each holds one model on the GPU). Empty: DELFIN's "
-                   "measured default for the GPU it runs on."),
+                   "DELFIN's measured default -- orca-mlips capped at 8 (one "
+                   "model per worker), orca-external-tools W workers on one "
+                   "server with W model processes (%pal nprocs W)."),
     FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
               help="yes refuses an MLIP whose weights are non-commercially "
                    "licensed (global_opt_method=mlip:mace)."),

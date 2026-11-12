@@ -183,7 +183,6 @@ def _global_opt_mlip_choice(config) -> dict | None:
         _as_global_opt_mlip_model,
         _as_global_opt_mlip_provider,
         _as_goat_max_workers,
-        _as_mlip_server_processes,
         _as_yes_no,
     )
 
@@ -199,7 +198,6 @@ def _global_opt_mlip_choice(config) -> dict | None:
         "device": _as_global_opt_mlip_device(config.get("global_opt_mlip_device")),
         "provider": _as_global_opt_mlip_provider(config.get("global_opt_mlip_provider")),
         "max_workers": _as_goat_max_workers(config.get("goat_max_workers")),
-        "server_processes": _as_mlip_server_processes(config.get("mlip_server_processes")),
         "refuse_noncommercial_weights":
             _as_yes_no(config.get("refuse_noncommercial_weights", "no")) == "yes",
     }
@@ -304,7 +302,6 @@ def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
     # orca-mlips with its workers capped -- it loads one model per worker.
     plan = plan_goat(backend, int(cores_limit), forced=choice["provider"],
                      max_workers=choice["max_workers"],
-                     server_processes=choice["server_processes"],
                      gpu_gib=None if choice["device"] == "cuda" else 0.0)
     print(f"GOAT provider: {plan.provider} ({plan.reason}).")
     if choice["device"] == "cuda":
@@ -329,7 +326,7 @@ def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
             "goat", elements=elements, coordinates=coordinates,
             charge=int(charge), mult=int(multiplicity), backend=backend,
             model=choice["model"] or None, device=choice["device"],
-            ncores=int(cores_limit), base_name="XTB_GOAT", work_dir=build_dir,
+            ncores=int(plan.nprocs or cores_limit), base_name="XTB_GOAT", work_dir=build_dir,
             xyz_name="XTB_GOAT_start.xyz", goat_options=goat_options,
             **provider_args,
         )

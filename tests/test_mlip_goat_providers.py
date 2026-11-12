@@ -73,8 +73,9 @@ def test_goat_max_workers_overrides_and_is_checked():
 def test_auto_prefers_oet_with_the_backend():
     plan = plan_goat("aimnet2", 40, gpu_gib=80, oet_info=OET, mlips_info=MLIPS)
     assert plan.provider == "oet"
-    # every worker queues on one server; the GPU holds its model processes
-    assert plan.nworkers is None and plan.workers == 40 and plan.server_processes == 8
+    # one number W: %pal nprocs, GOAT workers and the server's model processes
+    assert plan.nprocs == plan.workers == plan.server_processes == mlip_goat.OET_DEFAULT_WORKERS
+    assert plan.nworkers is None
 
 
 def test_auto_falls_back_to_orca_mlips_for_a_backend_oet_lacks():
@@ -91,11 +92,18 @@ def test_forcing_a_provider():
         plan_goat("orb", 8, gpu_gib=80, forced="oet", oet_info=OET, mlips_info=MLIPS)
 
 
-def test_oet_server_covers_one_request_when_workers_are_capped():
-    # 40 cores over 4 workers: each request asks for 10 cores (NCores), which
-    # the server's -n (its core budget) must hold.
-    plan = plan_goat("aimnet2", 40, gpu_gib=80, max_workers=4, oet_info=OET, mlips_info=MLIPS)
-    assert plan.server_processes == 10
+def test_oet_server_holds_every_request_ncores():
+    """The server refuses a request for more cores than its -n: the initial
+    optimisation asked for 32 with -n 8 ("Requested 32 cores but only 8 total
+    available", measured). So %pal nprocs never exceeds the server's -n."""
+    for max_workers in (None, 4, 16):
+        plan = plan_goat("aimnet2", 40, gpu_gib=80, max_workers=max_workers, oet_info=OET,
+                         mlips_info=MLIPS)
+        assert plan.nprocs <= plan.server_processes
+    assert plan_goat("aimnet2", 40, gpu_gib=80, max_workers=16, oet_info=OET,
+                     mlips_info=MLIPS).nprocs == 16
+    # a small job: never more workers than PAL
+    assert plan_goat("aimnet2", 4, gpu_gib=80, oet_info=OET, mlips_info=MLIPS).nprocs == 4
 
 
 def test_the_control_keys():
@@ -237,6 +245,7 @@ def test_an_oet_goat_runs_inside_one_server(run_dir, monkeypatch, ai_root):
     assert server_up, "ORCA ran while the server was up"
     assert f'"{prefix / "bin" / "delfin-oet-client"}"' in text
     assert '"-d cuda"' in text and "nworkers" not in text.lower()
+    assert "nprocs 8" in text.lower()  # PAL 40 job, 8 workers = 8 model processes
     meta = json.loads((run_dir / "XTB2_GOAT" / "XTB_GOAT.method.json").read_text())
     assert meta["provider"] == "oet" and meta["server_processes"] == 8
     assert not (run_dir / "XTB2_GOAT" / oet.ADDRESS_FILE).exists()
