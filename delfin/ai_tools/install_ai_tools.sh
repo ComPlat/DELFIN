@@ -27,6 +27,9 @@ set -euo pipefail
 #   INSTALL_ARCHITECTOR          (default: 0)  architector
 #   INSTALL_EPIC_MACE            (default: 0)  epic-MACE, in an environment of its own
 #                                              (Python 3.7 + RDKit 2020.09, micromamba)
+#   INSTALL_RXEMBED              (default: 0)  rxembed, own environment (Python 3.12, RDKit 2026.9)
+#   INSTALL_MOLASSEMBLER         (default: 0)  Molassembler, own environment (Python 3.11)
+#   INSTALL_METALLOGEN           (default: 0)  MetalloGen, own environment (Python 3.11; needs ORCA)
 #   INSTALL_PLOTLY               (default: 0)  plotly
 #   INSTALL_ALL                  (default: 0)  Install everything
 #   FORCE_REINSTALL              (default: 0)  Force reinstall
@@ -53,6 +56,9 @@ INSTALL_ADMETLAB="${INSTALL_ADMETLAB:-${INSTALL_ALL}}"
 INSTALL_MOLSIMPLIFY="${INSTALL_MOLSIMPLIFY:-${INSTALL_ALL}}"
 INSTALL_ARCHITECTOR="${INSTALL_ARCHITECTOR:-${INSTALL_ALL}}"
 INSTALL_EPIC_MACE="${INSTALL_EPIC_MACE:-${INSTALL_ALL}}"
+INSTALL_RXEMBED="${INSTALL_RXEMBED:-${INSTALL_ALL}}"
+INSTALL_MOLASSEMBLER="${INSTALL_MOLASSEMBLER:-${INSTALL_ALL}}"
+INSTALL_METALLOGEN="${INSTALL_METALLOGEN:-${INSTALL_ALL}}"
 INSTALL_PLOTLY="${INSTALL_PLOTLY:-${INSTALL_ALL}}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
@@ -209,6 +215,127 @@ install_epic_mace() {
   fi
 }
 
+# rxembed, Molassembler and MetalloGen, each in an environment of its own.
+#
+# DELFIN starts them as external programs (delfin/common/external_builders.py,
+# builds in delfin/cluster_bench/tool_workers/smiles_tools.py) with the
+# interpreter of ${ROOT}/.mamba_env/<name>/bin/python; DELFIN_RXEMBED_PYTHON,
+# DELFIN_MOLASSEMBLER_PYTHON and DELFIN_METALLOGEN_PYTHON override that.
+# rxembed (MIT) needs Python >= 3.12 and RDKit >= 2026.9.1, newer than DELFIN's;
+# it comes from a pinned GitHub commit (no PyPI release). Molassembler
+# (scine-molassembler, BSD-3) is a pinned PyPI wheel. MetalloGen (BSD-3) comes
+# from a pinned GitHub commit; DELFIN runs it only with its ORCA calculator
+# (GFN2-xTB through ORCA), so it needs ORCA, never Gaussian.
+#
+# Every version is exact: the tool itself is installed with --no-deps, its
+# dependencies are named with == (rxembed: the paper benchmark's environment,
+# KONKURRENZ_RXEMBED env_freeze; Molassembler: its benchmark environment), and
+# a GitHub archive is held to its SHA-256 before pip sees it.
+RXEMBED_REF="${RXEMBED_REF:-9c0ba5a6048bdbcba94450df5d6a68067bd250c8}"
+RXEMBED_URL="${RXEMBED_URL:-https://github.com/aligfellow/rxembed/archive/${RXEMBED_REF}.tar.gz}"
+RXEMBED_SHA256="${RXEMBED_SHA256:-58ad75e9f2fc652843f185540306560eba4258809ac991de10a34b297e2dfea5}"
+RXEMBED_CONDA_SPECS="${RXEMBED_CONDA_SPECS:-python=3.12.16 pip}"
+RXEMBED_PIP_DEPS="${RXEMBED_PIP_DEPS:-numpy==2.2.2 pillow==11.1.0 rdkit==2026.9.1 networkx==3.7 xyzgraph==1.7.0}"
+MOLASSEMBLER_URL="${MOLASSEMBLER_URL:-scine-molassembler==3.0.1}"
+MOLASSEMBLER_SHA256="${MOLASSEMBLER_SHA256:-}"
+MOLASSEMBLER_CONDA_SPECS="${MOLASSEMBLER_CONDA_SPECS:-python=3.11.18 pip}"
+MOLASSEMBLER_PIP_DEPS="${MOLASSEMBLER_PIP_DEPS:-scine-utilities==10.1.0 numpy==2.4.6 scipy==1.17.1}"
+METALLOGEN_REF="${METALLOGEN_REF:-fa26e2adb996ed2256e528e1c97fbc1c363c0808}"
+METALLOGEN_URL="${METALLOGEN_URL:-https://github.com/kyunghoonlee777/MetalloGen/archive/${METALLOGEN_REF}.tar.gz}"
+METALLOGEN_SHA256="${METALLOGEN_SHA256:-1a8a4f6a0223b7aa138b2eb0f57af4be6a84e056ed5c972bcbac2d6fdf3ab250}"
+METALLOGEN_CONDA_SPECS="${METALLOGEN_CONDA_SPECS:-python=3.11.18 rdkit=2026.09.2 numpy=2.4.6 scipy=1.17.1 cclib=1.8.1 pulp=3.3.2 pip}"
+METALLOGEN_PIP_DEPS="${METALLOGEN_PIP_DEPS:-}"
+
+sha256_of() {
+  if have sha256sum; then sha256sum "$1" | awk '{print $1}'
+  elif have shasum; then shasum -a 256 "$1" | awk '{print $1}'
+  elif have openssl; then openssl dgst -sha256 -r "$1" | awk '{print $1}'
+  else return 1
+  fi
+}
+
+fetch_checked() {
+  # fetch_checked URL SHA256 DEST: download, and keep DEST only when its SHA-256 is SHA256.
+  local url="$1" want="$2" dest="$3" got
+  rm -f "${dest}"
+  if have curl; then curl -fsSL -o "${dest}" "${url}" || return 1
+  elif have wget; then wget -q -O "${dest}" "${url}" || return 1
+  else warn "neither curl nor wget to fetch ${url}"; return 1
+  fi
+  if ! got="$(sha256_of "${dest}")" || [ "${got}" != "${want}" ]; then
+    warn "${url}: SHA-256 ${got:-unknown} is not the pinned ${want}; not installed"
+    rm -f "${dest}"
+    return 1
+  fi
+}
+
+install_own_env() {
+  # install_own_env SWITCH LABEL ENV_NAME MODULE "CONDA_SPECS" "PIP_DEPS" SPEC_OR_URL SHA256
+  # The tool goes in with --no-deps after its exactly pinned dependencies; with a SHA256 the
+  # SPEC_OR_URL is an archive that is downloaded and checked first.
+  local switch="$1" label="$2" name="$3" module="$4" specs="$5" deps="$6" pip_spec="$7" sha="$8"
+  if [ "${!switch:-0}" != "1" ]; then
+    log "${switch}: skipped (${switch}=0)"
+    return 0
+  fi
+  local env_dir="${ROOT}/.mamba_env/${name}"
+  local py="${env_dir}/bin/python"
+  local log_file="${LOG_DIR}/${name}_install.log"
+
+  if [ -x "${py}" ] && epic_mace_python "${py}" -c "import ${module}" >/dev/null 2>&1 \
+      && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "${label}: already installed (${py})"
+    return 0
+  fi
+  local mamba
+  if ! mamba="$(find_micromamba)"; then
+    warn "${label} needs micromamba (or conda) for its own environment, and none was found or could be fetched."
+    return 0
+  fi
+  if [ ! -x "${py}" ] || [ "${FORCE_REINSTALL}" = "1" ]; then
+    log "creating the ${label} environment at ${env_dir} with ${mamba} (${specs})..."
+    # shellcheck disable=SC2086
+    "${mamba}" create -y -p "${env_dir}" -c conda-forge --override-channels ${specs} \
+      2>&1 | tee -a "${log_file}" || true
+  fi
+  if [ ! -x "${py}" ]; then
+    warn "${label}: the environment could not be created; see ${log_file}"
+    return 0
+  fi
+  if [ -n "${deps}" ]; then
+    log "installing the pinned dependencies of ${label} (${deps})..."
+    # shellcheck disable=SC2086
+    epic_mace_python "${py}" -m pip install --no-cache-dir ${deps} \
+      2>&1 | tee -a "${log_file}" || true
+  fi
+  local target="${pip_spec}"
+  if [ -n "${sha}" ]; then
+    target="${env_dir}/${name}-${sha:0:12}.tar.gz"
+    if ! fetch_checked "${pip_spec}" "${sha}" "${target}"; then
+      warn "${label} installation failed: the archive could not be fetched and checked; see ${log_file}"
+      return 0
+    fi
+  fi
+  log "installing ${label} (${pip_spec}) into ${env_dir}..."
+  epic_mace_python "${py}" -m pip install --no-cache-dir --no-deps "${target}" \
+    2>&1 | tee -a "${log_file}" || true
+  if epic_mace_python "${py}" -c "import ${module}" >/dev/null 2>&1; then
+    log "${label} installed: ${py}"
+  else
+    warn "${label} installation failed; see ${log_file}"
+  fi
+}
+
+install_smiles_tools() {
+  install_own_env INSTALL_RXEMBED rxembed rxembed rxembed \
+    "${RXEMBED_CONDA_SPECS}" "${RXEMBED_PIP_DEPS}" "${RXEMBED_URL}" "${RXEMBED_SHA256}"
+  install_own_env INSTALL_MOLASSEMBLER Molassembler molassembler scine_molassembler \
+    "${MOLASSEMBLER_CONDA_SPECS}" "${MOLASSEMBLER_PIP_DEPS}" "${MOLASSEMBLER_URL}" "${MOLASSEMBLER_SHA256}"
+  # Its dependencies (rdkit, numpy, scipy, cclib, pulp) come pinned from conda-forge above.
+  install_own_env INSTALL_METALLOGEN MetalloGen metallogen MetalloGen \
+    "${METALLOGEN_CONDA_SPECS}" "${METALLOGEN_PIP_DEPS}" "${METALLOGEN_URL}" "${METALLOGEN_SHA256}"
+}
+
 # ---------------------------------------------------------------------------
 main() {
   local python_bin
@@ -245,6 +372,7 @@ main() {
   pip_install "${python_bin}" INSTALL_MOLSIMPLIFY "molSimplify" molSimplify
   pip_install "${python_bin}" INSTALL_ARCHITECTOR "architector"  architector
   install_epic_mace
+  install_smiles_tools
 
   # Visualization
   pip_install "${python_bin}" INSTALL_PLOTLY "plotly" plotly
@@ -284,6 +412,17 @@ main() {
   else
     printf "  %-24s %s\n" "epic-MACE" "not installed"
   fi
+  for env_label in "rxembed:rxembed:rxembed" "molassembler:scine_molassembler:Molassembler" \
+      "metallogen:MetalloGen:MetalloGen"; do
+    local env_name="${env_label%%:*}" rest="${env_label#*:}"
+    local env_module="${rest%%:*}" env_shown="${rest#*:}"
+    if [ -x "${ROOT}/.mamba_env/${env_name}/bin/python" ] \
+        && epic_mace_python "${ROOT}/.mamba_env/${env_name}/bin/python" -c "import ${env_module}" >/dev/null 2>&1; then
+      printf "  %-24s %s\n" "${env_shown}" "installed (own environment)"
+    else
+      printf "  %-24s %s\n" "${env_shown}" "not installed"
+    fi
+  done
 }
 
 main "$@"

@@ -22,7 +22,8 @@ except ImportError:  # python 3.7
 
 PACKAGES = ("rdkit", "rdkit-pypi", "numpy", "scipy", "architector", "molSimplify", "mendeleev",
             "openbabel", "openbabel-wheel", "xtb", "tblite", "ase", "numba", "epic-mace", "pyyaml",
-            "networkx", "stk")
+            "networkx", "stk", "rxembed", "xyzgraph", "scine_molassembler", "scine_utilities",
+            "MetalloGen", "cclib", "PuLP")
 
 
 def probe_version(name):
