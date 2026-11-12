@@ -424,9 +424,11 @@ ExecStartPre=+/bin/rm -f /run/delfin-messenger-bridge/messenger.sock
 ExecStopPost=+/bin/rm -f /run/delfin-messenger-bridge/messenger.sock
 # Person-start requests (people mode): the bridge's alone, read by the root
 # starter (delfin-person-start.path). Made the same way, 0700.
-ExecStartPre=+/bin/rm -rf /run/delfin-person-start
+# Kept like the socket directory (an rm -rf of a directory bound by
+# ReadWritePaths= fails with EBUSY); stale requests are cleared instead.
 ExecStartPre=+/usr/bin/install -d -m 0700 -o ${SERVICE_USER} -g ${SERVICE_USER} /run/delfin-person-start
-ExecStopPost=+/bin/rm -rf /run/delfin-person-start
+ExecStartPre=+/usr/bin/find /run/delfin-person-start -mindepth 1 -delete
+ExecStopPost=+/usr/bin/find /run/delfin-person-start -mindepth 1 -delete
 Environment=DELFIN_MESSENGER_PEER_UID=$(id -u "${GW_USER}")
 Environment=DELFIN_MESSENGER_SOCKET=${BRIDGE_SOCKET}
 Environment=DELFIN_MESSENGER_PERSON_STARTS=/run/delfin-person-start
@@ -442,7 +444,7 @@ ProtectHome=read-only
 # socket's own directory: ProtectSystem=strict makes /run read-only, and
 # without it bind() failed with "Read-only file system" (the RuntimeDirectory=
 # this replaced had made it writable as a side effect).
-ReadWritePaths=${SERVICE_HOME} -/run/delfin-messenger-bridge
+ReadWritePaths=${SERVICE_HOME} -/run/delfin-messenger-bridge -/run/delfin-person-start
 # The agent service socket is in the host's private per-user /tmp directory.
 PrivateTmp=no
 PrivateDevices=yes
