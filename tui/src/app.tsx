@@ -16,7 +16,9 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead } from "./commands"
+import { existsSync } from "node:fs"
+import { WINDOW_COMMANDS, WINDOW_ONLY_NAMES, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead,
+         unknownCommandNote, unknownCommandOf } from "./commands"
 import { createSwarmView } from "./swarm/view"
 import { createSwarmWatch } from "./swarm/watch"
 import type { ArgumentChoices } from "./composer/complete"
@@ -162,6 +164,43 @@ export function App(props: AppProps): JSX.Element {
     }
   }
   const sid = () => store.state.current ?? ""
+
+  // -- unknown /commands: answered here, never sent ------------------------------
+  /** The command names the session listed last (session.commands), per
+   *  session, asked again after a minute (a skill or a user command added
+   *  meanwhile). */
+  const commandNames = new Map<string, { at: number; names: string[] }>()
+  /** Every command `id` knows, or null when the session cannot say (a
+   *  service that does not answer session.commands, an empty list): then
+   *  nothing is judged and the line goes out as before. */
+  const knownCommands = async (id: string): Promise<string[] | null> => {
+    const hit = commandNames.get(id)
+    if (hit && Date.now() - hit.at < 60_000) return hit.names
+    let listedNames: string[] = []
+    try {
+      const got = await props.client.request("session.commands", { sessionId: id })
+      listedNames = ((got?.commands ?? []) as { name?: unknown }[]).map((c) => String(c?.name ?? "")).filter(Boolean)
+    } catch {
+      return null
+    }
+    if (!listedNames.length) return null
+    const names = [...new Set([...WINDOW_COMMANDS.map((c) => c.name), ...WINDOW_ONLY_NAMES, ...listedNames])]
+    commandNames.set(id, { at: Date.now(), names })
+    return names
+  }
+  /** True when `text` is an unknown /command for session `id`: said in the
+   *  window (with the command it was probably meant to be), never sent --
+   *  the line stays in the prompt to be put right. A path ("/home/…")
+   *  is no command and goes out. */
+  const refusedAsUnknown = async (text: string, id: string): Promise<boolean> => {
+    if (!text.trim().startsWith("/") || !id) return false
+    const known = await knownCommands(id)
+    if (!known) return false
+    const unknown = unknownCommandOf(text, known, existsSync)
+    if (!unknown) return false
+    say(unknownCommandNote(unknown))
+    return true
+  }
 
   // -- full screen: scrolling and copying ----------------------------------------
   let scrollBox: ScrollBoxRenderable | null = null
@@ -408,9 +447,13 @@ export function App(props: AppProps): JSX.Element {
         picker.open("merge back a session worktree", rows, (c) => void mergeWorktreeBack(c.value))
         return true
       }
+    // An unknown /command is answered here and never sent (a paid turn
+    // about a typo); with the key that steers too. The line stays.
+    const target = sid()
+    if (await refusedAsUnknown(text, target)) return false
     // The session strips the text it shows, as a typed line is stripped.
     if (shown) props.sentAs?.set(text.trim(), shown)
-    const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
+    const result = await call("session.prompt", how ? { sessionId: target, text, how } : { sessionId: target, text })
     return result !== undefined
   }
 
@@ -467,11 +510,24 @@ export function App(props: AppProps): JSX.Element {
       if (await call("session.message", { key: row.id, text })) say(`sent to ${row.name}`)
       return
     }
+    // An unknown /command is not sent to that session either; the line
+    // comes back into the prompt.
+    if (await refusedAsUnknown(text, row.id)) {
+      composer.setText(composer.value() ? `${composer.value()}\n${text}` : text)
+      return
+    }
     const result = await call("session.prompt", { sessionId: row.id, text })
     if (!result) return
     say(result.queued ? `queued for ${row.name}: it goes out when its turn ends` : `sent to ${row.name}`)
   }
   const startNew = async (text: string) => {
+    // An unknown /command starts no session (judged by the commands of the
+    // session in view: the builtins are every session's).
+    if (await refusedAsUnknown(text, sid())) {
+      agents.open()
+      composer.setText(composer.value() ? `${composer.value()}\n${text}` : text)
+      return
+    }
     if (store.state.starting) {
       // The first session is still starting: this one follows it (the
       // window then shows this one, the latest asked for).
