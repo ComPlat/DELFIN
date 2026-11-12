@@ -41,8 +41,9 @@ def test_wrong_field_name_gives_hint_not_silent_rename():
 
 
 def test_hint_comes_from_similarity_not_a_list():
-    # No hand-maintained table maps "paths" -> "path"; similarity must.
-    res = tool_args.check(_schema("read_file"), {"paths": "a.txt"})
+    # No hand-maintained table maps "pth" -> "path"; similarity must.
+    # ("paths" served here until read_file gained a real `paths`.)
+    res = tool_args.check(_schema("read_file"), {"pth": "a.txt"})
     assert "did you mean 'path'?" in res.error_text
     # ... but a field nothing like any known field gets no invented hint
     res = tool_args.check(_schema("read_file"), {"zzzzqqqq": 1})
