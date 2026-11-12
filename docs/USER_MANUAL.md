@@ -62,7 +62,9 @@ dashboard's Settings tab, or automatically when a calculation first needs it.
 `python -m delfin.installer --list` shows what can be installed, `--status` what is.
 A tool that cannot live in DELFIN's own Python gets an environment of its own: epic-MACE
 (`--install epic-mace`) is built with micromamba as Python 3.7 + RDKit 2020.09 under
-`~/.delfin/ai_tools/.mamba_env/epic_mace` and is called there as an external program.
+`~/.delfin/ai_tools/.mamba_env/epic_mace` and is called there as an external program; rxembed
+(`--install rxembed`, Python 3.12 + RDKit 2026.9), Molassembler (`--install molassembler`) and
+MetalloGen (`--install metallogen`) the same way under `.mamba_env/<name>`.
 
 ### Standard install
 
@@ -1038,7 +1040,7 @@ Can also be run standalone: `delfin --imag`.
 One CONTROL key decides, and a run that builds from a SMILES must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]
 ```
 
 | Value | What it does |
@@ -1049,10 +1051,15 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 | `ARCHITECTOR` | The external Architector builder; needs a metal-containing SMILES. Its lowest-energy structure is used. |
 | `MOLSIMPLIFY` | The external molSimplify builder; needs a metal-containing SMILES. Its first geometry (square planar for CN 4, octahedral for CN 6) is used. |
 | `MACE` | The external epic-MACE builder; needs a metal-containing SMILES. The lowest-energy conformer of its first geometry (octahedral for 6 donor sites, square planar for 4) is used. |
+| `RXEMBED` | The external rxembed builder (`rx.embed(rx.isomers(smiles))`, every isomer on its default polyhedron); organic or metal-containing SMILES. The first conformer of the first species is used. |
+| `MOLASSEMBLER` | The external Molassembler builder (every stereoisomer, ten seeded distance-geometry conformers each); charge-separated SMILES only, a dative `->` is refused. The first conformer of the first isomer is used. |
+| `METALLOGEN` | The external MetalloGen builder with its ORCA calculator (every donor arrangement on the usual geometries of the site count, relaxed with GFN2-xTB through ORCA); needs a metal-containing SMILES and ORCA. The lowest-energy frame is used. |
 
-The external builders are optional (Architector and molSimplify: `pip install 'delfin-complat[ai-complex]'`; epic-MACE: `python -m delfin.installer --install epic-mace`, see below) and share one build with the dashboard buttons (`delfin/common/external_builders.py`): the SMILES is split into metal and ligands, the coordination number and oxidation state are read from it, and the tool runs in its own process. When the tool lives in another Python environment, point `DELFIN_ARCHITECTOR_PYTHON` / `DELFIN_MOLSIMPLIFY_PYTHON` / `DELFIN_MACE_PYTHON` to that interpreter. A missing tool is an error; nothing falls back to another builder. Mononuclear complexes only.
+The external builders are optional (Architector and molSimplify: `pip install 'delfin-complat[ai-complex]'`; epic-MACE, rxembed, Molassembler, MetalloGen: `python -m delfin.installer --install epic-mace` / `rxembed` / `molassembler` / `metallogen`, see below) and share one build with the dashboard buttons (`delfin/common/external_builders.py`): the SMILES is split into metal and ligands (rxembed and Molassembler read it as written), the coordination number and oxidation state are read from it, and the tool runs in its own process. When the tool lives in another Python environment, point `DELFIN_ARCHITECTOR_PYTHON` / `DELFIN_MOLSIMPLIFY_PYTHON` / `DELFIN_MACE_PYTHON` / `DELFIN_RXEMBED_PYTHON` / `DELFIN_MOLASSEMBLER_PYTHON` / `DELFIN_METALLOGEN_PYTHON` to that interpreter. A missing tool is an error; nothing falls back to another builder. Mononuclear complexes only (rxembed and Molassembler take any SMILES they can read).
 
 epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-group/epic-mace](https://github.com/EPiCs-group/epic-mace), GPL-3.0) needs Python 3.7 and RDKit 2020.09, so it is never installed beside DELFIN: `python -m delfin.installer --install epic-mace` (or `install.sh --only epic-mace`, or the Install button in Settings) builds an environment of its own with micromamba under `~/.delfin/ai_tools/.mamba_env/epic_mace` (from the pinned GitHub commit efb5778e, which adds hapto ligands and the TET/SPY/TBP/SAN geometries to the octahedron and square of the PyPI release), and DELFIN calls it there as an external program; `DELFIN_MACE_PYTHON` points it to another interpreter. The geometry follows from the number of donor sites (a hapto ligand is one site): OH for 6, SP + TET for 4, SPY + TBP for 5, SAN for two hapto ligands. Every stereomer (enantiomers kept) gets ten conformers; MACE has no random seed, so two builds can differ.
+
+rxembed ([aligfellow/rxembed](https://github.com/aligfellow/rxembed), MIT), Molassembler (Sobez & Reiher, *J. Chem. Inf. Model.* 2020, 60, 3884; [qcscine/molassembler](https://github.com/qcscine/molassembler), BSD-3) and MetalloGen (Lee, Park, Park & Kim, *J. Chem. Inf. Model.* 2025, 65, 11878; [kyunghoonlee777/MetalloGen](https://github.com/kyunghoonlee777/MetalloGen), BSD-3) each get an environment of their own the same way: `python -m delfin.installer --install rxembed` (pinned commit 9c0ba5a6; it needs Python >= 3.12 and RDKit >= 2026.9.1, newer than DELFIN's), `--install molassembler` (scine-molassembler 3.0.1), `--install metallogen` (pinned commit fa26e2ad); `DELFIN_RXEMBED_PYTHON` / `DELFIN_MOLASSEMBLER_PYTHON` / `DELFIN_METALLOGEN_PYTHON` point elsewhere. Their builds are defined once in `delfin/cluster_bench/tool_workers/smiles_tools.py` (dashboard buttons, CONTROL and `delfin cluster` run the same one). rxembed and Molassembler take the SMILES as written, without DELFIN's split; Molassembler's reader does not parse dative bonds (write `[NH3+][Pt-2]([NH3+])(Cl)Cl`, not `N->[Pt](<-N)(Cl)Cl`) and picks one polyhedron per centre from its graph model (four-coordinate Pt(II): tetrahedral). MetalloGen's default calculator is xTB through Gaussian; DELFIN runs only its ORCA calculator (GFN2-xTB through ORCA's `otool_xtb`), never Gaussian, so it needs ORCA. MetalloGen builds the one arrangement its m-SMILES writes; DELFIN writes one m-SMILES per distinct arrangement of the donor sites on the usual polyhedra of the site count (SP + TET for 4, TBP + SPY for 5, OH for 6; proper rotations, ligand automorphisms and swaps of identical ligands identify arrangements, mirror images are kept, donors of one ligand at most four bonds apart are never trans; at most 48 per geometry, flagged `truncated`), and each is generated, clustered and relaxed as MetalloGen's command line does, with `random` and `numpy.random` seeded per m-SMILES (the xTB relaxations through ORCA can still differ in the last digits, so frame counts can vary). MetalloGen's time limit is 7200 s; a time-out keeps the finished arrangements in a partial xyz. Molassembler counts each stereoisomer once (meso included).
 
 `GUPPY` is still read as a spelling of `MANTA`, as is the older bare `GUPPY=yes`.
 
