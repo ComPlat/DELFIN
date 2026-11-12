@@ -465,6 +465,7 @@ DE = {
     "Tippe /'{yes} {token}' oder /'{no} {token}', oder antworte auf der Karte mit *ja* / *nein*.",
     'The attachment could not be received. Please send it again.':
     'Der Anhang kam nicht an. Bitte noch einmal senden.',
+    'New session': 'Neue Sitzung',
     'new NAME: task starts a new session on the phone.':
     'neu NAME: Aufgabe startet eine neue Sitzung auf dem Handy.',
     'No running sessions. new NAME starts one.': 'Keine laufenden Sitzungen. neu NAME startet eine.',

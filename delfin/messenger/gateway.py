@@ -206,7 +206,7 @@ def group_name(title: str, sid: str | None, person: str = OWNER) -> str:
         if person:
             name += f' · {person}'
     else:
-        name = f'{bot_name()} · {title.strip() or sid[:8]}'
+        name = f'{bot_name()} · {title.strip() or t("New session")}'
     return name[:NAME_LIMIT].rstrip()
 
 
@@ -443,6 +443,22 @@ class Rooms:
         if _takes(self.daemon.create_group, 'commands'):
             return await self.daemon.create_group(name, commands=self._group_commands())
         return await self.daemon.create_group(name)
+
+    async def _follow_title(self, chat, room, status):
+        """The chat takes the session's name when the session gets one or
+        is renamed (its first prompt, the dashboard, the TUI). A chat made
+        while the session was untitled kept the id's head as its name for
+        good (seen on the phone: only a number). A title that is a command
+        (starts with "/") is not taken. Never raises."""
+        from .activation import clean_name
+        title = clean_name(status.get('title') or '')
+        if status.get('error') or not title or title.startswith('/') or title == room.get('title'):
+            return
+        try:
+            await self._rename_group(chat, group_name(title, room['session_id'], room.get('person', OWNER)))
+            store.put_room(chat, room['session_id'], title, person=room.get('person', OWNER), ready=True)
+        except Exception as exc:  # noqa: BLE001 - the next round tries again
+            print(f'[gateway] rename: {type(exc).__name__}', file=sys.stderr, flush=True)
 
     async def _rename_group(self, chat, name):
         if _takes(self.daemon.rename_group, 'commands'):
@@ -1883,6 +1899,7 @@ class Rooms:
             if sid not in self._active or not room.get('ready') or not self.paired() or room.get('notifications') == 'aus':
                 continue
             status = await self.session(sid, 'status')
+            await self._follow_title(chat, room, status)
             next_shown = dict(self._shown)
             notices = []
             if status.get('error'):
