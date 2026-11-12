@@ -105,6 +105,7 @@ def _launch(monkeypatch, argv):
         raise Exec()
 
     monkeypatch.setattr(cli_service, "_security_preamble", lambda: None)
+    monkeypatch.setattr(cli_service, "_has_terminal", lambda: True)
     monkeypatch.setattr(launcher, "ensure_service", lambda: HELLO)
     monkeypatch.setattr(launcher, "tui_command", lambda: ["/bin/true"])
     monkeypatch.setattr(launcher, "service_command", lambda: ["svc"])
@@ -175,3 +176,29 @@ def test_a_session_that_was_asked_is_saved(tmp_path):
         w.turn("hello")
         sid = w.init_result["session"]["sessionId"]
     assert _saved_files(w, sid), "the session that was asked something was not saved"
+
+
+# -- no terminal ------------------------------------------------------------------------
+
+def test_tui_without_a_terminal_exits_2_and_names_print_mode(store, monkeypatch, tmp_path, capsys):
+    """As Claude Code: no interactive window in a pipe; -p is the way there."""
+    from delfin.agent import cli
+    from delfin.agent.service import launcher
+
+    started = []
+    monkeypatch.setattr(cli_service, "_has_terminal", lambda: False)
+    monkeypatch.setattr(launcher, "ensure_service", lambda: started.append(1) or HELLO)
+    monkeypatch.setattr(cli_service.os, "execvpe",
+                        lambda *a: pytest.fail("the window was started without a terminal"))
+    code = cli_service.cmd_tui(cli.build_parser().parse_args(["tui", "--cwd", str(tmp_path)]))
+    assert code == 2 and started == []
+    assert "needs a terminal" in capsys.readouterr().err
+
+
+def test_a_closed_stdin_counts_as_no_terminal(monkeypatch):
+    class Closed:
+        def isatty(self):
+            raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr(cli_service.sys, "stdin", Closed())
+    assert cli_service._has_terminal() is False

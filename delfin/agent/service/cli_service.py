@@ -219,9 +219,25 @@ def _setup_only() -> int:
     return 0
 
 
+def _has_terminal() -> bool:
+    """True when stdin and stdout are a terminal the window can take over."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):     # closed or replaced streams
+        return False
+
+
 def cmd_tui(args: argparse.Namespace) -> int:
     if getattr(args, "setup", False):
         return _setup_only()
+    if not _has_terminal():
+        # The window needs a terminal for its keys and its screen; in a
+        # pipe it drew escape codes and died on exit. As Claude Code does,
+        # refuse and name the mode that works without one.
+        print("ERROR: the TUI needs a terminal (stdin and stdout must be a TTY). "
+              "Without one, use `delfin-agent chat -p \"<prompt>\"`.",
+              file=sys.stderr)
+        return 2
     _security_preamble()
     command = launcher.tui_command()
     missing = ""
