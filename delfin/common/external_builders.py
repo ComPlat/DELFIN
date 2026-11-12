@@ -185,6 +185,18 @@ PROGRAMS = {
         "managed_env": ".mamba_env/orca_mlips",
         "install": "python -m delfin.installer --install orca-mlips",
     },
+    # orca-mlips with the UMA plugin's stack (fairchem-core), opt-in, in an
+    # environment of its own: fairchem-core pins torch~=2.13.0 and e3nn>=0.5,
+    # which neither the torch of the environment above nor MACE's e3nn==0.4.4
+    # allows. Its presence is the model stack's distribution, fairchem-core.
+    "orca_mlips_uma": {
+        "display": "orca-mlips (UMA)",
+        "module": "orca_mlips_plugins",
+        "dist": "fairchem-core",
+        "python_env": "DELFIN_ORCA_MLIPS_UMA_PYTHON",
+        "managed_env": ".mamba_env/orca_mlips_uma",
+        "install": "python -m delfin.installer --install orca-mlips-uma",
+    },
 }
 
 #: Tools whose build is defined in delfin.cluster_bench.tool_workers.smiles_tools.

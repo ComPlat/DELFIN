@@ -53,8 +53,22 @@ line in the ORCA output) and stops it with its parent ORCA process.
    - `aimnet2` -- MIT
    - `orb` -- Apache-2.0
    `uma` (FAIR Chemistry terms, gated) and `mace` (Academic Software
-   License, non-commercial) are not installed: their console scripts exist
-   in the environment, their model stacks do not.
+   License, non-commercial) are opt-in: installed only when named, each
+   stating its terms first.
+
+   ```
+   python -m delfin.installer --install orca-mlips-mace   # into the same environment
+   python -m delfin.installer --install orca-mlips-uma    # an environment of its own
+   ```
+
+   MACE (`mace-torch`, `e3nn==0.4.4`) goes into the orca-mlips environment
+   beside its torch.  UMA gets `.mamba_env/orca_mlips_uma`: `fairchem-core`
+   pins `torch~=2.13.0` and `e3nn>=0.5`, which neither that torch nor MACE's
+   e3nn allows (pip: ResolutionImpossible); ExtOpt then names that
+   environment's `orca-mlips-uma`.  UMA weights also need your own
+   HuggingFace login (`hf auth login`, older huggingface_hub:
+   `huggingface-cli login`) and the accepted model terms at
+   https://huggingface.co/facebook/UMA.
 3. **A GPU partition.** The CONTROL path runs GOAT on the node the DELFIN
    job runs on (`global_opt_mlip_device=cuda` refuses to start without a
    visible GPU); the ExtOpt submit path needs `runtime.slurm.gpu_partitions`
@@ -62,6 +76,18 @@ line in the ORCA output) and stops it with its parent ORCA process.
    fallback.
 
 ## Run one
+
+**GOAT from the dashboard.**  The Submit tab has a *GOAT method* selector
+above the CONTROL.txt editor: xTB (the `xTB_method`), AIMNet2, ORB, MACE or
+UMA, each with whether it is installed here, the exact install command and
+the licence or HuggingFace login it needs (read from the environments'
+metadata; torch is never imported).  Choosing one writes
+`global_opt_method=` (and `global_optimizer=GOAT` when GOAT is not selected
+yet); editing the text moves the selector; a value it does not know is shown
+as such and left in the text.  The optional *Model* field writes
+`global_opt_mlip_model=`.  Only GOAT changes: every later step of the
+CONTROL runs as before, but an MLIP GOAT sends the whole DELFIN job to a GPU
+partition.
 
 **GOAT from CONTROL.txt.**  In a CONTROL.txt from `delfin --define`, set
 
