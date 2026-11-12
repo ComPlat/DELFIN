@@ -47,6 +47,8 @@ KINDS: dict[str, tuple[str, str, bool]] = {
     "budget_warning": ("budget", "notices", False),
     # The window opens its masked login field for item["cluster"].
     "cluster_login": ("login", "needs", False),
+    # The window opens its add form filled in with item["proposal"].
+    "cluster_add": ("addCluster", "needs", False),
 }
 
 #: Findings older than this have no pending inbox entry left (a failure
@@ -241,6 +243,14 @@ def item_of(event: dict, *, findings: dict[str, dict], presence: dict[str, dict]
         item["cluster"] = cluster
         item["name"] = f"log in to {cluster}" if cluster else "a cluster login"
         item["text"] = _first_line(detail) or "a cluster tool needs a login"
+    elif kind == "addCluster":
+        raw = event.get("proposal") if isinstance(event.get("proposal"), dict) else {}
+        proposal = {k: _first_line(str(raw.get(k) or ""), 120)
+                    for k in ("name", "preset", "user", "host", "partition")}
+        item["proposal"] = proposal
+        item["cluster"] = proposal["name"]
+        item["name"] = f"add the cluster {proposal['name']}" if proposal["name"] else "add a cluster"
+        item["text"] = _first_line(detail) or "an agent proposes a cluster for DELFIN"
     # Whose it is, and where that runs: open in another process (its
     # presence record, or the store's lock) -- a window opens a copy -- and
     # whether the store has it at all (else it cannot be opened).

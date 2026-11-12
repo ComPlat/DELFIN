@@ -42,6 +42,12 @@ Semantics, tool by tool:
   as ctun's own guard reads it -- or cancel is refused and pointed to
   cluster_submit / cluster_cancel, which check the budget and ask.
 
+* ``cluster_propose``: a cluster for DELFIN, as a NEEDS YOU item that opens
+  the window's add form filled in (``delfin.remote.setup.propose``). It
+  writes no setting and no ctun entry -- only the person's form does --
+  and is advertised with or without a cluster configured. Unasked: the
+  item itself is the question.
+
 Every call: refused for a cluster the managed policy does not allow, and,
 when nobody is logged in, answered ``login_required`` with a login item in
 NEEDS YOU (the window's masked field). Each call that changes something, or
@@ -499,6 +505,25 @@ def run(executor, perms, *, cluster: Any, command: Any, timeout: Any = None) -> 
 
 
 # --- shared ------------------------------------------------------------------------
+
+
+def propose(executor, perms, *, name: Any = None, preset: Any = None, user: Any = None,
+            host: Any = None, partition: Any = None) -> str:
+    from delfin.agent import managed_policy
+    from delfin.remote import setup
+    if isinstance(name, str) and name.strip() and not managed_policy.cluster_allowed(name.strip()):
+        return _error("not_allowed", f"the managed policy does not allow the cluster {name.strip()}")
+    got = setup.propose(name=name, preset=preset, user=user, host=host, partition=partition,
+                        session_id=getattr(perms, "task_session_id", "") or "",
+                        workspace=getattr(perms, "workspace", None))
+    if not got.get("ok"):
+        return _error("not_proposed", str(got.get("error") or "the proposal was not recorded"))
+    _audit(perms, "cluster_propose", "proposed", path=str(name or ""))
+    return json.dumps({"ok": True, "proposed": str(name).strip(), "presets": got.get("presets", []),
+                       "next": "the user checks the form in the DELFIN window (NEEDS YOU) and "
+                               "sends it; nothing is added until then. Do not ask for a "
+                               "password; end your turn or go on with other work."},
+                      ensure_ascii=False)
 
 
 def _error(code: str, message: str) -> str:

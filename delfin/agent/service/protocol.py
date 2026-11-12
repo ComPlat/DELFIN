@@ -330,6 +330,20 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "cluster.detail": {"name": "string"},
     "job.detail": {"source": "string", "id": "string", "cluster": "string?",
                    "session": "string?", "group": "string?"},
+    # Adding and removing a cluster (delfin.remote.setup), from the window's
+    # add form only: the entries in ctun's config and remote.clusters decide
+    # where DELFIN's ssh goes. clusters.presets: the clusters ctun knows.
+    # cluster.add writes both entries, then pins a preset's published host
+    # key if the server presents it; else hostKey.offered is the key to show
+    # the person, and cluster.pin pins exactly that one once they confirm it
+    # (cluster.hostkey asks the server again). cluster.remove: both entries.
+    "clusters.presets": {},
+    "cluster.add": {"name": "string", "user": "string", "preset": "string?",
+                    "host": "string?", "partition": "string?", "workDir": "string?",
+                    "installRoot": "string?"},
+    "cluster.hostkey": {"name": "string"},
+    "cluster.pin": {"name": "string", "fingerprint": "string"},
+    "cluster.remove": {"name": "string"},
     # Swarm management (package SW2b; the logic is SW1's
     # delfin/agent/swarm/, the wrappers delfin/agent/service/swarm_rpc.py).
     # spec: the spec object, or specYaml: swarm.yaml text. swarm.start is
@@ -396,6 +410,18 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     # sections: each {title, pairs: [[label, value]], lines: [text]}.
     "cluster.detail": {"sections": "[object]", "error": "string?"},
     "job.detail": {"sections": "[object]", "error": "string?"},
+    # presets: each {name, title, host, requiresOtp, requiresPassword,
+    # userHint, budget, fingerprint, fingerprintSource, partition}. hostKey:
+    # {pinned, fingerprint, source, offered, expected, error}; code: invalid,
+    # exists, ctun_failed, settings_unreadable, settings_unwritable,
+    # host_key_mismatch, not_pinned, jobs_followed, unknown, not_removed.
+    "clusters.presets": {"presets": "[object]", "error": "string?"},
+    "cluster.add": {"ok": "boolean", "code": "string?", "error": "string?",
+                    "name": "string", "hostKey": "object?"},
+    "cluster.hostkey": {"offered": "string?", "pinned": "boolean", "error": "string?"},
+    "cluster.pin": {"ok": "boolean", "code": "string?", "error": "string?"},
+    "cluster.remove": {"ok": "boolean", "code": "string?", "error": "string?",
+                       "loggedOut": "boolean?", "keysRemoved": "integer?"},
     # The status schema SW1 documents (status.py STATUS_SCHEMA); plan
     # carries the launch plan plus dry_run_text; start is a dry run
     # unless confirm=true. pause/resume answer available=false until SW1

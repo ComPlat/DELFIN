@@ -63,7 +63,9 @@ from . import attention_feed, clusters_feed, eventlog, protocol, rundir
 #: permission.resolved names the window that answered (``client``).
 #: 5: clusters.list, cluster.login/logout and jobs.list (delfin.remote).
 #: 6: cluster.detail and job.detail (what Space on an entry shows).
-SERVICE_VERSION = 6
+#: 7: clusters.presets, cluster.add/hostkey/pin/remove (the window's add
+#: form, delfin.remote.setup), and ORCA's place in a logged-in row.
+SERVICE_VERSION = 7
 
 #: Requests a window sends to the service itself (the one definition is
 #: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
@@ -84,6 +86,10 @@ ACTING = frozenset({"session.create", "session.merge", "session.prompt",
                     "session.setTitle", "attention.answer", "attention.dismiss",
                     "cluster.login", "cluster.logout", "cluster.detail",
                     "job.detail",
+                    # What decides where DELFIN's ssh goes is written by a
+                    # person in the window, never by an agent's process
+                    # (which can only propose a cluster: cluster_propose).
+                    "cluster.add", "cluster.hostkey", "cluster.pin", "cluster.remove",
                     # A swarm is created, started and answered by the
                     # user, never by an agent session: the same rule that
                     # keeps an agent from answering its own approvals
@@ -1504,6 +1510,27 @@ class Supervisor:
 
     async def _m_cluster_logout(self, _client: Client, params: dict) -> dict:
         return await asyncio.to_thread(clusters_feed.logout, str(params["name"]))
+
+    async def _m_clusters_presets(self, _client: Client, _params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.presets)
+
+    async def _m_cluster_add(self, _client: Client, params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.add, dict(params))
+
+    async def _m_cluster_hostkey(self, _client: Client, params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.host_key, str(params["name"]))
+
+    async def _m_cluster_pin(self, _client: Client, params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.pin, str(params["name"]),
+                                       str(params["fingerprint"]))
+
+    async def _m_cluster_remove(self, _client: Client, params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.remove, str(params["name"]))
 
     async def _m_jobs_list(self, _client: Client, _params: dict) -> dict:
         return await asyncio.to_thread(clusters_feed.jobs, self._summaries())
