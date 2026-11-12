@@ -807,11 +807,13 @@ def run_rel_sp(
     rel_options: Optional[Mapping[str, Any]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     allow_nonrel_basis: bool = False,
+    functional: str = "",
 ) -> OrcaRelSpinResult:
     """Build, launch and read a scalar-relativistic single point."""
     try:
         build_rel_sp_input(
             work_dir,
+            functional=functional,
             hamiltonian=hamiltonian,
             basis=basis,
             elements=elements,
@@ -852,11 +854,13 @@ def run_zfs(
     rel_options: Optional[Mapping[str, Any]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     allow_nonrel_basis: bool = False,
+    functional: str = "",
 ) -> OrcaRelSpinResult:
     """Build, launch and read a zero-field-splitting run."""
     try:
         build_zfs_input(
             work_dir,
+            functional=functional,
             basis=basis,
             elements=elements,
             coordinates=coordinates,
@@ -899,11 +903,13 @@ def run_soc_tddft(
     rel_options: Optional[Mapping[str, Any]] = None,
     extra_keywords: Optional[Sequence[str]] = None,
     allow_nonrel_basis: bool = False,
+    functional: str = "",
 ) -> OrcaRelSpinResult:
     """Build, launch and read a SOC-corrected TDDFT run."""
     try:
         build_soc_tddft_input(
             work_dir,
+            functional=functional,
             basis=basis,
             nroots=nroots,
             elements=elements,

@@ -524,3 +524,34 @@ class TestRealRunFindings:
             "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n")
         res = read_zfs_result(tmp_path, "z")
         assert res.ok is False
+
+
+# ---------------------------------------------------------------------------
+# Live ORCA 6.1.1 findings (real runs through the adapter's execute path).
+# ---------------------------------------------------------------------------
+
+_JOB_KWARGS = {
+    "rel_sp": dict(hamiltonian="ZORA", basis="ZORA-def2-TZVP",
+                   elements=ELS, coordinates=XYZ, charge=0, mult=1),
+    "zfs": dict(basis="def2-TZVP", elements=ZFS_ELS, coordinates=XYZ,
+                charge=0, mult=2),
+    "soc_tddft": dict(basis="def2-TZVP", nroots=5, elements=ELS,
+                      coordinates=XYZ, charge=0, mult=1),
+}
+
+
+class TestLiveRunFindings:
+    @pytest.mark.parametrize("job", sorted(_JOB_KWARGS))
+    def test_execute_passes_the_functional_to_the_input(
+            self, job, tmp_path, monkeypatch):
+        # The builders require a functional, so the step path must accept
+        # one and hand it on; before, run_* had no such parameter and every
+        # execute() call failed with an unexpected-keyword TypeError.
+        import delfin.tools.adapters.orca_relspin_opi as mod
+
+        monkeypatch.setattr(mod, "_launch", lambda wdir, base: "stop: no ORCA")
+        res = OrcaRelSpinOpiAdapter().execute(
+            tmp_path, cores=1, job=job, functional="B3LYP",
+            **_JOB_KWARGS[job])
+        assert "stop: no ORCA" in (res.error or ""), res.error
+        assert "!b3lyp" in (tmp_path / f"{job}.inp").read_text().lower()
