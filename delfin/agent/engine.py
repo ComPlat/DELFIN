@@ -1884,7 +1884,10 @@ class AgentEngine:
                     f"{str(ev.get('description', ''))[:80]}"
                     + (f" — signatures: {sig}" if sig else "")
                     + (f" — {degraded}" if degraded else "")
-                    + (f" — {ev['url']}" if ev.get("url") else ""))
+                    + (f" — {ev['url']}" if ev.get("url") else "")
+                    # A cluster job: what became of it and where its
+                    # results came back to (delfin.remote.watch.summary).
+                    + (f" — {ev['results']}" if ev.get("results") else ""))
         except Exception:
             pass
         try:
@@ -8188,6 +8191,19 @@ class AgentEngine:
         except Exception:
             return 0
 
+    def _session_is_watched(self) -> bool:
+        """Whether DELFIN's job watcher follows a job or batch this session
+        started (cluster_submit, watch_job). False when unknown; never raises."""
+        try:
+            from delfin.agent import job_monitor
+            perms = self.kit_permissions
+            if perms is None:
+                return False
+            return job_monitor.session_is_watched(
+                perms.workspace, str(getattr(perms, "task_session_id", "") or ""))
+        except Exception:
+            return False
+
     def _note_turn_continuation(self, answer: str) -> None:
         """Record one follow-up note when *answer* announces work that it did
         not do while tasks stay open. Never raises; the latch keeps it to one
@@ -8198,7 +8214,8 @@ class AgentEngine:
             return
         try:
             from delfin.agent.turn_continuation import should_continue
-            cont, note = should_continue(answer, self._open_task_count())
+            cont, note = should_continue(answer, self._open_task_count(),
+                                         watched=self._session_is_watched())
         except Exception:
             return
         if cont and note:
@@ -8254,6 +8271,9 @@ class AgentEngine:
         try:
             if (not answer or self.pending_turn_continuation
                     or getattr(self, "_stall_guard_stopped", "")):
+                return
+            # Something does run: DELFIN's watcher follows this session's job.
+            if self._session_is_watched():
                 return
             if callable(on_token) and _ends_announcing(answer):
                 on_token(self.NOTHING_RUNS_NOTICE)

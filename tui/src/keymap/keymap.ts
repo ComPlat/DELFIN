@@ -14,6 +14,7 @@ export type Action =
   | "tasks" | "redraw" | "agents" | "palette" | "quit" | "historyPrev"
   | "historyNext" | "historySearch" | "agentsUp" | "agentsDown" | "agentsOpen"
   | "agentsPeek" | "agentsBack" | "agentsStop" | "agentsRename" | "agentsPin"
+  | "clustersBack" | "clustersAdd" | "clustersRemove"
   | "scrollUp" | "scrollDown" | "scrollTop" | "scrollBottom"
 
 export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
@@ -47,6 +48,11 @@ export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   // F2 too, the common rename key: no plain letter can rename here.
   agentsRename: ["ctrl+r", "f2"],
   agentsPin: ["ctrl+t"],
+  // /clusters and /jobs: back to the conversation, as from the agent view.
+  clustersBack: ["escape", "left"],
+  // /clusters: add a cluster (the add form), remove the selected one.
+  clustersAdd: ["a"],
+  clustersRemove: ["x"],
   // The conversation, when the window has the whole terminal (the wheel
   // scrolls it too).
   scrollUp: ["pageup"],

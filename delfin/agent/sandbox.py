@@ -1136,6 +1136,13 @@ _HOME_SECRET_DIRS = (
     # The account key and the MCP pins (trust_store): read by DELFIN's
     # own processes, never by a command an agent runs.
     ".delfin/trust_store",
+    # cluster-tunnel (delfin.remote): its config with the ssh options and
+    # budget scripts DELFIN's own process uses, the pinned host keys, and
+    # the control sockets of the logged-in masters -- the user's identity
+    # on every cluster. The default locations; ``runtime_masked_dirs`` adds
+    # the real ones wherever ctun keeps them.
+    ".config/cluster-tunnel",
+    ".cache/cluster-tunnel",
     ".delfin/messenger_sessions",
     # Phone pairing requests and the gateway's answers, invitation links
     # among them (delfin.messenger.pairing): the person's, never an agent's.
@@ -1310,6 +1317,14 @@ def runtime_masked_dirs() -> list[str]:
         d = _ts.ensure_store_dir()
         if d is not None and str(d.resolve()) not in out:
             out.append(str(d.resolve()))
+    except Exception:
+        pass
+    try:
+        # cluster-tunnel's config, cache and socket directories, at their
+        # real (possibly redirected) locations, created so that nothing can
+        # be planted there before the user writes ctun's config.
+        from delfin.remote import state_dirs as _ctun_dirs
+        out += [d for d in _ctun_dirs() if d not in out]
     except Exception:
         pass
     # Not the messenger's activation records: they live in

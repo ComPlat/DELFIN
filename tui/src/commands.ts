@@ -10,6 +10,11 @@
  *
  * `/resume [id]` opens another session in this window: bare, the picker;
  * with an id (the argument menu offers the sessions), that session.
+ *
+ * `/clusters` and a bare `/jobs` open a screen of the window's own
+ * (clusters/view.tsx): DELFIN's clusters, where one is logged into, and
+ * what runs in the background. `/jobs` with an argument (`/jobs watch on`)
+ * is the session's, as typed.
  */
 
 /** What makes a line a shell command: repl_commands.SHELL_PREFIX (a test
@@ -31,11 +36,22 @@ export const WINDOW_COMMANDS = [
     category: "session", takesArgs: true, source: "window" },
   { name: "/resume", summary: "open another session in this window (running here or saved)",
     category: "session", takesArgs: true, source: "window" },
+  { name: "/clusters", summary: "DELFIN's clusters: logged in, logged out or refused; log in to one",
+    category: "workspace", takesArgs: false, source: "window" },
+  // Its arguments are the session's /jobs's (the argument menu asks it).
+  { name: "/jobs", summary: "what runs in the background: the agents', the job monitor's, each cluster's",
+    category: "workspace", takesArgs: true, source: "window" },
   { name: "/merge", summary: "merge a session worktree back into this checkout (conflicts shown, nothing overwritten)",
     category: "session", takesArgs: true, source: "window" },
   { name: "/swarm", summary: "manage swarms: packages, members, what waits on you (SW2b)",
     category: "session", takesArgs: false, source: "window" },
 ]
+
+/** The screen a bare `/clusters` or `/jobs` line opens, or null. */
+export function screenOf(text: string): "clusters" | "jobs" | null {
+  const m = /^\/(clusters|jobs)$/.exec(text.trim())
+  return m ? m[1] as "clusters" | "jobs" : null
+}
 
 /** The session a `/resume <id>` line asks for, or null for another line
  *  (a bare /resume opens the picker). */

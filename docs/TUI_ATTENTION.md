@@ -86,7 +86,7 @@ records, that you can act on where it makes sense.
 | Source | Where | Who writes it | What it holds | How an entry ends |
 |---|---|---|---|---|
 | This service's sessions | the agent service, in memory | every session the window runs | open questions, approvals, plans; turns that failed; sessions that ended | answered in the window |
-| The attention inbox | `~/.delfin/attention_inbox.jsonl` (`delfin.agent.attention`) | see below | blocking: `confirm_pending`, `question_pending`, `plan_pending`; notices: `run_failed`, `run_finished`, `budget_warning`, `security_alert` | `answer_item`, `dismiss_item`, `clear_all`; notices expire after 2-7 days by kind, at most 200 kept |
+| The attention inbox | `~/.delfin/attention_inbox.jsonl` (`delfin.agent.attention`) | see below | blocking: `confirm_pending`, `question_pending`, `plan_pending`; notices: `run_failed`, `run_finished`, `budget_warning`, `security_alert`; `cluster_login` (a cluster tool found no login: the window opens its masked login field for the item's `cluster`; never answered with text, closed by the login) | `answer_item`, `dismiss_item`, `clear_all`; notices expire after 2-7 days by kind, at most 200 kept |
 | Job monitor findings | `~/.delfin/monitor_findings.jsonl` (`job_monitor`) | the monitor daemon | a failed job: state, error signatures, the diagnosis session, a summary, a prepared fix | the dashboard's banner and its fix button |
 | Session presence | `~/.delfin/session_presence/` | every open session (dashboard, REPL, window) | where a session runs and what it is called | gone 15 min after its last heartbeat |
 
