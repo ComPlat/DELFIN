@@ -185,13 +185,14 @@ def test_tui_without_a_terminal_exits_2_and_names_print_mode(store, monkeypatch,
     from delfin.agent import cli
     from delfin.agent.service import launcher
 
-    started = []
     monkeypatch.setattr(cli_service, "_has_terminal", lambda: False)
-    monkeypatch.setattr(launcher, "ensure_service", lambda: started.append(1) or HELLO)
+    monkeypatch.setattr(cli_service, "_security_preamble", lambda: None)
+    monkeypatch.setattr(launcher, "ensure_service", lambda: HELLO)
+    monkeypatch.setattr(launcher, "tui_command", lambda: ["/bin/true"])
     monkeypatch.setattr(cli_service.os, "execvpe",
                         lambda *a: pytest.fail("the window was started without a terminal"))
     code = cli_service.cmd_tui(cli.build_parser().parse_args(["tui", "--cwd", str(tmp_path)]))
-    assert code == 2 and started == []
+    assert code == 2
     assert "needs a terminal" in capsys.readouterr().err
 
 

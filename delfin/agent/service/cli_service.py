@@ -230,14 +230,6 @@ def _has_terminal() -> bool:
 def cmd_tui(args: argparse.Namespace) -> int:
     if getattr(args, "setup", False):
         return _setup_only()
-    if not _has_terminal():
-        # The window needs a terminal for its keys and its screen; in a
-        # pipe it drew escape codes and died on exit. As Claude Code does,
-        # refuse and name the mode that works without one.
-        print("ERROR: the TUI needs a terminal (stdin and stdout must be a TTY). "
-              "Without one, use `delfin-agent chat -p \"<prompt>\"`.",
-              file=sys.stderr)
-        return 2
     _security_preamble()
     command = launcher.tui_command()
     missing = ""
@@ -263,6 +255,15 @@ def cmd_tui(args: argparse.Namespace) -> int:
             print(f"ERROR: {why}", file=sys.stderr)
             return 2
         settings["resume"] = sid
+    if not _has_terminal():
+        # Last, right before the window takes the terminal (setup hints,
+        # the service and a --resume check come first). The window needs a terminal for its keys and its screen; in a
+        # pipe it drew escape codes and died on exit. As Claude Code does,
+        # refuse and name the mode that works without one.
+        print("ERROR: the TUI needs a terminal (stdin and stdout must be a TTY). "
+              "Without one, use `delfin-agent chat -p \"<prompt>\"`.",
+              file=sys.stderr)
+        return 2
     env = dict(os.environ)
     env["DELFIN_TUI_SOCKET"] = str(rundir.socket_path())
     # What starts the next service, should this one vanish under the window.
