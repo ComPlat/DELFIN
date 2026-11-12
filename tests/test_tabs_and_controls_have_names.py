@@ -4,7 +4,7 @@ An accessibility check (axe, WCAG 2 AA) and a look at the page found:
 - the tab bar clipped its labels ("Submit Jo", "Calculatic") and the
   widgets give a tab no tooltip to read the rest from;
 - an inactive tab's label measured below 4.5:1 contrast on the bar's grey;
-- the "Resume a saved session…" select, the three A-Z sort selects and the
+- the "Resume a saved session…" search field, the three A-Z sort selects and the
   structure editor's sliders had no accessible name;
 - at phone width the agent's session list kept its 236 px column and left
   the chat a 50 px strip.

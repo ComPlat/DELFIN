@@ -1522,6 +1522,105 @@ def _session_title(state: dict, session_id: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Naming and grouping for the ONE session list
+# ---------------------------------------------------------------------------
+
+#: A first message that the harness injected into a run -- a system note,
+#: an automatic check, a message from another session, a run's task
+#: briefing -- says nothing about what the session is. Its head never
+#: names a session in the list.
+_INJECTED_PREFIXES = (
+    "[DELFIN note]",
+    "[Verify]",
+    "Your task for this run",
+    "Your task:",
+    "Task:",
+)
+
+
+def session_display_name(title: Any, session_id: Any = "") -> str:
+    """A readable name for one row of the session list.
+
+    Input: the stored title (often the first message, sometimes injected)
+    and the session id. Output: the first line that is not a harness
+    injection, run through ``session_label``; if nothing readable is
+    left, the id-derived fallback. Unlike ``session_label`` this NEVER
+    returns an injected prefix: the person saw ~40 resume entries titled
+    "Your task for this run..." -- unusable.
+    """
+    text = str(title or "")
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(_INJECTED_PREFIXES) or is_delivered_message(line):
+            continue
+        # A markdown heading or a marker row ("# Workflow", "## Step 1")
+        # still carries the subject after the marks.
+        cleaned = _LABEL_MARKS.sub("", _LABEL_STRIP.sub("", line)).strip()
+        if cleaned.startswith(_INJECTED_PREFIXES):
+            continue
+        if cleaned:
+            return session_label(cleaned, session_id)
+        return session_label(line, session_id)
+    return session_label("", session_id)
+
+
+def is_background_session(workspace: Any, *, headless: bool = False) -> bool:
+    """Whether a saved session is background work, not a person's chat.
+
+    Swarm/operator runs work in checkouts under ``.delfin/worktrees``;
+    headless runs (no view attached) are grouped too. The front chat in
+    the project folder itself is never background.
+    """
+    if headless:
+        return True
+    path = str(workspace or "").replace("\\", "/")
+    if not path:
+        return False
+    parts = [p for p in path.split("/") if p]
+    idx = parts.index(".delfin") if ".delfin" in parts else -1
+    return idx >= 0 and "worktrees" in parts[idx + 1:]
+
+
+def resume_rows(*, open_ids: Any = None, limit: int = 60) -> list[dict]:
+    """The saved sessions for the resume list: newest first, deduplicated.
+
+    Input: the saved store's listing and the ids already open in views.
+    Output: rows {"session_id", "title", "where", "background",
+    "updated_at"}, sorted by ``updated_at`` (the store's order is not
+    relied on) -- one per session id (duplicate ids in the store are
+    the same conversation listed twice, not two), titled by
+    ``session_display_name``, with the workspace shortened. Sessions that
+    are already open are not offered again.
+    """
+    try:
+        from delfin.agent.session_store import list_sessions
+        saved = list_sessions(limit=limit)
+    except Exception:
+        saved = []
+    open_set = set(open_ids or ())
+    seen: set[str] = set()
+    rows: list[dict] = []
+    saved = sorted(saved, key=lambda r: -float(r.get("updated_at") or 0))
+    for row in saved:
+        sid = str(row.get("session_id") or "")
+        if not sid or sid in seen or sid in open_set:
+            continue
+        seen.add(sid)
+        where = str(row.get("workspace") or "")
+        rows.append({
+            "session_id": sid,
+            "title": session_display_name(row.get("title"), sid),
+            "where": _display_path(_short_path(where)) if where else "",
+            "background": is_background_session(where),
+            "updated_at": float(row.get("updated_at") or 0),
+        })
+    return rows
+
+
+
+# ---------------------------------------------------------------------------
 # Sessions in the agent service
 # ---------------------------------------------------------------------------
 
@@ -1928,10 +2027,6 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         layout=widgets.Layout(display="none")), "delfin-session-form")
     notice = _classed(widgets.HTML(""), "delfin-session-notice")
     list_box = _classed(widgets.VBox(), "delfin-session-list")
-    resume_dropdown = _classed(widgets.Dropdown(
-        options=[("Resume a saved session…", "")], value="",
-        tooltip="Resume a saved session"),
-        "delfin-session-resume")
     elsewhere_note = _classed(widgets.HTML(""), "delfin-session-elsewhere")
     stop_all_btn = _classed(widgets.Button(
         description="Stop all agents",
@@ -1941,12 +2036,21 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                  "nothing starts on its own afterwards; cluster jobs keep "
                  "running.")), "delfin-session-stopall")
     # The agent service: every session started here runs in it, and the
-    # running list shows every session it holds. Without one, the kernel.
+    # session list shows every session it holds. Without one, the kernel.
     live: dict[str, Any] = {"client": None, "why": "", "retry_at": 0.0, "scripts": False}
     running_panel = RunningPanel(None, on_open=lambda sid: open_from_list(sid),
                                  is_open=lambda sid: any(r.get("session_id") == sid
                                                          for r in sessions))
     running_panel.widget.layout.display = "none"
+    # The resume search: a text field over the saved sessions, not a
+    # <select>. Typing only narrows the rows below; a click on a row
+    # resumes it (the field's value is never taken for a session id).
+    resume_search = _classed(widgets.Text(
+        value="", placeholder="Resume a saved session…",
+        tooltip="Resume a saved session",
+        continuous_update=True), "delfin-session-resume")
+    resume_search.layout.width = "100%"
+    resume_rows_box = _classed(widgets.VBox(), "delfin-resume-rows")
     # The message box's suggestions (_COMPLETE_JS): what is typed up to the
     # caret comes in here, the answer goes out in complete_result.
     complete_query = _classed(widgets.Text(
@@ -1985,7 +2089,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     sidebar = _classed(widgets.VBox(
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
-         running_panel.widget, resume_dropdown, elsewhere_note, stop_all_btn,
+         running_panel.widget, resume_search, resume_rows_box, elsewhere_note,
+         stop_all_btn,
          complete_query, complete_result,
          widgets.HTML(_self_running_html(_RENAME_KEYS_JS, _PATH_KEYS_JS,
                                          _COMPLETE_JS, _SPLITTER_INIT_JS))]),
@@ -2178,22 +2283,42 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             return ""
 
     def _refresh_resume_options() -> None:
-        try:
-            from delfin.agent.session_store import list_sessions
-            saved = list_sessions(limit=40)
-        except Exception:
-            saved = []
+        """The searchable resume list: newest first, deduplicated, named
+        by something readable; the person's own sessions before the
+        background runs, which are marked."""
         open_ids = {_session_id(rec) for rec in sessions}
-        options = [("Resume a saved session…", "")]
-        for row in saved:
-            sid = str(row.get("session_id") or "")
-            if not sid or sid in open_ids:
+        try:
+            rows = resume_rows(open_ids=open_ids)
+        except Exception:
+            rows = []
+        # Stable: newest first stays within each group.
+        rows = sorted(rows, key=lambda r: bool(r["background"]))
+        # The field is the search: typing narrows; the rows below are the
+        # offers, front ones first, background runs marked and last.
+        typed = str(resume_search.value or "").strip().lower()
+        children = []
+        shown = 0
+        for row in rows:
+            if typed and typed not in row["title"].lower() \
+                    and typed not in row["where"].lower():
                 continue
-            title = session_label(row.get("title"), sid)
-            where = _short_path(str(row.get("workspace") or ""))
-            options.append((f"{title} — {where}" if where else title, sid))
-        resume_dropdown.options = options
-        resume_dropdown.value = ""
+            label = row["title"] + (f" — {row['where']}" if row["where"] else "")
+            if row["background"]:
+                label = "⌗ " + label
+            btn = widgets.Button(description=label, tooltip=(
+                "Resume this saved session"
+                + (" (a background run)" if row["background"] else "")))
+            btn.add_class("delfin-resume-row")
+            if row["background"]:
+                btn.add_class("delfin-resume-background")
+            btn.on_click(lambda _b, _sid=row["session_id"]:
+                         _on_resume({"new": _sid}))
+            children.append(btn)
+            shown += 1
+            if shown >= 12:
+                break
+        if tuple(resume_rows_box.children) != tuple(children):
+            resume_rows_box.children = tuple(children)
 
     # -- the agent service --------------------------------------------------
 
@@ -3022,7 +3147,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     new_btn.on_click(_on_new)
     cancel_btn.on_click(_on_cancel)
     start_btn.on_click(_on_start)
-    resume_dropdown.observe(_on_resume, names="value")
+    resume_search.observe(lambda _change: _refresh_resume_options(),
+                          names="value")
 
     # -- start ------------------------------------------------------------------
 
