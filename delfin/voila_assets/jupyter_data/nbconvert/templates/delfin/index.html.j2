@@ -1,0 +1,26 @@
+{#-
+  The DELFIN dashboard page: Voila's "lab" template, minus the two Font
+  Awesome stylesheets it links from cdn.jsdelivr.net.
+
+  Voila's lab template links fontawesome-free@^5 (all.min.css and
+  v4-shims.min.css) from the CDN: a version range, no SRI hash. The page CSP
+  (delfin/dashboard/web_security.py) refuses them, so every load logged two
+  CSP violations. The same Font Awesome (5.15.4, with the v4 shims that
+  ipywidgets' icon names need) is bundled in Voila's own voila-style.js,
+  which this block still includes, and its fonts are served from the
+  dashboard's origin under /voila/templates/<template>/static/. Nothing is
+  lost by dropping the links; the CSP stays as strict as it was.
+
+  Every other line of Voila's block is kept as it is (spinner, margins,
+  voila-style.js, nbconvert's lab CSS and theme). Selected by
+  `--VoilaConfiguration.template=delfin` in delfin/cli_voila.py.
+-#}
+{%- extends 'voila/templates/lab/index.html.j2' -%}
+
+{%- block notebook_css -%}
+{%- for line in super().splitlines() -%}
+{%- if 'cdn.jsdelivr.net/npm/@fortawesome/' not in line %}
+{{ line }}
+{%- endif -%}
+{%- endfor -%}
+{%- endblock notebook_css -%}
