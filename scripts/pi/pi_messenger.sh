@@ -414,9 +414,14 @@ User=${SERVICE_USER}
 # socket, nothing else of this process. Not a RuntimeDirectory=: systemd
 # chowns one of those to User=/Group= again when it sets up ExecStart, after
 # an ExecStartPre=+ chgrp, so the gateway lost the directory on every start.
-ExecStartPre=+/bin/rm -rf /run/delfin-messenger-bridge
+# The directory itself is kept between starts: ReadWritePaths= below binds it
+# into the unit's mount namespace, and an rm -rf of it then failed with
+# "Device or resource busy" on every start (measured on the Pi, 2026-11-12).
+# install -d sets owner, group and mode on an existing directory as well;
+# only a stale socket is removed.
 ExecStartPre=+/usr/bin/install -d -m 2750 -o ${SERVICE_USER} -g ${GW_USER} /run/delfin-messenger-bridge
-ExecStopPost=+/bin/rm -rf /run/delfin-messenger-bridge
+ExecStartPre=+/bin/rm -f /run/delfin-messenger-bridge/messenger.sock
+ExecStopPost=+/bin/rm -f /run/delfin-messenger-bridge/messenger.sock
 # Person-start requests (people mode): the bridge's alone, read by the root
 # starter (delfin-person-start.path). Made the same way, 0700.
 ExecStartPre=+/bin/rm -rf /run/delfin-person-start
