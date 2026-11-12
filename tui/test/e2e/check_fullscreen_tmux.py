@@ -168,6 +168,12 @@ def main() -> int:
             alternate = tmux.run("display-message", "-p", "-t", tmux.name, "#{alternate_on}").strip()
             if alternate == "1" or MARK not in tmux.history():
                 problems.append(f"--inline: the shell's lines are gone (it took the screen):\n{tmux.screen()}")
+            # Asked something: a session nobody asked anything is not kept
+            # when the window closes, and no way back to it is printed.
+            tmux.type("inline turn")
+            tmux.key("Enter")
+            expect(r"\(re: inline turn\)", "the inline window's turn", 30)
+            time.sleep(0.4)
             tmux.key("C-d")
             if expect(r"TUI_EXIT=0", "leaving the inline window", 30):
                 # The printed command, typed as printed, opens that session.

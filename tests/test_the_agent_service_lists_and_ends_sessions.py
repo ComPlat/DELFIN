@@ -383,6 +383,8 @@ def test_a_session_that_does_not_save_is_not_said_to_be_saved(service):
     a = service.client()
     unsaved = service.session(a, name="not saved")
     saved = service.session(a, name="saved one", fakeSave=True)
+    # Asked something: a session never asked anything is not kept (below).
+    turn(a, saved, "hello")
     rows = {r["id"]: r for r in json.loads(_cli(service, "status", "--json").stdout)["sessions"]}
     assert rows[unsaved]["saves"] is False and rows[saved]["saves"] is True
     out = _cli(service, "end", unsaved[:8], "--yes")
