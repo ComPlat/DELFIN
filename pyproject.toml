@@ -184,6 +184,17 @@ keyring = [
 browser = [
     "playwright>=1.40,<2",
 ]
+# The OPC UA LADS device driver (delfin/lab/drivers/opcua_lads.py): an
+# instrument facing the OPC Foundation LADS companion spec (OPC 30500) is
+# reached over OPC UA with SignAndEncrypt. opcua-asyncio (asyncua) is
+# "GNU Lesser General Public License v3.0 or later" -- LGPL, not GPL/AGPL,
+# and so compatible with DELFIN's own license. It stays an OPTIONAL extra,
+# like pymupdf above, so whoever installs a LADS device takes it on by
+# choice: the driver imports asyncua lazily and works against an in-process
+# transport for everything else, and the test suite never needs it.
+lab-opcua = [
+    "asyncua>=1.0,<2",
+]
 csp = [
     "mpi4py",
 ]

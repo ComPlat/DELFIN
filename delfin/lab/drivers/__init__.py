@@ -1,4 +1,5 @@
-"""Device drivers: simulator, Shelly Gen2 RPC, Tasmota and MQTT are implemented."""
+"""Device drivers. Implemented: simulator, Shelly Gen2 RPC, Tasmota, MQTT,
+OPC UA."""
 
 from __future__ import annotations
 
@@ -11,12 +12,14 @@ REGISTRY: dict = {}
 
 def _register_builtin() -> None:
     from .mqtt import MqttDriver
+    from .opcua_lads import OpcUaLadsDriver
     from .simulator import SimulatorDriver
     from .shelly_tasmota import ShellyDriver, TasmotaDriver
     REGISTRY.setdefault("simulator", SimulatorDriver)
     REGISTRY.setdefault("shelly_rpc", ShellyDriver)
     REGISTRY.setdefault("tasmota", TasmotaDriver)
     REGISTRY.setdefault("mqtt", MqttDriver)
+    REGISTRY.setdefault("opcua_lads", OpcUaLadsDriver)
 
 
 def make(name: str) -> Driver:
@@ -41,5 +44,6 @@ DEVICE_WATCHDOG_SUPPORT = {
              "hardware watchdog relay (planned)",
     "sila2": "lock timeout yes; safe state on timeout depends on the "
              "server (planned)",
-    "opcua_lads": "server-dependent (planned)",
+    "opcua_lads": "yes when the FunctionalUnit has a WatchdogTimeout variable "
+                  "(a server-side deadline)",
 }
