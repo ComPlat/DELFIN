@@ -15,4 +15,6 @@ def create_tab(ctx):
     office_ctx = replace(ctx, calc_dir=ctx.office_dir)
     # Preserve the calculations root so items can be moved back there.
     office_ctx.primary_calc_dir = ctx.calc_dir
+    # Headed by its own name, not the browser's (the tab's title).
+    office_ctx.browser_title = 'Office'
     return tab_calculations_browser.create_tab(office_ctx)

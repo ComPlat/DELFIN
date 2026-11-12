@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -95,6 +96,12 @@ class SlurmJobBackend(JobBackend):
     # drop the cache so the UI still reacts to the user immediately. Sites can
     # widen or (at their own risk) narrow this via DELFIN_SQUEUE_MIN_INTERVAL.
     _JOBS_CACHE_SECONDS = 25.0
+    #: While no view of jobs is on screen (see JobBackend.jobs_view_visible)
+    #: periodic callers -- the agent's job watcher, a hidden activity panel --
+    #: reach squeue at most this often, so a job that ends is still noticed,
+    #: just later.  Opening the Job Status tab or pressing Refresh asks at
+    #: once.  DELFIN_SQUEUE_BACKGROUND_INTERVAL overrides it; 0 means never.
+    _JOBS_BACKGROUND_SECONDS = 300.0
     #: sshare's numbers change once per PriorityCalcPeriod (5 min by default),
     #: so asking more often only loads the controller.
     _FAIRSHARE_CACHE_SECONDS = 300.0
@@ -870,6 +877,34 @@ class SlurmJobBackend(JobBackend):
                 pass
         return self._JOBS_CACHE_SECONDS
 
+    def _jobs_background_seconds(self) -> float:
+        raw = os.environ.get('DELFIN_SQUEUE_BACKGROUND_INTERVAL', '').strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                pass
+        return self._JOBS_BACKGROUND_SECONDS
+
+    def _jobs_view_open(self) -> bool:
+        """Whether this list_jobs() call may run at the normal pace.
+
+        Periodic refreshes run on timer threads (the agent's job watcher, the
+        activity panel's tick); a button, a command or a tab switch runs on
+        the kernel's main thread.  Only the periodic ones slow down while no
+        view of jobs is on screen, so a user action never gets an answer
+        older than the normal throttle.
+        """
+        gate = self.jobs_view_visible
+        if not callable(gate):
+            return True
+        if threading.current_thread() is threading.main_thread():
+            return True
+        try:
+            return bool(gate())
+        except Exception:
+            return True
+
     def _invalidate_jobs_cache(self) -> None:
         """Force the next list_jobs() to ask SLURM again."""
         self._jobs_cache = None
@@ -887,7 +922,13 @@ class SlurmJobBackend(JobBackend):
         # afford it.
         if not force and self._jobs_cache_at is not None:
             age = time.monotonic() - self._jobs_cache_at
-            if 0.0 <= age < self._jobs_cache_seconds():
+            interval = self._jobs_cache_seconds()
+            if not self._jobs_view_open():
+                # Nobody is looking at jobs: periodic callers get the last
+                # answer, and squeue is asked only at the background pace.
+                background = self._jobs_background_seconds()
+                interval = float('inf') if background <= 0 else max(interval, background)
+            if 0.0 <= age < interval:
                 return list(self._jobs_cache or [])
 
         jobs = self._query_jobs()

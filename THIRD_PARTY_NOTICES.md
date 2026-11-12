@@ -196,6 +196,9 @@ their Corresponding Source or a written offer for it.
 | Bun | <https://github.com/oven-sh/bun> | MIT; statically links JavaScriptCore/WebKit (LGPL-2.0) and further libraries listed in its `LICENSE.md` | `tui/scripts/install-bun.sh`, `delfin-agent tui` (version- and SHA-256-pinned) |
 | npm packages of the terminal window (`@opentui/*`, `solid-js`, `web-tree-sitter`) | npm registry, versions in `tui/bun.lock` | MIT | `bun install --frozen-lockfile` into `~/.delfin/tools` |
 | epic-MACE | <https://github.com/EPiCs-group/epic-mace> | GPL-3.0 | `python -m delfin.installer --install epic-mace` (own environment, run as an external program) |
+| rxembed | <https://github.com/aligfellow/rxembed> (commit 9c0ba5a6) | MIT | `python -m delfin.installer --install rxembed` (own environment, run as an external program) |
+| Molassembler (scine-molassembler 3.0.1) | <https://github.com/qcscine/molassembler> | BSD-3-Clause | `python -m delfin.installer --install molassembler` (own environment, run as an external program) |
+| MetalloGen | <https://github.com/kyunghoonlee777/MetalloGen> (commit fa26e2ad) | BSD-3-Clause | `python -m delfin.installer --install metallogen` (own environment, run as an external program with ORCA) |
 | ORCA | <https://www.faccts.de/> | proprietary (ORCA EULA) | never downloaded; each user installs a licensed copy |
 
 A compiled terminal window (`tui/scripts/build-binary.ts`, `bun build --compile`)

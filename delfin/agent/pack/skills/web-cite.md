@@ -30,8 +30,11 @@ retrieved date is what makes a citation honest about a moving web.
    unverifiable. Never fetch a wall with a stealth browser.
 6. A truncated fetch is cited as a partial view: say what was NOT read
    (page too large, timed out), never summarise as if complete.
+7. Cite a method (functional, basis set, solvation model) by its ORIGINAL
+   paper: `verify_source(action="works")`, then `action="doi"`.
 
 ## Not
 - Never cite a search snippet as the source of a claim — fetch the page.
 - Never merge several sources into one citation to hide a gap.
 - Never cite a URL you did not actually fetch this session.
+- Never script Google Scholar: no API, and its terms forbid it.

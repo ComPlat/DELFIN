@@ -147,17 +147,23 @@ jobs:
     if: ${{ github.event_name != 'merge_group' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    # macOS hosted runners are scarce: GitHub cancels a job it cannot place
+    # ("not acquired by Runner of type hosted ... capacity constraints"),
+    # and that turned main red for a runner, not for the code (11.11.). The
+    # macOS builds are optional; Linux stays strict.
+    continue-on-error: ${{ matrix.optional }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, target: bun-linux-x64, patched: true }
-          - { os: ubuntu-24.04-arm, target: bun-linux-arm64, patched: true }
+          - { os: ubuntu-24.04, target: bun-linux-x64, patched: true, optional: false }
+          - { os: ubuntu-24.04-arm, target: bun-linux-arm64, patched: true, optional: false }
           # macOS: the prebuilt native library for now -- the patched build
           # script does not build Darwin yet (on the user checklist).
-          - { os: macos-14, target: bun-darwin-arm64, patched: false }
+          # macos-14 is retired as well; macos-15 is the Apple silicon image.
+          - { os: macos-15, target: bun-darwin-arm64, patched: false, optional: true }
           # macos-13 is retired; macos-15-intel is the x86_64 image.
-          - { os: macos-15-intel, target: bun-darwin-x64, patched: false }
+          - { os: macos-15-intel, target: bun-darwin-x64, patched: false, optional: true }
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

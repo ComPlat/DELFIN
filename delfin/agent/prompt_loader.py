@@ -951,11 +951,14 @@ class PromptLoader:
     _DEFAULT_COAUTHOR_EMAIL = "noreply@delfin-agent.invalid"
 
     def _commit_attribution_block(self, model: str = "") -> str:
-        """The co-author trailer the agent ends its commits with.
+        """The co-author trailer naming the agent and the model behind a
+        commit.
 
         On by default; ``agent.commit_coauthor = false`` turns it off, and
-        the user's own instructions or remembered preferences win over it --
-        the same order Claude Code keeps for its attribution line.
+        the user's own instructions or remembered preferences win over it.
+        The executor now adds the same trailer mechanically to ``git
+        commit`` the agent runs, so this line is a fallback for the paths
+        that do not go through the bash executor.
         """
         try:
             from delfin.user_settings import load_settings
@@ -2378,9 +2381,8 @@ class PromptLoader:
             add("session_env", self.LAYER_VOLATILE,
                 f"--- Session Environment ---\n{env_block}" if env_block else "")
 
-            # Who wrote a commit, named the way Claude Code names itself:
-            # the agent and the model behind it, so a history read later
-            # says which model made which change.
+            # Who wrote a commit: the agent and the model behind it, so a
+            # history read later says which model made which change.
             add("commit_attribution", self.LAYER_VOLATILE,
                 self._commit_attribution_block(model))
 

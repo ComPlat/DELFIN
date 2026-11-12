@@ -236,8 +236,9 @@ def test_installed_units_share_port_socket_and_pairing_directory(tmp_path):
     assert 'Environment=DELFIN_MESSENGER_SOCKET=/run/delfin-messenger-bridge/messenger.sock' in bridge
     # The socket directory is the gateway's (setgid delfin-gw), the process
     # keeps the service user's group (test_the_messenger_units_hold_on_a_real_host).
-    assert 'RuntimeDirectoryMode=2750' in bridge
-    assert 'ExecStartPre=+/bin/chgrp delfin-gw /run/delfin-messenger-bridge' in bridge
+    assert not any(l.startswith('RuntimeDirectory') for l in bridge.splitlines())
+    assert ('ExecStartPre=+/usr/bin/install -d -m 2750 -o delfin -g delfin-gw '
+            '/run/delfin-messenger-bridge') in bridge
     assert 'DELFIN_MESSENGER_PEER_UID=' in bridge
     assert f'DELFIN_MESSENGER_DIR={tmp_path}/state/pairing' in gateway
     assert 'PrivateTmp=no' in bridge
