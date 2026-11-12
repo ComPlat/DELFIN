@@ -37,6 +37,7 @@ def _control(pal=2):
     t = t.replace("method=[classic|manually|OCCUPIER]", "method=classic")
     t = t.replace("[SOLVENT]", "water")
     t = re.sub(r"^smiles_converter=.*$", "smiles_converter=QUICK", t, flags=re.M)
+    t = re.sub(r"^PAL=.*$", f"PAL={pal}", t, flags=re.M)
     return t
 
 
