@@ -181,6 +181,20 @@ def cache_file(name):
     return folder / filename(name)
 
 
+def discard(path) -> None:
+    """Remove a received attachment and its own cache folder. Only the file
+    went before; the empty folders stayed until the 24 h sweep and counted
+    toward the 100-entry limit, so a busy day of voice messages ended in
+    "file store full". Never raises."""
+    try:
+        path = Path(path)
+        path.unlink(missing_ok=True)
+        if path.parent.parent.name == 'media':
+            path.parent.rmdir()
+    except OSError:
+        pass
+
+
 #: The transcriber, run as ``python -I -c`` in the whisper interpreter: it
 #: imports only faster-whisper, never DELFIN, and reads only the local
 #: model directory (``local_files_only``).

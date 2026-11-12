@@ -141,3 +141,17 @@ def test_files_from_unpaired_sender_do_not_trigger_download(tmp_path, monkeypatc
     asyncio.run(Rooms(daemon, bridge).handle({'chat': '#10', 'sender': '8', 'text': '', 'id': '1',
                                             'file': {'fileId': 1}}))
     assert not bridge.calls and not daemon.sent
+
+
+def test_a_discarded_attachment_takes_its_folder_with_it(tmp_path):
+    """Only the file was removed; the empty folders counted toward the
+    100-entry limit until a 24 h sweep ("file store full")."""
+    from delfin.messenger.media import discard
+    folder = tmp_path / "media" / "abc123"
+    folder.mkdir(parents=True)
+    f = folder / "voice.m4a"
+    f.write_bytes(b"x")
+    discard(f)
+    assert not f.exists() and not folder.exists()
+    assert (tmp_path / "media").exists()
+    discard(f)                                    # twice: never raises

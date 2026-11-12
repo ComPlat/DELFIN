@@ -203,7 +203,12 @@ class Daemon:
                 pass
 
     async def receive_file(self, file_id, path):
-        return await self.command(f"/freceive {int(file_id)} encrypt=off {path}")
+        # approved_relays=on: the phone uploads to an XFTP relay from its own
+        # server list; one the daemon does not know made the daemon refuse
+        # the download (fileNotApproved -- measured on the Pi, every few
+        # voice messages). The gateway receives only from a verified phone.
+        # Syntax: bots/api/COMMANDS.md, APIReceiveFile.
+        return await self.command(f"/freceive {int(file_id)} approved_relays=on encrypt=off {path}")
 
     async def send_file(self, chat, path, caption=''):
         if chat[:1] not in {'@', '#'} or not chat[1:].isdigit():
