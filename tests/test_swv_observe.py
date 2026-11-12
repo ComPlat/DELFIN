@@ -223,6 +223,29 @@ def test_overview_missing_member_never_lies(audit_log):
     assert rows[0]["state"] == "no session"
 
 
+def test_overview_defaults_to_the_real_health_records(monkeypatch):
+    """Without explicit ``records=`` (the production path: the service's
+    swarm.observe.overview passes only ``source``), the overview reads the
+    REAL session_health.collect() records -- its docstring promises this.
+    A member whose record is open (NEEDS APPROVAL / paused / ended) shows
+    that state, not the absence-fallback "working"."""
+    source = _spec([{"name": "swv", "roles": {"builder": True}}])
+    real = [_health_record("swv-builder", open_approvals=["r1"])]
+    monkeypatch.setattr(_observe, "_default_records", lambda: real)
+    rows = _observe.swarm_overview(source, steps_fn=lambda *a, **k: ([], 0))
+    assert rows[0]["state"] == "NEEDS APPROVAL"
+
+
+def test_overview_default_records_match_roster_names(monkeypatch):
+    """Roster names are matched against collect()'s records by name, so a
+    paused member found by name shows "paused" through the default path."""
+    roster = {"rr4-stop": {"package": "rr4", "role": "stop"}}
+    real = [_health_record("rr4-stop", paused=True)]
+    monkeypatch.setattr(_observe, "_default_records", lambda: real)
+    rows = _observe.swarm_overview(roster, steps_fn=lambda *a, **k: ([], 0))
+    assert rows[0]["state"] == "paused"
+
+
 # ---------------------------------------------------------------------------
 # member_feed
 # ---------------------------------------------------------------------------

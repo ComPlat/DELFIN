@@ -25,6 +25,9 @@ def py3dmol():
     cost off the startup path. Tests reach it as ``py3dmol()``.
     """
     if _py3dmol_cache:
+        # Again on every call: idempotent, and a reloaded py3Dmol has its
+        # own tostr back.
+        _harden_py3dmol(_py3dmol_cache[0])
         return _py3dmol_cache[0]
     import py3Dmol
     _harden_py3dmol(py3Dmol)

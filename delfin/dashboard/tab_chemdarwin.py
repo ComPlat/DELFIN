@@ -46,6 +46,11 @@ try:
     import py3Dmol
 except ImportError:
     py3Dmol = None
+else:
+    # The </script> rule; the lazy accessor in molecule_viewer is not on
+    # this path, so a viewer built here first would embed text unescaped.
+    from .molecule_viewer import _harden_py3dmol
+    _harden_py3dmol(py3Dmol)
 
 # Whether stk is installed, found without importing it: the import alone
 # takes about two seconds and this module never calls stk, while the tab

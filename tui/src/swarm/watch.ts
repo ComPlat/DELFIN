@@ -112,7 +112,8 @@ export function createSwarmWatch(deps: SwarmWatchDeps) {
     setState({ open: true, loading: true, error: null })
     try {
       const rows = await deps.askOverview()
-      setState({ rows, feed: null, selected: 0, loading: false })
+      setState({ rows: [...(Array.isArray(rows) ? rows : [])], feed: null,
+                 selected: 0, loading: false })
       // Prefetch every member's feed so Enter can open a member's recent
       // steps synchronously -- the watch is read-only, so the reads happen
       // as the table opens. A member whose feed cannot be read keeps an
