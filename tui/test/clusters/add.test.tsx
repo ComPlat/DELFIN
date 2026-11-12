@@ -213,8 +213,9 @@ describe("the add form", () => {
     await type("me")
     await enter()
     await type("login.lab.example")
-    for (let i = 0; i < 4; i++) await enter()
+    for (let i = 0; i < 5; i++) await enter()
     expect(called(calls, "cluster.add")).toEqual([{ name: "lab", user: "me", host: "login.lab.example",
+                                                    requiresOtp: false,
                                                     workDir: "~/delfin/jobs", installRoot: "~/delfin/installs" }])
     expect(screen()).toContain("no published key to compare with")
     await key("n")
@@ -227,6 +228,34 @@ describe("the add form", () => {
     expect(screen()).toContain(`presented  ${OTHER}`)
     await key("y")
     expect(called(calls, "cluster.pin")).toEqual([{ name: "lab", fingerprint: OTHER }])
+  })
+
+  test("another cluster says whether its login asks for an OTP; space switches it, typing does not", async () => {
+    // Seen while recording the video: the form had no such field, so a cluster
+    // given by its host that asks for password + OTP could not be added here.
+    expect(fieldsFor(undefined).find((f) => f.key === "otp")?.value).toBe("password")
+    expect(fieldsFor(presetsOf(PRESETS)[0]).map((f) => f.key)).not.toContain("otp")
+    const { calls } = await mount({ clusters: () => [] })
+    await line("/clusters")
+    await settled()
+    await key("a")
+    await down()
+    await down()                                     // another cluster
+    await enter()
+    await type("lab")
+    await enter()
+    await type("me")
+    await enter()
+    await type("login.lab.example")
+    await enter()
+    expect(screen()).toContain("password, or password + OTP")
+    await type("x")                                  // a choice is not typed into
+    await key(" ")
+    expect(screen()).toMatch(/login asks\s+password \+ OTP/)
+    for (let i = 0; i < 4; i++) await enter()
+    expect(called(calls, "cluster.add")).toEqual([{ name: "lab", user: "me", host: "login.lab.example",
+                                                    requiresOtp: true,
+                                                    workDir: "~/delfin/jobs", installRoot: "~/delfin/installs" }])
   })
 
   test("an empty field or the service's no keeps the form open and says why", async () => {

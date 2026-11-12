@@ -120,6 +120,10 @@ def add(params: dict, *, settings_path: Optional[str] = None,
     user = _text(params.get("user"))
     preset = _text(params.get("preset")) or None
     host = _text(params.get("host")) or None
+    # Whether the login asks for a one-time code after the password: the
+    # person says it for another cluster; a preset (IntNano included) knows.
+    otp = params.get("requiresOtp")
+    requires_otp = otp if isinstance(otp, bool) and not preset else None
 
     def refused(code: str, why: str) -> dict:
         return {"ok": False, "code": code, "error": clean(why, 300), "name": name, "hostKey": None}
@@ -143,7 +147,7 @@ def add(params: dict, *, settings_path: Optional[str] = None,
         return refused("exists", f"DELFIN has a cluster {name!r} already")
     try:
         added = ctun.add_cluster(name, user=user, preset=preset, host=host,
-                                 config_path=ctun_config)
+                                 requires_otp=requires_otp, config_path=ctun_config)
     except ctun.ClusterExistsError:
         return refused("exists", f"ctun has a cluster {name!r} already; pick another name, "
                                  f"or remove it there (`ctun remove {name}`)")

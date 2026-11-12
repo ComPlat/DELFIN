@@ -548,6 +548,23 @@ def register_agent_job(
     return entry
 
 
+def session_is_watched(workspace: str | Path, session_id: str) -> bool:
+    """Whether a job or batch this session started is still being followed.
+
+    Such a session is parked on purpose: the watcher wakes it when the job
+    ends. Only entries that name the session count, and only those not yet
+    in a terminal state; an empty session id counts nothing. Never raises."""
+    if not session_id or not workspace:
+        return False
+    try:
+        jobs = load_watched(_agent_watch_path(workspace)).get("jobs", {})
+    except Exception:
+        return False
+    done = _OK_TERMINAL_STATES | _FAILURE_STATES
+    return any(isinstance(e, dict) and e.get("session_id") == session_id
+               and e.get("last_state") not in done for e in jobs.values())
+
+
 def unwatch_agent_job(workspace: str | Path, job_id: str) -> bool:
     """Stop watching a job. The job itself is not touched: a cluster job or
     a CI run goes on, only nobody is told when it ends. True if it was

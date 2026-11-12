@@ -306,7 +306,7 @@ def upload(executor, perms, *, cluster: Any, src: Any, dest: Any = None) -> str:
         return refusal
     try:
         conn.run(["mkdir", "-p", "--", str(PurePosixPath(real).parent)])
-        got = (conn.upload(f"{local}/", f"{real}/") if local.is_dir()
+        got = (_upload_listed(conn, local, files, real) if local.is_dir()
                else conn.upload(str(local), real))
     except LoginRequired:
         return _login_needed(perms, conn.name, "cluster_upload")
@@ -319,6 +319,20 @@ def upload(executor, perms, *, cluster: Any, src: Any, dest: Any = None) -> str:
         return _error("upload_failed", (got.stderr or "").strip()[:300])
     return json.dumps({"cluster": conn.name, "to": remote_rel, "files": len(files),
                        "bytes": size})
+
+
+def _upload_listed(conn, local: Path, files: list[Path], real: str):
+    """Copy exactly ``files`` of the folder ``local`` (the ones checked and
+    shown in the dialog, so no .git) to ``real``; rsync's result."""
+    import tempfile
+    fd, names = tempfile.mkstemp(prefix="delfin-upload-", suffix=".list")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(b"".join(str(f.relative_to(local)).encode("utf-8", "surrogateescape") + b"\0"
+                              for f in files))
+        return conn.upload(f"{local}/", f"{real}/", extra=["--from0", f"--files-from={names}"])
+    finally:
+        os.unlink(names)
 
 
 def submit(executor, perms, *, cluster: Any, jobs: Any) -> str:
@@ -745,6 +759,12 @@ def _file_refusal(executor, perms):
     return refuse
 
 
+#: A version-control folder is no job input and stays here: one of its files
+#: (.git/COMMIT_EDITMSG) on the secret deny list refused the whole upload of
+#: a project folder, with a message naming only "COMMIT_EDITMSG".
+_VCS_DIRS = frozenset({".git", ".hg", ".svn"})
+
+
 def _upload_files(executor, perms, local: Path) -> tuple[list[Path], str]:
     refuse = _file_refusal(executor, perms)
     if local.is_file():
@@ -752,6 +772,7 @@ def _upload_files(executor, perms, local: Path) -> tuple[list[Path], str]:
     else:
         candidates = []
         for root, dirs, names in os.walk(local):
+            dirs[:] = [d for d in dirs if d not in _VCS_DIRS]
             for name in dirs + names:
                 if (Path(root) / name).is_symlink():
                     return [], (f"{(Path(root) / name).relative_to(local)} is a link; uploads "
@@ -763,7 +784,9 @@ def _upload_files(executor, perms, local: Path) -> tuple[list[Path], str]:
     for path in candidates:
         why = refuse(path)
         if why:
-            return [], f"{path.name} {why}; it does not leave this machine"
+            shown = path.relative_to(local) if local.is_dir() else path.name
+            return [], (f"{shown} {why}; it does not leave this machine, and nothing of "
+                        f"{local.name} was uploaded")
         total += path.stat().st_size
         if len(candidates) > UPLOAD_FILES or total > UPLOAD_BYTES:
             return [], (f"more than {UPLOAD_FILES} files or "

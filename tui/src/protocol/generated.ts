@@ -518,6 +518,7 @@ export interface ClusterAddParams {
   "user": string
   "preset"?: string | null
   "host"?: string | null
+  "requiresOtp"?: boolean | null
   "partition"?: string | null
   "workDir"?: string | null
   "installRoot"?: string | null

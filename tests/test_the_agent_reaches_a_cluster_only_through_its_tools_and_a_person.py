@@ -174,6 +174,7 @@ def _folder(world, name, files):
     folder = world.ws / name
     folder.mkdir()
     for rel, text in files.items():
+        (folder / rel).parent.mkdir(parents=True, exist_ok=True)
         (folder / rel).write_text(text, encoding="utf-8")
     return folder
 
@@ -328,6 +329,25 @@ def test_an_upload_names_its_files_and_goes_under_the_work_dir(world):
     (name, preview), = world.asked
     assert name == "cluster_upload" and "a.xyz" in preview and "b.txt" in preview
     assert (world.home / "delfin" / "jobs" / "batch1" / "a.xyz").exists()
+
+
+def test_a_project_folder_goes_up_without_its_git_folder(world):
+    """Seen while recording the video: .git/COMMIT_EDITMSG matched the secret
+    deny list and refused the whole folder, naming only COMMIT_EDITMSG."""
+    _folder(world, "proj", {"a.xyz": "1\n\nH 0 0 0\n", ".git/COMMIT_EDITMSG": "wip\n",
+                            ".git/config": "[core]\n"})
+    got = json.loads(world.call("cluster_upload", {"cluster": "kcist", "src": "proj",
+                                                    "dest": "proj"}))
+    assert got["files"] == 1
+    up = world.home / "delfin" / "jobs" / "proj"
+    assert (up / "a.xyz").exists() and not (up / ".git").exists()
+
+
+def test_a_refused_file_is_named_by_its_path_in_the_folder(world):
+    _folder(world, "proj", {"a.xyz": "1\n", "conf/.env": "TOKEN=1\n"})
+    got = _error(world.call("cluster_upload", {"cluster": "kcist", "src": "proj"}))
+    assert got["code"] == "refused" and "conf/.env" in got["error"]
+    assert "nothing of proj was uploaded" in got["error"]
 
 
 @pytest.mark.parametrize("args, code", [

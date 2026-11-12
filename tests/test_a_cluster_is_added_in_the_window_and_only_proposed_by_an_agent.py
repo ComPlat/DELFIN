@@ -108,6 +108,21 @@ def test_a_cluster_given_by_its_host_has_no_budget_guard_and_shows_its_key(where
     assert where.delfin() == {"lab": {"work_dir": "~/runs", "install_root": "/scratch/me/delfin"}}
 
 
+def test_another_cluster_says_whether_its_login_asks_for_an_otp(where):
+    """Seen while recording the video: cluster.add took no OTP, so a cluster
+    given by its host that asks for password + OTP could not be added."""
+    where.offered = OTHER
+    assert where.add(name="lab", host="login.lab.example", user="me", requiresOtp=True)["ok"]
+    assert where.add(name="lab2", host="login2.lab.example", user="me")["ok"]
+    assert where.add(name="kcist", preset="kcist", user="me", requiresOtp=True)["ok"]
+    entries = where.entries()
+    assert entries["lab"]["requires_otp"] is True
+    assert entries["lab2"]["requires_otp"] is False
+    assert entries["kcist"]["requires_otp"] is False      # the preset knows its own
+    assert not protocol.params_problem(protocol.SERVICE_REQUESTS["cluster.add"], {"name": "lab", "user": "me",
+                                                    "host": "h.example", "requiresOtp": True})
+
+
 @pytest.mark.parametrize("fields, word", [
     ({"partition": "bad name"}, "partition"),
     ({"workDir": "~"}, "work_dir"),
