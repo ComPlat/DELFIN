@@ -197,6 +197,46 @@ _CLAUDE_CLI_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
                     "CLAUDE_CODE_OAUTH_TOKEN")
 _CODEX_CLI_KEYS = ("OPENAI_API_KEY", "CODEX_API_KEY")
 
+# What the Claude CLI answers instead of a turn when it has no usable
+# login: "Not logged in · Please run /login", "Invalid API key · Please run
+# /login", an expired or revoked OAuth token. It arrives as the turn's
+# result text, so it used to be shown as the model's answer and a headless
+# run exited 0 with an empty error (bug hunt 11.11.2026, #6).
+_CLI_LOGIN_MARKERS = (
+    "Not logged in", "Please run /login", "Invalid API key",
+    "OAuth token has expired", "OAuth token revoked",
+)
+
+
+def _cli_login_failure(text: str, *, is_error: bool) -> bool:
+    """True when *text* is the Claude CLI's own no-login answer.
+
+    Short and either flagged ``is_error`` or naming ``/login``: a model
+    answer that merely mentions logging in is neither."""
+    text = str(text or "").strip()
+    if not text or len(text) > 400:
+        return False
+    if not (is_error or "/login" in text):
+        return False
+    return any(marker in text for marker in _CLI_LOGIN_MARKERS)
+
+
+def _cli_login_message(said: str) -> str:
+    """The error for a Claude CLI without a login, with DELFIN's fixes.
+
+    ``/login`` is a command of the interactive Claude CLI, not of DELFIN;
+    the message says where to run it, and names the API backend, which
+    reads the key DELFIN's own credential store holds."""
+    said = " ".join(str(said or "").split())[:200]
+    # The fix comes first: the dashboard shows the first 200 characters.
+    return (
+        "Not logged in: the `claude` CLI of DELFIN's claude provider "
+        "has no login here. Fix: run `claude` in a terminal, do its "
+        "/login; or `delfin-agent credentials set ANTHROPIC_API_KEY` and "
+        "--backend api."
+        + (f" (claude said: {said})" if said else "")
+    )
+
 
 def _cli_backend_env(own_keys: tuple[str, ...]) -> dict:
     """The environment for an external agent CLI: the shell's scrubbed
@@ -642,8 +682,18 @@ class CLIClient(_BaseClient):
                         tool_name=str(denial),
                     )
 
+                result_text = data.get("result", "")
+                if not emitted_text and _cli_login_failure(
+                        result_text, is_error=bool(data.get("is_error"))):
+                    # No turn ran: an error, not an answer. The process is
+                    # retired so the next send starts one that sees a
+                    # login made in the meantime.
+                    try:
+                        self.kill()
+                    except Exception:
+                        self._proc = None
+                    raise RuntimeError(_cli_login_message(result_text))
                 if not emitted_text:
-                    result_text = data.get("result", "")
                     if result_text:
                         yield StreamEvent(type="text_delta", text=result_text)
 
@@ -673,10 +723,7 @@ class CLIClient(_BaseClient):
             if rc != 0:
                 stderr = proc.stderr.read() if proc.stderr else ""
                 if "Not logged in" in stderr:
-                    raise RuntimeError(
-                        "Agent CLI is not logged in. "
-                        "Run 'claude' in a terminal and complete login first."
-                    )
+                    raise RuntimeError(_cli_login_message(""))
                 if stderr.strip():
                     raise RuntimeError(
                         f"CLI backend error (exit {rc}): {stderr.strip()[:500]}"
@@ -7353,6 +7400,7 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
     "geometry_merge", "geometry_freeze", "geometry_constraints_block",
     "geometry_build_smiles", "geometry_write_orca_block",
+    "geometry_renumber", "geometry_fix_hydrogens", "geometry_diff",
     # trajectory_xyz (2026-11-03): ORCA output -> multi-frame xyz text;
     # pure parse, no write.
     "trajectory_xyz",
@@ -7391,7 +7439,7 @@ _DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
 _PLAN_MODE_TASK_REJECT = (
     "plan mode (read-only) — creating or starting tasks is blocked while "
     "planning. Present the plan in chat and call exit_plan_mode to submit it "
-    "for approval (the user can also click 'Plan akzeptieren & ausführen' or "
+    "for approval (the user can also click 'Accept plan & execute' or "
     "switch the mode chip to 'acceptEdits'). Tasks are created once the plan "
     "is approved."
 )
@@ -16125,8 +16173,9 @@ def _bypass_screened_action(
     action itself for a message to another session or a web search; for
     a write whose target resolves inside the session workspace or the
     configured agent workspace, the action with the instructing-file
-    question answered on the path RELATIVE to that root; None for
-    everything else, which goes to the model.
+    question answered on the path RELATIVE to that root; for a shell
+    command that runs caged and stays in the workspace, the action itself;
+    None for everything else, which goes to the model.
 
     Relative, because a DELFIN worktree lives under ``.delfin/worktrees``
     and the absolute path of every file in it matched the ``/.delfin/``
@@ -16140,6 +16189,24 @@ def _bypass_screened_action(
     tool = str(action.get("tool") or "")
     if tool in _BYPASS_SCREENED_TOOLS:
         return action
+    if tool in ("bash", "bash_background"):
+        # A command that runs inside the cage and does not leave the
+        # workspace by the deterministic rules (_leaves_workspace: not the
+        # high-risk class, no network, not heavy compute) is workspace work
+        # like a write in the workspace: the cage confines its writes, the
+        # egress proxy its network, the change journal can take it back.
+        # Measured on the Pi on 2026-11-12: 55 of 74 refusals in a day were
+        # such commands (pytest, git add/commit in the session's repo,
+        # grep, true), refused because the confirming model did not answer
+        # under load; 10 more were git grep pipelines the model refused.
+        # Without a cage, the model still judges.
+        try:
+            if _bash_runs_caged(perms) and not _leaves_workspace(
+                    perms, action, True):
+                return action
+        except Exception:
+            return None
+        return None
     if tool not in ("write_file", "edit_file", "multi_edit"):
         return None
     raw = str(action.get("path") or "").strip()
@@ -22955,8 +23022,11 @@ class _DocToolExecutor:
         # with a reason is unaffected.
         on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
         try:
+            # The broad scope is the user asking for a second opinion on
+            # everything: there a shell command keeps the model.
             screened = (_bypass_screened_action(perms, action)
-                        if bypass else None)
+                        if bypass and not (cfg.get("broad") and base in (
+                            "bash", "bash_background")) else None)
             if screened is not None:
                 # A message to a sibling session, a web search, a write in
                 # the session or agent workspace: the user's rules and the
@@ -23251,7 +23321,7 @@ class _DocToolExecutor:
                 "Describe the proposed change in chat instead. "
                 "When the plan is complete, call exit_plan_mode to "
                 "submit it for approval; the user can also click "
-                "'Plan akzeptieren & ausführen' or switch the mode "
+                "'Accept plan & execute' or switch the mode "
                 "chip to 'acceptEdits' to proceed."
             )
 

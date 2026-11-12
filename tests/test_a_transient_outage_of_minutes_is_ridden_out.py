@@ -7,6 +7,28 @@ total. Production now retries up to 7 times, backing off to minutes.
 import importlib
 import os
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _api_client_restored():
+    """Put api_client back exactly as it was after each test.
+
+    importlib.reload re-runs the module in place: every class and function
+    in it becomes a new object. A test module that imported one by name
+    (``from delfin.agent.api_client import KitToolPermissions``) keeps the
+    old object, whose isinstance checks then meet the new classes -- in a
+    shared run a later test failed for no reason of its own
+    (test_workspace_bias, 'delfin qm_check' no longer auto-allowed). The
+    module's namespace is restored, so the old objects are the live ones
+    again.
+    """
+    import delfin.agent.api_client as ac
+    saved = dict(ac.__dict__)
+    yield
+    ac.__dict__.clear()
+    ac.__dict__.update(saved)
+
 
 def _fresh(monkeypatch, **env):
     for k in ("DELFIN_STREAM_RETRY_MAX", "DELFIN_STREAM_RETRY_DELAY_SCALE"):

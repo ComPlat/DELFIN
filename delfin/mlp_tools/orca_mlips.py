@@ -90,43 +90,124 @@ def mlips_progext_names(backends: Sequence[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _find_spec(name: str):
-    import importlib.util
+#: The distribution and the package it installs: ``orca-mlips`` ships its
+#: plugins as ``orca_mlips_plugins`` (pyproject ``[tool.setuptools]
+#: packages``); there is no ``orca_mlips`` module.
+ORCA_MLIPS_DIST = "orca-mlips"
+ORCA_MLIPS_MODULE = "orca_mlips_plugins"
+#: What installs it: DELFIN's installer, into an environment of its own
+#: (delfin.common.external_builders.PROGRAMS["orca_mlips"]).
+ORCA_MLIPS_INSTALL = "python -m delfin.installer --install orca-mlips"
 
-    return importlib.util.find_spec(name)
+
+def _env_dists(python: str):
+    """The ``orca-mlips`` distributions in the site-packages beside *python*.
+
+    Metadata only, read from the files; that interpreter is never started.
+    """
+    prefix = Path(python).resolve().parent.parent
+    sites = [str(site) for site in sorted(prefix.glob("lib/python*/site-packages"))]
+    if not sites:
+        return []
+    return list(importlib.metadata.distributions(name=ORCA_MLIPS_DIST, path=sites))
 
 
-def detect_orca_mlips() -> dict:
+def _own_env_python(environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """The interpreter of orca-mlips' own environment, or None when there is none.
+
+    ``DELFIN_ORCA_MLIPS_PYTHON``, else the environment DELFIN's installer
+    builds (``<AI tools root>/.mamba_env/orca_mlips``) when it exists.
+    """
+    import os
+    import sys
+
+    from delfin.common import external_builders
+
+    python = external_builders.tool_python("orca_mlips", environ)
+    if python == sys.executable or not os.access(python, os.X_OK):
+        return None
+    return python
+
+
+def detect_orca_mlips(environ: Optional[Mapping[str, str]] = None) -> dict:
     """Detect the installed orca-mlips package and its ProgExt entry points.
 
-    Reads the distribution metadata only; never imports the MLIP stack
-    (torch etc. must not load into this process), never installs anything.
+    Looks first in orca-mlips' own environment (the one DELFIN's installer
+    builds, or ``DELFIN_ORCA_MLIPS_PYTHON``), then in this interpreter.
+    Reads distribution metadata only; never imports the MLIP stack (torch
+    etc. must not load into this process), never installs anything.
+
+    ``progext_paths`` maps each plugin to the absolute path of its
+    ``orca-mlips-<backend>`` command where that file exists: the name ORCA's
+    ``ProgExt`` needs on a compute node whose ``PATH`` does not hold the
+    environment.
     """
-    installed = _find_spec("orca_mlips") is not None
-    names: list[str] = []
-    version = ""
-    if installed:
+    import sys
+    import sysconfig
+
+    dist = None
+    bin_dir: Optional[Path] = None
+    python = _own_env_python(environ)
+    if python:
+        found = _env_dists(python)
+        if found:
+            dist, bin_dir = found[0], Path(python).parent
+    if dist is None:
         try:
-            dist = importlib.metadata.distribution("orca-mlips")
-            version = dist.version or ""
-            eps = importlib.metadata.entry_points(group="console_scripts")
-            names = sorted(
-                ep.name for ep in eps if ep.name.startswith("orca-mlips-")
-            )
+            dist = importlib.metadata.distribution(ORCA_MLIPS_DIST)
+            scripts = sysconfig.get_path("scripts")
+            bin_dir = Path(scripts) if scripts else None
+            python = sys.executable
         except importlib.metadata.PackageNotFoundError:
-            installed = False
+            dist = None
+    names: list[str] = []
+    paths: dict[str, str] = {}
+    version = ""
+    if dist is not None:
+        version = dist.version or ""
+        names = sorted(
+            ep.name for ep in dist.entry_points
+            if ep.group == "console_scripts" and ep.name.startswith("orca-mlips-")
+        )
+        for name in names:
+            exe = bin_dir / name if bin_dir is not None else None
+            if exe is not None and exe.is_file():
+                paths[name[len("orca-mlips-"):]] = str(exe)
+    installed = dist is not None
     return {
         "available": installed,
         "progext_names": names or (
             [f"orca-mlips-{b}" for b in _MLIPS_BACKENDS] if installed else []
         ),
+        "progext_paths": paths,
+        "python": python if installed else "",
         "version": version,
         "install_hint": (
-            "pip install 'orca-mlips[uma]'   (or [orb], [mace], [aimnet2]; "
-            "UMA needs its own environment -- conflicts with MACE/ORB)"
+            f"{ORCA_MLIPS_INSTALL}   (its own environment with a CUDA PyTorch "
+            "and the aimnet2 + orb plugins; UMA and MACE need their own "
+            "environment and licence terms)"
         ),
         "xtb_required_for_solvent": bool(shutil.which("xtb")) is False,
     }
+
+
+def resolve_progext(backend: str, environ: Optional[Mapping[str, str]] = None) -> str:
+    """What ExtOpt's ``ProgExt`` names for an orca-mlips plugin.
+
+    The absolute ``orca-mlips-<backend>`` of the installed environment when
+    there is one, else the command found on this ``PATH`` (absolute), else
+    the bare name -- which ORCA then has to find on the ``PATH`` of the node
+    it runs on.  ORCA starts ``ProgExt`` from its own process, and a bare
+    name was "not found" on a GPU node whose ``PATH`` did not hold the
+    environment (docs/MLIP_GOAT_GPU.md, D3).
+    """
+    (name,) = mlips_progext_names([backend])
+    found = detect_orca_mlips(environ).get("progext_paths", {})
+    path = found.get(name[len("orca-mlips-"):])
+    if path:
+        return path
+    on_path = shutil.which(name)
+    return str(Path(on_path).absolute()) if on_path else name
 
 
 def ext_params_for(
@@ -156,7 +237,16 @@ def ext_params_for(
             f"solvent-model {solvent_model!r} not one of alpb|cpcmx "
             "(orca-mlips OPTIONS.md)"
         )
-    parts = [f"--backend {name}"]
+    if precision and name != "orb":
+        raise ValueError(
+            f"--precision is an option of the orb plugin only, not of {name!r} "
+            "(orca-mlips cli_orca.py)"
+        )
+    # No ``--backend``: the command itself is the backend (orca-mlips-<name>),
+    # and no plugin accepts that option -- argparse stops the plugin with
+    # "unrecognized arguments" and ORCA reports "external program failed"
+    # (docs/MLIP_GOAT_GPU.md, D4).
+    parts: list[str] = []
     if model:
         parts.append(f"--model {model}")
     parts.append(f"--device {device}")
@@ -373,7 +463,7 @@ def build_orca_mlips_input(
     if int(ncores) < 1:
         raise ValueError(f"ncores {ncores!r} must be >= 1")
 
-    progext = wrapper_path or f"orca-mlips-{name}"
+    progext = wrapper_path or resolve_progext(name)
 
     extra_ext: list[str] = []
     if run_type == "goat":

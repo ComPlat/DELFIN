@@ -130,6 +130,12 @@ REPLAY_BUDGET_BYTES = eventlog.REPLAY_BUDGET_BYTES
 #: DELFIN_AGENT_SLEEP_AFTER_S sets it.
 SLEEP_AFTER_S = 3600.0
 
+#: A session started new that was never asked anything ends this long after
+#: its last window let it go (detached, or the window closed) -- not kept
+#: running nor asleep, as Claude Code keeps no empty conversation. The
+#: pause lets a prompt sent right behind a detach still reach it.
+UNUSED_GRACE_S = 5.0
+
 #: How long a dormant session (asleep, or left by a service that stopped or
 #: died) is kept to be woken; a later service forgets older ones.
 DORMANT_KEEP_S = 7 * 86400.0
@@ -303,6 +309,9 @@ class Session:
         self.last_prompt = ""
         #: When someone last wrote to it (SESSION_SUMMARY.lastInput); 0: never.
         self.last_input = 0.0
+        #: A prompt was forwarded to it (session.prompt): asked something,
+        #: even before its worker says so (user.message).
+        self.prompted = False
         self.activity = ""
         self.answer = ""
         self.subscribers: dict["Client", int] = {}    # client -> last seq replayed
@@ -498,6 +507,15 @@ class Session:
                 "waiting": _asked_gist(next(iter(self.pending.values()))) if self.pending else None,
                 "answer": self.answer or None,
                 "lastInput": round(self.last_input, 3) or None}
+
+    def never_used(self) -> bool:
+        """Started new (not resumed, continued, forked; no brief, no
+        schedule's run) and never asked anything; idle, nothing open."""
+        s = self.settings
+        if any(s.get(k) for k in ("resume", "continue", "fork", "brief", "unattended")):
+            return False
+        return (not self.prompted and not self.first_prompt and not self.last_input
+                and self.state == "idle" and not self.pending)
 
     def resume_settings(self) -> dict:
         """What resumes this session as it is now: its create settings, with
@@ -885,10 +903,37 @@ class Supervisor:
 
     def client_gone(self, client: Client) -> None:
         self.clients.discard(client)
-        for session in self.sessions.values():
-            session.subscribers.pop(client, None)
+        for session in list(self.sessions.values()):
+            if session.subscribers.pop(client, None) is not None:
+                self._end_if_unused(session)
         if not self.clients:
             self.quiet_since = time.monotonic()
+
+    def _end_if_unused(self, session: Session) -> None:
+        """A session no window shows any more that was never asked anything
+        (Session.never_used): ended after UNUSED_GRACE_S, unsaved -- not
+        left running with a worker, nor put to sleep."""
+        if session.subscribers or self.closing or not session.never_used():
+            return
+        self.spawn(self._end_unused(session))
+
+    async def _end_unused(self, session: Session) -> None:
+        if self.stopping is not None:
+            try:
+                await asyncio.wait_for(self.stopping.wait(), UNUSED_GRACE_S)
+                return                  # the service stops: it ends with the rest
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(UNUSED_GRACE_S)
+        if (session.subscribers or self.closing or session.sleeping or not session.never_used()
+                or self.sessions.get(session.id) is not session):
+            return
+        try:
+            # ifIdle: a message on its way (queued) or a question keeps it.
+            await session.request("session.shutdown", {"ifIdle": True}, timeout=30)
+        except Exception:
+            pass
 
     # -- requests ------------------------------------------------------------------------
     async def _dispatch(self, client: Client, message: dict) -> None:
@@ -1025,6 +1070,8 @@ class Supervisor:
             if method == "session.cancel":
                 return {"stopping": False, "refused": 0}
         session = await self._awake(client, sid)
+        if method == "session.prompt":
+            session.prompted = True
         if method == "session.replay":
             # From memory, as an attach: the service holds the replay
             # budget of every session -- what the worker's log would give --
@@ -1313,8 +1360,8 @@ class Supervisor:
 
     async def _m_session_detach(self, client: Client, params: dict) -> dict:
         session = self.sessions.get(str(params["sessionId"]))
-        if session is not None:
-            session.subscribers.pop(client, None)
+        if session is not None and session.subscribers.pop(client, None) is not None:
+            self._end_if_unused(session)
         return {"detached": True}
 
     async def _m_session_message(self, _client: Client, params: dict) -> dict:

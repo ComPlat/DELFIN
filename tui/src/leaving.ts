@@ -15,6 +15,9 @@ export interface LeavingSession {
   title?: string | null
   state?: string
   ended?: { reason?: string | null } | null
+  /** Ended on leaving because nothing was asked of it (empty.ts): not
+   *  kept, so no way back to it is printed. */
+  discarded?: boolean
 }
 
 /** Characters a session id is made of; anything else is not printed as a
@@ -33,7 +36,10 @@ export function leavingNote(input: { session?: LeavingSession; problem?: string 
   const lines: string[] = []
   if (input.problem) lines.push(`DELFIN: ${plain(input.problem)}`)
   const s = input.session
-  if (s?.id) {
+  if (s?.id && s.discarded) {
+    // Nothing was asked of it: like Claude Code, nothing is kept.
+    if (!input.problem) lines.push("DELFIN: nothing was asked in this session, so it was not kept.")
+  } else if (s?.id) {
     const name = plain(s.title || `session ${s.id.slice(0, 8)}`)
     if (!input.problem) {
       lines.push(s.state === "ended"

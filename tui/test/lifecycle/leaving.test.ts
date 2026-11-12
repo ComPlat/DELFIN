@@ -28,6 +28,13 @@ describe("what leaving the window prints", () => {
     expect(note).toContain("resume with: delfin-agent tui --resume abc123def456")
   })
 
+  test("a session nobody asked anything was not kept: no way back is printed", () => {
+    const note = leavingNote({ session: { ...running, discarded: true } })
+    expect(note).toBe("DELFIN: nothing was asked in this session, so it was not kept.\n")
+    expect(note).not.toContain("resume with")
+    expect(leavingNote({ session: { ...running, discarded: true }, problem: "gone" })).toBe("DELFIN: gone\n")
+  })
+
   test("no session: nothing but the problem, if any", () => {
     expect(leavingNote({})).toBe("")
     expect(leavingNote({ problem: "x" })).toBe("DELFIN: x\n")
