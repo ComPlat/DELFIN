@@ -26,6 +26,68 @@ import ipywidgets as widgets
 _OPEN_SESSIONS_PATH = Path.home() / ".delfin" / "agent_open_sessions.json"
 # Each open session is a full agent tab with its own engine and timers.
 _MAX_OPEN = 8
+
+#: Agent sessions a dashboard on a cluster login node may run (issue #640):
+#: as many as the tab holds (the person, 11.11.: several sessions as
+#: before), unless the user setting ``hpc.login_node_sessions`` names fewer:
+#: the login node is shared; its sessions' tests and builds go to SLURM
+#: either way (calc_policy.login_node_heavy), and further sessions run on a
+#: compute node (``delfin-voila --job``, or a swarm).
+LOGIN_NODE_SESSIONS = _MAX_OPEN
+
+
+def login_node_sessions(settings: Optional[dict] = None) -> int:
+    """The limit: ``hpc.login_node_sessions`` (1.._MAX_OPEN), else _MAX_OPEN."""
+    if settings is None:
+        try:
+            from delfin.hpc_guard import _read_user_settings
+            settings = _read_user_settings()
+        except Exception:
+            settings = {}
+    hpc = settings.get("hpc") if isinstance(settings, dict) else None
+    try:
+        n = int((hpc or {}).get("login_node_sessions") or LOGIN_NODE_SESSIONS)
+    except (TypeError, ValueError):
+        n = LOGIN_NODE_SESSIONS
+    return max(1, min(_MAX_OPEN, n))
+
+
+def login_node_refusal(open_here: int, *, kind: Optional[str] = None,
+                       on_host: Optional[int] = None,
+                       limit: Optional[int] = None) -> str:
+    """Why one more agent session may not open here, or "".
+
+    ``open_here``: this dashboard's open sessions; ``on_host``: the open
+    sessions presence knows on this host (other dashboards and terminals
+    included; default: asked). Only a login node limits.
+    """
+    if kind is None:
+        try:
+            from delfin.agent.calc_policy import host_kind
+            kind = host_kind()
+        except Exception:
+            return ""
+    if kind != "login_node":
+        return ""
+    if on_host is None:
+        try:
+            import socket
+            from delfin.agent import session_presence
+            me = socket.gethostname().split(".")[0]
+            on_host = sum(1 for r in session_presence.open_sessions()
+                          if str(r.get("host") or "").split(".")[0] == me)
+        except Exception:
+            on_host = 0
+    limit = login_node_sessions() if limit is None else int(limit)
+    if max(int(open_here), int(on_host)) < limit:
+        return ""
+    return (f"A cluster login node runs {limit} agent session"
+            f"{'' if limit == 1 else 's'} here (hpc.login_node_sessions; "
+            "issue #640) and that many are open. More sessions run on a "
+            "compute node: start the dashboard there with "
+            "`delfin-voila --job` (your sessions come along), or a swarm. "
+            "Not a shared login node? Set DELFIN_HOST_KIND=workstation "
+            "(or hpc.host_kind in the settings).")
 _REFRESH_S = 3.0
 # Reading the saved sessions parses every session file, so the resume list
 # is rebuilt on open/close and at this interval, not on every refresh.
@@ -69,12 +131,39 @@ def stop_refresh_loops() -> int:
     return len(stops)
 
 
+def _self_running_html(*scripts: str) -> str:
+    """HTML that runs *scripts* when the browser shows it -- the agent
+    tab's own way (its chat tags): an <img> whose load fails runs its
+    onerror. Each script sits as raw text in an inert
+    ``<script type="text/x-delfin">`` beside it (raw text: no '<' in the
+    code is read as a tag), so nothing is escaped into an attribute. Each
+    guards itself against running twice and runs on its own, so one that
+    throws stops no other.
+
+    Why not only the init-js payload: a tab built after the page was out
+    sent its scripts as one block, and one that threw (MathJax) ended it.
+    """
+    out = []
+    for script in scripts:
+        body = str(script).replace("</script", "<\\/script")
+        out.append('<script type="text/x-delfin" class="delfin-sessions-js">'
+                   + body + "</script>")
+    out.append('<img src="" alt="" style="display:none" onerror="'
+               "this.parentNode.querySelectorAll('script.delfin-sessions-js')"
+               ".forEach(function(t){try{(0,eval)(t.textContent)}"
+               "catch(e){console.error('DELFIN sessions script',e)}});"
+               '">')
+    return "".join(out)
+
+
 def _register_init_js(ctx: Any, script: str) -> None:
-    """Add ``script`` to a context's init-js payload, at most once."""
+    """Add ``script`` to a context's init-js payload, at most once per
+    script. (Keyed on the context alone, the first script registered was
+    the only one: the rename, folder and suggestion keys never arrived.)"""
     add = getattr(ctx, "add_init_js", None)
     if not callable(add):
         return
-    key = id(ctx)
+    key = (id(ctx), hash(script))
     if key in _REGISTERED_INIT_JS:
         return
     _REGISTERED_INIT_JS.add(key)
@@ -218,6 +307,49 @@ _SIDEBAR_CSS = """<style>
     border-radius: 4px; z-index: 10; pointer-events: auto; }
 .delfin-session-splitter:hover { background: linear-gradient(
     to right, #b0b0b0, #e0e0e0, #b0b0b0); }
+/* The working-directory list (the box's suggestions). */
+.delfin-path-suggest { gap: 0; max-height: 220px; overflow-y: auto !important;
+    overflow-x: hidden !important; border: 1px solid #e5e7eb;
+    border-radius: 6px; background: #ffffff; }
+.delfin-path-suggest:empty { display: none; }
+.delfin-path-option { width: 100% !important; height: 24px !important;
+    flex: 0 0 24px !important; min-height: 24px;
+    margin: 0 !important; padding: 0 8px !important; border: 0;
+    background: transparent !important; text-align: left; font-size: 12px;
+    line-height: 24px; color: #1f2937; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; font-family: 'SF Mono', 'Consolas', monospace; }
+.delfin-path-suggest { max-height: 300px; }
+.delfin-path-option:hover, .delfin-path-option.delfin-path-active {
+    background: #dbeafe !important; color: #0f172a; }
+/* Rename in place: the field takes the name's place and size. */
+.delfin-session-rename { width: 100%; margin: 0; }
+.delfin-session-rename-input { width: 100% !important; margin: 0 !important; }
+.delfin-session-rename-input input { height: 22px !important; padding: 0 6px;
+    font-size: 13px; font-weight: 500; color: #0f172a; border: 1px solid #93c5fd;
+    border-radius: 5px; box-shadow: 0 0 0 2px rgba(147, 197, 253, 0.35);
+    background: #ffffff; outline: none; }
+.delfin-session-item { overflow: hidden; }
+/* Suggestions above the message box (_COMPLETE_JS). */
+.delfin-complete-pop { position: fixed; z-index: 10000; max-height: 260px;
+    overflow-y: auto; background: #ffffff; border: 1px solid #e5e7eb;
+    border-radius: 10px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+    padding: 4px; font-family: 'SF Mono', 'Consolas', monospace; font-size: 12px; }
+.delfin-complete-item { display: flex; justify-content: space-between; gap: 12px;
+    padding: 4px 8px; border-radius: 6px; cursor: pointer; color: #1f2937; }
+.delfin-complete-item:hover, .delfin-complete-active { background: #dbeafe; color: #0f172a; }
+.delfin-complete-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.delfin-complete-kind { color: #94a3b8; font-size: 11px; flex: 0 0 auto; }
+/* "Newest" at the foot of the visible chat, also in a short chat. The
+   button is the transcript's last child; sticky keeps it at the foot only
+   once the chat scrolls, so in a new session it sat under the last
+   message. margin-top:auto pushes it to the end of the (min 100 % high)
+   column, the negative bottom margin into the 84 px foot reserve; with a
+   working line it stays above that line (the sticky offset of the agent
+   tab's own rule). */
+.delfin-agent-chat-host > .delfin-agent-chat > .delfin-chat-jump {
+    margin-top: auto !important; margin-bottom: -78px !important; }
+.delfin-agent-chat-frame:has(> .delfin-agent-working-slot .delfin-agent-working)
+    .delfin-agent-chat > .delfin-chat-jump { margin-bottom: 0 !important; }
 </style>"""
 
 #: Drag the sessions column to a width. Runs once per shell (data-bound
@@ -225,6 +357,228 @@ _SIDEBAR_CSS = """<style>
 #: one keep_js() call from the dashboard. The widths it writes override the
 #: 236px CSS default on the sidebar, so a drag sticks and a refresh keeps
 #: the choice. Mirrors the calc browser's .calc-splitter handler.
+#: Esc in a rename box cancels it, in the session list as in the running
+#: list (live_tab binds the same key for its own view; bound once here so
+#: the list does not depend on a service view having been opened).
+#: Folders shown under the working-directory box at once (the list
+#: scrolls; workspace_choices bounds what is read at _PICKER_MAX).
+_SUGGEST_SHOWN = 40
+
+#: Keys of the working-directory box: Tab, Up/Down, Enter, Esc.
+_PATH_KEYS_JS = """\
+(function () {
+    if (window.__delfinPathKeys) return;
+    window.__delfinPathKeys = true;
+    function opts(form) {
+        return Array.prototype.slice.call(
+            form.querySelectorAll('.delfin-path-suggest .delfin-path-option'));
+    }
+    function mark(list, i) {
+        list.forEach(function (b, j) {
+            b.classList.toggle('delfin-path-active', j === i);
+            if (j === i && b.scrollIntoView) b.scrollIntoView({block: 'nearest'});
+        });
+    }
+    document.addEventListener('keydown', function (e) {
+        var t = e.target;
+        if (!t || !t.closest || t.tagName !== 'INPUT') return;
+        var host = t.closest('.delfin-path-input');
+        var form = host && t.closest('.delfin-session-form');
+        if (!form) return;
+        var list = opts(form);
+        var at = list.findIndex(function (b) {
+            return b.classList.contains('delfin-path-active'); });
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if (!list.length) return;
+            e.preventDefault();
+            at = e.key === 'ArrowDown' ? Math.min(list.length - 1, at + 1)
+                                       : Math.max(0, at - 1);
+            mark(list, at);
+        } else if (e.key === 'Tab' && !e.shiftKey && list.length) {
+            e.preventDefault();
+            (list[at >= 0 ? at : 0]).click();
+            setTimeout(function () { t.focus(); }, 0);
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (at >= 0) { list[at].click(); setTimeout(function () { t.focus(); }, 0); return; }
+            var start = form.querySelector('.delfin-session-start');
+            // Let the typed value reach the kernel before Start reads it.
+            if (start) setTimeout(function () { start.click(); }, 120);
+        } else if (e.key === 'Escape') {
+            var cancel = form.querySelector('.delfin-session-cancel');
+            if (cancel) { e.preventDefault(); cancel.click(); }
+        }
+    }, true);
+    document.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest && e.target.closest('.delfin-path-option');
+        var form = b && b.closest('.delfin-session-form');
+        var input = form && form.querySelector('.delfin-path-input input');
+        if (input) setTimeout(function () { input.focus(); }, 0);
+    }, true);
+})();
+"""
+
+#: Suggestions in the message box (delfin.dashboard.completion): for a
+#: `!command` and for a word that starts like a path. The box sends what is
+#: typed up to the caret to a hidden field; the kernel answers in a hidden
+#: HTML; a popup above the box shows the answer. Tab takes the highlighted
+#: (or first) suggestion, Up/Down move, Enter takes one only when one was
+#: highlighted (otherwise it sends, as always), Esc closes. Keys are taken
+#: on `window` in the capture phase, ahead of the box's own Enter-to-send.
+_COMPLETE_JS = """\
+(function () {
+    if (window.__delfinComplete) return;
+    window.__delfinComplete = true;
+    var st = {seq: 0, items: [], start: 0, at: -1, ta: null, timer: null, pop: null, lastRaw: null};
+    function pop() {
+        if (!st.pop) {
+            st.pop = document.createElement('div');
+            st.pop.className = 'delfin-complete-pop';
+            st.pop.style.display = 'none';
+            document.body.appendChild(st.pop);
+            st.pop.addEventListener('mousedown', function (e) {
+                var row = e.target.closest('.delfin-complete-item');
+                if (!row) return;
+                e.preventDefault();
+                take(parseInt(row.getAttribute('data-i'), 10));
+            });
+        }
+        return st.pop;
+    }
+    function hide() { st.items = []; st.at = -1; if (st.pop) st.pop.style.display = 'none'; }
+    function wanted(before) {
+        var line = before.slice(before.lastIndexOf('\\n') + 1);
+        if (before.indexOf('\\n') < 0 && line.charAt(0) === '!' && line.length > 1) return true;
+        var word = line.split(/\\s/).pop();
+        return /^(\\/|~\\/|~$|\\.\\/|\\.\\.\\/)/.test(word);
+    }
+    function ask(ta) {
+        var before = ta.value.slice(0, ta.selectionStart);
+        if (!wanted(before)) { hide(); return; }
+        var q = document.querySelector('.delfin-complete-query input');
+        if (!q) return;
+        st.ta = ta;
+        st.seq += 1;
+        q.value = JSON.stringify({text: before, seq: st.seq});
+        q.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+    function render() {
+        var p = pop();
+        if (!st.items.length || !st.ta) { hide(); return; }
+        var r = st.ta.getBoundingClientRect();
+        p.innerHTML = '';
+        st.items.forEach(function (it, i) {
+            var row = document.createElement('div');
+            row.className = 'delfin-complete-item' + (i === st.at ? ' delfin-complete-active' : '');
+            row.setAttribute('data-i', String(i));
+            var lab = document.createElement('span');
+            lab.className = 'delfin-complete-label';
+            lab.textContent = it.label;
+            var kind = document.createElement('span');
+            kind.className = 'delfin-complete-kind';
+            kind.textContent = it.kind;
+            row.appendChild(lab); row.appendChild(kind);
+            p.appendChild(row);
+        });
+        p.style.left = Math.max(8, r.left) + 'px';
+        p.style.width = Math.min(Math.max(320, r.width * 0.6), 640) + 'px';
+        p.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+        p.style.display = 'block';
+        var act = p.querySelector('.delfin-complete-active');
+        if (act && act.scrollIntoView) act.scrollIntoView({block: 'nearest'});
+    }
+    function take(i) {
+        var it = st.items[i], ta = st.ta;
+        if (!it || !ta) return;
+        var caret = ta.selectionStart;
+        var v = ta.value.slice(0, st.start) + it.insert + ta.value.slice(caret);
+        ta.value = v;
+        var pos = st.start + it.insert.length;
+        ta.setSelectionRange(pos, pos);
+        ta.dispatchEvent(new Event('input', {bubbles: true}));
+        ta.focus();
+        hide();
+        if (/\\/$/.test(it.insert)) ask(ta);   // a folder: go on into it
+    }
+    document.addEventListener('input', function (e) {
+        var t = e.target;
+        if (!t || t.tagName !== 'TEXTAREA' || !t.closest || !t.closest('.delfin-agent-input')) return;
+        clearTimeout(st.timer);
+        st.timer = setTimeout(function () { ask(t); }, 110);
+    }, true);
+    window.addEventListener('keydown', function (e) {
+        if (!st.items.length || !st.ta || e.target !== st.ta) return;
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault(); e.stopImmediatePropagation();
+            var n = st.items.length;
+            st.at = e.key === 'ArrowDown' ? (st.at + 1) % n : (st.at <= 0 ? n - 1 : st.at - 1);
+            render();
+        } else if (e.key === 'Tab' && !e.shiftKey) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            take(st.at >= 0 ? st.at : 0);
+        } else if (e.key === 'Enter' && !e.shiftKey && st.at >= 0) {
+            e.preventDefault(); e.stopImmediatePropagation();
+            take(st.at);
+        } else if (e.key === 'Escape') {
+            e.preventDefault(); e.stopImmediatePropagation();
+            hide();
+        }
+    }, true);
+    document.addEventListener('focusout', function (e) {
+        if (e.target === st.ta) setTimeout(hide, 150);
+    }, true);
+    // Only an answer that is new is shown. The popup itself changes the
+    // page, so an observer that re-rendered on any change fed on its own
+    // drawing and froze the page (measured 11.11.); mutations inside the
+    // popup are ignored and the same answer is never shown twice.
+    new MutationObserver(function (muts) {
+        if (st.pop && muts.every(function (m) { return st.pop.contains(m.target); })) return;
+        var el = document.querySelector('.delfin-complete-result [data-json]');
+        if (!el) return;
+        var raw = el.getAttribute('data-json');
+        if (raw === st.lastRaw) return;
+        st.lastRaw = raw;
+        var data;
+        try { data = JSON.parse(raw); } catch (_e) { return; }
+        if (!data || data.seq !== st.seq) return;
+        st.items = data.items || []; st.start = data.start || 0; st.at = -1;
+        render();
+    }).observe(document.documentElement, {childList: true, subtree: true, characterData: true});
+})();
+"""
+
+_RENAME_KEYS_JS = """\
+(function () {
+    if (window.__delfinRenameKeys) return;
+    window.__delfinRenameKeys = true;
+    document.addEventListener('keydown', function (e) {
+        var t = e.target;
+        if (!t || !t.closest || e.key !== 'Escape') return;
+        var box = t.closest('.delfin-live-rename');
+        var cancel = box && box.querySelector('.delfin-live-rename-cancel');
+        if (cancel) { e.preventDefault(); e.stopPropagation(); cancel.click(); }
+    }, true);
+    function focusField(item) {
+        var tries = 0;
+        (function go() {
+            var input = item && item.querySelector('.delfin-session-rename-input input');
+            if (input && input.offsetParent) { input.focus(); input.select(); return; }
+            if (tries++ < 20) setTimeout(go, 50);
+        })();
+    }
+    document.addEventListener('dblclick', function (e) {
+        var title = e.target && e.target.closest && e.target.closest('.delfin-session-title');
+        var item = title && title.closest('.delfin-session-item');
+        var pencil = item && item.querySelector('.delfin-session-rename-btn');
+        if (pencil) { e.preventDefault(); pencil.click(); focusField(item); }
+    }, true);
+    document.addEventListener('click', function (e) {
+        var pencil = e.target && e.target.closest && e.target.closest('.delfin-session-rename-btn');
+        if (pencil) focusField(pencil.closest('.delfin-session-item'));
+    }, true);
+})();
+"""
+
 _SPLITTER_INIT_JS = """\
 (function () {
     // The agent tab's DOM may not exist when this runs. ipywidgets Tab
@@ -1137,7 +1491,15 @@ def is_delivered_message(text: str) -> bool:
     return str(text or "").lstrip().startswith(_DELIVERED_PREFIX)
 
 
-def _session_title(state: dict) -> str:
+def _session_title(state: dict, session_id: str = "") -> str:
+    """The name in the list: the one the person gave it, else the start of
+    its first message. A chosen name lives in ``_messenger_titles`` -- the
+    map the agent tab's own save writes as the saved session's title, so
+    it survives a reload and shows in Resume."""
+    chosen = (state.get("_messenger_titles") or {}).get(session_id) \
+        if session_id else ""
+    if chosen:
+        return str(chosen)
     for message in state.get("chat_messages") or []:
         if isinstance(message, dict) and message.get("role") == "user":
             text = " ".join(str(message.get("content") or "").split())
@@ -1150,10 +1512,12 @@ def _session_title(state: dict) -> str:
 # Sessions in the agent service
 # ---------------------------------------------------------------------------
 
-#: Where sessions run: "service" (the default: the person's agent service,
-#: so the terminal and the phone open them too) or "kernel" (this
-#: dashboard's kernel, as before the service). The environment variable
-#: wins over agent.dashboard_sessions in the settings.
+#: Where the dashboard starts its sessions: "kernel" (the default: this
+#: dashboard's kernel, shown in the agent tab's full chat) or "service" (the
+#: person's agent service, so the terminal and the phone open them too; shown
+#: in live_tab's view, which does not yet have the chat's controls). Either
+#: way the sidebar lists the sessions a running service has and opens them.
+#: The environment variable wins over agent.dashboard_sessions in the settings.
 SESSIONS_ENV = "DELFIN_DASHBOARD_SESSIONS"
 
 #: The permission profiles the agent tab's ladder stores, and the posture
@@ -1169,7 +1533,7 @@ _PROFILE_OLD_NAMES = {"default": "ask_all", "erlaubt": "repo_free", "full": "all
 
 
 def sessions_where() -> str:
-    """``"service"`` or ``"kernel"``: where this dashboard starts sessions."""
+    """``"kernel"`` (default) or ``"service"``: where this dashboard starts sessions."""
     raw = os.environ.get(SESSIONS_ENV, "").strip().lower()
     if not raw:
         try:
@@ -1178,7 +1542,7 @@ def sessions_where() -> str:
                       .get("dashboard_sessions") or "").strip().lower()
         except Exception:
             raw = ""
-    return "kernel" if raw == "kernel" else "service"
+    return "service" if raw == "service" else "kernel"
 
 
 def dashboard_session_settings() -> dict:
@@ -1210,18 +1574,21 @@ def _service_connector(service: Any, explicit_build: bool):
     """What gives the session list its agent-service client, or None for
     sessions in the kernel only. ``service``: False (none), a callable
     returning a ``live_sessions.LiveClient``, a client, or None -- the
-    person's service unless a stand-in ``build`` was given or the setting
-    says kernel."""
+    person's service unless a stand-in ``build`` was given. With sessions in
+    the kernel (the default) a service is only joined when one runs: its
+    sessions (started in the terminal or on the phone) are listed, and
+    nothing is started for the list alone."""
     if service is False:
         return None
     if callable(service):
         return service
     if service is not None:
         return lambda: service
-    if explicit_build or sessions_where() == "kernel":
+    if explicit_build:
         return None
     from delfin.dashboard import live_sessions
-    return lambda: live_sessions.connect(start=True)
+    start = sessions_where() == "service"
+    return lambda: live_sessions.connect(start=start)
 
 
 _RUNNING_CSS = """<style>
@@ -1489,7 +1856,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     sessions: list[dict] = []
     view: dict[str, Any] = {"active": "", "restoring": True,
-                            "scripts_added": False, "resume_at": 0.0}
+                            "scripts_added": False, "resume_at": 0.0,
+                            # A stand-in service (tests, explicit callers) starts
+                            # sessions there; the person's own only when set so.
+                            "start_in_service": connector is not None and (
+                                service is not None or sessions_where() == "service")}
     shared_status = getattr(ctx, "agent_status_html", None)
 
     def _classed(w, *names):
@@ -1501,10 +1872,18 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     new_btn = _classed(widgets.Button(description="+", tooltip="New session"),
                        "delfin-session-add")
     head = _classed(widgets.HBox([heading, new_btn]), "delfin-session-head")
-    workdir_box = widgets.Combobox(
-        options=workspace_choices(ctx), value=default_workspace(ctx),
-        placeholder="Working directory", ensure_option=False,
+    # The working directory is picked the way a terminal or an editor's
+    # quick-open does it: type a path, the folders that fit are listed
+    # under the box; Tab takes the highlighted (or first) one, Up/Down move
+    # the highlight, a click goes into a folder, Enter starts (or takes the
+    # highlighted folder first), Esc closes the card. The browser's own
+    # datalist could do none of that.
+    workdir_box = widgets.Text(
+        value=default_workspace(ctx), continuous_update=True,
+        placeholder="Working directory -- type a path, Tab completes",
         layout=widgets.Layout(width="100%"))
+    workdir_box.add_class("delfin-path-input")
+    path_suggest = _classed(widgets.VBox(), "delfin-path-suggest")
     start_btn = _classed(widgets.Button(description="Start"),
                          "delfin-session-start")
     cancel_btn = _classed(widgets.Button(description="Cancel"),
@@ -1529,7 +1908,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     consent_no.on_click(lambda _b: _hide_consent())
     new_form = _classed(widgets.VBox(
         [_classed(widgets.HTML("Working directory"), "delfin-session-label"),
-         workdir_box, own_worktree_box, worktree_hint, consent_box,
+         workdir_box, path_suggest, own_worktree_box, worktree_hint,
+         consent_box,
          _classed(widgets.HBox([cancel_btn, start_btn]),
                   "delfin-session-actions")],
         layout=widgets.Layout(display="none")), "delfin-session-form")
@@ -1549,13 +1929,52 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     # The agent service: every session started here runs in it, and the
     # running list shows every session it holds. Without one, the kernel.
     live: dict[str, Any] = {"client": None, "why": "", "retry_at": 0.0, "scripts": False}
-    running_panel = RunningPanel(None, on_open=lambda sid: open_live(sid),
+    running_panel = RunningPanel(None, on_open=lambda sid: open_from_list(sid),
                                  is_open=lambda sid: any(r.get("session_id") == sid
                                                          for r in sessions))
     running_panel.widget.layout.display = "none"
+    # The message box's suggestions (_COMPLETE_JS): what is typed up to the
+    # caret comes in here, the answer goes out in complete_result.
+    complete_query = _classed(widgets.Text(
+        continuous_update=True, layout=widgets.Layout(display="none")),
+        "delfin-complete-query")
+    complete_result = _classed(widgets.HTML(
+        "", layout=widgets.Layout(display="none")), "delfin-complete-result")
+
+    def _on_complete(change) -> None:
+        try:
+            ask = json.loads(change.get("new") or "{}")
+        except ValueError:
+            return
+        if not isinstance(ask, dict):
+            return
+        try:
+            from delfin.dashboard import completion as _completion
+            rec = next((r for r in sessions if r["key"] == view.get("active")), None)
+            cwd = (rec or {}).get("workspace") or default_workspace(ctx)
+            own = []
+            if rec is not None and not rec.get("live"):
+                for m in _state(rec).get("chat_messages") or []:
+                    text = str((m or {}).get("content") or "") if isinstance(m, dict) else ""
+                    if (m.get("role") == "user" and text.startswith("!")
+                            and "\n" not in text):
+                        own.append(text)
+            answer = _completion.suggest(str(ask.get("text") or ""), cwd,
+                                         own_commands=own)
+        except Exception:
+            answer = {"start": 0, "items": []}
+        answer["seq"] = ask.get("seq")
+        complete_result.value = ('<div data-json="%s"></div>'
+                                 % html.escape(json.dumps(answer), quote=True))
+
+    complete_query.observe(_on_complete, names="value")
+
     sidebar = _classed(widgets.VBox(
         [widgets.HTML(_SIDEBAR_CSS), head, new_form, notice, list_box,
-         running_panel.widget, resume_dropdown, elsewhere_note, stop_all_btn]),
+         running_panel.widget, resume_dropdown, elsewhere_note, stop_all_btn,
+         complete_query, complete_result,
+         widgets.HTML(_self_running_html(_RENAME_KEYS_JS, _PATH_KEYS_JS,
+                                         _COMPLETE_JS, _SPLITTER_INIT_JS))]),
         "delfin-sessions")
     stage = _classed(widgets.VBox(), "delfin-session-stage")
     splitter_host = _classed(widgets.HBox([widgets.HTML("")]),
@@ -1569,6 +1988,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     # this runs after the shell is really on the page (the sidebar HTML
     # alone would render too early to find it).
     _register_init_js(ctx, _SPLITTER_INIT_JS)
+    # The keys of the list (rename, folder box) and the message box's
+    # suggestions run when the list is shown (_self_running_html).
 
     # -- lookup -------------------------------------------------------------
 
@@ -1632,6 +2053,36 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     def _session_id(rec: dict) -> str:
         return str(_state(rec).get("active_session_id") or "")
+
+    def rename_session(key: str, name: str) -> str:
+        """Give an open session the name *name* (empty: back to its first
+        message). Kept with the session: its next save writes it as the
+        saved title; a session no process holds is renamed on disk now.
+        Returns the name shown."""
+        name = " ".join(str(name or "").split())[:80]
+        rec = next((r for r in sessions if r["key"] == key), None)
+        if rec is None or rec.get("live"):
+            return ""
+        state = _state(rec)
+        sid = _session_id(rec)
+        if sid:
+            titles = state.setdefault("_messenger_titles", {})
+            if name:
+                titles[sid] = name
+            else:
+                titles.pop(sid, None)
+            try:
+                from delfin.agent import session_store as _store
+                _store.rename_session(sid, name)
+            except Exception:
+                pass
+        else:
+            rec["chosen_title"] = name
+        refresh()
+        _refresh_resume_options()
+        return rec["title_btn"].description
+
+    view["rename_session"] = rename_session
 
     def _held_elsewhere(session_id: str, key: str) -> bool:
         return any(rec["key"] != key and _session_id(rec) == session_id
@@ -1938,6 +2389,62 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                                    "this session asks as Accept Edits.")
         return rec
 
+    #: How long a take-over waits for the service to save and let go of
+    #: the session before it says so and shows the service view instead.
+    _TAKE_OVER_WAIT_S = 20.0
+
+    def open_from_list(sid: str) -> Optional[dict]:
+        """One click on a session of the service (the running list).
+
+        Input: the session id. Output: the open record, or None.
+        Dashboard sessions run in this kernel (the default): a session of
+        the service that is done or asleep is taken over -- the service
+        saves and ends it, and this kernel resumes the same session, with
+        its whole history, in the agent tab's full chat. A session that is
+        working or waits for an answer keeps running where it is and opens
+        in the service's view; nothing is cut off mid-turn.
+
+        Rejected: a second, reduced chat for service sessions (the view
+        that lost the composer, context bar and controls); resuming the
+        session here while the service still holds it (two writers on one
+        session file).
+        """
+        import time as _time
+        from delfin.dashboard import live_sessions as LS
+        for rec in sessions:
+            if rec.get("session_id") == sid or _session_id(rec) == sid:
+                activate(rec["key"])
+                return rec
+        summary = running_panel.running.summary(sid) or {}
+        client = live["client"]
+        if (view["start_in_service"] or client is None
+                or LS.state_word(summary) in ("working", "needs you")):
+            return open_live(sid)
+        name = str(summary.get("name") or sid[:8])
+        where = str(summary.get("workspace") or "")
+        try:
+            client.stop(sid)
+        except (LS.ServiceError, TimeoutError, OSError) as exc:
+            _say(f"{name} could not be moved here ({getattr(exc, 'message', exc)}); "
+                 "it opens in the service's view.")
+            return open_live(sid)
+        # The service lets go once its worker has saved and exited: the
+        # session leaves the running list (session.removed / ended).
+        # Both conditions, polled: the running list drops it on the
+        # service's event, and the saved file may be written a moment later.
+        deadline = _time.monotonic() + _TAKE_OVER_WAIT_S
+        while _time.monotonic() < deadline and (
+                running_panel.running.summary(sid) or not _saved_session(sid)):
+            _time.sleep(0.2)
+        if running_panel.running.summary(sid) or not _saved_session(sid):
+            _say(f"{name} did not finish saving in time; open it again in a moment.")
+            return None
+        rec = open_session(where, sid, in_kernel=True)
+        if rec is not None:
+            _say(f"{name} now runs in this dashboard's chat; the terminal and the "
+                 "phone no longer have it.")
+        return rec
+
     # -- open, close ----------------------------------------------------------
 
     def open_session(workspace: str = "", session_id: str = "", *,
@@ -1954,6 +2461,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         if len(sessions) >= _MAX_OPEN:
             _say(f"{_MAX_OPEN} sessions are open — close one first.")
             return None
+        _refusal = login_node_refusal(len(sessions))
+        if _refusal:
+            _say(_refusal)
+            return None
+        in_kernel = in_kernel or not view["start_in_service"]
         if live["client"] is not None and not in_kernel:
             where = str(workspace or "").strip() or default_workspace(ctx)
             live["note"] = ""
@@ -2005,13 +2517,70 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 "delfin-session-merge")
             merge_btn.on_click(
                 lambda _b, _where=where: _merge_back(_where))
+        # Rename in place, as in a file manager or an editor's tab: a
+        # double click on the name or the pencil turns the name into a text
+        # field of the same size with the text selected; Enter or a click
+        # elsewhere keeps it, Esc leaves it. No Save/Cancel buttons -- in
+        # the narrow column they only made the row scroll.
+        pencil = _classed(widgets.Button(
+            description="✎", tooltip="Rename (double click the name; Enter keeps, Esc leaves)"),
+            "delfin-session-close")
+        pencil.add_class("delfin-session-rename-btn")
+        name_edit = widgets.Text(continuous_update=False,
+                                 placeholder="Name (empty: its first message)")
+        name_edit.add_class("delfin-session-rename-input")
+        # Esc clicks this (the page script); it is never shown.
+        name_cancel = _classed(widgets.Button(
+            description="", layout=widgets.Layout(display="none")),
+            "delfin-live-rename-cancel")
+        rename_box = _classed(widgets.HBox(
+            [name_edit, name_cancel],
+            layout=widgets.Layout(display="none")), "delfin-session-rename")
+        rename_box.add_class("delfin-live-rename")
         row = _classed(widgets.HBox([
-            _classed(widgets.VBox([title_btn, info]), "delfin-session-text"),
-            *([merge_btn] if merge_btn else []), close_btn]),
+            _classed(widgets.VBox([title_btn, rename_box, info]),
+                     "delfin-session-text"),
+            *([merge_btn] if merge_btn else []), pencil, close_btn]),
             "delfin-session-item")
         rec = {"key": key, "workspace": where, "tab": tab, "refs": refs or {},
                "ctx": session_ctx, "title_btn": title_btn, "info": info,
                "row": row, "merge_btn": merge_btn}
+        editing = {"on": False}
+
+        def _open_rename(_b=None):
+            editing["on"] = True
+            name_edit.value = title_btn.description \
+                if title_btn.description != "New session" else ""
+            title_btn.layout.display = "none"
+            rename_box.layout.display = ""
+
+        def _close_rename(_b=None):
+            editing["on"] = False
+            rename_box.layout.display = "none"
+            title_btn.layout.display = ""
+
+        def _keep_name(change=None, _key=key):
+            # The typed name arrives as the value (continuous_update=False:
+            # on Enter or blur) -- AFTER the Enter event, so the name is
+            # kept from the value, never from the submit.
+            if not editing["on"]:
+                return
+            rename_session(_key, name_edit.value)
+            _close_rename()
+
+        def _enter_pressed(_w=None):
+            # Enter with the name unchanged brings no value: close then.
+            def _late():
+                if editing["on"]:
+                    _keep_name()
+            t = threading.Timer(0.6, _late)
+            t.daemon = True
+            t.start()
+
+        pencil.on_click(_open_rename)
+        name_cancel.on_click(_close_rename)
+        name_edit.observe(_keep_name, names="value")
+        name_edit.on_submit(_enter_pressed)
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
         session_ctx.agent_status_html.observe(
@@ -2114,7 +2683,13 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 _on_live_change(rec["key"])
                 continue
             state = _state(rec)
-            label = _session_title(state)
+            sid_now = _session_id(rec)
+            if rec.get("chosen_title") and sid_now:
+                # A name given before the session had an id goes where the
+                # save reads it as soon as there is one.
+                state.setdefault("_messenger_titles", {})[sid_now] = \
+                    rec.pop("chosen_title")
+            label = rec.get("chosen_title") or _session_title(state, sid_now)
             if rec["title_btn"].description != label:
                 rec["title_btn"].description = label
             _mark(rec)
@@ -2125,7 +2700,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             try:
                 from delfin.agent import session_presence as _presence
                 _presence.announce(rec["key"], session_id=sid,
-                                   title=_session_title(state),
+                                   title=_session_title(state, sid),
                                    workspace=rec["workspace"])
             except Exception:
                 pass
@@ -2258,7 +2833,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             worktree_hint.value = ""
 
     def _on_new(_btn=None) -> None:
-        workdir_box.options = workspace_choices(ctx)
+        _refresh_folder_choices()
         new_form.layout.display = ""
         new_btn.layout.display = "none"
         _suggest_worktree()
@@ -2352,14 +2927,45 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     workdir_box.observe(_suggest_worktree, names="value")
 
+    def _pick_folder(path: str) -> None:
+        """Go into *path*: the box shows it with a trailing slash, so the
+        list below becomes its sub-folders (as Tab does in a shell)."""
+        workdir_box.value = str(path).rstrip("/") + "/"
+
+    def _show_suggestions(choices: list, typed: str) -> None:
+        typed_dir = typed if typed.endswith("/") else \
+            (typed.rsplit("/", 1)[0] + "/" if "/" in typed else "")
+        typed_dir = os.path.expanduser(typed_dir) if typed_dir else ""
+        # What fits the typed path first: Tab takes the first entry, and
+        # it must complete what was typed, not jump to the default folder.
+        full = os.path.expanduser(typed) if typed else ""
+        fits = [c for c in choices if full and str(c).startswith(full)]
+        choices = fits + [c for c in choices if c not in fits]
+        buttons = []
+        for path in choices[:_SUGGEST_SHOWN]:
+            # One line each, as a terminal lists them: a folder of the typed
+            # one by its name, any other by its short path (~/..., …/x/y).
+            p = str(path)
+            if typed_dir and p.startswith(typed_dir) and "/" not in p[len(typed_dir):].strip("/"):
+                label = p[len(typed_dir):].strip("/") + "/"
+            else:
+                label = _display_path(p).rstrip("/") + "/"
+            b = _classed(widgets.Button(description=label, tooltip=p),
+                         "delfin-path-option")
+            b.on_click(lambda _b, _p=path: _pick_folder(_p))
+            buttons.append(b)
+        path_suggest.children = tuple(buttons)
+
     def _refresh_folder_choices(change=None) -> None:
-        """The list under the box follows what is typed, like an editor's
-        open dialog: the folders of the typed path, or of its parent."""
+        """The list under the box follows what is typed, like a shell's Tab:
+        the folders of the typed path, or of its parent."""
         try:
             typed = str((change or {}).get("new") if change else workdir_box.value or "")
             choices = workspace_choices(ctx, typed)
-            if list(workdir_box.options) != choices:
-                workdir_box.options = choices
+            key = (typed, tuple(choices))
+            if view.get("suggested") != key:
+                view["suggested"] = key
+                _show_suggestions(choices, typed)
         except Exception:
             pass
 
@@ -2441,7 +3047,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         open_session()
     if sessions and _find(view["active"]) is None:
         activate(sessions[-1]["key"])
-    if connector is not None and live["client"] is None:
+    if view["start_in_service"] and live["client"] is None:
         _say(_kernel_notice())
     if wanted:
         for rec in sessions:
@@ -2494,4 +3100,5 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         "running": running_panel.running,
         "running_panel": running_panel,
         "open_live": open_live,
+        "open_from_list": open_from_list,
     }

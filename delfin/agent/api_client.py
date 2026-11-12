@@ -6927,7 +6927,7 @@ def _ends_with_a_question(text: str) -> bool:
 def _announces_an_action(text: str) -> bool:
     """True when an answer ENDS by saying what it is about to do.
 
-    The last sentence, not any sentence: "I'll read the lines" in the
+     The last sentence, not any sentence: "I'll read the lines" in the
     middle of a finished report is narration; at the very end, followed
     by nothing, it is a promise the turn did not keep. Never true for an
     answer that ends with a question -- that one is waiting on the user
@@ -6944,6 +6944,51 @@ def _announces_an_action(text: str) -> bool:
         if mark in last:
             last = last.rsplit(mark, 1)[-1]
     return bool(ANNOUNCES_ACTION_RE.search(last.strip()))
+
+
+#: The corrective user row for a promised-but-unmade tool call. The short
+#: wording the brief fixes on purpose: a large write_file is the usual
+#: reason the model stalled, so the row names parts up front.
+_PROMISED_CONT_TEXT = (
+    "No tool call arrived. Make the call now; if the file is large, "
+    "write it in parts.")
+
+#: Bounded corrective re-requests per turn for a promised tool call: one
+#: or two, never a loop. The field shape repeats ("the same run repeated
+#: this 6 times"), so the cap keeps a stalling model from consuming the
+#: round budget on promises alone.
+_PROMISED_CONT_MAX = 2
+
+#: Stop reason when the corrective budget is spent and the turn still
+#: ends on a promise: NOT end_turn ("done"), so a supervisor resumes it
+#: instead of treating the run as finished.
+_PROMISED_STOP_REASON = "promised_no_tool_call"
+
+
+def _promises_an_unmade_tool_call(text: str) -> bool:
+    """True when a final answer claims a tool call is happening NOW and
+    no tool call ran in that response.
+
+    Different from :func:`_announces_an_action`, which reads only the
+    LAST sentence and is fired by planning language ("I'll read ...").
+    The field shapes (harness main d44702503, 216 runs,
+    kit.deepseek-v4-flash) put the promise FIRST and declarative filler
+    last:
+
+        "I am executing the write_file tool call now -- creating
+        ``orca_scan_opi.py`` ... This is the actual tool invocation
+        being executed."
+
+    So the whole text is scanned, for the present-continuous/immediate
+    first-person claim plus the German present forms. Past reports
+    ("I wrote the file"), questions and plain answers do not match; the
+    caller supplies the no-tool-call fact.
+    """
+    from .german import PROMISES_TOOL_CALL_RE
+    tail = (text or "").strip()
+    if not tail or _ends_with_a_question(tail):
+        return False
+    return bool(PROMISES_TOOL_CALL_RE.search(tail))
 
 
 def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
@@ -7298,6 +7343,9 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "find_orca_errors", "extract_thermochem",
     # result_checks reads a finished run; it writes nothing.
     "result_checks",
+    # frame_lineage (#573): reads the .xyz frames of the given stage
+    # directories and compares them; it writes nothing and runs nothing.
+    "frame_lineage",
     # geometry_edit: xyz text in, xyz text out; no file write, no run.
     "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
     "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
@@ -11492,7 +11540,6 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative or absolute.",
                     },
                     "offset": {
                         "type": "integer",
@@ -11505,6 +11552,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "around": {
                         "type": "string",
                         "description": "Regex; ±10 lines around its match.",
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Up to 4 more files; same options.",
                     },
                 },
                 "required": ["path"],
@@ -14803,6 +14855,130 @@ def _repair_json_args(raw) -> dict | None:
     return None
 
 
+# read_file(paths=[...]): files per call, `path` included. Five covers the
+# measured need (2-5 files read back to back, one request each) and keeps
+# the worst case at five per-file results in one round.
+READ_FILE_MAX_PATHS = 5
+_READ_FILE_PATH_KEYS = ("path", "file_path", "filename", "file", "target")
+
+
+def _read_file_targets(arguments: Any) -> tuple[Optional[list[str]], str]:
+    """The files a read_file call names, when it uses ``paths``.
+
+    Input: read_file's arguments. Output ``(files, error)``:
+    ``(None, "")`` for the single-file form (no ``paths``, or an empty
+    ``paths`` beside a ``path``) -- the caller proceeds unchanged;
+    ``(files, "")`` with the path first (``path`` or an alias, as
+    ``_get_path_arg`` takes it) then ``paths``, duplicates dropped;
+    ``(None, error)`` for a malformed list or more than
+    READ_FILE_MAX_PATHS names. The count is taken before duplicates are
+    dropped: the call is refused for what it asked, not for what was left.
+    """
+    if not isinstance(arguments, dict) or arguments.get("paths") is None:
+        return None, ""
+    raw = arguments.get("paths")
+    first = _DocToolExecutor._get_path_arg(arguments)
+    if (not isinstance(raw, list)
+            or not all(isinstance(p, str) and p.strip() for p in raw)
+            or not (raw or first)):
+        return None, (
+            "read_file: paths must be a list of file paths (strings), "
+            f"at most {READ_FILE_MAX_PATHS} together with path.")
+    if not raw:
+        return None, ""
+    named = ([first] if first else []) + [p.strip() for p in raw]
+    if len(named) > READ_FILE_MAX_PATHS:
+        return None, (
+            f"read_file reads at most {READ_FILE_MAX_PATHS} files per call "
+            f"(path and paths together); this call named {len(named)}. "
+            "Nothing was read -- split it into several calls.")
+    return list(dict.fromkeys(named)), ""
+
+
+def _read_file_single_args(arguments: dict, path: str) -> dict:
+    """One file's arguments out of a several-file read_file call: every
+    other argument (offset, limit, around, ...) applies to each file."""
+    single = {k: v for k, v in arguments.items()
+              if k != "paths" and k not in _READ_FILE_PATH_KEYS}
+    single["path"] = path
+    return single
+
+
+def _split_call_id(call_id: str, k: int, taken: set) -> str:
+    """A tool_call id for the k-th file (k >= 1) of a split call.
+
+    Unique within the round. An id of nine letters and digits (the form
+    Mistral-family chat templates require) gets a derived id of the same
+    form; any other id gets a suffix."""
+    import hashlib
+    salt = 0
+    while True:
+        if re.fullmatch(r"[A-Za-z0-9]{9}", call_id):
+            new = hashlib.sha1(
+                f"{call_id}:{k}:{salt}".encode()).hexdigest()[:9]
+        else:
+            new = f"{call_id}_{k}" + (f"_{salt}" if salt else "")
+        if new not in taken:
+            return new
+        salt += 1
+
+
+def _split_multi_read_calls(
+    tc_list: list[dict], raw_args_by_id: dict[str, str],
+) -> tuple[list[dict], dict[str, str]]:
+    """Every read_file call naming several files, as one call per file.
+
+    Input: the round's tool calls as they go into the assistant message,
+    and the raw argument text per call id. Output: the same lists with
+    each such call replaced by single-file read_file calls (the first
+    keeps the original id). Done before the assistant message is written,
+    so the history, the per-call loop (reread note, read ledger, observed
+    files, verification notes, events) and every executor gate see only
+    the single-file form they already handle; no consumer needs to know
+    ``paths``. A call that is malformed or over the cap is left as it is,
+    and the executor answers it with the error.
+
+    Rejected: joining the files into one result inside the loop. Every
+    per-call mechanism there keys on the call's arguments and its one
+    result row, so each would have needed its own list handling, and a
+    gate written for one spelling misses the other. Cost of the split:
+    the model's history shows N single reads where it emitted one call
+    (same request count, a few bytes of call ids per extra file).
+    """
+    if not any((tc.get("function") or {}).get("name", "").strip()
+               == "read_file" for tc in tc_list):
+        return tc_list, raw_args_by_id
+    taken = {tc["id"] for tc in tc_list}
+    out: list[dict] = []
+    raw_out = dict(raw_args_by_id)
+    for tc in tc_list:
+        fn = tc.get("function") or {}
+        if (fn.get("name") or "").strip() != "read_file":
+            out.append(tc)
+            continue
+        raw = raw_args_by_id.get(tc["id"], fn.get("arguments"))
+        if isinstance(raw, dict):
+            args = raw
+        else:
+            try:
+                args = json.loads(raw or "{}")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                args = _repair_json_args(raw)
+        files, err = _read_file_targets(args)
+        if err or not files:
+            out.append(tc)
+            continue
+        for k, path in enumerate(files):
+            cid = tc["id"] if k == 0 else _split_call_id(tc["id"], k, taken)
+            taken.add(cid)
+            text = json.dumps(_read_file_single_args(args, path),
+                              ensure_ascii=False)
+            raw_out[cid] = text
+            out.append({**tc, "id": cid,
+                        "function": {**fn, "arguments": text}})
+    return out, raw_out
+
+
 # A delegate's report is the answer the parent asked for, not bulk tool
 # output. Cut to the model's tool-result cap (5 KB on GLM) it lost its
 # middle, where the findings are, and the parent re-read the files itself
@@ -14880,7 +15056,8 @@ _CONTINUE_TEXT = {
                    "write_file(..., mode=\"append\") -- or say in your "
                    "answer that it is not done."),
     "cut_call": ("[Continue] Your last tool call was cut at the output "
-                 "limit and did not run. Write a long file in parts: "
+                 "limit and did not run: the arguments were cut off at "
+                 "the output limit; write the file in smaller parts -- "
                  "write_file(path, <first part>), then write_file(path, "
                  "<next part>, mode=\"append\")."),
     "cut": ("[Continue] Your answer was cut at the output limit. Continue "
@@ -16040,6 +16217,12 @@ def _classifier_timeout_s() -> float:
         return min(max(seconds, low), high)
     except Exception:
         return _CLASSIFIER_TIMEOUT_S
+
+
+#: When the classifier's attach last fetched the served roster in this
+#: process (None: never), and how long a failed fetch waits before the next.
+_ROSTER_TRIED_AT: Optional[float] = None
+_ROSTER_RETRY_S = 300.0
 
 
 def _classifier_settings() -> Optional[dict]:
@@ -18232,7 +18415,26 @@ class _DocToolExecutor:
         writes that attribute from its own thread, and the gate used to
         read it two or three times per call, so a flip landing between
         two reads decided one call by two different policies.
+
+        A read_file naming several files (``paths``) runs here as one
+        single-file call per file, each through the whole of
+        ``_execute_pinned`` (rules, hooks, role, mode, read gate, read
+        baseline), under one pin; the results are joined, each under a
+        ``=== <path> ===`` header. The streaming loop splits such calls
+        before they get here (_split_multi_read_calls); this covers the
+        callers that enter the executor directly (Code Mode).
         """
+        if _bare_tool_name(name) == "read_file":
+            files, err = _read_file_targets(arguments)
+            if err:
+                return json.dumps({"error": err})
+            if files is not None:
+                with _pin_permission_mode(permissions):
+                    return "\n\n".join(
+                        f"=== {p} ===\n" + self._execute_pinned(
+                            name, _read_file_single_args(arguments, p),
+                            permissions)
+                        for p in files)
         with _pin_permission_mode(permissions):
             return self._execute_pinned(name, arguments, permissions)
 
@@ -19465,6 +19667,13 @@ class _DocToolExecutor:
     def _execute_read_file(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
+        # A several-file call is split in execute() before it gets here.
+        # One that arrives anyway is refused: reading only `path` would
+        # drop the other files without saying so.
+        if arguments.get("paths") is not None:
+            return json.dumps({"error": (
+                "read_file: 'paths' reached the single-file reader; "
+                "nothing was read. Call read_file once per file.")})
         rel_path = self._get_path_arg(arguments)
         if not rel_path:
             return json.dumps({"error": "path is required"})
@@ -23675,6 +23884,18 @@ class _DocToolExecutor:
                         "give the user the link to open the pull request. "
                         "Only the user changes the role (`/git role "
                         "maintainer` in that repository).")
+            # A cluster login node is shared (issue #640): tests, builds and
+            # installs run on a compute node, whatever the mode or grant --
+            # the cluster's rule, not the user's to wave through.
+            try:
+                from . import calc_policy as _cp_login
+                _heavy = _cp_login.login_node_heavy(cmd)
+            except Exception:
+                _heavy = ""
+            if _heavy:
+                _record_security_event("login_node_heavy", "bash", cmd[:80],
+                                       blocked=True)
+                return _heavy
             _asked = perms.confirm_callback is not None
             # Opening a pull request publishes the branch. It spends the
             # same one-request grant a push does: the user who asked for a
@@ -33245,13 +33466,31 @@ class OpenAIClient(_BaseClient):
             # session on another backend asks its own model instead of
             # failing on every action.
             wire = self.model
-        resp = self.client.with_options(
-            timeout=_classifier_timeout_s(), max_retries=0,
-        ).chat.completions.create(
-            model=wire or self.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=120, stream=False)
-        return str(resp.choices[0].message.content or "")
+        t0 = time.monotonic()
+        outcome = "error"
+        try:
+            resp = self.client.with_options(
+                timeout=_classifier_timeout_s(), max_retries=0,
+            ).chat.completions.create(
+                model=wire or self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=120, stream=False)
+            outcome = "verdict"
+            return str(resp.choices[0].message.content or "")
+        finally:
+            # A request against the endpoint's quota like the turn's own:
+            # written beside them, marked, so the count can be split by what
+            # spent it (KIT: 2,000 requests a key a day, 2026-11-11).
+            session = getattr(self, "metrics_session", "")
+            if isinstance(session, str) and session:
+                try:
+                    from . import turn_metrics as _tm_cls
+                    _tm_cls.record_request(
+                        session, model=wire or self.model, purpose="classifier",
+                        total_ms=int((time.monotonic() - t0) * 1000),
+                        finish_reason=outcome)
+                except Exception:
+                    pass
 
     def _attach_classifier_runner(
         self, permissions: Optional["KitToolPermissions"],
@@ -33267,9 +33506,13 @@ class OpenAIClient(_BaseClient):
         # classifier must be independent of the session's model (a slow one
         # with many agents latched every action to a human, 2026-10-29). The
         # client is the only place with both the session model and the
-        # endpoint, so it stows the resolved ids here. Cached roster only
-        # (no fetch): re-attaching on every set_permissions must not spend a
-        # /v1/models round trip each time.
+        # endpoint, so it stows the resolved ids here. The cached roster
+        # first; when it is empty -- every fresh process, so every headless
+        # and swarm session (measured 2026-11-11: the classifier ran on
+        # deepseek alone with no confirmation chain) -- it is fetched once,
+        # and a failed fetch is retried at most every _ROSTER_RETRY_S, so
+        # re-attaching on every set_permissions does not spend a /v1/models
+        # round trip each time.
         try:
             from . import model_capabilities as _mc
             from .action_classifier import DEFAULT_MODEL as _default_cls
@@ -33277,6 +33520,14 @@ class OpenAIClient(_BaseClient):
             base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
             api_key = getattr(self, "_api_key", "") or ""
             served = _mc.kit_models_served(base_url, api_key)
+            if not served and getattr(self, "_provider", "") == "kit":
+                global _ROSTER_TRIED_AT
+                now = time.monotonic()
+                if (_ROSTER_TRIED_AT is None
+                        or now - _ROSTER_TRIED_AT >= _ROSTER_RETRY_S):
+                    _ROSTER_TRIED_AT = now
+                    served = _mc.kit_models_served(base_url, api_key,
+                                                   fetch=True)
             model = getattr(self, "model", "") or ""
             cfg_model = str(cfg.get("model") or _default_cls)
             explicit = bool(cfg.get("explicit_model"))
@@ -34025,6 +34276,10 @@ class OpenAIClient(_BaseClient):
         # Whether the announced-action continuation already fired this
         # turn; see the second auto-continue trigger.
         _announced_count = 0
+        # Bounded corrective re-requests for a PROMISED tool call that
+        # never came (shapes 1-4 in the field, harness main d44702503);
+        # see the corrective trigger below the announce continuation.
+        _promised_count = 0
         # The go-ahead and prose-choice triggers (go_ahead.py), once each
         # per turn, judged against the message that opened the turn and
         # every tool the turn called.
@@ -35003,6 +35258,10 @@ class OpenAIClient(_BaseClient):
                             "arguments": _sendable_tool_args(_raw_emitted),
                         },
                     })
+                # A read_file naming several files becomes one call per
+                # file HERE, before anything records or dispatches it.
+                tc_list, _raw_args_by_id = _split_multi_read_calls(
+                    tc_list, _raw_args_by_id)
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
                 _turn_tool_names.update(
@@ -35100,10 +35359,10 @@ class OpenAIClient(_BaseClient):
                                                 "multi_edit", "apply_patch"):
                             result = json.dumps({"error": (
                                 f"invalid JSON in arguments for '{fn_name}': "
-                                f"{_args_parse_error}. The call was cut at "
-                                "the output limit and did NOT run; the same "
-                                "call cuts again. Write a long file in "
-                                "parts: write_file(path, <first part>), then "
+                                f"{_args_parse_error}. The arguments were "
+                                "cut off at the output limit; write the "
+                                "file in smaller parts: write_file(path, "
+                                "<first part>), then "
                                 "write_file(path, <next part>, "
                                 "mode=\"append\") for each further part."
                             )})
@@ -36265,6 +36524,48 @@ class OpenAIClient(_BaseClient):
             # 2026-10-20 (bug report davh 414e5a17): "Ich lese jetzt ...",
             # sent back once, read, announced the edit, and the turn ended --
             # turn after turn; the user saw "I'm doing it now" and nothing.
+            # Corrective trigger for a PROMISED tool call that never
+            # came. The four field shapes (harness main d44702503, 216
+            # runs on kit.deepseek-v4-flash, often right before a large
+            # write_file) end the turn with prose like "I am executing
+            # the write_file tool call now" and no tool call, so the run
+            # looks "done" with the task list untouched. PR #600 covers
+            # leaked tool-call MARKUP; this covers the prose promise.
+            # First, unlike the announce trigger below: the whole text is
+            # matched, not the last sentence, because the promise sits in
+            # the first sentence with declarative filler last. Second,
+            # unlike the announce trigger: it is gated on OPEN TASKS (the
+            # brief's condition), it does NOT need tool activity between
+            # rounds (the stalled model repeats the same sentence), and
+            # when the budget is spent the turn ends with a distinct
+            # stop_reason so a supervisor resumes it instead of a silent
+            # "done". Never after a tool ran in this response -- a tool
+            # result already answered the promise, and re-requesting
+            # would execute the step twice.
+            _promised_text = "".join(_text_chunks) if _text_chunks else ""
+            _promised_end_state = self._open_task_state()
+            _promised_fires = (
+                not _tool_calls
+                and _promised_count < _PROMISED_CONT_MAX
+                and _auto_cont_count < _AUTO_CONT_CAP
+                and not self._waiting_on_watched_jobs()
+                and _promised_end_state.get("state", "none")
+                in ("open", "unknown")
+                and _promises_an_unmade_tool_call(_promised_text))
+            if _promised_fires:
+                _promised_count += 1
+                _auto_cont_count += 1
+                if _promised_text.strip():
+                    api_messages.append(
+                        {"role": "assistant", "content": _promised_text})
+                api_messages.append({"role": "user",
+                                     "content": _PROMISED_CONT_TEXT})
+                yield StreamEvent(
+                    type="notice",
+                    text=("\n\n↻ promised a tool call → corrected: "
+                          + _PROMISED_CONT_TEXT + "\n"))
+                continue
+
             _announced = (_announced_count < _ANNOUNCE_CONT_MAX
                           and (_announced_count == 0 or _did_tools_since_cont)
                           and _auto_cont_count < _AUTO_CONT_CAP
@@ -36382,9 +36683,19 @@ class OpenAIClient(_BaseClient):
                                   text="\n\n" + _end_notice + "\n")
             _stop = finish_reason or "end_turn"
             if _stop in ("end_turn", "stop", ""):
-                _stop = {"open": "end_turn_open_tasks",
-                         "unknown": "end_turn_tasks_unknown"}.get(
-                             str(_end_state.get("state", "")), "end_turn")
+                # A promise that survived the corrective budget: the turn
+                # does not end "done" -- the supervisor sees WHY it ended
+                # and resumes it (the brief's clear stop_reason).
+                if (not _tool_calls
+                        and _promised_end_state.get("state", "none")
+                        in ("open", "unknown")
+                        and _promises_an_unmade_tool_call(
+                            "".join(_text_chunks) if _text_chunks else "")):
+                    _stop = _PROMISED_STOP_REASON
+                else:
+                    _stop = {"open": "end_turn_open_tasks",
+                             "unknown": "end_turn_tasks_unknown"}.get(
+                                 str(_end_state.get("state", "")), "end_turn")
             _uncommitted = _uncommitted_note(
                 getattr(self._permissions, "workspace", None))
             if _uncommitted:
