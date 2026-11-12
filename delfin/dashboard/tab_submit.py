@@ -88,7 +88,8 @@ def create_tab(ctx):
     Returns ``(tab_widget, refs_dict)``.
     """
     SUBMIT_MOL_HEIGHT = 650
-    SMILES_CONVERTER_PLACEHOLDERS = ('[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]',
+    SMILES_CONVERTER_PLACEHOLDERS = ('[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]',
+                                    '[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]',
                                     '[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]',
                                     '[QUICK|NORMAL|MANTA|ARCHITECTOR]')
     main_io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
@@ -192,7 +193,8 @@ def create_tab(ctx):
         style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
     )
     only_goat_smiles_converter = widgets.Dropdown(
-        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'],
+        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE',
+                 'RXEMBED', 'MOLASSEMBLER', 'METALLOGEN'],
         value='QUICK', description='Converter:', style=COMMON_STYLE,
         layout=widgets.Layout(width='220px'),
     )
@@ -354,6 +356,9 @@ def create_tab(ctx):
     architector_button = _editor.architector_button
     molsimplify_button = _editor.molsimplify_button
     mace_button = _editor.mace_button
+    rxembed_button = _editor.rxembed_button
+    molassembler_button = _editor.molassembler_button
+    metallogen_button = _editor.metallogen_button
     xyz_copy_btn = _editor.xyz_copy_btn
     xyz_copy_status = _editor.xyz_copy_status
     isomer_nav_row = _editor.isomer_nav_row
@@ -988,7 +993,8 @@ def create_tab(ctx):
         if not text or text in SMILES_CONVERTER_PLACEHOLDERS:
             return ''
         normalized = text.upper()
-        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE'}:
+        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR', 'MOLSIMPLIFY', 'MACE',
+                          'RXEMBED', 'MOLASSEMBLER', 'METALLOGEN'}:
             return normalized
         return ''
 
@@ -2063,7 +2069,8 @@ def create_tab(ctx):
         manta_settings_row,
         # MANTA button sits directly UNDER its settings; the external
         # metal-complex constructors stand beside it as equals.
-        widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button],
+        widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button,
+                      rxembed_button, molassembler_button, metallogen_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
