@@ -41,6 +41,13 @@ ALIAS_LINE = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _consented(monkeypatch):
+    """The person said yes (on a terminal the default; 12.11.: asked first)."""
+    from delfin.agent import process_guard as _pg
+    monkeypatch.setattr(_pg, "_may_put_keys_away", lambda names, **k: True)
+
+
 @pytest.fixture
 def home(a_path_others_can_walk):
     # Genuinely reachable from the root: "others can read it" is
