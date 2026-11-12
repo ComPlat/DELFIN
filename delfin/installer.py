@@ -129,6 +129,15 @@ TOOLS: Tuple[Tool, ...] = (
     # Python 3.7 + RDKit 2020.09 in an environment of its own (micromamba).
     Tool("epic_mace", "ai", "epic-MACE", switch="INSTALL_EPIC_MACE", modules=("mace",),
          aliases=("epic-mace",), own_env="mace"),
+    # Each in an environment of its own (micromamba), called as an external program:
+    # rxembed needs Python >= 3.12 and RDKit >= 2026.9.1; Molassembler and MetalloGen
+    # Python 3.11.  MetalloGen is run with its ORCA calculator only (it needs ORCA).
+    Tool("rxembed", "ai", "rxembed", switch="INSTALL_RXEMBED", modules=("rxembed",),
+         own_env="rxembed"),
+    Tool("molassembler", "ai", "Molassembler", switch="INSTALL_MOLASSEMBLER",
+         modules=("scine_molassembler",), aliases=("scine-molassembler",), own_env="molassembler"),
+    Tool("metallogen", "ai", "MetalloGen", switch="INSTALL_METALLOGEN", modules=("MetalloGen",),
+         own_env="metallogen"),
     Tool("plotly", "ai", "plotly", switch="INSTALL_PLOTLY", modules=("plotly",)),
     # Python packages DELFIN needs to do its own work, installed with pip
     # into the session venv -- never --user / ~/.local. A missing pytest

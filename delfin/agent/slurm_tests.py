@@ -90,8 +90,11 @@ def _validate_test_paths(test_paths: Sequence[str]) -> list[str]:
     A test path must live under ``tests/`` and contain only characters safe
     for a shell command and a JSON summary (no spaces, quotes, backslashes)
     so a malicious or mistaken path cannot become a pytest target outside
-    the repository or break the rendered script's quoting.
+    the repository or break the rendered script's quoting. An empty list
+    is refused too: a job that runs no test would silently come back green.
     """
+    if not test_paths:
+        raise ValueError("at least one test path is required")
     bad = []
     for p in test_paths:
         if ".." in p or not _SAFE_TEST_PATH.match(p):
@@ -201,7 +204,7 @@ def build_job(
         '[ -x "$STAGE_PYTHON" ] || STAGE_PYTHON="' + q_python + '"',
         "",
         '# run ONLY the named tests, from the node-local copy',
-        f"cd \"$LOCAL\"",
+        "cd \"$LOCAL\"",
         f"TESTS=({quoted_paths})",
         'set +e',
         '"$STAGE_PYTHON" -m pytest -q "${TESTS[@]}" > "$LOCAL/pytest.log" 2>&1',
@@ -339,7 +342,9 @@ def _node_visible(path: str | Path, repo: str) -> bool:
     person's, not ours.
     """
     p = Path(path).resolve()
-    for root in (Path.home(), Path(repo).resolve(), Path.cwd().resolve()):
+    # Resolved like the path: a HOME that is a symlink (to the parallel
+    # filesystem, as on bwUniCluster) is still HOME.
+    for root in (Path.home().resolve(), Path(repo).resolve(), Path.cwd().resolve()):
         try:
             p.relative_to(root)
             return True

@@ -202,6 +202,8 @@ _KINDS = {
     "read_only_shape":   ("✅", "Harmless command form approved by rule"),
     "caged_unasked":     ("🧱", "Command run unasked inside the filesystem cage"),
     "calculation_admitted": ("🧪", "Calculation started unasked: setup and resources checked"),
+    "login_node_heavy":  ("🏔️", "Test, build or install refused on a cluster login node (runs via SLURM)"),
+    "information_call":  ("ℹ️", "Program asked for its version or help, run unasked"),
     "classifier_ask":    ("❓", "Action classifier asked the user"),
     "classifier_refuse": ("🛑", "Action classifier refused an allowed action"),
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),

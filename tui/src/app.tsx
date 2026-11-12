@@ -16,8 +16,9 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, renameOf, resumeOf, shellLead } from "./commands"
+import { WINDOW_COMMANDS, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead } from "./commands"
 import { createSwarmView } from "./swarm/view"
+import { createSwarmWatch } from "./swarm/watch"
 import type { ArgumentChoices } from "./composer/complete"
 import { CLICK_PAUSE_MS } from "./mouse"
 import { arrivalNote, attentionCounts, markOf } from "./agents/attention"
@@ -228,20 +229,49 @@ export function App(props: AppProps): JSX.Element {
   /** /rename: what a session is called -- the prompt box, the agent view
    *  and the terminal's title show it; without a name, after what it was
    *  first asked. Done at once, also while a turn runs. */
-  const rename = async (id: string, asked: string): Promise<boolean> => {
+  const rename = async (id: string, asked: string, exact = false): Promise<boolean> => {
     const s = store.state.sessions[id]
-    const title = asked || nameFromPrompt(String(s?.summary?.firstPrompt ?? ""))
-    if (!title) {
+    // exact (/name): as given; "" is the default name, the service's.
+    const title = exact ? asked : asked || nameFromPrompt(String(s?.summary?.firstPrompt ?? ""))
+    if (!title && !exact) {
       say("nothing to name it after yet: /rename <name>")
       return true
     }
     const result = await call("session.setTitle", { sessionId: id, title })
     if (!result) return false                   // not asked (the note says why): the line stays
-    say(`renamed: ${result.title}`)
+    say(result.title ? `renamed: ${result.title}` : "renamed: back to the default name")
     return true
+  }
+  /** A /name or /rename line: the name it gives and whether it is exact
+   *  (/name: "" is the default), else null. */
+  const naming = (text: string): { title: string; exact: boolean } | null => {
+    const exact = nameOf(text)
+    if (exact !== null) return { title: exact, exact: true }
+    const loose = renameOf(text)
+    return loose === null ? null : { title: loose, exact: false }
   }
 
   const picker = createPicker({ clickPauseMs: props.clickPauseMs })
+
+  /** /merge: what session.merge made of a worktree path -- said, never
+   *  overwritten silently. A conflict keeps the worktree so nothing is
+   *  lost; the user resolves it there and merges again. */
+  const mergeWorktreeBack = async (path: string): Promise<boolean> => {
+    const result = await call("session.merge", { path })
+    if (!result) return false                // not asked (the note says why)
+    if (result.status === "ok") {
+      const files = (result.files ?? []).join(", ") || "no file changes"
+      say(`merged back to ${result.target}: ${files} -- uncommitted, for review`)
+      return true
+    }
+    if (result.status === "conflict") {
+      const files = (result.files ?? []).join(", ") || "the changed files"
+      say(`conflict, nothing overwritten: ${files}. ${result.message || ""} the worktree is kept: resolve it there and merge again`)
+      return true
+    }
+    say(`merge did not apply: ${result.message || "error"}`)
+    return false
+  }
 
   // Prompts sent while a session starts (the first one, or a new one from
   // the agent view): they go out to it once it is up.
@@ -261,7 +291,7 @@ export function App(props: AppProps): JSX.Element {
       typingAt = 0
       // /rename here names the session peeked at, else the one selected --
       // it is never a new session's first prompt (nor a model's turn).
-      const named = renameOf(text)
+      const named = naming(text)
       if (named !== null && !agents.state.renaming) {
         const list = agents.rows()
         const row = agents.state.peek ? list.find((r) => r.id === agents.state.peek!.id) : list[agents.selected(list)]
@@ -277,7 +307,7 @@ export function App(props: AppProps): JSX.Element {
           say(`this is no session: ${props.keymap.label("agentsOpen")} opens it, ${props.keymap.label("agentsStop")} dismisses it`)
           return true
         }
-        return rename(row.id, named)
+        return rename(row.id, named.title, named.exact)
       }
       return agents.submit(text)
     }
@@ -288,6 +318,11 @@ export function App(props: AppProps): JSX.Element {
       const body = text.trim()
       if (swarm.state.pendingAnswer) return Boolean(await swarm.confirmAnswer(body))
       if (body) return Boolean(await swarm.newSwarm(body))
+      return true
+    }
+    if (watchOpen()) {
+      // The read-only watch accepts no input into a member session: a
+      // typed line while it is open is consumed, never delivered.
       return true
     }
     return deliver(text, how, shown)
@@ -334,9 +369,39 @@ export function App(props: AppProps): JSX.Element {
       void swarm.open()
       return true
     }
-    // Also with the key that steers: a rename is the window's, never the turn's.
-    const named = renameOf(text)
-    if (named !== null) return rename(sid(), named)
+    // /swarm watch <source> (package SWV, phase 2b): the read-only watch.
+    // The source is the file that names the members -- a roster (name ->
+    // package/role) or a swarm.yaml spec; there is no default swarm, so a
+    // bare /swarm watch says what to pass. The watch never accepts input
+    // into a member session.
+    if (/^\/swarm watch(?:\s+(\S+))?$/.test(text.trim()) && !how) {
+      const m = /^\/swarm watch(?:\s+(\S+))?$/.exec(text.trim())
+      if (!m?.[1]) {
+        say("usage: /swarm watch <roster.json | swarm.yaml> -- the file that names the members")
+        return true
+      }
+      watchSource = m[1]
+      void watch.open()
+      return true
+    }
+      // Also with the key that steers: a rename is the window's, never the turn's.
+      const named = naming(text)
+      if (named !== null) return rename(sid(), named.title, named.exact)
+      // /merge brings a session worktree back into this checkout. Bare, the
+      // picker lists the worktrees (session.worktrees); with a path, that
+      // one (session.merge). A conflict is said, nothing overwritten.
+      const merged = mergeOf(text)
+      if (merged !== null && !how) {
+        if (merged) return mergeWorktreeBack(merged)
+        const listed = await call("session.worktrees", { cwd: session()?.workspace ?? "" })
+        const rows = ((listed?.worktrees ?? []) as any[]).map((w) => ({
+          value: String(w.path ?? ""), label: String(w.path ?? ""),
+          detail: String(w.summary ?? ""),
+        }))
+        if (!rows.length) { say("no session worktrees here"); return true }
+        picker.open("merge back a session worktree", rows, (c) => void mergeWorktreeBack(c.value))
+        return true
+      }
     // The session strips the text it shows, as a typed line is stripped.
     if (shown) props.sentAs?.set(text.trim(), shown)
     const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
@@ -385,11 +450,11 @@ export function App(props: AppProps): JSX.Element {
   const pins = props.pins ?? new Pins()
   const [pinned, setPinned] = createSignal(0)
   const sendTo = async (row: AgentRow, text: string) => {
-    const named = renameOf(text)
+    const named = naming(text)
     if (named !== null) {
       // Not mailed: a session elsewhere is renamed where it runs.
       if (row.kind === "elsewhere") say(`${row.name} runs elsewhere: it is renamed where it runs`)
-      else await rename(row.id, named)
+      else await rename(row.id, named.title, named.exact)
       return
     }
     if (row.kind === "elsewhere") {
@@ -484,6 +549,28 @@ export function App(props: AppProps): JSX.Element {
     draft: () => composer.value(),
   })
   const swarmOpen = () => swarm.state.open
+  // The read-only /swarm watch (package SWV, phase 2b): a table of one
+  // row per member, Enter opens a member's live feed, Esc back. It only
+  // asks the observe.* requests; there is never an input into a member
+  // session. It reuses the submit + key routing below like the swarm
+  // view, but has no composer input of its own.
+  // The roster / spec path given to /swarm watch (the read-only watch
+  // target, package SWV phase 2b). Never touches session state.
+  let watchSource: string | undefined
+  // The service answers {rows} and {entries}; the watch takes the lists.
+  const watch = createSwarmWatch({
+    keymap: props.keymap,
+    now: () => Date.now() / 1000,
+    // The envelope unwrapped here, like askTriage's: the request returns
+    // { rows: [...] } (protocol.py), the watch state holds the rows.
+    askOverview: () => props.client.request("swarm.observe.overview",
+      { sourcePath: watchSource }).then((r) => (r as any)?.rows ?? []) as never,
+    askFeed: (name) => props.client.request("swarm.observe.feed", { session: name })
+      .then((r) => (r as any)?.entries ?? []) as never,
+    note: say,
+    draft: () => composer.value(),
+  })
+  const watchOpen = () => watch.state.open
   // The alternate screen, while the view is open.
   createEffect(() => {
     if (!props.agentScreen) return
@@ -656,6 +743,7 @@ export function App(props: AppProps): JSX.Element {
   const argumentChoices = async (command: string): Promise<ArgumentChoices> => {
     const s = session()
     if (command === "/rename") return { current: "", choices: [], usage: "/rename [name]  (no name: after its first prompt)" }
+    if (command === "/name") return { current: "", choices: [], usage: "/name [name]  (no name: folder and short id)" }
     if (command === "/resume") {
       if (!s) return { current: "", choices: [], usage: "" }
       const rows = await resumeRows(s)
@@ -928,6 +1016,24 @@ export function App(props: AppProps): JSX.Element {
       if (swarm.handleKey(key) || composer.handleKey(key)) key.preventDefault()
       return
     }
+    if (watchOpen()) {
+      // The read-only /swarm watch (phase 2b): ctrl+c / quit close or
+      // leave like the command view, then the view's own keys (Enter on
+      // a member -> live feed, Esc back, table keys in the footer). No
+      // composer input: there is never an input box into a member.
+      if (key.ctrl && key.name === "c" && !composer.search()) {
+        key.preventDefault()
+        watch.close()
+        return
+      }
+      if (km.matches("quit", key) && !draft()) {
+        key.preventDefault()
+        props.onQuit()
+        return
+      }
+      if (watch.handleKey(key)) key.preventDefault()
+      return
+    }
     if (offer() && !asked && takeOffer(key)) {
       key.preventDefault()
       return
@@ -1061,6 +1167,7 @@ export function App(props: AppProps): JSX.Element {
       onOfferClick={() => void clickOffer()}
       agents={agents}
       swarm={swarm}
+      watch={watch}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}
       others={others}
