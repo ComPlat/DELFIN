@@ -58,6 +58,9 @@ logger = logging.getLogger(__name__)
 #: text's printed precision; the shadow check uses the same.
 SHADOW_TOL = 1e-6
 
+#: Geometry shadow-check tolerance, Angstrom (see _geometries_agree).
+GEOMETRY_SHADOW_TOL = 1e-6
+
 #: Minimum ORCA version OPI supports (its own contract).
 _MIN_ORCA_VERSION = (6, 1, 1)
 
@@ -93,6 +96,8 @@ class Quantity(Enum):
     FAILURE_REASON = "failure_reason"
     #: geometry-optimisation converged; None when the run did not optimise
     GEOMETRY_CONVERGED = "geometry_converged"
+    #: the run's final geometry, [(element, x, y, z), ...] in Angstrom
+    FINAL_GEOMETRY = "final_geometry"
     #: IR modes of the IR SPECTRUM block (list of delfin.ir_spectrum.IRMode)
     IR_MODES = "ir_modes"
     #: (mode index, frequency) imaginary modes printed in the .out,
@@ -272,6 +277,16 @@ def _opi_values(work_dir: Path, base_name: str) -> dict:
     except Exception:
         s2 = None
     result["s2"] = s2
+
+    result["geometry"] = None
+    try:
+        structure = out.get_structure()
+        if structure is not None and structure.atoms:
+            result["geometry"] = [
+                (a.element, float(a.coordinates.x), float(a.coordinates.y),
+                 float(a.coordinates.z)) for a in structure.atoms]
+    except Exception:
+        pass
     return result
 
 
@@ -316,6 +331,12 @@ def _text_values(out_path: Path, inp_path: Path,
         return values
     if "term" in wanted:
         values["term"] = _terminated_normally_text(out_path)
+    if "geometry" in wanted:
+        # the run's final geometry comes from the ORCA-written xyz next to
+        # the output -- the established chaining-reader semantics, not the
+        # Cartesian blocks of the .out (those never carried the chaining
+        # hand-off). The xyz read is small (a few kB per run).
+        values["geometry"] = _final_geometry_text(out_path)
     if {"scf", "final_energy", "free_energy", "zpe", "enthalpy",
         "inner_energy", "entropy", "geometry_converged",
         "failure_reason", "s2"} & wanted:
@@ -449,6 +470,28 @@ def _failure_reason_text(values: dict, out_path: Path) -> Optional[str]:
     return outcome_of_folder(out_path.parent) or None
 
 
+def _final_geometry_text(out_path: Path) -> Optional[list]:
+    """The run's final geometry from the ORCA-written ``<base>.xyz``.
+
+    Exact copy of the chaining readers' established semantics
+    (delfin.imag._read_xyz: count line, blank, then ``el x y z`` rows,
+    floats; a malformed count line raises). Returns ``None`` when the xyz
+    is missing; None is a legitimate answer for a run without one.
+    """
+    xyz_path = out_path.with_suffix(".xyz")
+    if not xyz_path.is_file():
+        return None
+    lines = xyz_path.read_text(encoding="utf-8",
+                               errors="ignore").splitlines()
+    count = int(lines[0].split()[0])
+    atoms = []
+    for line in lines[2:2 + count]:
+        parts = line.split()
+        atoms.append((parts[0], float(parts[1]), float(parts[2]),
+                      float(parts[3])))
+    return atoms
+
+
 def _coord_header(inp_path: Path):
     """``* xyz <charge> <mult>`` from an ORCA input; None when absent."""
     try:
@@ -551,6 +594,7 @@ _TEXT_KEYS = {
     Quantity.CHARGE: {"charge", "mult", "nelectrons"},
     Quantity.MULTIPLICITY: {"charge", "mult", "nelectrons"},
     Quantity.NUMBER_OF_ELECTRONS: {"charge", "mult", "nelectrons"},
+    Quantity.FINAL_GEOMETRY: {"geometry"},
 }
 for _q, (_opi_key, _text_key, _unit) in _ENERGY_QUANTITIES.items():
     _TEXT_KEYS[_q] = {_text_key}
@@ -568,7 +612,8 @@ _TEXT_KEYS[Quantity.VIBRATIONAL_FREQUENCIES] = {"vib_freqs"}
 
 #: quantities whose OPI comparison showed identical values AND where OPI
 #: answers the same question -- everything else goes to the text parser.
-_OPI_FIRST = set(_ENERGY_QUANTITIES) | {Quantity.S2_DEVIATION}
+_OPI_FIRST = (set(_ENERGY_QUANTITIES) | {Quantity.S2_DEVIATION}
+              | {Quantity.FINAL_GEOMETRY})
 
 
 def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Reading:
@@ -611,8 +656,12 @@ def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Read
     text = _tail_text(out_path)
     text_values = _text_values(out_path, inp_path,
                                _TEXT_KEYS.get(quantity), tail=text)
-    text_value = text_values.get(quantity == Quantity.S2_DEVIATION
-                                 and "s2" or _ENERGY_QUANTITIES[quantity][1])
+    if quantity is Quantity.FINAL_GEOMETRY:
+        text_value = text_values.get("geometry")
+    else:
+        text_value = text_values.get(
+            quantity == Quantity.S2_DEVIATION and "s2"
+            or _ENERGY_QUANTITIES[quantity][1])
 
     if _reader_mode() == "text":
         return _reading_from_text(quantity, text_value, text_values,
@@ -632,6 +681,8 @@ def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Read
         if opi_value is None:
             # closed shell: OPI has no UHF block; the deviation is 0.0
             opi_value = 0.0
+    elif quantity is Quantity.FINAL_GEOMETRY:
+        opi_value = opi_values.get("geometry")
     else:
         opi_value = opi_values.get(_ENERGY_QUANTITIES[quantity][0])
 
@@ -641,9 +692,22 @@ def read(work_dir: Union[str, Path], base_name: str, quantity: Quantity) -> Read
 
     # shadow check: both readers answered; the text value is the record
     if text_value is None:
+        if quantity is Quantity.FINAL_GEOMETRY:
+            return Reading(opi_value, "Angstrom", "opi",
+                           "text parser has no value; OPI value unshadowed")
         return Reading(opi_value, _ENERGY_QUANTITIES.get(quantity, (None, None, "Eh"))[2]
                        if quantity in _ENERGY_QUANTITIES else "", "opi",
                        "text parser has no value; OPI value unshadowed")
+    if quantity is Quantity.FINAL_GEOMETRY:
+        if _geometries_agree(text_value, opi_value):
+            return Reading(text_value, "Angstrom", "opi",
+                           "confirmed by text shadow check")
+        logger.warning(
+            "orca_read mismatch for %s on run '%s': OPI geometry differs "
+            "from the output text xyz -- returning the text value",
+            quantity.name, base_name)
+        return Reading(text_value, "Angstrom", "text",
+                       "OPI disagreed; text value returned")
     if _values_agree(text_value, opi_value):
         return Reading(text_value,
                        _ENERGY_QUANTITIES[quantity][2]
@@ -663,6 +727,26 @@ def _values_agree(a: float, b: float) -> bool:
     return abs(float(a) - float(b)) <= SHADOW_TOL
 
 
+def _geometries_agree(text_geom, opi_geom) -> bool:
+    """The xyz-derived and the OPI-derived geometry are the same structure.
+
+    The xyz prints 14 decimals in Angstrom; OPI converts the property
+    JSON's Bohr doubles with AU_TO_ANGST, so the two agree to ~1e-12 A
+    with any rounding of the unit conversion; 1e-6 A leaves that margin
+    while still telling structures apart (any real geometry change moves
+    atoms by far more).
+    """
+    if not text_geom or not opi_geom or len(text_geom) != len(opi_geom):
+        return False
+    for (te, tx, ty, tz), (oe, ox, oy, oz) in zip(text_geom, opi_geom):
+        if str(te).capitalize() != str(oe).capitalize():
+            return False
+        if any(abs(float(a) - float(b)) > GEOMETRY_SHADOW_TOL
+               for a, b in ((tx, ox), (ty, oy), (tz, oz))):
+            return False
+    return True
+
+
 def _opi_s2_deviation(s2) -> Optional[float]:
     """OPI's (expected, ideal) tuple as DELFIN's deviation value."""
     if not s2:
@@ -674,6 +758,11 @@ def _opi_s2_deviation(s2) -> Optional[float]:
 def _reading_from_text(quantity: Quantity, text_value, text_values: dict,
                        note: str) -> Reading:
     """Build the answer from DELFIN's text readers (the established one)."""
+    if quantity is Quantity.FINAL_GEOMETRY:
+        if text_value is None:
+            return Reading(None, "", "none",
+                           f"text parser found nothing ({note})")
+        return Reading(text_value, "Angstrom", "text", note)
     if quantity is Quantity.IR_MODES:
         value = text_values.get("ir_modes") if text_value is None else text_value
         if value is None:
@@ -794,3 +883,185 @@ def ensure_property_json(work_dir: Union[str, Path], base_name: str) -> Optional
     runner = Runner(working_dir=work_dir)
     runner.create_property_json(base_name)
     return target if target.is_file() else None
+
+
+# ---------------------------------------------------------------------------
+# thermochemistry reading from an existing frequency .out (text only)
+# ---------------------------------------------------------------------------
+
+#: 1 Eh in kcal/mol (CODATA 2018; DELFIN's standard constant, see pka.py).
+_HARTREE_TO_KCAL = 627.5094740631
+
+#: The temperature is carried in the block header that ORCA prints over each
+#: thermochemistry section (manual, section 4.7). A ``%freq Temp`` list run
+#: (manual, section 4.6.1) prints one such block per temperature.
+_THERMO_BLOCK_RE = re.compile(r"THERMOCHEMISTRY AT\s+(-?\d+(?:\.\d+)?)\s*K\b",
+                              re.IGNORECASE)
+_THERMO_QUANTITY_RE = re.compile(
+    r"{label}\s+\.\.\.\s+(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s*{unit}",
+    re.IGNORECASE)
+#: ``<label> ... <eh> Eh  <kcal> kcal/mol`` -- ORCA prints ZPE and the
+#: entropy term in both units on one line (manual, section 4.7).
+_THERMO_BOTH_RE = re.compile(
+    r"{label}\s+\.\.\.\s+(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s*Eh\s+"
+    r"(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s*kcal/mol",
+    re.IGNORECASE)
+#: The line ORCA prints when the entropy is evaluated with the quasi-RRHO
+#: treatment of S. Grimme (manual, section 4.7). When this exact line is
+#: absent but a vibrational-entropy line is present, plain RRHO is used.
+_QUASI_RRHO_LINE = "QRRHO of S. Grimme"
+
+
+@dataclass(frozen=True)
+class ThermoReading:
+    """The thermochemistry of one temperature block of a frequency .out.
+
+    All energy quantities carry both hartree and kcal/mol. ORCA prints the
+    electronic energy, the total enthalpy and the Gibbs free energy only in
+    hartree (manual, section 4.7); their kcal/mol values are computed here
+    with :data:`_HARTREE_TO_KCAL`. ``zpe`` and ``ts`` are the values ORCA
+    itself prints in both units.
+
+    ``quasirrho`` is ``True`` when ORCA used the quasi-RRHO entropy
+    treatment (manual 4.7, ``%freq QuasiRRHO`` default true), ``False`` for
+    plain RRHO, ``None`` when no vibrational-entropy line was found.
+    """
+
+    #: temperature of this block, K
+    temperature_K: Optional[float]
+    #: pressure of this block, atm
+    pressure_atm: Optional[float]
+    #: electronic (single-point) energy, Eh and kcal/mol
+    e_el_Eh: Optional[float]
+    e_el_kcal: Optional[float]
+    #: zero-point energy correction, Eh and kcal/mol
+    zpe_Eh: Optional[float]
+    zpe_kcal: Optional[float]
+    #: total enthalpy H, Eh and kcal/mol
+    h_Eh: Optional[float]
+    h_kcal: Optional[float]
+    #: entropy term as ORCA prints it: T*S, Eh and kcal/mol
+    ts_Eh: Optional[float]
+    ts_kcal: Optional[float]
+    #: Gibbs free energy G, Eh and kcal/mol
+    g_Eh: Optional[float]
+    g_kcal: Optional[float]
+    #: True for quasi-RRHO, False for RRHO, None when undetermined
+    quasirrho: Optional[bool]
+    #: reading source ("text" always here)
+    source: str = "text"
+    #: human note (empty on success)
+    note: str = ""
+
+    @property
+    def e_el(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) electronic energy."""
+        return (self.e_el_Eh, self.e_el_kcal)
+
+    @property
+    def zpe(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) zero-point energy."""
+        return (self.zpe_Eh, self.zpe_kcal)
+
+    @property
+    def enthalpy(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) total enthalpy H."""
+        return (self.h_Eh, self.h_kcal)
+
+    @property
+    def ts(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) entropy term T*S."""
+        return (self.ts_Eh, self.ts_kcal)
+
+    @property
+    def gibbs(self) -> tuple[Optional[float], Optional[float]]:
+        """(Eh, kcal/mol) Gibbs free energy G."""
+        return (self.g_Eh, self.g_kcal)
+
+
+def _thermo_quantity(block: str, label: str, unit: str) -> Optional[float]:
+    """First ``<label> ... <value> <unit>`` on one line within *block*."""
+    pattern = _THERMO_QUANTITY_RE.pattern.format(label=re.escape(label),
+                                                 unit=re.escape(unit))
+    m = re.search(pattern, block)
+    if m is None:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _thermo_both(block: str, label: str) -> tuple[Optional[float], Optional[float]]:
+    """``(Eh, kcal/mol)`` of the ``<label> ... <eh> Eh <kcal> kcal/mol`` line."""
+    pattern = _THERMO_BOTH_RE.pattern.format(label=re.escape(label))
+    m = re.search(pattern, block)
+    if m is None:
+        return (None, None)
+    try:
+        return (float(m.group(1)), float(m.group(2)))
+    except ValueError:
+        return (None, None)
+
+
+def read_thermochemistry(out_path: Union[str, Path]) -> list[ThermoReading]:
+    """Read every thermochemistry block of a frequency run's ``.out``.
+
+    ORCA prints one ``THERMOCHEMISTRY AT <T>K`` block per temperature
+    (manual, section 4.7). A run requested at several temperatures with
+    ``%freq Temp 290,295,...`` (section 4.6.1) carries one block per
+    temperature; this returns one :class:`ThermoReading` per block, in file
+    order. This is a pure text reader and never needs OPI.
+
+    A missing file (or a file with no thermochemistry block) yields an empty
+    list. It never raises for a missing or unparseable output.
+    """
+    try:
+        text = Path(out_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    starts = [(m.start(), float(m.group(1)))
+              for m in _THERMO_BLOCK_RE.finditer(text)]
+    readings: list[ThermoReading] = []
+    for i, (start, temp) in enumerate(starts):
+        end = starts[i + 1][0] if i + 1 < len(starts) else len(text)
+        block = text[start:end]
+
+        e_el = _thermo_quantity(block, "Electronic energy", "Eh")
+        zpe_eh, zpe_kcal = _thermo_both(block, "Zero point energy")
+        h = _thermo_quantity(block, "Total Enthalpy", "Eh")
+        ts_eh, ts_kcal = _thermo_both(block, "Final entropy term")
+        if ts_eh is None:
+            # ORCA also prints the entropy as "Total entropy correction"
+            # (manual 4.7), but with the opposite sign: -T*S, the term already
+            # applied in G = H - T*S, whereas "Final entropy term" prints +T*S
+            # (verified: h2o_optfreq real output lines 3437 vs 3469). Negate so
+            # the reported entropy term stays +T*S, sign-stable whichever of
+            # the two labels survived a truncated-but-terminated output.
+            corr_eh, corr_kcal = _thermo_both(block, "Total entropy correction")
+            if corr_eh is not None:
+                ts_eh, ts_kcal = -corr_eh, -corr_kcal
+        g = _thermo_quantity(block, "Final Gibbs free energy", "Eh")
+        pressure = _thermo_quantity(block, "Pressure", "atm")
+
+        if "QRRHO of S. Grimme" in block:
+            quasirrho = True
+        elif "RRHO" in block:
+            quasirrho = False
+        else:
+            quasirrho = None
+
+        def _kcal(eh: Optional[float]) -> Optional[float]:
+            return None if eh is None else eh * _HARTREE_TO_KCAL
+
+        readings.append(ThermoReading(
+            temperature_K=temp,
+            pressure_atm=pressure,
+            e_el_Eh=e_el, e_el_kcal=_kcal(e_el),
+            zpe_Eh=zpe_eh, zpe_kcal=zpe_kcal,
+            h_Eh=h, h_kcal=_kcal(h),
+            ts_Eh=ts_eh, ts_kcal=ts_kcal,
+            g_Eh=g, g_kcal=_kcal(g),
+            quasirrho=quasirrho,
+        ))
+    return readings

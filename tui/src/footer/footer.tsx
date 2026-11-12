@@ -30,6 +30,7 @@ import { TextAttributes, infoStringToFiletype, type CliRenderer, type Renderable
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor, type JSX } from "solid-js"
 import { AgentViewPanel, agentHelp, takesAnswer, type AgentView } from "../agents/view"
 import { SwarmPanel, type SwarmView } from "../swarm/panel"
+import { SwarmWatchPanel, type SwarmWatchView } from "../swarm/watch_panel"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
@@ -71,6 +72,9 @@ export interface FooterProps {
   agents?: AgentView
   /** The swarm view (SW2b); while open it has the footer. */
   swarm?: SwarmView
+  /** The read-only /swarm watch (package SWV, phase 2b); while open it
+   *  has the footer: the member table (or a member's feed), no input. */
+  watch?: SwarmWatchView
   /** The view is drawn on the alternate screen: all of it is the view's,
    *  and the footer keeps its height for the way back. */
   agentsOnOwnScreen?: boolean
@@ -222,7 +226,8 @@ export function Footer(props: FooterProps): JSX.Element {
   // The agent view's ages: once a second is enough (its rows are drawn
   // again on each change of it).
   const [clock, setClock] = createSignal(Date.now())
-  const viewOpen = () => Boolean(props.agents?.state.open || props.swarm?.state.open)
+  const viewOpen = () => Boolean(props.agents?.state.open || props.swarm?.state.open
+                                 || props.watch?.state.open)
   let timer: ReturnType<typeof setInterval> | undefined
   createEffect(() => {
     const running = Boolean(props.session()?.turn) || viewOpen()
@@ -373,8 +378,12 @@ export function Footer(props: FooterProps): JSX.Element {
          paddingLeft={GUTTER}>
       <Show when={viewOpen()}>
         <Show when={props.swarm?.state.open} fallback={
-          <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
-                          keymap={props.keymap} />
+          <Show when={props.watch?.state.open} fallback={
+            <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
+                            keymap={props.keymap} />
+          }>
+            <SwarmWatchPanel view={props.watch!} theme={t} width={cols} height={panelRows} />
+          </Show>
         }>
           <SwarmPanel view={props.swarm!} theme={t} width={cols} height={panelRows} />
         </Show>

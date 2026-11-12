@@ -4877,6 +4877,20 @@ def _route_argv(argv: list[str], known: frozenset[str]) -> list[str]:
         return ["chat"]
     if argv[0] in known or argv[0] in ("-h", "--help", "--version"):
         return list(argv)
+    # A single bare word one or two letters away from a subcommand is a
+    # typo, not a prompt: `delfin-agent stauts` started a billed chat
+    # titled "stauts". As git, gh and kubectl do: say so, offer the
+    # command, exit 2. A prompt of that one word still goes through
+    # `delfin-agent chat <word>` or -p.
+    if len(argv) == 1 and not argv[0].startswith("-") and len(argv[0]) >= 3:
+        import difflib
+        close = difflib.get_close_matches(argv[0], sorted(known), n=1, cutoff=0.75)
+        if close:
+            print(f"delfin-agent: '{argv[0]}' is not a command. Did you mean "
+                  f"'{close[0]}'?\nTo ask the agent that word, use "
+                  f"`delfin-agent chat {argv[0]}` or `delfin-agent -p {argv[0]}`.",
+                  file=sys.stderr)
+            raise SystemExit(2)
     return ["chat", *argv]
 
 
@@ -4960,6 +4974,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="delfin-agent",
         description="The .delfin agent, in a terminal",
     )
+    from delfin import __version__ as _delfin_version
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {_delfin_version}",
+                   help="Print the DELFIN version and exit")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # chat — the implicit subcommand a bare `delfin-agent` routes to
@@ -5686,11 +5704,11 @@ def build_parser() -> argparse.ArgumentParser:
     # swarm -- build and run agent swarms (package SW1). The body lives
     # in cli_swarm.py, owned and tested there; this is the only hunk in
     # cli.py (same pattern as the prcheck subcommand).
-    from .cli_swarm import main as _swarm_main
+    from .cli_swarm import configure_parser as _swarm_configure
     _swarm_p = sub.add_parser(
         "swarm",
         help="Build and run agent swarms (init/plan/start/status)")
-    _swarm_p.set_defaults(func=_swarm_main)
+    _swarm_configure(_swarm_p)
 
     pins_p = sub.add_parser(
         "mcp-pins",
@@ -6292,12 +6310,39 @@ def build_parser() -> argparse.ArgumentParser:
                      help="end: let a running turn finish first (without it, the turn "
                           "is stopped at its next safe point, as ctrl+x twice does)")
     svc.add_argument("--yes", "-y", action="store_true",
-                     help="end: without asking (for scripts)")
+                     help="end, stop, restart: without asking (for scripts)")
     svc.add_argument("--json", action="store_true",
                      help="status: as JSON, for scripts")
     svc.add_argument("--lines", type=int, default=40,
                      help="Lines of the log to show (logs)")
     svc.set_defaults(func=_cmd_service)
+
+    # Durable sessions (package F1): the supervisor as a SLURM job instead
+    # of on the login node. Offline commands only -- rendering and status
+    # touch the shared filesystem, never submit anything; the rendered
+    # script is submitted by the person with sbatch (delfin does not
+    # submit from this path). Handler imported on use, like _cmd_service.
+    def _cmd_durable(args):
+        from delfin.agent.service.durable_host import cmd_durable
+        return cmd_durable(args)
+
+    dur = sub.add_parser(
+        "durable",
+        help="Durable sessions: render the SLURM job that runs the agent "
+             "service on a compute node, and read its supervisor heartbeat",
+    )
+    dur.add_argument("durable_action", nargs="?", default="status",
+                     choices=["render", "status"])
+    dur.add_argument("--walltime", default="12:00:00",
+                     help="render: the job's walltime (hh:mm:ss)")
+    dur.add_argument("--partition", default=None,
+                     help="render: SLURM partition")
+    dur.add_argument("--qos", default=None, help="render: SLURM QOS")
+    dur.add_argument("--signal-minutes", dest="signal_minutes", type=int,
+                     default=5,
+                     help="render: minutes before the walltime end for the "
+                          "checkpoint signal (0..60)")
+    dur.set_defaults(func=_cmd_durable)
 
     return p
 
@@ -6339,6 +6384,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
+    # Never on a shared cluster login node (account suspension 2026-11-10,
+    # issue #640): a session, a turn or the TUI started there moves onto a
+    # compute node (srun --pty); a swarm start or the schedule daemon is
+    # refused. Light commands stay. Off a login node this does nothing.
+    from delfin import hpc_guard as _hpc_guard
+    _hpc_guard.keep_cli_off_login_node(getattr(args, "func", None), args, argv)
     if getattr(args, "func", None) in (cmd_chat, cmd_run):
         guard_principles_or_exit()
         # An agent in a terminal ends with an emergency stop given anywhere

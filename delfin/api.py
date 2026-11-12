@@ -3318,6 +3318,28 @@ def geometry_align_rmsd(mobile_xyz: str, reference_xyz: str) -> dict:
     return out
 
 
+def frame_lineage(stage_dirs: list, rmsd_tol: float = 1e-3,
+                  conn_required: bool = True) -> dict:
+    """Match pipeline-stage frames by geometry, never by index.
+
+    Args:
+        stage_dirs: per-stage directories holding frame_<n>.xyz /
+            conf_<n>.xyz / final_<n>.xyz files (DELFIN_STAGE_GEOM_DUMP
+            layout), in stage order.
+        rmsd_tol: heavy-atom Kabsch RMSD tolerance (Angstrom) below which
+            two frames count as the same structure (default 1e-3, the
+            conf/final identity threshold of the stage analysis).
+        conn_required: also require the same covalent connectivity class.
+
+    Returns: {stages: [{stage, name, n_frames, summary}], edges:
+    [{src_stage, src_frame, dst_stage, dst_frame, status, rmsd}],
+    rmsd_tol}.  status is kept / merged / vanished / appeared.
+    """
+    from delfin.tools.frame_lineage import lineage_between_stages
+    return lineage_between_stages(stage_dirs, rmsd_tol=rmsd_tol,
+                                  conn_required=conn_required).to_json()
+
+
 def geometry_merge(fragments: list) -> dict:
     """Concatenate xyz fragments (atoms of earlier ones first): {xyz, change}."""
     g, ch = _ge().merge_fragments(*[_ge().parse_xyz(f) for f in fragments])
@@ -3583,6 +3605,10 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Mirror the structure across a coordinate plane."},
     {"name": "geometry_align_rmsd", "category": "geometry",
      "summary": "Kabsch-align two structures, report RMSD."},
+    {"name": "frame_lineage", "category": "geometry",
+     "summary": "Match pipeline-stage frames by geometry (element signature "
+                "+ Kabsch RMSD, never by index); kept/merged/vanished/"
+                "appeared lineage."},
     {"name": "geometry_merge", "category": "geometry",
      "summary": "Concatenate xyz fragments into one structure."},
     {"name": "geometry_freeze", "category": "geometry",

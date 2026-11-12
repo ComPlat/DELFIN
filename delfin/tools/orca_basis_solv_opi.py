@@ -540,7 +540,13 @@ def build_solvation(
     blocks: list[Any] = []
     keywords: list[str] = []
 
-    model_u = str(model).strip().upper()
+    model_u = str(model).strip().upper() if model else ""
+    if not model_u:
+        # No solvation requested (REAL-RUN FAIL #496): an empty model with an
+        # empty solvent is a no-op, not a refusal.  A pure per-element basis/ECP
+        # job (e.g. B3LYP/def2-SVP with %basis newgto O "def2-tzvp" and no
+        # solvent) must run without solvation lines.
+        return [], [], errors, warnings, sugg
     value = _solvent_value(solvent)
     if value is None:
         errors.append(

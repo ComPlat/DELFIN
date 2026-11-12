@@ -11,6 +11,7 @@ import importlib
 import itertools
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -195,6 +196,46 @@ class _BaseClient:
 _CLAUDE_CLI_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
                     "CLAUDE_CODE_OAUTH_TOKEN")
 _CODEX_CLI_KEYS = ("OPENAI_API_KEY", "CODEX_API_KEY")
+
+# What the Claude CLI answers instead of a turn when it has no usable
+# login: "Not logged in · Please run /login", "Invalid API key · Please run
+# /login", an expired or revoked OAuth token. It arrives as the turn's
+# result text, so it used to be shown as the model's answer and a headless
+# run exited 0 with an empty error (bug hunt 11.11.2026, #6).
+_CLI_LOGIN_MARKERS = (
+    "Not logged in", "Please run /login", "Invalid API key",
+    "OAuth token has expired", "OAuth token revoked",
+)
+
+
+def _cli_login_failure(text: str, *, is_error: bool) -> bool:
+    """True when *text* is the Claude CLI's own no-login answer.
+
+    Short and either flagged ``is_error`` or naming ``/login``: a model
+    answer that merely mentions logging in is neither."""
+    text = str(text or "").strip()
+    if not text or len(text) > 400:
+        return False
+    if not (is_error or "/login" in text):
+        return False
+    return any(marker in text for marker in _CLI_LOGIN_MARKERS)
+
+
+def _cli_login_message(said: str) -> str:
+    """The error for a Claude CLI without a login, with DELFIN's fixes.
+
+    ``/login`` is a command of the interactive Claude CLI, not of DELFIN;
+    the message says where to run it, and names the API backend, which
+    reads the key DELFIN's own credential store holds."""
+    said = " ".join(str(said or "").split())[:200]
+    # The fix comes first: the dashboard shows the first 200 characters.
+    return (
+        "Not logged in: the `claude` CLI of DELFIN's claude provider "
+        "has no login here. Fix: run `claude` in a terminal, do its "
+        "/login; or `delfin-agent credentials set ANTHROPIC_API_KEY` and "
+        "--backend api."
+        + (f" (claude said: {said})" if said else "")
+    )
 
 
 def _cli_backend_env(own_keys: tuple[str, ...]) -> dict:
@@ -641,8 +682,18 @@ class CLIClient(_BaseClient):
                         tool_name=str(denial),
                     )
 
+                result_text = data.get("result", "")
+                if not emitted_text and _cli_login_failure(
+                        result_text, is_error=bool(data.get("is_error"))):
+                    # No turn ran: an error, not an answer. The process is
+                    # retired so the next send starts one that sees a
+                    # login made in the meantime.
+                    try:
+                        self.kill()
+                    except Exception:
+                        self._proc = None
+                    raise RuntimeError(_cli_login_message(result_text))
                 if not emitted_text:
-                    result_text = data.get("result", "")
                     if result_text:
                         yield StreamEvent(type="text_delta", text=result_text)
 
@@ -672,10 +723,7 @@ class CLIClient(_BaseClient):
             if rc != 0:
                 stderr = proc.stderr.read() if proc.stderr else ""
                 if "Not logged in" in stderr:
-                    raise RuntimeError(
-                        "Agent CLI is not logged in. "
-                        "Run 'claude' in a terminal and complete login first."
-                    )
+                    raise RuntimeError(_cli_login_message(""))
                 if stderr.strip():
                     raise RuntimeError(
                         f"CLI backend error (exit {rc}): {stderr.strip()[:500]}"
@@ -6926,7 +6974,7 @@ def _ends_with_a_question(text: str) -> bool:
 def _announces_an_action(text: str) -> bool:
     """True when an answer ENDS by saying what it is about to do.
 
-    The last sentence, not any sentence: "I'll read the lines" in the
+     The last sentence, not any sentence: "I'll read the lines" in the
     middle of a finished report is narration; at the very end, followed
     by nothing, it is a promise the turn did not keep. Never true for an
     answer that ends with a question -- that one is waiting on the user
@@ -6943,6 +6991,51 @@ def _announces_an_action(text: str) -> bool:
         if mark in last:
             last = last.rsplit(mark, 1)[-1]
     return bool(ANNOUNCES_ACTION_RE.search(last.strip()))
+
+
+#: The corrective user row for a promised-but-unmade tool call. The short
+#: wording the brief fixes on purpose: a large write_file is the usual
+#: reason the model stalled, so the row names parts up front.
+_PROMISED_CONT_TEXT = (
+    "No tool call arrived. Make the call now; if the file is large, "
+    "write it in parts.")
+
+#: Bounded corrective re-requests per turn for a promised tool call: one
+#: or two, never a loop. The field shape repeats ("the same run repeated
+#: this 6 times"), so the cap keeps a stalling model from consuming the
+#: round budget on promises alone.
+_PROMISED_CONT_MAX = 2
+
+#: Stop reason when the corrective budget is spent and the turn still
+#: ends on a promise: NOT end_turn ("done"), so a supervisor resumes it
+#: instead of treating the run as finished.
+_PROMISED_STOP_REASON = "promised_no_tool_call"
+
+
+def _promises_an_unmade_tool_call(text: str) -> bool:
+    """True when a final answer claims a tool call is happening NOW and
+    no tool call ran in that response.
+
+    Different from :func:`_announces_an_action`, which reads only the
+    LAST sentence and is fired by planning language ("I'll read ...").
+    The field shapes (harness main d44702503, 216 runs,
+    kit.deepseek-v4-flash) put the promise FIRST and declarative filler
+    last:
+
+        "I am executing the write_file tool call now -- creating
+        ``orca_scan_opi.py`` ... This is the actual tool invocation
+        being executed."
+
+    So the whole text is scanned, for the present-continuous/immediate
+    first-person claim plus the German present forms. Past reports
+    ("I wrote the file"), questions and plain answers do not match; the
+    caller supplies the no-tool-call fact.
+    """
+    from .german import PROMISES_TOOL_CALL_RE
+    tail = (text or "").strip()
+    if not tail or _ends_with_a_question(tail):
+        return False
+    return bool(PROMISES_TOOL_CALL_RE.search(tail))
 
 
 def _pushed_refs(output: str) -> list[tuple[str, str, str]]:
@@ -7297,6 +7390,9 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "find_orca_errors", "extract_thermochem",
     # result_checks reads a finished run; it writes nothing.
     "result_checks",
+    # frame_lineage (#573): reads the .xyz frames of the given stage
+    # directories and compares them; it writes nothing and runs nothing.
+    "frame_lineage",
     # geometry_edit: xyz text in, xyz text out; no file write, no run.
     "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
     "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
@@ -7304,6 +7400,7 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
     "geometry_merge", "geometry_freeze", "geometry_constraints_block",
     "geometry_build_smiles", "geometry_write_orca_block",
+    "geometry_renumber", "geometry_fix_hydrogens", "geometry_diff",
     # trajectory_xyz (2026-11-03): ORCA output -> multi-frame xyz text;
     # pure parse, no write.
     "trajectory_xyz",
@@ -7342,7 +7439,7 @@ _DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
 _PLAN_MODE_TASK_REJECT = (
     "plan mode (read-only) — creating or starting tasks is blocked while "
     "planning. Present the plan in chat and call exit_plan_mode to submit it "
-    "for approval (the user can also click 'Plan akzeptieren & ausführen' or "
+    "for approval (the user can also click 'Accept plan & execute' or "
     "switch the mode chip to 'acceptEdits'). Tasks are created once the plan "
     "is approved."
 )
@@ -9349,7 +9446,7 @@ def _shell_visible(cmd: str) -> str:
     return _blank_quoted(cmd)
 
 
-_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))")
+_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])([\w.-]+)\2|([\w.-]+))")
 
 
 def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
@@ -9494,6 +9591,192 @@ PERSON_OUTPUT_CHARS = 4_000_000
 # still reads max_output_chars: the attribute is never written.
 _PERSON_OUTPUT: "_contextvars.ContextVar[bool]" = (
     _contextvars.ContextVar("delfin_person_output", default=False))
+
+
+#: Model behind this session's commits, for the co-author trailer. A bash
+#: call run by a model turn appends the trailer to every git commit it
+#: carries; a command the USER runs from the prompt (!cmd) stays untouched
+#: because that code path runs inside ``output_for_a_person``. Set by the
+#: executor/engine once per session; empty means no trailer is appended.
+_TRAILER_MODEL: "_contextvars.ContextVar[str]" = (
+    _contextvars.ContextVar("delfin_trailer_model", default=""))
+
+
+def set_commit_trailer_model(model: str = "") -> None:
+    """Record the model that stands behind this session's commits.
+
+    The executor appends ``Co-Authored-By: DELFIN-Agent (<model>) <email>``
+    to every ``git commit`` a model bash call runs, unless
+    ``agent.commit_coauthor`` is false or the call is a user ``!cmd``. Empty
+    model turns the trailer off. Takes effect on this thread only.
+    """
+    _TRAILER_MODEL.set(model or "")
+
+
+def _commit_trailer_enabled() -> bool:
+    """Model set and the setting not switched off and not a user !cmd here."""
+    if _TRAILER_MODEL.get() and not _PERSON_OUTPUT.get():
+        from delfin.user_settings import load_settings
+        agent = (load_settings() or {}).get("agent") or {}
+        return bool(agent.get("commit_coauthor", True))
+    return False
+
+
+def _commit_trailer_value() -> str:
+    """The exact trailer line for the current model/email settings."""
+    model = _TRAILER_MODEL.get()
+    from delfin.user_settings import load_settings
+    from delfin.user_settings import DEFAULT_SETTINGS
+    agent = (load_settings() or {}).get("agent") or {}
+    email = str(agent.get("commit_coauthor_email", "") or "").strip()
+    if not email:
+        email = (
+            (DEFAULT_SETTINGS.get("agent") or {})
+            .get("commit_coauthor_email", "") or "")
+    return f"Co-Authored-By: DELFIN-Agent ({model}) <{email}>"
+
+
+def _commit_trailer_rewrite(cmd: str) -> str:
+    """Append a co-author ``--trailer`` to every git commit a model runs.
+
+    ``_bash_isolation_argv`` is the single choke point every bash command
+    (foreground, background, detach) passes through, so rewriting the command
+    string there covers all of them. Recognises ``git commit`` in each
+    top-level ``&&`` / ``;`` / ``|`` segment -- including the ``-C`` / ``-c
+    key=value`` spellings -- by locating the ``git`` program and its ``commit``
+    subcommand, then inserting ``--trailer '<value>'`` immediately after the
+    subcommand token. git appends the trailer at commit time and deduplicates
+    an identical value on ``--amend``, so an amend that re-applies the same
+    line stays single (the notes confirm this).
+    """
+    if not _commit_trailer_enabled():
+        return cmd
+    trailer = _commit_trailer_value()
+    try:
+        return _rewrite_segments_for_trailer(cmd, trailer)
+    except Exception:
+        # A failure to rewrite must not turn a valid git command into a
+        # refused or mangled one -- leave it exactly as written.
+        return cmd
+
+
+def _rewrite_segments_for_trailer(cmd: str, trailer: str) -> str:
+    """Insert ``--trailer '<value>'`` after each top-level ``git … commit``.
+
+    Walks ``cmd`` once, tracking quotes, backslashes and the chain
+    operators ``&&`` / ``||`` / ``;`` / ``|`` / newline, so a commit inside
+    a compound command (``git add x && git commit -m y``) is caught as
+    cleanly as a bare one. Heredoc bodies are opaque data and are skipped
+    verbatim (never read as words, never rewritten). Every ``commit`` found
+    gets ``--trailer '<value>'`` spliced in immediately after its token; git
+    accepts the option before or after ``-m`` / ``-F`` / ``--amend`` and
+    deduplicates an identical ``Co-Authored-By`` line on ``--amend``, so
+    re-applying the trailer never doubles it. The value is single-quoted
+    (git's ``--trailer`` takes a literal string; an embedded quote is
+    escaped for the shell).
+    """
+    trailer_arg = " --trailer '" + trailer.replace("'", "'\\''") + "'"
+    # insertion byte-offsets into cmd, one per git-commit segment
+    inserts: list[int] = []
+    q: str | None = None
+    i, n = 0, len(cmd)
+    # token start offsets of the current segment (offsets into cmd)
+    seg_words: list[int] = []
+    while i < n:
+        c = cmd[i]
+        if c == "\\" and q != "'" and i + 1 < n:
+            i += 2
+            continue
+        if q is not None:
+            q = None if c == q else q
+            i += 1
+            continue
+        if c in ("'", '"'):
+            q = c
+            i += 1
+            continue
+        if cmd[i:i + 2] == "<<":
+            nr = _consumed_span(cmd, i)
+            if nr is not None:
+                i = nr
+                continue
+        if c in " \t":
+            i += 1
+            continue
+        if c in ("|", ";") or cmd[i:i + 2] in ("&&", "||") or c == "\n":
+            pos = _commit_sub_pos(cmd, seg_words)
+            if pos is not None:
+                inserts.append(pos)
+            seg_words = []
+            i += 2 if cmd[i:i + 2] in ("&&", "||") else 1
+            continue
+        # a word starts; consume until a shell-breaking character
+        start = i
+        while i < n and cmd[i] not in " \t\n;|&'\"\\":
+            i += 1
+        seg_words.append(start)
+    pos = _commit_sub_pos(cmd, seg_words)
+    if pos is not None:
+        inserts.append(pos)
+    if not inserts:
+        return cmd
+    # splice from the end so earlier offsets stay valid
+    out = cmd
+    for off in sorted(inserts, reverse=True):
+        out = out[:off] + trailer_arg + out[off:]
+    return out
+
+
+def _consumed_span(cmd: str, i: int):
+    """Offset just past a here-document body starting at ``i`` (``<<``), or
+    None when the ``<<`` is not a heredoc (a here-string ``<<<`` or a bare
+    redirect ``<<`` into an empty name, which cannot be an operator).
+    Mirrors ``_split_shell_segments``'s heredoc handling.
+    """
+    if cmd[i:i + 3] == "<<<":
+        return None
+    body, end = _consume_heredoc(cmd, i)
+    return end if body is not None else None
+
+
+def _commit_sub_pos(cmd: str, words: list[int]) -> int | None:
+    """Byte offset in ``cmd`` just after a ``commit`` token, if ``words``
+    spell ``git … commit``; else None.
+
+    ``words`` are token start offsets of one shell segment. The leading
+    env assignments (``VAR=x git …``) and ``-C <dir>`` / ``-c key=val``
+    option/value pairs are skipped, so ``git -c user.email=t commit`` and
+    ``git -C /repo -c k=v commit`` both resolve to ``commit``.
+    """
+    if not words:
+        return None
+    n = len(words)
+
+    def _tok(k: int) -> str:
+        e = words[k + 1] if k + 1 < n else len(cmd)
+        return cmd[words[k]:e].strip()
+
+    def _is_env_assignment(k: int) -> bool:
+        t = _tok(k)
+        return "=" in t and not t.startswith("=") and not t.startswith("-")
+
+    def _takes_value(k: int) -> bool:
+        t = _tok(k)
+        return t == "-C" or t == "-c"
+
+    # program: skip leading env assignments
+    p = 0
+    while p < n and _is_env_assignment(p):
+        p += 1
+    if p >= n or _tok(p) != "git":
+        return None
+    # subcommand: skip -C/-c option/value pairs between git and the operand
+    s = p + 1
+    while s < n and _takes_value(s):
+        s += 2 if s + 1 < n else 1
+    if s >= n or _tok(s) != "commit":
+        return None
+    return words[s] + len("commit")
 
 
 @contextlib.contextmanager
@@ -11491,7 +11774,6 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative or absolute.",
                     },
                     "offset": {
                         "type": "integer",
@@ -11504,6 +11786,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "around": {
                         "type": "string",
                         "description": "Regex; ±10 lines around its match.",
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Up to 4 more files; same options.",
                     },
                 },
                 "required": ["path"],
@@ -14802,6 +15089,130 @@ def _repair_json_args(raw) -> dict | None:
     return None
 
 
+# read_file(paths=[...]): files per call, `path` included. Five covers the
+# measured need (2-5 files read back to back, one request each) and keeps
+# the worst case at five per-file results in one round.
+READ_FILE_MAX_PATHS = 5
+_READ_FILE_PATH_KEYS = ("path", "file_path", "filename", "file", "target")
+
+
+def _read_file_targets(arguments: Any) -> tuple[Optional[list[str]], str]:
+    """The files a read_file call names, when it uses ``paths``.
+
+    Input: read_file's arguments. Output ``(files, error)``:
+    ``(None, "")`` for the single-file form (no ``paths``, or an empty
+    ``paths`` beside a ``path``) -- the caller proceeds unchanged;
+    ``(files, "")`` with the path first (``path`` or an alias, as
+    ``_get_path_arg`` takes it) then ``paths``, duplicates dropped;
+    ``(None, error)`` for a malformed list or more than
+    READ_FILE_MAX_PATHS names. The count is taken before duplicates are
+    dropped: the call is refused for what it asked, not for what was left.
+    """
+    if not isinstance(arguments, dict) or arguments.get("paths") is None:
+        return None, ""
+    raw = arguments.get("paths")
+    first = _DocToolExecutor._get_path_arg(arguments)
+    if (not isinstance(raw, list)
+            or not all(isinstance(p, str) and p.strip() for p in raw)
+            or not (raw or first)):
+        return None, (
+            "read_file: paths must be a list of file paths (strings), "
+            f"at most {READ_FILE_MAX_PATHS} together with path.")
+    if not raw:
+        return None, ""
+    named = ([first] if first else []) + [p.strip() for p in raw]
+    if len(named) > READ_FILE_MAX_PATHS:
+        return None, (
+            f"read_file reads at most {READ_FILE_MAX_PATHS} files per call "
+            f"(path and paths together); this call named {len(named)}. "
+            "Nothing was read -- split it into several calls.")
+    return list(dict.fromkeys(named)), ""
+
+
+def _read_file_single_args(arguments: dict, path: str) -> dict:
+    """One file's arguments out of a several-file read_file call: every
+    other argument (offset, limit, around, ...) applies to each file."""
+    single = {k: v for k, v in arguments.items()
+              if k != "paths" and k not in _READ_FILE_PATH_KEYS}
+    single["path"] = path
+    return single
+
+
+def _split_call_id(call_id: str, k: int, taken: set) -> str:
+    """A tool_call id for the k-th file (k >= 1) of a split call.
+
+    Unique within the round. An id of nine letters and digits (the form
+    Mistral-family chat templates require) gets a derived id of the same
+    form; any other id gets a suffix."""
+    import hashlib
+    salt = 0
+    while True:
+        if re.fullmatch(r"[A-Za-z0-9]{9}", call_id):
+            new = hashlib.sha1(
+                f"{call_id}:{k}:{salt}".encode()).hexdigest()[:9]
+        else:
+            new = f"{call_id}_{k}" + (f"_{salt}" if salt else "")
+        if new not in taken:
+            return new
+        salt += 1
+
+
+def _split_multi_read_calls(
+    tc_list: list[dict], raw_args_by_id: dict[str, str],
+) -> tuple[list[dict], dict[str, str]]:
+    """Every read_file call naming several files, as one call per file.
+
+    Input: the round's tool calls as they go into the assistant message,
+    and the raw argument text per call id. Output: the same lists with
+    each such call replaced by single-file read_file calls (the first
+    keeps the original id). Done before the assistant message is written,
+    so the history, the per-call loop (reread note, read ledger, observed
+    files, verification notes, events) and every executor gate see only
+    the single-file form they already handle; no consumer needs to know
+    ``paths``. A call that is malformed or over the cap is left as it is,
+    and the executor answers it with the error.
+
+    Rejected: joining the files into one result inside the loop. Every
+    per-call mechanism there keys on the call's arguments and its one
+    result row, so each would have needed its own list handling, and a
+    gate written for one spelling misses the other. Cost of the split:
+    the model's history shows N single reads where it emitted one call
+    (same request count, a few bytes of call ids per extra file).
+    """
+    if not any((tc.get("function") or {}).get("name", "").strip()
+               == "read_file" for tc in tc_list):
+        return tc_list, raw_args_by_id
+    taken = {tc["id"] for tc in tc_list}
+    out: list[dict] = []
+    raw_out = dict(raw_args_by_id)
+    for tc in tc_list:
+        fn = tc.get("function") or {}
+        if (fn.get("name") or "").strip() != "read_file":
+            out.append(tc)
+            continue
+        raw = raw_args_by_id.get(tc["id"], fn.get("arguments"))
+        if isinstance(raw, dict):
+            args = raw
+        else:
+            try:
+                args = json.loads(raw or "{}")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                args = _repair_json_args(raw)
+        files, err = _read_file_targets(args)
+        if err or not files:
+            out.append(tc)
+            continue
+        for k, path in enumerate(files):
+            cid = tc["id"] if k == 0 else _split_call_id(tc["id"], k, taken)
+            taken.add(cid)
+            text = json.dumps(_read_file_single_args(args, path),
+                              ensure_ascii=False)
+            raw_out[cid] = text
+            out.append({**tc, "id": cid,
+                        "function": {**fn, "arguments": text}})
+    return out, raw_out
+
+
 # A delegate's report is the answer the parent asked for, not bulk tool
 # output. Cut to the model's tool-result cap (5 KB on GLM) it lost its
 # middle, where the findings are, and the parent re-read the files itself
@@ -14879,7 +15290,8 @@ _CONTINUE_TEXT = {
                    "write_file(..., mode=\"append\") -- or say in your "
                    "answer that it is not done."),
     "cut_call": ("[Continue] Your last tool call was cut at the output "
-                 "limit and did not run. Write a long file in parts: "
+                 "limit and did not run: the arguments were cut off at "
+                 "the output limit; write the file in smaller parts -- "
                  "write_file(path, <first part>), then write_file(path, "
                  "<next part>, mode=\"append\")."),
     "cut": ("[Continue] Your answer was cut at the output limit. Continue "
@@ -15941,8 +16353,9 @@ def _bypass_screened_action(
     action itself for a message to another session or a web search; for
     a write whose target resolves inside the session workspace or the
     configured agent workspace, the action with the instructing-file
-    question answered on the path RELATIVE to that root; None for
-    everything else, which goes to the model.
+    question answered on the path RELATIVE to that root; for a shell
+    command that runs caged and stays in the workspace, the action itself;
+    None for everything else, which goes to the model.
 
     Relative, because a DELFIN worktree lives under ``.delfin/worktrees``
     and the absolute path of every file in it matched the ``/.delfin/``
@@ -15956,6 +16369,24 @@ def _bypass_screened_action(
     tool = str(action.get("tool") or "")
     if tool in _BYPASS_SCREENED_TOOLS:
         return action
+    if tool in ("bash", "bash_background"):
+        # A command that runs inside the cage and does not leave the
+        # workspace by the deterministic rules (_leaves_workspace: not the
+        # high-risk class, no network, not heavy compute) is workspace work
+        # like a write in the workspace: the cage confines its writes, the
+        # egress proxy its network, the change journal can take it back.
+        # Measured on the Pi on 2026-11-12: 55 of 74 refusals in a day were
+        # such commands (pytest, git add/commit in the session's repo,
+        # grep, true), refused because the confirming model did not answer
+        # under load; 10 more were git grep pipelines the model refused.
+        # Without a cage, the model still judges.
+        try:
+            if _bash_runs_caged(perms) and not _leaves_workspace(
+                    perms, action, True):
+                return action
+        except Exception:
+            return None
+        return None
     if tool not in ("write_file", "edit_file", "multi_edit"):
         return None
     raw = str(action.get("path") or "").strip()
@@ -16039,6 +16470,12 @@ def _classifier_timeout_s() -> float:
         return min(max(seconds, low), high)
     except Exception:
         return _CLASSIFIER_TIMEOUT_S
+
+
+#: When the classifier's attach last fetched the served roster in this
+#: process (None: never), and how long a failed fetch waits before the next.
+_ROSTER_TRIED_AT: Optional[float] = None
+_ROSTER_RETRY_S = 300.0
 
 
 def _classifier_settings() -> Optional[dict]:
@@ -18231,7 +18668,26 @@ class _DocToolExecutor:
         writes that attribute from its own thread, and the gate used to
         read it two or three times per call, so a flip landing between
         two reads decided one call by two different policies.
+
+        A read_file naming several files (``paths``) runs here as one
+        single-file call per file, each through the whole of
+        ``_execute_pinned`` (rules, hooks, role, mode, read gate, read
+        baseline), under one pin; the results are joined, each under a
+        ``=== <path> ===`` header. The streaming loop splits such calls
+        before they get here (_split_multi_read_calls); this covers the
+        callers that enter the executor directly (Code Mode).
         """
+        if _bare_tool_name(name) == "read_file":
+            files, err = _read_file_targets(arguments)
+            if err:
+                return json.dumps({"error": err})
+            if files is not None:
+                with _pin_permission_mode(permissions):
+                    return "\n\n".join(
+                        f"=== {p} ===\n" + self._execute_pinned(
+                            name, _read_file_single_args(arguments, p),
+                            permissions)
+                        for p in files)
         with _pin_permission_mode(permissions):
             return self._execute_pinned(name, arguments, permissions)
 
@@ -19464,6 +19920,13 @@ class _DocToolExecutor:
     def _execute_read_file(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
+        # A several-file call is split in execute() before it gets here.
+        # One that arrives anyway is refused: reading only `path` would
+        # drop the other files without saying so.
+        if arguments.get("paths") is not None:
+            return json.dumps({"error": (
+                "read_file: 'paths' reached the single-file reader; "
+                "nothing was read. Call read_file once per file.")})
         rel_path = self._get_path_arg(arguments)
         if not rel_path:
             return json.dumps({"error": "path is required"})
@@ -22729,8 +23192,11 @@ class _DocToolExecutor:
         # with a reason is unaffected.
         on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
         try:
+            # The broad scope is the user asking for a second opinion on
+            # everything: there a shell command keeps the model.
             screened = (_bypass_screened_action(perms, action)
-                        if bypass else None)
+                        if bypass and not (cfg.get("broad") and base in (
+                            "bash", "bash_background")) else None)
             if screened is not None:
                 # A message to a sibling session, a web search, a write in
                 # the session or agent workspace: the user's rules and the
@@ -23025,7 +23491,7 @@ class _DocToolExecutor:
                 "Describe the proposed change in chat instead. "
                 "When the plan is complete, call exit_plan_mode to "
                 "submit it for approval; the user can also click "
-                "'Plan akzeptieren & ausführen' or switch the mode "
+                "'Accept plan & execute' or switch the mode "
                 "chip to 'acceptEdits' to proceed."
             )
 
@@ -23674,6 +24140,18 @@ class _DocToolExecutor:
                         "give the user the link to open the pull request. "
                         "Only the user changes the role (`/git role "
                         "maintainer` in that repository).")
+            # A cluster login node is shared (issue #640): tests, builds and
+            # installs run on a compute node, whatever the mode or grant --
+            # the cluster's rule, not the user's to wave through.
+            try:
+                from . import calc_policy as _cp_login
+                _heavy = _cp_login.login_node_heavy(cmd)
+            except Exception:
+                _heavy = ""
+            if _heavy:
+                _record_security_event("login_node_heavy", "bash", cmd[:80],
+                                       blocked=True)
+                return _heavy
             _asked = perms.confirm_callback is not None
             # Opening a pull request publishes the branch. It spends the
             # same one-request grant a push does: the user who asked for a
@@ -31643,6 +32121,7 @@ def _bash_isolation_argv(
     -- with ``_caged_readonly_paths`` bound read-only and without the
     SLURM controller route.
     """
+    cmd = _commit_trailer_rewrite(cmd)
     plain = ["/bin/bash", "-c", cmd]
     _announce_child_network()
     # The --isolate override (set once per process by `delfin-agent
@@ -32062,7 +32541,109 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # A handful of API/stream failures are TRANSIENT — a shared-proxy hiccup, not a
 # bad request. On long KIT runs in a field report (vLLM behind an Open-WebUI proxy) a
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
-_STREAM_RETRY_MAX = 3
+_STREAM_RETRY_MAX = int(os.environ.get("DELFIN_STREAM_RETRY_MAX", "7") or 7)
+
+
+def _transient_retry_delay(attempt: int) -> float:
+    """Seconds to wait before transient-retry ``attempt`` (1-based).
+
+    The first three stay short (1.5, 3, 6 s: a proxy hiccup); later ones
+    back off to minutes (30, 60, 120, 240 s, then 240) with +-20 % jitter, so
+    a KIT outage of ~8 minutes is ridden out instead of ending the turn.
+    Measured 2026-11-06/07: 504/503 bursts of several minutes ended dozens of
+    unattended sessions after the old 1.5/3/6 s schedule (10.5 s in total).
+    ``DELFIN_STREAM_RETRY_DELAY_SCALE`` scales the wait (the test suite sets 0).
+    """
+    import random
+    base = (1.5, 3.0, 6.0, 30.0, 60.0, 120.0, 240.0)
+    d = base[attempt - 1] if attempt <= len(base) else base[-1]
+    if attempt > 3:
+        d *= random.uniform(0.8, 1.2)
+    try:
+        scale = float(os.environ.get("DELFIN_STREAM_RETRY_DELAY_SCALE", "1"))
+    except ValueError:
+        scale = 1.0
+    return max(0.0, d * scale)
+
+
+# The marker the endpoint's hourly token-quota 429 carries in its body.
+# A per-minute rate-limit 429 does not say this, so the marker alone
+# separates the two: a quota means "the key is spent, wait until the
+# reset"; per-minute congestion means "slow down now", which the backoff
+# ladder already cures.
+_QUOTA_429_MARKER = "hourly token quota exceeded"
+
+# The furthest a quota reset may park a run: the quota is HOURLY, so a
+# reset further than 65 minutes away cannot be the body of this hour's
+# quota (a clock skew, a stale proxy cache or a mispelled unit) and is
+# clamped rather than trusted.
+_QUOTA_RESET_MAX_S = 65 * 60
+
+
+def _quota_429_reset(body: str, *, now: float | None = None
+                     ) -> tuple[float, int, int] | None:
+    """Parse the hourly token-quota 429's body, or None.
+
+    Input: the exception's text (the body, whatever ``str(exc)`` embeds).
+    Output: ``(reset_epoch_s, tokens_used, tokens_limit)`` when the body
+    is a quota 429 whose reset could be read, else ``None`` -- and
+    ``None`` for every NON-quota 429, so a plain per-minute rate limit
+    keeps the transient backoff ladder.
+
+    The reset instant prefers the absolute UTC time ("Quota resets at
+    2026-11-09 22:00 UTC"); the relative "in Ns" is the fallback, because
+    the absolute instant survives a stalled run's start-up delay while
+    "in Ns" was measured the moment the endpoint answered. A reset further
+    than :data:`_QUOTA_RESET_MAX_S` away is clamped to the window's edge:
+    an hourly quota cannot reset further out than that. Never raises.
+    """
+    import datetime
+    try:
+        text = str(body or "")
+        low = text.lower()
+        if _QUOTA_429_MARKER not in low:
+            return None
+        t_now = float(now if now is not None else time.time())
+        used = limit = None
+        try:
+            import re
+            m = re.search(r"exceeded:\s*([\d,.\s]+)\s*/\s*([\d,.\s]+)", low)
+            if m:
+                used = int(float(m.group(1).replace(",", "").replace(" ", "")))
+                limit = int(float(m.group(2).replace(",", "").replace(" ", "")))
+        except (ValueError, AttributeError):
+            used = limit = None
+        reset = None
+        try:
+            import re
+            m = re.search(r"quota resets at\s+(\d{4}-\d{2}-\d{2}[ T]"
+                          r"\d{2}:\d{2}(?::\d{2})?)\s*utc\b", low)
+            if m:
+                stamp = m.group(1)
+                fmt = ("%Y-%m-%d %H:%M" if len(stamp) == 16
+                       else "%Y-%m-%d %H:%M:%S")
+                dt = datetime.datetime.strptime(stamp, fmt).replace(
+                    tzinfo=datetime.timezone.utc)
+                reset = dt.timestamp()
+        except (ValueError, AttributeError):
+            reset = None
+        if reset is None:
+            try:
+                import re
+                m = re.search(r"resets in\s+(\d+)\s*s", low)
+                if not m:
+                    m = re.search(r"resets at\s+[^(]*\(in\s+(\d+)\s*s\)", low)
+                if m:
+                    reset = t_now + int(m.group(1))
+            except (ValueError, AttributeError):
+                reset = None
+        if reset is None:
+            return None
+        if reset > t_now + _QUOTA_RESET_MAX_S:
+            reset = t_now + _QUOTA_RESET_MAX_S
+        return (reset, used or 0, limit or 0)
+    except Exception:
+        return None
 
 # How many times a single turn may switch to another model because KIT does
 # not serve the one it asked for (either "Model not found" or "…temporarily
@@ -32861,12 +33442,15 @@ class OpenAIClient(_BaseClient):
         here; a client without one behaves exactly as before.
         """
         probe = getattr(self, "should_stop", None)
-        if probe is None:
-            return False
-        try:
-            return bool(probe())
-        except Exception:
-            return False
+        if probe is not None:
+            try:
+                if bool(probe()):
+                    return True
+            except Exception:
+                pass
+        # The client's own stop flag (set directly by a test harness or
+        # an embedding layer): same semantics as the probe.
+        return bool(getattr(self, "_stop_requested", False))
 
     def _run_ceiling_reached(self, spent: float) -> str:
         """The run ceiling (``run_budget_s`` / ``run_budget_usd``) the
@@ -33138,13 +33722,31 @@ class OpenAIClient(_BaseClient):
             # session on another backend asks its own model instead of
             # failing on every action.
             wire = self.model
-        resp = self.client.with_options(
-            timeout=_classifier_timeout_s(), max_retries=0,
-        ).chat.completions.create(
-            model=wire or self.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=120, stream=False)
-        return str(resp.choices[0].message.content or "")
+        t0 = time.monotonic()
+        outcome = "error"
+        try:
+            resp = self.client.with_options(
+                timeout=_classifier_timeout_s(), max_retries=0,
+            ).chat.completions.create(
+                model=wire or self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=120, stream=False)
+            outcome = "verdict"
+            return str(resp.choices[0].message.content or "")
+        finally:
+            # A request against the endpoint's quota like the turn's own:
+            # written beside them, marked, so the count can be split by what
+            # spent it (KIT: 2,000 requests a key a day, 2026-11-11).
+            session = getattr(self, "metrics_session", "")
+            if isinstance(session, str) and session:
+                try:
+                    from . import turn_metrics as _tm_cls
+                    _tm_cls.record_request(
+                        session, model=wire or self.model, purpose="classifier",
+                        total_ms=int((time.monotonic() - t0) * 1000),
+                        finish_reason=outcome)
+                except Exception:
+                    pass
 
     def _attach_classifier_runner(
         self, permissions: Optional["KitToolPermissions"],
@@ -33160,9 +33762,13 @@ class OpenAIClient(_BaseClient):
         # classifier must be independent of the session's model (a slow one
         # with many agents latched every action to a human, 2026-10-29). The
         # client is the only place with both the session model and the
-        # endpoint, so it stows the resolved ids here. Cached roster only
-        # (no fetch): re-attaching on every set_permissions must not spend a
-        # /v1/models round trip each time.
+        # endpoint, so it stows the resolved ids here. The cached roster
+        # first; when it is empty -- every fresh process, so every headless
+        # and swarm session (measured 2026-11-11: the classifier ran on
+        # deepseek alone with no confirmation chain) -- it is fetched once,
+        # and a failed fetch is retried at most every _ROSTER_RETRY_S, so
+        # re-attaching on every set_permissions does not spend a /v1/models
+        # round trip each time.
         try:
             from . import model_capabilities as _mc
             from .action_classifier import DEFAULT_MODEL as _default_cls
@@ -33170,6 +33776,14 @@ class OpenAIClient(_BaseClient):
             base_url = getattr(self, "_base_url", "") or _mc._KIT_BASE_URL
             api_key = getattr(self, "_api_key", "") or ""
             served = _mc.kit_models_served(base_url, api_key)
+            if not served and getattr(self, "_provider", "") == "kit":
+                global _ROSTER_TRIED_AT
+                now = time.monotonic()
+                if (_ROSTER_TRIED_AT is None
+                        or now - _ROSTER_TRIED_AT >= _ROSTER_RETRY_S):
+                    _ROSTER_TRIED_AT = now
+                    served = _mc.kit_models_served(base_url, api_key,
+                                                   fetch=True)
             model = getattr(self, "model", "") or ""
             cfg_model = str(cfg.get("model") or _default_cls)
             explicit = bool(cfg.get("explicit_model"))
@@ -33918,6 +34532,10 @@ class OpenAIClient(_BaseClient):
         # Whether the announced-action continuation already fired this
         # turn; see the second auto-continue trigger.
         _announced_count = 0
+        # Bounded corrective re-requests for a PROMISED tool call that
+        # never came (shapes 1-4 in the field, harness main d44702503);
+        # see the corrective trigger below the announce continuation.
+        _promised_count = 0
         # The go-ahead and prose-choice triggers (go_ahead.py), once each
         # per turn, judged against the message that opened the turn and
         # every tool the turn called.
@@ -34405,6 +35023,93 @@ class OpenAIClient(_BaseClient):
                         cost_usd=self._estimate_cost(_total_in, _total_out),
                         cached_tokens=_total_cached, stop_reason="stopped")
                     return
+                _quota = _quota_429_reset(str(_stream_exc), now=time.time())
+                if _quota is not None:
+                    # A KIT hourly token-quota 429: the key is spent until
+                    # the reset. This is a spend ceiling, not congestion, so
+                    # it never reaches the transient backoff ladder nor the
+                    # shared endpoint gate (the gate stays at its own limit
+                    # and the round's `finally` has no congestion to report).
+                    # Wait out the reset in ~1 s slices honoring stop, then
+                    # retry the round; the jitter keeps sessions sharing a
+                    # key from all firing at the same second. The wait counts
+                    # toward the run's wall-clock budget, so a budget shorter
+                    # than the reset ends the turn with its own stop reason.
+                    _reset_epoch, _used, _limit = _quota
+                    self.quota_tokens_used = _used
+                    self.quota_tokens_limit = _limit
+                    # A quota wait is a retry, so it consumes the same
+                    # attempt ladder as a transient error: once drained,
+                    # re-raise instead of waiting forever against an
+                    # endpoint that never recovers.
+                    if _stream_attempt >= _STREAM_RETRY_MAX:
+                        raise _stream_exc
+                    _stream_attempt += 1
+                    _remaining = _reset_epoch - time.time()
+                    if _remaining > 0:
+                        _remaining += random.uniform(5.0, 30.0)
+                        import datetime as _dt_mod
+                        _until = _dt_mod.datetime.fromtimestamp(
+                            _reset_epoch, tz=_dt_mod.timezone.utc
+                        ).strftime("%H:%M")
+                        yield StreamEvent(type="notice", text=(
+                            f"\n🪙 KIT token quota used up -- waiting until "
+                            f"{_until} UTC ({max(1, int(_remaining // 60))} "
+                            "min). No request goes out inside the window.\n"))
+                        # Slices are counted, not clocked: each 1 s slice is
+                        # one second of wait regardless of how fast the
+                        # host executes the sleep, so a mocked sleep still
+                        # terminates and a real sleep keeps the wait honest.
+                        while _remaining > 0:
+                            if self._stop_was_requested() or getattr(
+                                    self, "_stop_requested", False):
+                                yield StreamEvent(
+                                    type="message_delta",
+                                    input_tokens=_total_in,
+                                    output_tokens=_total_out,
+                                    cost_usd=self._estimate_cost(
+                                        _total_in, _total_out),
+                                    cached_tokens=_total_cached,
+                                    stop_reason="stopped")
+                                return
+                            _ceiling_hit = self._run_ceiling_reached(
+                                self._estimate_cost(_total_in, _total_out))
+                            if _ceiling_hit:
+                                yield StreamEvent(type="notice", text=(
+                                    "\n🛑 The run's wall-clock budget is "
+                                    "shorter than the quota reset: this "
+                                    "turn stops here and the run starts "
+                                    "no new work. Nothing was lost; the "
+                                    "next run continues.\n"))
+                                yield StreamEvent(
+                                    type="message_delta",
+                                    input_tokens=_total_in,
+                                    output_tokens=_total_out,
+                                    cost_usd=self._estimate_cost(
+                                        _total_in, _total_out),
+                                    cached_tokens=_total_cached,
+                                    stop_reason="quota_wait_exceeds_budget")
+                                return
+                            # 0.25 s sub-slices: a stop/pause must be honored
+                            # within ~1 s, and 4 sub-slices still make one
+                            # logical second (a mocked sleep terminates).
+                            time.sleep(0.25)
+                            _remaining -= 0.25
+                        # The slices are done (a mocked sleep burns them
+                        # in microseconds, before an external stop flag
+                        # can land): still no retry on a stopped turn.
+                        if self._stop_was_requested() or getattr(
+                                self, "_stop_requested", False):
+                            yield StreamEvent(
+                                type="message_delta",
+                                input_tokens=_total_in,
+                                output_tokens=_total_out,
+                                cost_usd=self._estimate_cost(
+                                    _total_in, _total_out),
+                                cached_tokens=_total_cached,
+                                stop_reason="stopped")
+                            return
+                    continue
                 if not _is_stream_unsupported_error(_stream_exc):
                     # Not a stream-format issue. A transient shared-proxy
                     # hiccup (timeout / 5xx / rate-limit) retries the round —
@@ -34424,7 +35129,7 @@ class OpenAIClient(_BaseClient):
                         _round_in = 0
                         finish_reason = None
                         _stream_attempt += 1
-                        _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
+                        _delay = _transient_retry_delay(_stream_attempt)
                         yield StreamEvent(type="notice", text=_retry_notice(
                             type(_stream_exc).__name__,
                             time.monotonic() - _round_t0, _had_partial,
@@ -34769,11 +35474,14 @@ class OpenAIClient(_BaseClient):
                         _dsml_leaked = None
                     if _dsml_leaked:
                         self._dsml_rerequest = True
+                        # Sourced wording (LK1): the notice text lives in
+                        # leak_recovery.dsml_leak_notice, the one place both
+                        # this per-request notice and the engine's exhaustion
+                        # caveat read it from.
+                        from delfin.agent.leak_recovery import dsml_leak_notice
                         yield StreamEvent(
                             type="notice",
-                            text=(f"\n\n⚠️ a call to {_dsml_leaked[0]} "
-                                  f"was written as text instead of calling "
-                                  f"the tool; it did not run.\n"),
+                            text=dsml_leak_notice(_dsml_leaked[0]),
                         )
 
             # If model made tool calls, execute them locally and loop
@@ -34806,6 +35514,10 @@ class OpenAIClient(_BaseClient):
                             "arguments": _sendable_tool_args(_raw_emitted),
                         },
                     })
+                # A read_file naming several files becomes one call per
+                # file HERE, before anything records or dispatches it.
+                tc_list, _raw_args_by_id = _split_multi_read_calls(
+                    tc_list, _raw_args_by_id)
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
                 _turn_tool_names.update(
@@ -34903,10 +35615,10 @@ class OpenAIClient(_BaseClient):
                                                 "multi_edit", "apply_patch"):
                             result = json.dumps({"error": (
                                 f"invalid JSON in arguments for '{fn_name}': "
-                                f"{_args_parse_error}. The call was cut at "
-                                "the output limit and did NOT run; the same "
-                                "call cuts again. Write a long file in "
-                                "parts: write_file(path, <first part>), then "
+                                f"{_args_parse_error}. The arguments were "
+                                "cut off at the output limit; write the "
+                                "file in smaller parts: write_file(path, "
+                                "<first part>), then "
                                 "write_file(path, <next part>, "
                                 "mode=\"append\") for each further part."
                             )})
@@ -36068,6 +36780,48 @@ class OpenAIClient(_BaseClient):
             # 2026-10-20 (bug report davh 414e5a17): "Ich lese jetzt ...",
             # sent back once, read, announced the edit, and the turn ended --
             # turn after turn; the user saw "I'm doing it now" and nothing.
+            # Corrective trigger for a PROMISED tool call that never
+            # came. The four field shapes (harness main d44702503, 216
+            # runs on kit.deepseek-v4-flash, often right before a large
+            # write_file) end the turn with prose like "I am executing
+            # the write_file tool call now" and no tool call, so the run
+            # looks "done" with the task list untouched. PR #600 covers
+            # leaked tool-call MARKUP; this covers the prose promise.
+            # First, unlike the announce trigger below: the whole text is
+            # matched, not the last sentence, because the promise sits in
+            # the first sentence with declarative filler last. Second,
+            # unlike the announce trigger: it is gated on OPEN TASKS (the
+            # brief's condition), it does NOT need tool activity between
+            # rounds (the stalled model repeats the same sentence), and
+            # when the budget is spent the turn ends with a distinct
+            # stop_reason so a supervisor resumes it instead of a silent
+            # "done". Never after a tool ran in this response -- a tool
+            # result already answered the promise, and re-requesting
+            # would execute the step twice.
+            _promised_text = "".join(_text_chunks) if _text_chunks else ""
+            _promised_end_state = self._open_task_state()
+            _promised_fires = (
+                not _tool_calls
+                and _promised_count < _PROMISED_CONT_MAX
+                and _auto_cont_count < _AUTO_CONT_CAP
+                and not self._waiting_on_watched_jobs()
+                and _promised_end_state.get("state", "none")
+                in ("open", "unknown")
+                and _promises_an_unmade_tool_call(_promised_text))
+            if _promised_fires:
+                _promised_count += 1
+                _auto_cont_count += 1
+                if _promised_text.strip():
+                    api_messages.append(
+                        {"role": "assistant", "content": _promised_text})
+                api_messages.append({"role": "user",
+                                     "content": _PROMISED_CONT_TEXT})
+                yield StreamEvent(
+                    type="notice",
+                    text=("\n\n↻ promised a tool call → corrected: "
+                          + _PROMISED_CONT_TEXT + "\n"))
+                continue
+
             _announced = (_announced_count < _ANNOUNCE_CONT_MAX
                           and (_announced_count == 0 or _did_tools_since_cont)
                           and _auto_cont_count < _AUTO_CONT_CAP
@@ -36185,9 +36939,19 @@ class OpenAIClient(_BaseClient):
                                   text="\n\n" + _end_notice + "\n")
             _stop = finish_reason or "end_turn"
             if _stop in ("end_turn", "stop", ""):
-                _stop = {"open": "end_turn_open_tasks",
-                         "unknown": "end_turn_tasks_unknown"}.get(
-                             str(_end_state.get("state", "")), "end_turn")
+                # A promise that survived the corrective budget: the turn
+                # does not end "done" -- the supervisor sees WHY it ended
+                # and resumes it (the brief's clear stop_reason).
+                if (not _tool_calls
+                        and _promised_end_state.get("state", "none")
+                        in ("open", "unknown")
+                        and _promises_an_unmade_tool_call(
+                            "".join(_text_chunks) if _text_chunks else "")):
+                    _stop = _PROMISED_STOP_REASON
+                else:
+                    _stop = {"open": "end_turn_open_tasks",
+                             "unknown": "end_turn_tasks_unknown"}.get(
+                                 str(_end_state.get("state", "")), "end_turn")
             _uncommitted = _uncommitted_note(
                 getattr(self._permissions, "workspace", None))
             if _uncommitted:

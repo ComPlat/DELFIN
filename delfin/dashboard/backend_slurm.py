@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -95,6 +96,12 @@ class SlurmJobBackend(JobBackend):
     # drop the cache so the UI still reacts to the user immediately. Sites can
     # widen or (at their own risk) narrow this via DELFIN_SQUEUE_MIN_INTERVAL.
     _JOBS_CACHE_SECONDS = 25.0
+    #: While no view of jobs is on screen (see JobBackend.jobs_view_visible)
+    #: periodic callers -- the agent's job watcher, a hidden activity panel --
+    #: reach squeue at most this often, so a job that ends is still noticed,
+    #: just later.  Opening the Job Status tab or pressing Refresh asks at
+    #: once.  DELFIN_SQUEUE_BACKGROUND_INTERVAL overrides it; 0 means never.
+    _JOBS_BACKGROUND_SECONDS = 300.0
     #: sshare's numbers change once per PriorityCalcPeriod (5 min by default),
     #: so asking more often only loads the controller.
     _FAIRSHARE_CACHE_SECONDS = 300.0
@@ -623,11 +630,56 @@ class SlurmJobBackend(JobBackend):
         env_vars += f',DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
         env_vars = self._append_extra_env(env_vars, extra_env)
         env_vars = self._append_tool_exports(env_vars)
+        submit_script = self.submit_templates_dir / 'submit_delfin.sh'
+        gpu, partition, refusal = self._mlip_goat_gpu(
+            job_dir, submit_script, time_limit, pal_used, mem_used)
+        if refusal:
+            return SubmitResult(1, '', refusal)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
-            job_name, self.submit_templates_dir / 'submit_delfin.sh',
+            job_name, submit_script, gpu=gpu, partition=partition,
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
+
+    def _mlip_goat_gpu(self, job_dir, submit_script, time_limit, pal, mem_mb):
+        """``(gres, partitions, refusal)`` for a DELFIN job, all None but for an MLIP GOAT.
+
+        A CONTROL.txt with ``global_opt_method=mlip:<backend>`` on cuda runs
+        GOAT on the job's own node and needs its GPU; without one the job
+        stops at the GOAT step, so it is not sent to a CPU partition at all.
+        The GPU partitions are the configured ones
+        (:meth:`_gpu_partition_candidates`); those whose MaxTime cannot hold
+        the time limit are left out with one scontrol query, the rest are
+        asked with sbatch --test-only like every multi-partition submit, and
+        the job goes to all that fit. PAL, maxcore and the time limit are
+        never changed to fit. ``refusal`` is the reason when none can.
+        """
+        try:
+            control = (Path(job_dir) / 'CONTROL.txt').read_text(
+                encoding='utf-8', errors='replace')
+        except OSError:
+            return None, None, ''
+        from delfin.mlp_tools.goat_gpu_submit import gpu_partitions_for, mlip_goat_method
+
+        method = mlip_goat_method(control)
+        if not method:
+            return None, None, ''
+        try:
+            asked_time = normalize_time_limit(time_limit)
+        except ValueError:
+            return None, None, ''  # _sbatch refuses it with the reason
+        why = f'CONTROL.txt sets global_opt_method={method} on cuda: '
+        fitting, reason = gpu_partitions_for(self._gpu_partition_candidates(), asked_time)
+        if not fitting:
+            return None, None, why + reason
+        gres = 'gpu:1'
+        accepted = self._gpu_partitions_for_names(
+            fitting.split(','), job_dir, submit_script, asked_time, pal, mem_mb, gres)
+        if not accepted:
+            return None, None, why + (
+                f'none of the GPU partitions {fitting} accepts a job of {pal} cores, '
+                f'{mem_mb} MB and {asked_time} with one GPU (sbatch --test-only)')
+        return gres, accepted, ''
 
     def submit_guppy_batch(
         self,
@@ -776,8 +828,9 @@ class SlurmJobBackend(JobBackend):
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 
     def _gpu_partition_candidates(self) -> tuple:
-        """Settings, then DELFIN_SLURM_GPU_PARTITIONS, then the site profile,
-        then every GPU partition scontrol reports.
+        """Settings, then DELFIN_SLURM_GPU_PARTITIONS, then DELFIN_MLP_CLUSTER_GPU_PARTITIONS
+        (the MLP jobs' own variable), then the site profile, then every GPU
+        partition scontrol reports.
 
         This used to ask sinfo for partitions named gpu, gpu_4, gpu_8 and
         gpu_a100. bwUniCluster 3.0 refuses sinfo and has none of those names,
@@ -787,6 +840,7 @@ class SlurmJobBackend(JobBackend):
             self._gpu_candidates = (
                 self._partition_list(self._gpu_partitions_setting)
                 or self._partition_list(os.environ.get('DELFIN_SLURM_GPU_PARTITIONS', ''))
+                or self._partition_list(os.environ.get('DELFIN_MLP_CLUSTER_GPU_PARTITIONS', ''))
                 or PROFILE_GPU_PARTITIONS.get(self.slurm_profile, ())
                 or discover_gpu_partitions()
             )
@@ -801,7 +855,14 @@ class SlurmJobBackend(JobBackend):
         24-hour job without knowing its name. '' when none can: the job then
         runs on CPUs.
         """
-        candidates = self._gpu_partition_candidates()
+        return self._gpu_partitions_for_names(
+            self._gpu_partition_candidates(), job_dir, submit_script, time_limit,
+            pal, mem_mb, gres)
+
+    def _gpu_partitions_for_names(self, candidates, job_dir, submit_script, time_limit,
+                                  pal, mem_mb, gres='gpu:1') -> str:
+        """:meth:`_gpu_partitions_for` over the given candidates."""
+        candidates = tuple(candidates)
         if len(candidates) <= 1:
             return candidates[0] if candidates else ''
         fitting = []
@@ -870,6 +931,34 @@ class SlurmJobBackend(JobBackend):
                 pass
         return self._JOBS_CACHE_SECONDS
 
+    def _jobs_background_seconds(self) -> float:
+        raw = os.environ.get('DELFIN_SQUEUE_BACKGROUND_INTERVAL', '').strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                pass
+        return self._JOBS_BACKGROUND_SECONDS
+
+    def _jobs_view_open(self) -> bool:
+        """Whether this list_jobs() call may run at the normal pace.
+
+        Periodic refreshes run on timer threads (the agent's job watcher, the
+        activity panel's tick); a button, a command or a tab switch runs on
+        the kernel's main thread.  Only the periodic ones slow down while no
+        view of jobs is on screen, so a user action never gets an answer
+        older than the normal throttle.
+        """
+        gate = self.jobs_view_visible
+        if not callable(gate):
+            return True
+        if threading.current_thread() is threading.main_thread():
+            return True
+        try:
+            return bool(gate())
+        except Exception:
+            return True
+
     def _invalidate_jobs_cache(self) -> None:
         """Force the next list_jobs() to ask SLURM again."""
         self._jobs_cache = None
@@ -887,7 +976,13 @@ class SlurmJobBackend(JobBackend):
         # afford it.
         if not force and self._jobs_cache_at is not None:
             age = time.monotonic() - self._jobs_cache_at
-            if 0.0 <= age < self._jobs_cache_seconds():
+            interval = self._jobs_cache_seconds()
+            if not self._jobs_view_open():
+                # Nobody is looking at jobs: periodic callers get the last
+                # answer, and squeue is asked only at the background pace.
+                background = self._jobs_background_seconds()
+                interval = float('inf') if background <= 0 else max(interval, background)
+            if 0.0 <= age < interval:
                 return list(self._jobs_cache or [])
 
         jobs = self._query_jobs()

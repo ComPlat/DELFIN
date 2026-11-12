@@ -842,6 +842,10 @@ _XTB_STUB_DIR = Path(__file__).resolve().parent / "stubs"
 #: was in setup, and wrote xtb 6.7.1 into delfin/qm_tools/.mamba_env of the
 #: checkout 5 s into the run (test_the_switch_holds_between_tests_as_well).
 os.environ["DELFIN_AUTO_INSTALL_QM_TOOLS"] = "0"
+# Transient-retry backoff waits minutes in production; tests keep the old count
+# and do not sleep (delfin/agent/api_client.py _transient_retry_delay).
+os.environ.setdefault("DELFIN_STREAM_RETRY_MAX", "3")
+os.environ.setdefault("DELFIN_STREAM_RETRY_DELAY_SCALE", "0")
 
 
 @pytest.fixture(autouse=True)
@@ -1585,6 +1589,12 @@ def _hypothesis_store_removed() -> None:
 
 
 def pytest_configure(config):
+    # Tests never run on a shared cluster login node (account suspension
+    # 2026-11-10, issue #640): `delfin-agent test-on-slurm` runs them on a
+    # compute node from a node-local copy.
+    from delfin.hpc_guard import on_login_node, refusal_text
+    if on_login_node():
+        pytest.exit(refusal_text("tests", "delfin-agent test-on-slurm"), returncode=2)
     config.addinivalue_line(
         "markers",
         "slow: heavy or order-dependent test, excluded from the fast CI gate",

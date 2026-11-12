@@ -74,6 +74,12 @@ def _service_env() -> dict[str, str]:
 
 def start_service(*, idle_exit_s: float | None = None) -> subprocess.Popen:
     from .. import state_paths
+    from ...hpc_guard import refuse_on_login_node
+
+    # The service runs every session's turns: never on a shared login node.
+    refuse_on_login_node("the agent service",
+                         "run delfin-agent tui or chat inside a SLURM job "
+                         "(on a login node they start there themselves)")
 
     log = service_log()
     state_paths.ensure_dir(log.parent)

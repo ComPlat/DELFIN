@@ -133,13 +133,17 @@ def test_submission_goes_through_scheduler_client(tmp_path, monkeypatch):
     )
     out = submit_extopt_job(_goat(tmp_path), cfg=_cfg(), submit=True)
     assert out["submitted"] is True
-    assert calls == [("sbatch", ["sbatch", str(tmp_path / "goat_job.sbatch")])]
+    # The partition's MaxTime is asked first (D1), then the one sbatch.
+    assert [c for c in calls if c[0] == "sbatch"] == [
+        ("sbatch", ["sbatch", str(tmp_path / "goat_job.sbatch")])]
+    assert calls[0][1][:3] == ["scontrol", "show", "partition"]
 
 
 def test_opt_script_unchanged_by_goat_lines(tmp_path):
-    """An orca-mlips opt job keeps the bare `orca` call and no GOAT note."""
+    """An orca-mlips opt job uses absolute ORCA, without GOAT commentary."""
     req = _goat(tmp_path, run_type="opt")
     plan = plan_extopt_job(req, cfg=_cfg(cpus=8))
     script = plan.script.read_text()
-    assert "orca goat_job.inp > goat_job.out" in script
-    assert "ORCA_BIN" not in script and "GOAT" not in script
+    assert 'ORCA_BIN="$(command -v orca)"' in script
+    assert '"$ORCA_BIN" goat_job.inp > goat_job.out' in script
+    assert "GOAT" not in script

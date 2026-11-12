@@ -299,11 +299,13 @@ class Kernel:
 
     def _at_safe(self, device, values: dict) -> bool:
         for ch, sv in device.safe_state.items():
-            v = values.get(ch)
+            spec = device.writes[ch]
+            # the value is read where the write is read back (a Shelly
+            # writes `power` and reports it as `output`)
+            v = values.get(spec.readback or ch)
             if v is _expr.UNKNOWN or v is None:
                 return False
             v = v[0]
-            spec = device.writes[ch]
             if spec.is_state:
                 if str(v) != str(sv):
                     return False
@@ -602,7 +604,15 @@ class Kernel:
             if not _same(lock, actor) or (device_id and dev != device_id):
                 continue
             if dev in snap["active"]:
-                self.safe(dev, f"released by {actor.person}", latch=False)
+                res = self.safe(dev, f"released by {actor.person}", latch=False)
+                if not res.get("ok"):
+                    # Still hazardous and the drive failed: keep the lock and
+                    # the active guard so the dead-man keeps watching it, and
+                    # do not report the device as released.
+                    _audit.alert("lab_release",
+                                 f"{dev}: not released; safe state does not "
+                                 "hold, the guard stays")
+                    continue
             with _store.state() as doc:
                 doc["locks"].pop(dev, None)
                 doc["active"].pop(dev, None)
@@ -627,7 +637,11 @@ class Kernel:
         after = self._fresh(d)
         confirmed = "__error__" not in after and self._at_safe(d, after)
         with _store.state() as doc:
-            doc["active"].pop(d.id, None)
+            if confirmed:
+                # The hazardous obligation ends only when the readback
+                # confirms the device is safe; otherwise the dead-man and
+                # the release guard keep watching it.
+                doc["active"].pop(d.id, None)
             if latch:
                 doc["latched"][d.id] = {"reason": reason, "ts": self.clock()}
                 doc["locks"].pop(d.id, None)
