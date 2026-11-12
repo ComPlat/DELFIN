@@ -234,6 +234,11 @@ $(nft_start_line)
 ExecStart=${PREFIX}/bin/simplex-chat -d ${STATE_DIR}/simplex.db --chat-server-port ${API_PORT} --files-folder ${STATE_DIR} --temp-folder ${STATE_DIR}/tmp --auto-accept-files 0 --create-bot-display-name ${BOT_NAME} --create-bot-allow-files
 Restart=on-failure
 RestartSec=5
+# The daemon logs every API command it receives, message texts included
+# ("received command ... /_send ... text"); measured in the Pi's journal on
+# 2026-11-12. Those lines never reach the journal (systemd >= 253; an older
+# systemd ignores the setting with a warning).
+LogFilterPatterns=~received command
 
 # hardening
 NoNewPrivileges=yes
