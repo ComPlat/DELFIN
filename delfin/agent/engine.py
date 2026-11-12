@@ -310,6 +310,22 @@ _KIT_CODING_PREFIX = "mcp__kit-coding__"
 # blocks (open tasks, finished jobs, budget, late answers). The pipeline roles
 # run one scripted step each and have no list of their own to keep.
 _STEERING_ROLES = ("solo_agent", "dashboard_agent", "office_agent")
+
+#: The turn-tail line of a session enabled for the messenger (/sync):
+#: without it the model did not know the user reads it on the phone. One
+#: fixed line, in the volatile tail -- never in the system prompt, whose
+#: bytes the prefix cache keeps.
+MESSENGER_LINE = (
+    "[Messenger] This session is connected to the user's phone through SimpleX: "
+    "your replies appear there too. A file you offer for download (in the "
+    "messenger outbox the messenger note names) can be fetched there.")
+#: The rest of the line: the session's outbox and the forum note (formerly
+#: appended by the bridge to every phone prompt). ~330 characters.
+MESSENGER_RULES = (
+    " Offer a file only when the user asks, as a plain file in {outbox} (no secrets, no "
+    "chat export; name it in your reply). An explicit short note to other agents: forum.txt "
+    "there, at most 1400 bytes, passed on only when the user enabled the exchange; never "
+    "answer other agents' notes on your own.")
 # Of those blocks, the ones worth re-sending when they change mid-turn. The
 # project pin never changes within a turn, and the backend notice is a
 # session-opening statement — re-sending either would cost tokens to say
@@ -2854,7 +2870,8 @@ class AgentEngine:
         # change invalidates nothing before it, and the message keeps its
         # tail as a private key so every later request repeats the bytes
         # the endpoint already holds.
-        volatile = extra_blocks + ([dashboard_state] if dashboard_state else [])
+        volatile = (extra_blocks + ([dashboard_state] if dashboard_state else [])
+                    + ([self.messenger_line()] if self._on_the_phone() else []))
         _last = self.messages[-1] if self.messages else None
         _has_turn = isinstance(_last, dict) and _last.get("role") == "user"
         if volatile and not _has_turn:
@@ -2896,6 +2913,32 @@ class AgentEngine:
         return self.loader.build_system_prompt(
             **self._prompt_build_args(
                 role, memory_context, task_text, live_state, _perm_mode))
+
+    def messenger_line(self) -> str:
+        """MESSENGER_LINE with this session's rules: where a file is offered
+        (its outbox) and the forum note. Stable for the session, so the
+        tail's bytes repeat (the prefix cache); said once per turn."""
+        sid = str(getattr(self, "session_id", "") or "")
+        try:
+            from delfin.messenger.media import ROOT, session_hash
+            perms = getattr(getattr(self, "client", None), "_permissions", None)
+            ws = Path(str(getattr(perms, "workspace", "") or self.repo_dir))
+            outbox = ws / ROOT / session_hash(sid) / "outbox"
+        except Exception:
+            return MESSENGER_LINE
+        return MESSENGER_LINE + MESSENGER_RULES.format(outbox=outbox)
+
+    def _on_the_phone(self) -> bool:
+        """Whether this session is enabled for the messenger (its /sync
+        record, keyed by the session id). Never raises."""
+        sid = str(getattr(self, "session_id", "") or "")
+        if not sid:
+            return False
+        try:
+            from delfin.messenger import activation
+            return activation.enabled(sid)
+        except Exception:
+            return False
 
     def _prompt_build_args(self, role: str, memory_context: str,
                            task_text: str, live_state: str,

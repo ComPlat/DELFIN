@@ -159,14 +159,56 @@ class Daemon:
     async def send_text(self, contact_id: str, text: str) -> dict:
         return await self.send_chat("@" + str(int(contact_id)), text)
 
-    async def send_chat(self, chat: str, text: str) -> dict:
+    async def send_chat(self, chat: str, text: str, quote=None) -> dict:
+        """APISendMessages; ``quote``: the item id this message answers
+        (ComposedMessage.quotedItemId), shown by the app as a reply."""
         if chat[:1] not in {"@", "#"} or not chat[1:].isdigit():
             raise ValueError("invalid chat reference")
-        messages = [{"msgContent": {"type": "text", "text": text}, "mentions": {}}]
-        return await self.command(f"/_send {chat} json " + json.dumps(messages, ensure_ascii=False))
+        message = {"msgContent": {"type": "text", "text": text}, "mentions": {}}
+        if quote is not None and str(quote).isdigit():
+            message["quotedItemId"] = int(quote)
+        return await self.command(f"/_send {chat} json " + json.dumps([message], ensure_ascii=False))
+
+    async def set_bot_profile(self, commands: list) -> None:
+        """The active user as a bot (APIUpdateProfile, ``/_profile``):
+        ``peerType`` "bot" and ``preferences.commands`` the menu; the name,
+        the picture and the other preferences are kept."""
+        reply = await self.command("/user")
+        user = reply.get("user") or {}
+        profile = user.get("profile") or {}
+        keep = {k: profile[k] for k in ("displayName", "fullName", "shortDescr", "description",
+                                        "image", "contactLink") if profile.get(k) is not None}
+        preferences = dict(profile.get("preferences") or {})
+        preferences["commands"] = list(commands)
+        await self.command(f"/_profile {int(user['userId'])} " + json.dumps(
+            {**keep, "preferences": preferences, "peerType": "bot"}, ensure_ascii=False))
+
+    async def set_contact_menu(self, contact_id: str, commands: list) -> None:
+        """One contact's command menu (APISetContactPrefs, ``/_set prefs``)."""
+        await self.command(f"/_set prefs @{int(contact_id)} "
+                           + json.dumps({"commands": list(commands)}, ensure_ascii=False))
+
+    async def enable_receipts(self) -> None:
+        """Delivery receipts for contacts and groups, best effort
+        (``/_set receipts contacts|groups <userId> on``: the chat core's
+        parser; the bot API reference does not list it)."""
+        try:
+            uid = await self.user_id()
+        except (SimplexError, asyncio.TimeoutError, KeyError, ValueError):
+            return
+        for kind in ("contacts", "groups"):
+            try:
+                await self.command(f"/_set receipts {kind} {uid} on")
+            except (SimplexError, asyncio.TimeoutError):
+                pass
 
     async def receive_file(self, file_id, path):
-        return await self.command(f"/freceive {int(file_id)} encrypt=off {path}")
+        # approved_relays=on: the phone uploads to an XFTP relay from its own
+        # server list; one the daemon does not know made the daemon refuse
+        # the download (fileNotApproved -- measured on the Pi, every few
+        # voice messages). The gateway receives only from a verified phone.
+        # Syntax: bots/api/COMMANDS.md, APIReceiveFile.
+        return await self.command(f"/freceive {int(file_id)} approved_relays=on encrypt=off {path}")
 
     async def send_file(self, chat, path, caption=''):
         if chat[:1] not in {'@', '#'} or not chat[1:].isdigit():
@@ -175,37 +217,47 @@ class Daemon:
                      'msgContent': {'type': 'file', 'text': caption}, 'mentions': {}}]
         return await self.command(f'/_send {chat} json ' + json.dumps(messages))
 
-    async def create_group(self, title: str) -> str:
+    async def create_group(self, title: str, commands: list | None = None) -> str:
         """A new group; a name the daemon refuses is retried once with the
-        ``validName`` it offers (v7.0.3: display names end at 50 characters)."""
+        ``validName`` it offers (v7.0.3: display names end at 50 characters).
+        ``commands``: the group's menu (groupPreferences.commands)."""
         try:
-            reply = await self._new_group(title)
+            reply = await self._new_group(title, commands)
         except SimplexError as exc:
             valid = _valid_name(exc, title)
             if not valid:
                 raise
-            reply = await self._new_group(valid)
+            reply = await self._new_group(valid, commands)
         return "#" + str(int(reply["groupInfo"]["groupId"]))
 
-    async def _new_group(self, title: str) -> dict:
+    @staticmethod
+    def _group(title: str, commands: list | None) -> dict:
         profile = {"displayName": title, "fullName": title}
-        return await self.command(f"/_group {await self.user_id()} " + json.dumps(profile))
+        if commands:
+            profile["groupPreferences"] = {"commands": list(commands)}
+        return profile
+
+    async def _new_group(self, title: str, commands: list | None = None) -> dict:
+        return await self.command(f"/_group {await self.user_id()} "
+                                  + json.dumps(self._group(title, commands), ensure_ascii=False))
 
     async def invite(self, chat: str, contact_id: str) -> None:
         await self.command(f"/_add #{int(chat[1:])} {int(contact_id)} member")
 
-    async def rename_group(self, chat: str, title: str) -> None:
+    async def rename_group(self, chat: str, title: str, commands: list | None = None) -> None:
+        """APIUpdateGroupProfile: the whole profile, so the menu goes with
+        the name (``commands``) or is dropped."""
         try:
-            await self._group_profile(chat, title)
+            await self._group_profile(chat, title, commands)
         except SimplexError as exc:
             valid = _valid_name(exc, title)
             if not valid:
                 raise
-            await self._group_profile(chat, valid)
+            await self._group_profile(chat, valid, commands)
 
-    async def _group_profile(self, chat: str, title: str) -> None:
-        await self.command(f"/_group_profile #{int(chat[1:])} " +
-                           json.dumps({'displayName': title, 'fullName': title}))
+    async def _group_profile(self, chat: str, title: str, commands: list | None = None) -> None:
+        await self.command(f"/_group_profile #{int(chat[1:])} "
+                           + json.dumps(self._group(title, commands), ensure_ascii=False))
 
     async def contact_code(self, contact_id: str) -> str | None:
         """The connection's security code, as the phone shows it under
@@ -223,6 +275,46 @@ class Daemon:
         reply = await self.command(f"/_connect {await self.user_id()}")
         self.invitation_id = (reply.get("connection") or {}).get("pccConnId")
         return (reply.get("connLinkInvitation") or {}).get("connFullLink")
+
+    async def new_invitation(self) -> tuple[str | None, str | None]:
+        """A one-time invitation: (link, connection id). The link carries the
+        connection's own keys; it is answered only once by the daemon."""
+        reply = await self.command(f"/_connect {await self.user_id()}")
+        conn = (reply.get("connection") or {}).get("pccConnId")
+        link = (reply.get("connLinkInvitation") or {}).get("connFullLink")
+        return link, (str(conn) if conn is not None else None)
+
+    # Revocation and expiry (best effort: the pinned v7.0.3 bot reference
+    # does not list these chat-core commands; a refusal is caught by the
+    # gateway, which then leaves the group instead).
+
+    async def delete_contact(self, contact_id: str) -> None:
+        await self.command(f"/_delete @{int(contact_id)} notify=off")
+
+    async def delete_pending(self, conn_id) -> None:
+        await self.command(f"/_delete :{int(conn_id)}")
+
+    async def remove_member(self, chat: str, contact_id: str) -> None:
+        """Remove the member that is ``contact_id`` from group ``chat``."""
+        group = int(chat[1:])
+        reply = await self.command(f"/_members #{group}")
+        members = (reply.get("group") or {}).get("members") or reply.get("members") or []
+        ids = [m.get("groupMemberId") for m in members
+               if str(m.get("memberContactId") or "") == str(int(contact_id))]
+        if not ids:
+            raise SimplexError("memberNotFound")
+        await self.command(f"/_remove #{group} {','.join(str(int(i)) for i in ids)}")
+
+    async def update_message(self, chat: str, item_id, text: str) -> None:
+        """Edit a message the bot sent (APIUpdateChatItem, ``/_update item``)."""
+        if chat[:1] not in {"@", "#"} or not chat[1:].isdigit():
+            raise ValueError("invalid chat reference")
+        body = {"msgContent": {"type": "text", "text": text}, "mentions": {}}
+        await self.command(f"/_update item {chat} {int(item_id)} json "
+                           + json.dumps(body, ensure_ascii=False))
+
+    async def leave_group(self, chat: str) -> None:
+        await self.command(f"/_leave #{int(chat[1:])}")
 
 
 def extract_contact_list(reply: dict) -> list[dict]:

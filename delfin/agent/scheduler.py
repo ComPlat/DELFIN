@@ -515,6 +515,38 @@ class Scheduler:
                 self._save()
         return fired
 
+    def take_due(self, owns: Callable[[str], bool]) -> list[ScheduleEntry]:
+        """The due, enabled entries whose owning session ``owns`` accepts,
+        handed over as fired: a one-shot is removed, an interval
+        rescheduled; a one-shot past its grace is disabled with the reason
+        instead (as tick does). For a session that pulls its wake-ups at
+        its idle prompt (the terminal, the agent service) rather than
+        registering a fire listener (the dashboard)."""
+        taken: list[ScheduleEntry] = []
+        now = time.time()
+        with self._lock:
+            self._absorb_external_changes()
+            owners = self._read_owners()
+            changed = False
+            for ent in list(self._entries.values()):
+                owner = owners.get(ent.id, "")
+                if not owner or ent.disabled or not ent.is_due(now) or not owns(owner):
+                    continue
+                changed = True
+                if ent.is_stale(now):
+                    self._disable(ent, (
+                        f"not fired: overdue by {int(now - ent.next_fire_at)}s, past the "
+                        f"{int(_STALE_ONCE_GRACE_S)}s grace for a one-shot wake-up. "
+                        "Schedule it again if it is still wanted."))
+                    continue
+                taken.append(ent)
+                if not ent.reschedule(now):
+                    self._entries.pop(ent.id, None)
+                    self._removed.add(ent.id)
+            if changed:
+                self._save()
+        return taken
+
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
