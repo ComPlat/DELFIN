@@ -7,6 +7,276 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a new commit's install holds no turn, and keeps to the login node's share
+
+- **The first submit of a commit the cluster does not have comes back at
+  once.** `cluster_submit` starts the install and keeps the approved batch
+  (`~/.delfin/remote_pending.json`), and the agent ends its turn. Before,
+  the turn waited for the whole install: 25 minutes on kcist.
+- **DELFIN's job watcher submits the batch once the install is complete**,
+  exactly as approved and without asking again. The files and the budget
+  are checked again first, as for any submit. Its jobs are then watched for
+  the session that sent the batch, and the session reads at its next look
+  that the batch went in.
+- **When the batch cannot go in, nothing is submitted.** That is the case
+  when the install failed or was stopped, a folder changed, or the budget
+  no longer covers it. A notice goes to NEEDS YOU, and the session is woken
+  and told why. Without a login, the batch waits and the login item says
+  so. A service started after the PC was off submits what it finds
+  installed.
+- **The install keeps to the login node's share** (issue #640): one compile
+  or build at a time (hpc_guard's 2-core budget less one for the person's
+  own work), one BLAS/OpenMP thread, `nice -n 19`. `meson compile` (std2)
+  now honours `MAKE_JOBS` too; before, ninja ran nproc+2 jobs.
+- **An install hpc_guard stopped is reported as `stopped`**, not waited for.
+  hpc_guard SIGSTOPs the busiest DELFIN process when a user stays over the
+  budget, and the install's processes count as DELFIN's by their paths.
+  Such an install is never removed as unused, and the next batch the person
+  approves for that commit ends it and starts the install again (on a login
+  node only a job may resume a stopped process).
+- **`/jobs` shows a batch that waits for its install** as a `BATCH` row of
+  its cluster, before the cluster's Slurm jobs: installing (and for how
+  long), installed and about to go in, stopped by hpc_guard, failed, or
+  waiting for a login. `space` shows the approved jobs, the commit and the
+  install log's last lines. Once the watcher has settled the batch, the row
+  goes: its jobs, or NEEDS YOU, say what became of it.
+
+### Added — a cluster is added in the window, and an agent can only propose one
+
+- **`a` in `/clusters` opens an add form** (`tui/src/clusters/add.tsx`):
+  one of the clusters cluster-tunnel knows (bwUniCluster 3, HoreKa,
+  HAICORE, KCIST, IntNano) or another one by its login host, then the
+  name, your user name there (with the preset's hint), the partition
+  DELFIN's jobs go to, the work dir and the install root. The agent service
+  writes ctun's entry and DELFIN's `remote.clusters` entry from it
+  (`delfin/remote/setup.py`), each value checked before anything is
+  written; when DELFIN's settings cannot be written, ctun's entry goes
+  again. A preset brings its login prompts and its budget guard
+  (`guard_scope: every-command`); a cluster given by host has none. No
+  `ctun config` or settings file is edited by hand any more.
+- **The host key**: a preset's fingerprint that its operators publish is
+  pinned at once when the server presents exactly it. Any other key is
+  shown -- beside the published one when they differ -- and `y` pins
+  exactly the key shown, `n` leaves it unpinned (DELFIN then refuses the
+  cluster, and enter on its row shows the key again). Then the login field
+  opens.
+- **`x` removes the selected cluster** from DELFIN's settings and ctun's
+  config (which closes its tunnel and unpins its key), after a `y`; not
+  while DELFIN still follows a job there.
+- **`cluster_propose`** lets an agent propose a cluster: a NEEDS YOU item
+  that opens the form filled in, for the person to check and send. It
+  writes nothing else, is never answered with text, and is advertised with
+  or without a cluster (+95 tokens a request). The service's
+  `cluster.add`, `cluster.hostkey`, `cluster.pin` and `cluster.remove` are
+  taken only from a window (service version 7).
+- **ORCA**: a logged-in cluster's row and details say whether ORCA is where
+  DELFIN's installer looks for it, and what to do when it is not. DELFIN
+  never copies ORCA.
+- DELFIN depends on cluster-tunnel 0.10 (presets, `add_cluster`,
+  `remove_cluster`, pinning only an expected fingerprint).
+
+### Added — a cluster job's results come back, and the session that sent it is told
+
+- **DELFIN's job watcher** (`delfin/remote/watch.py`) follows every job
+  DELFIN submitted to a cluster (`~/.delfin/remote_jobs.jsonl`). The agent
+  service asks each cluster once a minute with one ctun probe of the user's
+  jobs, and by id for a job the probe no longer lists. When a job ends, its
+  key results come back into `<job folder>/<cluster>-<id>/` in the
+  workspace: DELFIN_Data.json, DELFIN.txt and the report, ORCA outputs,
+  inputs, geometries, logs and the exit marker, the folder's own before its
+  subfolders', at most 100 MB a file and 500 MB a job. Wave functions,
+  densities and scratch stay on the cluster, and so does the job folder; a
+  resubmit of the job folder leaves the fetched results out. A fetch that
+  fails is tried again over about a day.
+- **The outcome is judged on the fetched copy as on a local run** (exit
+  marker, run log, DELFIN_Data, ORCA's termination line, with Slurm's
+  state): a COMPLETED job whose run failed is reported failed, one whose
+  success DELFIN's files cannot confirm "unverified", and a failed one
+  carries the error signatures and job_fix's assessment. A notice goes to
+  NEEDS YOU; nothing a job wrote reaches the session's prompt.
+- **The session that submitted the job is told**: its next turn reads it,
+  a running session wakes at its next idle look, and the service wakes a
+  sleeping session for it. `cluster_submit` registers each job as a watch
+  of the session's (job_monitor's `cluster` kind), says where its results
+  will be, and tells the agent to end its turn instead of polling. A
+  cluster watch outlives the seven-day prune while the job is followed;
+  `/jobs` shows the state the watcher saw.
+- **Also after the PC was off**: the next agent service brings back what
+  ended meanwhile. Without a login it asks for one in NEEDS YOU, saying how
+  many jobs wait (at most twice a day), and goes on once logged in; the
+  jobs of a cluster that stays out of reach are given up after 30 days.
+  While a followed job is queued or running on a logged-in cluster, the
+  service does not stop for idleness.
+- Slurm's "oom_kill event" line is recognised as out of memory.
+
+### Added — the agent works on DELFIN's clusters, and a person approves every change there
+
+- **Seven cluster tools** (`delfin/agent/cluster_tools.py`), advertised
+  only while `remote.clusters` names a cluster: `cluster_status` (logged in
+  or not, budget, jobs, whether the PC's commit is installed),
+  `cluster_read` (a file, its tail, a folder's listing), `cluster_fetch`
+  (into the workspace), `cluster_upload`, `cluster_submit`,
+  `cluster_cancel` and `cluster_run` (one command on the login node).
+- **Whatever changes something on a cluster is asked every time, in every
+  mode** -- bypassPermissions too. With nobody to ask it is refused, a
+  refusal is not asked again in the session, and auto mode queues the call
+  for the user. The status and reading DELFIN's work dir run unasked;
+  reading or fetching elsewhere is asked; `~/.ssh`, `~/.config`, the shell
+  histories and the like, names the secret deny list knows and other
+  users' homes are never read, judged where a path really leads, and a
+  folder that holds them (the home) is never fetched. A fetch writes only
+  where write_file may, asked in the default mode like any write and under
+  diff approval (it stages nothing), and brings no link along, nor a
+  folder's own keys and `.env` files.
+- **`cluster_submit` runs DELFIN workflows and single ORCA inputs as Slurm
+  jobs** (`delfin.remote.jobs`). Resources are what the run uses: CONTROL.txt
+  (or DELFIN's defaults where it names none) or the input -- PAL, maxcore,
+  job_timeout_hours; more memory may be asked for, other cores or less
+  memory are refused. The batch is checked first -- folders in the
+  workspace without links or secrets, the partition, the session's budget
+  (core-hours or job-hours, as the cluster counts) and the managed ceiling,
+  the install -- and refused before anyone is asked when it does not fit.
+  The one dialog per batch shows each job's cores, memory and time, the
+  hours against the budget left, and an install it needs first. What was
+  approved is what goes: the folders are checked again for the files the
+  dialog counted, and the budget, before the first sbatch, and exactly
+  those files are uploaded. A batch that fails partway names, and watches,
+  the jobs it submitted. Jobs run `submit_delfin.sh` of the PC's commit,
+  which the first submit installs (a published commit only), on the compute
+  node's own TMPDIR or else its /tmp -- never the login node's TMPDIR; each
+  is recorded in `~/.delfin/remote_jobs.jsonl` for the job watcher.
+- **`cluster_run` never submits or cancels**: sbatch, srun, salloc and the
+  cluster's guard commands -- also inside `bash -c`, after env, timeout or
+  xargs, in `$(...)`, as ctun's own guard reads a command line -- and
+  scancel are refused and pointed to cluster_submit and cluster_cancel. It
+  passes the bash gate's deny patterns, secret paths, credential prints and
+  the user's deny rules for `bash` and `cluster_run`; an outbound transfer
+  is named in the dialog.
+- **Uploads stay in the work dir**, judged where the destination really
+  leads on the cluster (a link there is refused), with the files named in
+  the dialog; links, secrets and DELFIN's own state never leave the PC. A
+  cancel takes only the user's queued or running jobs, checked before the
+  dialog.
+- Without a login a tool answers `login_required` and leaves a login item
+  in NEEDS YOU; the agent is told never to ask for the password. A managed
+  policy (`clusters`: allowed, auto_install, max_core_hours_per_batch) can
+  keep a cluster out, turn automatic installs off or cap a batch.
+  Everything from a cluster reaches the model fenced as untrusted text;
+  every change and every refused command is in the audit log.
+
+### Added — the window shows the clusters and the jobs, and logs in without the agent
+
+- **`/clusters` shows every cluster of `remote.clusters`**: logged in,
+  logged out, or refused with why (no pinned host key, ...), with its
+  target, budget and active jobs. Enter on a logged-out cluster opens a
+  masked login field; `o` logs out.
+- **The login field never hands what is typed to anyone but ctun.** It
+  takes every key while open and the prompt none; the password and OTP
+  live in the field alone (the screen shows dots), go out in one
+  `cluster.login` request that the agent service hands to ctun's
+  `api.login` -- never to a session's worker, an event, a log, the input
+  history or an error text -- and a command an agent runs cannot send it.
+  When a cluster tool finds no login, a NEEDS-YOU item opens the same
+  field; it cannot be answered with text, since an answer goes to the
+  model, and the login closes it.
+- **`/jobs` shows everything that runs in the background, grouped**: the
+  agents' shells, watches, sub-agents and wake-ups per session, DELFIN's
+  job monitor, and the active jobs on each logged-in cluster -- also the
+  ones submitted by hand. A source that cannot be read is named, never
+  shown as empty. `/jobs` with an argument is still the session's.
+- **Space opens an entry's details under its row**, asked again every few
+  seconds while open. A cluster: logged in since when, the budget used and
+  left, its jobs, the guard, DELFIN's installs there with what each lacks
+  (std2 without gfortran) and which is the PC's commit, and whether the
+  server still presents the pinned host key -- for a refused one the key
+  it presents, to compare before pinning it. A job: Slurm's facts (state
+  and pending reason, partition, nodes, CPUs and GPUs, times), where it
+  runs (work dir, output files, the DELFIN install it uses) and its
+  output's last 20 lines; an agent's background item: its output. Only
+  the window asks: the details read files on a cluster and other
+  sessions' output. In `/jobs`, ↑/↓ moves from job to job; in both screens ←
+  goes back, as esc does (the masked login field keeps it).
+- Everything these screens show from elsewhere (a job name from a
+  cluster, a watch file in a workspace, a job's output) is stripped of
+  control characters and escape sequences: none reaches the terminal.
+
+### Added — DELFIN installs itself on a cluster, per commit and only published ones
+
+- **The commit the PC runs is installed on a cluster beside the others**
+  (`delfin.remote.install`): `git archive` of exactly that commit goes over
+  the tunnel into `~/delfin/installs/<commit>/` and `install_delfin.sh`
+  runs there detached, so it outlives the tunnel; ORCA, OpenMPI and the
+  tools are found or built once and shared. Changes in the PC's working
+  tree do not travel, and the result says so.
+- **Only a published commit is installed unasked**: one that lies on a
+  branch of an install source (`remote.install_sources`, ComPlat/DELFIN
+  unless the settings add a fork). Reachability, not "the server knows the
+  hash": GitHub serves any commit of a fork network by its hash.
+- **Unused installs are removed, used ones kept**: DELFIN's installs (only
+  directories it marked) that no queued or running job names
+  (`--comment=delfin-commit=<sha>`) can be removed; every install and
+  removal is in the audit log.
+- Measured on kcist, 2026-10-20: DELFIN 1.3.3 with its own Python 3.11
+  (the system's 3.10 cannot create a venv there), ORCA 6.1.1 from `$HOME`,
+  OpenMPI 4.1.8 built from source and every standard tool but std2, which
+  needs gfortran. A tool that fails is a warning of a complete install; no
+  OpenMPI or a venv that does not import DELFIN is a failed one.
+
+### Added — DELFIN knows its clusters, and only its own process reaches them
+
+- **`remote.clusters` in `~/.delfin_settings.json` names the clusters DELFIN
+  may use**; ctun's config says how each is reached. A cluster has a work
+  dir (default `~/delfin/jobs`) and an install root (`~/delfin/installs`)
+  on the cluster and may limit the partitions. DELFIN uses it only when
+  ctun has pinned its host key (`ctun -t <name> hostkey --pin`), a ctun
+  budget guard reads every command (`guard_scope: every-command`), and
+  every file ctun's ssh reads -- its config, an `ssh_config`, the pinned
+  key file, the budget script -- lies in ctun's directories or `~/.ssh`.
+  Otherwise it says what to fix, one line per problem.
+- **`delfin.remote.connection` is the one way to act on a cluster**:
+  commands as argv lists with captured output and a timeout, scripts fed
+  over the tunnel, transfers, the job list and the budget, with ctun's
+  errors as DELFIN's own (`login_required`, `budget_exhausted`, ...). It
+  refuses inside an agent session, where a command would otherwise drive
+  the user's ssh master.
+- **`delfin doctor` reports each cluster**: refused (with its problems),
+  usable but nobody logged in (with the login command), or logged in;
+  `--budget` also probes the budget over the tunnel.
+
+### Security — no agent route reaches cluster-tunnel's state
+
+- **ctun's config and cache directories are masked in every cage and
+  denied to every file tool**, at their real place (XDG-redirected too),
+  and created at once so nothing can be planted there before the user
+  writes ctun's config. The control socket of a logged-in master is the
+  user's identity on the cluster: a command in the process cage that found
+  it by walking the home connected to it; now it finds nothing there. The
+  config holds the ssh options DELFIN's own process runs with, so a
+  ProxyCommand written into it would have run outside every cage.
+- **A file in a directory every cage masks is not readable through a
+  granted root.** With `~/.config` granted, read_file returned ctun's
+  config: the deny globs see the path relative to its root
+  (`cluster-tunnel/config.yaml`), and a glob for that name would also hide
+  every checkout of the cluster-tunnel repository. The read gate now also
+  judges where the path really lies (approval codes and the account key
+  store included).
+
+### Added — cluster-tunnel is a dependency, the base for sending calculations to a cluster
+
+- **DELFIN installs cluster-tunnel (ctun) 0.10.** ctun keeps one logged-in
+  ssh connection per HPC cluster on the user's PC: a person logs in once
+  with password and OTP, and everything after that reuses the connection.
+  DELFIN's remote layer, which comes next, runs, transfers and submits over
+  it through ctun's Python API, so DELFIN no longer has to be started on a
+  login node. A plain `pip install delfin-complat` now also brings the
+  `ctun` command and two small MIT packages (rich-click, appdirs); nothing
+  DELFIN pins moves.
+- **The parts of ctun's API that DELFIN relies on are pinned by tests**,
+  against a fake ssh: without a login a command is refused with ctun's exit
+  code 10, a command comes back with its output and exit code, each word
+  reaches the remote shell as one argument, and a cluster with a pinned
+  host key runs every ssh against that key alone. A ctun release that
+  changes any of this fails DELFIN's CI, not a run on a cluster.
 ### Added — rxembed, Molassembler and MetalloGen as constructors
 
 - **Three more SMILES constructors beside Architector, molSimplify and epic-MACE**:

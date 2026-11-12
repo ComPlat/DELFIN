@@ -130,6 +130,20 @@ dependencies = [
     # all. Its own requirements (numpy, scipy, packaging, periodictable)
     # move nothing DELFIN pins.
     "cclib>=1.8.1,<1.9",
+    # cluster-tunnel (ctun, github.com/aimat-lab/cluster-tunnel, MIT) keeps
+    # the logged-in ssh connection to an HPC cluster that DELFIN sends its
+    # calculations through from the user's PC: a person logs in once with
+    # password and OTP, DELFIN then runs, transfers and submits over that
+    # connection through ctun's Python API. 0.10.0: the API with host-key
+    # pinning (0.7.0), a login with the password and OTP the window's
+    # masked field hands over (0.8.0), and the presets, add_cluster,
+    # remove_cluster and pinning only an expected fingerprint that the
+    # window's add form uses (delfin.remote.setup); the ceiling is the next
+    # minor, since a 0.x minor release may change the API
+    # (tests/test_ctun_runs_commands_on_a_cluster_through_a_fake_ssh.py pins
+    # the parts DELFIN uses). Pure Python; it adds rich-click and appdirs
+    # (both MIT) and moves nothing DELFIN pins.
+    "cluster-tunnel>=0.10,<0.11",
 ]
 
 [project.optional-dependencies]
@@ -387,6 +401,8 @@ include = ["delfin*"]
 [tool.setuptools.package-data]
 "delfin" = [
     "installers/*.sh",
+    # Fed over the tunnel by delfin/remote/install.py.
+    "remote/scripts/*.sh",
     "logo/*.png",
     "logo/*.PNG",
     # The submit tab loads MANTA_readme_demo.gif through importlib.resources

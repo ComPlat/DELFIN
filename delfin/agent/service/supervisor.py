@@ -46,11 +46,12 @@ import re
 import signal
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from . import attention_feed, eventlog, protocol, rundir
+from . import attention_feed, clusters_feed, eventlog, protocol, rundir
 
 #: What this service does beyond its protocol, for a launcher deciding
 #: what it may ask. 2: a dry-run session.shutdown only says what it would
@@ -60,11 +61,19 @@ from . import attention_feed, eventlog, protocol, rundir
 #: 4: one name for every window -- summaries carry ``name``, an empty
 #: session.setTitle puts the default back, titles are cut to 50 -- and
 #: permission.resolved names the window that answered (``client``).
-SERVICE_VERSION = 4
+#: 5: clusters.list, cluster.login/logout and jobs.list (delfin.remote).
+#: 6: cluster.detail and job.detail (what Space on an entry shows).
+#: 7: clusters.presets, cluster.add/hostkey/pin/remove (the window's add
+#: form, delfin.remote.setup), and ORCA's place in a logged-in row.
+SERVICE_VERSION = 7
 
 #: Requests a window sends to the service itself (the one definition is
 #: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
 SERVICE_REQUESTS = protocol.SERVICE_REQUESTS
+
+#: The window name the messenger bridge says hello with (bridge.Bridge.
+#: CLIENT_NAME): its prompts are a phone's.
+MESSENGER_BRIDGE_CLIENT = "delfin-messenger-bridge"
 
 #: Session requests, forwarded to the session's worker (with "sessionId").
 FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
@@ -79,6 +88,12 @@ ACTING = frozenset({"session.create", "session.merge", "session.prompt",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
                     "session.setTitle", "attention.answer", "attention.dismiss",
+                    "cluster.login", "cluster.logout", "cluster.detail",
+                    "job.detail",
+                    # What decides where DELFIN's ssh goes is written by a
+                    # person in the window, never by an agent's process
+                    # (which can only propose a cluster: cluster_propose).
+                    "cluster.add", "cluster.hostkey", "cluster.pin", "cluster.remove",
                     # A swarm is created, started and answered by the
                     # user, never by an agent session: the same rule that
                     # keeps an agent from answering its own approvals
@@ -155,6 +170,47 @@ ATTENTION_POLL_S = 2.0
 #: Read again at least this often though nothing changed: a notice
 #: expires, a session elsewhere closes.
 ATTENTION_FULL_S = 60.0
+
+#: How often the jobs DELFIN submitted to its clusters are followed
+#: (delfin.remote.watch), and at once after a login.
+#: DELFIN_AGENT_CLUSTER_WATCH_S sets it.
+CLUSTER_WATCH_S = 60.0
+
+
+def _cluster_watch_every() -> float:
+    try:
+        return max(0.2, float(os.environ.get("DELFIN_AGENT_CLUSTER_WATCH_S") or CLUSTER_WATCH_S))
+    except ValueError:
+        return CLUSTER_WATCH_S
+
+
+def _on_a_daemon_thread(fn, /, *args, **kwargs) -> "asyncio.Future":
+    """``fn`` on a daemon thread of its own, its answer as a future. Not
+    to_thread's pool, which the process's exit waits for: a probe of a slow
+    tunnel must not hold a stopping service after its run file is gone (a
+    tick cut short is done again by the next service)."""
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def settle(result: Any, exc: BaseException | None) -> None:
+        if not future.done():
+            if exc is not None:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+    def run() -> None:
+        try:
+            result, exc = fn(*args, **kwargs), None
+        except BaseException as caught:        # handed to the awaiting task
+            result, exc = None, caught
+        try:
+            loop.call_soon_threadsafe(settle, result, exc)
+        except RuntimeError:
+            pass                               # the loop has closed: nobody waits
+
+    threading.Thread(target=run, name="delfin-cluster-watch", daemon=True).start()
+    return future
 
 #: Summary changes the roster may take with the next write (half a second
 #: on): a turn's activity, many a second. Every other change -- state,
@@ -729,6 +785,10 @@ class Supervisor:
         self._attention_at = 0.0
         self._attention_titles = attention_feed.Titles()
         self._attention_lock = asyncio.Lock()
+        #: Jobs on a cluster with a live tunnel that the watcher follows: the
+        #: service waits for them rather than stop for idleness.
+        self.cluster_jobs_followed = 0
+        self._watch_now: asyncio.Event | None = None
         #: The user's schedules of this host, run as sessions here.
         from .schedule_runner import ScheduleRunner
         self.schedules = ScheduleRunner(self)
@@ -762,6 +822,8 @@ class Supervisor:
         os.chmod(path, 0o600)
         idle = self.spawn(self._watch_idle())
         attention = self.spawn(self._watch_attention())
+        self._watch_now = asyncio.Event()
+        cluster_jobs = self.spawn(self._watch_cluster_jobs())
         timed = self.spawn(self.schedules.run())
         try:
             await self.stopping.wait()
@@ -769,6 +831,7 @@ class Supervisor:
             self.closing = True
             idle.cancel()
             attention.cancel()
+            cluster_jobs.cancel()
             timed.cancel()
             self.server.close()
             # Said before anything closes: a window leaves (or, for a
@@ -999,6 +1062,13 @@ class Supervisor:
     async def _forward(self, client: Client, method: str, params: dict) -> Any:
         sid = str(params.get("sessionId") or "")
         rest = {k: v for k, v in params.items() if k != "sessionId"}
+        if method == "session.prompt":
+            # Where a prompt comes from is the service's to say, never the
+            # sender's: the messenger bridge's prompts are the phone's
+            # (the worker runs no window command for them).
+            rest.pop("via", None)
+            if str(getattr(client, "name", "") or "") == MESSENGER_BRIDGE_CLIENT:
+                rest["via"] = "messenger"
         if method == "permission.reply":
             # Who answers is what this connection said in its hello, never
             # what the reply says: permission.resolved names it to every
@@ -1480,6 +1550,104 @@ class Supervisor:
         await self._refresh_attention(force=True)
         return {"ok": bool(done.get("ok")), "error": str(done.get("error") or "") or None}
 
+    # -- clusters and background work (delfin.remote, clusters_feed) ------------------------
+    async def _m_clusters_list(self, _client: Client, _params: dict) -> dict:
+        return await asyncio.to_thread(clusters_feed.clusters)
+
+    async def _m_cluster_login(self, _client: Client, params: dict) -> dict:
+        # The password and OTP live in this call's params only. They are not
+        # in FORWARDED (no worker sees them), go into no event, and
+        # clusters_feed.login returns no text that holds them; a failure is
+        # answered, not raised, so _dispatch has nothing to echo.
+        answer = await asyncio.to_thread(clusters_feed.login, str(params["name"]),
+                                         str(params.get("password") or ""),
+                                         str(params.get("otp") or ""))
+        if answer.get("ok") and self._watch_now is not None:
+            self._watch_now.set()     # what waited for this login is followed now
+        return answer
+
+    async def _m_cluster_logout(self, _client: Client, params: dict) -> dict:
+        return await asyncio.to_thread(clusters_feed.logout, str(params["name"]))
+
+    async def _m_clusters_presets(self, _client: Client, _params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.presets)
+
+    async def _m_cluster_add(self, _client: Client, params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.add, dict(params))
+
+    async def _m_cluster_hostkey(self, _client: Client, params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.host_key, str(params["name"]))
+
+    async def _m_cluster_pin(self, _client: Client, params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.pin, str(params["name"]),
+                                       str(params["fingerprint"]))
+
+    async def _m_cluster_remove(self, _client: Client, params: dict) -> dict:
+        from delfin.remote import setup
+        return await asyncio.to_thread(setup.remove, str(params["name"]))
+
+    async def _m_jobs_list(self, _client: Client, _params: dict) -> dict:
+        return await asyncio.to_thread(clusters_feed.jobs, self._summaries())
+
+    async def _m_cluster_detail(self, _client: Client, params: dict) -> dict:
+        return await asyncio.to_thread(clusters_feed.cluster_detail, str(params["name"]))
+
+    async def _m_job_detail(self, _client: Client, params: dict) -> dict:
+        # An agent item's workspace comes from this service's own sessions,
+        # never from the window's params.
+        return await asyncio.to_thread(clusters_feed.job_detail, params, self._summaries())
+
+    async def _watch_cluster_jobs(self) -> None:
+        """The jobs DELFIN submitted to its clusters, followed every
+        CLUSTER_WATCH_S and at once after a login (delfin.remote.watch, on a
+        thread of its own: a slow tunnel holds no request, and no stop). The
+        session of a job that ended is told: at its next look while it runs,
+        woken if it sleeps."""
+        assert self._watch_now is not None
+        from delfin.remote import watch
+        while True:
+            every = _cluster_watch_every()
+            try:
+                tick = await _on_a_daemon_thread(
+                    watch.tick, probe_every_s=min(watch.PROBE_EVERY_S, every * 0.9))
+            except Exception:
+                tick = None               # asked again at the next tick
+            if self.closing:
+                return
+            if tick is not None:
+                self.cluster_jobs_followed = tick.following
+                for ended in tick.ended:
+                    await self._cluster_job_ended(ended)
+                if tick.ended:
+                    try:
+                        await self._refresh_attention(force=True)
+                    except Exception:
+                        pass
+            try:
+                await asyncio.wait_for(self._watch_now.wait(), every)
+            except asyncio.TimeoutError:
+                pass
+            self._watch_now.clear()
+
+    async def _cluster_job_ended(self, ended: dict) -> None:
+        """Wake the sleeping session that submitted an ended cluster job, so
+        its look at its watches tells it (job_wake). A running session looks
+        by itself; one that cannot be woken reads it when next opened."""
+        from delfin.agent import job_wake
+        sid = str(ended.get("session_id") or "")
+        if not sid or sid in self.sessions or sid not in self.dormant or self.closing:
+            return
+        if not job_wake.wake_enabled():
+            return
+        try:
+            await self._awake(None, sid)
+        except Exception:
+            pass                          # its folder is gone, or it is not saved any more
+
     async def _watch_attention(self) -> None:
         """While a window is there to tell: the attention records looked at
         every ATTENTION_POLL_S, and what changed sent to every window."""
@@ -1680,7 +1848,10 @@ class Supervisor:
         while True:
             await asyncio.sleep(tick)
             self._sleep_unused()
-            if self.sessions or self.starting or self.clients or self.schedules.keeps_up():
+            if (self.sessions or self.starting or self.clients
+                    or self.schedules.keeps_up() or self.cluster_jobs_followed):
+                # A cluster job still queued or running: its results are to
+                # be brought back when it ends, its session told.
                 continue
             # Dormant sessions keep nothing running: they wait in the roster.
             if time.monotonic() - self.quiet_since >= self.idle_exit_s:
@@ -1802,8 +1973,10 @@ class Supervisor:
         while pid and _alive_worker(pid) and time.monotonic() < deadline:
             await asyncio.sleep(0.2)
 
-    async def _awake(self, client: Client, sid: str) -> Session:
-        """The session ``sid`` with a worker: as it runs, or woken."""
+    async def _awake(self, client: Client | None, sid: str) -> Session:
+        """The session ``sid`` with a worker: as it runs, or woken. ``client``
+        None: woken by the service itself, for an event of the session's own
+        (a cluster job of its ended)."""
         session = self.sessions.get(sid)
         if session is not None and session.sleeping:
             # Being asked to sleep right now: it either goes (then it is
@@ -1836,10 +2009,10 @@ class Supervisor:
             raise _Refusal(UNKNOWN_SESSION, f"no session {sid!r} here")
         return session
 
-    async def _wake(self, client: Client, sid: str) -> None:
+    async def _wake(self, client: Client | None, sid: str) -> None:
         if self.closing:
             raise _Refusal(protocol.NOT_ALLOWED, "the agent service is stopping")
-        if not client.may_act:
+        if client is not None and not client.may_act:
             raise _Refusal(protocol.NOT_ALLOWED, "an agent session's own process may not wake a session")
         record = self.dormant[sid]
         await self._old_worker_gone(record)

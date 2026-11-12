@@ -260,6 +260,7 @@ _CLI_SECRET_PATTERNS: tuple[str, ...] = (
     "**/.aws/credentials", "~/.aws/credentials", "**/.npmrc", "**/.pypirc",
     "**/.pgpass", "~/.kube/**", "~/.docker/config.json",
     "~/.delfin/credentials.json", "~/.delfin/trust_store/**",
+    "~/.config/cluster-tunnel/**", "~/.cache/cluster-tunnel/**",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
 )
 
@@ -7912,6 +7913,7 @@ def _no_sandbox_refusal(name: str) -> str:
 _PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
     # Reading the world
     "read_file", "grep_file", "list_files", "find_definition",
+    "cluster_status", "cluster_read",
     "find_references", "notebook_read", "view_image", "read_document",
     "compare_tables", "sum_column", "list_docs", "list_sections",
     "read_section",
@@ -8976,13 +8978,28 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # The account key and the pins beside it (trust_store): DELFIN's own
     # processes outside agent sessions read them, no agent route does.
     "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
+    # cluster-tunnel's config (ssh options and budget scripts DELFIN's own
+    # process uses, pinned host keys) and cache (the control sockets of the
+    # logged-in masters, the sessions with their budget limit): no agent
+    # route reads or writes them (delfin.remote). With the parent's name,
+    # so a checkout of the cluster-tunnel repository stays ordinary.
+    ".config/cluster-tunnel", ".config/cluster-tunnel/**",
+    "**/.config/cluster-tunnel", "**/.config/cluster-tunnel/**",
+    ".cache/cluster-tunnel", ".cache/cluster-tunnel/**",
+    "**/.cache/cluster-tunnel", "**/.cache/cluster-tunnel/**",
     "messenger_sessions", "messenger_sessions/**",
     "**/messenger_sessions", "**/messenger_sessions/**",
+    # Phone pairing requests and answers (delfin.messenger.pairing).
+    "messenger_pairing", "messenger_pairing/**",
+    "**/messenger_pairing", "**/messenger_pairing/**",
     # The user's schedules: written and confirmed by the user only.
     "user_schedules", "user_schedules/**",
     "**/user_schedules", "**/user_schedules/**",
     "workspace_profiles.json", "workspace_profiles.json/**",
     "**/workspace_profiles.json", "**/workspace_profiles.json/**",
+    # The rootless messenger's state and units (delfin.messenger.rootless).
+    "**/.local/share/delfin-messenger", "**/.local/share/delfin-messenger/**",
+    "**/systemd/user/delfin-messenger-*.service",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -13309,7 +13326,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "push_notification",
             "description": (
-                "Send a local desktop notification. Use sparingly."
+                "Notify the user (desktop, phone). Use sparingly."
             ),
             "parameters": {
                 "type": "object",
@@ -13991,6 +14008,155 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    # DELFIN's HPC clusters (delfin/agent/cluster_tools.py): advertised only
+    # when remote.clusters names one (tool_unavailable_reason).
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_status",
+            "description": (
+                "DELFIN's HPC clusters: login, budget, problems; with cluster, "
+                "its jobs and DELFIN install."
+            ),
+            "parameters": {"type": "object",
+                           "properties": {"cluster": {"type": "string"}}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_read",
+            "description": (
+                "Read a cluster file (first 64 KB, or last tail lines) or list "
+                "a folder; asked outside DELFIN's work dir."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "path": {"type": "string"},
+                               "tail": {"type": "integer"}},
+                "required": ["cluster", "path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_fetch",
+            "description": (
+                "Copy a cluster file or folder into the workspace (dest), at "
+                "most 200 MB."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "path": {"type": "string"},
+                               "dest": {"type": "string"}},
+                "required": ["cluster", "path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_upload",
+            "description": (
+                "Copy workspace files to a folder under the cluster's work dir "
+                "(dest). Asked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "src": {"type": "string"},
+                               "dest": {"type": "string"}},
+                "required": ["cluster", "src"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_submit",
+            "description": (
+                "Submit DELFIN workflows (folder: input.txt, CONTROL.txt) or "
+                "ORCA runs (input: .inp) as one batch; resources default from "
+                "those files. Asked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cluster": {"type": "string"},
+                    "jobs": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "folder": {"type": "string"},
+                            "kind": {"type": "string", "enum": ["delfin", "orca"]},
+                            "input": {"type": "string"},
+                            "cores": {"type": "integer"},
+                            "mem_gb": {"type": "number"},
+                            "time": {"type": "string"},
+                            "partition": {"type": "string"},
+                        },
+                        "required": ["folder"],
+                    }},
+                },
+                "required": ["cluster", "jobs"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_cancel",
+            "description": "Cancel your queued or running jobs on a cluster. Asked.",
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "job_ids": {"type": "array",
+                                           "items": {"type": "string"}}},
+                "required": ["cluster", "job_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_run",
+            "description": (
+                "Run one command on a cluster's login node (no job submission: "
+                "cluster_submit). Asked every time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "command": {"type": "string"},
+                               "timeout": {"type": "integer"}},
+                "required": ["cluster", "command"],
+            },
+        },
+    },
+    # Advertised with or without a cluster (one is proposed before any is
+    # configured): the person checks and sends the window's form; the tool
+    # writes no setting (delfin.remote.setup.propose).
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_propose",
+            "description": (
+                "Propose a cluster for DELFIN: opens the user's add form "
+                "filled in; writes nothing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"},
+                               "preset": {"type": "string"},
+                               "user": {"type": "string"},
+                               "host": {"type": "string"},
+                               "partition": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -14306,6 +14472,26 @@ class ToolSurfaceContext:
     # Whether this installation has a lab manifest (delfin.lab). Default
     # True like the index flags; the live surface passes the real answer.
     has_lab: bool = True
+    # Whether remote.clusters names a cluster: the cluster tools have none
+    # to act on otherwise (connection.connect refuses every name).
+    has_clusters: bool = True
+
+
+#: The tools that act on DELFIN's HPC clusters (cluster_tools.py).
+_CLUSTER_TOOL_NAMES: frozenset[str] = frozenset({
+    "cluster_status", "cluster_read", "cluster_fetch", "cluster_upload",
+    "cluster_submit", "cluster_cancel", "cluster_run"})
+
+
+def _clusters_configured() -> bool:
+    """Whether the user's settings name a cluster (remote.clusters)."""
+    try:
+        from delfin.user_settings import load_settings
+        remote = load_settings().get("remote")
+        block = remote.get("clusters") if isinstance(remote, dict) else None
+        return isinstance(block, dict) and bool(block)
+    except Exception:
+        return False
 
 
 def tool_unavailable_reason(
@@ -14372,6 +14558,8 @@ def tool_unavailable_reason(
         elif needed and not any(b in available for b in needed):
             missing = ", ".join(_office_package_names(needed))
             return f"needs a package that is not installed ({missing})"
+    if base in _CLUSTER_TOOL_NAMES and not ctx.has_clusters:
+        return "no cluster is configured (remote.clusters)"
     return None
 
 
@@ -19429,6 +19617,9 @@ class _DocToolExecutor:
             if name == "bash_kill":
                 return self._execute_bash_kill(arguments)
 
+        if name in _CLUSTER_TOOL_NAMES or name == "cluster_propose":
+            return getattr(self, f"_execute_{name}")(arguments, permissions)
+
         if name == "watch_job":
             # Register a long-running job (SLURM id or bash job id) for the
             # LLM-free watcher; completion is injected into a later turn's
@@ -19440,6 +19631,37 @@ class _DocToolExecutor:
             if not ws:
                 return json.dumps({"error": (
                     "watch_job requires permissions to be configured.")})
+            _watch_sid = str(getattr(permissions, "task_session_id", "")
+                             or "")
+            # A job cluster_submit sent is watched already, as
+            # <cluster>:<id> (job_monitor's cluster kind). Its bare id was
+            # taken for a job of a local SLURM, asked of a scheduler a PC
+            # does not have, and every round then said UNAVAILABLE: the
+            # model polled the cluster instead of ending its turn.
+            try:
+                from .job_monitor import _agent_watch_path, load_watched
+                _sent = {k: e for k, e in load_watched(_agent_watch_path(ws))
+                         .get("jobs", {}).items()
+                         if isinstance(e, dict) and e.get("kind") == "cluster"
+                         and job_id in (k, str(e.get("remote_id") or ""))}
+            except Exception:
+                _sent = {}
+            if _sent:
+                mine = sorted(k for k, e in _sent.items() if not _watch_sid
+                              or str(e.get("session_id") or "") == _watch_sid)
+                if not mine:
+                    return json.dumps({"error": (
+                        f"{', '.join(sorted(_sent))} is a cluster job another "
+                        "session submitted; that session is told when it "
+                        "ends. cluster_status shows its state.")})
+                return json.dumps({
+                    "status": "watching", "job_id": ", ".join(mine),
+                    "kind": "cluster",
+                    "note": ("cluster_submit already watches this job: "
+                             "DELFIN's job watcher brings its results back "
+                             "and you are told in a later turn. End your "
+                             "turn instead of polling."),
+                })
             # A bash job id the registry does not know can never
             # complete, so watching it promises a notification that
             # cannot arrive -- and the note below tells the model to end
@@ -19459,8 +19681,6 @@ class _DocToolExecutor:
                 pass
             try:
                 from .job_monitor import register_agent_job
-                _watch_sid = str(getattr(permissions, "task_session_id", "")
-                                 or "")
                 entry = register_agent_job(
                     ws, job_id,
                     str(arguments.get("description", "") or "")[:200],
@@ -19580,7 +19800,7 @@ class _DocToolExecutor:
 
         # Notifications + remote triggers.
         if name == "push_notification":
-            return self._execute_push_notification(arguments)
+            return self._execute_push_notification(arguments, permissions)
         if name == "remote_trigger":
             return self._execute_remote_trigger(arguments, permissions)
 
@@ -22239,6 +22459,13 @@ class _DocToolExecutor:
                 "deny-glob (.ssh/, .env, *.key, credentials, *.pem). "
                 "These are never readable, regardless of mode or confirm."
             )
+        if _in_runtime_masked_dir(resolved):
+            return (
+                f"read denied: '{label or resolved}' lies in a directory DELFIN "
+                "keeps from every agent (cluster-tunnel's state, approval "
+                "codes, the account key store). It is never readable, "
+                "regardless of mode or confirm."
+            )
 
         # A deny rule of the user's on this path, as resolved by the tool.
         _rule_refusal = _rule_denies_path(perms, "read", resolved)
@@ -22631,6 +22858,16 @@ class _DocToolExecutor:
         _rule_refusal = _rule_denies_path(perms, "write", resolved)
         if _rule_refusal:
             return _rule_refusal
+        # The messenger's directory: read-only but for a file offered in
+        # the session's own outbox (messenger.media.internal_write_refusal).
+        from delfin.messenger.media import internal_write_refusal
+        _messenger_refusal = internal_write_refusal(
+            resolved, str(getattr(perms, "task_session_id", "") or ""))
+        if _messenger_refusal:
+            _record_security_event(
+                "messenger_internal_write", name,
+                self._display_path(resolved, perms), blocked=True)
+            return _messenger_refusal
         if not _write_in_scope(resolved, perms):
             _record_security_event(
                 "out_of_write_scope", name, self._display_path(resolved, perms),
@@ -24973,6 +25210,11 @@ class _DocToolExecutor:
                 old_text = resolved_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             old_text = ""
+        if name == "cluster_fetch":
+            # What lands is a cluster's file or folder, not text the model
+            # wrote: the dialog names where it comes from (cluster_tools).
+            return (f"fetch {args.get('cluster', '')}:{args.get('from', '')} "
+                    f"({args.get('size', '')}) into {args.get('path', '')}")
         if name == "apply_patch":
             # The patch itself IS the change preview — show it verbatim rather
             # than a synthetic old→new content diff (the new content isn't in
@@ -27863,13 +28105,26 @@ class _DocToolExecutor:
 
     # ------- Notifications / remote triggers ------------------------------
 
-    def _execute_push_notification(self, arguments: dict) -> str:
+    def _execute_push_notification(self, arguments: dict, perms=None) -> str:
+        """A desktop notification, and a note to the person's phone when
+        this session is on it (messenger.activation.post_note: one per
+        minute; the gateway sends it). ``phone``: True, "rate_limited" or
+        False (not connected)."""
         from . import notify as _n
         title = str(arguments.get("title", "")).strip() or "delfin agent"
         body = str(arguments.get("body", ""))
         urgency = str(arguments.get("urgency", "normal"))
         ok = _n.send_notification(title, body, urgency=urgency)
-        return json.dumps({"status": "ok" if ok else "noop", "sent": ok})
+        phone: Any = False
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        if sid:
+            try:
+                from delfin.messenger.activation import post_note
+                phone = post_note(sid, title, body)
+            except Exception:
+                phone = False
+        return json.dumps({"status": "ok" if ok or phone is True else "noop",
+                           "sent": ok, "phone": phone})
 
     def _execute_remote_trigger(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
@@ -29550,6 +29805,19 @@ class _DocToolExecutor:
                     "The user typed this answer in the chat instead of "
                     "picking an option; it may lie outside the options "
                     "offered. Take it as their answer and continue.")
+        # No answer always says why (``unanswered``): stopped, expired,
+        # timed out, or dismissed. A bare empty list was read as a choice
+        # and the model guessed one (field report, phone session).
+        if not answers:
+            payload["unanswered"] = str(result.get("unanswered") or (
+                "no answer (timed out)" if result.get("timed_out") else
+                "no answer (dismissed without picking an option)"))[:200]
+            if not result.get("timed_out"):
+                payload["note"] = (
+                    f"The question ended with {payload['unanswered']}. The "
+                    "empty answer list is not a choice; do not pick one for "
+                    "the user. Continue only where no answer is needed, or "
+                    "end the turn and say what is waiting.")
         # Surface the UI's timeout flag: empty answers because the user is
         # AWAY must not read like the user actively chose nothing (weak
         # models re-ask the identical question in a loop otherwise).
@@ -30030,6 +30298,50 @@ class _DocToolExecutor:
         except Exception as exc:
             return json.dumps({"error": f"web_search failed: {exc}"})
         return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
+
+    # -- DELFIN's HPC clusters (cluster_tools.py) ------------------------------
+    # Each names its arguments: the tool's rules -- what is asked, refused,
+    # fenced and audited -- live in cluster_tools, beside the remote layer.
+
+    def _execute_cluster_status(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.status(self, permissions, cluster=arguments.get("cluster"))
+
+    def _execute_cluster_read(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.read_path(self, permissions, cluster=arguments.get("cluster"),
+                                       path=arguments.get("path"), tail=arguments.get("tail"))
+
+    def _execute_cluster_fetch(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.fetch(self, permissions, cluster=arguments.get("cluster"),
+                                   path=arguments.get("path"), dest=arguments.get("dest"))
+
+    def _execute_cluster_upload(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.upload(self, permissions, cluster=arguments.get("cluster"),
+                                    src=arguments.get("src"), dest=arguments.get("dest"))
+
+    def _execute_cluster_submit(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.submit(self, permissions, cluster=arguments.get("cluster"),
+                                    jobs=arguments.get("jobs"))
+
+    def _execute_cluster_cancel(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.cancel(self, permissions, cluster=arguments.get("cluster"),
+                                    job_ids=arguments.get("job_ids"))
+
+    def _execute_cluster_run(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.run(self, permissions, cluster=arguments.get("cluster"),
+                                 command=arguments.get("command"),
+                                 timeout=arguments.get("timeout"))
+
+    def _execute_cluster_propose(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.propose(self, permissions, **{
+            k: arguments.get(k) for k in ("name", "preset", "user", "host", "partition")})
 
     def _execute_web_fetch(self, arguments: dict) -> str:
         url = (arguments.get("url", "") or "").strip()
@@ -30513,16 +30825,10 @@ def _session_scratch_dir() -> str:
 
 def _home_secret_paths() -> list[str]:
     try:
-        from delfin.agent.sandbox import _HOME_SECRET_DIRS
+        from delfin.agent.sandbox import home_secret_paths
+        out = list(home_secret_paths())
     except Exception:
-        _HOME_SECRET_DIRS = ()
-    home = Path.home()
-    out = []
-    for rel in _HOME_SECRET_DIRS:
-        try:
-            out.append(str((home / rel).resolve()))
-        except OSError:
-            continue
+        out = []
     # The approval-code directory, created and at its redirected location.
     try:
         from delfin.agent.sandbox import runtime_masked_dirs
@@ -30536,6 +30842,27 @@ def _home_secret_paths() -> list[str]:
     except Exception:
         pass
     return out
+
+
+def _in_runtime_masked_dir(path) -> bool:
+    """Whether ``path`` really lies in a directory every cage masks at run
+    time (``sandbox.runtime_masked_dirs``: the approval codes, the account
+    key store, cluster-tunnel's config and control sockets), whichever
+    granted root it is reached through. The deny globs are matched against
+    the path relative to its root, so a granted ~/.config saw ctun's config
+    as plain "cluster-tunnel/config.yaml", and a glob for that name would
+    also hide every checkout of the cluster-tunnel repository. Fails
+    closed."""
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        real = Path(path).expanduser().resolve()
+        for d in runtime_masked_dirs():
+            base = Path(d)
+            if real == base or base in real.parents:
+                return True
+        return False
+    except Exception:
+        return True
 
 
 def _landlock_hide_paths(write_roots) -> list[str]:
@@ -30780,6 +31107,18 @@ def _agent_service_door() -> str:
         return os.path.join("/tmp", f"delfin-{os.getuid()}")
 
 
+def _ctun_doors() -> list[str]:
+    """cluster-tunnel's directories (``delfin.remote.state_dirs``): the
+    control sockets of the logged-in cluster masters, through which a
+    command would act on a cluster as the user without any login, and the
+    config whose ssh options DELFIN's own process runs with."""
+    try:
+        from delfin.remote import state_dirs
+        return state_dirs()
+    except Exception:
+        return []
+
+
 def _session_doors() -> list[str]:
     """The sockets through which a command would reach the user's sessions:
     the same set the bubblewrap process cage masks."""
@@ -30789,7 +31128,7 @@ def _session_doors() -> list[str]:
              str(home / ".ssh"),
              os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}"),
              "/var/run/docker.sock", "/run/docker.sock", "/tmp/.X11-unix",
-             _agent_service_door()]
+             _agent_service_door(), *_ctun_doors()]
     agent = os.environ.get("SSH_AUTH_SOCK", "")
     if agent and os.path.basename(os.path.dirname(agent)).startswith("ssh-"):
         doors.append(os.path.dirname(agent))
@@ -31261,8 +31600,10 @@ def _announce_auto_isolation() -> None:
 # * The doors to long-lived servers outside are masked: the systemd user
 #   manager and D-Bus (/run/user/<uid>: `systemd-run --user`), running tmux
 #   and screen servers, the SSH directory (keys, and the control sockets a
-#   dashboard transfer leaves open) and the SSH agent. `crontab` and `at`
-#   cannot use their setuid helpers inside a user namespace.
+#   dashboard transfer leaves open), the SSH agent, and cluster-tunnel's
+#   directories (the control sockets of the logged-in cluster masters).
+#   `crontab` and `at` cannot use their setuid helpers inside a user
+#   namespace.
 #
 # Measured on a bwUniCluster login node, 2026-09-16: every escape above
 # ended with the command; SLURM (sbatch/squeue) keeps working inside, so
@@ -31337,6 +31678,7 @@ def _process_cage_options() -> list[str]:
         str(home / ".ssh"),
         os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}"),
         _agent_service_door(),
+        *_ctun_doors(),
     ]
     agent_socket = os.environ.get("SSH_AUTH_SOCK", "")
     # OpenSSH keeps an agent's socket in a directory of its own, ssh-XXXX.
@@ -32283,19 +32625,6 @@ def _bash_isolation_argv(
         pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
-    for rel in _HOME_SECRET_DIRS:
-        p = home / rel
-        try:
-            # resolve() — on HPC, $HOME is often a symlink (/home/... →
-            # /pfs/...); bwrap cannot create mountpoints through symlinked
-            # paths ("Can't mkdir parents").  Mask the REAL path.
-            rp = p.resolve()
-            if rp.is_dir():
-                args += ["--tmpfs", str(rp)]
-            elif rp.is_file():
-                args += ["--ro-bind", "/dev/null", str(rp)]
-        except OSError:
-            continue
     try:
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
@@ -32369,6 +32698,16 @@ def _bash_isolation_argv(
     # every root is read-only already through the "/" bind.
     for room in _rooms:
         args += ["--ro-bind-try", room, room]
+    # The home secrets (credentials, the stores, in people mode every
+    # person's pairing, activation and runtime directories) after every
+    # bind: a granted ~/.delfin or ~/people bound later covered them again.
+    # Resolved paths (on HPC $HOME is often a symlink; bwrap cannot create
+    # mount points through one).
+    try:
+        from delfin.agent.sandbox import _bwrap_home_mask_args
+        args += _bwrap_home_mask_args(home)
+    except Exception:
+        pass
     # The approval-code directory is not readable at all, and masked after
     # every bind so a granted ~/.delfin cannot re-expose it.
     try:
@@ -34076,6 +34415,8 @@ class OpenAIClient(_BaseClient):
                               "run_tests",
                               "watch_job",
                               "session_message",
+                              *_CLUSTER_TOOL_NAMES,
+                              "cluster_propose",
                               "history_search",
                               "history_get",
                               "orchestrate",
@@ -34123,6 +34464,7 @@ class OpenAIClient(_BaseClient):
             session_denied=(
                 getattr(self._permissions, "session_denied_tools", None)
                 or frozenset()),
+            has_clusters=_clusters_configured(),
         )
         advertised_tools = advertisable_tools(advertised_tools, _surface_ctx)
 

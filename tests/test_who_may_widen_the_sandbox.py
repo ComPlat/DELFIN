@@ -133,7 +133,13 @@ _GATES = ("_check_read_access", "_run_permission_gate", "_get_path_arg",
           "_resolve_in_workspace",
           # The secret deny list applied to a path a tool found itself
           # (a grep or code-navigation hit), not one the model named.
-          "_is_secret_path")
+          "_is_secret_path",
+          # A cluster tool hands its paths to cluster_tools: a path on the
+          # cluster is judged where it really leads (_place: the work dir
+          # unasked, elsewhere asked, private and secret paths never), a
+          # workspace path goes through _resolve_in_workspace and the write
+          # gate there.
+          "cluster_tools.")
 
 
 def test_every_tool_that_takes_a_path_asks_about_it():
@@ -156,7 +162,10 @@ def test_every_tool_that_takes_a_path_asks_about_it():
             tree = _package_ast.parse(path, errors="replace")
         except SyntaxError:
             continue
-        lines = src.splitlines()
+        # On newlines only: str.splitlines also breaks on U+2028 and the
+        # like, which ast does not count, and shifted every body after
+        # api_client's comment that names them onto its neighbour's lines.
+        lines = src.split("\n")
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue

@@ -2946,7 +2946,7 @@ def _awaiting_user_answer(state: dict) -> bool:
 # dispatcher. Kept at module scope so a test can drive the same routing
 # decision the send path makes.
 _BUILTIN_SLASH_PREFIXES = frozenset({
-    "/sync", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
+    "/sync", "/pair", "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
     "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
     "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
     "/memories", "/memorize", "/tidy", "/remember", "/forget", "/plans", "/plan", "/hooks",
@@ -3404,7 +3404,7 @@ def _md_to_html(text: str) -> str:
 # - has_args: True means the command takes arguments — palette adds a trailing
 #   space so the user starts typing immediately
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
-    ("Session", "/sync", "SimpleX for this session: on|off|status", True),
+    ("Session", "/sync", "SimpleX for this session on|off|status", True),
     # Session
     ("Session", "/help", "Show this help", False),
     ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),
@@ -10922,6 +10922,7 @@ def create_tab(ctx):
             state["_ask_user_args"] = dict(args or {})
             state["_ask_user_deadline"] = time.monotonic() + 300
         from html import escape as _esc
+        from delfin.agent.approval_answers import answer_hint as _answer_hint
         header_html = (f"<span style='background:#0a84ff;color:white;"
                        f"padding:2px 6px;border-radius:3px;font-size:11px;"
                        f"margin-right:6px;'>{_esc(header)}</span>"
@@ -10930,7 +10931,7 @@ def create_tab(ctx):
             f"<div style='font-size:14px;'>{header_html}"
             f"<b>{_esc(question)}</b></div>"
             "<div style='color:#888;font-size:11px;margin-top:2px;'>"
-            "Pick an option, or type your own answer in the chat.</div>"
+            + _esc(_answer_hint(len(options), multi)) + "</div>"
         )
         chosen: set[str] = set()
         button_widgets: list = []
@@ -11061,7 +11062,8 @@ def create_tab(ctx):
             ev.wait(timeout=300)
         _close_ask_user_modal(ev)
         if not result["answers"]:
-            return {"answers": [], "timed_out": True}
+            return {"answers": [], "timed_out": True,
+                    "unanswered": "no answer (timed out after 300 s)"}
         return result
 
     @_serialized_gate(state)
@@ -11099,7 +11101,13 @@ def create_tab(ctx):
         result = state.get("_ask_user_result")
         if ev is None or result is None or ev.is_set() or not text:
             return False
-        from delfin.agent.approval_answers import typed_answer
+        from delfin.agent.approval_answers import range_problem, typed_answer
+        problem = range_problem(text, state.get("_ask_user_args") or {})
+        if problem:
+            # Taken by the question (not sent to the model), refused with
+            # the real range.
+            _append_system_message(problem)
+            return True
         answer = typed_answer(text, state.get("_ask_user_args") or {})
         if not answer.get("answers"):
             return False
@@ -11593,6 +11601,19 @@ def create_tab(ctx):
     # chat by the height of the list, and closing it moved everything back.
     _palette_pop = widgets.VBox([palette_search, palette_select])
     _palette_pop.add_class("delfin-agent-palette-pop")
+    # The phone pairing panel (/pair, or the Phone button): the one-time
+    # invitation shown here, never in the chat transcript or the saved
+    # session; once the phone connected, a field for the code it got.
+    messenger_pair_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    messenger_code_input = widgets.Text(
+        placeholder="6-digit code from your phone",
+        layout=widgets.Layout(width="200px"))
+    messenger_code_btn = widgets.Button(description="Confirm", button_style="primary",
+                                        layout=widgets.Layout(width="auto"))
+    messenger_cancel_btn = widgets.Button(description="Cancel", layout=widgets.Layout(width="auto"))
+    messenger_code_row = widgets.HBox(
+        [messenger_code_input, messenger_code_btn, messenger_cancel_btn],
+        layout=widgets.Layout(display="none", gap="6px", margin="2px 0 4px 0"))
     # The composer is one rounded box: the message on top; below it the
     # commands and attach buttons, the chips that shape the next message
     # (permission, model, effort), the KIT quick mode, and the round Send.
@@ -11611,7 +11632,7 @@ def create_tab(ctx):
     composer_bar.add_class("delfin-agent-composer-bar")
     composer = widgets.VBox([input_textarea, composer_bar])
     composer.add_class("delfin-agent-composer")
-    _input_area = widgets.VBox([_palette_pop, composer])
+    _input_area = widgets.VBox([_palette_pop, messenger_pair_html, messenger_code_row, composer])
     _input_area.add_class("delfin-agent-input-area")
     # The terminal panel beside the chat (delfin-voila --agent-terminal
     # only): the one program the launcher was given. The page script
@@ -11652,6 +11673,25 @@ def create_tab(ctx):
         _chat_area = widgets.HBox([chat_frame, agent_term_panel])
         _chat_area.add_class("delfin-agent-chat-row")
         ctx.add_init_js(_agent_term.init_js())
+    # Connect a phone: the same as typing /pair; the code goes the same way.
+    messenger_phone_btn = widgets.Button(
+        description="Phone", icon="mobile",
+        tooltip=("Connect your phone (SimpleX): scan the code shown above the input, "
+                 "then type the 6-digit code your phone gets."),
+        layout=widgets.Layout(width="auto", flex="0 0 auto"))
+
+    def _messenger_send_code(_b=None):
+        code = "".join(ch for ch in str(messenger_code_input.value or "") if ch.isdigit())
+        if len(code) != 6:
+            _append_system_message("The code has 6 digits; it is in the first message on your phone.")
+            return
+        messenger_code_input.value = ""
+        _handle_slash_command("/pair " + code)
+
+    messenger_phone_btn.on_click(lambda _b: _handle_slash_command("/pair"))
+    messenger_code_btn.on_click(_messenger_send_code)
+    messenger_cancel_btn.on_click(lambda _b: _handle_slash_command("/pair cancel"))
+    git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
@@ -14597,10 +14637,18 @@ def create_tab(ctx):
         if not sid:
             return "Start a session first, then type /sync."
         adapters = state.setdefault("_messenger_adapters", {})
-        if args.strip().lower() in {"off", "status"}:
+        action, name = activation.parse_sync(args)
+        if action in {"off", "status", "usage"}:
             return activation.configure(sid, args)
-        if args.strip().lower() not in {"", "on"}:
-            return activation.configure(sid, args)
+        if name:
+            # /sync name NAME: the session's title too -- what the save
+            # writes as title and the messenger adapter answers as the name.
+            state.setdefault("_messenger_titles", {})[sid] = name
+            try:
+                _auto_save_session()
+            except Exception:
+                pass
+        # "", "on" and "/sync NAME" all switch on, with the live adapter.
         if sid not in adapters:
             def answer_detected_question(text):
                 if input_textarea.value.strip() or not state.get("_pending_question"):
@@ -16331,6 +16379,36 @@ def create_tab(ctx):
                 _append_system_message("\n".join(lines))
             return True
 
+        if cmd == "/pair" or cmd.startswith("/pair "):
+            # Phone pairing (delfin.messenger.pairing). The invitation and
+            # the code step go to the pairing panel above the input (not the
+            # chat, not the saved session); the rest to the chat.
+            if state.get("_on_its_own"):
+                _append_system_message("Only you pair a phone, in a session of your own.")
+                return True
+            from delfin.messenger import pairing as _pairing
+            from delfin.messenger.dashboard import PairPanel as _PairPanel
+            _panel = state.get("_messenger_pair_panel")
+            if _panel is None:
+                def _render(value):
+                    messenger_pair_html.value = value
+                    messenger_pair_html.layout.display = "" if value else "none"
+
+                def _stage(stage):
+                    # The code field only while the gateway waits for it.
+                    messenger_code_row.layout.display = "" if stage == "code" else "none"
+                    if stage != "code":
+                        messenger_code_input.value = ""
+                _panel = state["_messenger_pair_panel"] = _PairPanel(
+                    render=_render, say=_append_system_message, on_stage=_stage)
+            if text[5:].strip().lower() == "cancel":
+                _panel.clear()
+            _sid = str(getattr(state.get("engine"), "session_id", "")
+                       or state.get("active_session_id") or "")
+            _append_system_message(_pairing.session_command(
+                text[5:].strip(), requester="dashboard:" + _sid if _sid else "",
+                show=_panel.show))
+            return True
         if cmd == "/plans" or cmd.startswith("/plans "):
             from delfin.agent.memory_store import (
                 list_plans, get_plan, delete_plan,
