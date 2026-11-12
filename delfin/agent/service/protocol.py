@@ -339,8 +339,8 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     # (cluster.hostkey asks the server again). cluster.remove: both entries.
     "clusters.presets": {},
     "cluster.add": {"name": "string", "user": "string", "preset": "string?",
-                    "host": "string?", "partition": "string?", "workDir": "string?",
-                    "installRoot": "string?"},
+                    "host": "string?", "requiresOtp": "boolean?", "partition": "string?",
+                    "workDir": "string?", "installRoot": "string?"},
     "cluster.hostkey": {"name": "string"},
     "cluster.pin": {"name": "string", "fingerprint": "string"},
     "cluster.remove": {"name": "string"},

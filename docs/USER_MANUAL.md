@@ -2392,7 +2392,9 @@ is in [SECURITY_MODEL.md](SECURITY_MODEL.md#hpc-clusters).
    partition DELFIN's jobs go to, the work dir (default `~/delfin/jobs`)
    and the install root (default `~/delfin/installs`). The partition is
    filled in where DELFIN knows a good one; change it if your group uses
-   another.
+   another. For another cluster, also say what its login asks for:
+   `space` switches between "password" and "password + OTP". A known
+   cluster brings its own.
 3. **The host key.** For bwUniCluster 3, HoreKa and HAICORE the cluster's
    operators publish their key: when the server presents exactly that key
    it is pinned at once and the form says so. For any other cluster, or a

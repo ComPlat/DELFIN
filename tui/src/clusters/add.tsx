@@ -52,14 +52,19 @@ export interface Proposal {
   partition?: string
 }
 
-export type FieldKey = "name" | "user" | "host" | "partition" | "workDir" | "installRoot"
+export type FieldKey = "name" | "user" | "host" | "otp" | "partition" | "workDir" | "installRoot"
 
 export interface FormField {
   key: FieldKey
   label: string
   value: string
   hint: string
+  /** A field picked from these, not typed: space or ← → switch it. */
+  choices?: string[]
 }
+
+/** The login's prompts, for another cluster: ctun asks for these. */
+export const LOGIN_CHOICES = ["password", "password + OTP"]
 
 export interface HostKeyAsk {
   /** The key the server presents now, to pin once the person says y. */
@@ -138,6 +143,9 @@ export function fieldsFor(preset: Preset | undefined, proposal: Proposal = {}): 
   ]
   // Another cluster, or a preset without a public host (IntNano): the host is asked.
   if (!preset || !preset.host) out.push({ key: "host", label: "login host", value: proposal.host || "", hint: "e.g. login.cluster.example.org" })
+  // Another cluster: whether its login asks for a one-time code. A preset knows.
+  if (!preset) out.push({ key: "otp", label: "login asks", value: LOGIN_CHOICES[0]!, choices: LOGIN_CHOICES,
+                          hint: "space switches: password, or password + OTP (a one-time code after it)" })
   out.push(
     { key: "partition", label: "partition", value: proposal.partition || preset?.partition || "",
       hint: "where DELFIN's jobs go; empty: the cluster's default" },
@@ -222,6 +230,7 @@ export function createAddForm(deps: AddDeps): AddForm {
     const params: Record<string, unknown> = { name: value("name"), user: value("user") }
     if (p) params.preset = p.name
     if (!p || !p.host) params.host = value("host")
+    if (!p) params.requiresOtp = value("otp") === LOGIN_CHOICES[1]
     for (const key of ["partition", "workDir", "installRoot"] as const) if (value(key)) params[key] = value(key)
     setState({ busy: true, error: "" })
     void deps.request("cluster.add", params).then((got) => {
@@ -314,6 +323,14 @@ export function createAddForm(deps: AddDeps): AddForm {
     }
     const f = state.fields[state.focus]
     if (!f) return true
+    if (f.choices) {                       // picked, not typed
+      const step = key.name === "left" ? -1 : key.name === "right" || key.name === "space" || key.sequence === " " ? 1 : 0
+      if (step) {
+        const at = Math.max(0, f.choices.indexOf(f.value))
+        setField(f.choices[(at + step + f.choices.length) % f.choices.length]!)
+      }
+      return true
+    }
     if (key.name === "backspace") setField([...f.value].slice(0, -1).join(""))
     else if (key.ctrl && key.name === "u") setField("")
     else if (plain && key.sequence && !/[\x00-\x1f\x7f]/.test(key.sequence)) setField(f.value + key.sequence)
@@ -325,7 +342,7 @@ export function createAddForm(deps: AddDeps): AddForm {
     paste: (text) => {
       if (state.open && state.step === "fields" && !state.busy) {
         const f = state.fields[state.focus]
-        if (f) setField(f.value + text.replace(/[\x00-\x1f\x7f]/g, ""))
+        if (f && !f.choices) setField(f.value + text.replace(/[\x00-\x1f\x7f]/g, ""))
       }
     },
     // The border, the heading, the step's lines and the status line.
