@@ -3678,6 +3678,32 @@ _AGENT_PAGE_JS = """
     }
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
+
+    /* Enter sends what is in the box NOW. Clicking Send right away read
+       the kernel's copy, which lags behind ipywidgets' throttled value
+       updates: fast typing or a paste then Enter sent "g" of "gamma three"
+       (measured 11.11.). The text goes with the request instead, through
+       the session's submit channel; the box is cleared at once so a late
+       value update cannot bring the old text back. */
+    window.__delfinAgentSubmit = window.__delfinAgentSubmit || function(ta) {
+        var root = ta && ta.closest ? (ta.closest('.delfin-agent-root') || document) : document;
+        var ch = root.querySelector('.delfin-agent-submit input');
+        if (!ch) {
+            var sb = window.__delfinQ('.delfin-agent-send-row button');
+            if (sb) sb.click();
+            return;
+        }
+        window.__delfinAgentSubmitSeq = (window.__delfinAgentSubmitSeq || 0) + 1;
+        var text = ta.value;
+        var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        set.call(ch, JSON.stringify({seq: window.__delfinAgentSubmitSeq, text: text}));
+        ch.dispatchEvent(new Event('input', {bubbles: true}));
+        if (text.trim()) {
+            var tset = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            tset.call(ta, '');
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
     document.addEventListener('keydown', function(e) {
         if (!window.__delfinAgentOwnsKey(e)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
@@ -3687,8 +3713,7 @@ _AGENT_PAGE_JS = """
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
+                    window.__delfinAgentSubmit(e.target);
                     return;
                 }
             }
@@ -3702,23 +3727,9 @@ _AGENT_PAGE_JS = """
                 }
             }
         }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            var a = window.__delfinQ('.delfin-agent-chat');
-            if (a) {
-                e.preventDefault();
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var ns = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    ns.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sb = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sb) sb.click();
-                    }, 50);
-                }
-            }
-        }
+        /* Ctrl+L stays the browser's (focus the address bar). It used to
+           send /clear -- a fresh conversation and a lost draft, from any
+           focus; neither the TUI nor Claude Code clears a session on it. */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
             var a = window.__delfinQ('.delfin-agent-chat');
             if (a) {
@@ -9900,7 +9911,34 @@ def create_tab(ctx):
     send_btn.add_class("delfin-agent-send")
     # Send alone in the row the page scripts look in: they find it as the
     # row's first button (Enter, follow-to-bottom, the grow reset).
-    send_row = widgets.HBox([send_btn])
+    # Enter's request carries the text that was in the box (the page script
+    # __delfinAgentSubmit): the kernel's copy of the box lags behind
+    # ipywidgets' throttled value updates, and Send read "g" of a quickly
+    # typed "gamma three". A hidden field per session, found from the box.
+    submit_channel = widgets.Text(value="", layout=widgets.Layout(display="none"))
+    submit_channel.add_class("delfin-agent-submit")
+    _submit_seen = {"seq": 0}
+
+    def _on_submit_channel(change):
+        try:
+            import json as _sjson
+            data = _sjson.loads(change.get("new") or "{}")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        seq = int(data.get("seq") or 0)
+        if seq <= _submit_seen["seq"]:
+            return
+        _submit_seen["seq"] = seq
+        text = str(data.get("text") or "")
+        if not text.strip():
+            return
+        input_textarea.value = text
+        _on_send(None)
+
+    submit_channel.observe(_on_submit_channel, names="value")
+    send_row = widgets.HBox([send_btn, submit_channel])
     send_row.add_class("delfin-agent-send-row")
 
     # What could come next, under the box you type in. Drawn from the
@@ -14658,7 +14696,6 @@ def create_tab(ctx):
                     "  Enter            \u2014 Send message\n"
                     "  Shift+Enter      \u2014 New line\n"
                     "  Escape           \u2014 Stop generation\n"
-                    "  Ctrl+L           \u2014 Clear chat\n"
                     "  Ctrl+K           \u2014 Toggle search\n"
                     "  Shift+Tab        \u2014 Cycle permission mode")
             _append_system_message(_help_text)
@@ -25077,6 +25114,32 @@ def create_tab(ctx):
 (function() {
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
+
+    /* Enter sends what is in the box NOW. Clicking Send right away read
+       the kernel's copy, which lags behind ipywidgets' throttled value
+       updates: fast typing or a paste then Enter sent "g" of "gamma three"
+       (measured 11.11.). The text goes with the request instead, through
+       the session's submit channel; the box is cleared at once so a late
+       value update cannot bring the old text back. */
+    window.__delfinAgentSubmit = window.__delfinAgentSubmit || function(ta) {
+        var root = ta && ta.closest ? (ta.closest('.delfin-agent-root') || document) : document;
+        var ch = root.querySelector('.delfin-agent-submit input');
+        if (!ch) {
+            var sb = window.__delfinQ('.delfin-agent-send-row button');
+            if (sb) sb.click();
+            return;
+        }
+        window.__delfinAgentSubmitSeq = (window.__delfinAgentSubmitSeq || 0) + 1;
+        var text = ta.value;
+        var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        set.call(ch, JSON.stringify({seq: window.__delfinAgentSubmitSeq, text: text}));
+        ch.dispatchEvent(new Event('input', {bubbles: true}));
+        if (text.trim()) {
+            var tset = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            tset.call(ta, '');
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
     document.addEventListener('keydown', function(e) {
         if (!window.__delfinAgentOwnsKey(e)) return;
         /* Enter = Approve (if approval pending) or Send */
@@ -25095,8 +25158,7 @@ def create_tab(ctx):
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
+                    window.__delfinAgentSubmit(e.target);
                     return;
                 }
             }
@@ -25123,26 +25185,7 @@ def create_tab(ctx):
                 }
             }
         }
-        /* Ctrl+L = Clear chat */
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            /* Only if focus is in the agent area */
-            var agentArea = window.__delfinQ('.delfin-agent-chat');
-            if (agentArea) {
-                e.preventDefault();
-                /* Trigger /clear by setting textarea and clicking send */
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var nativeSet = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    nativeSet.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sendBtn) sendBtn.click();
-                    }, 50);
-                }
-            }
-        }
+        /* Ctrl+L stays the browser's (see the other key handler). */
         /* Ctrl+K = Toggle search */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
             var agentArea = window.__delfinQ('.delfin-agent-chat');
