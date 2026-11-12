@@ -6,7 +6,7 @@
  * title, folder, age and state.
  */
 import { describe, expect, test } from "bun:test"
-import { RESUME_PICK, START_HINT, ageOf, entryOf, resumeRowsOf, settingsFor, shortFolder } from "../src/entry"
+import { RESUME_PICK, START_HINT, ageOf, entryOf, neverAsked, resumeRowsOf, settingsFor, shortFolder } from "../src/entry"
 
 describe("the entry", () => {
   test("no flag is a new session, as before", () => {
@@ -85,11 +85,24 @@ describe("the resume picker's rows", () => {
   })
 
   test("untitled rows and ages", () => {
-    const rows = resumeRowsOf([{ sessionId: "n1", workspace: "" }], [], "", now, home)
+    // The one in view is listed even when nothing was asked of it yet.
+    const rows = resumeRowsOf([{ sessionId: "n1", workspace: "" }], [], "n1", now, home)
     expect(rows[0]!.title).toBe("(untitled)")
     expect(ageOf(now - 59, now)).toBe("now")
     expect(ageOf(now - 3 * 3600 - 5, now)).toBe("3h ago")
     expect(ageOf(0, now)).toBe("")
+  })
+
+  test("a session nobody asked anything, nor named, is not offered (unless in view)", () => {
+    const empty = { sessionId: "empty-00000", workspace: "/home/u/a", state: "idle", lastActivity: now - 5 }
+    const rows = resumeRowsOf([...listed, empty], past, "", now, home)
+    expect(rows.map((r) => r.id)).not.toContain("empty-00000")
+    expect(neverAsked(empty)).toBe(true)
+    // Asked once (here or from another window), or named: offered.
+    expect(neverAsked({ ...empty, lastInput: now - 60 })).toBe(false)
+    expect(neverAsked({ ...empty, firstPrompt: "hi" })).toBe(false)
+    expect(neverAsked({ ...empty, title: "benzene scan" })).toBe(false)
+    expect(resumeRowsOf([empty], [], "empty-00000", now, home).map((r) => r.id)).toEqual(["empty-00000"])
   })
 
   test("a long folder is cut in the middle, its own name kept", () => {

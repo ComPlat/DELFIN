@@ -104,6 +104,13 @@ function stateOf(summary: Record<string, unknown>): ResumeState {
   return "running"
 }
 
+/** A service's session nobody asked anything, nor named: no first
+ *  prompt, no input, no title. */
+export function neverAsked(summary: Record<string, unknown>): boolean {
+  return !String(summary.firstPrompt ?? "").trim() && !String(summary.lastPrompt ?? "").trim()
+    && !(Number(summary.lastInput ?? 0) > 0) && !String(summary.title ?? "").trim()
+}
+
 const firstLine = (text: unknown) => String(text ?? "").split("\n")[0]!.trim()
 
 /**
@@ -128,6 +135,10 @@ export function resumeRowsOf(listed: unknown[], past: unknown[], currentId = "",
     const s = (raw ?? {}) as Record<string, unknown>
     const id = String(s.sessionId ?? "")
     if (!id || seen.has(id)) continue
+    // Never asked anything and never named (a window's fresh "(untitled)"
+    // one): nothing to resume, as Claude Code lists no empty conversation
+    // -- unless it is the one in view.
+    if (id !== currentId && neverAsked(s)) continue
     seen.add(id)
     const at = Number(s.lastActivity ?? s.createdAt ?? 0) || 0
     rows.push(row(id, String(s.workspace ?? ""), firstLine(s.title || s.firstPrompt), stateOf(s), at))

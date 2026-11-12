@@ -7,8 +7,10 @@ only gains its parser lines.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -51,6 +53,89 @@ def _start_settings(args: argparse.Namespace) -> dict:
         del settings["resume"]
         settings["pick"] = True
     return settings
+
+
+#: What a session id is made of (the session store's file names, the
+#: window's leaving.ts ID); a line that is no id is never looked up.
+_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+
+#: The shortest prefix that stands for a whole id (`--resume 0f3a9c21`,
+#: the short id the resume picker and `service status` show).
+MIN_PREFIX = 4
+
+
+def _known_sessions(hello: dict) -> list[dict]:
+    """Every session ``tui --resume`` can open: the ones the service runs
+    or keeps asleep (``hello``), then the saved ones -- one row each,
+    ``{"id", "title"}``."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+
+    def add(sid: object, title: object) -> None:
+        sid = str(sid or "")
+        if sid and sid not in seen:
+            seen.add(sid)
+            rows.append({"id": sid, "title": str(title or "").split("\n")[0].strip()})
+
+    for s in hello.get("sessions") or []:
+        if isinstance(s, dict):
+            add(s.get("sessionId"), s.get("title") or s.get("firstPrompt"))
+    try:
+        from .. import session_store
+        for r in session_store.list_sessions(limit=1000):
+            add(r.get("session_id"), r.get("title"))
+    except Exception:
+        pass
+    return rows
+
+
+def _saved(sid: str) -> bool:
+    """Whether the session store has ``sid`` (one file read, no listing)."""
+    if not _SESSION_ID.match(sid) or ".." in sid:
+        return False
+    try:
+        from .. import session_store
+        return session_store.load_session(sid) is not None
+    except Exception:
+        return False
+
+
+def resolve_resume(wanted: str, hello: dict) -> tuple[str, str]:
+    """The session ``tui --resume <wanted>`` opens: ``(id, "")``, or
+    ``("", why not)`` -- an unknown id is an error naming the close ones,
+    never a new session under that name (``claude --resume`` says "No
+    conversation found"; git and gh refuse an unknown ref).
+
+    ``wanted`` is a whole id of a session the service runs, keeps asleep
+    or has saved, or a prefix of one id only (at least MIN_PREFIX
+    characters, as the picker's short ids)."""
+    wanted = wanted.strip()
+    live = {str(s.get("sessionId") or "") for s in hello.get("sessions") or [] if isinstance(s, dict)}
+    if wanted in live or _saved(wanted):
+        return wanted, ""
+    rows = _known_sessions(hello)
+    if len(wanted) >= MIN_PREFIX:
+        started = [r for r in rows if r["id"].startswith(wanted)]
+        if len(started) == 1:
+            return started[0]["id"], ""
+        if len(started) > 1:
+            listed = "\n".join(f"  {_plain(r['id'])}  {_plain(r['title'], 50)}" for r in started[:5])
+            return "", (f"{_plain(wanted)} is the start of {len(started)} sessions; "
+                        f"give more of the id:\n{listed}")
+    ids = [r["id"] for r in rows]
+    close = difflib.get_close_matches(wanted, ids, n=3, cutoff=0.6)
+    titled = {r["id"]: r["title"] for r in rows}
+    if not close:
+        # A title typed for an id: the sessions it names.
+        needle = wanted.lower()
+        close = [r["id"] for r in rows if needle and needle in r["title"].lower()][:3]
+    why = f"No session found with id {_plain(wanted)}."
+    if close:
+        why += " Did you mean:\n" + "\n".join(
+            f"  {_plain(c)}  {_plain(titled.get(c, ''), 50)}" for c in close)
+    why += ("\n`delfin-agent tui --resume` (no id) opens the picker; "
+            "`delfin-agent sessions` lists the saved ones.")
+    return "", why
 
 
 def _security_preamble() -> None:
@@ -153,6 +238,15 @@ def cmd_tui(args: argparse.Namespace) -> int:
         print(f"{missing}\nThe agent service runs: `delfin-agent service status` "
               f"(pid {hello.get('pid')}).", file=sys.stderr)
         return 2
+    settings = _start_settings(args)
+    if settings.get("resume"):
+        # Checked before the window takes the terminal: a typo opens no
+        # new session under its name.
+        sid, why = resolve_resume(str(settings["resume"]), hello)
+        if not sid:
+            print(f"ERROR: {why}", file=sys.stderr)
+            return 2
+        settings["resume"] = sid
     env = dict(os.environ)
     env["DELFIN_TUI_SOCKET"] = str(rundir.socket_path())
     # What starts the next service, should this one vanish under the window.
@@ -160,7 +254,7 @@ def cmd_tui(args: argparse.Namespace) -> int:
     # Said in the window: where else sessions of this user are.
     env["DELFIN_TUI_NOTES"] = json.dumps(launcher.other_host_notes())
     # Settings first: the workspace is where `delfin-agent tui` was typed.
-    env["DELFIN_TUI_START"] = json.dumps(_start_settings(args))
+    env["DELFIN_TUI_START"] = json.dumps(settings)
     # Inline instead of the whole terminal (tui.json "screen" says it for good).
     if getattr(args, "inline", False):
         env["DELFIN_TUI_SCREEN"] = "inline"
@@ -252,6 +346,9 @@ def _session_rows(svc: "client.ServiceClient") -> tuple[list[dict], dict]:
             "windows": int(s.get("windows") or 0),
             # False: a scripted (fake) session started without saving.
             "saves": bool(s.get("saves", True)),
+            # Asked something (here or from its log): a session never asked
+            # anything is not saved when it ends (worker.Worker.was_used).
+            "asked": bool(s.get("firstPrompt") or s.get("lastPrompt") or s.get("lastInput")),
             "model": _plain(s.get("model")),
             "createdAt": created,
             "lastActivity": active,
@@ -449,6 +546,10 @@ def _end(target: str, *, all_idle: bool, yes: bool, after_turn: bool = False) ->
         if not r["saves"]:
             print(f"ended {r['id'][:8]}  {r['title'][:40]}{when}: not saved "
                   "(a scripted session started without saving)")
+            continue
+        if not r.get("asked", True) and r.get("rawState") != "sleeping":
+            print(f"ended {r['id'][:8]}  {r['title'][:40]}{when}: nothing was asked "
+                  "in it, so it was not kept")
             continue
         still = " (still saving)" if r["id"] in saving else ""
         print(f"ended {r['id'][:8]}  {r['title'][:40]}{when}: saved{still}; "
