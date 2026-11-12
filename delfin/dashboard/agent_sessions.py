@@ -350,6 +350,19 @@ _SIDEBAR_CSS = """<style>
     margin-top: auto !important; margin-bottom: -78px !important; }
 .delfin-agent-chat-frame:has(> .delfin-agent-working-slot .delfin-agent-working)
     .delfin-agent-chat > .delfin-chat-jump { margin-bottom: 0 !important; }
+/* A narrow window: the session list goes above the chat instead of beside
+   it, a few rows high, and the chat keeps the full width -- beside a
+   236 px column it was squeezed to a 50 px strip at phone width. There is
+   nothing for the splitter to divide, so it is not shown. */
+@media (max-width: 800px) {
+    .delfin-session-shell { flex-direction: column !important;
+        align-items: stretch !important; }
+    .delfin-sessions { position: static; flex: 0 0 auto !important;
+        width: 100% !important; }
+    .delfin-session-list { max-height: 30vh; }
+    .delfin-splitter-host { display: none !important; }
+    .delfin-session-stage { flex: 0 0 auto !important; width: 100%; }
+}
 </style>"""
 
 #: Drag the sessions column to a width. Runs once per shell (data-bound
@@ -2034,6 +2047,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     # resumes it (the field's value is never taken for a session id).
     resume_search = _classed(widgets.Text(
         value="", placeholder="Resume a saved session…",
+        tooltip="Resume a saved session",
         continuous_update=True), "delfin-session-resume")
     resume_search.layout.width = "100%"
     resume_rows_box = _classed(widgets.VBox(), "delfin-resume-rows")
