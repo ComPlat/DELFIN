@@ -51,6 +51,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -948,6 +949,35 @@ def _lines(text: str) -> list[str]:
     return [line for line in text.splitlines() if line.strip()]
 
 
+#: What a session id is made of (cli_service._SESSION_ID): anything else
+#: is never looked up in the session store.
+_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+
+
+def resumable(session_id: str) -> bool:
+    """Whether ``--resume session_id`` names a session that ran before: a
+    saved one, one the agent service ran (its event log -- a session put
+    to sleep before anything was asked of it is not saved, and wakes under
+    its id), or the word ``latest`` (chat's own). An unknown id is
+    refused, never started as a new session under that name (``claude
+    --resume`` says "No conversation found"). Never raises."""
+    sid = str(session_id or "").strip()
+    if sid == "latest":
+        return True
+    if not _SESSION_ID.match(sid) or ".." in sid:
+        return False
+    try:
+        from .. import session_store
+        if session_store.load_session(sid) is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        return log_path(sid).is_file()
+    except Exception:
+        return False
+
+
 def open_real_session(args: argparse.Namespace, workspace: Path):
     """Engine, namespace, banner and opening notes, by ``cmd_chat``'s own
     set-up (``cli._start_interactive_session``): managed-policy start
@@ -966,6 +996,12 @@ def open_real_session(args: argparse.Namespace, workspace: Path):
     from .. import cli as _cli
     from .. import launch_guard
 
+    if args.resume and not resumable(args.resume):
+        # chat would say "not found, starting fresh" and open a new session
+        # under the id asked for: a typo would become a session.
+        raise SessionRefused(
+            f"No saved session {protocol.clean_line(args.resume, 128)}: nothing to resume. "
+            "`delfin-agent sessions` lists the saved ones.")
     ns = chat_namespace(args, workspace)
     report = launch_guard.inspect_launch_dir(
         workspace, add_dirs=tuple(ns.add_dirs or ()),
@@ -1057,7 +1093,7 @@ class Worker:
     def __init__(self, engine, *, writer: protocol.LineWriter, reader,
                  workspace: Path, banner: list[str], notices: list[str],
                  name: str = "", title: str | None = None, fake: bool = False,
-                 save: bool = True):
+                 save: bool = True, resumed: bool = False):
         from ..repl import ReplOptions
 
         self.engine = engine
@@ -1073,6 +1109,12 @@ class Worker:
         self.title = protocol.clean_title(name if title is None else title)
         self.fake = fake
         self.save = save
+        #: Resumed, continued or forked: a conversation from before, saved
+        #: again at the end even when nothing new was asked.
+        self.resumed = resumed
+        #: A prompt was accepted (session.prompt): the session was asked
+        #: something, and is saved at its end.
+        self.prompted = False
         sid = str(getattr(engine, "session_id", "") or "")
         if not sid:
             # A backend that announces its id only on the stream and cannot
@@ -1123,6 +1165,7 @@ class Worker:
         self.agent.brief_hooks = (self._brief_for_turn, self._brief_after_turn)
         # Turn ids stay unique in the session's log across resumes.
         self.agent._turn_seq = self.log.turns
+        self._turns_at_start = self.agent._turn_seq
         self.banner = banner
         self._initialized = False
         self._seen_lock = threading.Lock()
@@ -1452,6 +1495,7 @@ class Worker:
         how = str(params.get("how") or "queue")
         if how not in ("queue", "steer"):
             raise _Refusal(protocol.INVALID_PARAMS, "how must be queue or steer")
+        self.prompted = True
         agent = self.agent
         # As typed: the brief goes in front of the first prompt when its turn
         # starts (_brief_for_turn), not here -- a line can still be dropped.
@@ -1647,6 +1691,23 @@ class Worker:
             raise _Refusal(protocol.INVALID_PARAMS, str(exc)) from None
 
     # -- lifecycle -------------------------------------------------------------------
+    def was_used(self) -> bool:
+        """Whether the session holds a conversation worth keeping: resumed
+        from one, asked something (a prompt, a turn -- a message from
+        another session too), or with a message in its history. A new
+        session that was never asked anything is not saved when it ends
+        -- no "(untitled)" entry for every window opened and closed, as
+        Claude Code keeps no empty conversation."""
+        if self.resumed or self.prompted:
+            return True
+        if int(getattr(self.agent, "_turn_seq", 0) or 0) > self._turns_at_start:
+            return True
+        try:
+            return any(isinstance(m, dict) and m.get("role") in ("user", "assistant")
+                       for m in list(getattr(self.engine, "messages", None) or []))
+        except Exception:
+            return True
+
     def shutdown(self, reason: str, code: int = 0) -> None:
         """End the session: no next turn, every question refused (now and
         from any thread still to ask -- for good, see ProtocolBroker.close),
@@ -1783,7 +1844,7 @@ class Worker:
             with self.agent.cond:
                 self.agent.closing.set()
                 self.agent.cond.notify_all()
-            if self.save:
+            if self.save and self.was_used():
                 end_real_session(self.engine, self.workspace, self.title,
                                  agent=self.agent, t0=t0, learn=not self.fake)
             # A request being handled right now gets its answer out first.
@@ -2004,7 +2065,8 @@ def main(argv: list[str] | None = None) -> int:
     worker = Worker(engine, writer=writer, reader=reader, workspace=workspace,
                     banner=banner, notices=notes + notices, name=args.name,
                     title=initial_title(args, engine),
-                    fake=args.fake, save=(not args.fake) or args.fake_save)
+                    fake=args.fake, save=(not args.fake) or args.fake_save,
+                    resumed=bool(args.resume or args.continue_session or args.fork_session))
     return worker.run()
 
 

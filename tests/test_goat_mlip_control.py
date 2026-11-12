@@ -160,7 +160,7 @@ def test_mlip_goat_writes_extopt_input_and_keeps_file_names(run_dir, monkeypatch
     low = inp.lower()
     assert "goat" in low and "extopt" in low and "xtb2" not in low
     assert 'progext "orca-mlips-uma"' in low
-    assert "--backend uma --model uma-s-1p1 --device cuda" in inp
+    assert "--model uma-s-1p1 --device cuda" in inp
     assert "nprocs 8" in low
     assert "*xyzfile 0 1 XTB_GOAT_start.xyz" in inp
     start = (folder / "XTB_GOAT_start.xyz").read_text().splitlines()

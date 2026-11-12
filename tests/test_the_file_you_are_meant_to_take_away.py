@@ -106,7 +106,7 @@ def test_the_card_says_it_will_not_be_sent(draft):
     """The tool never sends. A card that looked like an outbox would be
     worse than no card."""
     html = _render_artifact_inline(draft)
-    assert re.search(r"(?i)nicht versendet|selbst senden", html)
+    assert re.search(r"(?i)not sent|send it yourself", html)
 
 
 def test_the_draft_can_actually_be_downloaded(draft):

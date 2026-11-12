@@ -931,7 +931,7 @@ def _finalize_plan_decision(
     repo_root: str,
     save_plan_fn=None,
 ) -> list[str]:
-    """Shared plan approve/reject logic for BOTH the 'Plan akzeptieren'
+    """Shared plan approve/reject logic for BOTH the 'Accept plan & execute'
     button (``_on_plan_accept_phase5``) and the ``/plan approve|reject``
     text fallback, so the two paths can never drift apart.
 
@@ -3404,7 +3404,7 @@ def _md_to_html(text: str) -> str:
 # - has_args: True means the command takes arguments — palette adds a trailing
 #   space so the user starts typing immediately
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
-    ("Session", "/sync", "SimpleX für diese Sitzung on|off|status", True),
+    ("Session", "/sync", "SimpleX for this session: on|off|status", True),
     # Session
     ("Session", "/help", "Show this help", False),
     ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),
@@ -3678,6 +3678,32 @@ _AGENT_PAGE_JS = """
     }
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
+
+    /* Enter sends what is in the box NOW. Clicking Send right away read
+       the kernel's copy, which lags behind ipywidgets' throttled value
+       updates: fast typing or a paste then Enter sent "g" of "gamma three"
+       (measured 11.11.). The text goes with the request instead, through
+       the session's submit channel; the box is cleared at once so a late
+       value update cannot bring the old text back. */
+    window.__delfinAgentSubmit = window.__delfinAgentSubmit || function(ta) {
+        var root = ta && ta.closest ? (ta.closest('.delfin-agent-root') || document) : document;
+        var ch = root.querySelector('.delfin-agent-submit input');
+        if (!ch) {
+            var sb = window.__delfinQ('.delfin-agent-send-row button');
+            if (sb) sb.click();
+            return;
+        }
+        window.__delfinAgentSubmitSeq = (window.__delfinAgentSubmitSeq || 0) + 1;
+        var text = ta.value;
+        var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        set.call(ch, JSON.stringify({seq: window.__delfinAgentSubmitSeq, text: text}));
+        ch.dispatchEvent(new Event('input', {bubbles: true}));
+        if (text.trim()) {
+            var tset = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            tset.call(ta, '');
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
     document.addEventListener('keydown', function(e) {
         if (!window.__delfinAgentOwnsKey(e)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
@@ -3687,8 +3713,7 @@ _AGENT_PAGE_JS = """
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
+                    window.__delfinAgentSubmit(e.target);
                     return;
                 }
             }
@@ -3702,23 +3727,9 @@ _AGENT_PAGE_JS = """
                 }
             }
         }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            var a = window.__delfinQ('.delfin-agent-chat');
-            if (a) {
-                e.preventDefault();
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var ns = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    ns.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sb = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sb) sb.click();
-                    }, 50);
-                }
-            }
-        }
+        /* Ctrl+L stays the browser's (focus the address bar). It used to
+           send /clear -- a fresh conversation and a lost draft, from any
+           focus; neither the TUI nor Claude Code clears a session on it. */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
             var a = window.__delfinQ('.delfin-agent-chat');
             if (a) {
@@ -6709,22 +6720,22 @@ def _render_eml_summary(path) -> str | None:
             return str(raw)
 
     rows = [(label, _field(key)) for label, key in
-            (("An", "To"), ("Cc", "Cc"), ("Betreff", "Subject"))]
+            (("To", "To"), ("Cc", "Cc"), ("Subject", "Subject"))]
     rows = [(label, value) for label, value in rows if value]
     if not rows:
         return None
     attachments = sum(
         1 for part in msg.walk() if part.get_filename())
     if attachments:
-        rows.append(("Anhänge", str(attachments)))
+        rows.append(("Attachments", str(attachments)))
     body = "".join(
         f'<div style="font-size:11px;color:#374151;">'
         f'<span style="color:#6b7280;">{_html.escape(label)}:</span> '
         f'{_html.escape(value)}</div>'
         for label, value in rows)
     return (body + '<div style="font-size:11px;color:#6b7280;'
-            'margin-top:4px;">Wird nicht versendet — öffnen und selbst '
-            'senden.</div>')
+            'margin-top:4px;">Not sent — open it and send it '
+            'yourself.</div>')
 
 
 # Which write a tool performs, under every name it is served by. The
@@ -9900,7 +9911,34 @@ def create_tab(ctx):
     send_btn.add_class("delfin-agent-send")
     # Send alone in the row the page scripts look in: they find it as the
     # row's first button (Enter, follow-to-bottom, the grow reset).
-    send_row = widgets.HBox([send_btn])
+    # Enter's request carries the text that was in the box (the page script
+    # __delfinAgentSubmit): the kernel's copy of the box lags behind
+    # ipywidgets' throttled value updates, and Send read "g" of a quickly
+    # typed "gamma three". A hidden field per session, found from the box.
+    submit_channel = widgets.Text(value="", layout=widgets.Layout(display="none"))
+    submit_channel.add_class("delfin-agent-submit")
+    _submit_seen = {"seq": 0}
+
+    def _on_submit_channel(change):
+        try:
+            import json as _sjson
+            data = _sjson.loads(change.get("new") or "{}")
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        seq = int(data.get("seq") or 0)
+        if seq <= _submit_seen["seq"]:
+            return
+        _submit_seen["seq"] = seq
+        text = str(data.get("text") or "")
+        if not text.strip():
+            return
+        input_textarea.value = text
+        _on_send(None)
+
+    submit_channel.observe(_on_submit_channel, names="value")
+    send_row = widgets.HBox([send_btn, submit_channel])
     send_row.add_class("delfin-agent-send-row")
 
     # What could come next, under the box you type in. Drawn from the
@@ -14557,7 +14595,7 @@ def create_tab(ctx):
         engine = _ensure_engine()
         sid = str(getattr(engine, "session_id", "") or state.get("active_session_id") or "")
         if not sid:
-            return "Zuerst eine Sitzung starten, dann /sync eingeben."
+            return "Start a session first, then type /sync."
         adapters = state.setdefault("_messenger_adapters", {})
         if args.strip().lower() in {"off", "status"}:
             return activation.configure(sid, args)
@@ -14567,7 +14605,7 @@ def create_tab(ctx):
             def answer_detected_question(text):
                 if input_textarea.value.strip() or not state.get("_pending_question"):
                     return False
-                input_textarea.value = "Antwort auf deine Rückfrage: " + text
+                input_textarea.value = "Answer to your question: " + text
                 _on_send(None)
                 return not state.get("_pending_question")
             def send(text):
@@ -14591,7 +14629,7 @@ def create_tab(ctx):
         cmd = text.lower().strip()
         if cmd == "/sync" or cmd.startswith("/sync "):
             if state.get("_on_its_own"):
-                _append_system_message("SimpleX kann nur von dir in dieser Sitzung aktiviert werden.")
+                _append_system_message("Only you can turn SimpleX on for this session.")
             else:
                 _append_system_message(_messenger_command(text[5:].strip()))
             return True
@@ -14658,7 +14696,6 @@ def create_tab(ctx):
                     "  Enter            \u2014 Send message\n"
                     "  Shift+Enter      \u2014 New line\n"
                     "  Escape           \u2014 Stop generation\n"
-                    "  Ctrl+L           \u2014 Clear chat\n"
                     "  Ctrl+K           \u2014 Toggle search\n"
                     "  Shift+Tab        \u2014 Cycle permission mode")
             _append_system_message(_help_text)
@@ -15875,7 +15912,7 @@ def create_tab(ctx):
                         "Switch to /mode plan and ask the agent to draft a plan."
                     )
                     return True
-                # Same shared logic as the 'Plan akzeptieren' button so the
+                # Same shared logic as the 'Accept plan & execute' button so the
                 # two paths are functionally identical (persist + perm flip).
                 for _m in _finalize_plan_decision(
                     state,
@@ -25077,6 +25114,32 @@ def create_tab(ctx):
 (function() {
     if (window.__delfinAgentKeys) return;
     window.__delfinAgentKeys = true;
+
+    /* Enter sends what is in the box NOW. Clicking Send right away read
+       the kernel's copy, which lags behind ipywidgets' throttled value
+       updates: fast typing or a paste then Enter sent "g" of "gamma three"
+       (measured 11.11.). The text goes with the request instead, through
+       the session's submit channel; the box is cleared at once so a late
+       value update cannot bring the old text back. */
+    window.__delfinAgentSubmit = window.__delfinAgentSubmit || function(ta) {
+        var root = ta && ta.closest ? (ta.closest('.delfin-agent-root') || document) : document;
+        var ch = root.querySelector('.delfin-agent-submit input');
+        if (!ch) {
+            var sb = window.__delfinQ('.delfin-agent-send-row button');
+            if (sb) sb.click();
+            return;
+        }
+        window.__delfinAgentSubmitSeq = (window.__delfinAgentSubmitSeq || 0) + 1;
+        var text = ta.value;
+        var set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        set.call(ch, JSON.stringify({seq: window.__delfinAgentSubmitSeq, text: text}));
+        ch.dispatchEvent(new Event('input', {bubbles: true}));
+        if (text.trim()) {
+            var tset = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            tset.call(ta, '');
+            ta.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+    };
     document.addEventListener('keydown', function(e) {
         if (!window.__delfinAgentOwnsKey(e)) return;
         /* Enter = Approve (if approval pending) or Send */
@@ -25095,8 +25158,7 @@ def create_tab(ctx):
                 if (container) {
                     e.preventDefault();
                     e.stopPropagation();
-                    var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                    if (sendBtn) sendBtn.click();
+                    window.__delfinAgentSubmit(e.target);
                     return;
                 }
             }
@@ -25123,26 +25185,7 @@ def create_tab(ctx):
                 }
             }
         }
-        /* Ctrl+L = Clear chat */
-        if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-            /* Only if focus is in the agent area */
-            var agentArea = window.__delfinQ('.delfin-agent-chat');
-            if (agentArea) {
-                e.preventDefault();
-                /* Trigger /clear by setting textarea and clicking send */
-                var ta = window.__delfinQ('.delfin-agent-input textarea');
-                if (ta) {
-                    var nativeSet = Object.getOwnPropertyDescriptor(
-                        window.HTMLTextAreaElement.prototype, 'value').set;
-                    nativeSet.call(ta, '/clear');
-                    ta.dispatchEvent(new Event('input', {bubbles: true}));
-                    setTimeout(function() {
-                        var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
-                        if (sendBtn) sendBtn.click();
-                    }, 50);
-                }
-            }
-        }
+        /* Ctrl+L stays the browser's (see the other key handler). */
         /* Ctrl+K = Toggle search */
         if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
             var agentArea = window.__delfinQ('.delfin-agent-chat');
