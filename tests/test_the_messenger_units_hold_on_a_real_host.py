@@ -51,6 +51,13 @@ def test_the_bridge_runs_with_the_service_users_own_group(tmp_path):
                and line.endswith("/run/delfin-messenger-bridge") for line in pre)
     assert any(line.startswith("ExecStopPost=+") and "/run/delfin-messenger-bridge" in line
                for line in bridge)
+    # Never the directory itself: bound by ReadWritePaths= into the unit's
+    # namespace, an rm -rf of it failed with EBUSY on every start (Pi,
+    # 2026-11-12, 116 failed starts). Only the stale socket goes.
+    assert not any("rm -rf /run/delfin-messenger-bridge" in line for line in bridge)
+    assert any(line.startswith("ExecStartPre=+")
+               and line.endswith("rm -f /run/delfin-messenger-bridge/messenger.sock")
+               for line in bridge)
 
 
 def test_the_port_rule_is_stored_and_loaded_before_every_daemon_start(tmp_path):
@@ -82,3 +89,21 @@ def test_the_host_firewall_keeps_the_messenger_rule_when_it_reloads(tmp_path):
 def test_english_phone_texts_are_one_flag_away(tmp_path):
     gateway = _run(tmp_path, ["--lang=en"])["delfin-messenger-gateway.service"]
     assert "Environment=DELFIN_MESSENGER_LANG=en" in gateway
+
+
+def test_the_bridge_may_create_its_socket_under_a_strict_system(tmp_path):
+    """ProtectSystem=strict makes /run read-only for the service. The
+    RuntimeDirectory= the bridge had made its directory writable as a side
+    effect; when it went (see above), nothing did. Measured on the Pi on
+    2026-11-12 after a re-run of the provisioner: the bridge exited with
+    "Read-only file system" at bind() and restarted 130 times, while the
+    dashboard's /sync still said the messenger was on."""
+    bridge = _lines(_run(tmp_path)["delfin-messenger-bridge.service"])
+    assert "ProtectSystem=strict" in bridge
+    sock = next(line.split("=", 2)[2] for line in bridge
+                if line.startswith("Environment=DELFIN_MESSENGER_SOCKET="))
+    sock_dir = str(Path(sock).parent)
+    writable = [p.lstrip("-") for line in bridge
+                if line.startswith("ReadWritePaths=")
+                for p in line.split("=", 1)[1].split()]
+    assert sock_dir in writable, (sock_dir, writable)

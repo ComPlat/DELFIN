@@ -1,9 +1,10 @@
 """The `delfin-agent swarm` subcommand body (package SW1).
 
 Kept out of cli.py so the module is owned and tested here; cli.py only
-wires the argparse subcommand to ``main``. Every action is a thin call
-into delfin/agent/swarm/ -- no orchestration logic lives here, so the
-SW2 dashboard and the SW3 lead call the same library functions.
+hands its ``swarm`` subparser to :func:`configure_parser`. Every action
+is a thin call into delfin/agent/swarm/ -- no orchestration logic lives
+here, so the SW2 dashboard and the SW3 lead call the same library
+functions.
 
 Read-only actions: plan, status, jobs. Side-effecting: init (writes the
 example spec), start (creates worktrees + branches; on a cluster login
@@ -19,19 +20,40 @@ import sys
 from pathlib import Path
 
 
+#: What `delfin-agent swarm --help` says above the subcommand list.
+_DESCRIPTION = (
+    "Build and run agent swarms: packages with disjoint write "
+    "scopes, role prompts (builder/reviewer/QS), a dry-run start "
+    "and a status view. Every member is a full DELFIN session "
+    "with its own worktree and the same permission gate as your "
+    "own session."
+)
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for the `delfin-agent swarm` subcommand."""
-    parser = argparse.ArgumentParser(
-        prog="delfin-agent swarm",
-        description=(
-            "Build and run agent swarms: packages with disjoint write "
-            "scopes, role prompts (builder/reviewer/QS), a dry-run start "
-            "and a status view. Every member is a full DELFIN session "
-            "with its own worktree and the same permission gate as your "
-            "own session."
-        ),
-    )
-    sub = parser.add_subparsers(dest="swarm_cmd", required=True)
+    """Entry point for the `delfin-agent swarm` subcommand, given its own
+    argv (the words after ``swarm``)."""
+    parser = configure_parser(
+        argparse.ArgumentParser(prog="delfin-agent swarm"))
+    return run_args(parser.parse_args(argv))
+
+
+def configure_parser(
+        parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Give *parser* the swarm subcommands and route it to :func:`run_args`.
+
+    cli.py calls this on its ``swarm`` subparser, so `delfin-agent swarm
+    status --json` and `delfin-agent swarm --help` are parsed by argparse
+    itself, as git, gh and kubectl hand a subcommand its own arguments.
+    It used to register a bare subparser whose handler was this module's
+    ``main``: the handler then received the parsed Namespace instead of an
+    argv list (TypeError), and the subparser, which declared no arguments,
+    rejected every subcommand ("unrecognized arguments: status").
+    """
+    parser.description = _DESCRIPTION
+    # Not required: a bare `delfin-agent swarm` prints this help, as
+    # `gh pr` and `kubectl config` do, instead of a usage error.
+    sub = parser.add_subparsers(dest="swarm_cmd", metavar="COMMAND")
 
     p_init = sub.add_parser(
         "init", help="Write a commented example swarm.yaml to edit")
@@ -100,8 +122,16 @@ def main(argv: list[str] | None = None) -> int:
         "merge", help="Pre-PR check + print the merge command")
     p_merge.add_argument("package", help="The package to merge")
 
-    args = parser.parse_args(argv)
+    parser.set_defaults(func=run_args, swarm_help=parser.format_help)
+    return parser
 
+
+def run_args(args: argparse.Namespace) -> int:
+    """Run the swarm subcommand *args* names (parsed by a parser that
+    :func:`configure_parser` set up)."""
+    if not getattr(args, "swarm_cmd", None):
+        print(args.swarm_help(), end="")
+        return 0
     if args.swarm_cmd == "init":
         return _cmd_init(args)
     if args.swarm_cmd == "plan":
@@ -119,6 +149,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.swarm_cmd == "merge":
         return _cmd_merge(args)
     return 2
+
+
+def _no_spec(path: str) -> int:
+    """A missing spec is said, with the command that writes one -- not a
+    FileNotFoundError traceback."""
+    print(f"ERROR: no swarm spec at {path}. `delfin-agent swarm init` "
+          "writes an example to edit (or pass --spec FILE).", file=sys.stderr)
+    return 1
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -143,6 +181,8 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     try:
         spec = load_spec(args.spec)
         validate_ok = plan_launch(spec)
+    except FileNotFoundError:
+        return _no_spec(args.spec)
     except (SpecError, LaunchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -285,6 +325,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
     try:
         spec = load_spec(args.spec)
+    except FileNotFoundError:
+        return _no_spec(args.spec)
     except SpecError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

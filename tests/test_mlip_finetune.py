@@ -168,7 +168,10 @@ def test_model_hand_over_returns_model_argument_for_mlip_route(tmp_path):
     # the orca-mlips ext param names the fine-tuned model -- the value
     # orca_mlips.ext_params_for would forward as --model
     assert f"--model {fake_model}" in args
-    assert "--backend mace" in args
+    # The backend is the executable (orca-mlips-mace), not an argument:
+    # the orca-mlips executables reject --backend (live run, D4 in
+    # docs/MLIP_GOAT_GPU.md).
+    assert "--backend" not in args
 
 
 def test_training_sbatch_has_no_bare_option_lines(tmp_path):

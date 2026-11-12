@@ -55,7 +55,7 @@ class Tool:
     arguments instead and has none. ``modules`` are the imports that prove a
     Python package is there. ``licensed`` tools are never part of a profile or
     an automatic install: they are installed when somebody names them.
-    ``own_env`` names the :mod:`delfin.common.external_builders` tool whose
+    ``own_env`` names the :mod:`delfin.common.external_builders` tool (or program) whose
     interpreter the package lives in, for a tool that cannot live in DELFIN's
     own environment (epic-MACE needs Python 3.7): its installer builds that
     environment, and ``modules`` are looked for there, not here.
@@ -138,6 +138,16 @@ TOOLS: Tuple[Tool, ...] = (
          modules=("scine_molassembler",), aliases=("scine-molassembler",), own_env="molassembler"),
     Tool("metallogen", "ai", "MetalloGen", switch="INSTALL_METALLOGEN", modules=("MetalloGen",),
          own_env="metallogen"),
+    # orca-mlips, the ProgExt program of ORCA's ExtOpt (MLIP GOAT / Opt), in an
+    # environment of its own (micromamba): a CUDA build of PyTorch and the
+    # aimnet2 (MIT) and orb (Apache-2.0) plugins, whose pins DELFIN's own
+    # environment cannot hold. Built by install_ai_tools.sh, where the
+    # environments of their own are built; ExtOpt names its absolute
+    # orca-mlips-<backend> (delfin.mlp_tools.orca_mlips.resolve_progext).
+    Tool("orca_mlips", "ai", "orca-mlips (ORCA ExtOpt MLIPs: AIMNet2, ORB)",
+         switch="INSTALL_ORCA_MLIPS", modules=("orca_mlips_plugins",),
+         aliases=("orca-mlips",), own_env="orca_mlips",
+         size="it brings a CUDA build of PyTorch with it, several GB"),
     Tool("plotly", "ai", "plotly", switch="INSTALL_PLOTLY", modules=("plotly",)),
     # Python packages DELFIN needs to do its own work, installed with pip
     # into the session venv -- never --user / ~/.local. A missing pytest
@@ -481,8 +491,22 @@ def _own_python(tool: Tool) -> Optional[str]:
 
 
 def _own_env_has(tool: Tool, python: str) -> bool:
-    """Whether *tool*'s package sits in the site-packages beside *python*."""
+    """Whether *tool*'s package sits in the site-packages beside *python*.
+
+    By its distribution metadata when the environment's entry names the
+    distribution (``dist``: orca-mlips, whose package is not named like it),
+    else by the module's files. Read from disk; that interpreter is not run.
+    """
     prefix = Path(python).resolve().parent.parent
+    from delfin.common import external_builders
+
+    dist = external_builders.own_env(tool.own_env).get("dist")
+    if dist:
+        import importlib.metadata
+
+        sites = [str(site) for site in prefix.glob("lib/python*/site-packages")]
+        return bool(sites) and any(True for _ in importlib.metadata.distributions(
+            name=dist, path=sites))
     for module in tool.modules:
         for site in prefix.glob("lib/python*/site-packages"):
             if (site / module / "__init__.py").is_file() or (site / f"{module}.py").is_file():

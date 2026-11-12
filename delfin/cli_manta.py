@@ -397,6 +397,9 @@ _CHAMPION_FLAGS = (
     # 3689 -> 3830, hard frames at equal frame count 57251 -> 56076, probe-severe frames
     # 26.0 % -> 18.1 %.  First emitted frame defective (geometry audit): 47.6 % -> 27.1 % of the
     # systems.  The three fixes off: 5826/5827 byte-identical with the unfixed construction.
+    # NOTE: both arms of this A/B were built with a development-stage CSD table that was later found
+    # to contain families of the 6000 pool and of a held-out set (leaky); the numbers above are not
+    # evidence and are not reported in the paper, which re-measures the landing with the shipped tables.
     "ML_TARGETS_BV", "ML_TARGETS_BV_EMBED", "ML_TARGETS_BV_HISTORIC",
     "CN5_BOTH", "UNION", "AROM_PLANARIZE_CARRY_H", "RING_SNAP_KEEP_LENGTH",
     "TEMPLATE_COMPRESSED_RESEAT", "TEMPLATE_COMPRESSED_CONJ", "SP3_PYRAMIDAL_SEAT",
@@ -416,6 +419,8 @@ _CHAMPION_FLAGS = (
     # 8159 -> 8328, clean distinct frames 24838 -> 28025, systems with >= 1 clean distinct frame
     # 3841 -> 3948, hard frames at equal frame count 27630 -> 26790 (raw) and 20078 -> 19353
     # (distinct), probe-severe frames 18.2 % -> 16.2 %.
+    # NOTE: as for landing 9, both arms were built with the leaky development-stage CSD table;
+    # the numbers above are not evidence (the paper reports the re-measurement with the shipped tables).
     "OB_KEKULE_ORDERS", "FLATTEN_P3_PYRAMIDAL", "ORIENT_ONE_SUB_LP",
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")

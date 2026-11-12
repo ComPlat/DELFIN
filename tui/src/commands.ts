@@ -66,6 +66,107 @@ export function mergeOf(text: string): string | null {
   return m ? (m[1] ?? "").trim() : null
 }
 
+// -- unknown /commands ----------------------------------------------------------
+
+/** Commands the window reads itself that take no row of their own in
+ *  WINDOW_COMMANDS: /name (nameOf), /keys and /editor, and the ones whose
+ *  picker it opens (/model, /effort, /mode; the session knows them too). */
+export const WINDOW_ONLY_NAMES = ["/name", "/keys", "/editor", "/model", "/effort", "/mode"]
+
+/** What a command name may look like: a letter, then letters, digits,
+ *  "_", "-", "." or ":" (a plugin's "/plugin:skill"). */
+const COMMAND_SHAPE = /^\/[A-Za-z][\w.:-]*$/
+
+/** Edit distance (insert, delete, substitute), case-insensitive. */
+function distance(a: string, b: string): number {
+  const s = a.toLowerCase()
+  const t = b.toLowerCase()
+  let prev = Array.from({ length: t.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= s.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= t.length; j++) {
+      row[j] = Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (s[i - 1] === t[j - 1] ? 0 : 1))
+    }
+    prev = row
+  }
+  return prev[t.length]!
+}
+
+/** The known command `head` was probably meant to be, or "": the closest
+ *  within two edits (one for names of up to three letters), or the only
+ *  one it begins (a name cut short, "/hel"). */
+export function nearestCommand(head: string, known: readonly string[]): string {
+  const name = head.toLowerCase()
+  let best = ""
+  let bestD = Infinity
+  for (const k of known) {
+    const d = distance(name, k)
+    if (d < bestD) {
+      best = k
+      bestD = d
+    }
+  }
+  const limit = name.length <= 4 ? 1 : 2
+  if (best && bestD <= limit) return best
+  const started = known.filter((k) => name.length >= 3 && k.toLowerCase().startsWith(name))
+  return started.length === 1 ? started[0]! : ""
+}
+
+/** A line refused as an unknown command: its first word, and the command
+ *  it was probably meant to be ("" when none is close). */
+export interface UnknownCommand {
+  head: string
+  near: string
+}
+
+/**
+ * Whether a line is an unknown `/command`, which is answered in the window
+ * and never sent (Claude Code, the dashboard's "Unknown command", the REPL's
+ * "did you mean"). `known` are the names the window and the session know
+ * (WINDOW_COMMANDS, WINDOW_ONLY_NAMES, session.commands); `exists` says
+ * whether a path is there.
+ *
+ * Not a command, so sent as typed:
+ *   - a line that does not start with "/", or only "/";
+ *   - a path: "/home/me/x.py is broken" -- a first word with another "/",
+ *     unless what comes before that "/" is a known command ("/help/keys",
+ *     two commands run together), and a first word that names something on
+ *     disk ("/tmp", "/scratch");
+ *   - a first word no command could be called ("/.hidden", "/* ... *\/",
+ *     "/123").
+ */
+export function unknownCommandOf(text: string, known: readonly string[],
+                                 exists: (path: string) => boolean = () => false): UnknownCommand | null {
+  const line = text.trim()
+  if (!line.startsWith("/") || line.length < 2) return null
+  const first = line.split(/\s+/)[0]!
+  const names = new Set(known.map((k) => k.toLowerCase()))
+  const second = first.indexOf("/", 1)
+  if (second > 0) {
+    const lead = first.slice(0, second)
+    if (COMMAND_SHAPE.test(lead) && names.has(lead.toLowerCase())) {
+      return { head: first, near: known.find((k) => k.toLowerCase() === lead.toLowerCase()) ?? lead }
+    }
+    return null                                  // a path
+  }
+  if (!COMMAND_SHAPE.test(first)) return null
+  if (names.has(first.toLowerCase())) return null
+  let there = false
+  try {
+    there = exists(first)
+  } catch {
+    there = false
+  }
+  if (there) return null                         // "/tmp": a path after all
+  return { head: first, near: nearestCommand(first, known) }
+}
+
+/** What the window says about an unknown command. */
+export function unknownCommandNote(unknown: UnknownCommand): string {
+  const near = unknown.near ? ` — did you mean ${unknown.near}?` : ""
+  return `Unknown command: ${unknown.head}${near} /help lists them. Nothing was sent.`
+}
+
 /** NEEDS_LOCAL_PROJECT (-32006): session.create refused a cwd without a
  *  repository -- the user may consent to making it a local project. */
 export const NEEDS_LOCAL_PROJECT = -32006
