@@ -51,6 +51,13 @@ def test_the_bridge_runs_with_the_service_users_own_group(tmp_path):
                and line.endswith("/run/delfin-messenger-bridge") for line in pre)
     assert any(line.startswith("ExecStopPost=+") and "/run/delfin-messenger-bridge" in line
                for line in bridge)
+    # Never the directory itself: bound by ReadWritePaths= into the unit's
+    # namespace, an rm -rf of it failed with EBUSY on every start (Pi,
+    # 2026-11-12, 116 failed starts). Only the stale socket goes.
+    assert not any("rm -rf /run/delfin-messenger-bridge" in line for line in bridge)
+    assert any(line.startswith("ExecStartPre=+")
+               and line.endswith("rm -f /run/delfin-messenger-bridge/messenger.sock")
+               for line in bridge)
 
 
 def test_the_port_rule_is_stored_and_loaded_before_every_daemon_start(tmp_path):
