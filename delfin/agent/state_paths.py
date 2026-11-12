@@ -668,6 +668,9 @@ def workspace_state_dir(workspace: Any) -> Path:
 #: ``(module, attribute, relative path under the redirected home)``.
 USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.messenger.activation", "_DIR", "messenger_sessions"),
+    # Phone pairing requests: a test's request would be answered by the
+    # real gateway with a real invitation.
+    ("delfin.messenger.pairing", "_DIR", "messenger_pairing"),
     # The user's schedules: a test's entry would run in the real service.
     ("delfin.agent.schedules", "_DIR", "user_schedules"),
     # The workspace freedom profiles share that directory: a test's "free"

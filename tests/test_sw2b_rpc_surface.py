@@ -56,8 +56,9 @@ def test_swarm_status_returns_the_sw1_report():
     names = [p["name"] for p in result["packages"]]
     assert names == ["core", "ui"]
     for pkg in result["packages"]:
-        assert pkg["phase"] in ("building", "in_review", "qs_ok",
-                                "pr", "merged", "blocked", "stopped")
+        assert pkg["phase"] in ("starting", "building", "in_review",
+                                "qs_ok", "pr", "merged", "blocked",
+                                "stopped")
 
 
 def test_swarm_status_validates_against_the_sw1_schema():
