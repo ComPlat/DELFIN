@@ -25,6 +25,7 @@ tests: ``runner(prompt, model) -> str``.
 from __future__ import annotations
 
 import re
+import shlex
 
 from collections import namedtuple
 
@@ -223,9 +224,19 @@ def _bash_is_plain_read(command: str) -> bool:
         return False
     if _bash_has_write_operator(cmd):
         return False
-    first = cmd.split()[0]
+    # The words as the program receives them: the shell removes quotes,
+    # so ``'--output=f'`` is --output=f to git. str.split() kept the
+    # quote and the option matched no prefix below. An unbalanced quote
+    # is no command a reader needs.
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not words:
+        return False
+    first = words[0]
     if first == "git":
-        rest = cmd.split()
+        rest = words
         if len(rest) < 2 or rest[1] not in _READ_GIT_SUBS:
             return False
         # A read sub-command is only a plain read when no destructive flag
