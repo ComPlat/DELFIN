@@ -920,6 +920,12 @@ def main(argv=None):
         prog="delfin-voila",
         description="Launch the DELFIN Dashboard with Voila.",
     )
+    from delfin import __version__ as _delfin_version
+    parser.add_argument(
+        "--version", action="version",
+        version=f"%(prog)s {_delfin_version}",
+        help="Print the DELFIN version and exit.",
+    )
     parser.add_argument(
         "--strict-port",
         action="store_true",
