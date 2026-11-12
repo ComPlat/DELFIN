@@ -310,46 +310,15 @@ def logout_control_html() -> str:
     )
 
 
-def strip_token_js() -> str:
-    """Drop ``?token=`` from the address bar once the page has loaded.
-
-    The token in the URL is consumed by the first request: jupyter-server
-    answers it with the login cookie, and every later request, websocket and
-    reload goes by that cookie. Left in the address bar the token ends up in
-    the browser history, in screenshots and in error stack traces. Jupyter
-    Notebook and JupyterLab remove it the same way, with
-    ``history.replaceState`` (no reload, no new history entry); every other
-    query parameter and the fragment stay as they were.
-
-    It runs with the page's start-up script (:func:`keepalive_js`), that is
-    after the kernel connection is open, so nothing on the page can still
-    need the token from the URL.
-    """
-    return (
-        "(function(){\n"
-        "  try {\n"
-        "    var u = new URL(window.location.href);\n"
-        "    if (!u.searchParams.has('token')) { return; }\n"
-        "    u.searchParams.delete('token');\n"
-        "    window.history.replaceState(window.history.state, document.title,\n"
-        "      u.pathname + u.search + u.hash);\n"
-        "  } catch (e) {}\n"
-        "})();\n"
-    )
-
-
 def keepalive_js() -> str:
     """Report user input on :data:`ALIVE_ROUTE`, at most every five minutes.
 
     A refused report (the login ended: idle, logged out elsewhere, server
     restarted without its store) shows a notice instead of failing later
     on the first image the page loads.
-
-    This is the login's start-up script on the page, so it also removes the
-    consumed token from the address bar first (:func:`strip_token_js`).
     """
     route = json.dumps(ALIVE_ROUTE.lstrip("/"))
-    return strip_token_js() + (
+    return (
         "(function(){\n"
         "  if (window.__delfinKeepAlive) { return; }\n"
         "  window.__delfinKeepAlive = true;\n"

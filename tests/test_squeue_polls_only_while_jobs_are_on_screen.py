@@ -98,6 +98,24 @@ def test_the_context_hands_its_visibility_to_the_backend(board):
     assert ctx.jobs_view_visible() is True
 
 
+def test_a_copied_context_does_not_take_the_gate_over(board):
+    """tab_office / tab_home / tab_archive_statistics copy the context with
+    dataclasses.replace before the tab bar exists (browser job 8544581)."""
+    from dataclasses import replace
+    ctx, backend, show, _squeues, _poll = board
+    copy = replace(ctx, tabs_widget=None)
+    assert copy.jobs_view_visible() is True  # the copy has no tab bar ...
+    show('Submit Job')
+    assert backend.jobs_view_visible == ctx.jobs_view_visible  # ... and is not the gate
+    assert backend._jobs_view_open() is True  # main thread
+    seen = []
+    import threading as _t
+    worker = _t.Thread(target=lambda: seen.append(backend._jobs_view_open()))
+    worker.start()
+    worker.join()
+    assert seen == [False]
+
+
 def test_no_tab_bar_means_visible_as_before():
     assert DashboardContext().jobs_view_visible() is True
 

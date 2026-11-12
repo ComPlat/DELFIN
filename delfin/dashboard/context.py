@@ -191,7 +191,11 @@ class DashboardContext:
     JOB_VIEW_TITLES = ('Job Status', 'Agent Activity')
 
     def __post_init__(self):
-        if self.backend is not None:
+        # The first context of a backend is the dashboard's own.  The Office,
+        # Home and Archive tabs make copies with ``dataclasses.replace``,
+        # which runs this again on a copy that never gets a tab bar; such a
+        # copy must not take the gate over (it would always say "visible").
+        if self.backend is not None and getattr(self.backend, 'jobs_view_visible', None) is None:
             try:
                 self.backend.jobs_view_visible = self.jobs_view_visible
             except Exception:
