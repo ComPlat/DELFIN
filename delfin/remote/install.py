@@ -22,7 +22,15 @@ Semantics:
   exactly the commit, not the PC's working tree.
 * ``install_delfin.sh`` runs there detached (``--repo`` that directory,
   ``--prefix`` the cluster's software_dir, the standard profile), so it
-  outlives the tunnel and the PC. Each commit has its own venv; ORCA,
+  outlives the tunnel and the PC. It runs on the login node within the
+  share a user has there (hpc_guard's LOGIN_CORE_BUDGET, DELFIN issue
+  #640): ``INSTALL_CORES`` compiles and builds at a time, one BLAS/OpenMP
+  thread, ``nice -n 19``. hpc_guard's watcher counts every process of the
+  user's on the login node and stops (SIGSTOP) the busiest DELFIN one --
+  the install's are, by their paths -- when the user stays over the
+  budget, so the install leaves a core of it to the person's own work; an
+  install stopped all the same is reported (``stopped``), not waited for
+  forever. Each commit has its own venv; ORCA,
   OpenMPI and the tools are found or built once and shared. It writes
   ``~/.delfin_settings.json`` and ``~/.delfin_env.sh`` on the cluster as any
   install does.
@@ -61,6 +69,22 @@ SCRIPT = Path(__file__).with_name("scripts") / "installs.sh"
 #: compiled, the tools are fetched) before it reports the install as
 #: still running; the install itself carries on.
 DEFAULT_WAIT_SECONDS = 3 * 3600
+
+
+def _install_cores() -> int:
+    """Compiles and builds an install runs at a time on a login node: hpc_guard's
+    budget for all of a user's processes there, less one core for the rest."""
+    from delfin.hpc_guard import LOGIN_CORE_BUDGET
+    return max(1, int(LOGIN_CORE_BUDGET) - 1)
+
+
+#: See the module's semantics: one compile at a time with the budget of 2.
+INSTALL_CORES = _install_cores()
+
+#: What an install that hpc_guard stopped is told with.
+STOPPED_HINT = ("a process of the install was stopped (SIGSTOP), as hpc_guard does to DELFIN's "
+                "processes while a user keeps a login node over its core budget; nothing "
+                "resumes it by itself")
 
 
 @dataclass(frozen=True)
@@ -134,7 +158,8 @@ def published_source(commit: Commit, sources: Sequence[str]) -> Optional[str]:
 
 
 def state(conn, sha: str) -> str:
-    """complete | running | failed | partial | absent, for install ``sha``."""
+    """complete | running | stopped | failed | partial | absent, for install
+    ``sha`` (stopped: a process of the running install was stopped)."""
     return _script(conn, "state", _install_dir(conn, sha)).strip() or "absent"
 
 
@@ -156,6 +181,9 @@ def ensure_installed(conn, *, commit: Optional[Commit] = None,
     if current == "complete":
         return Outcome(commit.sha, path, "complete", notes=notes,
                        warnings=_warnings(conn, path))
+    if current == "stopped":
+        raise InstallFailed(f"the install of {commit.sha[:10]} on {conn.name} does not go on: "
+                            f"{STOPPED_HINT}", log=_script(conn, "log", path))
     if current == "failed" and not retry:
         raise InstallFailed(f"the install of {commit.sha[:10]} on {conn.name} failed before; "
                             "fix the cause and install again with retry",
@@ -173,7 +201,7 @@ def ensure_installed(conn, *, commit: Optional[Commit] = None,
         say(f"uploading {commit.sha[:10]} to {conn.name}:{path}")
         _upload_tree(conn, commit, source, path)
         say(f"starting install_delfin.sh on {conn.name}")
-        _script(conn, "start", path, conn.cluster.software_dir)
+        _script(conn, "start", path, conn.cluster.software_dir, str(INSTALL_CORES))
         _audit("install", conn.name, commit.sha, source, path)
     if not wait:
         return Outcome(commit.sha, path, "running", installed_now=True, source=source,
@@ -185,8 +213,9 @@ def ensure_installed(conn, *, commit: Optional[Commit] = None,
             say(f"{commit.sha[:10]} is installed on {conn.name}")
             return Outcome(commit.sha, path, "complete", installed_now=True, source=source,
                            notes=notes, warnings=_warnings(conn, path))
-        if current in ("failed", "partial", "absent"):
-            raise InstallFailed(f"the install of {commit.sha[:10]} on {conn.name} failed",
+        if current in ("failed", "partial", "absent", "stopped"):
+            why = f": {STOPPED_HINT}" if current == "stopped" else ""
+            raise InstallFailed(f"the install of {commit.sha[:10]} on {conn.name} failed{why}",
                                 log=_script(conn, "log", path))
         if time.monotonic() > deadline:
             return Outcome(commit.sha, path, "running", installed_now=True, source=source,
@@ -203,6 +232,11 @@ def installs(conn) -> dict[str, str]:
         if len(parts) == 2:
             out[parts[0]] = parts[1]
     return out
+
+
+def log_tail(conn, sha: str) -> str:
+    """The last lines of install ``sha``'s log on the cluster."""
+    return _script(conn, "log", _install_dir(conn, sha))
 
 
 def warnings(conn, sha: str) -> list[str]:
@@ -222,7 +256,8 @@ def remove_unused(conn, keep: Sequence[str] = ()) -> list[str]:
     used = in_use(conn)
     removed = []
     for sha, st in installs(conn).items():
-        if st == "running" or any(sha.startswith(k) or k.startswith(sha) for k in keep):
+        if st in ("running", "stopped") or any(sha.startswith(k) or k.startswith(sha)
+                                               for k in keep):
             continue
         if any(sha.startswith(u) or u.startswith(sha) for u in used):
             continue
@@ -321,6 +356,6 @@ def _audit(action: str, cluster: str, sha: str, source: str, path: str) -> None:
         pass  # the audit log never blocks the action it records (audit_log.append)
 
 
-__all__ = ["Commit", "Outcome", "SCRIPT", "ensure_installed", "in_use", "installs",
-           "job_comment", "pc_commit", "published_source", "remove_unused", "state",
-           "warnings"]
+__all__ = ["Commit", "INSTALL_CORES", "Outcome", "SCRIPT", "STOPPED_HINT", "ensure_installed",
+           "in_use", "installs", "job_comment", "log_tail", "pc_commit", "published_source",
+           "remove_unused", "state", "warnings"]

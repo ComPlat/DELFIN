@@ -30,7 +30,11 @@ Semantics, tool by tool:
 * ``cluster_submit``: DELFIN workflows and single ORCA runs
   (``delfin.remote.jobs``). A batch that does not fit -- budget, partition,
   install, what is in its folders -- is refused before anyone is asked; one
-  that fits is always asked, in every mode, one dialog per batch.
+  that fits is always asked, in every mode, one dialog per batch. When the
+  PC's commit is not installed there yet, the approved batch waits for the
+  install without holding the turn: the install starts, the batch is kept,
+  and DELFIN's job watcher submits exactly it once the install is complete
+  (``jobs.queue_after_install``); the session is told if it cannot.
 * ``cluster_cancel``: jobs of the user's that are queued or running, which
   is checked before the dialog. Asked.
 * ``cluster_run``: one command on the login node. Asked every time, in every
@@ -350,6 +354,8 @@ def submit(executor, perms, *, cluster: Any, jobs: Any) -> str:
         _audit(perms, "cluster_submit", "denied", command=said,
                extra={"cluster": conn.name, "folders": folders})
         return refusal
+    if batch.install in ("needed", "running"):
+        return _queue_after_install(perms, conn, batch, said, folders)
     try:
         done = remote_jobs.submit(conn, batch, session_id=getattr(perms, "task_session_id", ""),
                                   workspace=perms.workspace)
@@ -385,6 +391,48 @@ def submit(executor, perms, *, cluster: Any, jobs: Any) -> str:
                   "do not poll with cluster_status.") if watched else
                  "cluster_status shows the jobs; cluster_read and cluster_fetch reach their "
                  "folders (remote_dir)")})
+
+
+def _queue_after_install(perms, conn, batch, said: str, folders: list[str]) -> str:
+    """An approved batch whose commit is still to be installed: the install
+    started, the batch kept for the job watcher, the turn not held."""
+    from delfin.agent import job_monitor
+    from delfin.remote import jobs as remote_jobs
+    from delfin.remote.errors import LoginRequired, RemoteError
+    session = str(getattr(perms, "task_session_id", "") or "")
+    try:
+        entry = remote_jobs.queue_after_install(conn, batch, session_id=session,
+                                                workspace=perms.workspace)
+    except LoginRequired:
+        return _login_needed(perms, conn.name, "cluster_submit")
+    except RemoteError as exc:
+        _audit(perms, "cluster_submit", "error", command=said, reason=str(exc)[:300],
+               extra={"cluster": conn.name, "folders": folders, "approved": True})
+        return _error(exc.code, str(exc))
+    key = f"{conn.name}:batch-{entry['id']}"
+    _audit(perms, "cluster_submit", "ok", command=f"{said} -> queued as {key}", extra={
+        "cluster": conn.name, "folders": folders, "approved": True, "queued": key,
+        "commit": batch.commit, "core_hours": batch.core_hours})
+    try:
+        job_monitor.register_agent_job(
+            perms.workspace, key, description=(f"{len(batch.jobs)} job(s) for {conn.name}, "
+                                               f"waiting for DELFIN {batch.commit[:12]}"),
+            extra={"kind": "cluster", "cluster": conn.name, "remote_id": f"batch-{entry['id']}",
+                   "session_id": session})
+        watched = True
+    except Exception:
+        watched = False
+    return json.dumps({
+        "cluster": conn.name, "queued": key, "jobs": entry["jobs"],
+        "installing": batch.commit[:12],
+        "next": ("DELFIN is being installed on the cluster (once per commit, up to an hour on "
+                 "the login node's share). DELFIN's job watcher submits exactly this approved "
+                 "batch once the install is done -- nobody is asked again -- and follows its "
+                 "jobs; you are told in a later turn if it cannot be submitted, and when the "
+                 "jobs end. END your turn; do NOT submit the batch again or poll."
+                 if watched else
+                 "DELFIN is being installed on the cluster; the batch goes in once it is done. "
+                 "cluster_status shows the install and the jobs.")}, ensure_ascii=False)
 
 
 def _submitted(perms, done: list[dict]) -> list[dict]:
