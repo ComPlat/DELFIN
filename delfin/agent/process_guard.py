@@ -178,6 +178,29 @@ def exported_key_advice(names) -> str:
             f"{names[0]}` and remove the export.")
 
 
+def _may_put_keys_away(names, *, ask=None, isatty=None) -> bool:
+    """Whether the exported keys may be moved into the store and their
+    export lines commented out: yes on a terminal unless the person says
+    no; never without one. ``DELFIN_KEEP_EXPORTED_KEYS=1`` never asks."""
+    import os as _os
+    import sys as _sys
+    if str(_os.environ.get("DELFIN_KEEP_EXPORTED_KEYS", "")).strip() in ("1", "true", "yes"):
+        return False
+    tty = isatty if isatty is not None else (
+        _sys.stdin.isatty() and _sys.stderr.isatty())
+    if not tty:
+        return False
+    ask = ask or input
+    try:
+        answer = ask(
+            f"{', '.join(names)} is exported in your environment. Move it into "
+            "DELFIN's private key store and comment out the export line in your "
+            "shell file (a copy of the file is kept)? [Y/n] ")
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return str(answer or "").strip().lower() in ("", "y", "yes", "j", "ja")
+
+
 def put_exported_keys_away(names=(), *, home=None) -> str:
     """Do it instead of asking for it. Returns one line, or "".
 
@@ -191,10 +214,21 @@ def put_exported_keys_away(names=(), *, home=None) -> str:
     the exported one is left alone and said out loud: which of the two is
     the right key is not this function's to decide.
     """
+    names = list(names or exported_provider_keys())
+    if not names:
+        return ""
+    # Asked, not done behind the person's back (gh, aws and kubectl only
+    # advise; editing someone's shell file is theirs to agree to). On a
+    # terminal the default is yes; without one -- a script, a job -- only
+    # the advice is given and nothing is changed.
+    if not _may_put_keys_away(names):
+        try:
+            return "Note: " + exported_key_advice(names)
+        except Exception:
+            return ""
     try:
         from . import credentials as _cred
-        rows = _cred.secure_exported_keys(
-            names or exported_provider_keys(), home=home)
+        rows = _cred.secure_exported_keys(names, home=home)
     except Exception:
         return ""
     stored = [r["name"] for r in rows if r["action"] == "stored"]
