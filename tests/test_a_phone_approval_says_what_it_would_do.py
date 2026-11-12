@@ -22,12 +22,21 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from delfin.agent import terminal_confirm as tc
 from delfin.agent.service import protocol
 from delfin.agent.service.approvals import ProtocolBroker
 from delfin.agent.service.bridge import Bridge
 from delfin.messenger import activation
 from delfin.messenger.gateway import Rooms
+
+
+@pytest.fixture(autouse=True)
+def _german_phone(monkeypatch):
+    """These tests read the German phone texts (lang.DE); English is the
+    default (test_the_phone_speaks_the_persons_language)."""
+    monkeypatch.setenv("DELFIN_MESSENGER_LANG", "de")
 
 
 def _describe(args, tool="bash", preview="$ ls -la"):
@@ -86,9 +95,9 @@ def test_the_phone_text_explains_then_shows_the_command(monkeypatch):
         "purpose": "Räumt den Build-Ordner auf", "text": "$ rm -rf build",
         "phoneApproval": True,
         "options": [{"key": "y", "label": "Once"}, {"key": "n", "label": "No"}]}])
-    what = text.index("Ein Befehl wird auf DELFIN-Pi ausgeführt")
-    purpose = text.index("Angabe des Agenten (ungeprüft): Räumt den Build-Ordner auf")
-    command = text.index("$ rm -rf build")
+    what = text.index("*einen Befehl ausführen* auf DELFIN-Pi")
+    purpose = text.index("Grund laut Agent (ungeprüft): Räumt den Build-Ordner auf")
+    command = text.index("```\n$ rm -rf build\n```")
     assert what < purpose < command
 
 
@@ -97,6 +106,6 @@ def test_without_a_purpose_the_command_is_still_explained(monkeypatch):
     text = Rooms.pending_text([{
         "kind": "confirm", "tool": "write_file", "action": "write",
         "text": "notes.md: +3 lines", "phoneApproval": True, "options": []}])
-    assert "Eine Datei wird geändert" in text
+    assert "*eine Datei schreiben*" in text
     assert "ungeprüft" not in text
     assert "notes.md: +3 lines" in text

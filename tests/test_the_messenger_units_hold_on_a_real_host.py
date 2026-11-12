@@ -107,3 +107,16 @@ def test_the_bridge_may_create_its_socket_under_a_strict_system(tmp_path):
                 if line.startswith("ReadWritePaths=")
                 for p in line.split("=", 1)[1].split()]
     assert sock_dir in writable, (sock_dir, writable)
+
+
+def test_the_bridge_may_leave_person_start_requests(tmp_path):
+    """The bridge leaves start requests in /run/delfin-person-start for the
+    root starter; under ProtectSystem=strict that directory must be in its
+    ReadWritePaths, and it is never removed whole (EBUSY, see above)."""
+    bridge = _lines(_run(tmp_path)["delfin-messenger-bridge.service"])
+    if not any("/run/delfin-person-start" in line for line in bridge):
+        return                                    # no people mode in this setup
+    writable = [p.lstrip("-") for line in bridge if line.startswith("ReadWritePaths=")
+                for p in line.split("=", 1)[1].split()]
+    assert "/run/delfin-person-start" in writable
+    assert not any("rm -rf /run/delfin-person-start" in line for line in bridge)

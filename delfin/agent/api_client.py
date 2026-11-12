@@ -8989,11 +8989,17 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     "**/.cache/cluster-tunnel", "**/.cache/cluster-tunnel/**",
     "messenger_sessions", "messenger_sessions/**",
     "**/messenger_sessions", "**/messenger_sessions/**",
+    # Phone pairing requests and answers (delfin.messenger.pairing).
+    "messenger_pairing", "messenger_pairing/**",
+    "**/messenger_pairing", "**/messenger_pairing/**",
     # The user's schedules: written and confirmed by the user only.
     "user_schedules", "user_schedules/**",
     "**/user_schedules", "**/user_schedules/**",
     "workspace_profiles.json", "workspace_profiles.json/**",
     "**/workspace_profiles.json", "**/workspace_profiles.json/**",
+    # The rootless messenger's state and units (delfin.messenger.rootless).
+    "**/.local/share/delfin-messenger", "**/.local/share/delfin-messenger/**",
+    "**/systemd/user/delfin-messenger-*.service",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -13320,7 +13326,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "push_notification",
             "description": (
-                "Send a local desktop notification. Use sparingly."
+                "Notify the user (desktop, phone). Use sparingly."
             ),
             "parameters": {
                 "type": "object",
@@ -19794,7 +19800,7 @@ class _DocToolExecutor:
 
         # Notifications + remote triggers.
         if name == "push_notification":
-            return self._execute_push_notification(arguments)
+            return self._execute_push_notification(arguments, permissions)
         if name == "remote_trigger":
             return self._execute_remote_trigger(arguments, permissions)
 
@@ -22852,6 +22858,16 @@ class _DocToolExecutor:
         _rule_refusal = _rule_denies_path(perms, "write", resolved)
         if _rule_refusal:
             return _rule_refusal
+        # The messenger's directory: read-only but for a file offered in
+        # the session's own outbox (messenger.media.internal_write_refusal).
+        from delfin.messenger.media import internal_write_refusal
+        _messenger_refusal = internal_write_refusal(
+            resolved, str(getattr(perms, "task_session_id", "") or ""))
+        if _messenger_refusal:
+            _record_security_event(
+                "messenger_internal_write", name,
+                self._display_path(resolved, perms), blocked=True)
+            return _messenger_refusal
         if not _write_in_scope(resolved, perms):
             _record_security_event(
                 "out_of_write_scope", name, self._display_path(resolved, perms),
@@ -28089,13 +28105,26 @@ class _DocToolExecutor:
 
     # ------- Notifications / remote triggers ------------------------------
 
-    def _execute_push_notification(self, arguments: dict) -> str:
+    def _execute_push_notification(self, arguments: dict, perms=None) -> str:
+        """A desktop notification, and a note to the person's phone when
+        this session is on it (messenger.activation.post_note: one per
+        minute; the gateway sends it). ``phone``: True, "rate_limited" or
+        False (not connected)."""
         from . import notify as _n
         title = str(arguments.get("title", "")).strip() or "delfin agent"
         body = str(arguments.get("body", ""))
         urgency = str(arguments.get("urgency", "normal"))
         ok = _n.send_notification(title, body, urgency=urgency)
-        return json.dumps({"status": "ok" if ok else "noop", "sent": ok})
+        phone: Any = False
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        if sid:
+            try:
+                from delfin.messenger.activation import post_note
+                phone = post_note(sid, title, body)
+            except Exception:
+                phone = False
+        return json.dumps({"status": "ok" if ok or phone is True else "noop",
+                           "sent": ok, "phone": phone})
 
     def _execute_remote_trigger(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
@@ -29776,6 +29805,19 @@ class _DocToolExecutor:
                     "The user typed this answer in the chat instead of "
                     "picking an option; it may lie outside the options "
                     "offered. Take it as their answer and continue.")
+        # No answer always says why (``unanswered``): stopped, expired,
+        # timed out, or dismissed. A bare empty list was read as a choice
+        # and the model guessed one (field report, phone session).
+        if not answers:
+            payload["unanswered"] = str(result.get("unanswered") or (
+                "no answer (timed out)" if result.get("timed_out") else
+                "no answer (dismissed without picking an option)"))[:200]
+            if not result.get("timed_out"):
+                payload["note"] = (
+                    f"The question ended with {payload['unanswered']}. The "
+                    "empty answer list is not a choice; do not pick one for "
+                    "the user. Continue only where no answer is needed, or "
+                    "end the turn and say what is waiting.")
         # Surface the UI's timeout flag: empty answers because the user is
         # AWAY must not read like the user actively chose nothing (weak
         # models re-ask the identical question in a loop otherwise).
@@ -30783,16 +30825,10 @@ def _session_scratch_dir() -> str:
 
 def _home_secret_paths() -> list[str]:
     try:
-        from delfin.agent.sandbox import _HOME_SECRET_DIRS
+        from delfin.agent.sandbox import home_secret_paths
+        out = list(home_secret_paths())
     except Exception:
-        _HOME_SECRET_DIRS = ()
-    home = Path.home()
-    out = []
-    for rel in _HOME_SECRET_DIRS:
-        try:
-            out.append(str((home / rel).resolve()))
-        except OSError:
-            continue
+        out = []
     # The approval-code directory, created and at its redirected location.
     try:
         from delfin.agent.sandbox import runtime_masked_dirs
@@ -32589,19 +32625,6 @@ def _bash_isolation_argv(
         pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
-    for rel in _HOME_SECRET_DIRS:
-        p = home / rel
-        try:
-            # resolve() — on HPC, $HOME is often a symlink (/home/... →
-            # /pfs/...); bwrap cannot create mountpoints through symlinked
-            # paths ("Can't mkdir parents").  Mask the REAL path.
-            rp = p.resolve()
-            if rp.is_dir():
-                args += ["--tmpfs", str(rp)]
-            elif rp.is_file():
-                args += ["--ro-bind", "/dev/null", str(rp)]
-        except OSError:
-            continue
     try:
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
@@ -32675,6 +32698,16 @@ def _bash_isolation_argv(
     # every root is read-only already through the "/" bind.
     for room in _rooms:
         args += ["--ro-bind-try", room, room]
+    # The home secrets (credentials, the stores, in people mode every
+    # person's pairing, activation and runtime directories) after every
+    # bind: a granted ~/.delfin or ~/people bound later covered them again.
+    # Resolved paths (on HPC $HOME is often a symlink; bwrap cannot create
+    # mount points through one).
+    try:
+        from delfin.agent.sandbox import _bwrap_home_mask_args
+        args += _bwrap_home_mask_args(home)
+    except Exception:
+        pass
     # The approval-code directory is not readable at all, and masked after
     # every bind so a granted ~/.delfin cannot re-expose it.
     try:
