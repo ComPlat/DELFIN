@@ -213,10 +213,10 @@ def test_a_long_answer_is_cut_and_more_sends_the_rest(acct):
     acct.row.update(state="idle", answer=long)
     refresh(acct)
     first = acct.daemon.to("#a1")[-1]
-    assert len(first) <= 1000 and first.endswith("`more`"), first[-80:]
+    assert len(first) <= 1000 and first.endswith("/'more'"), first[-80:]
     acct.say("21", "#a1", "more")
     rest = acct.daemon.to("#a1")[-1]
-    assert "Sentence 119" in rest or "`more`" in rest
+    assert "Sentence 119" in rest or "/'more'" in rest
     assert rest[:30] not in first
 
 

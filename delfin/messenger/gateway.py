@@ -1443,12 +1443,15 @@ class Rooms:
     TAP_TTL_S = 600.0
 
     async def send_request(self, chat, room, item):
-        """A request card. An approval the phone may give gets a tap token:
-        /'ja TOKEN' and /'nein TOKEN' on the card are tappable, and a tap
-        answers exactly this card (it is a new message, not a reply, so the
-        token is what binds it)."""
+        """A request card. A card the phone may answer gets a tap token:
+        an approval gets /'ja TOKEN' and /'nein TOKEN'; a single-choice
+        question gets /'N TOKEN' for each option. A tap is a new message,
+        not a reply, so the token is what binds it -- through the same
+        checks as a reply to the card, once, in this chat."""
         tap = None
-        if item.get('kind') in {'confirm', 'plan'} and item.get('phoneApproval'):
+        choices = [str(c) for c in item.get('choices') or []]
+        if ((item.get('kind') in {'confirm', 'plan'} and item.get('phoneApproval'))
+                or (item.get('kind') == 'question' and choices and not item.get('multiSelect'))):
             taps = self.__dict__.setdefault('_taps', {})
             tap = secrets.token_hex(2)
             while (chat, tap) in taps:
@@ -1462,11 +1465,12 @@ class Rooms:
                 taps.pop(next(iter(taps)))
 
     async def tap_answer(self, text, room, chat):
-        """``/ja TOKEN`` / ``/nein TOKEN`` tapped on a card: the card's
-        answer, through the same checks as a reply to it. None when the line
-        is not a tap of a card in this chat (then it is for the agent)."""
+        """A tap on a card: /'ja TOKEN' / 'nein TOKEN' on an approval, or
+        /'N TOKEN' (an option number) on a question. The card's answer,
+        through the same checks as a reply to it. None when the line is not
+        a tap of a card in this chat (then it is for the agent)."""
         words = text.strip().lstrip('/').split()
-        if len(words) != 2 or yes_no(words[0]) is None:
+        if len(words) != 2:
             return None
         hit = self.__dict__.get('_taps', {}).get((chat, words[1].lower()))
         if hit is None:
@@ -1475,8 +1479,18 @@ class Rooms:
         if time.monotonic() - when > self.TAP_TTL_S:
             self._taps.pop((chat, words[1].lower()), None)
             return t('This request is no longer bound here. Show the current one with pending and reply to it.')
+        item = self._reply_targets.get((chat, str(mid))) or {}
+        choice = words[0]
+        if item.get('kind') == 'question':
+            # Only a single-choice question has taps, and only a valid
+            # option number answers it (multiSelect keeps typed answers).
+            n = len(item.get('choices') or [])
+            if item.get('multiSelect') or not choice.isdigit() or not 1 <= int(choice) <= n:
+                return None
+        elif yes_no(choice) is None:
+            return None
         self._taps.pop((chat, words[1].lower()), None)
-        return await self.reply(words[0], room, chat, mid)
+        return await self.reply(choice, room, chat, mid)
 
     async def reply(self, text, room, chat, quote_id):
         target = self._reply_targets.get((chat, str(quote_id)))

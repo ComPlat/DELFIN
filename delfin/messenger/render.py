@@ -37,9 +37,21 @@ def question_card(item: dict) -> str:
         question = '\n'.join(lines).strip()
     out = [f'❓ *{question}*' if question else '❓']
     out += [f'{i}. {c}' for i, c in enumerate(choices, 1)]
-    out.append(hint(len(choices), bool(item.get('multiSelect'))) if choices
-               else t('Please reply with your answer.'))
+    if choices and item.get('_tap') and not item.get('multiSelect'):
+        # Each option is tappable (SimpleX 6.4.3+); the token binds the
+        # whole card to this chat, as with an approval's taps.
+        out.append(question_tap_line(len(choices), str(item['_tap'])))
+    else:
+        out.append(hint(len(choices), bool(item.get('multiSelect'))) if choices
+                   else t('Please reply with your answer.'))
     return '\n'.join(out)
+
+
+def question_tap_line(n: int, token: str) -> str:
+    """The answer line of a single-choice question: option 1..n tappable
+    (/'1 TOKEN', /'2 TOKEN', ...), one token for the whole card."""
+    taps = ', '.join(f"/'{i} {token}'" for i in range(1, n + 1))
+    return t('Tap {taps}, or type your answer.').format(taps=taps)
 
 
 #: The tool of an approval, in words (the card's first line).
@@ -193,7 +205,8 @@ def cut(text: str, limit: int = ANSWER_CUT) -> tuple[str, str]:
 
 
 def more_hint() -> str:
-    return '\n\n… ' + t('full answer: `more`')
+    kw = 'mehr' if not english() else 'more'
+    return '\n\n… ' + t("full answer: /'{word}'").format(word=kw)
 
 
 #: A session's state, in words (status).
