@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hpc_guard SIGSTOPs the busiest DELFIN process when a user stays over the
   budget, and the install's processes count as DELFIN's by their paths.
   Such an install is never removed as unused.
+- **`/jobs` shows a batch that waits for its install** as a `BATCH` row of
+  its cluster, before the cluster's Slurm jobs: installing (and for how
+  long), installed and about to go in, stopped by hpc_guard, failed, or
+  waiting for a login. `space` shows the approved jobs, the commit and the
+  install log's last lines. Once the watcher has settled the batch, the row
+  goes: its jobs, or NEEDS YOU, say what became of it.
+
 ### Added — a cluster is added in the window, and an agent can only propose one
 
 - **`a` in `/clusters` opens an add form** (`tui/src/clusters/add.tsx`):

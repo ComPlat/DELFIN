@@ -17,8 +17,10 @@
  *               when ORCA is not where DELFIN's installer looks
  *   /jobs       the agents' background work (a group per session), the
  *               jobs DELFIN's job monitor watches, and the active jobs on
- *               each logged-in cluster; a source that could not be read is
- *               said at the end, never shown as empty. Read-only.
+ *               each logged-in cluster, after the batches that wait there
+ *               for an install (BATCH rows, until they are submitted); a
+ *               source that could not be read is said at the end, never
+ *               shown as empty. Read-only.
  *                 ↑ ↓      select a job     r           ask again
  *                 space    details          esc         back
  *
@@ -629,8 +631,11 @@ export function ClustersPanel(props: { view: ClustersView; theme: () => Theme; w
   }
   const nameWidth = () => Math.min(18, Math.max(8, ...v.state.clusters.map((r) => width(r.name))))
   const tone = (state: ClusterRow["state"]) => state === "logged_in" ? t().ok : state === "refused" ? t().err : t().muted
-  const stateTone = (state: string) => /fail|error|cancel|timeout|memory|kill/i.test(state) ? t().err
-    : /run|complet/i.test(state) ? t().ok : /pend|queue|wait/i.test(state) ? t().warn : t().muted
+  // A batch that waits for its install (BATCH rows): INSTALLING, SUBMITTING
+  // and LOGIN wait, STOPPED (by hpc_guard) and FAILED will not go in.
+  const stateTone = (state: string) => /fail|error|cancel|timeout|memory|kill|stop/i.test(state) ? t().err
+    : /run|complet/i.test(state) ? t().ok : /pend|queue|wait|install|submitting|login/i.test(state) ? t().warn
+    : t().muted
   const detailTone = (look: Line["look"]) => look === "head" ? t().text : look === "note" ? t().faint
     : look === "error" ? t().err : t().muted
   return (

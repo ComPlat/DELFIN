@@ -541,6 +541,40 @@ describe("space: an entry's details", () => {
     expect(screen()).toContain("↑↓ select · space details · r refresh · esc/← back")
   })
 
+  test("a batch that waits for its install is a row of its cluster; space shows its jobs and the install's log", async () => {
+    const jobs = () => ({ ...JOBS5, groups: JOBS5.groups.map((g) => g.cluster !== "kcist" ? g : { ...g, rows: [
+      { id: "batch-ab12cd34", kind: "BATCH", label: "waiting for install · 2 jobs", state: "INSTALLING",
+        detail: "installing d139f831 (12 min)" }, ...g.rows] }) })
+    const batch = {
+      sections: [
+        { title: "Batch", pairs: [["Cluster", "kcist"], ["Commit", "d139f831aa0b"], ["Install", "running"]], lines: [] },
+        { title: "Approved jobs", pairs: [], lines: ["/ws/run0 · 2 cores · 2000 MB · 00:30:00",
+                                                     "/ws/run1 · 2 cores · 2000 MB · 00:30:00"] },
+        { title: "Install log, last 20 lines", pairs: [], lines: ["building openmpi"] },
+      ],
+      error: null,
+    }
+    const { calls } = await mount({ version: 6, jobs, detail: () => batch })
+    await line("/jobs")
+    await settled()
+    expect(screen()).toMatch(/kcist \(jonas@kcist\.example\.org\)\s*\n\s+BATCH\s+waiting for install · 2 jobs\s+INSTALLING\s+installing d139f831 \(12 min\)\s*\n\s+cpu\s+scan_01/)
+    await down(3)                                                    // shell, watch, monitor, the batch
+    expect(selected()[0]).toContain("waiting for install")
+    await space()
+    expect(called(calls, "job.detail")).toEqual([{ source: "cluster", cluster: "kcist", id: "batch-ab12cd34" }])
+    expect(under("waiting for install")).toEqual([
+      "Batch",
+      "Cluster  kcist",
+      "Commit   d139f831aa0b",
+      "Install  running",
+      "Approved jobs",
+      "/ws/run0 · 2 cores · 2000 MB · 00:30:00",
+      "/ws/run1 · 2 cores · 2000 MB · 00:30:00",
+      "Install log, last 20 lines",
+      "building openmpi",
+    ])
+  })
+
   test("space asks job.detail for what its row is, and draws the sections under it; on another row they move there", async () => {
     const { calls } = await mount({ version: 6, jobs: () => JOBS5 })
     await line("/jobs")
