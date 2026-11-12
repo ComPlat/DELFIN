@@ -130,13 +130,14 @@ export function presetsOf(raw: unknown): Preset[] {
   }))
 }
 
-function fieldsFor(preset: Preset | undefined, proposal: Proposal = {}): FormField[] {
+export function fieldsFor(preset: Preset | undefined, proposal: Proposal = {}): FormField[] {
   const out: FormField[] = [
     { key: "name", label: "name", value: proposal.name || preset?.name || "",
       hint: "what DELFIN and ctun call it" },
     { key: "user", label: "user", value: proposal.user || "", hint: preset?.userHint || "your user name on the cluster" },
   ]
-  if (!preset) out.push({ key: "host", label: "login host", value: proposal.host || "", hint: "e.g. login.cluster.example.org" })
+  // Another cluster, or a preset without a public host (IntNano): the host is asked.
+  if (!preset || !preset.host) out.push({ key: "host", label: "login host", value: proposal.host || "", hint: "e.g. login.cluster.example.org" })
   out.push(
     { key: "partition", label: "partition", value: proposal.partition || preset?.partition || "",
       hint: "where DELFIN's jobs go; empty: the cluster's default" },
@@ -220,7 +221,7 @@ export function createAddForm(deps: AddDeps): AddForm {
     const p = preset()
     const params: Record<string, unknown> = { name: value("name"), user: value("user") }
     if (p) params.preset = p.name
-    else params.host = value("host")
+    if (!p || !p.host) params.host = value("host")
     for (const key of ["partition", "workDir", "installRoot"] as const) if (value(key)) params[key] = value(key)
     setState({ busy: true, error: "" })
     void deps.request("cluster.add", params).then((got) => {

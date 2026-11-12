@@ -252,6 +252,11 @@ def plan(conn, workspace: Path, requests: Iterable[dict], *,
         batch.install = "complete"
     elif state == "running":
         batch.install = "running"
+    elif state == "stopped" and auto_install:
+        # hpc_guard stopped it; approving this batch starts it again.
+        batch.install = "needed"
+        batch.notes.append(f"the install of DELFIN {commit.sha[:12]} on {cluster.name} was stopped "
+                           "by hpc_guard; it starts again before the batch goes in")
     elif state == "stopped":
         batch.problems.append(f"the install of DELFIN {commit.sha[:12]} on {cluster.name} does not "
                               f"go on: {_install.STOPPED_HINT}; see /clusters (space)")

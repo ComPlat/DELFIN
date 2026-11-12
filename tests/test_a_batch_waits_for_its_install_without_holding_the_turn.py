@@ -106,7 +106,7 @@ class World:
 
     def submit_while_not_installed(self) -> dict:
         folder = self.ws / "fe"
-        folder.mkdir()
+        folder.mkdir(exist_ok=True)
         for rel, text in WORKFLOW.items():
             (folder / rel).write_text(text, encoding="utf-8")
         return json.loads(self.call("cluster_submit", {"cluster": "kcist", "jobs": [
@@ -326,6 +326,32 @@ def test_an_install_hpc_guard_stopped_is_said_not_waited_for(world):
     assert world.ran("sbatch") == [] and "SIGSTOP" in ended["outcome"]
     assert "hpc_guard" in ended["outcome"]
     assert install.remove_unused(conn) == []           # a stopped install is not removed
+
+
+def test_the_next_submit_starts_a_stopped_install_again(world):
+    """Before: a stopped install was never removed and every later submit
+    of that commit failed on it -- there was no way back."""
+    world.submit_while_not_installed()
+    deadline = time.monotonic() + 30
+    while not (world.state / "install.nice").exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    stopped_pid = world.installer_pid()
+    os.killpg(stopped_pid, signal.SIGSTOP)
+    conn = connection.connect("kcist")
+    assert install.state(conn, SHA) == "stopped"
+    watch.tick()                                       # the first batch: not submitted
+    (world.state / "install.nice").unlink()
+    got = world.submit_while_not_installed()           # approved again by the person
+    assert got.get("queued", "").startswith("kcist:batch-"), got
+    deadline = time.monotonic() + 30
+    while not (world.state / "install.nice").exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert install.state(conn, SHA) == "running"
+    assert world.installer_pid() != stopped_pid
+    with pytest.raises(ProcessLookupError):
+        os.killpg(stopped_pid, 0)                      # the stopped session is gone
+    assert [r for r in audit_log.read_last_n(20) if r.get("tool") == "cluster_install"
+            and r.get("mode") == "auto_install-restart"], "the restart is audited"
 
 
 def test_without_a_login_the_batch_waits_and_goes_in_after_it(world):

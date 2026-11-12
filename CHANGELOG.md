@@ -31,7 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An install hpc_guard stopped is reported as `stopped`**, not waited for.
   hpc_guard SIGSTOPs the busiest DELFIN process when a user stays over the
   budget, and the install's processes count as DELFIN's by their paths.
-  Such an install is never removed as unused.
+  Such an install is never removed as unused, and the next batch the person
+  approves for that commit ends it and starts the install again (on a login
+  node only a job may resume a stopped process).
+
 ### Added — a cluster is added in the window, and an agent can only propose one
 
 - **`a` in `/clusters` opens an add form** (`tui/src/clusters/add.tsx`):
@@ -190,8 +193,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Everything these screens show from elsewhere (a job name from a
   cluster, a watch file in a workspace, a job's output) is stripped of
   control characters and escape sequences: none reaches the terminal.
-  cluster-tunnel is required from 0.8.0 (its login with the caller's
-  credentials).
 
 ### Added — DELFIN installs itself on a cluster, per commit and only published ones
 
@@ -256,7 +257,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added — cluster-tunnel is a dependency, the base for sending calculations to a cluster
 
-- **DELFIN installs cluster-tunnel (ctun) 0.7.** ctun keeps one logged-in
+- **DELFIN installs cluster-tunnel (ctun) 0.10.** ctun keeps one logged-in
   ssh connection per HPC cluster on the user's PC: a person logs in once
   with password and OTP, and everything after that reuses the connection.
   DELFIN's remote layer, which comes next, runs, transfers and submits over

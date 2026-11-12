@@ -105,6 +105,16 @@ case "$action" in
     # pending, running, suspended and completing jobs.
     squeue --me -h -o '%k' 2>/dev/null \
       | grep -o 'delfin-commit=[0-9a-f]\{7,40\}' | cut -d= -f2 | sort -u ;;
+  abort)
+    # An install hpc_guard stopped does not go on by itself (on a login node
+    # only a job may resume it): its session ends here, so that the next
+    # start begins it again. A running install is left alone.
+    dir="$(home_path "${2:?abort needs a directory}")"
+    [ -f "$dir/.delfin-commit" ] || { echo "$dir is not an install of DELFIN's" >&2; exit 2; }
+    [ "$(state_of "$dir")" = stopped ] || exit 0
+    pid="$(cat "$dir/.delfin-install.pid")"
+    pkill -KILL -s "$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    echo 137 > "$dir/.delfin-install.exit" ;;
   remove)
     dir="$(home_path "${2:?remove needs a directory}")"
     [ -f "$dir/.delfin-commit" ] || { echo "$dir is not an install of DELFIN's" >&2; exit 2; }

@@ -83,8 +83,8 @@ INSTALL_CORES = _install_cores()
 
 #: What an install that hpc_guard stopped is told with.
 STOPPED_HINT = ("a process of the install was stopped (SIGSTOP), as hpc_guard does to DELFIN's "
-                "processes while a user keeps a login node over its core budget; nothing "
-                "resumes it by itself")
+                "processes while a user keeps a login node over its core budget; it does "
+                "not go on by itself, and the next submit of this commit starts it again")
 
 
 @dataclass(frozen=True)
@@ -182,8 +182,16 @@ def ensure_installed(conn, *, commit: Optional[Commit] = None,
         return Outcome(commit.sha, path, "complete", notes=notes,
                        warnings=_warnings(conn, path))
     if current == "stopped":
-        raise InstallFailed(f"the install of {commit.sha[:10]} on {conn.name} does not go on: "
-                            f"{STOPPED_HINT}", log=_script(conn, "log", path))
+        # hpc_guard stopped it, and on a login node nothing may resume it: a
+        # submit the person approved starts it again, on the same cores. The
+        # uploaded tree is there already.
+        say(f"the install of {commit.sha[:10]} on {conn.name} was stopped (hpc_guard); "
+            "starting it again")
+        _script(conn, "abort", path)
+        _script(conn, "start", path, conn.cluster.software_dir, str(INSTALL_CORES))
+        _audit("install-restart", conn.name, commit.sha, "", path)
+        notes.append("the install had been stopped by hpc_guard; it started again")
+        current = "running"
     if current == "failed" and not retry:
         raise InstallFailed(f"the install of {commit.sha[:10]} on {conn.name} failed before; "
                             "fix the cause and install again with retry",

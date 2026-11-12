@@ -13,7 +13,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { presetsOf } from "../../src/clusters/add"
+import { fieldsFor, presetsOf } from "../../src/clusters/add"
 import { clusterRows } from "../../src/clusters/view"
 import { History } from "../../src/composer/history"
 import type { AttentionItem } from "../../src/protocol/generated"
@@ -119,6 +119,14 @@ describe("reading what the service sends", () => {
 })
 
 describe("the add form", () => {
+  test("a preset without a public host asks for it, as another cluster does", () => {
+    const [intnano] = presetsOf([{ name: "intnano", title: "IntNano (KIT)", host: null, requiresOtp: false,
+                                   requiresPassword: true, userHint: "", budget: null, fingerprint: null,
+                                   fingerprintSource: null }])
+    expect(fieldsFor(intnano).map((f) => f.key)).toContain("host")
+    expect(fieldsFor(presetsOf(PRESETS)[0]).map((f) => f.key)).not.toContain("host")
+  })
+
   test("a opens it with the clusters ctun knows; enter picks one and fills in what it knows", async () => {
     const { calls } = await mount()
     await line("/clusters")
