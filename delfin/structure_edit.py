@@ -480,6 +480,45 @@ _XH_BOND_LENGTHS: dict[str, float] = {
 _SP2_ELEMENTS = {"C", "N"}
 
 
+def _on_aromatic_cycle(g, i, nbrs, radii) -> bool:
+    """True when heavy atom i lies on a ring cycle that carries an
+    aromatic (order 1.5) bond.
+
+    Detection: with exactly two heavy neighbours a cycle through i
+    exists iff a and b stay connected without passing through i (BFS);
+    a carbon with 0, 1 or 3+ heavy neighbours is either not on a cycle
+    this way or is a fused junction with no free valence. Only cycle
+    edges are tested for order 1.5, so a CH2 bridge between two
+    separate aromatic rings (diphenylmethane) is NOT clamped -- its
+    neighbours are in different rings and do not connect around it.
+    """
+    heavy = [j for j in nbrs.get(i, ()) if g.symbols[j] != "H"]
+    if len(heavy) != 2:
+        return False
+    a, b = heavy
+    seen = {i, a}
+    prev: dict[int, int | None] = {a: None}
+    queue = [a]
+    while queue:
+        cur = queue.pop(0)
+        for j in nbrs.get(cur, ()):
+            if j in seen or g.symbols[j] == "H":
+                continue
+            seen.add(j)
+            prev[j] = cur
+            queue.append(j)
+    if b not in prev:
+        return False
+    edges = [(i, a), (i, b)]
+    cur = b
+    while prev[cur] is not None:
+        edges.append((prev[cur], cur))
+        cur = prev[cur]
+    return any(
+        _heavy_bond_order(g, x, y, radii) == 1.5 for x, y in edges
+    )
+
+
 def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
     """Add missing hydrogens to a structure; never removes an atom.
 
@@ -532,7 +571,17 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
         # COUNT is an integer: round to nearest, minimum 1 when the
         # fractional part says at least one H is needed (reviewer
         # R7-F1: count=1.5 crashed _h_directions with a float slice).
-        missing = int(round(missing))
+        # QS-XE1-F1: on a ring cycle that carries an aromatic bond the
+        # count is clamped to 1 -- a fractional valence sum there means
+        # "at least one", never "round up to a CH2", which would make
+        # the carbon sp3 and break the pi sextet. Non-ring contexts
+        # keep int(round()).
+        if _on_aromatic_cycle(g, i, nbrs, radii):
+            # Cap at 1; zero or negative passes through (pyridine N:
+            # 1.5+1.5 = 3.0, missing 0 -> no H).
+            missing = min(1, int(round(missing)))
+        else:
+            missing = int(round(missing))
         if missing <= 0:
             continue
         away = _heavy_neighbour_directions(g, i, nbrs)
