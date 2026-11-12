@@ -196,6 +196,46 @@ _CLAUDE_CLI_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
                     "CLAUDE_CODE_OAUTH_TOKEN")
 _CODEX_CLI_KEYS = ("OPENAI_API_KEY", "CODEX_API_KEY")
 
+# What the Claude CLI answers instead of a turn when it has no usable
+# login: "Not logged in · Please run /login", "Invalid API key · Please run
+# /login", an expired or revoked OAuth token. It arrives as the turn's
+# result text, so it used to be shown as the model's answer and a headless
+# run exited 0 with an empty error (bug hunt 11.11.2026, #6).
+_CLI_LOGIN_MARKERS = (
+    "Not logged in", "Please run /login", "Invalid API key",
+    "OAuth token has expired", "OAuth token revoked",
+)
+
+
+def _cli_login_failure(text: str, *, is_error: bool) -> bool:
+    """True when *text* is the Claude CLI's own no-login answer.
+
+    Short and either flagged ``is_error`` or naming ``/login``: a model
+    answer that merely mentions logging in is neither."""
+    text = str(text or "").strip()
+    if not text or len(text) > 400:
+        return False
+    if not (is_error or "/login" in text):
+        return False
+    return any(marker in text for marker in _CLI_LOGIN_MARKERS)
+
+
+def _cli_login_message(said: str) -> str:
+    """The error for a Claude CLI without a login, with DELFIN's fixes.
+
+    ``/login`` is a command of the interactive Claude CLI, not of DELFIN;
+    the message says where to run it, and names the API backend, which
+    reads the key DELFIN's own credential store holds."""
+    said = " ".join(str(said or "").split())[:200]
+    # The fix comes first: the dashboard shows the first 200 characters.
+    return (
+        "Not logged in: the `claude` CLI of DELFIN's claude provider "
+        "has no login here. Fix: run `claude` in a terminal, do its "
+        "/login; or `delfin-agent credentials set ANTHROPIC_API_KEY` and "
+        "--backend api."
+        + (f" (claude said: {said})" if said else "")
+    )
+
 
 def _cli_backend_env(own_keys: tuple[str, ...]) -> dict:
     """The environment for an external agent CLI: the shell's scrubbed
@@ -641,8 +681,18 @@ class CLIClient(_BaseClient):
                         tool_name=str(denial),
                     )
 
+                result_text = data.get("result", "")
+                if not emitted_text and _cli_login_failure(
+                        result_text, is_error=bool(data.get("is_error"))):
+                    # No turn ran: an error, not an answer. The process is
+                    # retired so the next send starts one that sees a
+                    # login made in the meantime.
+                    try:
+                        self.kill()
+                    except Exception:
+                        self._proc = None
+                    raise RuntimeError(_cli_login_message(result_text))
                 if not emitted_text:
-                    result_text = data.get("result", "")
                     if result_text:
                         yield StreamEvent(type="text_delta", text=result_text)
 
@@ -672,10 +722,7 @@ class CLIClient(_BaseClient):
             if rc != 0:
                 stderr = proc.stderr.read() if proc.stderr else ""
                 if "Not logged in" in stderr:
-                    raise RuntimeError(
-                        "Agent CLI is not logged in. "
-                        "Run 'claude' in a terminal and complete login first."
-                    )
+                    raise RuntimeError(_cli_login_message(""))
                 if stderr.strip():
                     raise RuntimeError(
                         f"CLI backend error (exit {rc}): {stderr.strip()[:500]}"
