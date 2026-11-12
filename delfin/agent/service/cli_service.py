@@ -506,8 +506,16 @@ def _end(target: str, *, all_idle: bool, yes: bool, after_turn: bool = False) ->
         return 2
     hello, why = client.probe()
     if hello is None:
-        print(f"ERROR: no agent service answers on {rundir.hostname()} "
-              f"({launcher.why_in_words(why)}): no session to end", file=sys.stderr)
+        # The real state, as `service status` says it: none runs, or one
+        # runs and does not answer.
+        pid = rundir.service_pid()
+        if not pid:
+            print(f"ERROR: no agent service runs on {rundir.hostname()}: "
+                  "no session to end", file=sys.stderr)
+        else:
+            print(f"ERROR: the agent service on {rundir.hostname()} (pid {pid}) does not "
+                  f"answer ({launcher.why_in_words(why)}): no session to end",
+                  file=sys.stderr)
         return 1
     with client.ServiceClient(client="delfin-agent service") as svc:
         rows, _status = _session_rows(svc)
