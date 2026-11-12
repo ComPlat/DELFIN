@@ -7,13 +7,20 @@ only gains its parser lines.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 from . import client, launcher, rundir
+
+#: What a bare ``delfin-agent tui --resume`` (no id) stands for: the
+#: window opens the resume picker before any session (tui/src/entry.ts
+#: RESUME_PICK). No session id has this form.
+RESUME_PICK = ":pick"
 
 #: How long a service that does not answer gets to end after SIGTERM
 #: before SIGKILL: its sessions save within the service's own grace.
@@ -41,7 +48,94 @@ def _start_settings(args: argparse.Namespace) -> dict:
                   for v in (getattr(args, name, None) or [])]
         if values:
             settings[key] = values
+    if settings.get("resume") == RESUME_PICK:
+        # `--resume` without an id: the picker first, nothing to resume yet.
+        del settings["resume"]
+        settings["pick"] = True
     return settings
+
+
+#: What a session id is made of (the session store's file names, the
+#: window's leaving.ts ID); a line that is no id is never looked up.
+_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+
+#: The shortest prefix that stands for a whole id (`--resume 0f3a9c21`,
+#: the short id the resume picker and `service status` show).
+MIN_PREFIX = 4
+
+
+def _known_sessions(hello: dict) -> list[dict]:
+    """Every session ``tui --resume`` can open: the ones the service runs
+    or keeps asleep (``hello``), then the saved ones -- one row each,
+    ``{"id", "title"}``."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+
+    def add(sid: object, title: object) -> None:
+        sid = str(sid or "")
+        if sid and sid not in seen:
+            seen.add(sid)
+            rows.append({"id": sid, "title": str(title or "").split("\n")[0].strip()})
+
+    for s in hello.get("sessions") or []:
+        if isinstance(s, dict):
+            add(s.get("sessionId"), s.get("title") or s.get("firstPrompt"))
+    try:
+        from .. import session_store
+        for r in session_store.list_sessions(limit=1000):
+            add(r.get("session_id"), r.get("title"))
+    except Exception:
+        pass
+    return rows
+
+
+def _saved(sid: str) -> bool:
+    """Whether the session store has ``sid`` (one file read, no listing)."""
+    if not _SESSION_ID.match(sid) or ".." in sid:
+        return False
+    try:
+        from .. import session_store
+        return session_store.load_session(sid) is not None
+    except Exception:
+        return False
+
+
+def resolve_resume(wanted: str, hello: dict) -> tuple[str, str]:
+    """The session ``tui --resume <wanted>`` opens: ``(id, "")``, or
+    ``("", why not)`` -- an unknown id is an error naming the close ones,
+    never a new session under that name (``claude --resume`` says "No
+    conversation found"; git and gh refuse an unknown ref).
+
+    ``wanted`` is a whole id of a session the service runs, keeps asleep
+    or has saved, or a prefix of one id only (at least MIN_PREFIX
+    characters, as the picker's short ids)."""
+    wanted = wanted.strip()
+    live = {str(s.get("sessionId") or "") for s in hello.get("sessions") or [] if isinstance(s, dict)}
+    if wanted in live or _saved(wanted):
+        return wanted, ""
+    rows = _known_sessions(hello)
+    if len(wanted) >= MIN_PREFIX:
+        started = [r for r in rows if r["id"].startswith(wanted)]
+        if len(started) == 1:
+            return started[0]["id"], ""
+        if len(started) > 1:
+            listed = "\n".join(f"  {_plain(r['id'])}  {_plain(r['title'], 50)}" for r in started[:5])
+            return "", (f"{_plain(wanted)} is the start of {len(started)} sessions; "
+                        f"give more of the id:\n{listed}")
+    ids = [r["id"] for r in rows]
+    close = difflib.get_close_matches(wanted, ids, n=3, cutoff=0.6)
+    titled = {r["id"]: r["title"] for r in rows}
+    if not close:
+        # A title typed for an id: the sessions it names.
+        needle = wanted.lower()
+        close = [r["id"] for r in rows if needle and needle in r["title"].lower()][:3]
+    why = f"No session found with id {_plain(wanted)}."
+    if close:
+        why += " Did you mean:\n" + "\n".join(
+            f"  {_plain(c)}  {_plain(titled.get(c, ''), 50)}" for c in close)
+    why += ("\n`delfin-agent tui --resume` (no id) opens the picker; "
+            "`delfin-agent sessions` lists the saved ones.")
+    return "", why
 
 
 def _security_preamble() -> None:
@@ -125,6 +219,14 @@ def _setup_only() -> int:
     return 0
 
 
+def _has_terminal() -> bool:
+    """True when stdin and stdout are a terminal the window can take over."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):     # closed or replaced streams
+        return False
+
+
 def cmd_tui(args: argparse.Namespace) -> int:
     if getattr(args, "setup", False):
         return _setup_only()
@@ -144,6 +246,24 @@ def cmd_tui(args: argparse.Namespace) -> int:
         print(f"{missing}\nThe agent service runs: `delfin-agent service status` "
               f"(pid {hello.get('pid')}).", file=sys.stderr)
         return 2
+    settings = _start_settings(args)
+    if settings.get("resume"):
+        # Checked before the window takes the terminal: a typo opens no
+        # new session under its name.
+        sid, why = resolve_resume(str(settings["resume"]), hello)
+        if not sid:
+            print(f"ERROR: {why}", file=sys.stderr)
+            return 2
+        settings["resume"] = sid
+    if not _has_terminal():
+        # Last, right before the window takes the terminal (setup hints,
+        # the service and a --resume check come first). The window needs a terminal for its keys and its screen; in a
+        # pipe it drew escape codes and died on exit. As Claude Code does,
+        # refuse and name the mode that works without one.
+        print("ERROR: the TUI needs a terminal (stdin and stdout must be a TTY). "
+              "Without one, use `delfin-agent chat -p \"<prompt>\"`.",
+              file=sys.stderr)
+        return 2
     env = dict(os.environ)
     env["DELFIN_TUI_SOCKET"] = str(rundir.socket_path())
     # What starts the next service, should this one vanish under the window.
@@ -151,7 +271,7 @@ def cmd_tui(args: argparse.Namespace) -> int:
     # Said in the window: where else sessions of this user are.
     env["DELFIN_TUI_NOTES"] = json.dumps(launcher.other_host_notes())
     # Settings first: the workspace is where `delfin-agent tui` was typed.
-    env["DELFIN_TUI_START"] = json.dumps(_start_settings(args))
+    env["DELFIN_TUI_START"] = json.dumps(settings)
     # Inline instead of the whole terminal (tui.json "screen" says it for good).
     if getattr(args, "inline", False):
         env["DELFIN_TUI_SCREEN"] = "inline"
@@ -243,6 +363,9 @@ def _session_rows(svc: "client.ServiceClient") -> tuple[list[dict], dict]:
             "windows": int(s.get("windows") or 0),
             # False: a scripted (fake) session started without saving.
             "saves": bool(s.get("saves", True)),
+            # Asked something (here or from its log): a session never asked
+            # anything is not saved when it ends (worker.Worker.was_used).
+            "asked": bool(s.get("firstPrompt") or s.get("lastPrompt") or s.get("lastInput")),
             "model": _plain(s.get("model")),
             "createdAt": created,
             "lastActivity": active,
@@ -262,7 +385,8 @@ def cmd_service(args: argparse.Namespace) -> int:
                         all_idle=bool(getattr(args, "all_idle", False)),
                         yes=bool(getattr(args, "yes", False)),
                         after_turn=bool(getattr(args, "after_turn", False)))
-        return _service(action, as_json=bool(getattr(args, "json", False)))
+        return _service(action, as_json=bool(getattr(args, "json", False)),
+                        yes=bool(getattr(args, "yes", False)))
     except client.ServiceError as exc:
         # Refused (this shell is an agent session's own: watch only), or
         # the service went away in between: said, not a traceback.
@@ -286,7 +410,7 @@ def _refused_inside_an_agent(action: str) -> bool:
     return True
 
 
-def _service(action: str, *, as_json: bool = False) -> int:
+def _service(action: str, *, as_json: bool = False, yes: bool = False) -> int:
     if action in ("stop", "restart") and _refused_inside_an_agent(action):
         return 1
     hello, why = client.probe()
@@ -302,6 +426,8 @@ def _service(action: str, *, as_json: bool = False) -> int:
             print(f"an agent service runs on {rundir.hostname()} (pid {pid}), "
                   f"but {launcher.why_in_words(why)}")
             if action in ("stop", "restart"):
+                if not yes and _interactive() and not _confirm_unanswering(pid, action):
+                    return 1
                 code = _stop_unanswering(pid)
                 return _start_again() if action == "restart" and code == 0 else code
             print("  `delfin-agent service stop` ends it (its sessions save)")
@@ -315,6 +441,10 @@ def _service(action: str, *, as_json: bool = False) -> int:
                   "log in there to reach its sessions")
         return 0 if action == "status" else 1
     if action in ("stop", "restart"):
+        if not yes:
+            refused = _stop_asked(action)
+            if refused is not None:
+                return refused
         code = _stop(restart=action == "restart")
         return _start_again() if action == "restart" and code == 0 else code
     with client.ServiceClient(client="delfin-agent service") as svc:
@@ -384,8 +514,16 @@ def _end(target: str, *, all_idle: bool, yes: bool, after_turn: bool = False) ->
         return 2
     hello, why = client.probe()
     if hello is None:
-        print(f"ERROR: no agent service answers on {rundir.hostname()} "
-              f"({launcher.why_in_words(why)}): no session to end", file=sys.stderr)
+        # The real state, as `service status` says it: none runs, or one
+        # runs and does not answer.
+        pid = rundir.service_pid()
+        if not pid:
+            print(f"ERROR: no agent service runs on {rundir.hostname()}: "
+                  "no session to end", file=sys.stderr)
+        else:
+            print(f"ERROR: the agent service on {rundir.hostname()} (pid {pid}) does not "
+                  f"answer ({launcher.why_in_words(why)}): no session to end",
+                  file=sys.stderr)
         return 1
     with client.ServiceClient(client="delfin-agent service") as svc:
         rows, _status = _session_rows(svc)
@@ -441,6 +579,10 @@ def _end(target: str, *, all_idle: bool, yes: bool, after_turn: bool = False) ->
             print(f"ended {r['id'][:8]}  {r['title'][:40]}{when}: not saved "
                   "(a scripted session started without saving)")
             continue
+        if not r.get("asked", True) and r.get("rawState") != "sleeping":
+            print(f"ended {r['id'][:8]}  {r['title'][:40]}{when}: nothing was asked "
+                  "in it, so it was not kept")
+            continue
         still = " (still saving)" if r["id"] in saving else ""
         print(f"ended {r['id'][:8]}  {r['title'][:40]}{when}: saved{still}; "
               f"`delfin-agent tui --resume {r['id']}` resumes it")
@@ -474,6 +616,75 @@ def _confirm(chosen: list[dict], *, after_turn: bool = False) -> bool:
     if answer.strip().lower() in ("y", "yes"):
         return True
     print("nothing ended")
+    return False
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _stop_asked(action: str) -> int | None:
+    """`service stop|restart` without ``--yes``: None to go on, else the
+    exit code. It ends every session of the service, as `service end`
+    ends one, so on a terminal it asks first (y/N), like `end` and
+    `stop-all`. Without a terminal it refuses only when a session works
+    or waits for you -- the turn that would be stopped is what is lost;
+    idle ones are saved and offered again, which scripts rely on. Nothing
+    to end (no session, or only sleeping ones): nothing to ask."""
+    with client.ServiceClient(client="delfin-agent service") as svc:
+        rows, _status = _session_rows(svc)
+    live = [r for r in rows if r["state"] != "sleeping"]
+    if not live:
+        return None
+    if not _interactive():
+        busy = [r for r in live if r["state"] in ("working", "waiting for you")]
+        if not busy:
+            return None
+        n = len(busy)
+        print(f"ERROR: not asked: this is no terminal, and {n} session"
+              f"{'s' * (n != 1)} {'work or wait' if n != 1 else 'works or waits'} "
+              f"for you; `--yes` {action}s without asking", file=sys.stderr)
+        return 2
+    return None if _confirm_stop(live, restart=action == "restart") else 1
+
+
+def _confirm_stop(live: list[dict], *, restart: bool) -> bool:
+    """y/N on the terminal before the service stops: each session that
+    ends, what that stops, and whether it is saved (as `_confirm`)."""
+    notes = {"working": " -- it works now: its turn is stopped at its next safe point",
+             "waiting for you": " -- it waits for you: its open question is refused "
+                                "and its turn is stopped"}
+    for r in live:
+        unsaved = " (not saved)" if not r["saves"] else ""
+        print(f"  {r['id'][:8]}  {r['title'][:40]}  ({r['state']}){unsaved}{notes.get(r['state'], '')}")
+    n = len(live)
+    sessions = "its session" if n == 1 else f"its {n} sessions"
+    kept = ("the next service offers them again" if restart
+            else "they are saved and can be resumed")
+    if not all(r["saves"] for r in live):
+        kept += " (those marked (not saved) are not)"
+    try:
+        answer = input(f"{'Restart' if restart else 'Stop'} the agent service? "
+                       f"It ends {sessions}; {kept}. [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    print("nothing stopped")
+    return False
+
+
+def _confirm_unanswering(pid: int, action: str) -> bool:
+    """y/N before a service that does not answer is ended by signal: its
+    sessions cannot be listed, only said to end and save."""
+    try:
+        answer = input(f"End it by signal (pid {pid}){' and start it again' if action == 'restart' else ''}? "
+                       "Its sessions end and save; a running turn is stopped. [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        return True
+    print("nothing stopped")
     return False
 
 
