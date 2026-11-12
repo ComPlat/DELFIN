@@ -23883,6 +23883,18 @@ class _DocToolExecutor:
                         "give the user the link to open the pull request. "
                         "Only the user changes the role (`/git role "
                         "maintainer` in that repository).")
+            # A cluster login node is shared (issue #640): tests, builds and
+            # installs run on a compute node, whatever the mode or grant --
+            # the cluster's rule, not the user's to wave through.
+            try:
+                from . import calc_policy as _cp_login
+                _heavy = _cp_login.login_node_heavy(cmd)
+            except Exception:
+                _heavy = ""
+            if _heavy:
+                _record_security_event("login_node_heavy", "bash", cmd[:80],
+                                       blocked=True)
+                return _heavy
             _asked = perms.confirm_callback is not None
             # Opening a pull request publishes the branch. It spends the
             # same one-request grant a push does: the user who asked for a

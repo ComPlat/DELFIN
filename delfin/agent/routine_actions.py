@@ -25,6 +25,11 @@ command naming them is never matched here; every one of them is caught
 by the exact-shape matching (a git shape only matches ``git`` with one
 of the three sub-commands, and no web/curl/wget/pip/ssh shape exists).
 
+A list of plain reads (``grep x f | head``, ``git status; git log -3``)
+is the fifth shape (2026-11-11): every part must pass the plain-read
+floor on its own; only 2>&1 and 2>/dev/null may redirect. Red tests in
+tests/test_a_list_of_reads_is_routine.py.
+
 Look-alikes to stay judged (all red-tested in
 tests/test_fr1_routine_shapes.py): shell operators anywhere in the
 command, force flags (-f/-B/-C/-k), paths after ``checkout``, wildcard
@@ -33,6 +38,8 @@ mv, non-http(s) URLs, a POST body or extra arguments on web_fetch.
 
 from __future__ import annotations
 
+import re
+import shlex
 from collections import namedtuple
 
 from . import action_classifier as _ac
@@ -42,7 +49,7 @@ __all__ = ["ROUTINE_KINDS", "routine_verdict"]
 Verdict = _ac.Verdict
 
 ROUTINE_KINDS = ("merge_abort", "new_local_branch", "existing_local_branch",
-                 "git_mv", "web_fetch_get")
+                 "git_mv", "web_fetch_get", "compound_read")
 
 
 # Shell operators or nested execution anywhere in a command: the moment
@@ -61,6 +68,124 @@ def _plain_tokens(command: str):
         if ch in cmd:
             return None
     return cmd.split()
+
+
+# compound_read: the list operators that join two plain reads, and the
+# two redirects that only move or drop the error stream. Every other
+# operator (a file redirect, ``<``, ``&``, ``|&``, ``&>``) ends the shape.
+_LIST_OPERATORS = ("&&", "||", "|", ";")
+_STDERR_REDIRECTS = ("2>&1", "2>/dev/null")
+_OPERATOR_CHARS = frozenset(";&|<>")
+# find runs a program per match with these; inside a list the ``;`` that
+# ends them is quoted and so no longer visible to the plain-read floor.
+_FIND_RUNNERS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# ``sed -n N,Mp`` after a pipe reads stdin; the floor's sed form wants a
+# file operand.
+_SED_STDIN_RANGE = re.compile(r"\d+(?:,\d+)?p")
+
+
+def _list_parts(command: str):
+    """The parts of a ``| && || ;`` list, or None.
+
+    Input: one bash command. Output: the text of each part, with every
+    QUOTED or backslash-escaped operator character replaced by ``_`` so
+    the plain-read floor reads it as data (``grep 'a|b'``), not as an
+    operator; an option keeps its prefix (``--output=a;b`` becomes
+    ``--output=a_b``). The two stderr redirects are removed. None for an
+    unbalanced quote, an empty part, or any other unquoted operator.
+    Quote state is tracked here, not by shlex: shlex returns a quoted
+    ``'|'`` as the same token as an unquoted ``|``, and splitting there
+    would hand ``cat --output=x`` to the floor as a part of its own
+    (``git log '|' cat --output=x`` writes x).
+    """
+    def masked(ch):
+        return "_" if ch in _OPERATOR_CHARS else ch
+    parts, cur, quote, i, n = [], [], None, 0, len(command)
+    while i < n:
+        ch = command[i]
+        if quote:
+            if ch == quote:
+                quote = None
+                cur.append(ch)
+            elif ch == "\\" and quote == '"' and i + 1 < n:
+                cur.append(ch + masked(command[i + 1]))
+                i += 1
+            else:
+                cur.append(masked(ch))
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == "\\":
+            if i + 1 >= n:
+                return None
+            cur.append(ch + masked(command[i + 1]))
+            i += 2
+            continue
+        if ch in _OPERATOR_CHARS:
+            redirect = next((r for r in _STDERR_REDIRECTS
+                             if command.startswith(r[1:], i)), None)
+            end = i + len(redirect) - 1 if redirect else i
+            if (redirect and "".join(cur).endswith((" 2", "\t2"))
+                    and (end == n or command[end] in " \t|;&")):
+                cur.pop()
+                i = end
+                continue
+            op = next((o for o in _LIST_OPERATORS
+                       if command.startswith(o, i)), None)
+            if op is None or command.startswith("|&", i):
+                return None
+            parts.append("".join(cur))
+            cur = []
+            i += len(op)
+            continue
+        cur.append(ch)
+        i += 1
+    if quote:
+        return None
+    parts.append("".join(cur))
+    parts = [p.strip() for p in parts]
+    return None if any(not p for p in parts) else parts
+
+
+def _compound_read_routine(command: str) -> Verdict | None:
+    """A ``| && || ;`` list whose every part is a plain read.
+
+    Each part alone passes ``action_classifier._bash_is_plain_read`` and
+    never reaches the model; joining reads adds no write and no program
+    beyond the parts. Checked per part: the floor, no find runner, and
+    two additions -- ``set -o pipefail`` and ``sed -n N,Mp`` reading the
+    pipe. ``$`` and backticks end the shape anywhere, quoted or not
+    (expansion inside double quotes; a single-quoted ``$`` is rare
+    enough to stay judged). Measured: 37 % of the bash commands judged
+    by a model on 2026-11-11 had this shape.
+    """
+    cmd = (command or "").strip()
+    if not cmd or any(ch in cmd for ch in "$`\n\r"):
+        return None
+    parts = _list_parts(cmd)
+    if not parts:
+        return None
+    for n, part in enumerate(parts):
+        try:
+            words = shlex.split(part)
+        except ValueError:
+            return None
+        if _FIND_RUNNERS & set(words):
+            return None
+        if words == ["set", "-o", "pipefail"]:
+            continue
+        if (n > 0 and len(words) == 3 and words[:2] == ["sed", "-n"]
+                and _SED_STDIN_RANGE.fullmatch(words[2])):
+            continue
+        if not _ac._bash_is_plain_read(part):
+            return None
+    return Verdict(
+        "allow", "routine: a list of plain reads; each part is a read "
+        "on its own.")
 
 
 def _git_routine(tokens: list, sub: str,
@@ -211,6 +336,9 @@ def routine_verdict(action: dict, context: dict) -> Verdict | None:
     """
     tool = str(action.get("tool") or "")
     if tool in ("bash", "bash_background"):
+        compound = _compound_read_routine(str(action.get("command") or ""))
+        if compound is not None:
+            return compound
         tokens = _plain_tokens(str(action.get("command") or ""))
         # A command with a cwd of its own runs elsewhere than the
         # workspace the shapes are checked in.
