@@ -2447,6 +2447,7 @@ def create_tab(ctx):
 
     def _on_confirm_cancel(_button=None):
         confirm_panel.layout.display = "none"
+        state["delete_targets"] = []
 
     # --------------------------------------------------------------------------
 

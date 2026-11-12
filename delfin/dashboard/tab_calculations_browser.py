@@ -8955,7 +8955,9 @@ def create_tab(ctx):
 
     # -- delete helpers -----------------------------------------------------
     def calc_delete_hide_confirm():
+        # A question that is closed has no answer left: forget what it named.
         state['delete_current'] = False
+        state['delete_names'] = []
         calc_delete_confirm.layout.display = 'none'
         calc_delete_status.value = ''
 
