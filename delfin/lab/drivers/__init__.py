@@ -1,4 +1,5 @@
-"""Device drivers. Only the simulator is implemented in this release."""
+"""Device drivers. Implemented: simulator, Shelly Gen2 RPC, Tasmota, MQTT,
+OPC UA."""
 
 from __future__ import annotations
 
@@ -10,8 +11,15 @@ REGISTRY: dict = {}
 
 
 def _register_builtin() -> None:
+    from .mqtt import MqttDriver
+    from .opcua_lads import OpcUaLadsDriver
     from .simulator import SimulatorDriver
+    from .shelly_tasmota import ShellyDriver, TasmotaDriver
     REGISTRY.setdefault("simulator", SimulatorDriver)
+    REGISTRY.setdefault("shelly_rpc", ShellyDriver)
+    REGISTRY.setdefault("tasmota", TasmotaDriver)
+    REGISTRY.setdefault("mqtt", MqttDriver)
+    REGISTRY.setdefault("opcua_lads", OpcUaLadsDriver)
 
 
 def make(name: str) -> Driver:
@@ -25,15 +33,17 @@ def make(name: str) -> Driver:
 #: What each driver class can do on the device itself (design doc table).
 DEVICE_WATCHDOG_SUPPORT = {
     "simulator": "yes (deadline in the simulated device)",
-    "shelly_rpc": "yes: Switch.Set toggle_after (planned)",
-    "tasmota": "yes: PulseTime (planned)",
-    "mqtt": "only when the device firmware has a timer (Tasmota yes, "
-            "Zigbee plugs mostly no) (planned)",
+    "shelly_rpc": "yes: Switch.Set toggle_after",
+    "tasmota": "yes: PulseTime",
+    "mqtt": "yes when the firmware has a timer (Tasmota PulseTime reached "
+            "via address.arm_topic); generic Zigbee plugs mostly no (use the "
+            "kernel dead-man and a hardware watchdog relay)",
     "home_assistant": "no: HA automations run on the HA host, not on the "
                       "device (planned)",
     "gpiod": "no: a line keeps its value while the chip is powered; use a "
              "hardware watchdog relay (planned)",
     "sila2": "lock timeout yes; safe state on timeout depends on the "
              "server (planned)",
-    "opcua_lads": "server-dependent (planned)",
+    "opcua_lads": "yes when the FunctionalUnit has a WatchdogTimeout variable "
+                  "(a server-side deadline)",
 }
