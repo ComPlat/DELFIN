@@ -1157,6 +1157,51 @@ def _as_global_opt_mlip_device(value: Any) -> str:
     raise ValueError("must be cuda or cpu")
 
 
+def _as_global_opt_mlip_provider(value: Any) -> str:
+    """Which ExtOpt provider runs an MLIP GOAT: auto (default), oet or orca-mlips.
+
+    auto takes orca-external-tools when it is installed with the backend
+    (one model server per job), else orca-mlips
+    (delfin/mlp_tools/mlip_goat.py).
+    """
+    text = str(value or "").strip().lower().replace("_", "-")
+    if not text:
+        return "auto"
+    if text in {"orca-external-tools", "oet"}:
+        return "oet"
+    if text in {"auto", "orca-mlips"}:
+        return text
+    raise ValueError("must be auto, oet (orca-external-tools) or orca-mlips")
+
+
+def _as_goat_max_workers(value: Any) -> "int | None":
+    """GOAT workers of an MLIP GOAT: empty = DELFIN's choice, else a positive multiple of 4."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        number = int(text)
+    except ValueError:
+        raise ValueError("must be a positive multiple of 4") from None
+    if number <= 0 or number % 4:
+        raise ValueError("must be a positive multiple of 4 (ORCA: one worker per GOAT temperature)")
+    return number
+
+
+def _as_mlip_server_processes(value: Any) -> "int | None":
+    """Model processes of the orca-external-tools server: empty = DELFIN's choice, else 1..64."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        number = int(text)
+    except ValueError:
+        raise ValueError("must be a whole number from 1 to 64") from None
+    if not 1 <= number <= 64:
+        raise ValueError("must be a whole number from 1 to 64")
+    return number
+
+
 def _valid_global_opt_mlip(validated: Mapping[str, Any]) -> str:
     """``mlip:<plugin>`` when the value passed its field check, else ""."""
     try:
@@ -2336,6 +2381,20 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("global_opt_mlip_device", _as_global_opt_mlip_device, default="cuda",
               help="cuda (default) or cpu. cuda without a visible GPU stops "
                    "the GOAT step; there is no silent CPU fallback."),
+    FieldSpec("global_opt_mlip_provider", _as_global_opt_mlip_provider, default="auto",
+              help="auto (default): orca-external-tools when installed with the "
+                   "backend (one model server for the job), else orca-mlips; "
+                   "oet or orca-mlips forces one."),
+    FieldSpec("goat_max_workers", _as_goat_max_workers, default=None, allow_none=True,
+              help="GOAT workers of an MLIP GOAT (a multiple of 4). Empty: "
+                   "orca-external-tools runs %pal workers on one server; "
+                   "orca-mlips is capped (8 on a large GPU) because it loads "
+                   "one model per worker."),
+    FieldSpec("mlip_server_processes", _as_mlip_server_processes, default=None,
+              allow_none=True,
+              help="Model processes of the orca-external-tools server of an MLIP "
+                   "GOAT (each holds one model on the GPU). Empty: DELFIN's "
+                   "measured default for the GPU it runs on."),
     FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
               help="yes refuses an MLIP whose weights are non-commercially "
                    "licensed (global_opt_method=mlip:mace)."),

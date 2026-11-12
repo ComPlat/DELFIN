@@ -185,6 +185,22 @@ PROGRAMS = {
         "managed_env": ".mamba_env/orca_mlips",
         "install": "python -m delfin.installer --install orca-mlips",
     },
+    # orca-external-tools (FACCTs, GPL-3.0; github.com/faccts/orca-external-tools),
+    # the second ExtOpt provider (delfin/mlp_tools/oet.py): one long-lived,
+    # multi-process model server per job (oet_server) and a slim client
+    # (oet_client) as ProgExt, so a GOAT with many workers neither starts one
+    # model per worker nor pays a Python start-up with torch on every call.
+    # A separately installed external program DELFIN only starts; never
+    # vendored. install_ai_tools.sh (INSTALL_ORCA_EXTERNAL_TOOLS) builds it with the aimnet2
+    # extra (MIT weights) and a CUDA build of PyTorch.
+    "oet": {
+        "display": "orca-external-tools",
+        "module": "oet",
+        "dist": "oet",
+        "python_env": "DELFIN_OET_PYTHON",
+        "managed_env": ".mamba_env/oet",
+        "install": "python -m delfin.installer --install orca-external-tools",
+    },
 }
 
 #: Tools whose build is defined in delfin.cluster_bench.tool_workers.smiles_tools.

@@ -344,6 +344,24 @@
       "default": "cuda",
       "read_by": "delfin/xtb_crest.py _xtb_goat_mlip (_gpu_visible check)."
     },
+    "global_opt_mlip_provider": {
+      "meaning": "Which ExtOpt provider runs an MLIP GOAT. auto takes orca-external-tools when it is installed with the backend (one model server for the whole job, a slim client per call), else orca-mlips; oet or orca-mlips forces one. global_opt_method keeps its meaning either way.",
+      "valid_values": "auto | oet | orca-mlips (_as_global_opt_mlip_provider)",
+      "default": "auto",
+      "read_by": "delfin/xtb_crest.py _xtb_goat_mlip; delfin/mlp_tools/mlip_goat.py choose_provider."
+    },
+    "goat_max_workers": {
+      "meaning": "Number of GOAT workers (%goat nworkers) of an MLIP GOAT. Empty: orca-external-tools runs %pal workers on its one server; orca-mlips is capped (8 on a large GPU, fewer on a small one) because it loads one model per worker -- 40 workers ran a GPU out of memory. PAL is not changed.",
+      "valid_values": "empty | a positive multiple of 4 (_as_goat_max_workers)",
+      "default": "",
+      "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat."
+    },
+    "mlip_server_processes": {
+      "meaning": "Model processes of the orca-external-tools server that serves every GOAT worker of an MLIP GOAT; each holds one model on the GPU. Empty: DELFIN's measured default for the GPU the job runs on (delfin/mlp_tools/mlip_goat.py).",
+      "valid_values": "empty | 1..64 (_as_mlip_server_processes)",
+      "default": "",
+      "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat."
+    },
     "refuse_noncommercial_weights": {
       "meaning": "Refuse an MLIP whose model weights are non-commercially licensed (LICENSE_GUARD.md family 4); applies to global_opt_method (mlip:mace).",
       "valid_values": "yes | no (_as_yes_no)",

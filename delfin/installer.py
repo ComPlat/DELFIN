@@ -148,6 +148,14 @@ TOOLS: Tuple[Tool, ...] = (
          switch="INSTALL_ORCA_MLIPS", modules=("orca_mlips_plugins",),
          aliases=("orca-mlips",), own_env="orca_mlips",
          size="it brings a CUDA build of PyTorch with it, several GB"),
+    # orca-external-tools (FACCTs, GPL-3.0), the faster ExtOpt provider: one
+    # long-lived model server per job and a slim client as ProgExt
+    # (delfin.mlp_tools.oet). Its own environment with a CUDA PyTorch and the
+    # aimnet2 extra; a separately installed program DELFIN starts, never vendored.
+    Tool("orca_external_tools", "ai", "orca-external-tools (ORCA ExtOpt server: AIMNet2)",
+         switch="INSTALL_ORCA_EXTERNAL_TOOLS", modules=("oet",),
+         aliases=("orca-external-tools", "oet"), own_env="oet",
+         size="it brings a CUDA build of PyTorch with it, several GB"),
     Tool("plotly", "ai", "plotly", switch="INSTALL_PLOTLY", modules=("plotly",)),
     # Python packages DELFIN needs to do its own work, installed with pip
     # into the session venv -- never --user / ~/.local. A missing pytest
