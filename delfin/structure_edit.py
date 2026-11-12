@@ -89,7 +89,7 @@ _VALENCE: dict[str, int] = {
 # (C, N) keep the sp3/sp2 machinery.
 _BOND_ANGLE_ONE_NEIGHBOUR: dict[str, float] = {
     "O": 108.5,
-    "S": 96.0,
+    "S": 96.5,
 }
 
 
@@ -234,6 +234,7 @@ def _h_directions(
     away: list[tuple[float, float, float]], count: int,
     heavy_order: int = 1,
     polar_override: float | None = None,
+    two_h_sp3: bool = False,
 ) -> list[tuple[float, float, float]]:
     """``count`` unit directions for hydrogens on ``atom`` so that the
     placed angles match real hybridisation geometry, measured AT THE
@@ -301,9 +302,34 @@ def _h_directions(
             return [_unit(tuple(s))]
         # =CH2-type sp2: H in the plane spanned by the two bonds,
         # mirrored across the C-C axis, so X-X-H and H-X-H both come
-        # out at real sp2 values (ethylene: 121.5 / 117).
+        # out at real sp2 values (ethylene: 121.5 / 117). An sp3 CH2
+        # (two single bonds, e.g. ethanol C1) instead gets the sp3
+        # treatment: one H at the bisector cone, mirrored out of plane,
+        # H-C-H 109.47 (PR #606 round-8 test).
         b1 = _unit(away[0])
         b2 = _unit(away[1])
+        if two_h_sp3:
+            # sp3 CH2 (two single bonds, e.g. ethanol C1): both H near
+            # the AWAY-bisector m = -unit(b1+b2), mirrored out of the
+            # bond plane by phi = 54.7356 deg (cos phi = 1/sqrt(3))
+            # around the plane normal n = unit(b1 x b2). H-C-H comes
+            # out 109.47 exactly (cos of the mutual angle is
+            # cos(2 phi) = -1/3) and the angle to each bond ~109 deg;
+            # the out-of-plane mirror also clears in-plane heavy
+            # neighbours (PR #606 round-8 test: ethanol CH2 clear of O).
+            m = _unit([-(b1[k] + b2[k]) for k in range(3)])
+            cr = (b1[1] * b2[2] - b1[2] * b2[1],
+                  b1[2] * b2[0] - b1[0] * b2[2],
+                  b1[0] * b2[1] - b1[1] * b2[0])
+            n = _unit(cr)
+            cp = 1.0 / 3.0 ** 0.5
+            sp = (1.0 - cp * cp) ** 0.5
+            out2: list[tuple[float, float, float]] = []
+            for side in (1.0, -1.0):
+                out2.append(tuple(
+                    cp * m[k] + side * sp * n[k] for k in range(3)
+                ))
+            return out2
         # Internal bisector (points between the bonds) and the angle
         # between the bonds.
         dot = max(-1.0, min(1.0, sum(b1[k] * b2[k] for k in range(3))))
@@ -610,10 +636,26 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
         r_h_i = _XH_BOND_LENGTHS.get(sym, radii[i] + _COSMETIC_H_RADIUS)
         # Element-real bond angle for an O/S with one heavy neighbour
         # (operator round-7 rerun: linear 180 was wrong; O ~108.5,
-        # S ~96). C and N keep the sp3/sp2 machinery.
+        # S ~96.5). C and N keep the sp3/sp2 machinery.
         polar_override = _BOND_ANGLE_ONE_NEIGHBOUR.get(sym)
-        for direction in _h_directions(away, missing, dir_order,
-                                       polar_override=polar_override):
+        # Distinguish sp3 from sp2 at a two-neighbour carbon (PR #606
+        # round-8 test, ethanol): the sp2 in-plane mirrored placement
+        # fits =CH2 (bond order 2 toward a neighbour), while an sp3 CH2
+        # (both bonds order 1, like C1 in C-C-OH) needs two H on a cone
+        # whose mutual angle is 109.47, one on each side of the plane.
+        if sym == "C" and len(away) == 2 and missing == 2:
+            orders = [
+                _heavy_bond_order(g, i, j, radii)
+                for j in nbrs.get(i, ()) if g.symbols[j] != "H"
+            ]
+            sp3_two_h = max(orders) <= 1.0
+        else:
+            sp3_two_h = False
+        for direction in _h_directions(
+            away, missing, dir_order,
+            polar_override=polar_override,
+            two_h_sp3=sp3_two_h,
+        ):
             pos = tuple(
                 g.coords[i][k] + direction[k] * r_h_i for k in range(3)
             )

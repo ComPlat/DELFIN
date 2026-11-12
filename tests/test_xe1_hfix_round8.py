@@ -90,15 +90,20 @@ def test_ethanol_h_heavy_clash_is_flagged():
     out = fix_hydrogens(ETHANOL)
     atoms = _parse(out["xyz"])
     checks = " ".join(out["checks"])
-    # Any placed H closer than 0.9 x covalent sum to a heavy atom that is
-    # NOT its parent must produce a WARNING in checks[].
+    # A placed H closer than 0.9 x covalent sum to a heavy atom that is
+    # NOT its parent must produce a WARNING in checks[]. The parent's
+    # own X-H bond (O-H 0.96 A) is a bond, not a clash candidate --
+    # _clash_report excludes it deliberately (structure_edit.py).
     oi = [i for i, (s, _) in enumerate(atoms) if s == "O"][0]
+    from delfin.structure_edit import _parent_index
+
     worst = None
     for i, (s, p) in enumerate(atoms):
         if s != "H":
             continue
+        parent = _parent_index([a[0] for a in atoms], [a[1] for a in atoms], i)
         for j, (s2, p2) in enumerate(atoms):
-            if s2 == "H" or j == i:
+            if s2 == "H" or j == i or j == parent:
                 continue
             d = math.dist(p, p2)
             if worst is None or d < worst[0]:
