@@ -299,11 +299,13 @@ class Kernel:
 
     def _at_safe(self, device, values: dict) -> bool:
         for ch, sv in device.safe_state.items():
-            v = values.get(ch)
+            spec = device.writes[ch]
+            # the value is read where the write is read back (a Shelly
+            # writes `power` and reports it as `output`)
+            v = values.get(spec.readback or ch)
             if v is _expr.UNKNOWN or v is None:
                 return False
             v = v[0]
-            spec = device.writes[ch]
             if spec.is_state:
                 if str(v) != str(sv):
                     return False
