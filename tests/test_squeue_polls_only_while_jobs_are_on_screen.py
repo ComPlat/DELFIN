@@ -11,11 +11,14 @@ Now the dashboard tells the backend which tab is on screen
 in front, periodic callers keep the normal 25 s throttle. Anywhere else they
 get the last answer, and squeue is asked at most every 5 minutes (so a job
 that ends is still noticed, later), or never with
-``DELFIN_SQUEUE_BACKGROUND_INTERVAL=0``. Refresh (``force=True``) always asks.
+``DELFIN_SQUEUE_BACKGROUND_INTERVAL=0``. Refresh (``force=True``) always asks,
+and a user action (a command or button, on the kernel's main thread) keeps
+the normal throttle; only timer threads slow down.
 """
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -72,9 +75,12 @@ def board(tmp_path, monkeypatch):
         return len([c for c in calls if c and c[0] == 'squeue'])
 
     def poll_for(seconds, every=5.0):
+        """A periodic caller: a timer thread, as the real ones are."""
         t = 0.0
         while t < seconds:
-            backend.list_jobs()
+            worker = threading.Thread(target=backend.list_jobs)
+            worker.start()
+            worker.join()
             clock.now += every
             t += every
 
@@ -132,6 +138,18 @@ def test_refresh_always_asks(board):
     assert squeues() == before + 1
 
 
+def test_a_user_action_on_another_tab_keeps_the_normal_pace(board):
+    """A command or button (kernel main thread) is not a periodic refresh."""
+    _ctx, backend, show, squeues, _poll = board
+    show('DELFIN Agent')
+    backend.list_jobs()
+    before = squeues()
+    clock = backend_slurm.time.monotonic
+    clock.now += 30.0
+    backend.list_jobs()
+    assert squeues() == before + 1
+
+
 def test_opening_a_job_view_resumes_at_once(board):
     ctx, backend, show, squeues, poll_for = board
     show('Submit Job')
@@ -139,7 +157,7 @@ def test_opening_a_job_view_resumes_at_once(board):
     poll_for(60)
     before = squeues()
     show('Agent Activity')
-    backend.list_jobs()  # cache older than 25 s: asks now
+    poll_for(5)  # the next tick, cache older than 25 s: asks now
     assert squeues() == before + 1
 
 

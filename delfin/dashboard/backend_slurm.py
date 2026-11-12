@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -886,8 +887,18 @@ class SlurmJobBackend(JobBackend):
         return self._JOBS_BACKGROUND_SECONDS
 
     def _jobs_view_open(self) -> bool:
+        """Whether this list_jobs() call may run at the normal pace.
+
+        Periodic refreshes run on timer threads (the agent's job watcher, the
+        activity panel's tick); a button, a command or a tab switch runs on
+        the kernel's main thread.  Only the periodic ones slow down while no
+        view of jobs is on screen, so a user action never gets an answer
+        older than the normal throttle.
+        """
         gate = self.jobs_view_visible
         if not callable(gate):
+            return True
+        if threading.current_thread() is threading.main_thread():
             return True
         try:
             return bool(gate())
