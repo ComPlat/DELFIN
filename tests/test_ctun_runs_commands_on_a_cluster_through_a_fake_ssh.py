@@ -88,13 +88,14 @@ def cluster(tmp_path, monkeypatch):
 
 
 def test_cluster_tunnel_is_a_core_dependency_from_the_release_with_the_api():
-    """0.8.0: ``cluster_tunnel.api`` with host-key pinning (0.7.0) and a
-    login with given credentials (the window's masked field); the ceiling
+    """0.10.0: ``cluster_tunnel.api`` with host-key pinning (0.7.0), a
+    login with given credentials (the window's masked field, 0.8.0), and
+    the presets and add/remove calls of the window's add form; the ceiling
     is the next minor, since a 0.x minor release may change the API."""
     project = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     ctun = [r for r in project["dependencies"]
             if re.split(r"[<>=!~\[; ]", r, maxsplit=1)[0].lower() == "cluster-tunnel"]
-    assert ctun == ["cluster-tunnel>=0.8,<0.9"]
+    assert ctun == ["cluster-tunnel>=0.10,<0.11"]
 
 
 def test_without_a_master_a_command_needs_a_login_first(cluster):

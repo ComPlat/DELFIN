@@ -15,6 +15,9 @@ Semantics:
   state is the local control socket; the budget and the job list are asked
   over the tunnel at most once a minute per cluster, since a window polls
   every few seconds.
+* While logged in, a row also says whether ORCA is where DELFIN's installer
+  looks for it (``delfin.remote.setup.orca_status``, asked at most every ten
+  minutes): ORCA is the user's own, so a row without it says what to do.
 * ``login``: the password and OTP go to ``delfin.remote.connection``, which
   hands them to ctun, and nowhere else. They are in no return value, log
   line or error text: a failure is reported by its code and a message that
@@ -43,6 +46,8 @@ from typing import Any, Callable, Iterable, Optional
 #: job count) and for /jobs (the job list).
 ROW_PROBE_S = 60.0
 JOBS_PROBE_S = 30.0
+#: Seconds between two looks for ORCA on a logged-in cluster.
+ORCA_PROBE_S = 600.0
 
 _CONTROL = re.compile("[\x00-\x1f\x7f-\x9f  ‪-‮⁦-⁩]")
 # Terminal escape sequences, taken out whole (a coloured log line reads as
@@ -105,7 +110,7 @@ def clusters(*, settings: Optional[dict] = None) -> dict:
                "requiresOtp": bool(cluster.requires_otp),
                "workDir": clean(cluster.work_dir, 200),
                "defaultPartition": clean(cluster.default_partition or "", 64) or None,
-               "budget": None, "jobs": None, "error": None}
+               "budget": None, "jobs": None, "orca": None, "error": None}
         rows.append(row)
         if not cluster.usable:
             continue
@@ -124,7 +129,17 @@ def clusters(*, settings: Optional[dict] = None) -> dict:
             row["error"] = clean(f"{exc.code}: {exc}", 300)
             continue
         row["budget"], row["jobs"] = probe
+        row["orca"] = _orca(name, conn)
     return {"clusters": rows}
+
+
+def _orca(name: str, conn) -> Optional[dict]:
+    """Where ORCA is on a logged-in cluster (cached); None when not asked."""
+    from delfin.remote import setup
+    try:
+        return _cached(("orca", name), ORCA_PROBE_S, lambda: setup.orca_status(conn))
+    except Exception:  # noqa: BLE001 - not known now: the row says nothing of it
+        return None
 
 
 def _row_probe(conn) -> tuple[Optional[dict], int]:
@@ -361,6 +376,10 @@ def _session_section(conn, cluster, live: bool, ctun_api, where: dict) -> dict:
             pairs.append(("Jobs", f"{active} active, {len(listing) - active} finished recently"))
         except Exception as exc:  # noqa: BLE001
             pairs.append(("Jobs", f"not read: {exc}"))
+        orca = _orca(cluster.name, conn)
+        if orca is not None:
+            pairs.append(("ORCA", orca["path"] + (f" ({orca['hint']})" if orca["hint"] else "")
+                          if orca["found"] else f"not found: {orca['hint']}"))
     if budget is not None:
         pairs.append(("Guard", f"{budget.guard_scope}: {', '.join(budget.guard_commands)}"))
     pairs += [("Work dir", cluster.work_dir), ("Install root", cluster.install_root),

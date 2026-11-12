@@ -32,6 +32,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hpc_guard SIGSTOPs the busiest DELFIN process when a user stays over the
   budget, and the install's processes count as DELFIN's by their paths.
   Such an install is never removed as unused.
+### Added — a cluster is added in the window, and an agent can only propose one
+
+- **`a` in `/clusters` opens an add form** (`tui/src/clusters/add.tsx`):
+  one of the clusters cluster-tunnel knows (bwUniCluster 3, HoreKa,
+  HAICORE, KCIST, IntNano) or another one by its login host, then the
+  name, your user name there (with the preset's hint), the partition
+  DELFIN's jobs go to, the work dir and the install root. The agent service
+  writes ctun's entry and DELFIN's `remote.clusters` entry from it
+  (`delfin/remote/setup.py`), each value checked before anything is
+  written; when DELFIN's settings cannot be written, ctun's entry goes
+  again. A preset brings its login prompts and its budget guard
+  (`guard_scope: every-command`); a cluster given by host has none. No
+  `ctun config` or settings file is edited by hand any more.
+- **The host key**: a preset's fingerprint that its operators publish is
+  pinned at once when the server presents exactly it. Any other key is
+  shown -- beside the published one when they differ -- and `y` pins
+  exactly the key shown, `n` leaves it unpinned (DELFIN then refuses the
+  cluster, and enter on its row shows the key again). Then the login field
+  opens.
+- **`x` removes the selected cluster** from DELFIN's settings and ctun's
+  config (which closes its tunnel and unpins its key), after a `y`; not
+  while DELFIN still follows a job there.
+- **`cluster_propose`** lets an agent propose a cluster: a NEEDS YOU item
+  that opens the form filled in, for the person to check and send. It
+  writes nothing else, is never answered with text, and is advertised with
+  or without a cluster (+95 tokens a request). The service's
+  `cluster.add`, `cluster.hostkey`, `cluster.pin` and `cluster.remove` are
+  taken only from a window (service version 7).
+- **ORCA**: a logged-in cluster's row and details say whether ORCA is where
+  DELFIN's installer looks for it, and what to do when it is not. DELFIN
+  never copies ORCA.
+- DELFIN depends on cluster-tunnel 0.10 (presets, `add_cluster`,
+  `remove_cluster`, pinning only an expected fingerprint).
 
 ### Added — a cluster job's results come back, and the session that sent it is told
 

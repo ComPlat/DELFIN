@@ -36,7 +36,7 @@ export type ItemMark = "asks" | "failed" | "notice"
 
 export function markOf(item: AttentionItem): ItemMark {
   // A login waits for the user too, though nothing waits on an answer.
-  if (item.blocking || item.kind === "login") return "asks"
+  if (item.blocking || item.kind === "login" || item.kind === "addCluster") return "asks"
   if (item.kind === "failed" || item.kind === "alert") return "failed"
   return "notice"
 }
@@ -111,6 +111,7 @@ export function openingOf(item: AttentionItem): Opening {
 /** What → does, in words (the last line of a peek). */
 export function openingText(item: AttentionItem, thisHost: string): string {
   if (item.kind === "login") return `→ opens the masked login field for ${item.cluster || "the cluster"}`
+  if (item.kind === "addCluster") return `→ opens the add form filled in for ${item.cluster || "the cluster"}: check it, then send it`
   const o = openingOf(item)
   if (o.how === "diagnosis") return "→ opens the job monitor's diagnosis of it"
   if (o.how === "session") {
@@ -242,7 +243,7 @@ export function attentionCounts(state: AppState, waitingHere: number): { asks: n
 /** How a new item names itself at the bottom right for a few seconds. */
 export function arrivalNote(item: AttentionItem): string {
   const mark = markOf(item)
-  if (item.kind === "login") return `◉ ${item.name}`
+  if (item.kind === "login" || item.kind === "addCluster") return `◉ ${item.name}`
   if (mark === "asks") {
     const who = item.sessionTitle || item.name
     return `◉ ${who} ${item.kind === "question" ? "asks" : "waits for you"}`

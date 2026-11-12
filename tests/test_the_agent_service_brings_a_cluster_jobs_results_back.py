@@ -94,13 +94,13 @@ class Cluster:
         svc.env.pop("CTUN_CONFIG", None)
 
     def running(self) -> None:
-        (self.state / "squeue").write_text("active|4242|RUNNING|0:05|30:00|small|1|fe\n")
+        (self.state / "squeue").write_text("active|4242|RUNNING|0:05|30:00|small|1|N/A|fe\n")
         (self.state / "sacct").write_text("")
 
     def ended(self) -> None:
         (self.state / "squeue").write_text("")
         end = time.strftime("%Y-%m-%dT%H:%M:%S")
-        (self.state / "sacct").write_text(f"{end}|4242|COMPLETED|00:00:30|00:30:00|small|1|fe\n")
+        (self.state / "sacct").write_text(f"{end}|4242|COMPLETED|00:00:30|00:30:00|small|1|{end}|fe\n")
         for rel, text in DONE.items():
             path = self.svc.home / REMOTE / rel
             path.parent.mkdir(parents=True, exist_ok=True)

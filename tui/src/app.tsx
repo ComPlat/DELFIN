@@ -19,8 +19,9 @@ import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@ope
 import { useKeyboard } from "@opentui/solid"
 import { batch, createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
+import { createAddForm, type Proposal } from "./clusters/add"
 import { createLogin } from "./clusters/login"
-import { CLUSTERS_SERVICE_VERSION, createClustersView, type Screen } from "./clusters/view"
+import { CLUSTERS_SERVICE_VERSION, SETUP_SERVICE_VERSION, createClustersView, type Screen } from "./clusters/view"
 import { WINDOW_COMMANDS, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, screenOf, shellLead } from "./commands"
 import { createSwarmView } from "./swarm/view"
 import { createSwarmWatch } from "./swarm/watch"
@@ -525,6 +526,15 @@ export function App(props: AppProps): JSX.Element {
       if (canShow("clusters")) login.openFor(item.cluster ?? "", typed)
       return
     }
+    if (item.kind === "addCluster") {
+      // An agent's proposal: the add form filled in, over /clusters, for
+      // the person to check and send -- never an answer to a model.
+      if (!canShow("clusters")) return
+      if (store.state.serviceVersion < SETUP_SERVICE_VERSION) return say("restart the agent service to add clusters here")
+      clusters.open("clusters")
+      addForm.open((item.proposal as Proposal | null | undefined) ?? { name: item.cluster ?? "" })
+      return
+    }
     const suggested = await (props.onOpenItem?.(item) ?? Promise.resolve(null))
     if (suggested && !composer.value().trim() && !agents.state.open) composer.setText(suggested)
   }
@@ -558,7 +568,9 @@ export function App(props: AppProps): JSX.Element {
     // Never a login: an answer goes to a model, and what is typed for a
     // login is a password -- its masked field opens instead.
     answer: (item, text) => {
-      if (item.kind !== "login") return settle("attention.answer", { id: item.id, text }, "not answered")
+      if (item.kind !== "login" && item.kind !== "addCluster") {
+        return settle("attention.answer", { id: item.id, text }, "not answered")
+      }
       void openItem(item)
       return Promise.resolve(false)
     },
@@ -573,8 +585,20 @@ export function App(props: AppProps): JSX.Element {
     keymap: props.keymap,
     say,
     login: (row) => login.open(row),
+    add: () => addForm.open(),
+    pinKey: (row) => addForm.openPin(row.name),
     serviceVersion: () => store.state.serviceVersion,
     pollMs: props.clustersPollMs,
+  })
+  const addForm = createAddForm({
+    request: (method, params) => props.client.request(method, params),
+    keymap: props.keymap,
+    say,
+    // Added: /clusters asks again; with its key pinned, its login field.
+    added: (name, pinned) => {
+      clusters.refresh()
+      if (pinned) login.openFor(name)
+    },
   })
   const login = createLogin({
     request: (method, params) => props.client.request(method, params),
@@ -1028,6 +1052,13 @@ export function App(props: AppProps): JSX.Element {
       login.handleKey(key)
       return
     }
+    // The add form too: what is typed there is a cluster's entry, sent only
+    // as the form's one cluster.add.
+    if (addForm.state.open) {
+      key.preventDefault()
+      addForm.handleKey(key)
+      return
+    }
     // A screen has the keys as a picker has (ctrl+c leaves it too).
     if (clusters.state.open) {
       key.preventDefault()
@@ -1241,6 +1272,7 @@ export function App(props: AppProps): JSX.Element {
       agents={agents}
       clusters={clusters}
       login={login}
+      addForm={addForm}
       swarm={swarm}
       watch={watch}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
@@ -1249,7 +1281,7 @@ export function App(props: AppProps): JSX.Element {
       onOthersClick={() => {
         if (!agents.state.open) agents.open()
       }}
-      focused={() => !picker.state.open && !login.state.open && !clusters.state.open}
+      focused={() => !picker.state.open && !login.state.open && !addForm.state.open && !clusters.state.open}
       screen={props.screen}
       scrollRef={(box) => { scrollBox = box }}
       onUserScroll={() => { userScrolled = true }}

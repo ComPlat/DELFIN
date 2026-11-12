@@ -13895,6 +13895,28 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    # Advertised with or without a cluster (one is proposed before any is
+    # configured): the person checks and sends the window's form; the tool
+    # writes no setting (delfin.remote.setup.propose).
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_propose",
+            "description": (
+                "Propose a cluster for DELFIN: opens the user's add form "
+                "filled in; writes nothing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"},
+                               "preset": {"type": "string"},
+                               "user": {"type": "string"},
+                               "host": {"type": "string"},
+                               "partition": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -19336,7 +19358,7 @@ class _DocToolExecutor:
             if name == "bash_kill":
                 return self._execute_bash_kill(arguments)
 
-        if name in _CLUSTER_TOOL_NAMES:
+        if name in _CLUSTER_TOOL_NAMES or name == "cluster_propose":
             return getattr(self, f"_execute_{name}")(arguments, permissions)
 
         if name == "watch_job":
@@ -30018,6 +30040,11 @@ class _DocToolExecutor:
                                  command=arguments.get("command"),
                                  timeout=arguments.get("timeout"))
 
+    def _execute_cluster_propose(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.propose(self, permissions, **{
+            k: arguments.get(k) for k in ("name", "preset", "user", "host", "partition")})
+
     def _execute_web_fetch(self, arguments: dict) -> str:
         url = (arguments.get("url", "") or "").strip()
         timeout_s = int(arguments.get("timeout_s", 15) or 15)
@@ -34100,6 +34127,7 @@ class OpenAIClient(_BaseClient):
                               "watch_job",
                               "session_message",
                               *_CLUSTER_TOOL_NAMES,
+                              "cluster_propose",
                               "history_search",
                               "history_get",
                               "orchestrate",

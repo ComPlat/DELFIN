@@ -512,6 +512,26 @@ export interface JobDetailParams {
   "session"?: string | null
   "group"?: string | null
 }
+export interface ClustersPresetsParams {}
+export interface ClusterAddParams {
+  "name": string
+  "user": string
+  "preset"?: string | null
+  "host"?: string | null
+  "partition"?: string | null
+  "workDir"?: string | null
+  "installRoot"?: string | null
+}
+export interface ClusterHostkeyParams {
+  "name": string
+}
+export interface ClusterPinParams {
+  "name": string
+  "fingerprint": string
+}
+export interface ClusterRemoveParams {
+  "name": string
+}
 export interface SwarmStatusParams {
   "spec"?: Record<string, unknown> | null
   "specYaml"?: string | null
@@ -573,6 +593,11 @@ export interface ServiceRequests {
   "jobs.list": JobsListParams
   "cluster.detail": ClusterDetailParams
   "job.detail": JobDetailParams
+  "clusters.presets": ClustersPresetsParams
+  "cluster.add": ClusterAddParams
+  "cluster.hostkey": ClusterHostkeyParams
+  "cluster.pin": ClusterPinParams
+  "cluster.remove": ClusterRemoveParams
   "swarm.status": SwarmStatusParams
   "swarm.plan": SwarmPlanParams
   "swarm.validate": SwarmValidateParams
@@ -685,6 +710,34 @@ export interface JobDetailResult {
   "sections": Record<string, unknown>[]
   "error"?: string | null
 }
+export interface ClustersPresetsResult {
+  "presets": Record<string, unknown>[]
+  "error"?: string | null
+}
+export interface ClusterAddResult {
+  "ok": boolean
+  "code"?: string | null
+  "error"?: string | null
+  "name": string
+  "hostKey"?: Record<string, unknown> | null
+}
+export interface ClusterHostkeyResult {
+  "offered"?: string | null
+  "pinned": boolean
+  "error"?: string | null
+}
+export interface ClusterPinResult {
+  "ok": boolean
+  "code"?: string | null
+  "error"?: string | null
+}
+export interface ClusterRemoveResult {
+  "ok": boolean
+  "code"?: string | null
+  "error"?: string | null
+  "loggedOut"?: boolean | null
+  "keysRemoved"?: number | null
+}
 export interface SwarmStatusResult {
   "schema_version": number
   "goal": string
@@ -754,6 +807,11 @@ export interface ServiceResults {
   "jobs.list": JobsListResult
   "cluster.detail": ClusterDetailResult
   "job.detail": JobDetailResult
+  "clusters.presets": ClustersPresetsResult
+  "cluster.add": ClusterAddResult
+  "cluster.hostkey": ClusterHostkeyResult
+  "cluster.pin": ClusterPinResult
+  "cluster.remove": ClusterRemoveResult
   "swarm.status": SwarmStatusResult
   "swarm.plan": SwarmPlanResult
   "swarm.validate": SwarmValidateResult
@@ -838,6 +896,7 @@ export interface AttentionItem {
   "options": string[]
   "job"?: Record<string, unknown> | null
   "cluster"?: string | null
+  "proposal"?: Record<string, unknown> | null
 }
 
 /** Every event a window can receive: a session's own, and the service's. */

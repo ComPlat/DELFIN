@@ -10,6 +10,11 @@
  *                 ↑ ↓      select           enter / l   log in (login.tsx)
  *                 o        log out          r           ask again
  *                 space    details          esc         back
+ *                 a        add a cluster (add.tsx)
+ *                 x        remove one, from DELFIN and ctun (y confirms)
+ *               enter on a cluster refused for its unpinned host key shows
+ *               the key to pin (add.tsx, step 3); a logged-in one says
+ *               when ORCA is not where DELFIN's installer looks
  *   /jobs       the agents' background work (a group per session), the
  *               jobs DELFIN's job monitor watches, and the active jobs on
  *               each logged-in cluster; a source that could not be read is
@@ -45,6 +50,9 @@ export const CLUSTERS_SERVICE_VERSION = 5
 /** The first that answers cluster.detail and job.detail (space). */
 export const DETAILS_SERVICE_VERSION = 6
 
+/** The first that adds, pins and removes clusters (a, x; add.tsx). */
+export const SETUP_SERVICE_VERSION = 7
+
 /** How often an open screen asks the service again. */
 export const CLUSTERS_POLL_MS = 5000
 
@@ -62,6 +70,8 @@ export interface ClusterRow {
   budget: { used: number; limit: number; unit: string } | null
   /** The user's active jobs there while logged in. */
   jobs: number | null
+  /** While logged in: whether ORCA is where DELFIN's installer looks. */
+  orca: { found: boolean; path: string; hint: string } | null
   error: string | null
 }
 
@@ -133,6 +143,8 @@ export function clusterRows(raw: unknown): ClusterRow[] {
       budget: b && Number.isFinite(Number(b.used)) && Number.isFinite(Number(b.limit))
         ? { used: Number(b.used), limit: Number(b.limit), unit: clean(b.unit, 16) } : null,
       jobs: typeof r.jobs === "number" && Number.isFinite(r.jobs) ? r.jobs : null,
+      orca: r.orca && typeof r.orca === "object"
+        ? { found: Boolean(r.orca.found), path: clean(r.orca.path, 200), hint: clean(r.orca.hint, 300) } : null,
       error: clean(r.error, 300) || null,
     })
   }
@@ -209,6 +221,11 @@ export function refusal(row: ClusterRow): string {
   return `${row.name} cannot be logged into: ${why}${/host ?key/i.test(why) && !why.includes(pin) ? ` (${pin})` : ""}`
 }
 
+/** Whether all that keeps a refused cluster from use is its unpinned host
+ *  key: enter then shows the key to pin. */
+export const onlyUnpinned = (row: ClusterRow): boolean =>
+  row.state === "refused" && row.problems.length > 0 && row.problems.every((p) => /host ?key/i.test(p))
+
 const num = (n: number) => Number.isInteger(n) ? String(n) : n.toFixed(1)
 
 export function budgetText(b: ClusterRow["budget"]): string {
@@ -229,6 +246,8 @@ export interface ClustersViewState {
   selected: number
   /** The entry whose details are open (space), and what the service said. */
   details: Details | null
+  /** The cluster x asks to remove (y removes it, n keeps it). */
+  removing: string
 }
 
 export interface ClustersViewDeps {
@@ -237,6 +256,10 @@ export interface ClustersViewDeps {
   say(text: string): void
   /** Enter on a logged-out cluster: the masked login field for it. */
   login(row: ClusterRow): void
+  /** a: the add form (add.tsx). */
+  add(): void
+  /** Enter on a cluster refused only for its unpinned key: step 3 of the form. */
+  pinKey(row: ClusterRow): void
   /** The service's version: details from DETAILS_SERVICE_VERSION on. */
   serviceVersion(): number
   /** How often an open screen asks again (CLUSTERS_POLL_MS; tests shorten it). */
@@ -269,6 +292,8 @@ export interface ClustersView {
   jobLines(): JobLine[]
   /** The keys that go back (esc, ←), as the hints line names them. */
   backKeys(): string
+  /** Whether the service adds and removes clusters (a, x). */
+  setup(): boolean
 }
 
 /** An entry whose details space shows: its key (a cluster's name, a job's
@@ -282,6 +307,7 @@ interface Entry {
 export function createClustersView(deps: ClustersViewDeps): ClustersView {
   const [state, setState] = createStore<ClustersViewState>({
     open: null, loading: false, error: "", clusters: [], groups: [], errors: [], selected: 0, details: null,
+    removing: "",
   })
   /** The screens with a request on its way: one at a time each. One
    *  asked for meanwhile (r, a login that went through) goes after it; the
@@ -291,9 +317,10 @@ export function createClustersView(deps: ClustersViewDeps): ClustersView {
 
   const open = (screen: Screen) => {
     if (state.open === screen) return refresh()
-    setState({ open: screen, loading: true, error: "", clusters: [], groups: [], errors: [], selected: 0, details: null })
+    setState({ open: screen, loading: true, error: "", clusters: [], groups: [], errors: [], selected: 0, details: null,
+               removing: "" })
   }
-  const close = () => setState({ open: null, details: null })
+  const close = () => setState({ open: null, details: null, removing: "" })
 
   /** The open screen's entries, in the order shown. */
   const entries = (): Entry[] => state.open === "jobs"
@@ -411,10 +438,36 @@ export function createClustersView(deps: ClustersViewDeps): ClustersView {
     refresh()
   }
 
+  const remove = async (name: string) => {
+    deps.say(`removing ${name}…`)
+    try {
+      const got = await deps.request("cluster.remove", { name })
+      deps.say(!got?.ok ? `${name} not removed: ${clean(got?.error || got?.code || "the service said no", 300)}`
+        : `removed ${name} from DELFIN and ctun${got.loggedOut ? " (logged out first)" : ""}`)
+    } catch (error) {
+      deps.say(`${name} not removed: ${clean((error as Error)?.message ?? error, 300)}`)
+    }
+    refresh()
+  }
+  /** a and x need a service that adds and removes; else it says so. */
+  const canSetUp = () => {
+    if (deps.serviceVersion() >= SETUP_SERVICE_VERSION) return true
+    deps.say("restart the agent service to add or remove clusters here")
+    return false
+  }
+
   const handleKey = (key: KeyEvent): boolean => {
     if (!state.open) return false
     const plain = !key.ctrl && !key.meta
     const letter = plain ? (key.sequence ?? "").toLowerCase() : ""
+    if (state.removing) {
+      // The question has the keys: only y removes, anything else keeps it.
+      const name = state.removing
+      setState({ removing: "" })
+      if (letter === "y") void remove(name)
+      else deps.say(`kept ${name}`)
+      return true
+    }
     if (key.name === "escape" || deps.keymap.matches("clustersBack", key)) {
       close()
       return true
@@ -435,10 +488,19 @@ export function createClustersView(deps: ClustersViewDeps): ClustersView {
       refresh()
       return true
     }
+    if (state.open === "clusters" && deps.keymap.matches("clustersAdd", key)) {
+      if (canSetUp()) deps.add()
+      return true
+    }
     const row = state.open === "clusters" ? selectedRow() : undefined
+    if (row && deps.keymap.matches("clustersRemove", key)) {
+      if (canSetUp()) setState({ removing: row.name })
+      return true
+    }
     if (row && (deps.keymap.matches("submit", key) || letter === "l")) {
       if (row.state === "logged_out") deps.login(row)
       else if (row.state === "logged_in") deps.say(`already logged in to ${row.name}: o logs out`)
+      else if (onlyUnpinned(row) && deps.serviceVersion() >= SETUP_SERVICE_VERSION) deps.pinKey(row)
       else deps.say(refusal(row))
       return true
     }
@@ -452,15 +514,22 @@ export function createClustersView(deps: ClustersViewDeps): ClustersView {
 
   const backKeys = () => deps.keymap.keys("clustersBack").map(describe).join("/") || "esc"
 
-  return { state, open, close, refresh, handleKey, selectedRow, selectedAt, jobLines, backKeys }
+  const setup = () => deps.serviceVersion() >= SETUP_SERVICE_VERSION
+
+  return { state, open, close, refresh, handleKey, selectedRow, selectedAt, jobLines, backKeys, setup }
 }
 
 /** The hints line while a screen is open: what its keys do now. */
-export function clustersHelp(view: ClustersView, room = Infinity): string {
+export function clustersHelp(view: ClustersView, room = Infinity, keys?: { add: string; remove: string }): string {
   const row = view.state.open === "clusters" ? view.selectedRow() : undefined
   const back = `${view.backKeys()} back`
+  if (view.state.removing) return `remove ${view.state.removing} from DELFIN and ctun? y removes · any other key keeps it`
+  const add = keys?.add || "a"
+  const setup = view.setup()
   const parts = view.state.open === "jobs" ? ["↑↓ select", "space details", "r refresh", back]
-    : ["↑↓ select", row?.state === "logged_out" ? "enter log in" : row?.state === "logged_in" ? "o log out" : "",
+    : ["↑↓ select", row?.state === "logged_out" ? "enter log in" : row?.state === "logged_in" ? "o log out"
+         : row && onlyUnpinned(row) && setup ? "enter pin its key" : "",
+       setup ? `${add} add` : "", setup && row ? `${keys?.remove || "x"} remove` : "",
        "space details", "r refresh", back].filter(Boolean)
   const kept: string[] = []
   for (const part of parts) {
@@ -480,7 +549,9 @@ const LOOK: Record<ClusterRow["state"], { glyph: string; word: string }> = {
  *  problems, another's error. */
 function detailOf(row: ClusterRow): string[] {
   if (row.state === "refused") return row.problems.length ? row.problems : [refusal(row)]
-  return row.error ? [row.error] : []
+  const out = row.error ? [row.error] : []
+  if (row.orca && !row.orca.found) out.push(`no ORCA where DELFIN looks: ${row.orca.hint}`)
+  return out
 }
 
 interface Line {
@@ -528,13 +599,14 @@ export function ClustersPanel(props: { view: ClustersView; theme: () => Theme; w
       }
     } else {
       if (!v.state.loading && !v.state.error && !v.state.clusters.length) {
-        add("empty", "no clusters: remote.clusters in DELFIN's settings names none")
+        add("empty", "no clusters yet: a adds one (a cluster ctun knows, or any by its login host)")
       }
       v.state.clusters.forEach((row, index) => {
         out.push({ kind: "row", text: row.name, row, index })
         // The short lines step aside while the full details are open (a
         // refused cluster's would say its problems twice).
-        under(row.name, index === at && v.state.details?.key !== row.name ? detailOf(row) : [])
+        const asked = v.state.removing === row.name ? [`remove ${row.name} from DELFIN and ctun? y removes, any other key keeps it`] : []
+        under(row.name, [...asked, ...(index === at && v.state.details?.key !== row.name ? detailOf(row) : [])])
       })
     }
     // The selection and what is under it in view -- the row itself always.
