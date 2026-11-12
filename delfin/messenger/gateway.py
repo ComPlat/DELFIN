@@ -748,6 +748,12 @@ class Rooms:
                 _PERSON.reset(token)
         if quote_id is not None:
             return await self.reply(text, room, chat, quote_id)
+        # SimpleX 6.4.3+ shows /'cmd args' in a bot message as a tappable
+        # command and sends the quoted form on a tap: unwrap it so a tapped
+        # command does exactly what the typed word does.
+        text = text.strip()
+        if text.startswith("/'") and text.endswith("'"):
+            text = text[2:-1].strip()
         tapped = await self.tap_answer(text, room, chat)
         if tapped is not None:
             return tapped
