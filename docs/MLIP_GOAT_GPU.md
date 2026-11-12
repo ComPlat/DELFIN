@@ -1,3 +1,4 @@
+| same GOAT, submitted as a user does (`submit_calculation`, no sbatch flags added) | routed by DELFIN: `--gres=gpu:1`, the four configured 30-min GPU partitions; ran on an H100 | terminated normally; 5 conformers within 2.5 kcal/mol; `check_goat_e2e` ok | 518.1 s (job 10 min) |
 # MLIP GOAT on a SLURM GPU cluster (orca-mlips)
 
 How to run a GOAT conformer search (and an MLIP optimisation) driven by an
@@ -70,10 +71,15 @@ global_opt_method=mlip:aimnet2
 global_opt_mlip_device=cuda
 ```
 
-and submit the DELFIN job with DELFIN's own job script
-(`delfin/submit_templates/submit_delfin.sh`, `DELFIN_MODE=delfin`) on a GPU
-partition with one GPU (`--gres=gpu:1`) and a `--time` inside that
-partition's `MaxTime`.  The GOAT runs in `<xTB_method>_GOAT/`
+and submit the folder as any DELFIN job (dashboard, agent, or
+`delfin.api.submit_calculation`).  The submission sees the MLIP GOAT in
+CONTROL.txt and sends the job with `--gres=gpu:1` to the configured GPU
+partitions (`runtime.slurm.gpu_partitions`, `DELFIN_SLURM_GPU_PARTITIONS`,
+`DELFIN_MLP_CLUSTER_GPU_PARTITIONS`, the site profile, else scontrol):
+those whose `MaxTime` cannot hold the time limit are left out (one
+scontrol query), the rest asked with `sbatch --test-only`, and the job goes
+to all that fit.  PAL, maxcore and the time limit are never changed; no GPU
+partition that can take it is a refusal, not a CPU job.  The GOAT runs in `<xTB_method>_GOAT/`
 (`XTB_GOAT.inp`, `output_XTB_GOAT.out`, `XTB_GOAT.finalensemble.xyz`,
 `XTB_GOAT.globalminimum.xyz`), and the global minimum becomes the start
 geometry of the rest of the workflow.
@@ -148,6 +154,7 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
 |-----|-------|---------|---------------|
 | `--install orca-mlips` | CPU node | environment built, `--status`: installed | 162 s (whole installer) |
 | GOAT, CONTROL.txt, `mlip:aimnet2`, `cuda`, PAL 8 | 1 x H100, 30 min dev partition | terminated normally; 6 conformers within 2.5 kcal/mol, global minimum written | 568.8 s (job 10 min incl. staging) |
+| same GOAT, submitted as a user does (`submit_calculation`, no sbatch flags added) | routed by DELFIN: `--gres=gpu:1` to the four configured 30-min GPU partitions; ran on an H100 | terminated normally; 5 conformers within 2.5 kcal/mol; `check_goat_e2e` ok | 518.1 s (job 10 min) |
 | `orca_mlip_opt_opi`, `opt_freq`, aimnet2, `cpu`, 4 cores | CPU node | converged; NumFreq: 21 vibrational modes, none imaginary (lowest 220 cm^-1) | 27.7 s |
 | ExtOpt Opt, `orb`, `cuda`, 4 cores, via `submit_extopt_job` | 1 x H100, 30 min dev partition | converged, terminated normally (server `OrbMolEvaluator`); no "unrecognized arguments" | 34.9 s (job 63 s) |
 
@@ -165,7 +172,8 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
 - D1, live: for the default 04:00:00 the first version of the check dropped
   one 30-minute partition and kept the second unread -- its own scontrol
   query came back throttled by the scheduler client.  The check now asks
-  once for all partitions (unit-tested; not re-run live).
+  once for all partitions (unit-tested; re-run live in that submit: one query read
+  all four MaxTimes; for 04:00:00 it refuses with each of them).
 - GOAT ran 8 workers with one process each on `%pal nprocs 8` and finished.
   Whether the workers shared one model server or started one each cannot
   be read back afterwards (worker outputs are deleted unless
@@ -192,10 +200,6 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
 - **`! Opt Freq ExtOpt` runs no frequencies** in ORCA 6.1.1 (optimisation
   only, normal termination, no warning).  The block writes `NumFreq`.
 - **Worker sharing** of one model server is not shown (see Measured).
-- **CONTROL jobs are not routed to a GPU by DELFIN's job submission**: the
-  dashboard's `submit_delfin` asks for no GPU, so a CONTROL with
-  `global_opt_method=mlip:*` and `device=cuda` has to be submitted to a GPU
-  partition with `--gres` by hand (it then refuses to start without a GPU).
 - **Open-shell / charged systems** are not exercised: ethanol is
   closed-shell neutral.  Whether ORB and AIMNet2 handle a charged,
   open-shell input (e.g. `[Cu(NH3)4]2+`) is not established.
