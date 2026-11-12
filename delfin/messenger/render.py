@@ -8,6 +8,8 @@ internal tags are rendered.
 """
 from __future__ import annotations
 
+import re
+
 from delfin.agent.approval_answers import answer_hint, answer_range
 
 from .lang import english, t
@@ -115,6 +117,46 @@ def preview_block(item: dict) -> str:
     return _code(str(item.get('text') or '').strip('\n') or '-')
 
 
+_FENCE = re.compile(r"```.*?```", re.S)
+_INLINE_CODE = re.compile(r"`[^`\n]+`")
+_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+_STRONG = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
+_EM = re.compile(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])")
+_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.M)
+_STAR_BULLET = re.compile(r"^(\s*)\*\s+", re.M)
+
+
+def simplex_text(text: str) -> str:
+    """A model's Markdown in SimpleX's own markup: SimpleX bolds *x* (one
+    star) and shows **x**, # headings and [text](url) literally (seen on the
+    phone, 2026-11-12). **x** / __x__ -> *x*; a Markdown *x* (italic) ->
+    _x_; # heading -> *heading*; [text](url) -> text (url), or the url
+    alone when both are the same; a "* " bullet -> "• ". Code (``` blocks
+    and `inline`) is kept as it is."""
+    kept: list[str] = []
+
+    def keep(match):
+        kept.append(match.group(0))
+        return f"\x00{len(kept) - 1}\x00"
+
+    out = _FENCE.sub(keep, str(text or ''))
+    out = _INLINE_CODE.sub(keep, out)
+    out = _LINK.sub(lambda m: m.group(2) if m.group(1).strip('`* ') == m.group(2)
+                    else f"{m.group(1)} ({m.group(2)})", out)
+    out = _STAR_BULLET.sub(lambda m: m.group(1) + '• ', out)
+    bold: list[str] = []
+
+    def strong(match):
+        bold.append(match.group(2))
+        return f"\x01{len(bold) - 1}\x01"
+
+    out = _STRONG.sub(strong, out)
+    out = _EM.sub(lambda m: f"_{m.group(1)}_", out)
+    out = _HEADING.sub(lambda m: f"*{m.group(1).strip('*')}*", out)
+    out = re.sub(r"\x01(\d+)\x01", lambda m: f"*{bold[int(m.group(1))]}*", out)
+    return re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], out)
+
+
 def cut(text: str, limit: int = ANSWER_CUT) -> tuple[str, str]:
     """``text`` cut at a paragraph, sentence or word end at most ``limit``
     characters in, and the rest ('' when it fits)."""
@@ -147,7 +189,7 @@ def status_text(reply: dict, details: bool = False) -> str:
     if (details or state == 'running') and reply.get('activity'):
         out.append(str(reply['activity']))
     if reply.get('answer'):
-        out.append(cut(str(reply['answer']), 1200 if details else 400)[0])
+        out.append(cut(simplex_text(str(reply['answer'])), 1200 if details else 400)[0])
     return '\n'.join(filter(None, out))
 
 

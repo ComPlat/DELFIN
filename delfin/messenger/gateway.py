@@ -25,7 +25,7 @@ from collections import deque
 from . import audit, eventlog, language, pairing, simplex, store
 from . import lang as _lang
 from .lang import command_word, t, yes_no
-from .render import cut, in_forum, more_hint, status_text
+from .render import cut, in_forum, more_hint, simplex_text, status_text
 from .people import OWNER
 from .bridge_client import BridgeClient, BridgeDown, default_socket_path
 
@@ -1873,7 +1873,7 @@ class Rooms:
                         except Exception:
                             pass
                     if answer and answer != before[1]:
-                        head, rest = cut(answer)
+                        head, rest = cut(simplex_text(answer))
                         self._more[chat] = rest
                         notices.append(head + (more_hint() if rest else ''))
                     elif state == 'ended':
