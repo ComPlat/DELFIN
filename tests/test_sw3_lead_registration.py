@@ -1,24 +1,26 @@
-"""SW3 phase 3: lead tool names are registered so the lead session's
-preset can list them (red control — see delfin/agent/swarm/lead.py for
-the tool-name truth, api_client.py for where they become known).
+"""SW3 phase 3 / v4: the lead tool names are KNOWN to the preset-tool
+surface through the LEAD-ONLY set, not _DELFIN_ONLY_TOOL_NAMES.
 
-The phase-2 preset (delfin/agent/pack/agents/swarm-lead_subagent.md)
-lists only generic plan-mode tools; it cannot yet list the swarm_* lead
-tools because those names are not part of _known_preset_tool_names().
-This registration makes them known. The change lives in the PROTECTED
-file delfin/agent/api_client.py (`_DELFIN_ONLY_TOOL_NAMES`), delivered
-as .gate/px/orig_api_client.py + .gate/px/new_api_client.py and built
-by the operator. This file is the red control: it must FAIL before the
-registration exists and PASS after it is applied.
+v4 contract (operator, 2026-11-12): the nine swarm_* lead tools are not
+advertised tools of the normal agent -- putting them into
+_DELFIN_ONLY_TOOL_NAMES broke the schema budget, the catalogue
+measurement, the DELFIN-workspace filter and the office denylist. They
+now live in _SWARM_LEAD_TOOL_NAMES (delfin/agent/api_client.py), which
+feeds only the typo check (unknown_tool_names) and the T4 grounding
+_known set. _known_preset_tool_names() unions those known tools, so the
+SA0 lead preset can list them.
+
+This file is the red control: it must FAIL before the operator build
+applies the v4 api_client copy and PASS after it.
 """
 
 import pytest
 
 
 def _lead_tool_names() -> set[str]:
-    """The lead tools the phase-2 preset must be able to list once the
+    """The lead tools the SA0 preset must be able to list once the v4
     registration lands. Source of truth: lead.py READ_ONLY_TOOLS and
-    STATE_CHANGING_TOOLS (lines 33-41)."""
+    STATE_CHANGING_TOOLS."""
     return {
         # read-only lead tools (safe in default mode)
         "swarm_status", "swarm_plan", "swarm_message", "swarm_triage_list",
@@ -33,6 +35,11 @@ def _known_preset_tool_names():
     return _k()
 
 
+def _delfin_only_tool_names():
+    from delfin.agent.api_client import _DELFIN_ONLY_TOOL_NAMES
+    return set(_DELFIN_ONLY_TOOL_NAMES)
+
+
 @pytest.mark.parametrize(
     "tool",
     ["swarm_status", "swarm_plan", "swarm_message", "swarm_triage_list",
@@ -41,11 +48,11 @@ def _known_preset_tool_names():
 )
 def test_lead_tool_is_known_after_registration(tool):
     """Each lead tool name must be part of the known preset-tool surface
-    once the operator applies the api_client registration."""
+    once the operator applies the v4 api_client copy."""
     assert tool in _known_preset_tool_names(), (
         f"{tool} is not known to _known_preset_tool_names(); the SW3 "
-        f"phase-3 registration in api_client.py _DELFIN_ONLY_TOOL_NAMES "
-        f"has not been applied yet."
+        f"v4 lead registration (_SWARM_LEAD_TOOL_NAMES feeding the "
+        f"unknown/grounding known sets) has not been applied yet."
     )
 
 
@@ -56,3 +63,14 @@ def test_known_surface_covers_the_whole_lead_toolset():
     known = _known_preset_tool_names()
     missing = sorted(_lead_tool_names() - set(known))
     assert not missing, f"lead tools not yet registered: {missing}"
+
+
+def test_lead_tools_stay_out_of_the_delfin_only_set():
+    """v4 contract: the lead tools are NOT in _DELFIN_ONLY_TOOL_NAMES --
+    they are not advertised tools of the normal agent, and the schema
+    budget / catalogue measurement / workspace filter / office denylist
+    all key off that set."""
+    leaked = sorted(_lead_tool_names() & _delfin_only_tool_names())
+    assert not leaked, (
+        f"lead tools leaked into _DELFIN_ONLY_TOOL_NAMES: {leaked} -- "
+        "they must live only in _SWARM_LEAD_TOOL_NAMES (v4 contract)")
