@@ -1,62 +1,101 @@
 # MLIP GOAT on a SLURM GPU cluster (orca-mlips)
 
-How to run a GOAT conformer search driven by an MLIP through ORCA's
-ExtOpt interface on a GPU SLURM cluster, using DELFIN's own submit path
-and its end-to-end checker, and what is known to limit it right now.
+How to run a GOAT conformer search (and an MLIP optimisation) driven by an
+MLIP through ORCA's ExtOpt interface on a GPU SLURM cluster, using DELFIN's
+own installer, its own submit paths and its end-to-end checker, and what was
+measured when it was run for real.
 
-> Measurement honesty, as of this writing: the verified path here is a
-> **dry run** through DELFIN's own path (`plan_extopt_job(submit=False)`)
-> -- the rendered input and sbatch script are shown and checked below.
-> Three **live ethanol jobs were submitted** on a GPU node (A100 visible);
-> all three stopped early on the blockers in "Known limits" (D1-D4), so
-> **no usable ensemble wall time is measured yet**.  The page records
-> exactly what was observed and what blocks a full run; wall times will be
-> appended once a job survives to a finished ensemble.
+> Measurement honesty: everything under "Measured" below ran for real on a
+> SLURM cluster with ORCA 6.1.1 and the orca-mlips environment built by
+> DELFIN's installer -- ethanol, closed-shell, neutral.  Earlier live jobs
+> stopped on the blockers D1-D4 ("Known limits"); each is now fixed in
+> DELFIN or shown to be someone else's limit, and the status is stated per
+> item.  MLIP energies are a pre-screen, never a final result.
 
 ## What this runs
 
-| Run        | Method in the ORCA input                                   |
-|------------|------------------------------------------------------------|
-| GOAT       | `! GOAT ExtOpt` + `%method ProgExt "orca-mlips-<backend>"` |
+| Run                         | Method in the ORCA input                                  |
+|-----------------------------|-----------------------------------------------------------|
+| GOAT (CONTROL.txt)          | `! GOAT ExtOpt` + `%method ProgExt "<env>/bin/orca-mlips-<backend>"` |
+| Opt / Opt+Freq (block)      | `! Opt ExtOpt` / `! Opt NumFreq ExtOpt`, same `%method`   |
+| ExtOpt job (extopt_submit)  | any orca-mlips run type, one sbatch job on a GPU node     |
 
-The MLIP is called through ORCA's `ProgExt`/`Ext_Params` mechanism:
-ORCA asks the MLIP for energies and gradients, GOAT drives the conformer
-search, and the ensemble comes back in `<base>.finalensemble.xyz` with
-`<base>.globalminimum.xyz` for the lowest conformer.  The one-node
-`--nodes=1` line in the job script keeps the ORCA process and the
-orca-mlips resident model server on the same GPU node (the MLIP side
-is orca-mlips' auto-server, stopped with the job by the EXIT trap).
+The MLIP is called through ORCA's `ProgExt`/`Ext_Params` mechanism: ORCA
+asks the MLIP for energies and gradients, GOAT drives the conformer search,
+and the ensemble comes back in `<base>.finalensemble.xyz` with
+`<base>.globalminimum.xyz` for the lowest conformer.  orca-mlips starts a
+resident model server on the first call (the `[mlip-server] Listening ...`
+line in the ORCA output) and stops it with its parent ORCA process.
 
 ## Prerequisites
 
-1. **orca-mlips installed** in the worker job environment, giving the
-   console entry points `orca-mlips-<backend>` for the backend you
-   choose.  Detect it with `detect_orca_mlips()` (reads distribution
-   metadata only; never imports torch).
-2. **A clean weight licence.** Use a backend whose weight licence is
-   compatible with your use:
-   - `orb`  -- Apache-2.0 (verified)
-   - `aimnet2` -- MIT (verified)
-   - `uma` -- FAIR Chemistry terms, **gated** on HuggingFace: needs the
-     user's own HF login + acceptance of the terms before use.
-   - `mace` -- Academic Software License, **non-commercial**.
-   A weight whose licence forbids your use must not be used; prefer
-   `orb` or `aimnet2` unless the gated/non-commercial terms are accepted.
-3. **A GPU partition configured** for DELFIN: `runtime.slurm
-   .gpu_partitions` (or `DELFIN_MLP_CLUSTER_GPU_PARTITIONS`).  GOAT has
-   **no local CPU fallback**; without a GPU partition the job is refused.
+1. **orca-mlips installed by DELFIN's installer**, in an environment of its
+   own (Python 3.12, a CUDA build of PyTorch, the aimnet2 and orb plugins):
+
+   ```
+   python -m delfin.installer --install orca-mlips
+   ```
+
+   It is built under the AI tools root (`~/.delfin/ai_tools/.mamba_env/
+   orca_mlips`, or `DELFIN_AI_TOOLS_ROOT`) on the shared file system, so a
+   GPU job sees it; `DELFIN_ORCA_MLIPS_PYTHON` points DELFIN at another
+   environment.  `--update orca-mlips` and `--repair orca-mlips` work as for
+   every other tool; `--status` reads its presence from the distribution
+   metadata of that environment (`detect_orca_mlips()` does the same and
+   never imports torch).  Every version is pinned in
+   `delfin/ai_tools/install_ai_tools.sh` (`ORCA_MLIPS_*`).
+   DELFIN writes the **absolute** `<env>/bin/orca-mlips-<backend>` as
+   `ProgExt` (`delfin.mlp_tools.orca_mlips.resolve_progext`), so the compute
+   node needs nothing on its `PATH`.
+2. **A clean weight licence.** The installer brings only the two plugins
+   whose weights are licence-clean for any use:
+   - `aimnet2` -- MIT
+   - `orb` -- Apache-2.0
+   `uma` (FAIR Chemistry terms, gated) and `mace` (Academic Software
+   License, non-commercial) are not installed: their console scripts exist
+   in the environment, their model stacks do not.
+3. **A GPU partition.** The CONTROL path runs GOAT on the node the DELFIN
+   job runs on (`global_opt_mlip_device=cuda` refuses to start without a
+   visible GPU); the ExtOpt submit path needs `runtime.slurm.gpu_partitions`
+   (or `DELFIN_MLP_CLUSTER_GPU_PARTITIONS`).  GOAT has no local CPU
+   fallback.
 
 ## Run one
 
-DELFIN's own path (`delfin.mlp_tools.extopt_submit`): build an
-`ExtOptJobRequest` with `run_type="goat"`, `provider="orca_mlips"`, the
-backend and `device="cuda"`, and submit through
-`submit_extopt_job(..., submit=True)`.  This writes the input and the
-sbatch script, then submits through DELFIN's scheduler client -- never a
-hand-written sbatch.  With `submit=False` (the default) it is a dry run:
-input + script are written, nothing is submitted.
+**GOAT from CONTROL.txt.**  In a CONTROL.txt from `delfin --define`, set
 
-A rendered GOAT input looks like:
+```
+global_optimizer=GOAT
+global_opt_method=mlip:aimnet2
+global_opt_mlip_device=cuda
+```
+
+and submit the DELFIN job with DELFIN's own job script
+(`delfin/submit_templates/submit_delfin.sh`, `DELFIN_MODE=delfin`) on a GPU
+partition with one GPU (`--gres=gpu:1`) and a `--time` inside that
+partition's `MaxTime`.  The GOAT runs in `<xTB_method>_GOAT/`
+(`XTB_GOAT.inp`, `output_XTB_GOAT.out`, `XTB_GOAT.finalensemble.xyz`,
+`XTB_GOAT.globalminimum.xyz`), and the global minimum becomes the start
+geometry of the rest of the workflow.
+
+**Opt or Opt+Freq as a building block.**  `run_step("orca_mlip_opt_opi",
+elements=..., coordinates=..., run_type="opt_freq", backend="aimnet2",
+device="cpu")` writes `! Opt NumFreq ExtOpt` and runs ORCA; the step fails
+when frequencies were asked for and the output holds none.  The block runs
+the MLIP on the CPU of the node it runs on; it refuses `device=cuda`.
+
+**ExtOpt job on a GPU node.**  `delfin.mlp_tools.extopt_submit`: build an
+`ExtOptJobRequest` (`provider="orca_mlips"`, `mlips_backend`, `device=
+"cuda"`) and call `submit_extopt_job(..., submit=True)`.  It writes the
+input and the sbatch script and submits through DELFIN's scheduler client;
+before that it leaves out every configured GPU partition whose `MaxTime`
+cannot hold `time_limit` (one `scontrol show partition -o`), and refuses
+with each partition's `MaxTime` when none can.  The script carries
+`--partition`, `--gres`, `--nodes=1`, `--ntasks=1`, `--cpus-per-task`,
+DELFIN's OpenMPI settings (`delfin.dashboard.mpi_env`, oversubscribe on)
+and ORCA by its full path.  `submit=False` (the default) is a dry run.
+
+A rendered GOAT input (CONTROL path, PAL=8):
 
 ```
 ! GOAT ExtOpt
@@ -66,25 +105,12 @@ A rendered GOAT input looks like:
 end
 
 %method
-  ProgExt "orca-mlips-orb"
-  Ext_Params "--backend orb --device cuda"
+  ProgExt "<AI tools root>/.mamba_env/orca_mlips/bin/orca-mlips-aimnet2"
+  Ext_Params "--device cuda"
 end
 
-%goat
-    nworkers 4
-end
-
-*xyzfile 0 1 <base>.xyz
+*xyzfile 0 1 XTB_GOAT_start.xyz
 ```
-
-The job script carries `--partition` (the GPU partition), `--gres=gpu:1`,
-`--nodes=1` (same-node guarantee), `--cpus-per-task` shared among the
-GOAT workers (`%goat nworkers` <= `%pal nprocs`), a sensible `--time`,
-and an EXIT trap that stops the model server.  Note: the current render
-does **not** emit `#SBATCH --export=ALL`; if your MLIP environment
-depends on variables inherited through SLURM's export, either set them
-in `runtime.mlp.env_activation` or add the export line explicitly
-(reported as finding F1 in .gate/a4_defects.md).
 
 ## Verify a finished run
 
@@ -93,56 +119,83 @@ checks, from the run directory alone:
 
 - the ensemble `<base>.finalensemble.xyz` exists and is non-empty;
 - the global minimum `<base>.globalminimum.xyz` is present;
-- `<base>.out` terminated cleanly (the ORCA termination marker, no
-  SCF/geometry failure line);
+- the ORCA output terminated cleanly -- `<base>.out`, or
+  `output_<base>.out` as the CONTROL path names it (`base_name="XTB_GOAT"`);
 - **the job logs are free of the known failure shapes** (Open MPI "not
   enough slots", an `Error (ORCA_MAIN)/ProgExt not found` abort, an
-  `Error (ORCA/EXT): external program failed` MLIP exit): when one is
-  present the checker names it as the reason the run stopped rather than
-  only reporting the missing termination marker;
+  `Error (ORCA/EXT): external program failed` MLIP exit, "unrecognized
+  arguments"): when one is present the checker names it;
 - the ensemble energies are finite and sorted (GOAT writes the lowest
   conformer first);
-- whether the MLIP server ran on the GPU (a CUDA/GPU line in any
-  `*.log`/`*.out` in the job directory -- log evidence, not assumption);
-- wall time recorded from ORCA's `Total Job Time (sec)` line;
+- a CUDA/GPU line in a log of the job directory (log evidence, a warning
+  when absent; the line it finds in an ORCA output is the `--device cuda`
+  the MLIP was started with);
+- wall time from ORCA's `TOTAL RUN TIME` line (ORCA 6), else `Total Job
+  Time (sec)`;
 - whether a live-run `.pid` marker was left in the job directory.
 
 `check_goat_e2e` is a **completion and well-formedness** check.  It does
 not certify the ensemble as a final result: MLIP energies are a
 pre-screen, and the physical verdict is a DFT re-ranking of the lowest
-conformers.  The report's `energy_source="mlip"` and `final=False` say
-exactly that.
+conformers (`energy_source="mlip"`, `final=False`).
+
+## Measured
+
+Ethanol (9 atoms, neutral singlet), ORCA 6.1.1, orca-mlips 1.3.0 with
+torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
+
+| Run | Where | Outcome | ORCA run time |
+|-----|-------|---------|---------------|
+| `--install orca-mlips` | CPU node | environment built, `--status`: installed | 162 s (whole installer) |
+| GOAT, CONTROL.txt, `mlip:aimnet2`, `cuda`, PAL 8 | 1 x H100, 30 min dev partition | terminated normally; 6 conformers within 2.5 kcal/mol, global minimum written | 568.8 s (job 10 min incl. staging) |
+| `orca_mlip_opt_opi`, `opt_freq`, aimnet2, `cpu`, 4 cores | CPU node | converged; NumFreq: 21 vibrational modes, none imaginary (lowest 220 cm^-1) | 27.7 s |
+| ExtOpt Opt, `orb`, `cuda`, 4 cores, via `submit_extopt_job` | 1 x H100, 30 min dev partition | converged, terminated normally (server `OrbMolEvaluator`); no "unrecognized arguments" | 34.9 s (job 63 s) |
+
+- `check_goat_e2e(..., base_name="XTB_GOAT")` on the GOAT run: `ok=True`,
+  `terminated_normally=True`, 6 conformers, energies sorted, relative
+  energies 0.00 / 0.08 / 0.90 / 1.01 / 2.39 / 2.49 kcal/mol.
+- GPU evidence: the model server was started with `--device cuda` on the
+  job's one GPU and answered every call (`[mlip-server] Listening ...
+  evaluator=AIMNet2Evaluator`, then `Server is ready`); the evaluator loads
+  the model onto `cuda` and fails when that device is absent.  No GPU
+  utilisation counter was recorded (the scheduler accounts `gres/gpu=1`,
+  not its use).
+- orb (D4 check): the same command line without `--backend` was
+  accepted by `orca-mlips-orb`.
+- D1, live: for the default 04:00:00 the first version of the check dropped
+  one 30-minute partition and kept the second unread -- its own scontrol
+  query came back throttled by the scheduler client.  The check now asks
+  once for all partitions (unit-tested; not re-run live).
+- GOAT ran 8 workers with one process each on `%pal nprocs 8` and finished.
+  Whether the workers shared one model server or started one each cannot
+  be read back afterwards (worker outputs are deleted unless
+  `KEEPWORKERDATA`).
 
 ## Known limits
 
-- **Worker sharing is unverified.** Orca-mlips starts one resident
-  server for the parent ORCA process; whether several parallel GOAT
-  workers share one server cleanly has not been exercised on a real GPU
-  job.  Cap the workers with `goat_max_workers` until the first real
-  job shows it (worker outputs, GPU memory, server processes).
-- **Weight licences** restrict the usable backends (see Prerequisites).
-- **No local CPU fallback** for GOAT: a GPU partition is required.
-- **Live runs so far stopped on the four blockers below** (three ethanol
-  jobs on a GPU node, A100 visible; no usable ensemble yet).  Wall times
-  and the job's CPU-efficiency line will be recorded here once a job
-  survives to a finished ensemble.
-  - **D1 -- walltime vs partition.** A short GPU partition cap (30 min
-    here) rejects a long `time_limit`; pick the limit for the chosen
-    partition or `submit` returns "Requested time limit is invalid".
-  - **D2 -- MPI slots.** The script's `--ntasks=1` with `%pal 8` made
-    Open MPI abort with "not enough slots"; oversubscribe or a matching
-    `pal`/task count is required.
-  - **D3 -- ProgExt executable not found.** The bare ProgExt name is not
-    on the compute node's `PATH`; an `Error (ORCA_MAIN)` / "File ...
-    not found" abort follows (worked around with a symlink).
-  - **D4 -- MLIP CLI argument rejected.** `--backend orb` was not
-    recognised by `orca-mlips-orb` (the option set differs).  Not
-    workable from DELFIN's config; needs a fix in the orca-mlips
-    integration before a live chemistry run.
-- **Open-shell metal complex.** The practice system `[Cu(NH3)4]2+` is an
-  open-shell doublet with a +2 charge.  Whether ORB (and AIMNet2) support
-  a charged, open-shell input at all was not established by these runs --
-  until it is, that job exercises the *plumbing* (submit, GPU, check),
-  not the *chemistry*.  Use a closed-shell neutral organic for a real
-  energy/geometry result until the backend's charge/spin handling is
-  known.
+- **D1 -- walltime vs partition: fixed in DELFIN** (ExtOpt submit path).
+  A 30-minute GPU partition refused the default 04:00:00.  The submit now
+  drops partitions too short for the time limit and refuses when none is
+  left; the time limit itself is never changed.  The CONTROL path is
+  submitted through `submit_delfin.sh`, whose caller chooses `--time`.
+- **D2 -- MPI slots: fixed in DELFIN.**  `--ntasks=1` is one Open MPI slot;
+  the ExtOpt job script now sets DELFIN's OpenMPI environment
+  (oversubscribe), as every DELFIN job runner does.  The CONTROL path ran
+  8 GOAT workers this way.
+- **D3 -- ProgExt executable not found: fixed in DELFIN.**  ProgExt is the
+  absolute path of the installed environment's command.
+- **D4 -- MLIP CLI argument rejected: fixed in DELFIN.**  DELFIN rendered
+  `--backend <name>`, an option no orca-mlips plugin has (argparse:
+  "unrecognized arguments: --backend", reproduced with orca-mlips 1.3.0 for
+  aimnet2 and orb); the command itself is the backend.  `--precision` is
+  rendered for orb only.
+- **`! Opt Freq ExtOpt` runs no frequencies** in ORCA 6.1.1 (optimisation
+  only, normal termination, no warning).  The block writes `NumFreq`.
+- **Worker sharing** of one model server is not shown (see Measured).
+- **CONTROL jobs are not routed to a GPU by DELFIN's job submission**: the
+  dashboard's `submit_delfin` asks for no GPU, so a CONTROL with
+  `global_opt_method=mlip:*` and `device=cuda` has to be submitted to a GPU
+  partition with `--gres` by hand (it then refuses to start without a GPU).
+- **Open-shell / charged systems** are not exercised: ethanol is
+  closed-shell neutral.  Whether ORB and AIMNet2 handle a charged,
+  open-shell input (e.g. `[Cu(NH3)4]2+`) is not established.
