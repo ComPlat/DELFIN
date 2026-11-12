@@ -128,7 +128,32 @@ def ensure_dir(path: Any, *, mode: int = DIR_MODE) -> Path:
     except OSError:
         return p
     _chmod(p, mode)
+    _tighten_state_root_above(p)
     return p
+
+
+def _tighten_state_root_above(path: Path) -> None:
+    """Make ``~/.delfin`` and every level between it and *path* 0700.
+
+    ``mkdir(parents=True, mode=...)`` gives the mode to the LAST level
+    only; the parents it creates get the umask. On a fresh home under the
+    cluster's umask 002 the first state write therefore made ``~/.delfin``
+    itself 0775 (bug hunt 11.11.2026, #7), and group members could reach
+    everything below it, the memory notes read back into prompts among
+    them. An owner-only root closes the whole tree, whatever the modes
+    further down. Only ``~/.delfin`` and levels inside it: a path
+    elsewhere belongs to the user or to a test. Never raises.
+    """
+    try:
+        root = Path.home() / ".delfin"
+        if path != root and root not in path.parents:
+            return
+        levels = [root, *[a for a in reversed(path.parents)
+                          if root in a.parents]]
+    except Exception:
+        return
+    for level in levels:
+        _chmod(level, DIR_MODE)
 
 
 def secure_file(path: Any, *, mode: int = FILE_MODE) -> Path:

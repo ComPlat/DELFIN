@@ -7,7 +7,7 @@
 import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { Pins } from "../src/agents/pins"
-import { App, type Requester } from "../src/app"
+import { App, type AppProps, type Requester } from "../src/app"
 import type { History } from "../src/composer/history"
 import type { AttentionItem } from "../src/protocol/generated"
 import { Keymap } from "../src/keymap/keymap"
@@ -36,6 +36,8 @@ export async function mountWindow(options: {
   onResume?: (id: string, workspace: string) => void
   onNewSession?: () => Promise<string | null>
   onOpenItem?: (item: AttentionItem) => Promise<string | null>
+  /** `--resume` without an id: the picker before any session. */
+  resumeAtStart?: AppProps["resumeAtStart"]
   /** The bottom-right note's timings (App's `arrival`). */
   arrival?: { shownMs: number; quietMs: number }
   pins?: Pins
@@ -85,7 +87,7 @@ export async function mountWindow(options: {
          onResume={options.onResume} onNewSession={options.onNewSession} pins={options.pins}
          onOpenItem={options.onOpenItem} arrival={options.arrival ?? { shownMs: 5000, quietMs: 600_000 }}
          answerPauseMs={options.answerPauseMs ?? 0} clickPauseMs={options.clickPauseMs ?? 0} screen={screen}
-         clustersPollMs={options.clustersPollMs} />
+         clustersPollMs={options.clustersPollMs} resumeAtStart={options.resumeAtStart} />
   ), t.renderer)
   const settle = async () => {
     store.flush()

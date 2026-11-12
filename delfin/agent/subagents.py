@@ -1760,7 +1760,9 @@ def _known_preset_tool_names() -> frozenset[str]:
     channel a preset already ships with (subagent_message). Read-only
     catalogue names (explore's measured surface) are included via the
     preset definitions themselves — a NEW preset listing a tool an
-    existing preset lists must not be refused for it.
+    existing preset lists must not be refused for it. The ops server's own
+    structure/geometry tools are derived from the server module (see below),
+    never from a hand list.
     """
     names: set[str] = set()
     try:
@@ -1776,6 +1778,20 @@ def _known_preset_tool_names() -> frozenset[str]:
                     or "")
             if n:
                 names.add(n)
+    except Exception:
+        pass
+    # The ops server's structure/geometry tools: a preset may list them
+    # bare (geometry_renumber) or namespaced (mcp__delfin-ops__
+    # geometry_renumber). Derive from the server module so a NEW
+    # tool_geometry_* the server registers stays known automatically —
+    # never a hand list, and a made-up name is still refused below.
+    try:
+        from delfin.ops_server import server as _ops_server
+        for _n in dir(_ops_server):
+            if _n.startswith("tool_geometry_"):
+                _base = _n[len("tool_"):]
+                names.add(_base)
+                names.add(f"mcp__delfin-ops__{_base}")
     except Exception:
         pass
     # The union of tools every shipped preset actually lists: these are
@@ -1846,6 +1862,14 @@ def validate_preset(path_or_text: str) -> list[str]:
         try:
             pack_ids = {p.stem.replace("_subagent", "") for p in
                         pack_dir.glob("*_subagent.md")}
+            # A preset validated by path is the file being introduced; its
+            # own stem is not an "existing pack preset" it overrides.
+            if not source.strip().startswith("---"):
+                try:
+                    own = Path(source).stem.replace("_subagent", "")
+                    pack_ids.discard(own)
+                except Exception:
+                    pass
             pack_ids |= {n for n in SUBAGENT_PRESETS
                          if n not in _BUILTIN_PRESETS
                          and n not in pack_ids}
@@ -1910,7 +1934,8 @@ def validate_preset(path_or_text: str) -> list[str]:
             for prop, spec in props.items():
                 t = spec.get("type") if isinstance(spec, dict) else None
                 sample[prop] = {"string": "x", "integer": 1,
-                                "number": 1.0, "boolean": True}.get(
+                                "number": 1.0, "boolean": True,
+                                "array": [], "object": {}}.get(
                     t if isinstance(t, str) else "", "x")
         errs = validate_json_schema(sample, schema)
         if errs:

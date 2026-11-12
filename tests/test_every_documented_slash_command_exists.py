@@ -168,6 +168,12 @@ def test_every_backticked_command_in_the_docs_exists():
 # 3. Message texts: every recommended command exists
 # ---------------------------------------------------------------------------
 
+#: Commands of OTHER tools that a message names on purpose, with the tool:
+#: the Claude CLI's ``/login`` ("run `claude` in a terminal, do its /login").
+#: Only for the message check -- documentation is held to DELFIN's own.
+OTHER_TOOLS_COMMANDS = frozenset({"/login"})
+
+
 def _agent_message_recommendations() -> list[str]:
     """``/token`` a delfin/agent/*.py message text recommends.
 
@@ -221,6 +227,6 @@ def test_every_recommended_command_in_agent_messages_exists(
     assert recs, ("extractor found nothing — the verb-anchored regex "
                   "no longer matches real recommendations; loosen it, "
                   "do not delete this guard")
-    known = all_commands() | dashboard_routed()
+    known = all_commands() | dashboard_routed() | OTHER_TOOLS_COMMANDS
     missing = [t for t in recs if t not in known]
     assert missing == [], f"recommended in code but not a command: {missing}"

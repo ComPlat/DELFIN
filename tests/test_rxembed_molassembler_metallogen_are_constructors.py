@@ -220,7 +220,7 @@ def test_the_ai_installer_builds_each_environment_with_its_pin(tmp_path):
              "LOGDIR": str(tmp_path), "DELFIN_PYTHON": sys.executable,
              "DELFIN_AI_TOOLS_ROOT": str(root), "INSTALL_RXEMBED": "1",
              "INSTALL_MOLASSEMBLER": "1", "INSTALL_METALLOGEN": "1",
-             "RXEMBED_SHA256": good})
+             "RXEMBED_SHA256": good, "MOLASSEMBLER_SHA256": good})
     said = done.stdout + done.stderr
     calls = (tmp_path / "calls.log").read_text()
     assert "curl -fsSL -o" in calls
@@ -230,7 +230,11 @@ def test_the_ai_installer_builds_each_environment_with_its_pin(tmp_path):
     assert f"pip install --no-cache-dir --no-deps {root}/.mamba_env/rxembed/rxembed-" in calls
     assert ("pip install --no-cache-dir scine-utilities==10.1.0 numpy==2.4.6 scipy==1.17.1"
             in calls)
-    assert "pip install --no-cache-dir --no-deps scine-molassembler==3.0.1" in calls
+    # Molassembler: the pinned CPython 3.11 wheel, fetched and checked, installed under its own file name
+    # (pip reads the Python and platform tags from it).
+    assert "/scine_molassembler-3.0.1-cp311-cp311-manylinux_2_28_x86_64.whl" in calls
+    assert (f"pip install --no-cache-dir --no-deps {root}/.mamba_env/molassembler/"
+            "scine_molassembler-3.0.1-cp311-cp311-manylinux_2_28_x86_64.whl") in calls
     assert (f"create -y -p {root}/.mamba_env/rxembed -c conda-forge --override-channels "
             "python=3.12.16 pip") in calls
     assert ("python=3.11.18 rdkit=2026.09.2 numpy=2.4.6 scipy=1.17.1 cclib=1.8.1 pulp=3.3.2"

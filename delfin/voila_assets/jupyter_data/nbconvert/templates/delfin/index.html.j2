@@ -24,3 +24,30 @@
 {%- endif -%}
 {%- endfor -%}
 {%- endblock notebook_css -%}
+
+{#-
+  The access token leaves the address bar once the page is served.
+
+  The first request (this page, with ?token=...) is the one that uses the
+  token: jupyter-server answers it with the login cookie, and every later
+  request, websocket and reload goes by that cookie. Left in the address bar
+  the token ends up in the browser history, in screenshots and in error
+  stack traces. Jupyter Notebook and JupyterLab drop it the same way, with
+  history.replaceState (no reload, no new history entry); every other query
+  parameter and the #fragment stay. It runs at the end of the page, after
+  the cells have been sent and the kernel connection has been set up.
+-#}
+{%- block footer_js -%}
+{{ super() }}
+<script type="text/javascript" id="delfin-strip-token">
+(function () {
+  try {
+    var u = new URL(window.location.href);
+    if (!u.searchParams.has('token')) { return; }
+    u.searchParams.delete('token');
+    window.history.replaceState(window.history.state, document.title,
+      u.pathname + u.search + u.hash);
+  } catch (e) {}
+})();
+</script>
+{%- endblock footer_js -%}

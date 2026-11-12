@@ -30,6 +30,8 @@ set -euo pipefail
 #   INSTALL_RXEMBED              (default: 0)  rxembed, own environment (Python 3.12, RDKit 2026.9)
 #   INSTALL_MOLASSEMBLER         (default: 0)  Molassembler, own environment (Python 3.11)
 #   INSTALL_METALLOGEN           (default: 0)  MetalloGen, own environment (Python 3.11; needs ORCA)
+#   INSTALL_ORCA_MLIPS           (default: 0)  orca-mlips (ORCA ExtOpt MLIPs: AIMNet2, ORB), own
+#                                              environment (Python 3.12, CUDA PyTorch)
 #   INSTALL_PLOTLY               (default: 0)  plotly
 #   INSTALL_ALL                  (default: 0)  Install everything
 #   FORCE_REINSTALL              (default: 0)  Force reinstall
@@ -59,6 +61,7 @@ INSTALL_EPIC_MACE="${INSTALL_EPIC_MACE:-${INSTALL_ALL}}"
 INSTALL_RXEMBED="${INSTALL_RXEMBED:-${INSTALL_ALL}}"
 INSTALL_MOLASSEMBLER="${INSTALL_MOLASSEMBLER:-${INSTALL_ALL}}"
 INSTALL_METALLOGEN="${INSTALL_METALLOGEN:-${INSTALL_ALL}}"
+INSTALL_ORCA_MLIPS="${INSTALL_ORCA_MLIPS:-${INSTALL_ALL}}"
 INSTALL_PLOTLY="${INSTALL_PLOTLY:-${INSTALL_ALL}}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
@@ -169,8 +172,10 @@ EPIC_MACE_CONDA_SPECS="${EPIC_MACE_CONDA_SPECS:-python=3.7 rdkit=2020.09.5 numpy
 
 epic_mace_python() {
   # The environment's own interpreter, untouched by DELFIN's PYTHONPATH or a
-  # user site of another Python version.
-  env -u PYTHONPATH PYTHONNOUSERSITE=1 "$@"
+  # user site of another Python version. Nor is its pip held to DELFIN's own
+  # pins (PIP_CONSTRAINT, set for DELFIN's environment by delfin.installer):
+  # an environment of its own exists because those pins cannot hold the tool.
+  env -u PYTHONPATH -u PIP_CONSTRAINT PYTHONNOUSERSITE=1 "$@"
 }
 
 install_epic_mace() {
@@ -223,21 +228,22 @@ install_epic_mace() {
 # DELFIN_MOLASSEMBLER_PYTHON and DELFIN_METALLOGEN_PYTHON override that.
 # rxembed (MIT) needs Python >= 3.12 and RDKit >= 2026.9.1, newer than DELFIN's;
 # it comes from a pinned GitHub commit (no PyPI release). Molassembler
-# (scine-molassembler, BSD-3) is a pinned PyPI wheel. MetalloGen (BSD-3) comes
+# (scine-molassembler, BSD-3) is the PyPI wheel for CPython 3.11 on x86_64 Linux, held to its
+# SHA-256 like the archives (no wheel for other platforms). MetalloGen (BSD-3) comes
 # from a pinned GitHub commit; DELFIN runs it only with its ORCA calculator
 # (GFN2-xTB through ORCA), so it needs ORCA, never Gaussian.
 #
 # Every version is exact: the tool itself is installed with --no-deps, its
 # dependencies are named with == (rxembed: the paper benchmark's environment,
 # KONKURRENZ_RXEMBED env_freeze; Molassembler: its benchmark environment), and
-# a GitHub archive is held to its SHA-256 before pip sees it.
+# every downloaded archive or wheel is held to its SHA-256 before pip sees it.
 RXEMBED_REF="${RXEMBED_REF:-9c0ba5a6048bdbcba94450df5d6a68067bd250c8}"
 RXEMBED_URL="${RXEMBED_URL:-https://github.com/aligfellow/rxembed/archive/${RXEMBED_REF}.tar.gz}"
 RXEMBED_SHA256="${RXEMBED_SHA256:-58ad75e9f2fc652843f185540306560eba4258809ac991de10a34b297e2dfea5}"
 RXEMBED_CONDA_SPECS="${RXEMBED_CONDA_SPECS:-python=3.12.16 pip}"
 RXEMBED_PIP_DEPS="${RXEMBED_PIP_DEPS:-numpy==2.2.2 pillow==11.1.0 rdkit==2026.9.1 networkx==3.7 xyzgraph==1.7.0}"
-MOLASSEMBLER_URL="${MOLASSEMBLER_URL:-scine-molassembler==3.0.1}"
-MOLASSEMBLER_SHA256="${MOLASSEMBLER_SHA256:-}"
+MOLASSEMBLER_URL="${MOLASSEMBLER_URL:-https://files.pythonhosted.org/packages/f6/82/9c297a7368b0010dbde0a5b5e0dd5f4186cc59a7664f967b5d8e7580be3e/scine_molassembler-3.0.1-cp311-cp311-manylinux_2_28_x86_64.whl}"
+MOLASSEMBLER_SHA256="${MOLASSEMBLER_SHA256:-b1035ce455ed2418d9b493fb19ebf9411eb7ac0d783ec5ed9081e838d54fec2b}"
 MOLASSEMBLER_CONDA_SPECS="${MOLASSEMBLER_CONDA_SPECS:-python=3.11.18 pip}"
 MOLASSEMBLER_PIP_DEPS="${MOLASSEMBLER_PIP_DEPS:-scine-utilities==10.1.0 numpy==2.4.6 scipy==1.17.1}"
 METALLOGEN_REF="${METALLOGEN_REF:-fa26e2adb996ed2256e528e1c97fbc1c363c0808}"
@@ -311,6 +317,8 @@ install_own_env() {
   local target="${pip_spec}"
   if [ -n "${sha}" ]; then
     target="${env_dir}/${name}-${sha:0:12}.tar.gz"
+    # a wheel keeps its file name: pip reads the Python and platform tags from it
+    case "${pip_spec}" in *.whl) target="${env_dir}/${pip_spec##*/}" ;; esac
     if ! fetch_checked "${pip_spec}" "${sha}" "${target}"; then
       warn "${label} installation failed: the archive could not be fetched and checked; see ${log_file}"
       return 0
@@ -334,6 +342,28 @@ install_smiles_tools() {
   # Its dependencies (rdkit, numpy, scipy, cclib, pulp) come pinned from conda-forge above.
   install_own_env INSTALL_METALLOGEN MetalloGen metallogen MetalloGen \
     "${METALLOGEN_CONDA_SPECS}" "${METALLOGEN_PIP_DEPS}" "${METALLOGEN_URL}" "${METALLOGEN_SHA256}"
+}
+
+# orca-mlips (MIT), the program ORCA's ExtOpt starts as ProgExt for an MLIP GOAT
+# or optimisation (delfin/mlp_tools/orca_mlips.py), in an environment of its own:
+# it needs a CUDA build of PyTorch, and its MLIP stacks pin numpy and friends
+# beyond what DELFIN's own environment holds. Only the two plugins whose weights
+# are licence-clean for any use go in: aimnet2 (MIT) and orb (Apache-2.0); the
+# uma (gated) and mace (non-commercial) plugins are not installed here.
+# ExtOpt names ${ROOT}/.mamba_env/orca_mlips/bin/orca-mlips-<backend> by its
+# absolute path, so a compute node needs nothing on its PATH;
+# DELFIN_ORCA_MLIPS_PYTHON points DELFIN at another environment.
+# Every version is exact, as resolved by pip for orca-mlips[aimnet2,orb]==1.3.0:
+# aimnet 0.2.6 needs nvalchemi-toolkit-ops >= 0.4.1, which orb-models 0.7 excludes,
+# so orb-models is the newest release that installs beside it. The PyPI torch
+# wheel is the CUDA build (it runs on the CPU where a job has no GPU).
+ORCA_MLIPS_SPEC="${ORCA_MLIPS_SPEC:-orca-mlips==1.3.0}"
+ORCA_MLIPS_CONDA_SPECS="${ORCA_MLIPS_CONDA_SPECS:-python=3.12.16 pip}"
+ORCA_MLIPS_PIP_DEPS="${ORCA_MLIPS_PIP_DEPS:-torch==2.15.0 aimnet==0.2.6 orb-models==0.5.5 ase==3.29.0 numpy==2.4.6}"
+
+install_orca_mlips() {
+  install_own_env INSTALL_ORCA_MLIPS orca-mlips orca_mlips orca_mlips_plugins \
+    "${ORCA_MLIPS_CONDA_SPECS}" "${ORCA_MLIPS_PIP_DEPS}" "${ORCA_MLIPS_SPEC}" ""
 }
 
 # ---------------------------------------------------------------------------
@@ -373,6 +403,7 @@ main() {
   pip_install "${python_bin}" INSTALL_ARCHITECTOR "architector"  architector
   install_epic_mace
   install_smiles_tools
+  install_orca_mlips
 
   # Visualization
   pip_install "${python_bin}" INSTALL_PLOTLY "plotly" plotly
@@ -413,7 +444,7 @@ main() {
     printf "  %-24s %s\n" "epic-MACE" "not installed"
   fi
   for env_label in "rxembed:rxembed:rxembed" "molassembler:scine_molassembler:Molassembler" \
-      "metallogen:MetalloGen:MetalloGen"; do
+      "metallogen:MetalloGen:MetalloGen" "orca_mlips:orca_mlips_plugins:orca-mlips"; do
     local env_name="${env_label%%:*}" rest="${env_label#*:}"
     local env_module="${rest%%:*}" env_shown="${rest#*:}"
     if [ -x "${ROOT}/.mamba_env/${env_name}/bin/python" ] \
