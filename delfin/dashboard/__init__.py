@@ -68,6 +68,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from .context import DashboardContext
     from .helpers import (
         _append_js,
+        self_running_html,
         apply_branding,
         create_busy_css,
         create_page_css,
@@ -664,7 +665,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # Without the bundle no viewer can draw (there is no network fallback),
     # so a broken installation says so in the browser console.
     from delfin.dashboard.login_session import keepalive_js as _keepalive_js
-    _calc_init = '\n'.join([
+    _startup_parts = [
         vendored_3dmol_js() or (
             'console.error("DELFIN: the bundled 3Dmol '
             '(delfin/dashboard/static/3Dmol-min.js) is missing from this '
@@ -674,9 +675,22 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         _keepalive_js(),
         RIGHT_MOUSE_TRANSLATE_PATCH_JS,
         *ctx.init_js_parts,
-    ])
+    ]
+    _calc_init = '\n'.join(_startup_parts)
+    # The page's startup script runs from the page itself (an element in the
+    # body, helpers.self_running_html), not from ctx.js_output: run_js
+    # clears that output before it writes, and with every tab built at
+    # start a tab's own run_js (Remote Archive's preview reset) cleared the
+    # startup script before the browser ran it -- no 3Dmol (no molecule
+    # viewer drew), no login keep-alive (measured in a real browser,
+    # 11.11.). Kept in page_scripts for a resumed window as before.
+    _startup_runner = None
     if _calc_init.strip():
-        ctx.keep_js(_calc_init)
+        ctx.page_scripts.append(_calc_init)
+        _startup_runner = widgets.HTML(
+            self_running_html(*_startup_parts),
+            layout=widgets.Layout(width='0px', height='0px', margin='0',
+                                  overflow='hidden'))
 
     def _resolve_tab_preferences():
         specs = ctx.tab_specs or []
@@ -741,9 +755,20 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         except Exception:
             spec['widget'] = None
             return
-        fresh = '\n'.join(ctx.init_js_parts[already:])
-        if fresh.strip():
-            _append_js(ctx, fresh)
+        # The tab carries its own init scripts and runs them when it is
+        # shown (helpers.self_running_html). Sent as a Javascript output
+        # into ctx.js_output after the page was out, they never ran: every
+        # tab built on its first open lost its splitter, explorer clicks,
+        # upload and keys (Calculations, Remote Archive, ... since 09.11.).
+        parts = [p for p in ctx.init_js_parts[already:] if p and str(p).strip()]
+        if parts and spec.get('widget') is not None:
+            runner = widgets.HTML(self_running_html(*parts), layout=widgets.Layout(
+                width='0px', height='0px', margin='0', overflow='hidden'))
+            built = spec['widget']
+            if isinstance(built, widgets.Box):
+                built.children = tuple(built.children) + (runner,)
+            else:
+                spec['widget'] = widgets.VBox([built, runner])
 
     def _sorted_visible_specs():
         order, hidden = _resolve_tab_preferences()
@@ -1150,7 +1175,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + ([branch_panel.box] if branch_panel is not None else []),
         layout=widgets.Layout(width='100%'))
     _header_root.add_class('delfin-hdr')
-    _body_root = widgets.VBox([js_output, tabs])
+    _body_root = widgets.VBox(
+        [js_output] + ([_startup_runner] if _startup_runner is not None else [])
+        + [tabs])
 
     # The two roots are kept before they are shown, not after.
     #

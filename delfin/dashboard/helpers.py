@@ -411,6 +411,38 @@ def parse_time_to_seconds(time_str):
         return 48 * 3600
 
 
+def self_running_html(*scripts):
+    """HTML that runs *scripts* when the browser shows it.
+
+    Each script sits as raw text in an inert ``<script type="text/x-delfin">``
+    (raw text: no '<' in the code is read as a tag) and an <img> whose load
+    fails runs each one on its own through its onerror -- the way the agent
+    tab's chat tags run their code. One script that throws stops no other.
+
+    For a tab built after the page went out: its init scripts were sent as a
+    Javascript output into the shared JS output widget, and since tabs build
+    on first open (09.11.) those outputs were never executed -- measured: the
+    Calculations tab's resolvers stayed undefined, its splitter and explorer
+    were never bound.
+    """
+    out = []
+    for script in scripts:
+        if not script or not str(script).strip():
+            continue
+        body = str(script).replace("</script", "<\\/script")
+        out.append('<script type="text/x-delfin" class="delfin-tab-js">'
+                   + body + "</script>")
+    if not out:
+        return ""
+    out.append('<img src="" alt="" style="display:none" onerror="'
+               "this.parentNode.querySelectorAll('script.delfin-tab-js')"
+               ".forEach(function(t){try{(0,eval)(t.textContent)}"
+               "catch(e){console.error('DELFIN tab script',e)}});"
+               "this.remove();"
+               '">')
+    return "".join(out)
+
+
 def _append_js(ctx, script):
     """Append JavaScript to the shared output without clearing prior JS."""
     if not script:
@@ -437,17 +469,24 @@ def disable_spellcheck(ctx, class_name='delfin-nospell'):
             if (!el) return;
             const tag = (el.tagName || '').toUpperCase();
             if (tag !== 'TEXTAREA' && tag !== 'INPUT') return;
-            el.setAttribute('spellcheck', 'false');
-            el.spellcheck = false;
-            el.setAttribute('autocorrect', 'off');
-            el.setAttribute('autocapitalize', 'off');
-            el.setAttribute('autocomplete', 'off');
-            el.setAttribute('data-gramm', 'false');
-            el.setAttribute('data-gramm_editor', 'false');
-            el.setAttribute('data-enable-grammarly', 'false');
-            el.setAttribute('data-lt-active', 'false');
-            el.setAttribute('data-grammarly', 'false');
-            el.setAttribute('data-ms-editor', 'false');
+            // Set an attribute only when it differs: the observer below
+            // watches these attributes, and setAttribute writes a mutation
+            // record even for the value already there -- unguarded, one
+            // change elsewhere fed the observer its own writes forever and
+            // froze the page (the Calculations tab, built on first open).
+            function put(name, value) {{
+                if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+            }}
+            put('spellcheck', 'false');
+            put('autocorrect', 'off');
+            put('autocapitalize', 'off');
+            put('autocomplete', 'off');
+            put('data-gramm', 'false');
+            put('data-gramm_editor', 'false');
+            put('data-enable-grammarly', 'false');
+            put('data-lt-active', 'false');
+            put('data-grammarly', 'false');
+            put('data-ms-editor', 'false');
             if (!el.hasAttribute('lang')) el.setAttribute('lang', '');
         }}
         function scan(root) {{
