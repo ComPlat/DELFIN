@@ -76,20 +76,20 @@ def where(tmp_path, monkeypatch):
 
 
 def test_a_preset_whose_server_presents_the_published_key_is_pinned_at_once(where):
-    got = where.add(name="bwuni3", preset="bwuni3", user="ka_ab1234", partition="cpu")
+    got = where.add(name="bwuni3", preset="bwuni3", user="zz_ab1234", partition="cpu")
     assert got["ok"] and got["hostKey"]["pinned"] is True
     assert got["hostKey"]["fingerprint"] == PUBLISHED
     assert "bwhpc" in (got["hostKey"]["source"] or "")
     assert where.pinned == [("bwuni3", PUBLISHED)]
     entry = where.entries()["bwuni3"]
-    assert (entry["host"], entry["user"], entry["requires_otp"]) == ("uc3.scc.kit.edu", "ka_ab1234", True)
+    assert (entry["host"], entry["user"], entry["requires_otp"]) == ("uc3.scc.kit.edu", "zz_ab1234", True)
     assert entry["budget"]["guard_scope"] == "every-command"
     assert where.delfin() == {"bwuni3": {"default_partition": "cpu"}}
 
 
 def test_another_key_is_only_shown_and_pinned_once_the_person_confirms_it(where):
     where.offered = OTHER
-    got = where.add(name="bwuni3", preset="bwuni3", user="ka_ab1234")
+    got = where.add(name="bwuni3", preset="bwuni3", user="zz_ab1234")
     key = got["hostKey"]
     assert got["ok"] and key["pinned"] is False
     assert (key["offered"], key["expected"]) == (OTHER, PUBLISHED)
@@ -117,7 +117,7 @@ def test_a_cluster_given_by_its_host_has_no_budget_guard_and_shows_its_key(where
     ({"preset": "nowhere"}, "preset"),
 ])
 def test_a_bad_field_writes_neither_entry(where, fields, word):
-    params = {"name": "bwuni3", "preset": "bwuni3", "user": "ka_ab1234", **fields}
+    params = {"name": "bwuni3", "preset": "bwuni3", "user": "zz_ab1234", **fields}
     got = where.add(**params)
     assert got["ok"] is False and got["code"] == "invalid" and word in got["error"]
     assert where.entries() == {} and where.delfin() == {}
@@ -183,23 +183,23 @@ def test_an_agent_proposes_a_cluster_as_an_item_and_writes_nothing_else(where):
     from delfin.agent import cluster_tools
     perms = SimpleNamespace(task_session_id="s-1", workspace=None, mode="default")
     got = json.loads(cluster_tools.propose(None, perms, name="bwuni3", preset="bwuni3",
-                                           user="ka_ab1234", partition="cpu"))
+                                           user="zz_ab1234", partition="cpu"))
     assert got["ok"] and "nothing is added" in got["next"]
     (event,) = _proposals("bwuni3")
-    assert event["proposal"] == {"name": "bwuni3", "preset": "bwuni3", "user": "ka_ab1234",
+    assert event["proposal"] == {"name": "bwuni3", "preset": "bwuni3", "user": "zz_ab1234",
                                  "host": "", "partition": "cpu"}
     assert where.entries() == {} and where.delfin() == {}
     item = attention_feed.item_of(event, findings={}, presence={}, titles=attention_feed.Titles())
     assert (item["kind"], item["group"], item["cluster"]) == ("addCluster", "needs", "bwuni3")
-    assert item["proposal"]["user"] == "ka_ab1234"
+    assert item["proposal"]["user"] == "zz_ab1234"
     refused = attention.answer_item(event["id"], "yes add it")
     assert refused["ok"] is False and "form" in refused["error"]
     # Proposed again: one item, with the newer values.
-    cluster_tools.propose(None, perms, name="bwuni3", preset="bwuni3", user="ka_cd5678")
+    cluster_tools.propose(None, perms, name="bwuni3", preset="bwuni3", user="zz_cd5678")
     (event,) = _proposals("bwuni3")
-    assert event["proposal"]["user"] == "ka_cd5678"
+    assert event["proposal"]["user"] == "zz_cd5678"
     # The person's add closes it, with nothing for a model.
-    assert where.add(name="bwuni3", preset="bwuni3", user="ka_cd5678")["ok"]
+    assert where.add(name="bwuni3", preset="bwuni3", user="zz_cd5678")["ok"]
     assert _proposals("bwuni3") == []
 
 

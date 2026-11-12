@@ -27,11 +27,11 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-const PUBLISHED = "SHA256:5mZYEpKigwK5ibBMHRrh3WIkOtCqomJW6H7OMbPk3ec"
+const PUBLISHED = "SHA256:5mZYEpKigwK5ibBMHRrh3WIkOtCqomJW6H7OMbPk3ec"  // secret-guard: allow (the host-key fingerprint the bwHPC wiki publishes: public)
 const OTHER = "SHA256:another-key-0000000000000000000000000000000"
 const PRESETS = [
   { name: "bwuni3", title: "bwUniCluster 3.0 (KIT / bwHPC)", host: "uc3.scc.kit.edu", requiresOtp: true,
-    requiresPassword: true, userHint: "KIT users: 'ka_' + your KIT username, e.g. ka_ab1234",
+    requiresPassword: true, userHint: "KIT users: 'ka_' + your KIT username, e.g. zz_ab1234",
     budget: { limit: 200, unit: "jobh" }, fingerprint: PUBLISHED,
     fingerprintSource: "https://wiki.bwhpc.de/e/BwUniCluster3.0/Login", partition: "cpu" },
   { name: "kcist", title: "KCIST (KIT)", host: "login2.kcist.kit.edu", requiresOtp: false, requiresPassword: true,
@@ -45,7 +45,7 @@ const row = (extra: Record<string, unknown>) => ({
 
 /** The fake service's clusters: kcist, and bwuni3 once it was added. */
 const listed = (calls: Call[]) => [row({}), ...(calls.some((c) => c.method === "cluster.add")
-  ? [row({ name: "bwuni3", target: "ka_ab1234@uc3.scc.kit.edu", requiresOtp: true })] : [])]
+  ? [row({ name: "bwuni3", target: "zz_ab1234@uc3.scc.kit.edu", requiresOtp: true })] : [])]
 
 async function mount(options: { version?: number; clusters?: (calls: Call[]) => Record<string, unknown>[];
                                 add?: (params: Record<string, any>) => unknown;
@@ -156,15 +156,15 @@ describe("the add form", () => {
     await key("a")
     await enter()                                    // bwuni3
     await down()
-    await type("ka_ab1234")
+    await type("zz_ab1234")
     for (let i = 0; i < 4; i++) await enter()        // user -> partition -> work dir -> install root -> add
     await settled()
-    expect(called(calls, "cluster.add")).toEqual([{ name: "bwuni3", user: "ka_ab1234", preset: "bwuni3",
+    expect(called(calls, "cluster.add")).toEqual([{ name: "bwuni3", user: "zz_ab1234", preset: "bwuni3",
                                                     partition: "cpu", workDir: "~/delfin/jobs",
                                                     installRoot: "~/delfin/installs" }])
     const text = screen()
     expect(text).toContain("log in to bwuni3")      // the login field, for the cluster just added
-    expect(text).toContain("ka_ab1234@uc3.scc.kit.edu")
+    expect(text).toContain("zz_ab1234@uc3.scc.kit.edu")
     expect(called(calls, "cluster.pin")).toEqual([])
     expect(called(calls, "clusters.list").length).toBeGreaterThanOrEqual(2)
   })
@@ -178,7 +178,7 @@ describe("the add form", () => {
     await key("a")
     await enter()
     await down()
-    await type("ka_ab1234")
+    await type("zz_ab1234")
     for (let i = 0; i < 4; i++) await enter()
     const text = screen()
     expect(text).toContain(`presented  ${OTHER}`)
@@ -309,7 +309,7 @@ describe("an agent's proposal in NEEDS YOU", () => {
     text: "an agent proposes bwuni3", detail: "An agent proposes bwuni3 (bwuni3) for DELFIN.", workspace: "/w",
     host: "", sessionId: "s1", sessionTitle: "", sessionOpen: false, sessionSaved: false, createdAt: Date.now() / 1000 - 30,
     options: [], job: null, cluster: "bwuni3",
-    proposal: { name: "bwuni3", preset: "bwuni3", user: "ka_ab1234", host: "", partition: "cpu" },
+    proposal: { name: "bwuni3", preset: "bwuni3", user: "zz_ab1234", host: "", partition: "cpu" },
   }
 
   test("enter opens the form filled in over /clusters; it is checked and sent by the person, never answered", async () => {
@@ -327,12 +327,12 @@ describe("an agent's proposal in NEEDS YOU", () => {
     await enter()
     const text = screen()
     expect(text).toContain("proposed by an agent: check every field")
-    expect(text).toMatch(/user\s+ka_ab1234/)
+    expect(text).toMatch(/user\s+zz_ab1234/)
     expect(text).toMatch(/partition\s+cpu/)
     expect(called(calls, "cluster.add")).toEqual([])
     expect(called(calls, "attention.answer")).toEqual([])
     for (let i = 0; i < 5; i++) await enter()
-    expect(called(calls, "cluster.add")).toEqual([{ name: "bwuni3", user: "ka_ab1234", preset: "bwuni3", partition: "cpu",
+    expect(called(calls, "cluster.add")).toEqual([{ name: "bwuni3", user: "zz_ab1234", preset: "bwuni3", partition: "cpu",
                                                     workDir: "~/delfin/jobs", installRoot: "~/delfin/installs" }])
   })
 
