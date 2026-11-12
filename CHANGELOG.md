@@ -211,6 +211,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reaches the remote shell as one argument, and a cluster with a pinned
   host key runs every ssh against that key alone. A ctun release that
   changes any of this fails DELFIN's CI, not a run on a cluster.
+### Added — rxembed, Molassembler and MetalloGen as constructors
+
+- **Three more SMILES constructors beside Architector, molSimplify and epic-MACE**:
+  RXEMBED / MOLASSEMBLER / METALLOGEN buttons in the structure editor (Submit Job and
+  ORCA Builder), `smiles_converter=RXEMBED|MOLASSEMBLER|METALLOGEN` in CONTROL, and
+  `delfin cluster --tool rxembed|molassembler|metallogen`, all through one build
+  (`delfin/cluster_bench/tool_workers/smiles_tools.py`). Each runs in an environment of
+  its own (`python -m delfin.installer --install rxembed|molassembler|metallogen`;
+  `DELFIN_<TOOL>_PYTHON`); a missing tool is an error naming the installer.
+- rxembed: `rx.embed(rx.isomers(smiles))` as shipped (pinned commit 9c0ba5a6; Python
+  >= 3.12, RDKit >= 2026.9.1). Molassembler 3.0.1: every stereoisomer, ten seeded
+  distance-geometry conformers each; a dative SMILES is refused, not rewritten.
+  MetalloGen: only its ORCA calculator (GFN2-xTB through ORCA), never Gaussian; one
+  m-SMILES per distinct donor arrangement (rotations x ligand automorphisms x identical
+  ligands; [Co(trien)Cl2]+ = 5), seeded, 7200 s limit with partial frames kept, `truncated`
+  when capped. Molassembler counts meso forms once. Every dependency pinned exactly, GitHub
+  archives held to SHA-256; no user site reaches a tool environment, on the cluster either.
+  MANTA is unchanged.
+
+### Added — open ports are on screen and can be closed; a server never runs in the foreground
+
+- **The ports a background job really listens on** (read from /proc for the
+  job and its children, any server: http.server, vite, flask, node) show in
+  the dashboard's Background panel and the terminal's status line, with the
+  address to open; the row's × closes the job and its port.
+- **`/ports` in the terminal** lists the open ports with address and job;
+  `/ports close <port|job_id>` closes one.
+- **A server started with plain bash is refused at once**, before any
+  question, naming bash_background: `python -m http.server`, `npm run dev`,
+  `vite`, `flask run`, `uvicorn`, `jupyter lab` and the like, unless
+  backgrounded (`&`) or bounded (`timeout`). In session 7cc700dc the call
+  waited its full 120 s and was killed before the agent used bash_background.
 
 ### Security — what runs unasked writes nothing, loads no script and reaches nothing
 
@@ -232,8 +264,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed — KIT runs on its best model, and a model KIT does not serve is explained
 
-- **GLM-5.3 is the KIT default and first in the ranking**, DeepSeek V4
-  Flash next: the dashboard's KIT default (was `azure.gpt-5.1`), the strong
+- **GLM-5.3 Flash is the KIT default and first in the ranking** (KIT serves
+  `kit.glm-5.3-flash`; `kit.glm-5.3` returned "Model not found" on
+  2026-10-20), DeepSeek V4 Flash the fallback: the dashboard's KIT default (was `azure.gpt-5.1`), the strong
   routing tier (was `azure.gpt-5.4`) and `KIT_BEST_MODEL`. DeepSeek is the
   cheap default (was `azure.gpt-5-nano`) and stays the action watcher's model.
 - **A model KIT does not serve is explained and replaced**: a "Model not

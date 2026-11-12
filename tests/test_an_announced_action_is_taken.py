@@ -78,8 +78,9 @@ class TestItReachesTheTurnLoop:
 
         src = inspect.getsource(A)
         assert '_announces_an_action("".join(_text_chunks))' in src
-        assert "not _announced_once" in src
-        assert "_announced_once = True" in src
+        assert "_announced_count < _ANNOUNCE_CONT_MAX" in src
+        assert "_announced_count == 0 or _did_tools_since_cont" in src
+        assert "_announced_count += 1" in src
         assert "_auto_cont_count < _AUTO_CONT_CAP\n" in src or \
             "_auto_cont_count < _AUTO_CONT_CAP" in src
         assert "announced an action → taking it" in src

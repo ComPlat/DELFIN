@@ -139,6 +139,10 @@ def handlers():
         SUPPORTED_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 
         def check_xsrf_cookie(self):
+            # Tornado calls this before JupyterHandler.prepare authenticates.
+            # Jupyter calls it again after resolving the current user.
+            if not hasattr(self, "_jupyter_current_user"):
+                return
             if self.request.method in ("GET", "HEAD", "OPTIONS"):
                 return
             if getattr(self, "token_authenticated", False):

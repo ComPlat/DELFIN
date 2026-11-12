@@ -179,16 +179,21 @@ def _parse_energy(path: Path, use_gibbs: bool) -> Optional[float]:
         if use_gibbs:
             search_text = "Final Gibbs free energy         ... "
             with path.open("r", encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    idx = line.find(search_text)
-                    if idx != -1:
-                        token = line[idx + len(search_text):].strip().split()
-                        if token:
-                            try:
-                                return float(token[0])
-                            except ValueError:
-                                logger.error("Failed to parse Gibbs energy token '%s' in %s", token[0], path)
-                                return None
+                lines = fh.readlines()
+            # Bottom-up scan, same discipline as the FSPE branch below
+            # (OC1 audit F1, s4 adversarial finding): an appended/continued
+            # thermochemistry block must not be masked by a stale earlier one,
+            # and one unparseable token is skipped, not fatal.
+            for line in reversed(lines):
+                idx = line.find(search_text)
+                if idx != -1:
+                    token = line[idx + len(search_text):].strip().split()
+                    if token:
+                        try:
+                            return float(token[0])
+                        except ValueError:
+                            logger.error("Failed to parse Gibbs energy token '%s' in %s", token[0], path)
+                            continue
         else:
             search_text = "FINAL SINGLE POINT ENERGY   "
             with path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -202,7 +207,7 @@ def _parse_energy(path: Path, use_gibbs: bool) -> Optional[float]:
                             return float(token[0])
                         except ValueError:
                             logger.error("Failed to parse FSPE token '%s' in %s", token[0], path)
-                            return None
+                            continue
         logger.warning("No energy marker found in %s", path)
     except Exception as exc:  # noqa: BLE001
         logger.error("Could not read %s to extract energy: %s", path, exc)

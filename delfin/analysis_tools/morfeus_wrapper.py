@@ -54,6 +54,28 @@ def _read_structure(xyz_file: str | Path) -> tuple:
     return read_xyz(str(xyz_file))
 
 
+def _check_index(name: str, index: int, natoms: int | None = None) -> None:
+    """Validate a 0-based atom index before morfeus sees it.
+
+    morfeus uses 1-based indices; the wrappers convert with +1, so a
+    negative index would silently become 0 and die inside morfeus with
+    a bare IndexError ("indices should not be 0 (1-indexed)") that does
+    not name the physics. Once the structure is read, ``natoms`` also
+    rejects out-of-range indices with the offending value in the message.
+    """
+    index = int(index)
+    if index < 0:
+        raise ValueError(
+            f"'{name}'={index} is negative: atom indices are 0-based "
+            "and must be >= 0"
+        )
+    if natoms is not None and index >= natoms:
+        raise ValueError(
+            f"'{name}'={index} is out of range: the geometry has "
+            f"{natoms} atoms (0-based indices 0..{natoms - 1})"
+        )
+
+
 def buried_volume(
     xyz_file: str | Path,
     metal_index: int,
@@ -77,10 +99,12 @@ def buried_volume(
     dict with keys: percent_buried_volume, free_volume, buried_volume,
                     total_volume, metal_index, radius
     """
+    _check_index("metal_index", metal_index)
     _require_morfeus()
     from morfeus import BuriedVolume
 
     elements, coordinates = _read_structure(xyz_file)
+    _check_index("metal_index", metal_index, len(elements))
     # morfeus uses 1-based indexing
     metal_idx_1 = metal_index + 1
     excluded_1 = [i + 1 for i in (excluded_atoms or [])]
@@ -95,7 +119,14 @@ def buried_volume(
     )
 
     return {
-        "percent_buried_volume": bv.percent_buried_volume,
+        # morfeus's deprecated percent_buried_volume returns a FRACTION
+        # (site-packages/morfeus/buried_volume.py:619 -> fraction),
+        # observed 0.5845 on cisplatin.  Label both units correctly:
+        # "fraction_buried_volume" is the raw fraction, and the % key
+        # really carries percent (x100) — a number that says % must be
+        # a percent (RUN1 real-run finding R4, cisplatin 2026-10-26).
+        "fraction_buried_volume": bv.fraction_buried_volume,
+        "percent_buried_volume": 100.0 * bv.fraction_buried_volume,
         "free_volume": bv.free_volume,
         "buried_volume": bv.buried_volume,
         "total_volume": 4 / 3 * 3.14159265 * radius**3,
@@ -119,10 +150,12 @@ def cone_angle(
     -------
     dict with keys: cone_angle, metal_index
     """
+    _check_index("metal_index", metal_index)
     _require_morfeus()
     from morfeus import ConeAngle
 
     elements, coordinates = _read_structure(xyz_file)
+    _check_index("metal_index", metal_index, len(elements))
     metal_idx_1 = metal_index + 1
 
     ca = ConeAngle(elements, coordinates, metal_idx_1)
@@ -152,12 +185,18 @@ def bite_angle(
     """
     if len(donor_indices) != 2:
         raise ValueError("bite_angle requires exactly 2 donor atom indices")
+    for i, donor in enumerate(donor_indices):
+        _check_index(f"donor_indices[{i}]", donor)
 
     _require_morfeus()
 
     import numpy as np
 
     elements, coordinates = _read_structure(xyz_file)
+    natoms = len(elements)
+    _check_index("metal_index", metal_index, natoms)
+    for i, donor in enumerate(donor_indices):
+        _check_index(f"donor_indices[{i}]", donor, natoms)
 
     # Simple geometric bite angle: angle donor1-metal-donor2
     m = coordinates[metal_index]
@@ -193,11 +232,15 @@ def sterimol(
     -------
     dict with keys: L, B1, B5 (in Angstrom)
     """
+    _check_index("atom1_index", atom1_index)
+    _check_index("atom2_index", atom2_index)
     _require_morfeus()
     from morfeus import Sterimol
 
     elements, coordinates = _read_structure(xyz_file)
     # morfeus uses 1-based
+    _check_index("atom1_index", atom1_index, len(elements))
+    _check_index("atom2_index", atom2_index, len(elements))
     s = Sterimol(elements, coordinates, atom1_index + 1, atom2_index + 1)
 
     return {
@@ -232,10 +275,24 @@ def full_steric_report(
     -------
     dict with keys: buried_volume, cone_angle, bite_angle (if applicable)
     """
+    _check_index("metal_index", metal_index)
+    if donor_indices is not None:
+        for i, donor in enumerate(donor_indices):
+            _check_index(f"donor_indices[{i}]", donor)
     report = {
         "xyz_file": str(xyz_file),
         "metal_index": metal_index,
     }
+
+    try:
+        elements, _coordinates = _read_structure(xyz_file)
+        _check_index("metal_index", metal_index, len(elements))
+        if donor_indices is not None:
+            for i, donor in enumerate(donor_indices):
+                _check_index(f"donor_indices[{i}]", donor, len(elements))
+    except Exception as exc:
+        report["validation_error"] = str(exc)
+        return report
 
     try:
         report["buried_volume"] = buried_volume(

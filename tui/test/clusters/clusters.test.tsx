@@ -135,7 +135,7 @@ async function mount(options: { version?: number; clusters?: Record<string, unkn
     },
   }
   w = await mountWindow({ width: 110, height: 30, full: true, client, history, clustersPollMs: options.pollMs })
-  w.store.update((d) => { d.serviceVersion = options.version ?? 4 })
+  w.store.update((d) => { d.serviceVersion = options.version ?? 5 })
   await w.settle()
   return { w, calls, history, historyFile }
 }
@@ -290,8 +290,8 @@ describe("/clusters", () => {
     expect(called(calls, "session.prompt")).toEqual([])
   })
 
-  test("with a service before version 4 it says so in a line and asks nothing", async () => {
-    const { calls } = await mount({ version: 3 })
+  test("with a service before version 5 it says so in a line and asks nothing", async () => {
+    const { calls } = await mount({ version: 4 })
     await line("/clusters")
     await settled()
     expect(screen()).toContain("the agent service is too old for /clusters; restart it")
@@ -522,7 +522,7 @@ describe("space: an entry's details", () => {
   }
 
   test("↓ walks /jobs job by job across the groups -- never onto a title or what was not read -- and around", async () => {
-    await mount({ version: 5, jobs: () => ({ ...JOBS5, errors: ["horeka: tunnel_down: the control socket does not answer"] }) })
+    await mount({ version: 6, jobs: () => ({ ...JOBS5, errors: ["horeka: tunnel_down: the control socket does not answer"] }) })
     await line("/jobs")
     await settled()
     const walk = [selected()]
@@ -542,7 +542,7 @@ describe("space: an entry's details", () => {
   })
 
   test("space asks job.detail for what its row is, and draws the sections under it; on another row they move there", async () => {
-    const { calls } = await mount({ version: 5, jobs: () => JOBS5 })
+    const { calls } = await mount({ version: 6, jobs: () => JOBS5 })
     await line("/jobs")
     await settled()
     await space()                                                    // the agent's shell
@@ -584,7 +584,7 @@ describe("space: an entry's details", () => {
   test("space again closes them; while open, each poll asks again and the last answer stays until the next is in", async () => {
     let asked = 0
     const later = { sections: [{ title: "Slurm", pairs: [["State", "COMPLETING"]], lines: [] }], error: null }
-    const { calls } = await mount({ version: 5, jobs: () => JOBS5, pollMs: 150, detail: () =>
+    const { calls } = await mount({ version: 6, jobs: () => JOBS5, pollMs: 150, detail: () =>
       ++asked === 1 ? JOB_DETAIL : new Promise((resolve) => setTimeout(() => resolve(later), 300)) })
     await line("/jobs")
     await settled()
@@ -608,7 +608,7 @@ describe("space: an entry's details", () => {
 
   test("the selection stays on its job when a row above it leaves; when the job leaves, on the one in its place", async () => {
     let answer = JOBS5
-    await mount({ version: 5, jobs: () => answer })
+    await mount({ version: 6, jobs: () => answer })
     await line("/jobs")
     await settled()
     await down(3)
@@ -628,7 +628,7 @@ describe("space: an entry's details", () => {
   })
 
   test("/clusters: space asks cluster.detail and draws it under the row; enter still opens the login field", async () => {
-    const { calls } = await mount({ version: 5 })
+    const { calls } = await mount({ version: 6 })
     await line("/clusters")
     await settled()
     expect(screen()).toContain("↑↓ select · enter log in · space details · r refresh · esc/← back")
@@ -659,7 +659,7 @@ describe("space: an entry's details", () => {
 
   test("details taller than the room under the row end with how many more lines there are; the row stays in view", async () => {
     const tail = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`)
-    await mount({ version: 5, jobs: () => JOBS5,
+    await mount({ version: 6, jobs: () => JOBS5,
                   detail: () => ({ sections: [{ title: "Output, last 40 lines", pairs: [], lines: tail }], error: null }) })
     await line("/jobs")
     await settled()
@@ -677,8 +677,8 @@ describe("space: an entry's details", () => {
     expect(lines[1 + shown.length + 1]).toMatch(/^─+/)               // and the screen full: the prompt's rule
   })
 
-  test("with a service before version 5, space asks nothing and says to restart it", async () => {
-    const { calls } = await mount({ version: 4, jobs: () => JOBS5 })
+  test("with a service before version 6, space asks nothing and says to restart it", async () => {
+    const { calls } = await mount({ version: 5, jobs: () => JOBS5 })
     await line("/jobs")
     await settled()
     await space()

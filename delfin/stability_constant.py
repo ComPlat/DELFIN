@@ -711,8 +711,11 @@ def _convert_smiles_and_write(
         smiles_to_xyz,
         smiles_to_xyz_architector,
         smiles_to_xyz_mace,
+        smiles_to_xyz_metallogen,
+        smiles_to_xyz_molassembler,
         smiles_to_xyz_molsimplify,
         smiles_to_xyz_quick,
+        smiles_to_xyz_rxembed,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -726,6 +729,12 @@ def _convert_smiles_and_write(
         xyz_content, error = smiles_to_xyz_molsimplify(smiles)
     elif converter == "MACE":
         xyz_content, error = smiles_to_xyz_mace(smiles)
+    elif converter == "RXEMBED":
+        xyz_content, error = smiles_to_xyz_rxembed(smiles)
+    elif converter == "MOLASSEMBLER":
+        xyz_content, error = smiles_to_xyz_molassembler(smiles)
+    elif converter == "METALLOGEN":
+        xyz_content, error = smiles_to_xyz_metallogen(smiles)
     elif converter in ("MANTA", "GUPPY"):
         run_config = dict(config or {})
         _run_guppy_for_smiles(smiles, start_path, run_config)

@@ -3696,11 +3696,13 @@ def _ocr_image(
 ) -> tuple[str, float, int]:
     """OCR one page image. Returns ``(text, mean confidence, weak blocks)``."""
     status = ocr_availability()
-    if not status["available"] or status["engine"] != "easyocr":
+    if not status["available"] or status["engine"] not in ("pytesseract", "easyocr"):
         raise OfficeError(
             "OCR is not available here: "
             + ("; ".join(status["detail"]) or "no engine could be used")
             + ". " + status["next_step"])
+    if status["engine"] == "pytesseract":
+        return _ocr_image_tesseract(image, languages)
     try:
         import easyocr
     except Exception as exc:                      # pragma: no cover
@@ -3727,6 +3729,61 @@ def _ocr_image(
 
     lines = [str(text) for _box, text, _conf in found]
     scores = [float(conf) for _box, _text, conf in found]
+    weak = sum(1 for s in scores if s < OCR_LOW_CONFIDENCE)
+    mean = sum(scores) / len(scores) if scores else 0.0
+    return "\n".join(lines), mean, weak
+
+
+#: Tesseract names its languages by ISO 639-2 (its traineddata files).
+_TESSERACT_LANGUAGES = {"de": "deu", "en": "eng"}
+
+
+def _ocr_image_tesseract(image: bytes, languages: tuple) -> tuple[str, float, int]:
+    """``_ocr_image`` through pytesseract: one block per recognised line.
+
+    ocr_availability names pytesseract first, and this is what it names:
+    without it a machine with tesseract reported OCR as available and every
+    read of a scan came back empty.
+    """
+    import io
+    try:
+        import pytesseract
+        from PIL import Image
+    except Exception as exc:                      # pragma: no cover
+        raise OfficeError(f"pytesseract could not be imported: {exc}") from exc
+
+    wanted = [_TESSERACT_LANGUAGES.get(lang, lang) for lang in languages]
+    try:
+        installed = set(pytesseract.get_languages(config=""))
+    except Exception:
+        installed = set()
+    usable = [lang for lang in wanted if lang in installed] if installed else wanted
+    if not usable:
+        raise OfficeError(
+            "tesseract has none of the languages " + ", ".join(wanted)
+            + " installed (Debian/Ubuntu: apt-get install "
+            + " ".join(f"tesseract-ocr-{lang}" for lang in wanted) + ")")
+    try:
+        data = pytesseract.image_to_data(
+            Image.open(io.BytesIO(image)), lang="+".join(usable),
+            output_type=pytesseract.Output.DICT)
+    except Exception as exc:
+        raise OfficeError(f"OCR failed on this page: {exc}") from exc
+
+    # Words carry a confidence of 0..100; layout rows carry -1.
+    rows: dict[tuple, list[tuple[str, float]]] = {}
+    for i, word in enumerate(data.get("text", [])):
+        word = str(word or "").strip()
+        try:
+            conf = float(data["conf"][i])
+        except (KeyError, IndexError, TypeError, ValueError):
+            conf = -1.0
+        if not word or conf < 0:
+            continue
+        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        rows.setdefault(key, []).append((word, conf / 100.0))
+    lines = [" ".join(w for w, _ in words) for _, words in sorted(rows.items())]
+    scores = [sum(c for _, c in words) / len(words) for _, words in sorted(rows.items())]
     weak = sum(1 for s in scores if s < OCR_LOW_CONFIDENCE)
     mean = sum(scores) / len(scores) if scores else 0.0
     return "\n".join(lines), mean, weak

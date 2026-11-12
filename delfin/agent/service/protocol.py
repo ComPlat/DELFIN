@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import PurePath
 from typing import IO, Any, Callable, Iterator
 
 PROTOCOL_VERSION = 1
@@ -72,7 +73,13 @@ REQUESTS: dict[str, dict[str, str]] = {
     # (A, k) need; without it they approve once.
     "permission.reply": {"requestId": "string", "choice": "string?",
                          "answers": "[string]?", "reason": "string?",
-                         "persist": "boolean?", "text": "string?"},
+                         "persist": "boolean?", "text": "string?",
+                         "command": "string?",
+                         # Who answers: the hello name of the window the
+                         # service forwarded the reply from (delfin-tui,
+                         # delfin-dashboard, the messenger bridge). Set by
+                         # the service; a window's own value is replaced.
+                         "client": "string?"},
     # What the window completes and picks from (choices.py): the session's
     # /commands, the paths under its workspace for an @fragment, and the
     # models, efforts or agent modes a picker offers (what: model | effort
@@ -84,7 +91,10 @@ REQUESTS: dict[str, dict[str, str]] = {
     # ctrl+t: show or hide the open task list at the end of each turn, as
     # in the REPL (its notice says which).
     "session.toggleTasks": {},
-    # The session's name (the agent view's ctrl+r): what it is saved under.
+    # The session's name (the agent view's ctrl+r / F2, /rename, /name, the
+    # dashboard's pencil, the phone's name): what it is saved under. Cleaned
+    # by clean_title; nothing printable left ("") puts the default back
+    # (default_name: folder and short id).
     "session.setTitle": {"title": "string"},
 }
 
@@ -128,11 +138,12 @@ EVENTS: dict[str, dict[str, str]] = {
     # What a window shows at the top of a session.
     "session.info": {"sessionId": "string", "workspace": "string",
                      "provider": "string", "model": "string",
+                     "effort": "string?",
                      "mode": "string", "approval": "string",
                      "title": "string?", "banner": "[string]",
                      "notices": "[string]", "tasks": "[object]?",
                      "bypassBlocked": "string?", "bypassConfirmed": "boolean?",
-                     "auto": "string?"},
+                     "auto": "string?", "background": "[object]?"},
     # bypassBlocked: why shift+tab steps over bypassPermissions ("" when it
     # may stop there: the managed policy allows it and isolation holds
     # each command; posture_cycle.bypass_refusal); bypassConfirmed: its
@@ -143,10 +154,16 @@ EVENTS: dict[str, dict[str, str]] = {
     # num, status, label -- sent whole whenever any of it changed.
     # auto: auto mode's one-line state (loop, iteration n/max, last
     # result, how many items need the user); "" while it is off.
+    # background: what this session still has out -- shells, watched
+    # jobs, background agents, wake-ups (background_view.snapshot) -- each
+    # row group, id, kind, label, url, state, and since / at in epoch
+    # seconds; no ages, so it is sent when the set changes, not each
+    # second. The window draws the ages.
     "session.updated": {"approval": "string?", "model": "string?",
-                        "effort": "string?", "title": "string?",
+                        "effort": "string?", "mode": "string?", "title": "string?",
                         "tasks": "[object]?", "bypassBlocked": "string?",
-                        "bypassConfirmed": "boolean?", "auto": "string?"},
+                        "bypassConfirmed": "boolean?", "auto": "string?",
+                        "background": "[object]?"},
     # idle | running | needs_input | ended. "running" covers everything the
     # session does on its own: a turn, a follow-up, waiting out an outage.
     "session.state": {"state": "string"},
@@ -195,10 +212,20 @@ EVENTS: dict[str, dict[str, str]] = {
                          "choices": "[string]?",
                          "choiceDetails": "[string]?",
                          "multiSelect": "boolean?",
-                         "suggestion": "string?", "readDir": "string?"},
-    # by: client | outside | expired | abort
+                         "suggestion": "string?", "readDir": "string?",
+                         # The tool call's own one-line description (the
+                         # bash tool requires one), masked; the model's
+                         # statement, not a check of the command.
+                         "purpose": "string?",
+                         # A shell request's command, for a window to put
+                         # in the prompt to change (key c); absent when it
+                         # holds a secret the preview masks.
+                         "command": "string?"},
+    # by: client | outside | expired | abort. client: with by "client",
+    # the hello name of the window whose answer landed (permission.reply's
+    # client, as the service set it).
     "permission.resolved": {"requestId": "string", "decision": "string",
-                            "by": "string"},
+                            "by": "string", "client": "string?"},
     # What a session was started with to look into (session.create's
     # brief: a failed job, a finished run, an alert from the agent view):
     # shown as one row, and put in front of the session's first prompt.
@@ -229,8 +256,25 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        "fakeDelay": "number?", "fakeSave": "boolean?", "attach": "boolean?",
                        # What to look into (the context event); its title
                        # names the row.
-                       "brief": "string?", "briefTitle": "string?"},
+                       "brief": "string?", "briefTitle": "string?",
+                       # worktree: the session runs in its own worktree and
+                       # branch of cwd's repository (session_worktree.py);
+                       # initProject: the user agreed that a cwd without
+                       # git becomes a local project first. Without it such
+                       # a cwd is refused with NEEDS_LOCAL_PROJECT, the
+                       # question to put in the error's text.
+                       "worktree": "boolean?", "initProject": "boolean?",
+                       # untitled: renamed back to the default name; the
+                       # worker takes neither `name` nor a saved title as
+                       # its title (a wake of such a session sets it).
+                       "untitled": "boolean?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
+    # The session worktrees of cwd's repository, and one merged back into
+    # the main checkout (uncommitted, for review; a conflict changes
+    # nothing). Refused while a session of this service works in it.
+    "session.worktrees": {"cwd": "string"},
+    "session.merge": {"path": "string"},
+    "session.pending": {"sessionId": "string"},
     "session.detach": {"sessionId": "string"},
     # A message for a session elsewhere (dashboard, another terminal).
     "session.message": {"key": "string", "text": "string"},
@@ -243,6 +287,22 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     # restart: a new service follows at once (an update); windows reconnect
     # to it instead of leaving.
     "service.shutdown": {"restart": "boolean?"},
+    # Branch operations (delfin/agent/branch_ops.py): the dashboard's
+    # branch logic, run in *workspace* (a session's or a window's). list:
+    # the rows of one view (mine|all|hidden|merged|remote), narrowed by
+    # text. pull: fast-forward-only main, never a switch. test: a worktree
+    # at ref, the branch's changed test files run there (capped, nice),
+    # worktree removed unless keep. cleanup: what may be deleted; delete
+    # only with confirm=true (branch_cleanup.delete itself, rules re-read
+    # at deletion). Nothing here switches the shared checkout.
+    "branch.list": {"workspace": "string", "view": "string?",
+                    "text": "string?", "refresh": "boolean?"},
+    "branch.pull": {"workspace": "string"},
+    "branch.test": {"workspace": "string", "ref": "string",
+                    "keep": "boolean?"},
+    "branch.cleanup": {"workspace": "string", "includeUnmerged": "boolean?",
+                       "refresh": "boolean?", "delete": "[string]?",
+                       "confirm": "boolean?"},
     # What needs the user, from every DELFIN process (attention_feed.py):
     # the items of ATTENTION_ITEM. answer: a parked question's answer, for
     # the next session in its workspace; dismiss: cleared, never answered.
@@ -270,6 +330,28 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "cluster.detail": {"name": "string"},
     "job.detail": {"source": "string", "id": "string", "cluster": "string?",
                    "session": "string?", "group": "string?"},
+    # Swarm management (package SW2b; the logic is SW1's
+    # delfin/agent/swarm/, the wrappers delfin/agent/service/swarm_rpc.py).
+    # spec: the spec object, or specYaml: swarm.yaml text. swarm.start is
+    # a dry run unless confirm=true -- the TUI sends confirm only after
+    # the user approved the plan it showed.
+    "swarm.status": {"spec": "object?", "specYaml": "string?"},
+    "swarm.plan": {"spec": "object?", "specYaml": "string?"},
+    "swarm.validate": {"spec": "object?", "specYaml": "string?"},
+    "swarm.start": {"spec": "object?", "specYaml": "string?",
+                    "dryRun": "boolean?", "confirm": "boolean?"},
+    "swarm.pause": {},
+    "swarm.resume": {},
+    "swarm.triage.list": {"queue": "[object]"},
+    "swarm.triage.answer": {"item": "object", "answer": "string"},
+    # Read-only watch (package SWV): pure observe reads. source: an SW1
+    # spec object, or a roster file path (name -> {package, role}), so an
+    # operator wave with no spec shows too. feed: newest last steps of one
+    # member session. Ownership for swarm.observe.feed (only the owning
+    # user may see a member's feed) is NOT yet enforced by any layer and
+    # is a follow-up; the API is currently callable by any requestor.
+    "swarm.observe.overview": {"source": "object?", "sourcePath": "string?"},
+    "swarm.observe.feed": {"session": "string", "since": "integer?"},
 }
 
 SERVICE_RESULTS: dict[str, dict[str, str]] = {
@@ -283,10 +365,14 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     # point the window is subscribed at (later events arrive live).
     "session.create": {"sessionId": "string", "session": "object",
                        "state": "string", "pending": "[object]",
-                       "events": "[object]"},
+                       "events": "[object]", "worktree": "object?"},
+    "session.worktrees": {"worktrees": "[object]"},
+    "session.merge": {"status": "string", "files": "[string]",
+                      "target": "string", "message": "string"},
     "session.attach": {"session": "object", "state": "string",
                        "pending": "[object]", "events": "[object]",
                        "summary": "object"},
+    "session.pending": {"pending": "[object]"},
     "session.detach": {"detached": "boolean"},
     "session.message": {"sent": "boolean"},
     # sessionId, title, workspace, model, provider, updatedAt, running
@@ -310,6 +396,30 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     # sections: each {title, pairs: [[label, value]], lines: [text]}.
     "cluster.detail": {"sections": "[object]", "error": "string?"},
     "job.detail": {"sections": "[object]", "error": "string?"},
+    # The status schema SW1 documents (status.py STATUS_SCHEMA); plan
+    # carries the launch plan plus dry_run_text; start is a dry run
+    # unless confirm=true. pause/resume answer available=false until SW1
+    # ships the verbs. triage.answer: answered, item_id, logged.
+    "swarm.status": {"schema_version": "integer", "goal": "string",
+                     "packages": "[object]",
+                     "waiting_for_user": "[object]"},
+    "swarm.plan": {"goal": "string", "members": "[object]",
+                   "start_spacing_s": "integer?", "memory_gate": "boolean?",
+                   "dry_run_text": "string"},
+    "swarm.validate": {"valid": "boolean", "errors": "[string]"},
+    "swarm.start": {"dry_run": "boolean", "goal": "string",
+                    "members": "[object]?", "dry_run_text": "string?",
+                    "started": "[object]", "refused": "string?"},
+    "swarm.pause": {"available": "boolean", "reason": "string"},
+    "swarm.resume": {"available": "boolean", "reason": "string"},
+    "swarm.triage.list": {"items": "[object]"},
+    "swarm.triage.answer": {"answered": "boolean", "item_id": "string?",
+                            "logged": "string?"},
+    # Read-only watch (package SWV): overview = one row per member
+    # ([object]); feed = that member's steps newest last ([object], each
+    # {at, kind, text}).
+    "swarm.observe.overview": {"rows": "[object]"},
+    "swarm.observe.feed": {"entries": "[object]"},
 }
 
 #: Events from the service itself, to every window.
@@ -361,10 +471,21 @@ SESSION_SUMMARY: dict[str, str] = {
     "state": "string", "pending": "integer", "costUsd": "number",
     "createdAt": "number", "lastActivity": "number", "pid": "integer",
     "firstPrompt": "string?", "lastPrompt": "string?", "activity": "string?",
-    "waiting": "string?", "answer": "string?"}
+    "waiting": "string?", "answer": "string?",
+    # What every window calls it (display_name): its title, else the
+    # default -- folder name and short id. Absent only in a roster written
+    # by a service before this field.
+    "name": "string?",
+    # When someone last wrote to it (a prompt typed, queued or steered; not
+    # one the harness sent), epoch seconds; none yet: absent. What a window
+    # tells a session that runs on unattended by.
+    "lastInput": "number?"}
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005
+#: session.create with worktree in a folder without git and no initProject:
+#: the error text is the question to put to the user.
+NEEDS_LOCAL_PROJECT = -32006
 
 #: Events kept in the session's durable log (eventlog.py) and replayed to
 #: a window that attaches later. Only these carry a sequence number. Deltas,
@@ -383,8 +504,10 @@ DURABLE_EVENTS = frozenset({
 # Building messages
 # ---------------------------------------------------------------------------
 
-#: The longest session title: what the session store keeps of one.
-TITLE_MAX = 80
+#: The longest session title: what the session store keeps of one, and
+#: what a rename from any window is cut to. 50 is the longest group name
+#: SimpleX takes, so the phone's chat of a session can carry it whole.
+TITLE_MAX = 50
 
 #: The longest task label a window is sent (a task row is one line).
 TASK_LABEL_MAX = 160
@@ -395,6 +518,21 @@ def clean_title(text: Any) -> str:
     characters (escapes, zero-width marks) made spaces, single spaces, at
     most TITLE_MAX characters. "" when nothing printable is left."""
     return clean_line(text, TITLE_MAX)
+
+
+def default_name(workspace: Any, session_id: Any) -> str:
+    """What a session without a title is called: its folder's name and the
+    first eight characters of its id (the head the presence address and
+    the TUI's rows use), e.g. ``scan-a · 0123abcd``. Two sessions in one
+    folder differ by the id."""
+    folder = clean_line(PurePath(str(workspace or "")).name, TITLE_MAX) or "session"
+    return f"{folder} · {str(session_id or '')[:8]}".rstrip(" ·")
+
+
+def display_name(title: Any, workspace: Any, session_id: Any) -> str:
+    """The one name every window shows: the cleaned title, else
+    :func:`default_name`."""
+    return clean_title(title) or default_name(workspace, session_id)
 
 
 def clean_line(text: Any, limit: int) -> str:

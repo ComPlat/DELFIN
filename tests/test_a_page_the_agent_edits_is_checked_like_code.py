@@ -232,3 +232,17 @@ def test_a_sound_page_ends_the_turn_without_a_skip_notice(client):
     sent, notices = _run(client, [_write(GOOD), _say("Fertig.")])
     assert len(sent) == 2
     assert "Auto-verify" not in notices and "NOT machine-verified" not in notices
+
+
+def test_a_module_page_is_not_judged_by_a_file_url(ws, monkeypatch):
+    """From file:// every module import is refused by the browser (CORS,
+    origin null): that is the check's error, not the page's, and it came
+    back on every machine with Playwright and Chromium."""
+    called: list = []
+    monkeypatch.setattr(AC, "_browser_errors", lambda p: called.append(p) or ["x"])
+    (ws / "x.js").write_text("export default 1;\n")
+    (ws / "m.html").write_text('<script type="module" src="./x.js"></script>')
+    (ws / "plain.html").write_text("<p>hi</p>")
+    assert AC.problems([ws / "m.html"]) == ""
+    assert AC.problems([ws / "plain.html"]) != ""
+    assert called == [ws / "plain.html"]

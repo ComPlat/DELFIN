@@ -251,6 +251,28 @@ def _check_python_deps(ctx: dict) -> list[dict]:
     return out
 
 
+def _check_optional_tools(ctx: dict) -> list[dict]:
+    """Optional chemistry programs, one row per install group.
+
+    The table and the presence probe are ``optional_tools`` -- the same
+    the Pi's post-install smoke step reads -- so the doctor and the deploy
+    name the same groups. Nothing is imported or run here (``find_spec``
+    and the tool resolver): importing torch alone takes seconds on a Pi.
+    ``python -m delfin.agent.optional_tools smoke`` runs the computations.
+    """
+    from . import optional_tools as ot
+    out: list[dict] = []
+    for group in ot.GROUPS:
+        status, detail = ot.availability(group)
+        if status == ot.OK:
+            out.append(_row(f"optional: {group.name}", PASS, detail))
+            continue
+        fix = (f"{group.install}  (Raspberry Pi: {ot.pi_hint(group)}; "
+               "scripts/pi/README.md)")
+        out.append(_row(f"optional: {group.name}", WARN, detail, fix))
+    return out
+
+
 def _check_test_runner(ctx: dict) -> list[dict]:
     """Can the agent run the suite in the interpreter it would use.
 
@@ -858,6 +880,29 @@ def _check_loader_path(ctx: dict) -> list[dict]:
     return rows
 
 
+def _without_landlock(held_by: str) -> str:
+    """What a cage of bubblewrap alone leaves out, for the row's detail; "".
+
+    The cage confines a command's reads through Landlock inside it, and
+    only with both does a command off the auto-allow list run in it
+    without a question (api_client._caged_command_may_run_unasked). The
+    Raspberry Pi OS kernel, for one, is built without Landlock: the row said
+    only "bwrap active", and nothing told why every such command was asked.
+    """
+    if held_by != "bwrap" or not sys.platform.startswith("linux"):
+        return ""
+    try:
+        from delfin.agent.api_client import _landlock_functional
+        if _landlock_functional():
+            return ""
+    except Exception:
+        return ""
+    return ("; no Landlock in this kernel, so reads are not confined and "
+            "commands off the auto-allow list are asked about instead of run "
+            "in the cage (a kernel with CONFIG_SECURITY_LANDLOCK and "
+            "landlock in its LSM list lets them run)")
+
+
 def _check_bash_isolation(ctx: dict) -> list[dict]:
     """Report whether shell commands run in a filesystem namespace.
 
@@ -906,7 +951,8 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     if mode == "bwrap":
         if held_by:
             return [{"check": "bash isolation", "status": "PASS",
-                     "detail": f"{held_by} active for every command"}]
+                     "detail": f"{held_by} active for every command"
+                               + _without_landlock(held_by)}]
         # Not a silent downgrade: with nothing able to hold the command,
         # the product refuses to run it rather than run it unisolated.
         return [{"check": "bash isolation", "status": "FAIL",
@@ -941,7 +987,7 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
     if held_by:
         return [{"check": "bash isolation", "status": "PASS",
                  "detail": (f"auto — {held_by} active in every permission "
-                            "mode")}]
+                            "mode" + _without_landlock(held_by))}]
     # Nothing here can hold a command. Then auto is honest about what is
     # left: the command still runs (refusing every shell command in an
     # attended session would be secure and useless), and what protects
@@ -954,6 +1000,40 @@ def _check_bash_isolation(ctx: dict) -> list[dict]:
          "gate and the socket guard are what hold"),
         no_mechanism,
     )]
+
+
+def _check_bash_cage(ctx: dict) -> list[dict]:
+    """Whether this host can hold a shell command in the bash cage.
+
+    The freedom profiles (``workspace_profiles``) grant a workspace's
+    unattended runs bypass only where a cage exists, so the doctor says
+    which it is -- and on a host without one, what the profile ``free``
+    would be refused for. The answer is
+    ``workspace_profiles.host_cage_decision``, the same
+    ``api_client._bash_isolation_decision`` the bash executor builds its
+    argv from, not a separate probe that could drift from it.
+    """
+    from delfin.agent import workspace_profiles
+    try:
+        kind = workspace_profiles.host_cage_decision()
+    except Exception as exc:                        # noqa: BLE001
+        return [_row("bash cage", WARN, f"not verified: {exc}")]
+    if kind in ("bwrap", "landlock", "seatbelt"):
+        return [_row("bash cage", PASS,
+                     f"{kind} holds shell commands; workspaces with the "
+                     "profile \"free\" may run their scheduled runs in "
+                     "bypass inside the cage")]
+    if kind == "refuse":
+        return [_row("bash cage", WARN,
+                     f"isolation demanded and unavailable ({kind}); the "
+                     "profile \"free\" is refused here",
+                     "install bubblewrap, or run on a kernel with Landlock "
+                     "(Linux 5.13+)")]
+    return [_row("bash cage", WARN,
+                 f"no cage on this host ({kind}); the profile \"free\" is "
+                 "refused here -- scheduled runs stay in acceptEdits",
+                 "install bubblewrap, or run on a kernel with Landlock "
+                 "(Linux 5.13+)")]
 
 
 def _check_document_backends(ctx: dict) -> list[dict]:
@@ -1098,6 +1178,7 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("credentials", "_check_credentials"),
     ("chemistry binaries", "_check_binaries"),
     ("python deps", "_check_python_deps"),
+    ("optional chemistry", "_check_optional_tools"),
     ("test runner", "_check_test_runner"),
     ("mcp servers", "_check_mcp"),
     ("scheduler daemon", "_check_scheduler"),
@@ -1110,10 +1191,30 @@ _CHECK_ATTRS: tuple[tuple[str, str], ...] = (
     ("memory store", "_check_memory_store"),
     ("disk space", "_check_disk"),
     ("bash isolation", "_check_bash_isolation"),
+    ("bash cage", "_check_bash_cage"),
     ("command network", "_check_child_network"),
     ("document backends", "_check_document_backends"),
     ("terminal window", "_check_tui"),
+    ("MLIP", "_check_mlip"),
 )
+
+
+def _check_mlip(ctx: dict) -> list[dict]:
+    """The orca-mlips set-up: env, GPU partition and backend configured,
+    and the env's ProgExt command present. From
+    ``guided_setup.mlip_readiness`` (settings + file checks; no scheduler
+    query, no process). Not configured is a PASS: MLIPs are optional."""
+    from delfin.mlp_tools.guided_setup import mlip_readiness
+
+    # ctx["settings"] is the agent's settings; runtime.* lives in DELFIN's
+    # user settings, which mlip_readiness loads when given none.
+    given = ctx.get("settings") or {}
+    state = mlip_readiness(given if "runtime" in given else None)
+    if not state["configured"] or state["ready"]:
+        return [_row("MLIP", PASS, state["detail"])]
+    return [_row("MLIP", WARN, state["detail"],
+                 "delfin mlp_setup plan, then delfin mlp_setup configure --write",
+                 command="delfin mlp_setup plan")]
 
 
 def _check_child_network(ctx: dict) -> list[dict]:

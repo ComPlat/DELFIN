@@ -12,7 +12,8 @@ What each kind gets, fast and without running the project:
   reported at its line in the HTML; every local ``src``/``href`` of a
   script, stylesheet or image that does not exist; and, when Playwright is
   importable, the page loaded headless with its uncaught errors and
-  console errors;
+  console errors (not for a page with module scripts: from file:// the
+  browser refuses their imports, whatever the page);
 * ``.json`` -- parsed;
 * ``.sh`` / ``.bash`` -- ``bash -n``.
 
@@ -119,6 +120,8 @@ class _Scan(HTMLParser):
         super().__init__(convert_charrefs=False)
         self.scripts: list[tuple[int, str, bool]] = []
         self.refs: list[tuple[int, str]] = []
+        #: A <script type="module">, inline or with a src.
+        self.module = False
         self._in: Optional[tuple[int, bool]] = None
         self._buf: list[str] = []
 
@@ -126,6 +129,8 @@ class _Scan(HTMLParser):
         a = {k.lower(): (v or "") for k, v in attrs}
         line = self.getpos()[0]
         if tag == "script":
+            if a.get("type", "").strip().lower() == "module":
+                self.module = True
             if a.get("src"):
                 self.refs.append((line, a["src"]))
             elif a.get("type", "").strip().lower() in self._JS_TYPES:
@@ -187,7 +192,10 @@ def _check_html(path: Path) -> str:
         if target is not None and local and not target.exists():
             probs.append(f"{path.name}:{line}: references {r}, which does "
                          "not exist")
-    if not probs:
+    # From file:// Chromium refuses every module import (CORS: the origin is
+    # "null"), so a module page fails there whatever it contains -- an error
+    # of the check, not of the page. Its scripts were checked by node above.
+    if not probs and not scan.module:
         probs.extend(_browser_errors(path))
     return "\n".join(probs)
 

@@ -4,7 +4,6 @@ import hashlib
 import json
 from html import escape as html_escape
 
-import py3Dmol
 from IPython.display import HTML, clear_output, display
 
 
@@ -15,7 +14,28 @@ def js_string_literal(value):
     return _literal(value)
 
 
-def _harden_py3dmol():
+_py3dmol_cache: list = []
+
+
+def py3dmol():
+    """Import py3Dmol on first use and return it, with the script-safe
+    rule installed. The module-level import pulled the whole py3Dmol
+    package into every dashboard start, whether or not a viewer was ever
+    opened; drawing it only when a viewer is actually built keeps the
+    cost off the startup path. Tests reach it as ``py3dmol()``.
+    """
+    if _py3dmol_cache:
+        # Again on every call: idempotent, and a reloaded py3Dmol has its
+        # own tostr back.
+        _harden_py3dmol(_py3dmol_cache[0])
+        return _py3dmol_cache[0]
+    import py3Dmol
+    _harden_py3dmol(py3Dmol)
+    _py3dmol_cache.append(py3Dmol)
+    return py3Dmol
+
+
+def _harden_py3dmol(module):
     """Route py3Dmol's argument encoding through the script-safe rule.
 
     py3Dmol writes every argument of a viewer call (``addModel(text,
@@ -26,7 +46,7 @@ def _harden_py3dmol():
     unicode escapes, which the script reads back as the same characters.
     Idempotent; a py3Dmol without ``tostr`` is left alone.
     """
-    original = getattr(py3Dmol, 'tostr', None)
+    original = getattr(module, 'tostr', None)
     if original is None or getattr(original, '_delfin_script_safe', False):
         return
 
@@ -37,10 +57,8 @@ def _harden_py3dmol():
                 .replace('&', '\\u0026'))
 
     tostr._delfin_script_safe = True
-    py3Dmol.tostr = tostr
+    module.tostr = tostr
 
-
-_harden_py3dmol()
 
 DEFAULT_3DMOL_BACKGROUND = 'white'
 DEFAULT_3DMOL_ZOOM = 0.90
@@ -6910,7 +6928,7 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
     return view
 
 
-def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
+def render_xyz_in_output(output_widget, xyz_text, width=None, height=None, extra_js=None):
     """Render an XYZ string inside an ipywidgets Output widget.
 
     Honors the global viewer settings (``ui.viewer.enabled`` and
@@ -6929,10 +6947,468 @@ def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
             return
         eff_width = width if width is not None else profile['width']
         eff_height = height if height is not None else profile['height']
-        view = py3Dmol.view(width=eff_width, height=eff_height)
+        view = py3dmol().view(width=eff_width, height=eff_height)
         view.addModel(xyz_text, 'xyz')
         apply_molecule_view_style(view, zoom=profile['zoom'], style=profile['style'])
+        if extra_js:
+            # Raw script on the viewer (``viewer_UNIQUEID``), e.g. atom clicks.
+            view.startjs += extra_js
         view.show()
+
+
+# --- script-free GLViewer bootstrap for panels attached LATER -----------
+#
+# py3Dmol's generated HTML carries the loader INSIDE the Output widget's
+# stored content.  When the owning widget is attached to the page only
+# afterwards (a panel that fills its children after an event handler),
+# Voila replays those stored outputs as inert HTML: <script> tags are
+# never executed, so $3Dmol stays uninitialised from the widget's point
+# of view and py3Dmol's red "3Dmol.js failed to load" banner is all the
+# user ever sees.  The workaround is to store only the static viewer
+# <div> in the output and instantiate the GLViewer later through
+# ctx.run_js -- the one JavaScript channel Voila executes even on a
+# panel that came up after page load.  The library itself is already on
+# the page from the startup bundle (vendored_3dmol_js), so nothing is
+# fetched from any CDN.
+#
+# Diagnostics (user request 2026-11-02): when $3Dmol is missing the
+# bootstrap says exactly that in the panel instead of the generic
+# py3Dmol banner.
+
+def static_viewer_html(xyz_text, width=640, height=450,
+                       highlight_indices=None, viewer_id=None,
+                       arrows=None, frames=None):
+    """Pure builder for the script-free viewer markup.
+
+    Returns ``(viewer_id, html)``.  The payload sits in an inert
+    ``<script type="application/json">`` block (not executed by any
+    browser); the executable bootstrap comes separately from
+    :func:`ts_goat_viewer_bootstrap_js` and runs through ctx.run_js.
+
+    ``frames`` is a multi-frame XYZ string (validated orca_pltvib
+    trajectory); the frame player in :func:`ts_goat_viewer_frames_js`
+    loads it once with ``addModelsAsFrames`` and then only calls
+    ``setFrame`` -- the camera never moves.
+    """
+    vid = viewer_id or f'tsgoatviewer_{abs(hash(xyz_text)) % 10**8}'
+    payload = {
+        'id': vid,
+        'xyz': xyz_text,
+        'highlight': list(highlight_indices or []),
+        'arrows': list(arrows or []),
+        'show_arrows': bool(arrows),  # optional; off when no arrows passed
+        'frames': frames or None,
+        # Browser playback uses this validated count rather than assuming
+        # GLViewer exposes a getLength() method.
+        'frame_count': len(parse_xyz_frames(frames)) if frames else 0,
+    }
+    html = (
+        # The right column is fluid. A 640px-wide canvas inside a much
+        # wider stage visually parks the molecule on the left, even when
+        # 3Dmol centres it inside its own fixed-size canvas.
+        f'<div style="width:100%;height:{height}px;position:relative;'
+        f'border:0;margin:0;padding:0;min-width:0;">'
+        f'<div id="{vid}" style="position:relative;'
+        f'width:100%;height:100%;min-width:0;"></div>'
+        f'<script type="application/json" id="{vid}_data">'
+        + json.dumps(payload).replace('<', '\\u003c')
+        + '</script></div>'
+    )
+    return vid, html
+
+
+def render_xyz_static_div(output_widget, xyz_text, width=640, height=450,
+                          highlight_indices=None, viewer_id=None,
+                          arrows=None, frames=None):
+    """Store ONLY the static viewer div + highlight data in an Output.
+
+    No <script> reaches the output, so replaying it can never fail.
+    The caller instantiates the viewer afterwards with
+    :func:`ts_goat_viewer_bootstrap_js` through a run_js one-off.
+    """
+    from IPython.display import HTML
+    profile = get_viewer_profile()
+    with output_widget:
+        clear_output()
+        if not profile['enabled']:
+            display(HTML(viewer_disabled_html()))
+            return None
+        if not xyz_text or not xyz_text.strip():
+            print('No coordinates to display.')
+            return None
+        vid, html = static_viewer_html(
+            xyz_text, width=width, height=height,
+            highlight_indices=highlight_indices,
+            viewer_id=viewer_id, arrows=arrows, frames=frames)
+        display(HTML(html))
+        return vid
+
+
+def ts_goat_viewer_bootstrap_js(viewer_id, width=640, height=450,
+                                click_sync_css='.ts-goat-click-sync',
+                                arrows=None, mode_vector=None):
+    """The run_js one-off that instantiates the static-div viewer.
+
+    Uses the already-loaded ``window.$3Dmol`` (startup bundle); binds
+    setClickable so an atom click writes its 0-based index into the
+    sync input selected by ``click_sync_css`` (the same
+    property-setter + input-event pattern the structure editor uses);
+    draws displacement arrows when ``arrows`` (3N floats per atom) is
+    given.  Diagnoses instead of failing silently when the library or
+    the target div is missing.
+    """
+    import json as _json
+    arrow_payload = _json.dumps(list(arrows or []))
+    return (
+        "(function(){\n"
+        "var vid = " + _json.dumps(viewer_id) + ";\n"
+        "var attempt = 0;\n"
+        "function boot(){\n"
+        "  attempt++;\n"
+        # The Output widget's display(HTML) reaches the browser DOM only
+        # with the NEXT widget-state sync -- run_js from Python fires
+        # earlier, so the div may not exist yet.  Retry until the Voila
+        # sync lands it (max ~10 s); this is the race behind the
+        # "white viewer" report of 2026-11-02.
+        "  var el = document.getElementById(vid);\n"
+        "  if (!el || el.getBoundingClientRect().width < 100) {\n"
+        "    if (attempt < 40) { window.setTimeout(boot, 250); return; }\n"
+        "    console.error('DELFIN TS-GOAT: viewer stage not visible/sized for ' + vid); return;\n"
+        "  }\n"
+        "  if (typeof window.$3Dmol === 'undefined') {\n"
+        "    el.innerHTML = '<div style=\"padding:10px;color:#c62828;\">'\n"
+        "      + 'The bundled 3Dmol library is not loaded on this page '\n"
+        "      + '($3Dmol undefined). Reload the dashboard; if it persists '\n"
+        "      + 'the installation is missing delfin/dashboard/static/3Dmol-min.js.'\n"
+        "      + '</div>';\n"
+        "    console.error('DELFIN TS-GOAT: window.$3Dmol is undefined');\n"
+        "    return;\n"
+        "  }\n"
+        "  var dataEl = document.getElementById(vid + '_data');\n"
+        "  if (!dataEl) {\n"
+        "    if (attempt < 40) { window.setTimeout(boot, 250); return; }\n"
+        "    console.error('DELFIN TS-GOAT: payload missing for ' + vid);\n"
+        "    return;\n"
+        "  }\n"
+        # The HTML inside the Output has its own layout width, which can
+        # become stale after flex resize / closing Chrome DevTools. Drive
+        # the canvas from the visible Output widget's bounding box.
+        "var outputHost = el.closest('.ts-goat-viewer-output');\n"
+        "var stage = el.parentElement;\n"
+        "function sizeStage(){\n"
+        "  if (!stage || !outputHost) return;\n"
+        "  var bounds = outputHost.getBoundingClientRect();\n"
+        "  var w = Math.floor(bounds.width - 2), h = Math.floor(bounds.height - 2);\n"
+        "  if (w > 160 && h > 160) {\n"
+        "    stage.style.width = w + 'px';\n"
+        "    stage.style.height = h + 'px';\n"
+        "    el.style.width = '100%'; el.style.height = '100%';\n"
+        "  }\n"
+        "}\n"
+        "sizeStage();\n"
+        "var payload = JSON.parse(dataEl.textContent);\n"
+        "window.__tsGoatViewers = window.__tsGoatViewers || {};\n"
+        "window.__tsGoatAnimStop = window.__tsGoatAnimStop || {};\n"
+        "var previous = window.__tsGoatViewers[vid];\n"
+        "var savedView = null;\n"
+        "if (previous && typeof previous.getView === 'function') {\n"
+        "  try { savedView = previous.getView(); } catch (e) {}\n"
+        "}\n"
+        "if (window.__tsGoatAnimStop[vid]) {\n"
+        "  clearTimeout(window.__tsGoatAnimStop[vid]);\n"
+        "  delete window.__tsGoatAnimStop[vid];\n"
+        "}\n"
+        "if (previous && previous.__tsGoatResizeObserver) {\n"
+        "  try { previous.__tsGoatResizeObserver.disconnect(); } catch (e) {}\n"
+        "}\n"
+        "if (previous && previous.__tsGoatResizeHandler) {\n"
+        "  window.removeEventListener('resize', previous.__tsGoatResizeHandler);\n"
+        "}\n"
+        "if (previous && typeof window.__delfinDisposeViewer === 'function') {\n"
+        "  try { window.__delfinDisposeViewer(previous); } catch (e) {}\n"
+        "}\n"
+        "var viewer = new $3Dmol.createViewer(el, {backgroundColor: 'white', antialias: true});\n"
+        "viewer.__tsGoatDataEl = dataEl;\n"
+        "viewer.__tsGoatFrameCount = payload.frame_count || 0;\n"
+        "viewer.__tsGoatHighlightIndices = payload.highlight.slice();\n"
+        "window.__tsGoatViewers[vid] = viewer;\n"
+        "if (payload.frames) {\n"
+        "  viewer.addModelsAsFrames(payload.frames, 'xyz');\n"
+        "  viewer.setFrame(0);\n"
+        "} else {\n"
+        "  viewer.addModel(payload.xyz, 'xyz');\n"
+        "}\n"
+        "viewer.setStyle({}, {stick: {radius: 0.11}, sphere: {scale: 0.28}});\n"
+        # Render selection markers as independent GL shapes, never as
+        # atom styles: mixed atom-sphere opacities in 3Dmol can become
+        # ambiguous and recolour most of the molecular model.
+        "viewer.__tsGoatUpdateHighlights = function(){\n"
+        "  viewer.removeAllShapes();\n"
+        "  var atoms = viewer.getModel().selectedAtoms({}) || [];\n"
+        "  var chosen = {};\n"
+        "  for (var i = 0; i < viewer.__tsGoatHighlightIndices.length; i++) {\n"
+        "    chosen[viewer.__tsGoatHighlightIndices[i]] = true;\n"
+        "  }\n"
+        "  for (var k = 0; k < atoms.length; k++) {\n"
+        "    var a = atoms[k];\n"
+        "    if (!chosen[k]) continue;\n"
+        # A wireframe sphere at 12% opacity was effectively invisible.
+        # A solid, softly translucent *separate* shell is distinguishable
+        # without replacing the atom's CPK sphere or changing bond colours.
+        "    var radius = a.elem === 'H' ? 0.58 : 0.79;\n"
+        "    viewer.addSphere({center:{x:a.x,y:a.y,z:a.z},\n"
+        "      radius:radius,color:0x80a9c5,opacity:0.48,\n"
+        "      clickable:false});\n"
+        "  }\n"
+        "};\n"
+        "viewer.__tsGoatUpdateHighlights();\n"
+        "var arrows = " + arrow_payload + ";\n"
+        "if (payload.show_arrows && arrows && arrows.length) {\n"
+        "  var atoms = viewer.getModel().selectedAtoms({}) || [];\n"
+        "  for (var a = 0; a < atoms.length && a * 3 < arrows.length; a++) {\n"
+        "    var ax = arrows[a*3], ay = arrows[a*3+1], az = arrows[a*3+2];\n"
+        "    if (!ax && !ay && !az) continue;\n"
+        "    var L = 1.2, sc = 0.35;\n"
+        "    viewer.addArrow({start: {x: atoms[a].x, y: atoms[a].y, z: atoms[a].z},\n"
+        "      end: {x: atoms[a].x + ax*sc, y: atoms[a].y + ay*sc, z: atoms[a].z + az*sc},\n"
+        "      color: 0x1565c0, radius: 0.06, mid: 0.5});\n"
+        "  }\n"
+        "}\n"
+        "try {\n"
+        "  viewer.setClickable({}, true, function(atom) {\n"
+        "    if (!atom || atom.serial === undefined || atom.serial === null) return;\n"
+        # The css class belongs to the ipywidgets Text container;
+        # HTMLInputElement.value must be set on its nested <input>.
+        "    var syncHost = document.querySelector(" + _json.dumps(click_sync_css) + ");\n"
+        "    var sync = syncHost ? syncHost.querySelector('input') : null;\n"
+        "    if (!sync) { console.error('DELFIN TS-GOAT: click sync input missing'); return; }\n"
+        # Add a monotonically changing suffix: a second click on the
+        # SAME atom must emit a new Text value, otherwise traitlets
+        # suppresses the second on_change and the atom cannot toggle off.
+        "    window.__tsGoatClickSeq = (window.__tsGoatClickSeq || 0) + 1;\n"
+                # Click indices must match the zero-based line order of the XYZ
+        # file, also used in ORCA { C index C } constraints.
+        "    var orderedAtoms = viewer.getModel().selectedAtoms({}) || [];\n"
+        "    var clicked = orderedAtoms.indexOf(atom);\n"
+        "    if (clicked < 0 && typeof atom.index === 'number') clicked = atom.index;\n"
+        "    if (clicked < 0) clicked = orderedAtoms.findIndex(function(a){\n"
+        "      return a.serial === atom.serial && a.elem === atom.elem;\n"
+        "    });\n"
+        "    if (clicked < 0 || clicked >= orderedAtoms.length) {\n"
+        "      console.error('DELFIN TS-GOAT: clicked atom not in XYZ model'); return;\n"
+        "    }\n"
+        "    var clickValue = String(clicked) + ':' + window.__tsGoatClickSeq;\n"
+        "    var setter = Object.getOwnPropertyDescriptor(\n"
+        "      window.HTMLInputElement.prototype, 'value');\n"
+        "    if (setter && setter.set) setter.set.call(sync, clickValue);\n"
+        "    else sync.value = clickValue;\n"
+        "    sync.dispatchEvent(new Event('input', {bubbles: true}));\n"
+        "  });\n"
+        "} catch (e) { console.error('DELFIN TS-GOAT: setClickable failed', e); }\n"
+        # Fit the actual rendered canvas, not the stale hard-coded 640px.
+        # zoomTo()/center() run only for the initial view. A later atom
+        # click/re-render restores the prior camera via getView/setView.
+        # Fitting uses 3Dmol's model geometry, not the first three
+        # getView() components (translation).  Manually replacing those
+        # components led to a badly zoomed/cropped view in the browser.
+        "sizeStage(); viewer.resize();\n"
+        "function fitMolecule(){\n"
+        "  viewer.zoomTo({model: 0}); viewer.center({model: 0});\n"
+        "  viewer.zoom(0.85);\n"
+        "}\n"
+        "if (savedView && typeof viewer.setView === 'function') {\n"
+        "  try { viewer.setView(savedView); } catch (e) { fitMolecule(); }\n"
+        "} else { fitMolecule(); }\n"
+        "viewer.render();\n"
+        "var lastW = el.clientWidth, lastH = el.clientHeight;\n"
+        "var resizePending = false;\n"
+        "function resizeToHost(){\n"
+        "  if (!document.documentElement.contains(el)) {\n"
+        "    if (viewer.__tsGoatResizeObserver) viewer.__tsGoatResizeObserver.disconnect();\n"
+        "    window.removeEventListener('resize', scheduleResize);\n"
+        "    return;\n"
+        "  }\n"
+        "  sizeStage();\n"
+        "  var w = el.clientWidth, h = el.clientHeight;\n"
+        "  var canvas = el.querySelector('canvas');\n"
+        "  var cw = canvas ? canvas.getBoundingClientRect().width : 0;\n"
+        "  var ch = canvas ? canvas.getBoundingClientRect().height : 0;\n"
+        "  if (w > 160 && h > 160 &&\n"
+        "      (Math.abs(w - lastW) > 1 || Math.abs(h - lastH) > 1 ||\n"
+        "       Math.abs(w - cw) > 1 || Math.abs(h - ch) > 1)) {\n"
+        "    viewer.resize(); viewer.render();\n"
+        "  }\n"
+        "  lastW = w; lastH = h;\n"
+        "}\n"
+        "function scheduleResize(){\n"
+        "  if (resizePending) return;\n"
+        "  resizePending = true;\n"
+        "  requestAnimationFrame(function(){resizePending = false; resizeToHost();});\n"
+        "}\n"
+        "if (typeof ResizeObserver !== 'undefined') {\n"
+        "  var ro = new ResizeObserver(scheduleResize);\n"
+        "  ro.observe(outputHost || el);\n"
+        "  viewer.__tsGoatResizeObserver = ro;\n"
+        "}\n"
+        "window.addEventListener('resize', scheduleResize);\n"
+        "viewer.__tsGoatResizeHandler = scheduleResize;\n"
+        "setTimeout(scheduleResize, 80);\n"
+        "setTimeout(scheduleResize, 400);\n"
+        "setTimeout(scheduleResize, 1100);\n"
+        "}\n"
+        "boot();\n"
+        "})();\n"
+    )
+
+
+def ts_goat_viewer_highlights_js(viewer_id, indices):
+    """Change constraint halos without touching the 3Dmol canvas or camera.
+
+    This runs through the existing Voila run_js channel when the
+    constraints Textarea changes. Atom clicks and manual edits update
+    the currently rendered model instead of clearing the Output widget,
+    preventing asynchronous canvas disposal/reinitialisation races.
+    """
+    clean = sorted({int(i) for i in indices if int(i) >= 0})
+    return (
+        "(function(){\n"
+        "var vid = " + json.dumps(viewer_id) + ";\n"
+        "var indices = " + json.dumps(clean) + ";\n"
+        "var viewer = (window.__tsGoatViewers || {})[vid];\n"
+        "var payloadEl = document.getElementById(vid + '_data');\n"
+        "if (!viewer || !payloadEl || viewer.__tsGoatDataEl !== payloadEl) {\n"
+        "  console.warn('DELFIN TS-GOAT: selection update skipped; viewer not ready');\n"
+        "  return;\n"
+        "}\n"
+        "viewer.__tsGoatHighlightIndices = indices;\n"
+        "if (viewer.__tsGoatUpdateHighlights) {\n"
+        "  viewer.__tsGoatUpdateHighlights();\n"
+        "  viewer.render();\n"
+        "}\n"
+        "})();\n"
+    )
+
+
+def ts_goat_viewer_center_js(viewer_id):
+    """Re-center + re-zoom the existing viewer ('Ansicht zentrieren')."""
+    return (
+        "(function(){\n"
+        "var vid = " + json.dumps(viewer_id) + ";\n"
+        "var viewer = (window.__tsGoatViewers||{})[vid];\n"
+        "if (!viewer) { console.error('DELFIN TS-GOAT: no viewer ' + vid); return; }\n"
+        "viewer.resize();\n"
+        "viewer.zoomTo({model: 0}); viewer.center({model: 0});\n"
+        "viewer.zoom(0.85); viewer.render();\n"
+        "})();\n"
+    )
+
+
+def ts_goat_viewer_step_js(viewer_id, direction):
+    """Swap the displayed geometry to +direction or -direction arrows.
+
+    Reads the stored arrows from the payload JSON (already on the page),
+    re-adds the model displaced by them, re-applies highlights from the
+    payload and renders.  Play/Pause simply alternate direction in
+    Python, so no JS timer and no kernel round-trip per frame is
+    needed: each step is one run_js call.
+    """
+    return (
+        "(function(){\n"
+        "var vid = " + json.dumps(viewer_id) + ";\n"
+        "var viewer = (window.__tsGoatViewers||{})[vid];\n"
+        "if (!viewer) { console.error('DELFIN TS-GOAT: no viewer ' + vid); return; }\n"
+        "var dataEl = document.getElementById(vid + '_data');\n"
+        "if (!dataEl) return;\n"
+        "var payload = JSON.parse(dataEl.textContent);\n"
+        "var sign = " + ("1" if direction > 0 else "-1") + ";\n"
+        "viewer.clear();\n"
+        "var arrows = payload.arrows || [];\n"
+        "var lines = payload.xyz.split('\\n');\n"
+        "var n = parseInt(lines[0], 10) || 0;\n"
+        "var out = [lines[0], 'mode step'];\n"
+        "var amp = window.__tsGoatAmp || 0.25;\n"
+        "for (var a = 0; a < n; a++) {\n"
+        "  var row = lines[2 + a].split(/\\s+/);\n"
+        "  var x = parseFloat(row[1]), y = parseFloat(row[2]), z = parseFloat(row[3]);\n"
+        "  x += sign * amp * (arrows[a*3] || 0);\n"
+        "  y += sign * amp * (arrows[a*3+1] || 0);\n"
+        "  z += sign * amp * (arrows[a*3+2] || 0);\n"
+        "  out.push(row[0] + ' ' + x.toFixed(6) + ' ' + y.toFixed(6) + ' ' + z.toFixed(6));\n"
+        "}\n"
+        "viewer.addModel(out.join('\\n'), 'xyz');\n"
+        "viewer.setStyle({}, {stick: {radius: 0.11}, sphere: {scale: 0.28}});\n"
+        "var stepAtoms = viewer.getModel().selectedAtoms({}) || [];\n"
+        "for (var h = 0; h < payload.highlight.length; h++) {\n"
+        "  var hSerial = payload.highlight[h] + 1;\n"
+        "  for (var bi = 0; bi < stepAtoms.length; bi++) {\n"
+        "    if (stepAtoms[bi].serial !== hSerial) continue;\n"
+        "    var bt = stepAtoms[bi];\n"
+        "    viewer.addStyle({serial: hSerial},\n"
+        "      {sphere: {scale: 0.35, color: 0x1976a3, opacity: 0.20}});\n"
+                        "  }\n"
+        "}\n"
+        "viewer.render();\n"
+        "})();\n"
+    )
+
+
+def ts_goat_viewer_frames_js(viewer_id, running):
+    """Play/pause/reset preloaded ORCA frames without moving the camera.
+
+    True starts playback; 'pause' freezes the displayed frame; False stops
+    and resets to frame zero. A Play issued before Voila synchronises the
+    new viewer waits for the exact payload rendered by its bootstrap.
+    """
+    command = 'pause' if running == 'pause' else ('play' if running else 'reset')
+    return (
+        "(function(){\n"
+        "var vid = " + json.dumps(viewer_id) + ";\n"
+        "var command = " + json.dumps(command) + ";\n"
+        "window.__tsGoatAnimStop = window.__tsGoatAnimStop || {};\n"
+        "window.__tsGoatPlaybackTokens = window.__tsGoatPlaybackTokens || {};\n"
+        "var epoch = (window.__tsGoatPlaybackTokens[vid] || 0) + 1;\n"
+        "window.__tsGoatPlaybackTokens[vid] = epoch;\n"
+        "if (window.__tsGoatAnimStop[vid]) {\n"
+        "  clearTimeout(window.__tsGoatAnimStop[vid]);\n"
+        "  delete window.__tsGoatAnimStop[vid];\n"
+        "}\n"
+        "if (command !== 'play') {\n"
+        "  var stoppedViewer = (window.__tsGoatViewers || {})[vid];\n"
+        "  if (command === 'reset' && stoppedViewer) {\n"
+        "    try { stoppedViewer.setFrame(0);\n"
+        "      if (stoppedViewer.__tsGoatUpdateHighlights) stoppedViewer.__tsGoatUpdateHighlights();\n"
+        "      stoppedViewer.render(); } catch (e) {}\n"
+        "  }\n"
+        "  return;\n"
+        "}\n"
+        "var tries = 0;\n"
+        "function startWhenReady(){\n"
+        "  if (window.__tsGoatPlaybackTokens[vid] !== epoch) return;\n"
+        "  var dataEl = document.getElementById(vid + '_data');\n"
+        "  var viewer = (window.__tsGoatViewers || {})[vid];\n"
+        "  var n = viewer ? viewer.__tsGoatFrameCount : 0;\n"
+        "  if (!dataEl || !viewer || viewer.__tsGoatDataEl !== dataEl || n <= 1) {\n"
+        "    if (++tries < 50) { setTimeout(startWhenReady, 150); return; }\n"
+        "    console.error('DELFIN TS-GOAT: vibration frames not ready for ' + vid);\n"
+        "    return;\n"
+        "  }\n"
+        "  var frame = 0;\n"
+        "  function tick(){\n"
+        "    if (window.__tsGoatPlaybackTokens[vid] !== epoch) return;\n"
+        "    frame = (frame + 1) % n;\n"
+        "    try { viewer.setFrame(frame);\n"
+        "      if (viewer.__tsGoatUpdateHighlights) viewer.__tsGoatUpdateHighlights();\n"
+        "      viewer.render(); }\n"
+        "    catch (e) { console.error('DELFIN TS-GOAT: frame playback failed', e); return; }\n"
+        "    window.__tsGoatAnimStop[vid] = setTimeout(tick,\n"
+        "      Math.max(30, window.__tsGoatPeriodMs || 200));\n"
+        "  }\n"
+        "  window.__tsGoatAnimStop[vid] = setTimeout(tick,\n"
+        "    Math.max(30, window.__tsGoatPeriodMs || 200));\n"
+        "}\n"
+        "startWhenReady();\n"
+        "})();\n"
+    )
 
 
 def coord_to_xyz(coord_text):
@@ -7055,7 +7531,9 @@ def _fukui_atom_positions_from_xyz(xyz_text):
         if len(parts) < 4:
             continue
         try:
-            x = float(parts[1]); y = float(parts[2]); z = float(parts[3])
+            x = float(parts[1])
+            y = float(parts[2])
+            z = float(parts[3])
         except ValueError:
             continue
         positions.append((parts[0], x, y, z))
@@ -7450,7 +7928,9 @@ def render_fukui_panel(workdir, output_widget=None):
     viewer_box.add_class('fukui-viewer-box')
 
     def _redraw(*_):
-        from IPython.display import HTML as _HTML, clear_output as _clear, display as _display
+        from IPython.display import HTML as _HTML
+        from IPython.display import clear_output as _clear
+        from IPython.display import display as _display
 
         label_kind = label_select.value
         cube_name = cube_select.value

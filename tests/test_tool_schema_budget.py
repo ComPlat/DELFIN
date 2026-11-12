@@ -241,15 +241,51 @@ _BASELINE_TOKENS = 11_422
 # budget, so the budget moves +42, 10_178 -> 10_220.
 # Both arrived on main the same day; measured together: 10_176 + 11
 # (memory's remember schema) + 44 (make_plot energy_profile) = 10_231.
+# verify_source (SRC1, wave 26, 2026-11-02): one tool, three official-API
+# lookups (DOI via Crossref, compound via PubChem, works via OpenAlex) instead
+# of three tools. It arrived at +257 tokens; trimmed before measuring -- the
+# action enum describes itself, the value line is one clause, the refusal
+# rule stays ("not_found: it does not exist, do not cite it") because live
+# runs cite invented DOIs without it -- to +135 (description 37, parameter
+# descriptions 15, structure 83). Main had 3 tokens of slack (10_228), so
+# the budget moves +132, 10_231 -> 10_363.
+# Wave 14/w04 (2026-11-01): three ORCA-on-demand / workflow-routing tools
+# (orca_explain, orca_check_input, workflow_candidates). Trimmed first --
+# one-sentence description each, bare types, no parameter prose. Measured:
+# 70 + 76 + 89 = 235 tokens; the budget moves by exactly that, 10_231 ->
+# 10_466 on the then-main. Their payload (dictionary records, knowledge cards, the ranking
+# with CONTROL keys) lives in the tool RESULTS, not the schema.
+# Both on main together: 10_363 + 235 = 10_598.
+# Lab control (delfin/lab, 2026-11-05): five tools -- lab_devices,
+# lab_read, lab_set, lab_plan_check, lab_estop -- measured at 342 as first
+# written and trimmed to 327 (e-stop reason dropped from the schema: the
+# audit records a default; descriptions cut to one clause each). 248 of the
+# 327 are structure (names, types, required), which no wording shrinks;
+# lab_set carries the whole write contract (device, channel, value, unit,
+# approval). Advertised only where a lab manifest exists
+# (ToolSurfaceContext.has_lab, read from delfin.lab.store), so an
+# installation without a lab pays nothing per request; the catalogue is
+# measured whole. Main measured 10_595, so the budget moves +324,
+# 10_598 -> 10_922. Rejected: one `lab` tool with an action enum (a single
+# schema whose arguments change meaning by action is the shape models
+# mis-call most; the refusal reasons are per-tool).
+# read_file `paths` (2026-11-11): several files in one call, because the
+# measured model sends one tool call per request 91 % of the time, so each
+# further file read cost a full model round trip. The property costs 27
+# tokens (14 structure, 13 its one-clause text); 10 were returned by
+# dropping the `path` description ("Relative or absolute."), which the
+# tool description already says. Main measured 10_922; the budget moves +17, to 10_939.
+# Rejected: a separate read_files tool (a whole second schema, ~60 tokens,
+# and a second spelling every read gate would have to learn).
 # 2026-10-21: the seven cluster tools (delfin/agent/cluster_tools.py:
 # status, read, fetch, upload, submit, cancel, run), +641. They are
 # advertised only when remote.clusters names a cluster
 # (tool_unavailable_reason), so a session without one pays nothing; a
 # session with one gets the agent's whole way to its clusters. Trimmed
 # before measuring -- descriptions shortened, the batch item's name dropped
-# (a job is named after its folder) -- 689 -> 641. Main measured 10_229, so
-# the budget moves 10_231 -> 10_870.
-_TOKEN_BUDGET = 10_870
+# (a job is named after its folder) -- 689 -> 641. Measured on 10_229 then;
+# merged onto main's 10_939 on 2026-11-12, measured 11_580 (+641).
+_TOKEN_BUDGET = 11_580
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -263,6 +299,9 @@ _POST_COMPACTION_TOOLS = frozenset({
     "subagent_message", "show_molecule", "make_plot", "skill_share",
     "cluster_status", "cluster_read", "cluster_fetch", "cluster_upload",
     "cluster_submit", "cluster_cancel", "cluster_run",
+    "verify_source",
+    "orca_explain", "orca_check_input", "workflow_candidates",
+    "lab_devices", "lab_read", "lab_set", "lab_plan_check", "lab_estop",
 })
 
 

@@ -1,0 +1,1450 @@
+[
+ {
+  "id": "dlpno.fits-basis-required",
+  "topic": "dlpno",
+  "kind": "requirement",
+  "severity": "error",
+  "statement": "The DLPNO and LPNO methods obligatorily make use of the RI approximation; a correlation fitting basis set must be provided. The same rules as for RI-MP2 apply: the auxiliary basis sets optimized for MP2 are fine for PNO calculations (e.g. def2-SVP/C for def2-SVP). The manual states 'The DLPNO and LPNO methods obligatorily make use of the RI approximation. Hence, a correlation fit set must be provided.' Several auxiliary bases may be given in one job and the program sorts them out.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD",
+   "DLPNO-CCSD(T)",
+   "DLPNO-MP2",
+   "def2-SVP/C"
+  ],
+  "when": {
+   "method": "any DLPNO-* or LPNO-* correlation method"
+  },
+  "recommend": {
+   "keywords": [
+    "DLPNO-CCSD(T)"
+   ]
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.pno-keywords-accuracy-control",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "Control DLPNO accuracy with the simple-input keywords LoosePNO, NormalPNO and TightPNO, not by editing individual thresholds. The manual calls these keywords 'the recommended way to control the accuracy of DLPNO calculations'; 'Manual changing of thresholds beyond these specifying these keywords is usually discouraged' and 'Individual thresholds should normally not be changed, as the defaults are sensible and lead to good cost/performance ratios.' NormalPNO (the default) is useful for general thermochemistry; TightPNO when investigating weak interactions or conformational equilibria; LoosePNO for rapid estimates.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "LoosePNO",
+   "NormalPNO",
+   "TightPNO"
+  ],
+  "when": {
+   "method": "any DLPNO-* method"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.tightpno.full-iterative-lmp2",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "TightPNO triggers the full iterative (DLPNO-MP2) treatment in the MP2 guess, whereas LoosePNO and NormalPNO use a semicanonical MP2 calculation. Table 3.40 'Accuracy settings for DLPNO coupled cluster (current version)': LoosePNO MP2 pair treatment = semicanonical; NormalPNO = semicanonical; TightPNO = full iterative.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "TightPNO",
+   "NormalPNO",
+   "LoosePNO"
+  ],
+  "when": {
+   "method": "any DLPNO-* method"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.threshold-defaults-normalpno",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "Default DLPNO-CCSD truncation thresholds, i.e. the NormalPNO values: TCutPNO = 3.33e-7 (the main truncation parameter, cuts PNOs with occupation number below it), TCutPairs = 1e-4, TCutDO = 1e-2, TCutMKN = 1e-3. Written as one complete %mdci block line: '%mdci TCutPNO 3.33e-7 TCutPairs 1e-4 TCutDO 1e-2 TCutMKN 1e-3 end'. These are the NormalPNO values; change them via the LoosePNO/TightPNO keywords, not by hand (the manual: 'All of these default values are conservative. Hence, no adjustment of these parameters is necessary.').",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "method": "DLPNO-CCSD and variants"
+  },
+  "recommend": {
+   "keywords": [
+    "NormalPNO"
+   ]
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The numbers are right (3.10.10.1 / 3.10.10.2), but '%block TCutPNO 3.33e-7' is not ORCA syntax. An agent that copies it writes an invalid input. It also largely duplicates dlpno.tightpno-threshold-table."
+ },
+ {
+  "id": "dlpno.tightpno-threshold-table",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "Table 3.40 'Accuracy settings for DLPNO coupled cluster (current version)': LoosePNO: TCutPairs 1e-3, TCutDO 2e-2, TCutPNO 1.00e-6, TCutMKN 1e-3. NormalPNO: TCutPairs 1e-4, TCutDO 1e-2, TCutPNO 3.33e-7, TCutMKN 1e-3. TightPNO: TCutPairs 1e-5, TCutDO 5e-3, TCutPNO 1.00e-7, TCutMKN 1e-3. The three accuracy keywords change TCutPairs, TCutDO and TCutPNO; TCutMKN stays 1e-3 for all settings (in Table 3.41 for the deprecated DLPNO2013 thresholds, TightPNO has TCutMKN 1e-4). TightPNO additionally switches the MP2 guess from semicanonical to full iterative LMP2. Block options only - write them as a complete block, e.g. '%mdci TCutPNO <value> end', never as simple-input keywords.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "method": "DLPNO-CCSD and variants"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The Table 3.40 values are correct. But the card says the accuracy keywords change only TCutPairs, TCutDO and TCutPNO, while TightPNO also switches the MP2 pair treatment to full iterative LMP2. It also uses the invalid '%block' placeholder."
+ },
+ {
+  "id": "dlpno.lpno-not-supported-6",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "With ORCA 6.0 the LPNO variants are no longer supported, as they involve some higher order scaling steps (up to N^5) while DLPNO is linear scaling and of similar accuracy. Keywords such as LPNO-CCSD or LPNO-CEPA/1 are legacy of older ORCA versions and must not be expected to work in ORCA 6.x; use the DLPNO-prefixed methods instead.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "orca-version": ">=6.0"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.dlpno2013-legacy-prefix",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "Since ORCA 4.0, the linear-scaling DLPNO implementation is the default DLPNO algorithm. The first DLPNO implementation (2013) can still be called by using the DLPNO2013 prefix instead of the DLPNO- prefix, e.g. '! cc-pVTZ cc-pVTZ/C DLPNO2013-CCSD(T)'. Deprecated (Table 3.41); use only to reproduce old results. The improvements of the linear-scaling algorithm compared to DLPNO2013-CCSD(T) start to become significant at system sizes of about 300 atoms. DLPNO2013 uses RIJCOSX for the singles Fock matrix unless RIJK is given (then RIJK), while in DLPNO the singles Fock term is evaluated using PNOs (SinglesFockUsePNOs true).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO2013-CCSD(T)",
+   "DLPNO-CCSD(T)",
+   "RIJCOSX"
+  ],
+  "when": {
+   "method": "DLPNO-CCSD and variants"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   },
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.2.2. Single Exchange and Hybrid Algorithms for the Singles Fock Term"
+   },
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.2. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The prefix, example and 300-atom crossover are correct. Two omissions: Table 3.41 labels the 2013 version deprecated, and the 3.10.10.2 listing says DLPNO2013 uses RIJCOSX for the singles Fock matrix 'except when RIJK is given', in which case it uses RIJK."
+ },
+ {
+  "id": "dlpno.triples-nomenclature-t0-vs-t1",
+  "topic": "dlpno",
+  "kind": "keyword",
+  "statement": "ORCA input nomenclature differs from the literature. In ORCA input, the keyword DLPNO-CCSD(T) invokes the SEMI-CANONICAL perturbative triples correction; the improved ITERATIVE perturbative triples correction is invoked by DLPNO-CCSD(T1). In the paper these are named DLPNO-CCSD(T0) (semicanonical) and DLPNO-CCSD(T) (iterative) respectively - the names are swapped relative to ORCA input files.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)",
+   "DLPNO-CCSD(T1)"
+  ],
+  "when": {
+   "method": "DLPNO-CCSD with perturbative triples"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.t1-accuracy-small-gap",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "The semicanonical perturbative triples correction (keyword DLPNO-CCSD(T)) can introduce large errors in rare cases, particularly when the HOMO-LUMO gap is small, whereas DLPNO-CCSD remains very accurate. Use DLPNO-CCSD(T1) (iterative triples) when the HOMO-LUMO gap is small or when reference-quality (T) energies are needed. Open-shell DLPNO-CCSD(T1) is available since ORCA 4.2, with the same keyword as the closed-shell case.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)",
+   "DLPNO-CCSD(T1)"
+  ],
+  "when": {
+   "method": "DLPNO-CCSD(T) or DLPNO-CCSD(T1)"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.t1-block-options",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "For DLPNO-CCSD(T1) the triples natural orbitals are controlled in the %mdci block: TNOSCALES 10.0 (TNO truncation scale for strong triples, TNOSCALES*TCutTNO; default 10.0), TNOSCALEW 100.0 (TNO truncation scale for weak triples, TNOSCALEW*TCutTNO; default 100.0), TriTolE 1e-4 ((T) energy convergence tolerance; default 1e-4). Block options only - never write TNOSCALES or TriTolE as simple-input keywords.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T1)"
+  ],
+  "when": {
+   "method": "DLPNO-CCSD(T1)"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.closed-shell-and-high-spin-only",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "DLPNO-CISD/QCISD/CCSD methods are dedicated to closed-shell and high-spin open-shell species, but not spin-polarized systems (e.g. open-shell singlets or antiferromagnetically coupled transition metal clusters). Performing DLPNO-CISD/QCISD/CCSD calculations upon open-shell singlet UHF/UKS wavefunctions will give results resembling the corresponding closed-shell singlet calculations, because the DLPNO calculations will be done on the closed-shell determinant composed of the QRO orbitals. Similarly, calculations of spin-polarized systems other than open-shell singlets may give qualitatively wrong results - the energy obtained is that of the wrong state. Use DLPNO-NEVPT2 or another multireference method instead, or canonical UHF-CCSD(T) for small systems with a check of <S^2>.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD",
+   "DLPNO-NEVPT2",
+   "UHF",
+   "UKS"
+  ],
+  "when": {
+   "multiplicity": "open-shell singlet or spin-polarized (broken-symmetry) systems"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "severity": "error",
+  "verified_by": "expert-mdci",
+  "review_note": "The restriction is quoted correctly, but the card passes on the manual's stale advice to use UHF-LPNO-CCSD, which ORCA 6 no longer supports (the card dlpno.lpno-not-supported-6 says the same). The outcome is a qualitatively wrong result, not an ORCA refusal, yet the card has no severity."
+ },
+ {
+  "id": "dlpno.open-shell-uco-recommended",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "Add ! UCO to print UHF corresponding orbitals; corresponding-orbital overlaps clearly below 1 (e.g. <0.9) indicate a broken-symmetry/spin-polarized solution, for which DLPNO-CCSD is not meaningful (see dlpno.closed-shell-and-high-spin-only). Check <S^2> as well.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)",
+   "UCO",
+   "UHF"
+  ],
+  "when": {
+   "multiplicity": "open-shell systems"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The statement repeats the manual but never says what UCO does. UCO only prints the UHF corresponding orbitals and their overlaps, which is a diagnostic for broken symmetry. It does not prevent a broken-symmetry SCF, and an agent could read it as a fix."
+ },
+ {
+  "id": "dlpno.open-shell-reference-choices",
+  "topic": "dlpno",
+  "kind": "procedure",
+  "statement": "Open-shell DLPNO-CCSD can be run from three reference types as given in the manual: (1) ROHF reference: '! ROHF DLPNO-CCSD def2-TZVPP def2-TZVPP/C TightSCF TightPNO'; (2) UHF reference - the default open-shell route: the QROs are constructed first and used for the open-shell DLPNO-CCSD computations: '! UHF DLPNO-CCSD def2-TZVPP def2-TZVPP/C TightSCF TightPNO'; (3) UKS: '! UKS CAM-B3LYP DLPNO-CCSD def2-TZVPP def2-TZVPP/C TightSCF TightPNO' - the QROs are constructed from the UKS orbitals and used as unconverged UHF orbitals. Use the UKS route when the converged UHF is qualitatively wrong (e.g. strong spin contamination) but UKS is not. The open-shell DLPNO-CCSD produces more than 99.9% of the canonical CCSD correlation energy.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD",
+   "ROHF",
+   "UHF",
+   "UKS",
+   "TightPNO",
+   "def2-TZVPP",
+   "def2-TZVPP/C"
+  ],
+  "when": {
+   "multiplicity": "high-spin open-shell"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Reference (3) drops the functional. The manual input is '! UKS CAM-B3LYP DLPNO-CCSD ...', so a bare UKS line with no functional is incomplete. The card also omits the manual's reason for choosing the UKS route."
+ },
+ {
+  "id": "dlpno.qro-orbital-ordering-convergence",
+  "topic": "dlpno",
+  "kind": "error-pattern",
+  "statement": "On top of a Slater determinant constructed from the QROs, check the QRO orbital energies: in some cases the orbital energy of the highest SOMO appears higher than that of the lowest virtual MO, and the orbital energy of the highest DOMO may appear higher than that of the lowest SOMOs. In such cases the CEPA/QCISD/CCSD iteration may show difficulty in convergence; in the worst case it diverges. Remedies: first suspect that charge and multiplicity might be wrong; if they are correct, use UKS/DFT orbitals as reference if HF is deficient, and increase MaxDIIS and LShift (default 0.3), e.g. '%mdci LShift 0.5 MaxDIIS 12 MaxIter 100 end'.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "method": "canonical or DLPNO CEPA/QCISD/CCSD on QROs"
+  },
+  "recommend": {
+   "block": "%mdci LShift <value> MaxDIIS <n> end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Incomplete against 3.10.10.1. The manual names three remedies: better starting orbitals (DFT orbitals in place of HF when HF is deficient, e.g. severe spin contamination), MaxDIIS, and LShift. The card gives only LShift and no value."
+ },
+ {
+  "id": "dlpno.somo-count-cost",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "In the open-shell DLPNO implementations, SOMOs are included not only in the occupied space but also in the PNO space in the preceding integral transformation step. Special care should be taken if the system possesses more than ten SOMOs, since inclusion of more SOMOs may drastically increase the prefactor of the calculations. If the SOMOs are distributed over the entire molecular skeleton, each pair domain may not be truncated at all; in this case the speedup attributed to the domain truncation will not be achieved.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "multiplicity": "high-spin open-shell with many SOMOs"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.open-shell-cost-factor",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "The open-shell versions of the DLPNO methods are about twice as expensive as the corresponding closed-shell versions.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "multiplicity": "open-shell DLPNO calculations"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.gradients-not-available",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "No analytic gradients for the DLPNO-CC family (DLPNO-CCSD, DLPNO-CCSD(T), DLPNO-CCSD(T1) and their F12 variants); DLPNO-MP2 has analytic gradients. Potential energy surfaces are virtually but not perfectly smooth (like any method that involves cut-offs). Use NumGrad/NumFreq explicitly if needed, with TightPNO and TightSCF since the PES is only nearly smooth, or optimize at DFT/DLPNO-MP2 and run single-point energies at DLPNO-CCSD(T). Do not request Opt or Freq on the DLPNO-CC family expecting analytic derivatives.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD",
+   "DLPNO-CCSD(T)",
+   "NumGrad",
+   "NumFreq"
+  ],
+  "when": {
+   "job-type": "optimization or frequencies with DLPNO-CC methods"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Too broad. The manual line refers to the DLPNO coupled-cluster methods, but ORCA 6 has analytic gradients for DLPNO-MP2 (and the DLPNO double hybrids). Banning Opt/Freq on 'DLPNO methods' would wrongly block those jobs."
+ },
+ {
+  "id": "dlpno.frozen-core-default",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "In coupled-cluster calculations (including DLPNO) the Frozen Core (FC) approximation is applied by default: the core electrons are not included in the correlation treatment. Switch it with !FrozenCore or !NoFrozenCore in the simple input. Note that the same FrozenCore options as for MP2 are applied in the MDCI module.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "FrozenCore",
+   "NoFrozenCore"
+  ],
+  "when": {
+   "method": "MDCI module methods (CCSD, DLPNO-CCSD, ...)"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.2.1. Frozen Core Options"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.semicores-tightened-tcutpno-default",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "Starting from ORCA 6.0, in DLPNO calculations tightened TCutPNO thresholds are used by default for 'semicore' electron pairs involving the 3s and 3p orbitals of first-row transition metals. This improves the accuracy noticeably. To reproduce results from earlier versions, set the number of semicore orbitals on first-row transition metals to zero (the old default) instead of eight (the current default): '%method NewNSemiCore <Element> 0 end end', repeated for every first-row transition-metal element present (manual example: Zn). Do not mix DLPNO energies for 3d-metal systems from ORCA <6 and >=6 in one energy difference.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "elements": "first-row transition metals present"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.3. Including (semi)core orbitals in the correlation treatment"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Correct as a 6.0 default. But NewNSemiCore is set per element, and the card gives only the Zn example. An agent reproducing ORCA 5 numbers for an Fe complex could copy 'Zn'. The card should also say that 5.x and 6.x DLPNO energies for 3d metals are not directly comparable."
+ },
+ {
+  "id": "dlpno.nofrozencore-needs-correlating-basis",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "If the frozen-core approximation is switched off (NoFrozenCore) and all electrons are included in the correlation treatment, DLPNO tightens TCutPNO by default for all electron pairs and Singles that involve chemical core electrons; the scaling factor is settable as '%mdci TScalePNO_Core 0.01 end' (0.01 is the manual's example value, not a stated default). In this case, the use of properly optimized basis functions for correlating the inner electrons is highly recommended: core-correlating bases such as cc-pwCVnZ or cc-pCVnZ (see footnote 4 of section 3.10.14), and note that the /C fit set must also cover core correlation (e.g. the matching -C/C basis or AutoAux). If electrons are replaced by ECPs, they are not included in the correlation treatment.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "NoFrozenCore",
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "job-type": "NoFrozenCore DLPNO calculation"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.3. Including (semi)core orbitals in the correlation treatment"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The content is right (3.10.10.3), but '%block TScalePNO_Core 0.01' is not ORCA syntax, and the 0.01 is the manual's example value, not a stated default. The card does not name a core-correlating basis."
+ },
+ {
+  "id": "dlpno.newncore-ecp-count",
+  "topic": "dlpno",
+  "kind": "requirement",
+  "statement": "With ECPs, NewNCore counts the ECP electrons plus the extra frozen electrons (e.g. 60 ECP + 8 frozen = 68): '%method NewNCore <El> 68 end end'. NewNCore (in the %method block, e.g. '%method NewNCore Ti 8 end end') defines the number of chemical core electrons per element that are affected by TScalePNO_Core. A wrong NewNCore silently changes which electrons are frozen.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "elements": "ECP + NewNCore used together"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.3. Including (semi)core orbitals in the correlation treatment"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "severity": "warning",
+  "verified_by": "expert-mdci",
+  "review_note": "The content (NewNCore includes the ECP electrons, 60+8=68) matches 3.10.10.3. But kind 'error-pattern' is wrong: there is no ORCA message, it is an input rule. A wrong NewNCore silently changes which electrons are frozen, so it needs a severity."
+ },
+ {
+  "id": "dlpno.localization-ahfb-default",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "Localized orbitals for DLPNO are obtained via the Foster-Boys method with an augmented Hessian converger (AHFB) by default; LocMet options are PM, FB, IAOIBO, IAOBOYS, NEWBOYS, AHFB. The localization tolerance (LocTol) is coupled to the SCF gradient tolerance (TolG) with a constant factor by default - selecting TightSCF therefore also ensures a set of appropriately well converged localized orbitals. No randomization is used for the AHFB converger. The ORCA 4.0 old defaults can be reproduced with '%mdci LocMet FB LocTol 1.0e-6 LocRandom 1 end'.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "TightSCF"
+  ],
+  "when": {
+   "method": "any DLPNO method"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.2. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The facts match 3.10.10.2 (AHFB default, LocTol coupled to TolG, no randomization for AHFB, LocMet options). The old-defaults input uses the invalid '%block' placeholder."
+ },
+ {
+  "id": "dlpno.localization-randomization-reproducibility",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "The localization methods FB, PM, IAOIBO and IAOBOYS employ randomization of the initial guess. Randomization can lead to differently localized MOs in different calculations, yielding non-identical correlation energies varying in the sub-kJ/mol range for different runs on the same machine. Switching randomization off ('%mdci LocRandom 0 end' in the %mdci block) gives identical results only on the same machine; different machines can still differ slightly (sub-kJ/mol range). Setting LocNAttempts to higher values increases reproducibility. With the default AHFB converger none of this applies - it does not use randomization; switching to FB or PM is what introduces the run-to-run spread.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "method": "DLPNO with LocMet FB, PM, IAOIBO or IAOBOYS"
+  },
+  "recommend": {
+   "block": "%mdci LocRandom 0 end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.2. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The content matches 3.10.10.2. The statement still uses '%block LocRandom 0' (only the recommend field is valid). Minor, but it is the form an agent will copy."
+ },
+ {
+  "id": "dlpno.storage-shared-ram",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "For larger systems and tighter thresholds the disk I/O of a DLPNO calculation may become challenging. If enough RAM is available, '%mdci StorageType Shared end' in the %mdci block makes ORCA store certain much-used integrals in shared memory; if the memory is not sufficient, ORCA falls back to on-disk storage. This only works if all processes work on the same node (all MPI processes on one node). Block option only - never a simple-input keyword.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "job-type": "large-system DLPNO runs, single node"
+  },
+  "recommend": {
+   "block": "%mdci StorageType Shared end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.2. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The content matches 3.10.10.2, but the statement uses the invalid '%block StorageType Shared' form."
+ },
+ {
+  "id": "dlpno.f12d-cheaper-than-f12",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "DLPNO-CCSD(T)-F12 and DLPNO-CCSD(T1)-F12 (iterative triples) are available for both closed- and open-shell cases and employ a perturbative F12 correction on top of DLPNO-CCSD(T). The F12 correction takes only a fraction (usually 10-30%) of the total time (excluding SCF) and scales the same as the parent DLPNO method; no new truncation parameters are introduced. The F12D approximation is highly recommended as it is computationally cheaper than the F12 approach which involves a double RI summation. Keywords: DLPNO-CCSD(T)-F12D, DLPNO-CCSD(T)-F12, DLPNO-CCSD(T1)-F12D, DLPNO-CCSD(T1)-F12, DLPNO-CCSD-F12D, DLPNO-CCSD-F12.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)-F12D",
+   "DLPNO-CCSD(T)-F12",
+   "DLPNO-CCSD(T1)-F12D",
+   "DLPNO-CCSD(T1)-F12",
+   "DLPNO-CCSD-F12D",
+   "DLPNO-CCSD-F12"
+  ],
+  "when": {
+   "job-type": "F12-corrected DLPNO single-point energy"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.unrelaxed-density-closed-shell-only",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "General first-order properties from the unrelaxed DLPNO-CCSD density are documented for closed shells; open-shell DLPNO-CCSD spin densities are available for hyperfine couplings with the DLPNO-HFC1/HFC2 settings (see dlpno.hfc-tightened-settings). Use tighter than default PNO thresholds to approach canonical properties. Request the density with '%MDCI Density Unrelaxed End'.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "job-type": "DLPNO-CCSD property calculation, closed shell"
+  },
+  "recommend": {
+   "block": "%mdci Density Unrelaxed end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Repeats the manual, but 'closed-shell DLPNO-CCSD only' is too strong. Open-shell DLPNO-CCSD spin densities exist for hyperfine couplings (Saitow & Neese 2018, the DLPNO-HFC1/DLPNO-HFC2 keywords in Table 3.43). Read literally, the card would make the agent refuse a supported calculation."
+ },
+ {
+  "id": "dlpno.mdci-density-options",
+  "topic": "dlpno",
+  "kind": "keyword",
+  "statement": "Coupled-cluster densities are selected in the %mdci block: 'none' (the manual is inconsistent on the default - none vs linearized; set it explicitly), 'linearized' (a linearized density coinciding with CEPA/0; cheap, but not what coupled-cluster aficionados accept as a density), 'unrelaxed' (from the Lambda equations), 'orbopt' (orbital-optimized, fully relaxed). Write e.g. '%mdci density unrelaxed end'. Works together with CCSD or QCISD; there is no density for CCSD(T)/QCISD(T). Instead of density orbopt, OOCCD can be invoked by the simple keyword OOCCD.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD",
+   "OOCCD"
+  ],
+  "when": {
+   "job-type": "CCSD/QCISD density or property calculation"
+  },
+  "recommend": {
+   "block": "%mdci density unrelaxed end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.3. Coupled-Cluster Densities"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Three problems. (1) The keyword tag QCISD(T) is wrong: densities are for CCSD/QCISD, with no (T) density. (2) '%block density none' is not syntax. (3) The default is ambiguous: 3.10.3 lists none first, while the 3.10.14 listing (keyword Denmat) says '(default: linearized)'."
+ },
+ {
+  "id": "dlpno.sdiagnostic-for-multireference",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "Check single-reference suitability with the S-diagnostic, not the T1-diagnostic. The manual states the widely used T1-diagnostic 'has nothing to do with multi-reference character' - it measures the extent of orbital relaxation in the dynamic correlation field. The S-diagnostic introduced by Pedersen et al. does measure multi-reference character; it is available for canonical RHF and UHF CCSD and invoked with '%mdci DoSDiagnostic true end' (block option only).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD"
+  ],
+  "when": {
+   "method": "canonical RHF or UHF CCSD"
+  },
+  "recommend": {
+   "block": "%mdci DoSDiagnostic true end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.6. The Coupled Cluster S-Diagnostic"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.single-reference-limits-twist-and-dissociation",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "Single-reference correlation methods (CCSD, CCSD(T), DLPNO-*) are only reliable if the reference determinant already provides a good description of the system's electronic structure. C2H4 twist: RHF fails, CCSD(T) happens to stay close to MRACPF (an abuse of the method). F2 dissociation: CCSD(T) agrees with MRACPF up to ~2.0 A and becomes unphysical beyond. Bond breaking and diradicals need CASSCF/NEVPT2/MRCI.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD(T)",
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "job-type": "bond dissociation, biradicals, multireference systems"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.4. Static versus Dynamic Correlation"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Two examples are conflated. In 3.10.4 the 'CCSD(T) begins to diverge beyond ~2.0 A' statement is about F2 dissociation. For the 90-degree C2H4 twist the manual says CCSD(T) stays very close to MRACPF (2-3 mEh), calls that an inappropriate use, and notes the T1 diagnostic rises."
+ },
+ {
+  "id": "dlpno.basis-quality-tz-minimum",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "CCSD(T)-level methods only deliver their accuracy in conjunction with large basis sets; the manual states it is 'perhaps not very meaningful to perform a CCSD(T) calculation with a double-zeta basis set'. The very least basis set quality required for meaningful results is about def2-TZVP(-f), preferably def2-TZVPP (cc-pVTZ, ano-pVTZ); for accurate results quadruple-zeta and even larger basis sets are required. Smaller DZP-type basis sets produce errors on the order of 1-2 pm in calculated distances.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD(T)",
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "job-type": "correlated single-point energies"
+  },
+  "recommend": {
+   "keywords": [
+    "def2-TZVPP"
+   ]
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.2. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.dlpno-recovers-998-percent",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "DLPNO methods are designed to reproduce canonical coupled-cluster results: typically about 99.8% to 99.9% of the canonical correlation energy is recovered with the default cut-offs, and the default cut-offs are set so that the vast majority of chemically meaningful energy differences are reproduced to better than 1 kcal/mol relative to the canonical results with the same basis set. DLPNO truncations are not real-space cut-offs; all truncations are based on wavefunction or energy parameters.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "method": "any DLPNO method with default thresholds"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.maxcore-in-mdci-block",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "Using large main memory is not mandatory but advantageous for DLPNO: it speeds up the initial integral transformation significantly. Set the global memory control '%maxcore <MB per MPI process>' (e.g. 3000-8000 for DLPNO-CCSD(T)), staying below the physical RAM per core. The '%mdci MaxCore 350' line in the manual listing is a module-level override only - do not set it while leaving %maxcore at its small default. DLPNO works together with RIJCOSX, RI-JK, ANO basis sets, basis set extrapolation and conventional integral handling.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD",
+   "RIJCOSX",
+   "RIJK"
+  ],
+  "when": {
+   "method": "any DLPNO method"
+  },
+  "recommend": {
+   "block": "%maxcore <MB per MPI process>"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10. Local correlation (DLPNO)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Misleading as an instruction. The memory control a user normally sets is the global '%maxcore <MB per process>', which the MDCI module uses. The '%mdci MaxCore 350' line in 3.10.14 is a listing example, not a recommended control, and the agent may set it while leaving %maxcore at its small default."
+ },
+ {
+  "id": "dlpno.mdci-maxiter-printlevel",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "Values shown in the manual's %mdci listing (MaxIter 35, STol 1e-5, LShift 0.3, MaxDIIS 7, PrintLevel 2; at PrintLevel 3 and higher things like pair correlation energies are printed). This listing is an annotated example, not a verified table of defaults - confirm the defaults in the MDCI settings printed in the output. Block options only - never write MaxIter or STol as simple-input keywords; the literal form is e.g. '%mdci MaxIter 100 end'.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD"
+  ],
+  "when": {
+   "module": "orca_mdci"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.14. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The values come from the 3.10.14 block listing, which is an annotated example (it also shows 'MaxCore 350' and 'citype CISD'), not a verified table of defaults. The run's output header is authoritative. Calling them defaults risks wrong expectations, e.g. about MaxIter."
+ },
+ {
+  "id": "dlpno.trajectory-slowconvergence-approach",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "Slowly converging MDCI calculations: the manual documents that SlowConv-like handling of difficult CEPA/QCISD/CCSD convergence can be helped by increasing MaxIter and adjusting LShift in the %mdci block. If the QRO orbital-energy ordering is inverted (see dlpno.qro-orbital-ordering-convergence), check charge and multiplicity first before raising thresholds or level shifts.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD"
+  ],
+  "when": {
+   "module": "orca_mdci, convergence problems"
+  },
+  "recommend": {
+   "block": "%mdci MaxIter <n> LShift <value> end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.14. Keywords"
+   }
+  ],
+  "status": "rejected",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Duplicate of dlpno.qro-orbital-ordering-convergence, with a misattributed claim: the manual documents no 'SlowConv-like handling' for MDCI. Its remedies (3.10.10.1) are better starting orbitals, MaxDIIS and LShift, in the QRO context. The id is also meaningless."
+ },
+ {
+  "id": "dlpno.cim-methods-and-cimthresh",
+  "topic": "dlpno",
+  "kind": "procedure",
+  "statement": "CIM (cluster in molecules): add ! CIM to RI-MP2, CCSD(T), DLPNO-MP2 or DLPNO-CCSD(T) (e.g. '! DLPNO-CCSD(T) cc-pVDZ cc-pVDZ/C CIM'); closed-shell only (the open-shell generalization is future work); energies only. The only parameter is CIMTHRESH in the %CIM block: '%CIM CIMTHRESH 0.0005 end' for accurate work (default 0.001). Since ORCA 4.1, neglected weak inter-subsystem correlations are approximately evaluated via dipole moment integrals; about 99.8% of the correlation energies are recovered. CIM-RI-MP2, CIM-CCSD(T), CIM-DLPNO-MP2 and CIM-DLPNO-CCSD(T) are the method names produced by the parent method plus the CIM keyword.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CIM",
+   "DLPNO-CCSD(T)",
+   "cc-pVDZ",
+   "cc-pVDZ/C"
+  ],
+  "when": {
+   "multiplicity": "1 (closed-shell)",
+   "job-type": "very large molecules, energy only"
+  },
+  "recommend": {
+   "block": "%CIM CIMTHRESH <value> end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.9. Cluster in molecules (CIM)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Two problems. It omits the main restriction: CIM in ORCA is closed-shell only, and 3.10.9 says the open-shell generalization is future work. It also calls CIM-RI-MP2 etc. keywords; they are method names produced by the parent method plus the CIM keyword."
+ },
+ {
+  "id": "dlpno.multilevel-fraginter-options",
+  "topic": "dlpno",
+  "kind": "procedure",
+  "statement": "Multi-level (QM/QM) DLPNO calculations assign levels per fragment: in the %mdci block, LoosePNOFragInter {1 1} {2 2}, NormalPNOFragInter {1 2}, TightPNOFragInter {1 3}, NormalPNOTightPairFragInter {1 2} (NormalPNO with TCutPairs 1e-5), LoosePNOTightPairFragInter {1 3}, NoTriplesFragments 1, 2, MP2FragInter {1 1} {2 2}, HFFragInter {1 1} {2 2}. The one-keyword line defines the default method (DLPNO-CCSD(T) or DLPNO-CCSD plus a PNO keyword); each intra- or interfragment combination must be defined only once. When MP2FragInter is used, UseFullLmp2Guess defaults to true. Fragments are defined by suffixing atoms in the coordinate block with (n), e.g. C(1); LMOs are assigned to fragments by Mulliken populations. Available levels: DLPNO-CCSD(T) Tight/Normal/LoosePNO, DLPNO-CCSD, DLPNO-MP2, HF.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "job-type": "multi-level QM/QM calculations with fragments"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.11. Multi-Level Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The options are listed correctly, but the card cannot be acted on without the fragment definition (atom labels like C(1), H(2) in the coordinate block; LMOs assigned to fragments by Mulliken population). It also omits the allowed levels (TightPNO/NormalPNO/LoosePNO DLPNO-CCSD(T), DLPNO-CCSD, DLPNO-MP2, HF)."
+ },
+ {
+  "id": "dlpno.multilevel-monomer-consistency",
+  "topic": "dlpno",
+  "kind": "requirement",
+  "severity": "error",
+  "statement": "For multi-level DLPNO interaction energies, the monomer energies must be computed at the accuracy level of the monomer inside the complex: the manual's benzene-dimer example computes each monomer at MP2 with full LMP2 guess (UseFullLmp2Guess True) because the intrafragment pairs are treated with MP2FragInter in the dimer calculation. Comparing a multi-level complex energy with monomer energies at a different level is inconsistent and gives wrong interaction energies.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)"
+  ],
+  "when": {
+   "job-type": "multi-level interaction energies"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.11. Multi-Level Calculations"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.eom-multilevel-ip-accuracy-placement",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "For multi-layer IP-EOM-DLPNO-CCSD, treat the fragment from which the ionization happens at the highest possible level, the interaction between main fragment and environment at intermediate accuracy, and the environment can safely be treated with HFFragInter for almost all cases. MP2FragInter treatment is NOT available for the EOM method. Decide the main-fragment size from HF occupied orbitals - Koopmans' approximation is a very good zeroth order guess for IP values.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "IP-EOM-DLPNO-CCSD"
+  ],
+  "when": {
+   "job-type": "multi-layer IP-EOM-DLPNO-CCSD"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.12. Multi-Level Calculations for IP and EA-EOM-DLPNO-CCSD"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.eom-multilevel-ea-tighter-thresholds",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "Multi-layer EA-EOM-DLPNO-CCSD requires much tighter thresholds than the IP variant because electron-attached states are much less localized. Example: ! EA-EOM-DLPNO-CCSD NormalPNO ma-def2-SVP RIJCOSX aug-cc-pVDZ/C def2/J, with '%mdci FollowCIS true TCutPNOSingles 1e-12 MaxIter 2000 DTol 1e-7 end' (TCutPNOSingles -1 means 0.03*TCutPNO, the default, and it is adjusted per fragment automatically). Diffuse functions are needed for anions. For reasonable accuracy the environment and inter-fragment interaction should be treated at least at LoosePNOFragInter level.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "EA-EOM-DLPNO-CCSD",
+   "NormalPNO"
+  ],
+  "when": {
+   "job-type": "multi-layer EA-EOM-DLPNO-CCSD"
+  },
+  "recommend": {
+   "block": "%mdci TCutPNOSingles 1e-12 end"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.12. Multi-Level Calculations for IP and EA-EOM-DLPNO-CCSD"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The EA example in 3.10.12 does not contain TightSCF (that is in the IP example). It does use diffuse bases (ma-def2-SVP, aug-cc-pVDZ/C), MaxIter 2000 and DTol 1e-7, which the card omits. The manual also notes that TCutPNOSingles is adjusted per fragment automatically."
+ },
+ {
+  "id": "dlpno.extrapolate-ep2-default-method",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "ExtrapolateEP2(n/m,bas,[method,method-details]) estimates the CCSD(T) basis set limit: CCSD(T) is computed only at cardinal number X, and the cheap method M (default DLPNO-CCSD(T) with NormalPNO; options MP2, or DLPNO-CCSD(T) with LoosePNO/TightPNO in the method-details slot) is computed at X and X+1 and extrapolated. E.g. '! ExtrapolateEP2(2/3,cc,DLPNO-CCSD(T)) TightSCF Conv Bohrs'. Basis-family-specific alpha/beta values (cc 2/3: 4.42/2.46) are used; the program prints the values. Deprecated; prefer the compound scripts. Single points only; auxiliary bases are chosen automatically and cannot be changed; only the built-in basis families work; use TightSCF or tighter.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "ExtrapolateEP2(2/3,cc,DLPNO-CCSD(T))",
+   "TightSCF"
+  ],
+  "when": {
+   "job-type": "basis set limit estimation"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.8. Automatic extrapolation to the basis set limit"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Omits that the feature is deprecated (3.10.8 note), and the conditions from the same section: auxiliary bases are chosen automatically and cannot be changed, only default basis families work, single points only, very tight SCF needed. The 'beta = 2.4 always' sentence contradicts the manual's own output (Beta(2/3) 2.460 for cc)."
+ },
+ {
+  "id": "dlpno.extrapolate-deprecated",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "The automatic basis set extrapolation functionality (Extrapolate(X/Y,basis), ExtrapolateEP2, ExtrapolateEP3) is deprecated - the manual's note reads 'This functionality is deprecated - it may still be usable but we will not actively maintain this part of code anymore. For basis set extrapolation please use the respective compound scripts.' For new work prefer the compound scripts; ExtrapolateEP2/EP3 remain documented with DLPNO-CCSD(T) as the default cheap method.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "ExtrapolateEP2(2/3,cc,DLPNO-CCSD(T))",
+   "ExtrapolateEP3(CC)"
+  ],
+  "when": {
+   "job-type": "basis set extrapolation"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.8. Automatic extrapolation to the basis set limit"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.extrapolate-ep3-cardinal-shift",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "ExtrapolateEP3(CC): CCSD(T) at cc-pVDZ, and the cheap method M (default DLPNO-CCSD(T) NormalPNO) at DZ, TZ and QZ, with M's CBS taken from TZ/QZ - instead of extrapolating M with cardinal numbers X and X+1, X+1 and X+2 are used (eq. 3.128). Deprecated; prefer the compound scripts. Invoked as e.g. '! ExtrapolateEP3(CC) TightSCF Conv Bohrs', which runs cc-pVDZ/cc-pVTZ/cc-pVQZ.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "ExtrapolateEP3(CC)"
+  ],
+  "when": {
+   "job-type": "basis set limit estimation"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.8. Automatic extrapolation to the basis set limit"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The scheme (eq. 3.128) is right, but the card omits the deprecation. It is also ambiguous about which energies come from which basis: CCSD(T) is computed only with cc-pVDZ, and the cheap method M (default DLPNO-CCSD(T)/NormalPNO) is extrapolated from TZ/QZ."
+ },
+ {
+  "id": "dlpno.aux-basis-cabs-f12",
+  "topic": "dlpno",
+  "kind": "requirement",
+  "severity": "error",
+  "statement": "F12 (incl. DLPNO-F12) calculations need special orbital basis sets (cc-pVnZ-F12, n = D, T, Q, recommended where available) and, in addition to the orbital basis, a near-complete auxiliary 'CABS' basis (cc-pVnZ-F12-CABS). CABS basis sets are read like RI auxiliary bases (replace AUX by CABS); for elements not covered, supply a CABS basis yourself (e.g. via AutoCABS). For DLPNO-F12 a /C basis is always required (one cardinal level up recommended, e.g. cc-pVTZ/C with cc-pVDZ-F12); with RIJCOSX or RI-JK add a fourth Coulomb fitting basis (e.g. def2/J).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD(T)-F12D",
+   "cc-pVDZ-F12",
+   "cc-pVDZ-F12-CABS",
+   "cc-pVTZ/C"
+  ],
+  "when": {
+   "method": "any F12 method"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.7. Explicitly Correlated Methods: F12-MP2 and F12-CCSD(T)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "Basis requirements match 3.10.7, but there are gaps. For DLPNO-F12 the /C basis is mandatory (DLPNO is RI-bound), not conditional on 'if RI is used'. The keywords list cc-pVDZ/C with cc-pVDZ-F12 although the text recommends cc-pVTZ/C. The fourth (/J or /JK) basis needed with RIJCOSX/RI-JK is missing."
+ },
+ {
+  "id": "dlpno.f12-no-gradients-no-rohf",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "Explicitly correlated (F12) methods: RHF and UHF are available, ROHF is not (although a ROHF-like calculation can be done using QROs). Gradients are not available. This holds for the F12 family including F12-MP2 and F12-CCSD(T); do not combine F12 methods with ROHF references or with optimization/frequency jobs.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "F12-MP2",
+   "F12-CCSD(T)",
+   "ROHF"
+  ],
+  "when": {
+   "method": "F12 methods"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.7. Explicitly Correlated Methods: F12-MP2 and F12-CCSD(T)"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.singles-fock-keywords",
+  "topic": "dlpno",
+  "kind": "keyword",
+  "statement": "The singles Fock term is evaluated by RIJCOSX (simple keyword RCSinglesFock) or RIJK (simple keyword RIJKSinglesFock); NoRCSinglesFock and NoRIJKSinglesFock turn them off. The program usually decides which method to use, and chooses sensibly - change only for a specific reason: for canonical and LPNO methods the default is the same approximation used in the SCF calculation; DLPNO2013 uses RIJCOSX by default; in (linear-scaling) DLPNO the singles Fock term is evaluated using PNOs via SinglesFockUsePNOs. The %method block accepts the literal form '%method RIJKSinglesFock 1 RCSinglesFock 0 end'.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "RCSinglesFock",
+   "RIJKSinglesFock",
+   "NoRCSinglesFock",
+   "NoRIJKSinglesFock",
+   "RIJCOSX"
+  ],
+  "when": {
+   "module": "orca_mdci"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.2. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The facts match 3.10.2 and 3.10.2.2, but '%block RIJKSinglesFock 1' is invalid; the manual form is '%method RIJKSinglesFock 1 RCSinglesFock 0 end'. The card does not say the defaults should normally be kept."
+ },
+ {
+  "id": "dlpno.integral-implementation-choices",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "Canonical MDCI integral handling via simple-input prefixes: AO-, MO- (the default, full four-index transformation), RI- ('rarely advisable', significantly slower), RI34- (RI only for 3- and 4-external integrals), AOX-<Method> (outdated, four times the disk space, kept for historical reasons). MO-METHOD is usually most efficient up to about 300 basis functions, AO-METHOD beyond (much less disk in the direct variant); deeply contracted ANO bases run in conventional mode. The KC options (kc_ao, kc_aoblas, kc_ri) are not available for UHF. If the integral transformation dominates: '%mdci TrafoType trafo_ri end' or KCOpt kc_ao (closed shell only).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD"
+  ],
+  "when": {
+   "method": "canonical MDCI methods (not DLPNO)"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.2. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "It omits the manual's size guidance (MO-METHOD best up to ~300 basis functions; AO-METHOD for >300; deeply contracted ANO bases in conventional mode). It also omits that KC_AO/KC_AOBLAS/KC_RI are not available for UHF. 'Block options only' is wrong for AO-/MO-/RI-METHOD, which are simple-input prefixes."
+ },
+ {
+  "id": "dlpno.mdci-citype-values",
+  "topic": "dlpno",
+  "kind": "keyword",
+  "statement": "The correlation method can be selected inside the %mdci block with citype: CISD, QCISD, CCSD, CEPA_1, CEPA_2, CEPA_3, NCEPA_1, NCEPA_2, NCEPA_3, NCPF_1, NCPF_2, NCPF_3, ACPF, ACPF_2, NACPF, AQCC, SEOI (SEOI not yet available for UHF). Complete block option: '%mdci citype CCSD end'. The simple-input method keyword is the normal route; citype is for canonical MDCI. These values carry underscores in the block, unlike the simple-input names CEPA/1, NCPF/1, etc.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD"
+  ],
+  "when": {
+   "module": "orca_mdci %mdci block"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.14. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The list matches 3.10.14, but '%block citype CCSD' is not syntax."
+ },
+ {
+  "id": "dlpno.cepa-open-shell-variant-choice",
+  "topic": "dlpno",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "CEPA/1 and NCEPA/1 are the simple-input forms of the coupled-pair variants. Except for CEPA/1 and VCEPA/1 (and CEPA/0), CEPA calculations of closed-shell molecules yield slightly different energies for the spin-restricted and spin-unrestricted versions; for CEPA/2 and CEPA/3 this holds even for closed-shell molecules. Use variant 1 for coupled-pair type calculations (the manual recommends it; it is also the most accurate CEPA variant). For variants 2 and 3, reaction energies of reactions involving closed-shell and open-shell molecules simultaneously should be calculated using the spin-unrestricted versions only.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD"
+  ],
+  "when": {
+   "method": "CEPA/1, NCEPA/1; CEPA variants 2 and 3 in mixed closed-/open-shell reaction energies"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.1.2. Open-Shell Equations"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The content matches 3.10.1.2, but the keyword tag is CCSD although the card is about CEPA variants, so it would be retrieved for the wrong method."
+ },
+ {
+  "id": "dlpno.localization-vs-triples-incompatible",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "In the %mdci block, the manual notes that localization is incompatible with the (T) correction ('Localize 0 # use localized MOs. Presently very little use is made of locality. It may help for interpretations. Localization is incompatible with the (T) correction'). Do not combine Localize with a (T)-triples calculation in the canonical MDCI module. Block option only.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD(T)"
+  ],
+  "when": {
+   "method": "canonical MDCI methods with (T) correction"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.14. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.useqros-default-false",
+  "topic": "dlpno",
+  "kind": "default",
+  "statement": "In the %mdci block, UseQROs (use of quasi-restricted orbitals) defaults to false; it is switched on automatically for open-shell DLPNO-CCSD run from UHF or UKS references, where the QROs are constructed first and used for the correlation computation. Setting it explicitly is only needed for canonical MDCI open-shell runs.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD",
+   "UHF",
+   "UKS"
+  ],
+  "when": {
+   "module": "orca_mdci"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.14. Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ },
+ {
+  "id": "dlpno.hfc-tightened-settings",
+  "topic": "dlpno",
+  "kind": "keyword",
+  "statement": "Open-shell DLPNO-CCSD spin densities for hyperfine couplings (HFCs): use DLPNO-HFC1 (or the tighter DLPNO-HFC2) instead of LoosePNO/NormalPNO/TightPNO, and request the HFC with '%eprnmr Nuclei = all <El> {aiso, adip} end'. Use a core-property basis (e.g. EPR-II, EPR-III) and NoFrozenCore where core polarization matters.",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-HFC1",
+   "DLPNO-HFC2",
+   "EPR-II",
+   "EPR-III",
+   "NoFrozenCore"
+  ],
+  "when": {
+   "job-type": "DLPNO hyperfine coupling constants"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.14. Keywords"
+   },
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/spectroscopyproperties/epr.html",
+    "section": "Hyperfine Couplings and g Tensors"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "The keywords exist (Table 3.43), but the card cannot be acted on. It does not say that DLPNO-HFC1/HFC2 replace the PNO keyword on an open-shell (UHF/QRO) DLPNO-CCSD run, nor that the hyperfine property must still be requested. The claim that NormalPNO is not the tightened setting is an inference, not manual text."
+ },
+ {
+  "id": "dlpno.mdci-availability-rhf-uhf-only",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "The coupled-cluster and CI methods in the orca_mdci module are available for RHF and UHF references; in the open-shell case quasi-restricted orbitals (QROs) are also supported. All these methods are designed to cover dynamic correlation in systems where the Hartree-Fock determinant dominates the wavefunction; CISD is not size-consistent and therefore practically useless for energies. MDCI fails if there are no alpha virtual orbitals (e.g. minimal basis); canonical CC is O(N^6), (T) O(N^7), feasible to ~300-600 basis functions; open-shell (T) includes the 4th-order DT term since 4.2 ('%mdci Include_4thOrder_DT_in_Triples false end' to reproduce older results).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "CCSD",
+   "CISD"
+  ],
+  "when": {
+   "method": "orca_mdci methods"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.2. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci",
+  "review_note": "It omits the hard restriction in 3.10.2: MDCI cannot run without alpha virtual orbitals (minimal bases), which is a refusal. It also omits the cost facts that steer method choice (O(N^6)/O(N^7); UHF ~3x, ~6x with triples) and the 4.2 change to open-shell CCSD(T) (Include_4thOrder_DT_in_Triples)."
+ },
+ {
+  "id": "dlpno.lpno-vs-dlpno-model-chemistry",
+  "topic": "dlpno",
+  "kind": "limit",
+  "statement": "LPNO methods were designed to reproduce the canonical results including BSSE - they should not be viewed as a new model chemistry. The domain based local correlation methods (DLPNO) do constitute a new model chemistry with properties that are different from the original methods. Comparisons of DLPNO energies must therefore be made within one PNO setting (identical LoosePNO/NormalPNO/TightPNO across all members of an energy difference).",
+  "orca": ">=6.0,<7",
+  "keywords": [
+   "DLPNO-CCSD"
+  ],
+  "when": {
+   "job-type": "energy differences between DLPNO calculations"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/mdci.html",
+    "section": "3.10.10.1. Basic Usage"
+   }
+  ],
+  "status": "verified",
+  "author": "w13",
+  "verified_by": "expert-mdci"
+ }
+]

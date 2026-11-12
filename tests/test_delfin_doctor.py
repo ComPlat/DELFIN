@@ -268,8 +268,9 @@ class TestRunAll:
         docs_index_file(None)
         results = run_all(scratch_dir=scratch_dir)
         names = [r.name for r in results]
-        assert len(results) == 9
-        assert len(set(names)) == 9  # distinct, no duplicates
+        # 10: the OPI check (test_opi_is_the_same_everywhere).
+        assert len(results) == 10
+        assert len(set(names)) == 10  # distinct, no duplicates
         assert all(isinstance(r, CheckResult) for r in results)
 
     def test_all_ok(self, clean_env, scratch_dir, docs_index_file, monkeypatch, tool_health):
@@ -283,6 +284,9 @@ class TestRunAll:
                             lambda name, **kw: "dummy")
         monkeypatch.setattr("delfin.doctor.check_command_isolation",
                             lambda: CheckResult("command_isolation", OK, "supplied"))
+        # OPI is an extra: supplied here, as the binaries are.
+        monkeypatch.setattr("delfin.doctor.check_opi",
+                            lambda: CheckResult("opi", OK, "supplied"))
         docs_index_file({"documents": []})
         results = run_all(scratch_dir=scratch_dir)
         assert all(r.status == OK for r in results), [

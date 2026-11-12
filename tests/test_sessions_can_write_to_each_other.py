@@ -130,8 +130,10 @@ def _input(tab):
     stack = [tab]
     while stack:
         node = stack.pop()
-        if isinstance(node, widgets.Textarea) and "Message the agent" in (
-                node.placeholder or ""):
+        # By its class, not its placeholder: the placeholder is wording
+        # and changes (it did on 2026-10-22), the class is the contract.
+        if isinstance(node, widgets.Textarea) and "delfin-agent-input" in (
+                getattr(node, "_dom_classes", ()) or ()):
             return node
         stack.extend(getattr(node, "children", ()) or ())
     raise AssertionError("no input box")

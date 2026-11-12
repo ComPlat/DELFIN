@@ -63,7 +63,9 @@ def test_the_stream_loop_ends_stopped_before_it_would_retry():
     from pathlib import Path
     src = Path(api_client.__file__).read_text(encoding="utf-8")
     i = src.index("except Exception as _stream_exc:")
-    window = src[i:i + 2200]
+    # Up to the transient retry: the quota wait sits between the stop
+    # check and the retry, so a fixed width would cut the window short.
+    window = src[i:src.index("_is_transient_api_error(", i) + 30]
     assert "if self._stop_was_requested():" in window
     assert window.index("if self._stop_was_requested():") < window.index("_is_transient_api_error(")
     assert 'stop_reason="stopped"' in window

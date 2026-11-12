@@ -306,6 +306,28 @@ describe("an approval keeps the prompt, and typing never answers it", () => {
     expect(prompts()).toEqual([])
   })
 
+  test("c: the command is put in the prompt, enter answers with the changed one", async () => {
+    await mount()
+    await asked({ ...bash("c1", 2), command: "pytest -q",
+                  options: [...bash("c1", 2).options, { key: "c", label: "change the command" }] })
+    await press("c")
+    expect(w!.replies()).toEqual([])
+    expect(w!.footer().join("\n")).toContain("change")
+    expect(promptLine()).toContain("❯ pytest -q")
+    await type(" -x")
+    await press("return")
+    expect(w!.replies()).toEqual([{ sessionId: "s1", requestId: "c1", choice: "c", command: "pytest -q -x" }])
+    expect(prompts()).toEqual([])
+  })
+
+  test("c is no key where the session did not offer it", async () => {
+    await mount()
+    await asked({ ...bash("c1", 2), command: "pytest -q" })
+    await press("c")
+    await press("return")
+    expect(w!.replies()).toEqual([])
+  })
+
   test("A still takes its second step; typing in the prompt does not take it", async () => {
     await mount()
     await asked(bash("c1", 2))

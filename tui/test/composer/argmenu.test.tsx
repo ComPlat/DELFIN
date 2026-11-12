@@ -6,6 +6,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { mountWindow } from "../harness"
+import { WINDOW_COMMANDS } from "../../src/commands"
 
 let w: Awaited<ReturnType<typeof mountWindow>> | null = null
 afterEach(async () => { await w?.close(); w = null })
@@ -61,7 +62,7 @@ describe("the menu after a command", () => {
     await type("/")
     // More than the list's rows: what it shows as ↓ walks it.
     let seen = screen()
-    for (let i = 0; i < COMMANDS.length + 4; i++) {
+    for (let i = 0; i < COMMANDS.length + WINDOW_COMMANDS.length; i++) {
       w!.keys.pressArrow("down")
       await w!.settle()
       seen += screen()

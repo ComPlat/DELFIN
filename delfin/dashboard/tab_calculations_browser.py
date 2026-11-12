@@ -4,6 +4,7 @@ import base64
 import html as _html
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -22,44 +23,7 @@ import ipywidgets as widgets
 import numpy as np
 from IPython.display import HTML, clear_output, display
 
-from .constants import CALC_SEARCH_OPTIONS
-from .energy_labels import format_xyz_comment_label
-from .input_processing import (
-    parse_inp_resources,
-    parse_resource_settings,
-    smiles_to_xyz,
-    smiles_to_xyz_quick,
-    contains_metal,
-    is_smiles,
-)
-from . import upload_limits as _upload_limits
-from .helpers import (
-    disable_spellcheck, image_data_uri, js_string_literal,
-    neutralise_link_targets, save_neb_trajectory_csv,
-    save_neb_trajectory_plot_png,
-)
-from . import docx_view as _docx
-from . import pdf_view as _pdf
-from . import formula_engine as _formula_engine
-from . import spreadsheet_view as _sheet
-from . import text_view as _text_view
-from . import ketcher as _ketcher
-from . import ketcher_panel as _ketcher_panel
-from .molecule_viewer import (
-    VIEWER_CONTAINER_DYNAMIC_SCALE,
-    VIEWER_CONTAINER_HEIGHT_PX,
-    coord_to_xyz,
-    parse_xyz_frames,
-    get_viewer_profile,
-    measurement_bootstrap_js,
-    molecule_view_style_js,
-    patch_viewer_mouse_controls_js,
-    render_fukui_panel,
-    structure_viewer_fullscreen_bootstrap_js,
-    structure_viewer_fullscreen_css,
-    structure_viewer_fullscreen_kind_js,
-    viewer_disabled_html,
-)
+
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
 from delfin.reporting.delfin_docx_report import _orca_plot_binary
 from delfin.ssh_transfer_jobs import (
@@ -70,17 +34,60 @@ from delfin.ssh_transfer_jobs import (
 )
 from delfin.user_settings import (
     get_settings_path,
-    is_calc_unread,
     load_remote_archive_enabled,
     load_transfer_settings,
     mark_calc_as_read,
     normalize_ssh_transfer_settings,
     update_calc_running_transitions,
 )
-from rdkit import Chem, RDLogger
-from rdkit.Chem import rdDepictor, AllChem
-from rdkit.Chem.Draw import MolToImage
 
+from . import docx_view as _docx
+from . import formula_engine as _formula_engine
+from . import ketcher as _ketcher
+from . import ketcher_panel as _ketcher_panel
+from . import pdf_view as _pdf
+from . import spreadsheet_view as _sheet
+from . import text_view as _text_view
+from . import upload_limits as _upload_limits
+from .constants import CALC_SEARCH_OPTIONS
+from .energy_labels import format_xyz_comment_label
+from .select_state import replace_options as _replace_options
+from .helpers import (
+    disable_spellcheck,
+    image_data_uri,
+    js_string_literal,
+    neutralise_link_targets,
+    save_neb_trajectory_csv,
+    save_neb_trajectory_plot_png,
+)
+
+def _input_processing():
+    """Import .input_processing on first use.
+
+    That module pulls in delfin.smiles_converter and, through it,
+    delfin.manta.ml_tables, whose module level ``import stk`` costs seconds
+    of every process start. Nothing on the startup path needs it: the names
+    are wanted when a SMILES is parsed or an input is inspected, so the
+    import runs then, once, and is cached by sys.modules afterwards.
+    """
+    from . import input_processing
+    return input_processing
+
+from .molecule_viewer import (
+    VIEWER_CONTAINER_DYNAMIC_SCALE,
+    VIEWER_CONTAINER_HEIGHT_PX,
+    coord_to_xyz,
+    get_viewer_profile,
+    measurement_bootstrap_js,
+    molecule_view_style_js,
+    parse_xyz_frames,
+    patch_viewer_mouse_controls_js,
+    render_fukui_panel,
+    structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css,
+    structure_viewer_fullscreen_kind_js,
+    viewer_disabled_html,
+)
 
 ORCA_CPCM_TOP10_SOLVENTS = (
     "chloroform",
@@ -236,6 +243,10 @@ def create_tab(ctx):
         'xyz_workflow_source_path': None,
         'xyz_batch_path': '',
         'xyz_batch_marked_paths': [],
+        # Spin density panel parameters. 'spin_display' holds the current
+        # display settings and the path of the cube they were rendered from,
+        # so the viewer can re-render without re-running orca_plot.
+        'spin_display': None,
         'delete_current': False,
         'table_col_defs': [
             {'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'},
@@ -1261,6 +1272,20 @@ def create_tab(ctx):
     calc_file_info = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    # One line, as a file header is today: a long name ends in an ellipsis
+    # (hover shows it whole) instead of breaking anywhere onto a second line
+    # beside the action buttons.
+    calc_file_info.add_class('calc-file-info')
+
+    def _calc_file_info_tooltip(change):
+        # The whole header as plain text on hover, for a name cut short.
+        text = re.sub(r'<[^>]+>', '', str(change.get('new') or ''))
+        try:
+            calc_file_info.tooltip = _html.unescape(text).strip() or None
+        except Exception:
+            pass
+
+    calc_file_info.observe(_calc_file_info_tooltip, names='value')
     calc_path_display = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
@@ -1624,6 +1649,145 @@ def create_tab(ctx):
         layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
     )
 
+    # -- spin density widgets -----------------------------------------------
+    # The panel is split by what changes the computed data and what only
+    # changes the view:
+    #   "Spin Density Generation"    (.out files)  -> grid, "Plot Spin Density"
+    #   "Spin Density Visualization" (.cube files) -> isovalue, colors, ...
+    # A grid change is the only parameter that re-runs orca_plot (a new cube
+    # must be generated); every display parameter only changes how the
+    # already-generated cube is drawn.
+    calc_spin_density_btn = widgets.Button(
+        description='Plot Spin Density',
+        button_style='primary',
+        layout=widgets.Layout(width='140px', min_width='140px', height='26px'),
+    )
+    calc_spin_density_status = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', overflow_x='hidden'),
+    )
+    calc_spin_density_grid = widgets.Dropdown(
+        options=[40, 60, 80, 100, 120],
+        value=80,
+        description='Grid Resolution:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(
+            width='240px', min_width='240px', height='28px', overflow='hidden',
+        ),
+    )
+    calc_spin_density_grid_note = widgets.HTML(
+        '<span style="color:#555; font-size:12px;">'
+        'Changing Grid Resolution requires regenerating the cube.</span>',
+        layout=widgets.Layout(width='100%', margin='0 0 0 8px'),
+    )
+    calc_spin_density_isoval = widgets.FloatText(
+        value=0.005,
+        description='Isovalue:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='170px', min_width='170px', height='28px'),
+    )
+    calc_spin_density_pos_cb = widgets.Checkbox(
+        value=True, description='Positive Density', indent=False,
+        layout=widgets.Layout(width='190px', height='28px', overflow='hidden'),
+    )
+    calc_spin_density_neg_cb = widgets.Checkbox(
+        value=True, description='Negative Density', indent=False,
+        layout=widgets.Layout(width='190px', height='28px',
+                              flex='0 0 auto', overflow='hidden'),
+    )
+    calc_spin_density_mol_cb = widgets.Checkbox(
+        value=True, description='Show Molecule', indent=False,
+        layout=widgets.Layout(width='160px', height='28px', overflow='hidden'),
+    )
+    calc_spin_density_opacity = widgets.FloatSlider(
+        value=0.65, min=0.0, max=1.0, step=0.05,
+        description='Opacity:',
+        style={'description_width': 'initial'},
+        readout=True, readout_format='.2f',
+        continuous_update=False,
+        layout=widgets.Layout(width='250px', min_width='250px', height='28px'),
+    )
+    calc_spin_density_pos_color = widgets.ColorPicker(
+        value='#0000ff', description='Positive Color:', concise=True,
+        style={'description_width': 'initial'},
+        # No fixed height: the browser adds a scrollbar to the widget
+        # body when the fixed height is smaller than its content.
+        layout=widgets.Layout(width='210px', min_width='210px'),
+    )
+    calc_spin_density_neg_color = widgets.ColorPicker(
+        value='#ff0000', description='Negative Color:', concise=True,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='210px', min_width='210px'),
+    )
+    calc_spin_density_apply_btn = widgets.Button(
+        description='Apply Display Settings',
+        tooltip='Apply the display settings to the displayed spin density cube (no orca_plot run).',
+        layout=widgets.Layout(width='180px', min_width='180px', height='28px'),
+    )
+    # Generation section: grid + plot button, shown for ORCA output files.
+    calc_spin_density_generation_box = widgets.VBox(
+        [
+            widgets.HTML('<b>Spin Density Generation</b>'),
+            calc_spin_density_grid,
+            calc_spin_density_grid_note,
+            calc_spin_density_btn,
+        ],
+        layout=widgets.Layout(width='100%', margin='0', padding='0'),
+    )
+    # Visualization section: the display parameters, shown when a spin
+    # density cube is displayed.
+    calc_spin_density_settings = widgets.VBox(
+        [
+            widgets.HTML('<b>Spin Density Visualization</b>'),
+            widgets.HBox(
+                [calc_spin_density_isoval],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap',
+                                      align_items='center', width='100%'),
+            ),
+            widgets.HBox(
+                [calc_spin_density_pos_cb, calc_spin_density_neg_cb,
+                 calc_spin_density_mol_cb],
+                layout=widgets.Layout(gap='16px', flex_flow='row wrap',
+                                      align_items='center', width='100%'),
+            ),
+            widgets.HBox(
+                [calc_spin_density_opacity],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap',
+                                      align_items='center', width='100%'),
+            ),
+            widgets.HBox(
+                [calc_spin_density_pos_color, calc_spin_density_neg_color],
+                layout=widgets.Layout(gap='16px', flex_flow='row wrap',
+                                      align_items='center', width='100%'),
+            ),
+            widgets.HBox(
+                [calc_spin_density_apply_btn],
+                layout=widgets.Layout(gap='8px', flex_flow='row wrap',
+                                      align_items='center', width='100%',
+                                      margin='2px 0 0 0'),
+            ),
+        ],
+        layout=widgets.Layout(width='100%'),
+    )
+    calc_spin_density_panel = widgets.VBox(
+        [
+            widgets.HTML('<b>Spin Density</b>'),
+            widgets.HTML(
+                '<span style="color:#555;">Generate the spin density (alpha-beta) cube via orca_plot and display in 3D viewer. Only available for open-shell (UKS/UHF) calculations.</span>'
+            ),
+            calc_spin_density_generation_box,
+            calc_spin_density_settings,
+            calc_spin_density_status,
+        ],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
+    # TS -> GOAT preparation panel: the dialog lives in ts_goat_panel.py
+    # and is attached here when the 'TS -> GOAT' option is selected.
+    calc_ts_goat_panel = widgets.VBox(
+        [],
+        layout=widgets.Layout(display='none', margin='8px 0 8px 0', width='100%'),
+    )
+
 
     # -- preselection widgets ----------------------------------------------
     calc_preselect_title = widgets.HTML('<b>Preselection</b>')
@@ -1736,10 +1900,51 @@ def create_tab(ctx):
     # it costs nothing to carry; filled, it is the reason the viewer is open.
     calc_fukui_panel_container.add_class('delfin-structure-fs-member')
     calc_fukui_panel_container.add_class('delfin-structure-fs-panel')
+    # DELFIN_PRE_GXTB_SP_GUI_V1: controls
+    calc_prescreen_btn = widgets.Button(
+        description='Pre-g-xTB + DFT-SP', button_style='info',
+        tooltip='Start g-xTB optimizations and ORCA single-points for ALL GOAT frames',
+        layout=widgets.Layout(width='185px'),
+    )
+    calc_prescreen_submit_cb = widgets.Checkbox(
+        value=True, description='Submit SLURM jobs', indent=False,
+        tooltip='When checked, clicking Pre-g-xTB + DFT-SP submits the full arrays',
+        layout=widgets.Layout(width='170px'),
+    )
+    calc_prescreen_charge = widgets.IntText(
+        value=0, description='Charge',
+        layout=widgets.Layout(width='135px'),
+    )
+    calc_prescreen_mult = widgets.BoundedIntText(
+        value=1, min=1, max=20, description='Multiplicity',
+        layout=widgets.Layout(width='165px'),
+    )
+    calc_prescreen_refresh_btn = widgets.Button(
+        description='Load SP ranking', disabled=False,
+        tooltip='Check the finished run and load the SP-sorted g-xTB geometries into the viewer',
+        layout=widgets.Layout(width='150px'),
+    )
+    calc_prescreen_status = widgets.HTML(
+        value='', layout=widgets.Layout(width='100%', overflow_x='auto'),
+    )
+    calc_prescreen_controls = widgets.HBox(
+        [calc_prescreen_submit_cb, calc_prescreen_charge,
+         calc_prescreen_mult, calc_prescreen_refresh_btn],
+        layout=widgets.Layout(width='100%', align_items='center',
+                              flex_flow='row wrap', gap='8px'),
+    )
+
+    calc_prescreen_toolbar = widgets.VBox([
+        widgets.HBox([calc_prescreen_btn], layout=widgets.Layout(gap='8px')),
+        calc_prescreen_controls,
+        calc_prescreen_status,
+    ], layout=widgets.Layout(display='none', width='100%', margin='5px 0', gap='6px'))
+
     calc_mol_container = widgets.VBox(
         [
             calc_mol_header,
             calc_rmsd_controls,
+            calc_prescreen_toolbar,
             calc_mol_view_row,
             calc_fukui_panel_container,
         ],
@@ -1930,9 +2135,24 @@ def create_tab(ctx):
     )
 
     # -- helper closures ----------------------------------------------------
-    RDLogger.DisableLog('rdApp.*')
+    # RDKit is imported here, at first use inside create_tab, not at module
+    # load: a cold dashboard start never draws a structure, and the import
+    # (with its module-level RDLogger.DisableLog) is what module load paid
+    # for every startup regardless.
+
+    def _calc_rdkit():
+        from rdkit import Chem, RDLogger
+        RDLogger.DisableLog('rdApp.*')
+        return Chem
+
+    def _calc_rdkit_chem_all():
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import AllChem, rdDepictor
+        RDLogger.DisableLog('rdApp.*')
+        return Chem, AllChem, rdDepictor
 
     def _calc_parse_complex_mol(smiles):
+        Chem = _calc_rdkit()
         mol = Chem.MolFromSmiles(smiles)
         if mol is not None:
             return mol
@@ -1954,11 +2174,12 @@ def create_tab(ctx):
         return Chem.MolFromSmiles(smiles, sanitize=False)
 
     def _calc_preselect_smiles_to_3d_molblock(smiles, seed=42):
+        Chem, AllChem, rdDepictor = _calc_rdkit_chem_all()
         try:
             seed = int(seed)
         except Exception:
             seed = 42
-        is_complex = contains_metal(smiles)
+        is_complex = _input_processing().contains_metal(smiles)
         mol = None
         if is_complex:
             mol = _calc_parse_complex_mol(smiles)
@@ -3588,6 +3809,8 @@ def create_tab(ctx):
 
         with calc_preselect_img:
             clear_output(wait=True)
+            Chem, _allchem, rdDepictor = _calc_rdkit_chem_all()
+            from rdkit.Chem.Draw import MolToImage
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 mol = Chem.MolFromSmiles(smiles, sanitize=False)
@@ -4197,7 +4420,7 @@ def create_tab(ctx):
         with calc_mol_viewer:
             display(HTML(html))
 
-    def _render_3dmol(data, fmt='xyz', extra_fn=None):
+    def _render_3dmol(data, fmt='xyz', hide_molecule=False):
         """Render a 3D molecule via JS with correct initial sizing."""
         import json
         profile = get_viewer_profile()
@@ -4217,13 +4440,61 @@ def create_tab(ctx):
         viewer_config_js = profile['viewer_config_js']
 
         volumetric_js = ""
+        # Spin density display settings (see calc_on_spin_density): when a
+        # spin density render is active, the isovalue/opacity/colors come
+        # from the panel instead of the hardcoded cube defaults. Pure display
+        # changes re-render from the cached cube via this path; orca_plot is
+        # never invoked for them.
+        spin_display = state.get('spin_display') or {}
+        spin_iso = 0.02
+        spin_opacity = 0.85
+        spin_pos_color = '#0026ff'
+        spin_neg_color = '#b00010'
+        spin_active = False
+        if spin_display:
+            spin_active = True
+            # The values are written into the script as numbers: the
+            # isovalue as a +/- pair by its magnitude (a negative entry
+            # would render as "--x"), a non-finite one as the default.
+            try:
+                spin_iso = abs(float(spin_display.get('isoval', 0.005)))
+            except (TypeError, ValueError):
+                spin_iso = 0.005
+            if not math.isfinite(spin_iso) or spin_iso == 0:
+                spin_iso = 0.005
+            try:
+                spin_opacity = float(spin_display.get('opacity', 0.65))
+            except (TypeError, ValueError):
+                spin_opacity = 0.65
+            if not math.isfinite(spin_opacity):
+                spin_opacity = 0.65
+            spin_opacity = min(max(spin_opacity, 0.0), 1.0)
+            spin_pos_color = spin_display.get('pos_color') or '#0026ff'
+            spin_neg_color = spin_display.get('neg_color') or '#b00010'
         if fmt == 'cube':
-            volumetric_js = (
-                "viewer.addVolumetricData(molData,'cube',"
-                "{isoval:0.02,color:'#0026ff',opacity:0.85});"
-                "viewer.addVolumetricData(molData,'cube',"
-                "{isoval:-0.02,color:'#b00010',opacity:0.85});"
-            )
+            if spin_active:
+                pos_js = neg_js = ''
+                if spin_display.get('show_pos', True):
+                    pos_js = (
+                        "viewer.addVolumetricData(molData,'cube',"
+                        f"{{isoval:{spin_iso},color:'{spin_pos_color}',opacity:{spin_opacity}}});"
+                    )
+                if spin_display.get('show_neg', True):
+                    neg_js = (
+                        "viewer.addVolumetricData(molData,'cube',"
+                        f"{{isoval:-{spin_iso},color:'{spin_neg_color}',opacity:{spin_opacity}}});"
+                    )
+                volumetric_js = pos_js + neg_js
+            else:
+                volumetric_js = (
+                    "viewer.addVolumetricData(molData,'cube',"
+                    "{isoval:0.02,color:'#0026ff',opacity:0.85});"
+                    "viewer.addVolumetricData(molData,'cube',"
+                    "{isoval:-0.02,color:'#b00010',opacity:0.85});"
+                )
+        # "Show molecule" off: render the cube surface alone (empty style).
+        if hide_molecule:
+            style_js = '{}'
 
         html = f"""
         <div id="{wrapper_id}" class="calc-mol-stage-wrapper" style="width:100%;">
@@ -4396,7 +4667,7 @@ def create_tab(ctx):
                     input_text = input_path.read_text(errors='ignore')
                 except Exception:
                     input_text = ''
-            if not is_smiles(input_text):
+            if not _input_processing().is_smiles(input_text):
                 return False
             smiles_lines = [ln.strip() for ln in input_text.splitlines() if ln.strip()]
             if not smiles_lines:
@@ -4589,9 +4860,9 @@ def create_tab(ctx):
             "if(el) window._batchScrollTop=el.scrollTop;"
         )
         # Force a real widget rerender so changed labels (⬜ -> ✅) become visible.
-        calc_xyz_batch_select.options = ()
-        calc_xyz_batch_select.value = ()
-        calc_xyz_batch_select.options = tuple(candidates)
+        # Each step reaches the browser as one state (labels and selection
+        # together), so it never holds a selection outside the list.
+        _replace_options(calc_xyz_batch_select, ())
         kept = tuple(value for _label, value in candidates if value in previous_selection)
         selected_value = ''
         selected_path = _calc_selected_item_path()
@@ -4602,11 +4873,12 @@ def create_tab(ctx):
             except Exception:
                 selected_value = ''
         if kept:
-            calc_xyz_batch_select.value = kept
+            new_value = kept
         elif selected_value and any(value == selected_value for _label, value in candidates):
-            calc_xyz_batch_select.value = (selected_value,)
+            new_value = (selected_value,)
         else:
-            calc_xyz_batch_select.value = ()
+            new_value = ()
+        _replace_options(calc_xyz_batch_select, tuple(candidates), new_value)
         current_rel = state.get('xyz_batch_path') or ''
         display_rel = f'/{current_rel}' if current_rel else '/'
         marked_count = len(state.get('xyz_batch_marked_paths') or [])
@@ -4841,7 +5113,9 @@ def create_tab(ctx):
         # Fallback: parse orbitals directly from selected ORCA output.
         # This is robust for OCCUPIER directories without DELFIN_Data.json.
         try:
-            from delfin.reporting.delfin_collector import parse_orbitals as _parse_orbitals
+            from delfin.reporting.delfin_collector import (
+                parse_orbitals as _parse_orbitals,
+            )
 
             parsed = _parse_orbitals(selected_path)
             if parsed:
@@ -4907,6 +5181,42 @@ def create_tab(ctx):
             calc_mo_plot_panel.layout.display = 'block'
         else:
             calc_mo_plot_panel.layout.display = 'none'
+        _run_js(
+            f"setTimeout(function(){{"
+            f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
+            f"}}, 80);"
+        )
+
+    def _calc_show_spin_density_panel(show, visualize=False):
+        """Show/hide the spin density panel. `visualize` selects the section:
+        False -> Generation (grid + plot button, for ORCA output files),
+        True  -> Visualization (display settings, for spin density cubes)."""
+        calc_spin_density_generation_box.layout.display = (
+            'none' if visualize else 'block'
+        )
+        calc_spin_density_settings.layout.display = (
+            'block' if visualize else 'none'
+        )
+        if show:
+            calc_spin_density_status.value = ''
+            calc_spin_density_panel.layout.display = 'block'
+            # The hint under the grid dropdown describes generation; when
+            # the visualization section is shown, describe that instead.
+            if visualize:
+                calc_spin_density_grid_note.value = (
+                    '<span style="color:#555; font-size:12px;">'
+                    'Adjust how the loaded spin density cube is drawn. '
+                    'Apply Display Settings re-renders it without running '
+                    'orca_plot.</span>'
+                )
+            else:
+                calc_spin_density_grid_note.value = (
+                    '<span style="color:#555; font-size:12px;">'
+                    'Changing Grid Resolution requires regenerating the '
+                    'cube.</span>'
+                )
+        else:
+            calc_spin_density_panel.layout.display = 'none'
         _run_js(
             f"setTimeout(function(){{"
             f" if(window['{calc_resize_mol_fn}']) window['{calc_resize_mol_fn}']();"
@@ -5498,6 +5808,226 @@ def create_tab(ctx):
 
         threading.Thread(target=_run_mo_plot, daemon=True).start()
         calc_options_dropdown.value = '(Options)'
+
+    def calc_on_spin_density(_button=None):
+        selected_path = _calc_get_selected_path()
+        _calc_refresh_mo_plot_info()
+        if selected_path is None or selected_path.suffix.lower() != '.out':
+            calc_spin_density_status.value = '<span style="color:#d32f2f;">Select a .out file first.</span>'
+            return
+
+        scheme, _homo_index = _calc_mo_detect_spin(selected_path)
+        if scheme != 'UKS':
+            calc_spin_density_status.value = (
+                '<span style="color:#d32f2f;">Spin density requires an open-shell calculation '
+                '(UKS/UHF). This job looks closed-shell (RKS/RHF).</span>'
+            )
+            return
+
+        gbw_path = _calc_mo_find_gbw(selected_path)
+        if gbw_path is None:
+            calc_spin_density_status.value = (
+                '<span style="color:#d32f2f;">No suitable .gbw file found for selected job.</span>'
+            )
+            return
+
+        orca_plot_exe = shutil.which('orca_plot') or _orca_plot_binary()
+        if not orca_plot_exe:
+            calc_spin_density_status.value = (
+                '<span style="color:#d32f2f;">orca_plot not found in PATH or ORCA env variables.</span>'
+            )
+            return
+
+        gbw_dir = gbw_path.parent
+        project_dir = _calc_mo_project_dir(selected_path) or gbw_dir
+        calc_spin_density_btn.disabled = True
+        calc_spin_density_status.value = (
+            '<span style="color:#1976d2;">Generating spin density cube ...</span>'
+        )
+
+        def _cube_stamp(path):
+            try:
+                st = path.stat()
+            except OSError:
+                return None
+            return (st.st_mtime_ns, st.st_size)
+
+        def _run_spin_density():
+            created_temp_files = []
+            env = os.environ.copy()
+            env['ORCA_SCRDIR'] = str(gbw_dir)
+            env['ORCA_TMPDIR'] = str(gbw_dir)
+            env.setdefault('TMPDIR', str(gbw_dir))
+
+            try:
+                dens_candidates = [
+                    project_dir / f'{gbw_path.stem}.densitiesinfo',
+                    gbw_dir / f'{gbw_path.stem}.densitiesinfo',
+                    project_dir / 'initial.densitiesinfo',
+                    gbw_dir / 'initial.densitiesinfo',
+                ]
+                dens_src = next((p for p in dens_candidates if p.exists()), None)
+                if dens_src is not None:
+                    for dens_dest in {gbw_dir / dens_src.name, gbw_dir / f'{gbw_path.stem}.densitiesinfo'}:
+                        if dens_dest.exists():
+                            continue
+                        try:
+                            shutil.copy2(dens_src, dens_dest)
+                            created_temp_files.append(dens_dest)
+                        except Exception:
+                            pass
+
+                # The spin density plot type lives in orca_plot's plot-type
+                # submenu ("1 - Enter type of plot"): menu item 3 is
+                # "(scf) spin density" (scfp = total electron density is 2).
+                # Empirically verified against ORCA 6.1.1 (orca_plot asks
+                # "Is this the one you want (y/n)?" and confirms the default
+                # density name <base>.scfr). Sequence:
+                #   1 = enter plot type, 3 = spin density, y = accept the
+                #   default density file, then the grid interval, then
+                #   11 = generate the plot, 12 = exit. Menu item 4 sets the
+                #   number of grid intervals (same interaction the MO Plot
+                #   branch uses with its hardcoded 70, see the
+                #   f"1\n1\n2\n{mo_idx}...4\n70\n..." sequence above).
+                grid_value = calc_spin_density_grid.value
+                spin_type_candidates = [3]
+                cubes_before = {p: _cube_stamp(p) for p in gbw_dir.glob('*.cube')}
+                generated = []
+                failures = []
+                for spin_type in spin_type_candidates:
+                    orca_input = f"1\n{spin_type}\ny\n4\n{grid_value}\n11\n12\n"
+                    try:
+                        result = subprocess.run(
+                            [orca_plot_exe, gbw_path.name, '-i'],
+                            input=orca_input.encode(),
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            cwd=str(gbw_dir),
+                            env=env,
+                            timeout=120,
+                            check=False,
+                        )
+                    except subprocess.TimeoutExpired:
+                        failures.append(f'spin type {spin_type}: timeout after 120s')
+                        continue
+                    except Exception as exc:
+                        failures.append(f'spin type {spin_type}: {exc}')
+                        continue
+
+                    # Only a cube this run wrote or rewrote counts; an older
+                    # one in the folder (an MO plot) is not the spin density.
+                    cubes = sorted(
+                        (p for p in gbw_dir.glob('*.cube')
+                         if _cube_stamp(p) != cubes_before.get(p)),
+                        key=lambda p: (p.name.lower().endswith('.spindens.cube'),
+                                       p.stat().st_mtime_ns))
+                    nonempty = [p for p in cubes if p.stat().st_size > 44]
+                    if nonempty:
+                        generated.append(nonempty[-1])
+                        break
+
+                    stderr_raw = (result.stderr or result.stdout or b'').decode(errors='ignore')
+                    m = re.search(r"Filename:\s*(\S+\.densitiesinfo)", stderr_raw)
+                    if m and dens_src is not None:
+                        retry_path = Path(m.group(1)).expanduser()
+                        if not retry_path.is_absolute():
+                            retry_path = gbw_dir / retry_path
+                        try:
+                            retry_path.parent.mkdir(parents=True, exist_ok=True)
+                            if not retry_path.exists():
+                                shutil.copy2(dens_src, retry_path)
+                                created_temp_files.append(retry_path)
+                        except Exception:
+                            pass
+
+                if generated:
+                    shown = ', '.join(path.name for path in generated[:6])
+                    calc_spin_density_status.value = (
+                        '<span style="color:#2e7d32;">'
+                        f'Generated spin density cube(s): {_html.escape(shown)}'
+                        ' — displaying it now.</span>'
+                    )
+                    # Record the cube and the current panel display settings
+                    # so the viewer renders it with them, and re-rendering on
+                    # a pure display change needs no orca_plot re-run.
+                    state['spin_display'] = {
+                        'cube_path': str(generated[-1].resolve()),
+                        'isoval': calc_spin_density_isoval.value,
+                        'opacity': calc_spin_density_opacity.value,
+                        'show_pos': calc_spin_density_pos_cb.value,
+                        'show_neg': calc_spin_density_neg_cb.value,
+                        'show_mol': calc_spin_density_mol_cb.value,
+                        'pos_color': calc_spin_density_pos_color.value,
+                        'neg_color': calc_spin_density_neg_color.value,
+                    }
+                    try:
+                        content = generated[-1].read_text()
+                        _render_3dmol(content, fmt='cube',
+                                      hide_molecule=not calc_spin_density_mol_cb.value)
+                    except Exception as exc:
+                        calc_spin_density_status.value = (
+                            f'<span style="color:#d32f2f;">'
+                            f'Cube generated but display failed: {_html.escape(str(exc))}</span>'
+                        )
+                else:
+                    failure_text = '; '.join(failures[:2]) if failures else 'No spin density cube was generated.'
+                    if failures and len(failures) > 2:
+                        failure_text += f' ... (+{len(failures) - 2} more)'
+                    calc_spin_density_status.value = (
+                        f'<span style="color:#d32f2f;">{_html.escape(failure_text)}</span>'
+                    )
+            finally:
+                for temp_path in created_temp_files:
+                    try:
+                        if temp_path.exists():
+                            temp_path.unlink()
+                    except Exception:
+                        pass
+                calc_spin_density_btn.disabled = False
+
+        threading.Thread(target=_run_spin_density, daemon=True).start()
+        calc_options_dropdown.value = '(Options)'
+
+    def calc_on_spin_density_update_view(_button=None):
+        """Apply the panel's display settings to the already displayed spin
+        density cube. Pure display change: orca_plot is NOT invoked and the
+        cube file is reused."""
+        spin_display = state.get('spin_display') or {}
+        if not spin_display.get('cube_path'):
+            calc_spin_density_status.value = (
+                '<span style="color:#d32f2f;">No spin density cube displayed yet. '
+                'Open a spin density cube (or generate one from an ORCA output '
+                'file) first.</span>'
+            )
+            return
+        try:
+            cube_path = Path(spin_display['cube_path'])
+            content = cube_path.read_text()
+        except Exception as exc:
+            calc_spin_density_status.value = (
+                f'<span style="color:#d32f2f;">'
+                f'Cannot read cube file {_html.escape(spin_display["cube_path"])}: '
+                f'{_html.escape(str(exc))}</span>'
+            )
+            return
+        state['spin_display'] = {
+            'cube_path': spin_display['cube_path'],
+            'isoval': calc_spin_density_isoval.value,
+            'opacity': calc_spin_density_opacity.value,
+            'show_pos': calc_spin_density_pos_cb.value,
+            'show_neg': calc_spin_density_neg_cb.value,
+            'show_mol': calc_spin_density_mol_cb.value,
+            'pos_color': calc_spin_density_pos_color.value,
+            'neg_color': calc_spin_density_neg_color.value,
+        }
+        _render_3dmol(content, fmt='cube',
+                      hide_molecule=not calc_spin_density_mol_cb.value)
+        calc_spin_density_status.value = (
+            '<span style="color:#2e7d32;">View updated from the existing cube '
+            '(no orca_plot run).</span>'
+        )
+
+    calc_spin_density_apply_btn.on_click(calc_on_spin_density_update_view)
 
     def calc_on_xyz_batch_refresh(_button=None):
         _calc_refresh_xyz_batch_selector()
@@ -6156,6 +6686,8 @@ def create_tab(ctx):
         calc_pdf_container.layout.display = 'none'
         show_mol = calc_view_toggle.value
         if show_mol:
+            selected_goat = str(state.get('selected_file_path') or '').lower().endswith('finalensemble.xyz')
+            calc_prescreen_toolbar.layout.display = 'flex' if selected_goat else 'none'
             calc_mol_container.layout.display = 'block'
             calc_content_area.layout.display = 'none'
             calc_edit_area.layout.display = 'none'
@@ -6595,9 +7127,10 @@ def create_tab(ctx):
             return '\n'.join(lines)
         # input.txt may contain only a SMILES string (optionally with short comment lines).
         # Convert to XYZ so it can be visualized like regular coordinates.
-        if is_smiles(text):
+        if _input_processing().is_smiles(text):
             smiles_line = lines[0].strip()
-            xyz_string, num_atoms, _method, error = smiles_to_xyz_quick(smiles_line)
+            xyz_string, num_atoms, _method, error = (
+                _input_processing().smiles_to_xyz_quick(smiles_line))
             if not error and xyz_string:
                 return f"{num_atoms}\n{title}\n{xyz_string}"
         atom_count = len(lines)
@@ -7548,8 +8081,8 @@ def create_tab(ctx):
         calc_xyz_frame_input.max = len(frames)
         calc_xyz_frame_input.observe(calc_on_xyz_input_change, names='value')
         large_traj_note = (
-            f' <span style="color:#888;font-size:0.85em;">'
-            f'(large trajectory, single-frame mode)</span>'
+            ' <span style="color:#888;font-size:0.85em;">'
+            '(large trajectory, single-frame mode)</span>'
             if len(frames) > CALC_XYZ_LARGE_TRAJ_FRAMES else ''
         )
         calc_xyz_frame_total.value = f"<b>/ {len(frames)}</b>"
@@ -8100,7 +8633,7 @@ def create_tab(ctx):
         state['file_chunk_start'] = 0
         state['file_chunk_end'] = 0
         state['chunk_dom_initialized'] = False
-        calc_file_list.options = []
+        _replace_options(calc_file_list, [])
         # No file is on screen once the listing is rebuilt, so the actions of
         # the one that was must not stay in the dropdown.
         state['open_label'] = ''
@@ -8135,6 +8668,7 @@ def create_tab(ctx):
         _calc_show_xyz_batch_panel(False)
         _calc_show_print_mode_panel(False)
         _calc_show_mo_plot_panel(False)
+        _calc_show_spin_density_panel(False)
         _calc_hide_chunk_controls()
         _calc_pdf_close()
         _calc_ketcher_close()
@@ -8144,7 +8678,7 @@ def create_tab(ctx):
 
         current_dir = _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
         if not current_dir.exists():
-            calc_file_list.options = ['(Folder not found)']
+            _replace_options(calc_file_list, ['(Folder not found)'])
             return
 
         items = []
@@ -8255,7 +8789,7 @@ def create_tab(ctx):
             items = ['(Permission denied)']
 
         state['all_items'] = items if items else ['(Empty folder)']
-        calc_file_list.options = state['all_items']
+        _replace_options(calc_file_list, state['all_items'])
         calc_update_path_display()
         calc_update_report_btn()
         calc_update_download_btn()
@@ -8264,11 +8798,11 @@ def create_tab(ctx):
     def calc_filter_file_list(change=None):
         query = calc_folder_search.value.strip().lower()
         if not query:
-            calc_file_list.options = state['all_items']
+            _replace_options(calc_file_list, state['all_items'])
         else:
             filtered = [item for item in state['all_items'] if query in item.lower()]
             result = filtered if filtered else ['(No matches)']
-            calc_file_list.options = result
+            _replace_options(calc_file_list, result)
 
     # -- recalc helpers -----------------------------------------------------
     def calc_reset_recalc_state():
@@ -8610,7 +9144,19 @@ def create_tab(ctx):
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
         elif selected and sel_lower.endswith('.out'):
-            out_options = ['(Options)', 'Print Mode', 'MO Plot', 'Print NMR']
+            out_options = ['(Options)', 'Print Mode', 'MO Plot', 'Print NMR', 'Spin Density']
+            # 'TS -> GOAT' is offered only for a TS output; the panel itself
+            # re-checks and explains why a file does not qualify, so the
+            # dropdown never guesses from the name alone.
+            try:
+                # Head-only check: this runs on every .out selection, so
+                # it must not read a whole (possibly huge) output.
+                out_path_candidate = _calc_path_for_label(selected)
+                from delfin.ts_goat import is_optts_output
+                if is_optts_output(out_path_candidate):
+                    out_options.append('TS → GOAT')
+            except Exception:
+                pass
             if rmsd_available:
                 out_options.append('RMSD')
             calc_options_dropdown.options = out_options
@@ -9526,6 +10072,7 @@ def create_tab(ctx):
             _calc_show_print_mode_panel(False)
         if change['new'] != 'MO Plot':
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
         if change['new'] != 'Calc NMR':
             _calc_show_nmr_panel(False)
         if change['new'] != 'Calc CENSO/ANMR':
@@ -9677,6 +10224,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             _calc_render_traj_plot()
             calc_content_area.layout.display = 'block'
             _calc_reset_options_dropdown()
@@ -9691,8 +10239,220 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             calc_content_area.layout.display = 'block'
             _calc_run_print_nmr()
+            _calc_reset_options_dropdown()
+        elif change['new'] == 'Spin Density':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(True, visualize=False)
+            calc_content_area.layout.display = 'block'
+        elif change['new'] == 'TS → GOAT':
+            calc_override_input.layout.display = 'none'
+            calc_override_time.layout.display = 'none'
+            calc_override_btn.layout.display = 'none'
+            calc_override_status.layout.display = 'none'
+            calc_override_status.value = ''
+            calc_edit_area.layout.display = 'none'
+            _calc_preselect_show(False)
+            _calc_show_xyz_batch_panel(False)
+            _calc_show_print_mode_panel(False)
+            _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
+            # TS→GOAT owns the entire content pane while open; hiding
+            # only the text body left "File Content" and its toolbar
+            # competing with the panel at the bottom of the window.
+            _ts_file_ui_before = (
+                calc_content_area.layout.display,
+                calc_content_label.layout.display,
+                calc_content_toolbar.layout.display,
+            )
+            calc_content_area.layout.display = 'none'
+            calc_content_label.layout.display = 'none'
+            calc_content_toolbar.layout.display = 'none'
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'block'
+            _ts_labels = _calc_selected_labels()
+            _ts_path = _calc_path_for_label(_ts_labels[0]) if _ts_labels else None
+            if _ts_path is None:
+                calc_content_area.layout.display = _ts_file_ui_before[0]
+                calc_content_label.layout.display = _ts_file_ui_before[1]
+                calc_content_toolbar.layout.display = _ts_file_ui_before[2]
+                calc_ts_goat_panel.children = [widgets.HTML(
+                    '<b>TS → GOAT:</b> select a .out file first.')]
+            else:
+                def _ts_render_viewer(xyz_lines, indices, arrows=None):
+                    """Render the TS with constraint atoms highlighted."""
+                    _render_3dmol(xyz_lines, fmt='xyz')
+
+                def _ts_render_in_panel(atoms, indices, arrows=None,
+                                        output_widget=None,
+                                        mode_vector=None,
+                                        frames_payload=None):
+                    """Render the TS INTO the panel's own Output widget.
+
+                    The panel passes its ``viewer_out`` Output widget as
+                    ``output_widget`` (the panel owns it, the tab only
+                    draws into it).  Highlights the constraint atoms
+                    and injects the click JS that toggles atoms in the
+                    constraint field.
+                    """
+                    if output_widget is None:
+                        return  # panel shows its own fallback note
+                    from delfin.dashboard import molecule_viewer as _mv
+                    xyz_lines = '\n'.join(
+                        [str(len(atoms)), 'optimized TS']
+                        + [f'{el} {x:.6f} {y:.6f} {z:.6f}'
+                           for el, x, y, z in atoms]
+                    )
+                    # py3Dmol's loader script inside a later-attached
+                    # Output never runs on Voila replay (inert HTML) --
+                    # the exact cause of the "3Dmol.js failed to load"
+                    # banner (user report 2026-11-02).  Store only the
+                    # static div + payload, then instantiate the
+                    # GLViewer through the run_js channel, which Voila
+                    # executes even for panels that come up after the
+                    # page loaded.  The library is already on the page
+                    # from the startup bundle; nothing hits a CDN.
+                    arrows_payload = None
+                    if arrows:
+                        flat = []
+                        for _el, x, y, z in arrows:
+                            flat.extend([x, y, z])
+                        arrows_payload = flat
+                    vid = _mv.render_xyz_static_div(
+                        output_widget, xyz_lines, width=640, height=450,
+                        highlight_indices=list(indices or []),
+                        arrows=arrows_payload,
+                        frames=frames_payload,
+                    )
+                    if vid:
+                        _ts_viewer_state['vid'] = vid
+                        # the animation displaces along mode_vector --
+                        # SEPARATE from the visible arrows toggle: the
+                        # animation data must reach the browser even
+                        # when no arrows are drawn (default).
+                        vec_payload = None
+                        if mode_vector:
+                            vec_payload = [
+                                v for a in mode_vector
+                                for v in (a[1], a[2], a[3])]
+                        _run_js(_mv.ts_goat_viewer_bootstrap_js(
+                            vid, width=640, height=450,
+                            click_sync_css='.ts-goat-click-sync',
+                            arrows=arrows_payload,
+                            mode_vector=vec_payload,
+                        ))
+
+                def _ts_scroll_top():
+                    _run_js(
+                        "setTimeout(function(){"
+                        "var el=document.querySelector('.calc-file-list');"
+                        " if(el) el.scrollTop=0;},80);"
+                    )
+
+                _ts_viewer_state = {'vid': None}
+
+                def _ts_get_viewer_id():
+                    """The last panel viewer id, for 'Ansicht zentrieren'."""
+                    return _ts_viewer_state.get('vid')
+
+                def _ts_update_highlights_in_panel(indices):
+                    """Toggle atom halos without clearing/recreating WebGL."""
+                    vid = _ts_viewer_state.get('vid')
+                    if vid:
+                        from delfin.dashboard import molecule_viewer as _mv
+                        _run_js(_mv.ts_goat_viewer_highlights_js(
+                            vid, indices))
+
+                def _ts_center_viewer(vid):
+                    """Re-center the panel viewer ('Ansicht zentrieren')."""
+                    from delfin.dashboard import molecule_viewer as _mv
+                    _run_js(_mv.ts_goat_viewer_center_js(vid))
+
+                def _ts_animate_in_panel(vid, running):
+                    """Play/pause validated ORCA XYZ frames without camera reset.
+
+                    The speed slider changes the timeout used by each
+                    subsequent frame; no old sinusoidal JS is involved.
+                    """
+                    from delfin.dashboard import molecule_viewer as _mv
+                    if running == 'speed':
+                        period_ms = max(60, int(
+                            200 / (_ts_anim_speed_value() or 1.0)))
+                        _run_js(
+                            "window.__tsGoatPeriodMs=" + str(period_ms) + ";")
+                        return
+                    _run_js(_mv.ts_goat_viewer_frames_js(vid, running))
+
+                _ts_panel_widgets = {'items': []}
+
+                def _ts_collect_speed(widget_box):
+                    """Remember panel widgets for the speed lookup."""
+                    def _walk(w, acc):
+                        for child in getattr(w, 'children', ()):
+                            acc.append(child)
+                            _walk(child, acc)
+                        return acc
+                    try:
+                        _ts_panel_widgets['items'] = _walk(widget_box, [])
+                    except Exception:
+                        pass
+
+                def _ts_anim_speed_value():
+                    """Current speed from the panel widget, if reachable."""
+                    for w in _ts_panel_widgets['items']:
+                        if ('ts-goat-speed-slider' in
+                                getattr(w, '_dom_classes', ()) or
+                                getattr(w, 'description', '') == 'Speed:'):
+                            return getattr(w, 'value', 1.0)
+                    return 1.0
+
+                def _ts_restore_file_ui():
+                    calc_content_area.layout.display = _ts_file_ui_before[0]
+                    calc_content_label.layout.display = _ts_file_ui_before[1]
+                    calc_content_toolbar.layout.display = _ts_file_ui_before[2]
+
+                def _ts_on_close():
+                    calc_ts_goat_panel.children = []
+                    calc_ts_goat_panel.layout.display = 'none'
+                    _ts_restore_file_ui()
+
+                from .ts_goat_panel import open_ts_goat_dialog
+                open_result = open_ts_goat_dialog(
+                    _ts_path,
+                    callbacks={
+                        'backend': ctx.backend,
+                        'reset_dropdown': _calc_reset_options_dropdown,
+                        'render_viewer': _ts_render_viewer,
+                        'scroll_top': _ts_scroll_top,
+                        'render_in_panel': _ts_render_in_panel,
+                        'update_highlights_in_panel': _ts_update_highlights_in_panel,
+                        'on_close': _ts_on_close,
+                        'center_viewer': _ts_center_viewer,
+                        'get_viewer_id': _ts_get_viewer_id,
+                        'animate_in_panel': _ts_animate_in_panel,
+                    },
+                )
+                if open_result['error']:
+                    _ts_restore_file_ui()
+                    # the message carries folder names and exception
+                    # text: external text, escaped like every other
+                    calc_ts_goat_panel.children = [widgets.HTML(
+                        '<b>TS → GOAT:</b> '
+                        + _html.escape(str(open_result['error'])))]
+                else:
+                    calc_ts_goat_panel.children = [open_result['panel']]
+                    _ts_collect_speed(open_result['panel'])
             _calc_reset_options_dropdown()
         elif change['new'] == 'Calc NMR':
             calc_override_input.layout.display = 'none'
@@ -9705,6 +10465,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             _calc_show_nmr_panel(True)
             calc_content_area.layout.display = 'block'
         elif change['new'] == 'Calc CENSO/ANMR':
@@ -9718,6 +10479,7 @@ def create_tab(ctx):
             _calc_show_xyz_batch_panel(False)
             _calc_show_print_mode_panel(False)
             _calc_show_mo_plot_panel(False)
+            _calc_show_spin_density_panel(False)
             _calc_show_censo_nmr_panel(True)
             calc_content_area.layout.display = 'block'
         elif change['new'] == 'RMSD':
@@ -9758,6 +10520,198 @@ def create_tab(ctx):
             _calc_preselect_show(False)
             _calc_show_xyz_batch_panel(False)
             calc_content_area.layout.display = 'block'
+
+    # DELFIN_PRE_GXTB_SP_GUI_V1: callbacks
+    def _calc_on_prescreen_click(_button=None):
+        """Start standalone pre-screen on all frames of the selected GOAT ensemble."""
+        source = state.get('selected_file_path')
+        if source is None or not Path(source).is_file():
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Open a GOAT finalensemble.xyz first.</span>'
+            )
+            return
+        source = Path(source).resolve()
+        if not source.name.lower().endswith('finalensemble.xyz'):
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Select a GOAT finalensemble.xyz file, '
+                'not a representative/single-frame XYZ.</span>'
+            )
+            return
+        if state.get('prescreen_running'):
+            return
+        workflow_cli = (
+            Path(__file__).resolve().parents[1]
+            / 'analysis_tools' / 'pre_gxtb_sp_workflow' / 'prescreen.py'
+        )
+        if not workflow_cli.is_file():
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Pre-screening backend missing: '
+                f'{_html.escape(str(workflow_cli))}</span>'
+            )
+            return
+
+        charge = int(calc_prescreen_charge.value)
+        multiplicity = int(calc_prescreen_mult.value)
+        submit_jobs = bool(calc_prescreen_submit_cb.value)
+        cmd = [
+            sys.executable, str(workflow_cli), 'prepare', '--ensemble', str(source),
+            '--charge', str(charge), '--multiplicity', str(multiplicity),
+        ]
+        if submit_jobs:
+            cmd.append('--submit')
+
+        state['prescreen_running'] = True
+        calc_prescreen_btn.disabled = True
+        calc_prescreen_status.value = (
+            '<span style="color:#1565c0;">Preparing all GOAT frames'
+            + (' and submitting the parallel SLURM arrays...' if submit_jobs
+               else ' (no jobs submitted)...')
+            + '</span>'
+        )
+
+        def _prescreen_worker():
+            try:
+                p = subprocess.run(
+                    cmd, text=True, capture_output=True, timeout=240,
+                    check=False,
+                )
+                stdout = p.stdout or ''
+                stderr = p.stderr or ''
+                match = re.search(r'^Prepared\s+(\d+)\s+conformers\s+at\s+(.+)$',
+                                  stdout, re.M)
+                if match:
+                    run = Path(match.group(2).strip())
+                    state['prescreen_last_run'] = str(run)
+                    calc_prescreen_refresh_btn.disabled = False
+                if p.returncode != 0:
+                    details = (stdout + '\n' + stderr).strip()[-1100:]
+                    raise RuntimeError(details or f'Exit code {p.returncode}')
+                if match is None:
+                    raise RuntimeError('Workflow did not return a run directory')
+                count = int(match.group(1))
+                job_info = ''
+                submission = run / 'submission.json'
+                if submission.is_file():
+                    try:
+                        ids = json.loads(submission.read_text())
+                        job_info = (
+                            f" | SLURM g-xTB={ids.get('gxtb_array')}, "
+                            f"DFT-SP={ids.get('sp_array')}, "
+                            f"report={ids.get('collect_job')}"
+                        )
+                    except (ValueError, OSError):
+                        pass
+                verb = 'Submitted' if submit_jobs else 'Prepared only'
+                calc_prescreen_status.value = (
+                    '<span style="color:#2e7d32;">'
+                    f'{verb}: {count} conformers{_html.escape(job_info)}. '
+                    f'Run: <code>{_html.escape(str(run))}</code>. '
+                    'After completion press <b>Load SP ranking</b>.'
+                    '</span>'
+                )
+                calc_list_directory()
+            except Exception as exc:
+                calc_prescreen_status.value = (
+                    '<span style="color:#c62828;">Pre-screening failed: '
+                    f'{_html.escape(str(exc)[:1200])}</span>'
+                )
+            finally:
+                state['prescreen_running'] = False
+                calc_prescreen_btn.disabled = False
+
+        threading.Thread(target=_prescreen_worker, daemon=True).start()
+
+    def _calc_on_prescreen_refresh_click(_button=None):
+        """Show complete SP results, and navigate them in the existing XYZ viewer."""
+        run_str = state.get('prescreen_last_run')
+        # Runs may take hours. Recover a prior session's run from the
+        # selected GOAT ensemble, instead of requiring the notebook to stay open.
+        if not run_str:
+            selected = state.get('selected_file_path')
+            if selected is not None:
+                source = Path(selected).resolve()
+                if source.is_file() and source.name.lower().endswith('finalensemble.xyz'):
+                    matches = []
+                    for candidate in source.parent.glob('pre_gxtb_sp_*'):
+                        config = candidate / 'settings.json'
+                        if not config.is_file():
+                            continue
+                        try:
+                            settings = json.loads(config.read_text())
+                            if Path(settings.get('input', '')).resolve() == source:
+                                matches.append(candidate)
+                        except (ValueError, OSError, TypeError):
+                            continue
+                    if matches:
+                        run_str = str(max(matches, key=lambda x: x.stat().st_mtime))
+                        state['prescreen_last_run'] = run_str
+        if not run_str:
+            calc_prescreen_status.value = (
+                'No matching pre-screening run found for the selected finalensemble.xyz.'
+            )
+            return
+        run = Path(run_str)
+        summary_path = run / 'results' / 'summary.json'
+        if not summary_path.is_file():
+            calc_prescreen_status.value = (
+                f'Waiting for result collection. Run: <code>{_html.escape(str(run))}</code>'
+            )
+            return
+        try:
+            summary = json.loads(summary_path.read_text())
+            n = int(summary['frames'])
+            valid = int(summary['sp_valid'])
+            gvalid = int(summary['gxtb_valid'])
+            if valid != n or gvalid != n:
+                calc_prescreen_status.value = (
+                    '<span style="color:#a86800;">'
+                    f'Screening incomplete: g-xTB {gvalid}/{n}, SP {valid}/{n}. '
+                    'See results/per_conformer_status.csv and SLURM logs. '
+                    f'<code>{_html.escape(str(run))}</code></span>'
+                )
+                return
+            xyz_path = run / 'results' / 'gxtb_geometries_sorted_by_dft_sp.xyz'
+            csv_path = run / 'results' / 'single_point_energies.csv'
+            import csv as _csv
+            with csv_path.open(newline='') as f:
+                rows = list(_csv.DictReader(f))
+            if len(rows) != n:
+                raise ValueError('SP energy CSV does not contain every conformer')
+            frames = parse_xyz_frames(xyz_path.read_text(encoding='utf-8'))
+            if len(frames) != n:
+                raise ValueError('Ranked XYZ has wrong frame count')
+            # Same viewer path used by the existing conformer-clustering button.
+            state['xyz_frames'].clear()
+            state['xyz_frames'].extend(frames)
+            state['xyz_current_frame'][0] = 0
+            state['traj_viewer_ready'] = False
+            calc_xyz_controls.layout.display = 'flex'
+            calc_coord_controls.layout.display = 'none'
+            calc_mol_container.layout.display = 'block'
+            calc_mol_view_row.layout.display = ''
+            _set_view_toggle(True, False)
+            calc_update_xyz_viewer(initial_load=True)
+            calc_file_info.value = (
+                f'<b>{n} SP-sorted g-xTB geometries</b> | '
+                f'{_html.escape(xyz_path.name)}'
+            )
+            top = ', '.join(
+                f"#{r['sp_rank']} GOAT {r['goat_index']} "
+                f"({float(r['delta_kcal_mol']):.3f} kcal/mol)"
+                for r in rows[:min(8, n)]
+            )
+            calc_prescreen_status.value = (
+                '<span style="color:#2e7d32;">'
+                f'COMPLETE: {n}/{n}. Leading SP candidates: {_html.escape(top)}. '
+                f'Results: <code>{_html.escape(str(run / "results"))}</code>'
+                '</span>'
+            )
+            calc_list_directory()
+        except Exception as exc:
+            calc_prescreen_status.value = (
+                '<span style="color:#c62828;">Could not load SP results: '
+                f'{_html.escape(str(exc)[:800])}</span>'
+            )
 
     def calc_on_override_start(button):
         selected_option = calc_options_dropdown.value
@@ -9808,7 +10762,7 @@ def create_tab(ctx):
                 new_inp.write_text(inp_content)
 
                 slurm_time = calc_override_time.value.strip() or '24:00:00'
-                pal_used, maxcore_used = parse_inp_resources(inp_content)
+                pal_used, maxcore_used = _input_processing().parse_inp_resources(inp_content)
                 if pal_used is None and ctx.orca_pal_widget is not None:
                     pal_used = ctx.orca_pal_widget.value
                 if maxcore_used is None and ctx.orca_maxcore_widget is not None:
@@ -9874,7 +10828,7 @@ def create_tab(ctx):
             maxcore_used = None
             control_path = workspace_path / 'CONTROL.txt'
             if control_path.exists():
-                pal_used, maxcore_used = parse_resource_settings(control_path.read_text())
+                pal_used, maxcore_used = _input_processing().parse_resource_settings(control_path.read_text())
 
             if pal_used is None or maxcore_used is None:
                 inp_candidate = None
@@ -9889,7 +10843,7 @@ def create_tab(ctx):
                     inp_candidate = inp_files[0] if inp_files else None
 
                 if inp_candidate is not None and inp_candidate.exists():
-                    pal_inp, maxcore_inp = parse_inp_resources(inp_candidate.read_text())
+                    pal_inp, maxcore_inp = _input_processing().parse_inp_resources(inp_candidate.read_text())
                     if pal_used is None:
                         pal_used = pal_inp
                     if maxcore_used is None:
@@ -9983,7 +10937,7 @@ def create_tab(ctx):
             inp_path.write_text(inp_content)
 
             slurm_time = calc_recalc_time.value.strip() or '24:00:00'
-            pal_used, maxcore_used = parse_inp_resources(inp_content)
+            pal_used, maxcore_used = _input_processing().parse_inp_resources(inp_content)
             if pal_used is None and ctx.orca_pal_widget is not None:
                 pal_used = ctx.orca_pal_widget.value
             if maxcore_used is None and ctx.orca_maxcore_widget is not None:
@@ -11348,7 +12302,8 @@ def create_tab(ctx):
                                 row.append('—')
                     rows.append(row)
         calc_table_output.value = _render_extract_table_html(headers, rows)
-        import io, csv as _csv
+        import csv as _csv
+        import io
         buf = io.StringIO()
         csv_rows = [['' if c == '—' else c for c in row] for row in rows]
         _csv.writer(buf, delimiter=';').writerows([headers] + csv_rows)
@@ -12665,6 +13620,7 @@ def create_tab(ctx):
         _calc_show_xyz_batch_panel(False)
         _calc_show_print_mode_panel(False)
         _calc_show_mo_plot_panel(False)
+        _calc_show_spin_density_panel(False)
 
         # Reset xyz trajectory controls
         state['xyz_frames'].clear()
@@ -12753,7 +13709,7 @@ def create_tab(ctx):
                 calc_update_view()
                 try:
                     head_bytes = min(CALC_TEXT_CHUNK_BYTES, size)
-                    with open(str(full_path), 'r', errors='ignore') as fh:
+                    with open(str(full_path), errors='ignore') as fh:
                         head_text = fh.read(head_bytes)
                     head_frames = parse_xyz_frames(head_text)
                     _calc_load_text_preview_chunk(full_path, size, 0)
@@ -13006,10 +13962,64 @@ def create_tab(ctx):
                 else:
                     content = full_path.read_text()
                     state['file_content'] = ''
-                    def _cube_extra(view, raw):
-                        view.addVolumetricData(raw, 'cube', {'isoval': 0.02, 'color': '#0026ff', 'opacity': 0.85})
-                        view.addVolumetricData(raw, 'cube', {'isoval': -0.02, 'color': '#b00010', 'opacity': 0.85})
-                    _render_3dmol(content, fmt='cube', extra_fn=_cube_extra)
+                    # If this cube is the spin density cube of the active
+                    # spin display, use the panel's display settings; the
+                    # hardcoded ±0.02 defaults only apply to other cubes.
+                    # A cube orca_plot wrote itself is named
+                    # <base>.spindens.cube, so the visualization controls
+                    # also survive a dashboard restart. Other cube files
+                    # are never classified as spin density.
+                    spin_display = state.get('spin_display') or {}
+                    _is_spin_cube = (
+                        spin_display.get('cube_path') == str(full_path)
+                        or lower_name.endswith('.spindens.cube')
+                        or lower_name.endswith('.spindens.cub')
+                    )
+                    if not _is_spin_cube:
+                        spin_display = {}
+                        state['spin_display'] = None
+                        _calc_show_spin_density_panel(False)
+                    else:
+                        # Make the opened cube the active spin display so
+                        # Apply works immediately; keep settings that were
+                        # made for this very file, otherwise the defaults.
+                        if spin_display.get('cube_path') != str(full_path):
+                            spin_display = {
+                                'cube_path': str(full_path),
+                                'isoval': 0.005,
+                                'opacity': 0.65,
+                                'show_pos': True,
+                                'show_neg': True,
+                                'show_mol': True,
+                                'pos_color': '#0000ff',
+                                'neg_color': '#ff0000',
+                            }
+                        state['spin_display'] = dict(spin_display)
+                        # Mirror the stored settings into the panel widgets.
+                        try:
+                            calc_spin_density_isoval.value = float(
+                                spin_display.get('isoval', 0.005))
+                            calc_spin_density_opacity.value = float(
+                                spin_display.get('opacity', 0.65))
+                            calc_spin_density_pos_cb.value = bool(
+                                spin_display.get('show_pos', True))
+                            calc_spin_density_neg_cb.value = bool(
+                                spin_display.get('show_neg', True))
+                            calc_spin_density_mol_cb.value = bool(
+                                spin_display.get('show_mol', True))
+                            calc_spin_density_pos_color.value = (
+                                spin_display.get('pos_color') or '#0000ff')
+                            calc_spin_density_neg_color.value = (
+                                spin_display.get('neg_color') or '#ff0000')
+                        except (TypeError, ValueError):
+                            pass
+                        _calc_show_spin_density_panel(True, visualize=True)
+                    # The spin display settings are applied inside
+                    # _render_3dmol (volumetric_js); the old extra_fn path
+                    # was never consumed there and is removed.
+                    _render_3dmol(content, fmt='cube',
+                                  hide_molecule=not spin_display.get(
+                                      'show_mol', True))
                 # Trigger dynamic resize after volumetric data is loaded
                 _run_js(
                     f"setTimeout(function(){{"
@@ -13211,7 +14221,7 @@ def create_tab(ctx):
                     try:
                         if size > CALC_LOG_XYZ_EXTRACT_MAX:
                             # Read only the tail of large logs (XYZ blocks are near the end)
-                            with open(str(full_path), 'r', errors='ignore') as fh:
+                            with open(str(full_path), errors='ignore') as fh:
                                 fh.seek(max(0, size - CALC_TEXT_CHUNK_BYTES))
                                 xyz_source = fh.read()
                         else:
@@ -13271,7 +14281,7 @@ def create_tab(ctx):
             if name in ('input.txt', 'start.txt'):
                 # For SMILES-only input.txt, open the same side-by-side 2D/3D visual mode
                 # used for mutation-space CSV browsing.
-                if name == 'input.txt' and is_smiles(content):
+                if name == 'input.txt' and _input_processing().is_smiles(content):
                     _set_view_toggle(True, False)
                     _on_view_toggle()
                     return
@@ -13437,6 +14447,14 @@ def create_tab(ctx):
         # construction. Still keyed by folder as well, so the same name in
         # another directory still opens.
         state['last_opened_label'] = (state['current_path'], name)
+        # a newly opened file ends the TS→GOAT session for the previous
+        # .out (single-selection panel is bound to one concrete output)
+        if calc_ts_goat_panel.children:
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'none'
+            # the panel hid the label and toolbar too; let the view
+            # decide all three for the current mode
+            calc_update_view()
         _calc_open_item(label)
 
     def calc_on_open_request(change):
@@ -13455,6 +14473,13 @@ def create_tab(ctx):
     def calc_on_selection_change(change):
         _calc_update_explorer_action_state()
         labels = [label for label in (change['new'] or ()) if label and not label.startswith('(')]
+        # TS→GOAT belongs to one concrete .out: any other selection
+        # (another file, an .xyz, nothing) hides the panel so the normal
+        # preview shows and no stale constraints/viewer stay around.
+        if calc_ts_goat_panel.children and len(labels) != 1:
+            calc_ts_goat_panel.children = []
+            calc_ts_goat_panel.layout.display = 'none'
+            calc_update_view()
         if len(labels) == 1:
             # The click bridge above has usually opened this one already.  This
             # path still serves keyboard navigation, and stands in whenever the
@@ -13582,6 +14607,8 @@ def create_tab(ctx):
     calc_recalc_btn.on_click(calc_on_recalc_click)
     calc_submit_recalc_btn.on_click(calc_on_submit_recalc)
     calc_submit_xyz_workflow_btn.on_click(_calc_submit_xyz_browser_workflow)
+    calc_prescreen_btn.on_click(_calc_on_prescreen_click)
+    calc_prescreen_refresh_btn.on_click(_calc_on_prescreen_refresh_click)
     calc_delete_btn.on_click(calc_on_delete_click)
     calc_delete_yes_btn.on_click(calc_on_delete_yes)
     calc_delete_no_btn.on_click(calc_on_delete_no)
@@ -13690,6 +14717,7 @@ def create_tab(ctx):
     calc_mo_plot_beta_cb.observe(_calc_update_mo_spin_button_styles, names='value')
     _calc_update_mo_spin_button_styles()
     calc_mo_plot_btn.on_click(calc_on_mo_plot)
+    calc_spin_density_btn.on_click(calc_on_spin_density)
     calc_nmr_submit_btn.on_click(_calc_on_nmr_submit)
     calc_censo_nmr_submit_btn.on_click(_calc_on_censo_nmr_submit)
     calc_report_btn.on_click(calc_on_report)
@@ -13705,7 +14733,7 @@ def create_tab(ctx):
     if ctx.calc_dir.exists():
         calc_list_directory()
     else:
-        calc_file_list.options = ['(calc folder not found)']
+        _replace_options(calc_file_list, ['(calc folder not found)'])
 
     _explorer_interactions_js = r"""
     (function(){
@@ -15078,6 +16106,11 @@ def create_tab(ctx):
         '.calc-left .widget-vbox { overflow:hidden !important; }'
         '.calc-left code { display:block !important; overflow:hidden !important;'
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
+        '.calc-file-info { flex:1 1 auto !important; min-width:0 !important; }'
+        '.calc-file-info .widget-html-content { white-space:nowrap; overflow:hidden;'
+        ' text-overflow:ellipsis; }'
+        '.calc-file-info .widget-html-content span[style*="break-all"]'
+        ' { word-break:normal !important; }'
         '.calc-splitter { width:8px; height:100%; cursor:col-resize; touch-action:none;'
         ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
         ' border-radius:4px; display:block;'
@@ -15141,6 +16174,8 @@ def create_tab(ctx):
         calc_xyz_batch_panel,
         calc_print_mode_panel,
         calc_mo_plot_panel,
+        calc_spin_density_panel,
+        calc_ts_goat_panel,
         calc_delete_confirm,
         calc_delete_status,
         calc_mol_container,
@@ -15268,10 +16303,24 @@ def create_tab(ctx):
                     }}, 100);
                     return;
                 }}
+                // Built before it is shown (the agent tab builds the tabs it
+                // drives; the dashboard warms it): the tab's DOM appears only
+                // on its first open. Giving up after 4 s left the splitter and
+                // the explorer's clicks unbound for good. Wait for THIS tab's
+                // root instead -- one observer per scope, gone once bound.
                 // No fallback to the first .calc-tab on the page: with three
-                // browsers open that is somebody else's tab, and binding this
-                // tab's splitter and upload target to it is worse than not
-                // binding at all.
+                // browsers open that is somebody else's tab.
+                var waits = (window.__delfinCalcRootWaits = window.__delfinCalcRootWaits || {{}});
+                if (!waits[scopeKey]) {{
+                    waits[scopeKey] = new MutationObserver(function() {{
+                        if (document.querySelector('.' + scopeKey)) {{
+                            waits[scopeKey].disconnect();
+                            delete waits[scopeKey];
+                            initCalcScopeBind(0);
+                        }}
+                    }});
+                    waits[scopeKey].observe(document.body, {{childList: true, subtree: true}});
+                }}
                 return;
             }}
             window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
@@ -15544,6 +16593,8 @@ def create_tab(ctx):
         'calc_ketcher_container': calc_ketcher_container,
         'calc_recalc_toolbar': calc_recalc_toolbar,
         'calc_content_toolbar': calc_content_toolbar,
+        'calc_content_label': calc_content_label,
+        'calc_ts_goat_panel': calc_ts_goat_panel,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # the spreadsheet, for driving it the way the browser does
@@ -15569,6 +16620,9 @@ def create_tab(ctx):
         'calc_ssh_transfer_btn': calc_ssh_transfer_btn,
         # Visualization & report
         'calc_view_toggle': calc_view_toggle,
+        'calc_prescreen_btn': calc_prescreen_btn,
+        'calc_prescreen_refresh_btn': calc_prescreen_refresh_btn,
+        'calc_prescreen_toolbar': calc_prescreen_toolbar,
         'calc_view_png_btn': calc_view_png_btn,
         'calc_view_fullscreen_btn': calc_view_fullscreen_btn,
         'calc_xyz_png_btn': calc_xyz_png_btn,
@@ -15604,6 +16658,22 @@ def create_tab(ctx):
         'calc_on_download': calc_on_download,
         'calc_download_btn': calc_download_btn,
         'calc_download_status': calc_download_status,
+        # Spin density (exposed for tests: fire the button, read the status)
+        'calc_spin_density_btn': calc_spin_density_btn,
+        'calc_spin_density_status': calc_spin_density_status,
+        'calc_spin_density_grid': calc_spin_density_grid,
+        'calc_spin_density_isoval': calc_spin_density_isoval,
+        'calc_spin_density_opacity': calc_spin_density_opacity,
+        'calc_spin_density_pos_cb': calc_spin_density_pos_cb,
+        'calc_spin_density_neg_cb': calc_spin_density_neg_cb,
+        'calc_spin_density_mol_cb': calc_spin_density_mol_cb,
+        'calc_spin_density_pos_color': calc_spin_density_pos_color,
+        'calc_spin_density_neg_color': calc_spin_density_neg_color,
+        'calc_spin_density_apply_btn': calc_spin_density_apply_btn,
+        'calc_spin_density_panel': calc_spin_density_panel,
+        'calc_spin_density_generation_box': calc_spin_density_generation_box,
+        'calc_spin_density_settings': calc_spin_density_settings,
+        'calc_on_spin_density_update_view': calc_on_spin_density_update_view,
         'calc_download_targets': _calc_download_targets,
         'calc_update_download_btn': calc_update_download_btn,
         # Delete (exposed for blocking only — agent must NOT click)

@@ -927,6 +927,12 @@ def chat_namespace(args: argparse.Namespace, workspace: Path) -> argparse.Namesp
         argv.append("--continue")
     if args.fork_session:
         argv.append("--fork-session")
+    if getattr(args, "unattended", False):
+        argv.append("--unattended")
+    for flag, value in (("--max-budget-usd", getattr(args, "max_budget_usd", 0.0)),
+                        ("--max-run-seconds", getattr(args, "max_run_seconds", 0.0))):
+        if value and float(value) > 0:
+            argv += [flag, str(float(value))]
     for path in args.add_dir:
         argv += ["--add-dir", path]
     for path in args.read_dir:
@@ -1019,6 +1025,8 @@ def initial_title(args: argparse.Namespace, engine) -> str:
     """What a session is called when it starts: the title or the name given;
     resumed, continued or forked without one, the one it was saved under
     (if it was given one -- never the store's stand-in, its first message)."""
+    if getattr(args, "untitled", False) and not args.title:
+        return ""                     # reset to the default name: kept so
     title = args.title or args.name
     if not title and (args.resume or args.continue_session or args.fork_session):
         title = stored_title(str(getattr(engine, "session_id", "") or args.resume))
@@ -1048,7 +1056,8 @@ class Worker:
 
     def __init__(self, engine, *, writer: protocol.LineWriter, reader,
                  workspace: Path, banner: list[str], notices: list[str],
-                 name: str = "", title: str = "", fake: bool = False, save: bool = True):
+                 name: str = "", title: str | None = None, fake: bool = False,
+                 save: bool = True):
         from ..repl import ReplOptions
 
         self.engine = engine
@@ -1058,12 +1067,21 @@ class Worker:
         #: The address: the name it started with (mail, approvals and presence
         #: reach the session by it, or by its id when there is none).
         self.name = name
-        #: What it is called: the title given, else that name; a rename
-        #: changes this, never the address.
-        self.title = protocol.clean_title(title or name)
+        #: What it is called: the title given (initial_title: that name when
+        #: none, "" for a session renamed back to the default), else that
+        #: name; a rename changes this, never the address.
+        self.title = protocol.clean_title(name if title is None else title)
         self.fake = fake
         self.save = save
         sid = str(getattr(engine, "session_id", "") or "")
+        if not sid:
+            # A backend that announces its id only on the stream and cannot
+            # be told one up front (engine._fresh_session_id): the session
+            # still needs an address and a log before its first turn. The
+            # engine's own id is left alone -- the backend resumes by the
+            # id it announces.
+            import uuid
+            sid = uuid.uuid4().hex
         self.notices = list(notices)
         #: What the session was started to look into (session.create's
         #: brief), put in front of the first prompt that reaches the model.
@@ -1110,6 +1128,8 @@ class Worker:
         self._seen_lock = threading.Lock()
         self._tasks: list[dict[str, Any]] = []
         self._tasks_key: Any = ()
+        self._background: list[dict[str, Any]] = []
+        self._background_at = -1e9
         #: bypassPermissions was confirmed once in this session (the
         #: window's y): shift+tab passes through it from then on.
         self._bypass_confirmed = False
@@ -1126,7 +1146,11 @@ class Worker:
     def _bind_broker(self, key: str) -> None:
         bind = getattr(self.engine, "set_kit_confirm_callback", None)
         if callable(bind) and bind(self.broker.callback):
-            perms = self.engine.kit_permissions
+            perms = getattr(self.engine, "kit_permissions", None)
+            if perms is None:
+                # The Claude CLI backend: its file gate took the callback,
+                # and there is no permissions object to give the rest to.
+                return
             perms.ask_user_callback = self.broker.ask_user
             perms.plan_approval_callback = self.broker.approve_plan
             perms.presence_key = key
@@ -1156,12 +1180,16 @@ class Worker:
                 "model": str(getattr(client, "model", "") or ""),
                 "effort": str(getattr(client, "effort", "")
                               or getattr(self.engine, "effort", "") or ""),
+                # The agent mode: /mode switches the engine, and every
+                # window has to hear it (session.updated.mode).
+                "mode": str(getattr(self.engine, "mode", "") or ""),
                 "tasks": self._task_rows(),
                 # Whether shift+tab may stop on bypass ("" yes, else why
                 # not) and whether its first step was confirmed already.
                 "bypassBlocked": self._bypass_blocked(),
                 "bypassConfirmed": bool(getattr(self, "_bypass_confirmed", False)),
-                "auto": self._auto_line()}
+                "auto": self._auto_line(),
+                "background": self._background_rows()}
 
     def _bypass_blocked(self) -> str:
         try:
@@ -1213,6 +1241,43 @@ class Worker:
             pass
         return self._tasks
 
+    #: How often the background list is read again. check_session runs
+    #: every tick (0.25 s); the list reads the job registry, the process
+    #: table and the scheduler, which is a glance every few seconds, not a
+    #: poll (the terminal's status line uses the same 3 s).
+    _BACKGROUND_EVERY_S = 3.0
+    #: Rows sent at most. The window draws three and a count, so a longer
+    #: list only costs event size; a runaway (hundreds of wake-ups) is cut.
+    _BACKGROUND_MAX = 50
+
+    def _background_rows(self) -> list[dict[str, Any]]:
+        """This session's background work (background_view.snapshot), each
+        label one plain line. A list that cannot be read keeps the last one
+        rather than announcing that nothing runs."""
+        # getattr: a worker built without __init__ (tests of the posture
+        # ladder) has neither, and session facts must still be readable.
+        now = time.monotonic()
+        if now - getattr(self, "_background_at", -1e9) < self._BACKGROUND_EVERY_S:
+            return getattr(self, "_background", [])
+        self._background_at = now
+        try:
+            from .. import background_view
+
+            sid = str(getattr(self.engine, "session_id", "") or "") or None
+            rows = background_view.snapshot(
+                background_view.collect(self.workspace, session_id=sid))
+            self._background = [
+                {"group": r["group"], "id": protocol.clean_line(r["id"], 64),
+                 "kind": protocol.clean_line(r["kind"], 40),
+                 "label": protocol.clean_line(r["label"], protocol.TASK_LABEL_MAX),
+                 "url": protocol.clean_line(r["url"], 200),
+                 "state": protocol.clean_line(r["state"], 40),
+                 "since": r["since"], "at": r["at"]}
+                for r in rows[:self._BACKGROUND_MAX]]
+        except Exception:
+            pass
+        return getattr(self, "_background", [])
+
     def check_session(self) -> None:
         """Announce the posture, model, effort or task list whenever it
         changed, however it changed: a plan approval, "stop asking about
@@ -1242,7 +1307,10 @@ class Worker:
                 "workspace": str(self.workspace),
                 "provider": str(getattr(self.engine, "provider", "") or ""),
                 "model": facts["model"],
-                "mode": str(getattr(self.engine, "mode", "") or ""),
+                # As session.updated reports it later: a window that starts
+                # from this header must show the effort the session has.
+                "effort": facts["effort"],
+                "mode": facts["mode"],
                 "approval": facts["approval"],
                 "title": self.title or None,
                 "banner": [l for l in self.banner if l is not None],
@@ -1250,7 +1318,8 @@ class Worker:
                 "tasks": facts["tasks"],
                 "bypassBlocked": facts["bypassBlocked"],
                 "bypassConfirmed": facts["bypassConfirmed"],
-                "auto": facts["auto"]}
+                "auto": facts["auto"],
+                "background": facts["background"]}
 
     def header(self) -> dict[str, Any]:
         """A ``session.info`` event as the session is now (for replays)."""
@@ -1375,6 +1444,11 @@ class Worker:
         text = str(params.get("text") or "").strip()
         if not text:
             raise _Refusal(protocol.INVALID_PARAMS, "empty prompt")
+        if text.split()[0].lower() == "/sync":
+            from delfin.messenger.activation import configure
+            output = configure(self.emitter.session_id, text[5:].strip(), endpoint="")
+            self.emitter.emit("notice", text=output)
+            return {"accepted": True}
         how = str(params.get("how") or "queue")
         if how not in ("queue", "steer"):
             raise _Refusal(protocol.INVALID_PARAMS, "how must be queue or steer")
@@ -1498,7 +1572,9 @@ class Worker:
                 answers=list(params.get("answers") or []),
                 reason=str(params.get("reason") or ""),
                 persist=bool(params.get("persist", False)),
-                text=str(params.get("text") or ""))
+                text=str(params.get("text") or ""),
+                command=str(params.get("command") or ""),
+                client=str(params.get("client") or ""))
         except UnknownRequest as exc:
             raise _Refusal(protocol.UNKNOWN_REQUEST, str(exc)) from None
         except InvalidAnswer as exc:
@@ -1527,10 +1603,10 @@ class Worker:
         """What the session is called: what the store saves it under, what
         its checkpoints carry, what every window shows. Its address -- the
         name it started with, or its id -- stays: mail, approvals and its
-        presence keep reaching it by that."""
+        presence keep reaching it by that. Nothing printable left: the
+        title is cleared and every window shows the default name
+        (protocol.default_name); the store then keeps it as untitled."""
         title = protocol.clean_title(params.get("title"))
-        if not title:
-            raise _Refusal(protocol.INVALID_PARAMS, "a name needs some text")
         self.title = title
         self.agent.session_title = title
 
@@ -1743,6 +1819,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="the address the session is reached by (mail, approvals)")
     p.add_argument("--title", default="",
                    help="what the session is called (`/rename`); the name when not given")
+    p.add_argument("--untitled", action="store_true",
+                   help="renamed back to the default name: no title, neither the name "
+                        "(-n, its address) nor the saved one (the service's wake)")
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
     p.add_argument("--effort", default="")
@@ -1751,6 +1830,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    choices=["", "plan", "default", "acceptEdits"])
     p.add_argument("--add-dir", action="append", default=[])
     p.add_argument("--read-dir", action="append", default=[])
+    # A run nobody watches (a user schedule): chat's own ceilings, so the
+    # session stops itself at its cost or time and says which.
+    p.add_argument("--unattended", action="store_true")
+    p.add_argument("--max-budget-usd", type=float, default=0.0)
+    p.add_argument("--max-run-seconds", type=float, default=0.0)
     p.add_argument("--isolate", action="store_true")
     p.add_argument("--no-isolate", action="store_true")
     p.add_argument("--fake", action="store_true",
@@ -1868,6 +1952,14 @@ def main(argv: list[str] | None = None) -> int:
             from .fake_engine import FakeEngine
             engine = FakeEngine(str(workspace), delay=args.fake_delay,
                                 steer_window=args.fake_steer_window)
+            # Started as asked, as a real engine is: what a window then
+            # shows of model, effort and mode is the session's own.
+            if args.model:
+                engine.client.model = args.model
+            if args.effort:
+                engine.effort = engine.client.effort = args.effort
+            if args.mode and args.mode in engine.MODES:
+                engine._load_mode(args.mode)
             if args.resume:
                 # As a real resume (cli._open_session restores the id): the
                 # session goes on under its id, in the same log -- with what

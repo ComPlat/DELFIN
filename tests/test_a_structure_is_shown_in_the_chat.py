@@ -22,6 +22,8 @@ renderer returns.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from delfin.dashboard import tab_agent as T
@@ -171,3 +173,72 @@ def test_the_page_script_is_installed_once_and_starts_the_viewer():
     assert "__delfinMol3DInstalled" in src, "the guard against a second install"
     assert "addModelsAsFrames" in src, "a trajectory would not animate"
     assert "addVolumetricData" in src, "an orbital would have no isosurface"
+
+# -- the reworked chat viewer ------------------------------------------------
+
+def test_the_stage_fits_the_chat_window_not_the_viewport(tmp_path):
+    """The stage used to be a fixed 260px box, then viewport-based
+    (min(68vh,1000px)) -- but the chat scrolls inside its own frame, so
+    the viewport says nothing about the room the card actually has. The
+    fallback height is now moderate (380px) and the JS measures the
+    chat frame and caps the stage to fit inside it."""
+    card = T._mol3d_card_html(_xyz(tmp_path), "struct.xyz")
+    assert card is not None
+    # 380px until a card was sized; then the height the script kept on
+    # the frame (tests/test_a_rebuilt_chat_keeps_its_height.py).
+    assert "height:var(--delfin-mol3d-h, 380px)" in card
+    assert "min-height:280px" in card
+    src = inspect.getsource(T)
+    assert ".delfin-agent-chat-frame" in src, (
+        "the JS sizes the stage to the chat frame it lives in")
+    assert "clientHeight" in src, "the chat frame's actual height is measured"
+
+
+def test_a_trajectory_card_has_play_step_reset_and_fullscreen(tmp_path):
+    """A trajectory (frames > 1) gets a control bar: play/pause, one frame
+    back, the frame counter, one forward, reset, and a fullscreen button,
+    so it can be stepped through by hand."""
+    card = T._mol3d_card_html(_xyz(tmp_path, frames=8), "opt.xyz")
+    assert 'class="delfin-mol3d-play"' in card
+    assert 'class="delfin-mol3d-prev"' in card
+    assert 'class="delfin-mol3d-frame"' in card
+    assert 'class="delfin-mol3d-next"' in card
+    assert 'class="delfin-mol3d-reset"' in card
+    assert 'class="delfin-mol3d-fullscreen"' in card
+    assert "1 / 8" in card
+
+
+def test_a_single_structure_gets_only_the_fullscreen_button(tmp_path):
+    """A single structure has no frames to step through, so it keeps the
+    card minimal: the fullscreen button is present, the frame controls are
+    not."""
+    card = T._mol3d_card_html(_xyz(tmp_path), "struct.xyz")
+    assert 'class="delfin-mol3d-fullscreen"' in card
+    assert 'class="delfin-mol3d-play"' not in card
+    assert 'class="delfin-mol3d-prev"' not in card
+    assert 'class="delfin-mol3d-next"' not in card
+    assert 'class="delfin-mol3d-reset"' not in card
+
+
+def test_the_fullscreen_lightbox_reads_the_saved_data(tmp_path):
+    """The fullscreen view rebuilds the molecule in a viewport overlay. It
+    must read from the in-memory copy kept before the data attribute is
+    removed, not from `getAttribute('data-mol3d')` (which the build drops
+    so a long transcript does not hold every molecule twice)."""
+    import pathlib
+    src = pathlib.Path(T.__file__).read_text(encoding="utf-8")
+    assert "card.__delfinMol3DData = data;" in src
+    assert "wireFullscreen(card" in src
+    # the lightbox must not read the removed attribute
+    assert "var txt = card.__delfinMol3DData;" in src
+    assert "card.removeAttribute('data-mol3d');" in src
+
+
+def test_a_trajectory_is_stepped_by_hand_not_auto_animated():
+    """The old card played the trajectory as an endless loop. The rework
+    steps it with setFrame driven by the control bar, so it can be watched
+    frame by frame."""
+    import pathlib
+    src = pathlib.Path(T.__file__).read_text(encoding="utf-8")
+    assert "wireTrajectory(card, stage, viewer, frames);" in src
+    assert "viewer.setFrame(0);" in src

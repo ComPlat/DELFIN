@@ -138,6 +138,12 @@ def expand_at_references(text: str, workspace: Path) -> str:
 # The builtin handlers
 # ---------------------------------------------------------------------------
 
+def _sync(ctx, args: str) -> CommandResult:
+    from delfin.messenger.activation import configure
+    sid = str(ctx.session_id or getattr(ctx.engine, "session_id", "") or "")
+    return CommandResult(output=configure(sid, args, endpoint=""))
+
+
 def _status(ctx, _args: str) -> CommandResult:
     engine = ctx.engine
     try:
@@ -465,6 +471,93 @@ def _rewind(ctx, _args: str) -> CommandResult:
         return CommandResult(output=f"no change report available ({exc})")
 
 
+# Branches on this checkout: the dashboard's rules, the same words the
+# messenger answers (delfin/agent/branch_commands.py formats, branch_ops
+# does). Nothing here switches the shared checkout; a deletion is only
+# /cleanup ok, through branch_cleanup.delete with its rules re-read.
+
+def _branches(ctx, args: str) -> CommandResult:
+    """``/branches [view]`` lists; ``/branches test <n|name>``,
+    ``/branches pull`` and ``/branches cleanup [ok <n|name>]`` act.
+
+    The actions live under /branches instead of top-level /test, /pull,
+    /cleanup: /cle is then unambiguous for /clear again (the tab
+    completion test pins that), and one command groups everything the
+    dashboard's branch panel does.
+    """
+    from . import branch_commands
+    word, _, rest = args.strip().partition(" ")
+    word = word.strip().lower()
+    rest = rest.strip()
+    if word in ("test", "pull", "cleanup"):
+        if word == "test":
+            handler, label = _test, "/branches test"
+        elif word == "pull":
+            handler, label = _pull, "/branches pull"
+        else:
+            handler, label = _cleanup, "/branches cleanup"
+        result = handler(ctx, rest)
+        if result.output.startswith(f"/{word} failed:"):
+            result.output = f"{label} failed:{result.output.split(':', 1)[1]}"
+        return result
+    try:
+        out = branch_commands.rows_text(ctx.workspace, word or "mine", rest)
+    except Exception as exc:
+        return CommandResult(output=f"/branches failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _test(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    token = args.strip()
+    if not token:
+        return CommandResult(output=(
+            "which branch? /branches test <number|name> -- /branches lists them"))
+    try:
+        out = branch_commands.test_text(ctx.workspace, token)
+    except Exception as exc:
+        return CommandResult(output=f"/test failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _pull(ctx, _args: str) -> CommandResult:
+    from . import branch_commands
+    try:
+        out = branch_commands.pull_text(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"/pull failed: {exc}")
+    return CommandResult(output=out)
+
+
+def _cleanup(ctx, args: str) -> CommandResult:
+    from . import branch_commands
+    word, _, rest = args.strip().partition(" ")
+    word = word.strip().lower()
+    try:
+        if word in ("ok", "yes", "confirm", "y"):
+            out, _deleted = branch_commands.cleanup_confirm_text(
+                ctx.workspace, rest.strip())
+            return CommandResult(output=out)
+        if word:
+            # a number or name without the ok: show what it is, delete
+            # nothing (a bare name is not a confirmation)
+            ref = branch_commands.resolve(ctx.workspace, word)
+            if not ref:
+                return CommandResult(output=(
+                    f"no branch {word!r}; /branches cleanup lists what may be "
+                    "deleted, /branches cleanup ok <number> deletes it"))
+            note = branch_commands.unmerged_note(ctx.workspace, ref)
+            return CommandResult(output=(
+                f"{ref} is in the cleanup listing only when it is merged. "
+                + (note or "/branches cleanup ok " + word + " deletes it "
+                          "(merged branches only); it is re-checked at "
+                          "deletion.")))
+        out = branch_commands.cleanup_text(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"cleanup failed: {exc}")
+    return CommandResult(output=out)
+
+
 def _tasks(ctx, _args: str) -> CommandResult:
     """This session's open work, on demand.
 
@@ -650,6 +743,7 @@ def _tools(ctx, args: str) -> CommandResult:
             list(getattr(ac, "_DOC_TOOLS_OPENAI", None) or []),
             ac.ToolSurfaceContext(
                 role=role,
+                has_lab=ac._lab_configured(),
                 session_allowed=frozenset(
                     getattr(perms, "session_allowed_tools", None) or ()),
                 session_denied=frozenset(
@@ -1187,8 +1281,12 @@ def _agents(ctx, _args: str) -> CommandResult:
         f"{str(p.get('description') or '')[:60]}"
         for p in presets
     ]
+    # This session's runs: the store is account-wide, and a terminal
+    # listing every session's delegates offered ids this conversation never
+    # started. A session without an id yet owns none.
     try:
-        finished = subagents.list_finished(last_n=5)
+        finished = subagents.list_finished(last_n=5,
+                                           session=_live_session(ctx))
     except Exception:
         finished = []
     if finished:
@@ -1323,6 +1421,53 @@ def _hooks(ctx, _args: str) -> CommandResult:
         lines.append(f"        source {row.get('source') or 'unknown'}")
     for note in warnings:
         lines.append(f"  ! {note}")
+    return CommandResult(output="\n".join(lines))
+
+
+def _ports(ctx, args: str) -> CommandResult:
+    """The ports background jobs hold open, and closing one.
+
+    `/ports` lists each running job that listens, with its ports and the
+    address to open; `/ports close <port|job_id>` ends the job that holds
+    it, and with it the port. The ports are what the job's processes
+    really listen on (bash_jobs.open_ports, read from /proc), whatever the
+    server is. Asked for 2026-10-20: a server left running after a session
+    held its port with nothing on screen saying so, and closing it took a
+    process hunt.
+    """
+    try:
+        from . import bash_jobs
+        rows = bash_jobs.open_ports()
+    except Exception as exc:
+        return CommandResult(output=f"ports unavailable ({exc})")
+    parts = args.strip().split()
+    if parts[:1] == ["close"]:
+        if len(parts) < 2:
+            return CommandResult(output="usage: /ports close <port|job_id>")
+        want = parts[1].lstrip(":")
+        hit = next((r for r in rows if want.isdigit()
+                    and int(want) in r["ports"]), None) or next(
+            (r for r in rows if r["job_id"].startswith(want)), None)
+        if hit is None:
+            return CommandResult(output=(
+                f"no background job holds {parts[1]} -- /ports lists the "
+                "open ones"))
+        try:
+            ok, note = bash_jobs.get_registry().kill(hit["job_id"])
+        except Exception as exc:
+            return CommandResult(output=f"close failed: {exc}")
+        ports = " ".join(f":{p}" for p in hit["ports"])
+        return CommandResult(output=(
+            f"closed {ports} (job {hit['job_id']}: {note})" if ok
+            else f"not closed -- {note}"))
+    if not rows:
+        return CommandResult(output="no background job holds a port open")
+    lines = ["open ports of background jobs:"]
+    for r in rows:
+        ports = " ".join(f":{p}" for p in r["ports"])
+        lines.append(f"  {ports:<14} http://127.0.0.1:{r['ports'][0]}/   "
+                     f"job {r['job_id']}  {r['command'][:60]}")
+    lines.append("  /ports close <port|job_id>   ends the job, and its port")
     return CommandResult(output="\n".join(lines))
 
 
@@ -1861,6 +2006,31 @@ def _loop(ctx, args: str) -> CommandResult:
     return CommandResult(output=text, prompt=prompt)
 
 
+def _profile(ctx, args: str) -> CommandResult:
+    from . import workspace_profiles
+    words = str(args or "").strip().split()
+    usage = "usage: /profile [workspace] frei|standard"
+    word = words[-1] if words else ""
+    target = words[0] if len(words) == 2 else str(ctx.workspace)
+    if len(words) not in (1, 2) or word.lower() not in (
+            "frei", "free", "standard", "default"):
+        return CommandResult(output=usage)
+    try:
+        result = workspace_profiles.set_from_word(target, word)
+    except PermissionError as exc:
+        return CommandResult(output=f"profile refused: {exc}")
+    except ValueError as exc:
+        return CommandResult(output=f"profile: {exc}")
+    return CommandResult(output=f"profile {result['workspace']}: "
+                                f"{result['profile']} (confirmed)")
+
+
+def _schedule(ctx, args: str) -> CommandResult:
+    from . import schedule_commands
+    return CommandResult(output=schedule_commands.handle(
+        args, workspace=ctx.workspace, created_by="session", ask=ctx.ask))
+
+
 def _auto(ctx, args: str) -> CommandResult:
     from . import loop_commands
     return CommandResult(output=loop_commands.auto_command(
@@ -1971,6 +2141,7 @@ BUILTINS: dict[str, ReplCommand] = {
                     _keys),
         ReplCommand("/editor", "session", "Write the next prompt in "
                     "$VISUAL or $EDITOR", _editor, True),
+        ReplCommand("/sync", "session", "SimpleX für diese Sitzung on|off|status", _sync, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
         ReplCommand("/usage", "session", "Token and cost detail, with the rate",
@@ -2018,6 +2189,10 @@ BUILTINS: dict[str, ReplCommand] = {
                     _session, True),
         ReplCommand("/rewind", "history", "What the agent changed here",
                     _rewind),
+        ReplCommand("/branches", "git", "Branches of this checkout: "
+                    "[view] lists (mine, all, hidden, merged, remote); "
+                    "test <n|name>, pull, cleanup [ok <n>] act", _branches,
+                    True),
         ReplCommand("/tasks", "history", "This session's open work", _tasks),
         ReplCommand("/memories", "history", "Stored memories", _memories, True),
         ReplCommand("/forget", "history", "Delete one memory by name",
@@ -2048,6 +2223,9 @@ BUILTINS: dict[str, ReplCommand] = {
                     _reject, True),
         ReplCommand("/git", "workspace", "status | diff | log | branch | role",
                     _git, True),
+        ReplCommand("/ports", "workspace",
+                    "Open ports of background jobs; /ports close <port|id>",
+                    _ports, True),
         ReplCommand("/bash", "workspace", "Background jobs: list or kill one",
                     _bash, True),
         ReplCommand("/jobs", "workspace",
@@ -2060,6 +2238,14 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/loop", "workspace",
                     "Loops: list | show | confirm | run | stop | new | log",
                     _loop, True),
+        ReplCommand("/schedule", "workspace",
+                    "Your schedules: list | add <when> <task> | ok | pause | "
+                    "run | delete | log",
+                    _schedule, True),
+        ReplCommand("/profile", "workspace",
+                    "Freedom profile of a workspace: [path] frei|standard "
+                    "(free = scheduled runs in bypass inside the cage)",
+                    _profile, True),
         ReplCommand("/auto", "workspace",
                     "Auto mode: on | off | needs — work on without input",
                     _auto, True),

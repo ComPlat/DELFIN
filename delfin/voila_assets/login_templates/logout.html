@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Signed out · DELFIN Dashboard</title>
+  {% include "_delfin_card_style.html" %}
+  <style>
+    a.submit {
+      display: block;
+      text-decoration: none;
+      box-sizing: border-box;
+    }
+  </style>
+</head>
+<body>
+  {# jupyter_server renders this for /logout after it has cleared the
+     login cookie: the page is shown as signed out. #}
+  <main class="card">
+    <!--LOGO_TILE_START-->
+    <div class="logo-tile">
+      <img src="__DELFIN_LOGO_URI__" alt="DELFIN logo">
+    </div>
+    <!--LOGO_TILE_END-->
+    <div class="wordmark">DELFIN</div>
+    <div class="subtitle">Signed out</div>
+
+    {% if message %}
+      {% for key in message %}
+        <div class="message {{ key }}">{{ message[key] }}</div>
+      {% endfor %}
+    {% endif %}
+
+    <div class="hint">
+      This browser is signed out. The dashboard keeps running on the
+      server, and a kept session is still there when you sign in again.
+    </div>
+
+    {% if login_available %}
+    <a class="submit" href="{{ base_url }}login" id="login_again">Sign in again</a>
+    {% else %}
+    <a class="submit" href="{{ base_url }}" id="login_again">Back to the dashboard</a>
+    {% endif %}
+
+    <div class="foot">Secured on this host — only you can sign in</div>
+  </main>
+</body>
+</html>

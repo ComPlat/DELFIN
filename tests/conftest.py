@@ -333,7 +333,33 @@ def child_env(tmp_path) -> dict:
     # login keychain): keyring's own override selects its null backend,
     # which DELFIN refuses as a store.
     env["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+    # Jupyter's runtime directory (kernel keys, sockets, the dashboard's
+    # login store) does not follow HOME when JUPYTER_RUNTIME_DIR is set,
+    # and under a pytest HOME it is too long for a socket, so the launcher
+    # moves it to $XDG_RUNTIME_DIR or to the user's real
+    # /tmp/delfin-k-<uid> (measured 2026-10-22: two server tests left
+    # login stores there). A short private one of the child's own:
+    env.pop("JUPYTER_RUNTIME_DIR", None)
+    env["XDG_RUNTIME_DIR"] = _child_runtime_dir()
     return env
+
+
+#: Runtime directories handed to children, removed when the session ends.
+_CHILD_RUNTIMES: list = []
+
+
+def _child_runtime_dir() -> str:
+    import atexit
+    import os
+    import shutil
+    import tempfile
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    made = tempfile.mkdtemp(prefix="dx", dir=root)       # 0700, ours
+    if not _CHILD_RUNTIMES:
+        atexit.register(lambda: [shutil.rmtree(d, ignore_errors=True)
+                                 for d in _CHILD_RUNTIMES])
+    _CHILD_RUNTIMES.append(made)
+    return made
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -816,6 +842,10 @@ _XTB_STUB_DIR = Path(__file__).resolve().parent / "stubs"
 #: was in setup, and wrote xtb 6.7.1 into delfin/qm_tools/.mamba_env of the
 #: checkout 5 s into the run (test_the_switch_holds_between_tests_as_well).
 os.environ["DELFIN_AUTO_INSTALL_QM_TOOLS"] = "0"
+# Transient-retry backoff waits minutes in production; tests keep the old count
+# and do not sleep (delfin/agent/api_client.py _transient_retry_delay).
+os.environ.setdefault("DELFIN_STREAM_RETRY_MAX", "3")
+os.environ.setdefault("DELFIN_STREAM_RETRY_DELAY_SCALE", "0")
 
 
 @pytest.fixture(autouse=True)
@@ -933,6 +963,17 @@ def _reset_workspace_trust_caches():
     yield
     wt.reset_announcements()
     _mcp.forget_pin_decisions()
+
+
+@pytest.fixture(autouse=True)
+def _no_host_settings_defaults(monkeypatch):
+    """DELFIN_SETTINGS_DEFAULTS unset for every test.
+
+    The Windows launcher's people mode exports it (the account's settings
+    file read under the person's own); a suite started from such a shell
+    would otherwise load and write every settings test against that file.
+    Tests of the layer set their own."""
+    monkeypatch.delenv("DELFIN_SETTINGS_DEFAULTS", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -1336,6 +1377,90 @@ def requires_a_working_sandbox(fn):
     )(fn)
 
 
+# ---------------------------------------------------------------------------
+# No external agent CLI, no remote model endpoint
+# ---------------------------------------------------------------------------
+# On 2026-11-03 a dashboard agent-tab test found an external agent CLI on
+# PATH, listed that provider first, and sent 13 prompts to it; the CLI
+# then ran commands in the pytest temp folders. The mechanism (discovery,
+# spawn and connect tripwires, the session environment strip) lives in
+# tests/external_agent_guard.py and is installed in pytest_configure; this
+# fixture turns what it recorded during a test into that test's failure.
+import external_agent_guard as _external_agent_guard  # noqa: E402
+
+
+#: (next test's nodeid, refusal) recorded while no test ran.
+_AGENT_TRIPS_OUTSIDE_TESTS: list = []
+
+
+@pytest.fixture()
+def fake_agent_cli(tmp_path_factory, monkeypatch):
+    """Stub ``claude``/``codex`` first on PATH; returns the stub directory.
+
+    Each stub appends ``"$0 $*"`` to ``<dir>/calls.log`` and exits 0. The
+    real binaries and non-loopback connections remain refused."""
+    stub = _external_agent_guard.make_stub_dir(
+        str(tmp_path_factory.mktemp("fake-agent-cli")))
+    monkeypatch.setenv("PATH", stub + os.pathsep + os.environ.get("PATH", ""))
+    return Path(stub)
+
+
+@pytest.fixture(autouse=True)
+def _no_external_agent_is_reached(request):
+    """Fail the test that resolved or spawned a host agent CLI, or opened a
+    non-loopback connection; the refusal itself raised in place already."""
+    # Recorded while no test ran: a module-level probe at collection (a
+    # "is the network reachable?" skipif, which the guard answers "no") or
+    # a thread an earlier test left running. Not this test's doing, so it
+    # is named in the terminal summary instead of failing this test.
+    _AGENT_TRIPS_OUTSIDE_TESTS.extend(
+        (request.node.nodeid, t) for t in _external_agent_guard.take_trips())
+    if request.node.get_closest_marker(_external_agent_guard.MARKER):
+        request.getfixturevalue("fake_agent_cli")
+    yield
+    trips = _external_agent_guard.take_trips()
+    if trips:
+        pytest.fail(
+            "external agent tripwire: this test tried to reach an external "
+            "agent CLI or a remote endpoint (use a fake, or "
+            "@pytest.mark.fake_agent_cli for a stub CLI):\n  "
+            + "\n  ".join(trips[:20]), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _model_lists_are_offline(monkeypatch):
+    """A provider's model list on a non-loopback host answers as an
+    unreachable host would: ``urllib.request.urlopen`` of a URL whose path
+    ends in ``/models``, ``/api/tags`` or ``/api/show`` raises URLError.
+
+    Measured 2026-11-03: building the dashboard agent tab with a test key
+    (tab_agent ``_fetch_models``), engine construction and the KIT fallback
+    model (model_capabilities ``resolve``/``kit_models_served``) connected
+    to ki-toolbox.scc.kit.edu:443 from 26 test files on every run. A list
+    is a read, never a prompt, so it is answered here instead of failing
+    those tests; any other non-loopback request (a prompt, a classifier
+    call) still meets the tripwire. A loopback server (a local Ollama
+    stand-in) is still asked, and a test that patches urlopen itself wins."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    original = urllib.request.urlopen
+
+    def _urlopen(url, *a, **k):
+        full = getattr(url, "full_url", url)
+        parts = urllib.parse.urlsplit(str(full))
+        path = parts.path.rstrip("/")
+        if (path.endswith(("/models", "/api/tags", "/api/show"))
+                and not _external_agent_guard._is_loopback(parts.hostname or "")):
+            raise urllib.error.URLError(
+                "model list offline in the test suite (conftest)")
+        return original(url, *a, **k)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    yield
+
+
 # Secret API keys delfin resolves, each from the env OR ~/.delfin/credentials.json.
 _SECRET_KEY_VARS = ("KIT_TOOLBOX_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 
@@ -1464,22 +1589,102 @@ def _hypothesis_store_removed() -> None:
 
 
 def pytest_configure(config):
+    # Tests never run on a shared cluster login node (account suspension
+    # 2026-11-10, issue #640): `delfin-agent test-on-slurm` runs them on a
+    # compute node from a node-local copy.
+    from delfin.hpc_guard import on_login_node, refusal_text
+    if on_login_node():
+        pytest.exit(refusal_text("tests", "delfin-agent test-on-slurm"), returncode=2)
     config.addinivalue_line(
         "markers",
         "slow: heavy or order-dependent test, excluded from the fast CI gate",
+    )
+    config.addinivalue_line(
+        "markers",
+        "private_fixtures: needs the private store of real ORCA output "
+        "(DELFIN_PRIVATE_FIXTURES); select locally with "
+        "`pytest -m private_fixtures`, excluded in CI by SKIP behaviour",
+    )
+    config.addinivalue_line(
+        "markers",
+        "fake_agent_cli: discovery of an external agent CLI by name finds a "
+        "stub (argv logged to <stub dir>/calls.log, exit 0); the real binaries "
+        "and non-loopback connections stay refused (tests/external_agent_guard.py)",
     )
     import os
     for name in _LIFELINE_NAMES:
         if name in os.environ:
             _LIFELINE_SAVED[name] = os.environ.pop(name)
+    # A dashboard built by a test (a voila server, a create_tab without a
+    # stand-in build) keeps its sessions in its kernel: it must never reach
+    # the user's agent service, nor start one under /tmp. The tests of the
+    # service-backed dashboard give it a private service explicitly.
+    if "DELFIN_DASHBOARD_SESSIONS" in os.environ:
+        _LIFELINE_SAVED["DELFIN_DASHBOARD_SESSIONS"] = os.environ["DELFIN_DASHBOARD_SESSIONS"]
+    os.environ["DELFIN_DASHBOARD_SESSIONS"] = "kernel"
+    _external_agent_guard.install(is_credential)
     _hypothesis_store_outside_the_checkout()
+    _private_tmp_of_the_suite()
 
 
 def pytest_unconfigure(config):
     import os
+    _external_agent_guard.uninstall()
+    os.environ.pop("DELFIN_DASHBOARD_SESSIONS", None)
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()
+    _private_tmp_removed()
+
+
+_HELPER_USE_RE = None
+
+
+def _uses_private_fixtures(module) -> bool:
+    """True when a test module reads the private ORCA fixture store."""
+    global _HELPER_USE_RE
+    import inspect
+    import re
+
+    if _HELPER_USE_RE is None:
+        _HELPER_USE_RE = re.compile(
+            r"private_fixtures_or_skip|private_fixtures_path|lc1_fixture_dir"
+        )
+    try:
+        source = inspect.getsource(module)
+    except (OSError, TypeError):
+        return False
+    return bool(_HELPER_USE_RE.search(source))
+
+
+#: The suite's stand-in for /tmp as the base of the launcher's private
+#: runtime directories (delfin.cli_voila.PRIVATE_TMP_ENV). Set before the
+#: first test, so every child inherits it: a test server whose runtime
+#: path is too long for a socket otherwise moved its kernels and login
+#: store into the user's real /tmp/delfin-k-<uid> (measured 2026-10-22,
+#: four test files). Short, and the suite's own (0700).
+_PRIVATE_TMP: list = []
+
+
+def _private_tmp_of_the_suite():
+    import os
+    import tempfile
+    root = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+    made = tempfile.mkdtemp(prefix="dp", dir=root)
+    _PRIVATE_TMP.append((made, os.environ.get("DELFIN_PRIVATE_TMP")))
+    os.environ["DELFIN_PRIVATE_TMP"] = made
+
+
+def _private_tmp_removed():
+    import os
+    import shutil
+    while _PRIVATE_TMP:
+        made, before = _PRIVATE_TMP.pop()
+        shutil.rmtree(made, ignore_errors=True)
+        if before is None:
+            os.environ.pop("DELFIN_PRIVATE_TMP", None)
+        else:
+            os.environ["DELFIN_PRIVATE_TMP"] = before
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
@@ -1492,6 +1697,16 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     would turn dozens of passing tests red in one commit; naming them lets
     the list be worked down while the restore above already stops the harm.
     """
+    outside = _AGENT_TRIPS_OUTSIDE_TESTS + [
+        ("(after the last test)", t) for t in _external_agent_guard.take_trips()]
+    if outside:
+        terminalreporter.write_sep(
+            "=", f"{len(outside)} external-agent tripwire refusal(s) outside a test")
+        terminalreporter.write_line(
+            "Refused while no test ran (collection-time probes, threads left "
+            "running); listed with the test that ran next:")
+        for nodeid, trip in outside[:40]:
+            terminalreporter.write_line(f"  before {nodeid}: {trip}")
     if not _DELFIN_ENV_LEAKS:
         return
     by_test: dict[str, list[str]] = {}
@@ -1510,10 +1725,18 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 
 
 def pytest_collection_modifyitems(config, items):
+    seen: dict[str, bool] = {}
     for item in items:
         fname = item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1]
         if fname in _SLOW_TEST_FILES:
             item.add_marker(pytest.mark.slow)
+        module = getattr(item, "module", None)
+        if module is None:
+            continue
+        if module.__name__ not in seen:
+            seen[module.__name__] = _uses_private_fixtures(module)
+        if seen[module.__name__]:
+            item.add_marker(pytest.mark.private_fixtures)
 
 
 _PACKAGE_AST_LAST: list = []
@@ -1589,3 +1812,50 @@ def _state_maintenance_runs_once_per_test(monkeypatch):
     from delfin.agent import state_paths as _sp
     monkeypatch.setattr(_sp, "_MAINTENANCE_DONE", False)
     yield
+
+
+# ---------------------------------------------------------------------------
+# OPI-dependent tests skip where OPI (delfin[orca]) is not installed -- which
+# is every interpreter of the main CI jobs (they pin numpy<2, OPI needs
+# numpy>=2.2.6). The CI "OPI tests" job sets DELFIN_OPI_REQUIRED=1: there a
+# skip for a missing OPI is a FAILURE, so the job cannot pass by not having
+# OPI (the pattern of DELFIN_TOOLCHAIN_REQUIRED).
+# ---------------------------------------------------------------------------
+_OPI_SKIP_MARKERS = ("could not import 'opi'", "no module named 'opi'",
+                     "opi (delfin[orca]) not installed", "opi not installed")
+
+
+# ---------------------------------------------------------------------------
+# Private fixture store (LC1): real ORCA output lives outside the repo.
+#
+# DELFIN_PRIVATE_FIXTURES points at the operator-managed store root, which
+# mirrors the repository paths (e.g. <root>/tests/fixtures/orca611/...).
+# Tests that genuinely need real program output (exact pinned energies,
+# format-drift coverage) read from there and SKIP when the variable is
+# absent -- they never fail in CI. See LICENSE_GUARD.md, rule family 2.
+# The helpers live in tests/test_lc1_fixtures_helper.py (an importable
+# module under tests/ -- conftest is not importable as `tests.conftest`
+# without a package __init__); re-exported here for anyone importing
+# conftest.
+# ---------------------------------------------------------------------------
+
+from test_lc1_fixtures_helper import (  # noqa: E402, F401  (tests/ is on sys.path while pytest loads conftest; the package name `tests` is not)
+    PRIVATE_FIXTURES_ENV,
+    lc1_fixture_dir,
+    private_fixtures_or_skip,
+    private_fixtures_path,
+)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    if os.environ.get("DELFIN_OPI_REQUIRED") != "1":
+        return
+    rep = outcome.get_result()
+    if not rep.skipped:
+        return
+    reason = str(rep.longrepr[-1] if isinstance(rep.longrepr, tuple) else rep.longrepr).lower()
+    if any(m in reason for m in _OPI_SKIP_MARKERS):
+        rep.outcome = "failed"
+        rep.longrepr = f"DELFIN_OPI_REQUIRED=1 but the test skipped for a missing OPI: {reason[:200]}"

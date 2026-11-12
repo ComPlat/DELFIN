@@ -121,7 +121,9 @@ def test_a_cut_write_is_told_to_go_in_parts(tmp_path):
     sent = _loop(tmp_path, [_CUT_WRITE, ("text", "Done.", "stop")])
     tool_rows = [m for m in sent[1] if m.get("role") == "tool"]
     assert tool_rows and 'mode=\\"append\\"' in tool_rows[-1]["content"]
-    assert "did NOT run" in tool_rows[-1]["content"]
+    assert "The arguments were cut off at the output limit" in \
+        tool_rows[-1]["content"]
+    assert "write the file in smaller parts" in tool_rows[-1]["content"]
 
 
 def test_a_response_cut_inside_a_call_is_told_the_call_was_dropped(tmp_path):

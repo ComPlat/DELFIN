@@ -1,0 +1,256 @@
+"""swarm triage: the user's approval queue for the swarm (package SW1).
+
+The rule is an ALLOW-list, deliberately narrow. An item may be
+auto-answered only when BOTH hold:
+
+- its kind is a plain ``session_message`` between two identities the
+  queue's roster knows as members of THIS swarm (roster supplied by the
+  caller; never inferred from the item's own text), or its kind is
+  ``test_output`` from the member's own identity; and
+- no narrowing rule in the queue's ``rules`` demotes it.
+
+EVERYTHING ELSE escalates to the user -- a push request, a permission
+request, a message from an unknown identity, anything whose wording
+asks for an act only a person may grant. Nothing in the item's own data
+can widen this: rules may only narrow, sender strings are not trusted,
+and the verdict is re-derived inside ``triage_answer`` from the ITEM
+(a caller-passed verdict dict is never trusted).
+
+Auto-answers are logged to the swarm's STATE directory (outside the
+workspace, resolved per call like DELFIN's other per-workspace state),
+so what the machine said on the user's behalf is auditable and nothing
+is written into the user's tree.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+
+class TriageError(RuntimeError):
+    """A triage action cannot be taken, with the reason in prose."""
+
+
+def _log_dir() -> Path:
+    """The log lives in per-workspace state, NOT in the workspace:
+    resolved per call so a redirected home moves it, and never written
+    inside a checkout (finding T4/D14: a probe wrote
+    .swarm/triage_log.jsonl into a user tree)."""
+    from .. import state_paths
+
+    return state_paths.workspace_state_dir(Path.cwd())
+
+
+def _log_path() -> Path:
+    return _log_dir() / "triage_log.jsonl"
+
+
+# ---------------------------------------------------------------------------
+# Strict `command` allow shape (B's rule set, SWP phase 3). A `command`
+# item is auto-answerable ONLY when it is a worktree edit or a plain test
+# run; everything else escalates. Same ALLOW-list posture as the message
+# kinds -- the lightweight per-member command a member may auto-accept.
+# ---------------------------------------------------------------------------
+
+#: Verbs/words B's strict set refuses outright, whatever their shape.
+_DANGEROUS_WORDS: tuple[str, ...] = (
+    "rm", "unlink", "shred", "sudo", "ssh", "scp",
+    "chmod", "chown", "kill", "curl", "wget", "push",
+)
+_EDIT_WRITE_VERBS: tuple[str, ...] = ("edit_file", "write_file")
+_CHAIN_TOKENS: tuple[str, ...] = (";", "&&", "||", "|", ">", "<", "`")
+#: The project's test entry (a command whose first token this is, alone,
+#: is a test run -- e.g. the gate on DELFIN's own tree).
+_TEST_ENTRY = "gate"
+
+
+def _has_chain(text: str) -> bool:
+    """A chained command (; && | redirect backticks) is never plain."""
+    return any(token in text for token in _CHAIN_TOKENS)
+
+
+def _has_dangerous_word(text: str) -> bool:
+    """Any dangerous verb as a distinct word (never inside a longer path)."""
+    import re
+    return any(
+        re.search(rf"(?<!\S){re.escape(w)}(?!\S)", text)
+        for w in _DANGEROUS_WORDS
+    )
+
+
+def _resolves_inside(path: str, worktree_root: Path) -> bool:
+    """True when ``path`` (relative to the worktree or absolute) resolves
+    to a location inside ``worktree_root``, never out via ``..``/symlink."""
+    try:
+        p = Path(path)
+        if not p.is_absolute():
+            p = worktree_root / p
+        p = p.resolve()
+        p.relative_to(worktree_root)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _under_special(path: str, worktree_root: Path) -> bool:
+    """Refuse a path landing under the worktree's ``.git`` or ``.delfin``
+    -- the policy files a member never edits."""
+    try:
+        p = Path(path)
+        if not p.is_absolute():
+            p = worktree_root / p
+        p = p.resolve()
+        parts = p.parts
+        root_parts = worktree_root.resolve().parts
+        return ".git" in parts[len(root_parts):] or \
+            ".delfin" in parts[len(root_parts):]
+    except (ValueError, OSError):
+        return True
+
+
+def _classify_command(item: dict[str, Any]) -> dict[str, Any]:
+    """The strict `command` allow shape (B's rule set, SWP phase 3)."""
+    member = item.get("member", "")
+    sender = item.get("from", "")
+    text = item.get("text", "")
+    worktree = item.get("worktree", "")
+
+    if not member or not worktree:
+        return {"action": "escalate",
+                "reason": "no member or worktree on a command item"}
+    if sender != member:
+        return {"action": "escalate",
+                "reason": "forged sender: a command comes from its own member"}
+    if not text:
+        return {"action": "escalate", "reason": "empty command"}
+    # A chain is never a plain single action.
+    if _has_chain(text):
+        return {"action": "escalate", "reason": "chained command"}
+    # Dangerous words are refused outright.
+    if _has_dangerous_word(text):
+        return {"action": "escalate", "reason": "refused command word"}
+
+    clauses = text.split()
+    verb = clauses[0]
+
+    # plain test run through the project's test entry, target inside tests/
+    if verb == _TEST_ENTRY:
+        target = clauses[1] if len(clauses) > 1 else ""
+        if not target.startswith("tests/"):
+            return {"action": "escalate",
+                    "reason": "test run must target the tests/ tree"}
+        return {"action": "auto_answer",
+                "reason": "plain test run through the project test entry"}
+
+    # an edit/write inside the member's OWN worktree, not .git/.delfin
+    if verb in _EDIT_WRITE_VERBS and len(clauses) == 2:
+        target = clauses[1]
+        root = Path(worktree).expanduser().resolve()
+        if not _resolves_inside(target, root):
+            return {"action": "escalate",
+                    "reason": "target escapes the member's own worktree"}
+        if _under_special(target, root):
+            return {"action": "escalate",
+                    "reason": "target is a policy file (.git/.delfin)"}
+        return {"action": "auto_answer",
+                "reason": "edit/write inside the member's own worktree"}
+
+    return {"action": "escalate",
+            "reason": "command is not on the strict allow shape"}
+
+
+def classify(item: dict[str, Any]) -> dict[str, Any]:
+    """Decide what may happen to one queued item. Read-only.
+
+    ALLOW-list: every failure to match a permitted shape escalates.
+    The queue may carry ``roster`` (the member identities of this
+    swarm) and ``rules`` (narrowing only); neither is trusted beyond
+    narrowing.
+    """
+    roster = frozenset(item.get("roster") or ())
+    kind = item.get("kind", "")
+    sender = item.get("from", "")
+    member = item.get("member", "")
+
+    # A `command` item is the member's own action about their OWN worktree
+    # (checked via from == member + worktree containment); it is judged by
+    # the strict command shape before the partner-message roster gate.
+    if kind == "command":
+        return _classify_command(item)
+
+    def _escalate(reason: str) -> dict[str, Any]:
+        return {"action": "escalate", "reason": reason}
+
+    # Both ends of a partner message must be known members of THIS
+    # swarm (T2: 'from' is self-claimed item data; an unknown identity
+    # is not a partner). Unknown member or sender -> escalate.
+    if not member or member not in roster:
+        return _escalate("recipient is not a member of this swarm")
+    if kind == "session_message":
+        if not sender or sender not in roster:
+            return _escalate("sender is not a member of this swarm")
+        return {"action": "auto_answer",
+                "reason": "plain partner message between swarm members"}
+    if kind == "test_output" and sender == member:
+        return {"action": "auto_answer",
+                "reason": "a member reading its own test output"}
+    return _escalate("not on the auto-answer list")
+
+
+def _apply_rules(verdict: dict[str, Any], item: dict[str, Any]) -> dict:
+    """The queue's rule file may NARROW only (T3): a rule demotes an
+    auto-answerable item to escalation. A rule that tries to promote an
+    escalation is ignored. Shape: rules["never_auto_answer"] is a list
+    of "kind:identity" strings."""
+    if verdict.get("action") != "auto_answer":
+        return verdict
+    rules = item.get("rules") or {}
+    never = rules.get("never_auto_answer") or []
+    key = f"{item.get('kind', '')}:{item.get('from', '')}"
+    if key in never:
+        return {"action": "escalate",
+                "reason": "narrowed by the swarm's triage rules"}
+    return verdict
+
+
+def triage_list(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort the queue: escalations first, then auto-answerables."""
+    enriched = [dict(item, **_apply_rules(classify(item), item))
+                for item in queue]
+    escalations = [i for i in enriched if i["action"] == "escalate"]
+    autos = [i for i in enriched if i["action"] == "auto_answer"]
+    return escalations + autos
+
+
+def triage_answer(item: dict[str, Any], verdict: dict[str, Any],
+                  *, answer: str) -> dict[str, Any]:
+    """Answer one item on the user's behalf; log it.
+
+    The verdict is RE-DERIVED from the item here (T4/D13: a caller's
+    verdict dict is untrusted data); only an item that classifies as
+    auto-answerable -- after the narrowing rules -- may be answered.
+    """
+    derived = _apply_rules(classify(item), item)
+    if derived.get("action") != "auto_answer":
+        raise TriageError(
+            f"item {item.get('id')!r} is {derived.get('action')!r} "
+            f"({derived.get('reason')}) -- it goes to the user, not to "
+            f"an auto-answer")
+    log_path = _log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": time.time(),
+        "item_id": item.get("id"),
+        "member": item.get("member"),
+        "kind": item.get("kind"),
+        "action": "auto_answer",
+        "reason": derived.get("reason"),
+        "answer": answer,
+    }
+    with log_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+    return {"answered": True, "item_id": item.get("id"),
+            "logged": str(log_path)}

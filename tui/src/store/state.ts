@@ -23,6 +23,8 @@ export interface Asked {
   multiSelect?: boolean
   suggestion?: string
   readDir?: string
+  /** A shell request's command (masked), for key c to change. */
+  command?: string
 }
 
 export interface TurnLive {
@@ -68,6 +70,44 @@ export function taskRows(raw: unknown): TaskRow[] {
   return out
 }
 
+/** One piece of work the session still has out (session.info /
+ *  session.updated `background`): a shell, a watched job, a background
+ *  agent, a wake-up. No age: `since` (started) or `at` (fires), in epoch
+ *  seconds, and the window counts the time itself. */
+export interface BackgroundRow {
+  group: string              // shells | watches | agents | wakeups | errors
+  id: string
+  kind: string               // "Shell", "Server", "Watch · CI", "Agent", "Wake-up"
+  /** What it is: a description or the command, one plain line. */
+  label: string
+  url: string
+  state: string
+  since: number | null
+  at: number | null
+}
+
+const one = (value: unknown, max: number) => str(value)
+  .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, " ")
+  .replace(/\s+/g, " ").trim().slice(0, max)
+const seconds = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null
+
+/** The rows a session sent, each field as its type says (control and
+ *  invisible characters made spaces); a row without an id or a label is
+ *  left out. */
+export function backgroundRows(raw: unknown): BackgroundRow[] {
+  if (!Array.isArray(raw)) return []
+  const out: BackgroundRow[] = []
+  for (const r of raw as Record<string, unknown>[]) {
+    if (!r || typeof r !== "object") continue
+    const id = one(r.id, 64)
+    const label = one(r.label, 160) || id
+    if (!id) continue
+    out.push({ group: one(r.group, 20), id, kind: one(r.kind, 40) || "Job", label, url: one(r.url, 200),
+               state: one(r.state, 40), since: seconds(r.since), at: seconds(r.at) })
+  }
+  return out
+}
+
 export interface SessionState {
   id: string
   title: string
@@ -107,6 +147,8 @@ export interface SessionState {
   bypassConfirmed: boolean
   /** Auto mode's one-line state ("" while off), as the session sent it. */
   auto: string
+  /** What the session still has out, as it sent it last. */
+  background: BackgroundRow[]
 }
 
 export interface Elsewhere {
@@ -136,7 +178,7 @@ export interface AppState {
    *  until the service of this connection has said one. */
   attentionVersion: number
   /** What the service does beyond its protocol (its hello's
-   *  serviceVersion): 4 and later answer /clusters and /jobs, 5 and later
+   *  serviceVersion): 5 and later answer /clusters and /jobs, 6 and later
    *  their entries' details (space). */
   serviceVersion: number
 }
@@ -172,7 +214,7 @@ export function newSession(id: string, info: Record<string, unknown> = {}): Sess
     id, title: "", workspace: "", provider: "", model: "", mode: "", approval: "",
     effort: "", state: "starting", pending: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
     turn: null, tail: "", tailKey: "", held: [], thinking: "", lastSeq: 0, summary: null, ended: null, wait: "",
-    tasks: [], bypassBlocked: null, bypassConfirmed: false, auto: "",
+    tasks: [], bypassBlocked: null, bypassConfirmed: false, auto: "", background: [],
   }
   applyInfo(s, info)
   return s
@@ -183,7 +225,8 @@ function str(value: unknown): string {
 }
 
 export function applyInfo(s: SessionState, info: Record<string, unknown>): void {
-  if ("title" in info && info.title) s.title = str(info.title)
+  // "" is a rename back to the default name (the summary's `name`).
+  if ("title" in info && info.title != null) s.title = str(info.title)
   if ("workspace" in info) s.workspace = str(info.workspace)
   if ("provider" in info) s.provider = str(info.provider)
   if ("model" in info) s.model = str(info.model)
@@ -194,6 +237,7 @@ export function applyInfo(s: SessionState, info: Record<string, unknown>): void 
   if ("bypassBlocked" in info && info.bypassBlocked != null) s.bypassBlocked = str(info.bypassBlocked)
   if ("bypassConfirmed" in info && info.bypassConfirmed != null) s.bypassConfirmed = Boolean(info.bypassConfirmed)
   if ("auto" in info) s.auto = oneLine(str(info.auto))
+  if ("background" in info && info.background != null) s.background = backgroundRows(info.background)
 }
 
 /** The session's text as one plain line: control and invisible characters

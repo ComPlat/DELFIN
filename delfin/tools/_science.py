@@ -93,6 +93,11 @@ def _lint_step(label: str, kwargs: Dict[str, Any]) -> List[ScienceFinding]:
             label, "error", "invalid-multiplicity",
             f"multiplicity {mult} is invalid; spin multiplicity (2S+1) must be ≥ 1"))
 
+    # WB1 electronic realism rules (diffuse basis, relativistic elements,
+    # electron-count/multiplicity parity) — same module tree, same entry point.
+    from delfin.tools._science_rules.electronic import lint_electronic
+    out.extend(lint_electronic(label, kwargs))
+
     return out
 
 
@@ -106,16 +111,53 @@ def scientific_lint(spec: Dict[str, Any]) -> List[ScienceFinding]:
     inner = spec.get("spec") if "spec" in spec and "steps" not in spec else spec
     findings: List[ScienceFinding] = []
 
-    def _walk(steps):
+    from delfin.tools._science_rules.chain import lint_chain
+    from delfin.tools._science_rules.system import lint_system
+
+    # the system rules' satisfaction flags are shared across the whole
+    # spec: a search/scan in the trunk closes the requirement in the
+    # branches too (reviewer finding F6/F7, branch case)
+    _shared = {}
+
+    def _walk(steps, collect=False):
+        concrete = []
         for st in steps or []:
+            if not isinstance(st, dict):
+                # a branch may serialize a malformed entry; lint never crashes
+                # on spec shape — it reports findings, not errors (finding F1)
+                continue
             label = st.get("label") or st.get("step") or "?"
             findings.extend(_lint_step(label, st.get("kwargs", {}) or {}))
+            # SV1 solvation realism rules (package SV1, wave 21): the
+            # step-level rule needs the step NAME, which _lint_step does
+            # not receive — called here, not inside _lint_step, to keep
+            # the WB1 signature untouched.
+            from delfin.tools.adapters.xtb_solvator_realism_lint import (
+                lint_solvator_step)
+            findings.extend(lint_solvator_step(
+                label, str(st.get("step") or ""), st.get("kwargs", {}) or {}))
+            concrete.append(st)
+        # spec-level chain rules need the whole concrete step sequence
+        if collect:
+            findings.extend(lint_chain(concrete))
+            findings.extend(lint_system(concrete, _shared))
+            # SV1: explicit + implicit solvation double-counting (the
+            # rule needs the whole walked sequence, like the chain rules)
+            from delfin.tools.adapters.xtb_solvator_realism_lint import (
+                lint_solvation_chain)
+            findings.extend(lint_solvation_chain(concrete))
 
-    _walk(inner.get("steps"))
+    _walk(inner.get("steps"), collect=True)
     for bname, bsteps in (inner.get("branches") or {}).items():
-        # branches serialize either as a list of steps or as a nested spec dict
-        steps = bsteps.get("steps") if isinstance(bsteps, dict) else bsteps
-        _walk(steps)
+        # branches serialize either as a list of steps or as a nested spec dict;
+        # anything else is spec-shape noise the lint skips, never crashes on
+        if isinstance(bsteps, dict):
+            steps = bsteps.get("steps")
+        elif isinstance(bsteps, list):
+            steps = bsteps
+        else:
+            continue
+        _walk(steps, collect=True)
     return findings
 
 

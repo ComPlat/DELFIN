@@ -1,0 +1,1341 @@
+[
+ {
+  "id": "nevpt2.method-selection",
+  "topic": "nevpt2",
+  "kind": "keyword",
+  "statement": "NEVPT2 is switched on with one keyword on top of a working CASSCF input: !SC-NEVPT2 (strongly contracted), !FIC-NEVPT2 (fully internally contracted) or !DLPNO-NEVPT2 (DLPNO variant of FIC-NEVPT2); the plain !NEVPT2 is also accepted and means SC-NEVPT2. Alternatively the method is set inside the %casscf block with \"PTMethod SC_NEVPT2\", \"PTMethod FIC_NEVPT2\" or \"PTMethod DLPNO_NEVPT2\" -- note the underscore in the block form. There is no RI-NEVPT2 keyword; use \"%casscf TrafoStep RI end\" for the RI approximation. QD-NEVPT2 needs SC_NEVPT2, and the DLPNO and F12 options need FIC (or DLPNO).",
+  "orca": ">=6.0.1,<7",
+  "when": {
+   "context": "any NEVPT2 run",
+   "requires": "a valid CASSCF input (active space, multiplicity, roots)"
+  },
+  "keywords": [
+   "SC-NEVPT2",
+   "FIC-NEVPT2",
+   "DLPNO-NEVPT2",
+   "NEVPT2"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16 NEVPT2 / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "Keywords and hyphen/underscore rule match NEVPT2.txt 3.16 and 3.16.13. Missing: the plain !NEVPT2 keyword (known to the parser, used in the manual's LiF and selectedRoots examples) selects SC-NEVPT2; RI-NEVPT2 is not a parser keyword. Also missing: QD needs SC, while DLPNO and F12 need FIC. ORCA 6.0.0 gave wrong NEVPT2/FIC-NEVPT2 energies for the V1_ija (Vija) class, fixed in 6.0.1 (changelog 1.3). kind 'keyword' fits better than 'default'."
+ },
+ {
+  "id": "nevpt2.fic-naming",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "The partially contracted NEVPT2 (PC-NEVPT2) of Angeli et al. employs a fully internally contracted wave function; ORCA therefore uses the term FIC-NEVPT2 in place of PC-NEVPT2. In the %casscf block the same method is called \"PTMethod FIC_NEVPT2\" with the comment 'fully internally contracted / partially contracted NEVPT2'.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "choosing between SC-NEVPT2 and FIC-NEVPT2 variants"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16 NEVPT2 / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.frozen-core-default",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "ORCA by default employs the frozen core approximation in NEVPT2; it can be disabled with the simple keyword !NoFrozenCore. Full frozen-core settings are described in the manual section 'Frozen Core Options'. Compare NEVPT2 energies only at the same frozen-core setting.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "any NEVPT2 run"
+  },
+  "keywords": [
+   "NoFrozenCore"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16 NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.properties-available",
+  "topic": "nevpt2",
+  "kind": "limit",
+  "statement": "ORCA provides spectroscopic properties for NEVPT2 -- UV, IR, CD and MCD spectra as well as EPR parameters -- computed with quasi-degenerate perturbation theory, where the NEVPT2 corrections enter as 'improved diagonal energies'. The multi-state extension QD-NEVPT2 exists only for the strongly contracted variant and revises the reference wave function in the presence of dynamical correlation.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "requesting properties on top of NEVPT2"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16 NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.split-into-two-steps",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "For better control over the program flow, split the calculation into two parts: first converge the CASSCF wave function and inspect the resulting orbitals, then in a second step read the converged orbitals (!MORead NoIter with %moinp \"...gbw\") and run the actual NEVPT2 calculation. With NoIter the second input must repeat exactly the converged CASSCF definition (nel, norb, mult, nroots, weights, basis, geometry, active-orbital order). Any change gives an unoptimised reference.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "NEVPT2 production runs, especially after CASSCF inspection"
+  },
+  "keywords": [
+   "MORead",
+   "NoIter"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.1 A simple Example"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The recommendation matches 3.16.1. Missing condition: with !MORead NoIter the CASSCF is not re-optimised. The second input must define the same active space, multiplicities, nroots, weights, basis and geometry as the converged run. Otherwise the PT2 is built on a non-stationary reference, and nothing in the output flags it."
+ },
+ {
+  "id": "nevpt2.inherits-casscf-settings",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "NEVPT2 is implemented as a submodule of CASSCF, so all options available in CASSCF can in principle be applied and NEVPT2 inherits all settings from CASSCF (e.g. !tightscf, !UseSym, or the RIJCOSX approximation). A setting changed at the CASSCF level silently carries into the NEVPT2 step.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "any NEVPT2 run built on a CASSCF input"
+  },
+  "keywords": [
+   "UseSym"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.1 A simple Example"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.ri-trafostep-couples-casscf-and-nevpt2",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "Setting the RI approximation on the CASSCF level (\"TrafoStep RI\" in the %casscf block, as \"%casscf TrafoStep RI end\") sets the RI options for NEVPT2 as well. The three-index integrals are computed and partially stored on disk; three-index integrals with two internal labels are kept in main memory and the two-electron integrals are assembled on the fly. !RIJCOSX implies TrafoStep RI (CASSCF manual), so it also RI-approximates the NEVPT2 integrals. The fit basis for TrafoStep RI is the AuxC slot (/C or /JK), or AuxJK with RIJK.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "RI-accelerated CASSCF+NEVPT2"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.2 RI, RIJK and RIJCOSX Approximation"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "Matches 3.16.2. Missing: CASSCF.txt states that !RIJCOSX implies TrafoStep RI, and RIJK uses AuxJK for the transformation. So an agent that adds !RIJCOSX for speed silently switches CASSCF and NEVPT2 to RI integrals, which shifts absolute energies. The AuxC slot is the one TrafoStep RI uses."
+ },
+ {
+  "id": "nevpt2.ri-auxbasis-j-not-sufficient",
+  "topic": "nevpt2",
+  "kind": "incompatibility",
+  "severity": "warning",
+  "statement": "The AuxC slot used by TrafoStep RI / RI-NEVPT2 needs a /C or /JK basis; a /J basis is too small for the exchange-type and correlation integrals. If no /C or /JK exists for the orbital basis, use AutoAux.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "RI-NEVPT2 or TrafoStep RI"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.2 RI, RIJK and RIJCOSX Approximation"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The content matches 3.16.2 and CASSCF.txt (/J not sufficient, use /C or /JK). Severity 'error' is too strong. A /J set in the AuxC slot gives a larger fitting error, but ORCA does not refuse it and the result is not qualitatively wrong. The card should name the slot (AuxC) and the AutoAux fallback the CASSCF manual gives."
+ },
+ {
+  "id": "nevpt2.rijcosx-needs-auxj-slot",
+  "topic": "nevpt2",
+  "kind": "requirement",
+  "severity": "error",
+  "statement": "RIJCOSX implies TrafoStep RI. A /C (or /JK) basis in AuxC is mandatory. AuxJ is filled with def2/J (SARC/J relativistic) when not given, but give it explicitly, e.g. ! def2-svp def2/J RIJCOSX def2-svp/C.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "NEVPT2 with the RIJCOSX approximation"
+  },
+  "keywords": [
+   "RIJCOSX"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.2 RI, RIJK and RIJCOSX Approximation"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The manual text is copied correctly, but severity 'error' is not justified for the AuxJ part. basisset.txt says def2/J (SARC/J when relativistic) is invoked by default when RI-J or COSX is active and nothing else is given. The hard requirement is the AuxC (/C) basis, because RIJCOSX implies TrafoStep RI (CASSCF.txt). Without AuxC the run fails or is wrong."
+ },
+ {
+  "id": "nevpt2.rijk-auxjk-and-conv-mode",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "RIJK requires a single auxiliary basis set in the AuxJK slot (e.g. def2/JK) large enough for the Fock-matrix construction, the orbital gradient/Hessian and the correlation part. In contrast to COSX, RIJK can also be carried out in conv mode (AO integrals on disk); the manual's RIJK one-liner example is '! def2-svp def2/JK RIJK' and states that !conv is recommended.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "NEVPT2 with the RIJK approximation"
+  },
+  "keywords": [
+   "RIJK",
+   "conv"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.2 RI, RIJK and RIJCOSX Approximation"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.rijk-more-accurate-than-cosx",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "For DLPNO-NEVPT2, both RIJK and RIJCOSX acceleration of the CASSCF step are equally valid, but the RIJK variant typically produces more accurate results than RIJCOSX. Prefer RIJK (with conv) when accuracy matters.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "DLPNO-NEVPT2 with Fock-operator approximation"
+  },
+  "keywords": [
+   "RIJK",
+   "RIJCOSX"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.3 Beyond the RI approximation: DLPNO-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.ri-scope-2000-basis-functions",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "statement": "Canonical RI/RIJK/RIJCOSX NEVPT2 is practical up to about 2000 basis functions (not a hard limit); beyond that, or above about 80 atoms, use DLPNO-NEVPT2.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "sizing an RI-based NEVPT2 calculation"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.2 RI, RIJK and RIJCOSX Approximation"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The text matches 3.16.2, but kind 'limit' turns a statement of demonstrated scale into what an agent will read as a cap. ORCA does not refuse more than 2000 basis functions; this is the practical range of canonical RI-NEVPT2."
+ },
+ {
+  "id": "nevpt2.dlpno-for-large-systems",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "For systems with more than 80 atoms, use DLPNO-NEVPT2, which combines the DLPNO ansatz with the FIC-NEVPT2 approach. It recovers 99.9% of the FIC-NEVPT2 correlation energies, even for large systems; the input structure is similar to the parent FIC-NEVPT2 method.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "molecules with more than 80 atoms"
+  },
+  "keywords": [
+   "DLPNO-NEVPT2"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.3 Beyond the RI approximation: DLPNO-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.dlpno-sets-trafostep-ri",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "Setting \"PTMethod DLPNO_NEVPT2\" in the %casscf block automatically sets TrafoStep RI. Like RI-NEVPT2, DLPNO-NEVPT2 requires an auxiliary basis of /C or /JK type (the /JK type being more accurate).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "DLPNO-NEVPT2 input"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.3 Beyond the RI approximation: DLPNO-NEVPT2 / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.dlpno-accuracy-via-pno-presets",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "The most important DLPNO-specific parameters are TCutPNO, TCutMKN and TCutDO (set in the PTSettings sub-block). It is recommended to use the simple keywords !TightPNO, !NormalPNO or !LoosePNO to adjust the accuracy instead of setting them manually. In contrast to canonical FIC-NEVPT2, the DLPNO amplitude equations require the iterative solution of a set of linear equations via a DIIS solver.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "DLPNO-NEVPT2 accuracy control"
+  },
+  "keywords": [
+   "TightPNO",
+   "NormalPNO",
+   "LoosePNO"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.3 Beyond the RI approximation: DLPNO-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.dlpno-diis-solver-defaults",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "Default DLPNO-NEVPT2 DIIS solver settings in the PTSettings sub-block (commented as 'repeating the defaults' in the manual example): \"MaxIter 30\" (maximum number of iterations), \"MaxDIIS 7\" (DIIS maximum dimension), \"DIISDamp1 0.5\" (damping of the residual before DIIS is switched on), \"DIISDamp2 0\" (damping after DIIS is switched on), \"LevelShift 0.2\" (level shift during update), \"LMP2TolE 1e-7\" (energy convergence), \"LMP2TolR 5e-7\" (residual convergence), \"LMP2Damp 1.0\" (amplitude damping). MaxIter is honoured in DLPNO-NEVPT2 only from ORCA 6.1 on.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "DLPNO-NEVPT2, PTSettings sub-block"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.3 Beyond the RI approximation: DLPNO-NEVPT2 / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The five listed defaults are correct, but the card is incomplete: LMP2TolE 1e-7, LMP2TolR 5e-7 and LMP2Damp 1.0 are also listed defaults. ORCA 6.1 fixed 'MaxIter not properly passed in DLPNO-NEVPT2' (changelog 1.2.3), so a MaxIter set under 6.0.x has no effect. The PTSettings MaxIter name is shared with CASPT2, where the default is 20."
+ },
+ {
+  "id": "nevpt2.f12-requires-trafostep-ri",
+  "topic": "nevpt2",
+  "kind": "requirement",
+  "severity": "error",
+  "statement": "The F12 correction requires the RI approximation (\"TrafoStep RI\" in the %casscf block) -- the manual marks it as 'RI approximation must be on for F12' because the involved integrals are expensive. The correction itself is requested with \"PTSettings F12 true\", which also adds the CABS singles correction for the CASSCF reference. It is only available with PTMethod FIC_NEVPT2 or DLPNO_NEVPT2, not SC_NEVPT2. DLPNO_NEVPT2 sets TrafoStep RI itself. CPCM plus (DLPNO-)NEVPT2-F12 crashes in ORCA 6.1.0; use 6.1.1 or later.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "NEVPT2-F12 and DLPNO-NEVPT2-F12"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.4 Explicit Correlation: NEVPT2-F12 and DLPNO-NEVPT2-F12"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "Matches 3.16.4. Missing: F12 exists only for FIC-NEVPT2 and DLPNO-NEVPT2, not SC (3.16 intro: 'newer additions such as DLPNO and F12 rely on the FIC variant'). DLPNO_NEVPT2 sets TrafoStep RI itself. ORCA 6.1.0 crashed for CPCM combined with NEVPT2-F12 or DLPNO-F12 (fixed in 6.1.1, changelog 1.1.2). CABS singles is on by default for DLPNO-F12-NEVPT2 since 6.1."
+ },
+ {
+  "id": "nevpt2.f12-basis-requirements",
+  "topic": "nevpt2",
+  "kind": "requirement",
+  "severity": "error",
+  "statement": "NEVPT2-F12 input requires, in complete analogy to single-reference MP2-F12, an F12 basis, an F12-cabs basis and a sufficiently large RI basis (/JK or /C), e.g. '! cc-pvdz-F12 aug-cc-pvdz/C cc-pvdz-f12-cabs'. Note that the CASSCF wave function itself is also affected by basis set incompleteness.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "NEVPT2-F12 and DLPNO-NEVPT2-F12"
+  },
+  "keywords": [
+   "cc-pvdz-F12",
+   "cc-pvdz-f12-cabs",
+   "aug-cc-pvdz/C"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.4 Explicit Correlation: NEVPT2-F12 and DLPNO-NEVPT2-F12"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.dlpno-f12-unitary-invariant",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "The DLPNO-NEVPT2-F12 algorithm (input identical to NEVPT2-F12 except \"PTMethod DLPNO_NEVPT2\") is unitary invariant with respect to subspace rotations of inactive and active orbitals. Tightening the DLPNO truncation thresholds TCutPNO, TCutDO, TCutCMO and TCutDOij (PTSettings sub-block) reproduces the canonical NEVPT2-F12 even with localized orbitals.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "DLPNO-NEVPT2-F12"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.4 Explicit Correlation: NEVPT2-F12 and DLPNO-NEVPT2-F12"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.rdm-4rdm-bottleneck-and-d4step",
+  "topic": "nevpt2",
+  "kind": "limit",
+  "statement": "NEVPT2 needs higher-order reduced density matrices, a major bottleneck for active spaces of CAS(10,10) and larger. With Dyall's rank-reduction scheme the standard implementation involves at most the 4-RDM; the full-rank FR-NEVPT2 requires the 5-RDM. \"D4Step\" in PTSettings selects: 'efficient' (default 4-RDM handling), 'fly' (memory-saving algorithm for larger active spaces), 'cu4' (cumulant approximation of the 4-RDM) or 'cu34' (cumulant approximation of the 3-RDM and 4-RDM).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "large active spaces or memory-limited NEVPT2 runs"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.5 Handling of Reduced Density Matrices / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.ps-approximation-defaults",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "To accelerate the evaluation of higher-order RDMs, ORCA uses a prescreening (PS) approximation: only configurations with weight larger than D4TPre are taken into account, and D3TPre does the same for the 3rd-order density matrix. Defaults: \"D4TPre 1e-12\" and \"D3TPre 1e-14\". Setting both parameters to zero recovers the exact NEVPT2 energy. Larger (looser) thresholds than the defaults can create false intruder states. Smaller thresholds (e.g. D4TPre 1e-14) or 0 (exact) are safer and are the first remedy for intruder warnings. ORCA 5 used D4TPre 1e-10, so ORCA 5 and 6 energies differ slightly. Available for all variants (SC, FIC, DLPNO-FIC).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "any NEVPT2 run, PTSettings sub-block"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.5.1 PS Approximation (default)"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The defaults (D4TPre 1e-12, D3TPre 1e-14, 0 = exact, all variants) are correct. The copied phrase 'lowering them might lead to false intruder states' is dangerous for an agent. In the manual's sense 'lowering' means loosening the approximation, i.e. larger thresholds. 3.16.6 says the cure for false intruders is the smaller value (D4TPre 1e-14). Read literally, the card says the opposite. ORCA 5 used D4TPre 1e-10 (changelog 6.0.1)."
+ },
+ {
+  "id": "nevpt2.cumulant-approximation-intruder-risk",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "The cumulant expansion (\"D4Step cu4\" or \"cu34\" in PTSettings) brings large computational savings, but the results should be treated with care as false intruder states can emerge; in those cases the imaginary level shift is the only mitigation tool, and the imaginary shift is only implemented for FIC-NEVPT2. The manual also says the cumulant approximation 'should thus be avoided' when false intruder-state warnings appear.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "NEVPT2 with D4Step cu4 or cu34"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.5.2 Cumulant Approximation (optional) / 3.16.6 False Intruder States and Imaginary Shift"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.intruder-state-signs",
+  "topic": "nevpt2",
+  "kind": "check",
+  "severity": "warning",
+  "statement": "Indications of false intruder states are unreasonable correlation energy contributions from the 1-hole excitation class (V_i / ITUV) or the 1-particle class (V_a / TUVA), e.g. positive or large values compared to the 2-hole-2-particle class (V_ijab / IJAB). ORCA prints 'WARNING: Denominator is negative for DEpsilon ITUV ...' and 'WARNING: Koopmans matrices have at least one negative eigenvalue (...)' when Koopmans energies or denominators are negative; warnings are suppressed after MaxWarnings (default 5). On these warnings, inspect the RDM approximations first: tightening the PS threshold (e.g. D4TPre 1e-14) should immediately alleviate the issue.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "post-processing any NEVPT2 output"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.6 False Intruder States and Imaginary Shift"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.imaginary-shift-fic-only",
+  "topic": "nevpt2",
+  "kind": "incompatibility",
+  "severity": "warning",
+  "statement": "As a last resort against intruder states, an imaginary shift can be added via \"imaginary\" in the PTSettings sub-block (default 0.0; manual example \"imaginary 0.2\"). Imaginary shifts are restricted to the canonical FIC-NEVPT2 implementation -- they are not available for SC-NEVPT2 or DLPNO-NEVPT2. The shift changes the NEVPT2 energy, so report it whenever it is nonzero.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "NEVPT2 runs affected by false intruder states"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.5.2 Cumulant Approximation / 3.16.6 False Intruder States and Imaginary Shift / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.ice-reference-recipe",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "For ICE reference wave functions (\"CIStep ICE\" plus \"PTMethod FIC_NEVPT2\"), the default ICE parameter TVar is less ideal for NEVPT2. Recommended recipe: first converge ICE-CASSCF with default parameters and inspect the orbitals; then in a second step read the converged orbitals (!MORead NoIter) and run FIC-NEVPT2 with \"TVar 1e-7\" in the CI block (TVar ~ TGen x 1e-3, larger than the default), \"D4Step fly\" to avoid memory-intense RDM processing, \"CASCI_Approx true\" (FR-NEVPT2), and \"D4TPre 0.0\" (disable PS approximation for the 4-RDM -- no benefit from screening) while keeping \"D3TPre 1e-14\".",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "NEVPT2 on an ICE reference, active spaces up to CAS(34,34)"
+  },
+  "keywords": [
+   "MORead",
+   "NoIter"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.7 Large Active Spaces: ICE-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.ice-defaults-to-full-rank",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "With an ICE reference wave function, ORCA defaults to the full-rank NEVPT2 formulation (FR-NEVPT2): the canonical implementation using Dyall's rank-reduction scheme cannot be applied to an approximate CAS-CI solution without introducing false intruder states. The additional 5-RDM contributions are enabled with \"CASCI_Approx true\" in the PTSettings sub-block.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "CIStep ICE"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.7 Large Active Spaces: ICE-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.dmrg-nevpt2-maxm",
+  "topic": "nevpt2",
+  "kind": "requirement",
+  "severity": "error",
+  "statement": "DMRG-NEVPT2 (\"cistep DMRGCI\" with \"PTMethod SC_NEVPT2\" or FIC_NEVPT2) requires the additional parameter \"nevpt2_MaxM\" in the DMRG block (e.g. \"%dmrg nevpt2_MaxM 2000 end\"); the reduced density matrices are provided by the external BLOCK program, which is platform dependent and has crashed several times in the past -- for troubleshooting contact the BLOCK developers directly. BLOCK (and therefore DMRG-NEVPT2) is available only on Linux builds of ORCA.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "DMRG-NEVPT2 runs"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.8 Large Active Spaces: DMRG-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "Matches 3.16.8 (nevpt2_MaxM in %dmrg, BLOCK supplies RDMs, SC or FIC). Missing condition from dmrg.txt: the BLOCK code in ORCA is available only on Linux. On any other platform the route does not exist."
+ },
+ {
+  "id": "nevpt2.selected-roots",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "By default ORCA computes all states defined in the CASSCF block input with the NEVPT2 approach. To skip states, set \"selectedRoots[block] = root numbers\" in the PTSettings sub-block, where blocks and roots are enumerated starting with 0. The block index is the position in the MULT list, not the multiplicity. With MULT 3,1, NRoots 2,3, selectedRoots[1]=0,1 computes the singlet roots 0 and 1 only; with MULT 1,3 the singlet block is [0].",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "multi-state CASSCF where PT2 is only wanted for selected states"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.9 Selecting or Specific States for NEVPT2 / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The mechanism and 0-based counting match 3.16.9. The example 'selectedRoots[1]=0,1 computes MULT=1 (second block)' is correct only for the manual's 'MULT 3,1'; the card leaves that out. An agent may read the bracket index as the multiplicity or as fixed. The CASPT2 keyword list uses MULT 1,3 with selectedRoots[0] for the singlet."
+ },
+ {
+  "id": "nevpt2.unrelaxed-density-and-natorbs",
+  "topic": "nevpt2",
+  "kind": "procedure",
+  "statement": "For FIC-NEVPT2, state-specific unrelaxed densities can be requested with \"Density unrelaxed\" in PTSettings. The Density options are Unrelaxed | Cu4 | Cu34 | FirstOrder: \"Density Cu4\" or \"Density Cu34\" keep the second-order term with cumulant-approximated 4-RDM (or 3- and 4-RDM); \"Density FirstOrder\" omits the expensive second-order contribution. \"NatOrbs true\" (default False) generates natural orbitals per state, stored in separate GBW files with the suffix '.mult.A.root.B.pt2.nat' (with !UseSymmetry the suffix also includes the irreducible representation). With !KeepDens the NEVPT2 density is stored in the .densities container with the prefix 'Tdens-CASNEV'. NEVPT2 natural orbitals are mandatory for analysis tools such as MultiWFN and can be reused via !MORead NoIter to extend the active space.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "FIC-NEVPT2, densities or natural orbitals requested"
+  },
+  "keywords": [
+   "KeepDens",
+   "UseSymmetry",
+   "MORead",
+   "NoIter"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.10 Unrelaxed Densities and Natural Orbitals / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "Mostly correct (FIC only, Density unrelaxed, NatOrbs default false, file suffix, Tdens-CASNEV with KeepDens). One keyword path is wrong. In 3.16.10 the cumulant-approximated densities are values of the Density keyword ('Density Cu4' / 'Density Cu34', next to 'Density FirstOrder'), not 'D4Step cu4/cu34'. An agent following the card would change the RDM handling of the energy rather than the density approximation."
+ },
+ {
+  "id": "nevpt2.state-averaged-canonicalization",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "For SC-NEVPT2, the default is canonical orbitals for each state ('Orbitals ... canonical for each state' in the output): the state-averaged CASSCF orbitals are pseudo-canonicalized with state-specific Fock operators, one integral transformation per state. \"CanonStep\" in PTSettings can switch this: 'averaged' (state-averaged orbitals and orbital energies; the V_ijab / 2-hole-2-particle class then contributes no excitation energy), '0' (state-averaged orbitals with state-specific orbital energies, the ORCA <= 3.0 default), 'relaxed' (one orbital-relaxation step per state before SC-NEVPT2), or 'canonical' (default). These approximations work best if the averaged states are similar in nature and should be turned off for substantially different states.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "state-averaged SC-NEVPT2 with many states"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.11 State-averaged SC-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.canonstep-relaxed-failure-handling",
+  "topic": "nevpt2",
+  "kind": "check",
+  "severity": "info",
+  "statement": "With \"CanonStep relaxed\" (SC-NEVPT2), the gradient of individual states can be surprisingly large despite a converged state-averaged calculation; the orbital relaxation may fail when steepest descent (\"GStep SOSCF\") and Newton-Raphson (\"GStep NR\") are both outside their convergence radius. ORCA retries with increased damping and, if the update still fails, sticks with the initial orbitals. Setting an overall damping manually may help: \"GScaling 0.5\" (gscaling in the PTSettings example) damps the gradient with a pre-factor.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "SC-NEVPT2 with CanonStep relaxed"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.11 State-averaged SC-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.qd-requires-sc-and-vanvleck-recommended",
+  "topic": "nevpt2",
+  "kind": "recommendation",
+  "severity": "info",
+  "statement": "Quasi-degenerate NEVPT2 is only available for the strongly contracted variant: \"PTMethod SC_NEVPT2\" is mandatory. Switch it on with \"QDType QD_VanVleck\" (Hermitian effective Hamiltonian, always real, recommended approach in ORCA) or \"QDType QD_Bloch\" (non-Hermitian); \"QDType 0\" disables it (default). PrintLevel 4 prints the effective Hamiltonian matrix and its eigenvectors.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "states falsely mixed at the CASSCF level, e.g. bond dissociation crossings"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.12 Quasi-Degenerate SC-NEVPT2 / 3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.qd-canonstep-restricted",
+  "topic": "nevpt2",
+  "kind": "incompatibility",
+  "severity": "warning",
+  "statement": "QD-SC-NEVPT2 always runs with CanonStep canonical (=1). ORCA restricts it because averaged orbitals or orbital energies (CanonStep 0 / averaged = 2) shrink the QD denominators. Do not request them with QDType, and check the NEVPT2-SETTINGS print (Orbitals ... canonical for each state).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "QD-SC-NEVPT2"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.12 Quasi-Degenerate SC-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The physics matches 3.16.12. Severity 'error' and the 'do not combine' advice assume a user-facing failure. The manual says ORCA itself restricts QD to canonstep 1 (canonical), so a requested averaged CanonStep is enforced away or refused; it does not produce a wrong result. Note that the numeric codes 0/1/2 correspond to 0/canonical/averaged."
+ },
+ {
+  "id": "nevpt2.qd-imaginary-eigenvalue-warning",
+  "topic": "nevpt2",
+  "kind": "error-pattern",
+  "severity": "error",
+  "statement": "The output warning \"WARNING! QD-Matrix has eigenvalues with imaginary component!\" (from the NEVPT2 module (example line: ... iE(0)=-0.000016; raised after the general eigenvalue decomposition of the QD effective Hamiltonian) means the results are not reliable. It occurs only with QDType QD_Bloch (non-Hermitian); with QD_VanVleck it cannot occur. Remedy: switch to QDType QD_VanVleck, which avoids the general eigenvalue decomposition and yields a Hermitian effective Hamiltonian whose solution is always real.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "QD-SC-NEVPT2 output inspection"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.12 Quasi-Degenerate SC-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "An error-pattern card must quote the message exactly. The manual prints 'WARNING! QD-Matrix has eigenvalues with imaginary component! iE(0)=-0.000016'; the card drops both '!'. The card also leaves out that this arises only with QDType QD_Bloch (non-Hermitian). With QD_VanVleck it cannot occur. Severity error is fine, since such results are unreliable."
+ },
+ {
+  "id": "nevpt2.qd-densities-and-natorbs",
+  "topic": "nevpt2",
+  "kind": "procedure",
+  "statement": "In QD-NEVPT2, \"QDPopulationAnalysis true\" repeats the population analysis with the unrelaxed density of the revised reference wave function and \"QDNatOrbs true\" forms natural orbitals from it, stored in a GBW file with the suffix 'mult.A.iroot.B.QD-NEVPT2.natorbs'. With !KeepDens the revised densities are kept in the density container as 'Tdens-CAS-DPDICPT2' with a suffix ending in '.p' for densities and '.r' for spin-densities. Properties processed in orca_prop (such as Moessbauer) are re-computed with the revised densities when available/allowed. Under ORCA 6.0.x the revised QD densities were not properly used in property calculations (fixed in 6.1); property results from QD-NEVPT2 need ORCA >= 6.1.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "QD-SC-NEVPT2 with revised densities"
+  },
+  "keywords": [
+   "KeepDens"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.12 Quasi-Degenerate SC-NEVPT2"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "File and density names match 3.16.12. The last sentence (orca_prop properties re-computed with revised densities) holds only from ORCA 6.1: changelog 1.2.3 'FIX: QD-NEVPT2 densities not properly used in property calculations'. Under the card's range >=6.0, 6.0.x silently used the wrong densities."
+ },
+ {
+  "id": "nevpt2.ci-step-support",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "NEVPT2 methods require higher-order reduced density matrices, which are not implemented for all CISteps. In addition to the default CIStep (CSFCI, marked 'recommended'), ACCCI ('fast, but memory intense'), ICE (larger active spaces with ICE FIC-NEVPT2) and DMRGCI (larger active spaces with DMRG SC-NEVPT2) are supported.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "choosing the CI solver for NEVPT2"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "nevpt2.ptsettings-other-defaults",
+  "topic": "nevpt2",
+  "kind": "default",
+  "statement": "Further PTSettings defaults listed in the keywords section: \"PrintLevel 1\" (default printing), \"EWIN -3,1000\" (energy window for the frozencore setting fc_ewin), \"NThresh 1e-6\" (FIC-NEVPT2 cut-off for linear dependencies), \"TSMallDenom 1e-2\" (printing threshold for small denominators), \"MaxWarnings 5\" (maximum number of denominator warnings before going silent).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "PTSettings sub-block of any NEVPT2 run"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/NEVPT2.html",
+    "section": "3.16.13 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "caspt2.method-selection",
+  "topic": "caspt2",
+  "kind": "default",
+  "statement": "CASPT2 is called in complete analogy to FIC-NEVPT2: simple keywords !CASPT2 (FIC-CASPT2), !CASPT2K (CASPT2-K with revised H0), !RI-CASPT2 or !RI-CASPT2K on top of any valid CASSCF input, or in the %casscf block \"PTMethod FIC_CASPT2\" or \"PTMethod FIC_CASPT2K\". \"%casscf TrafoStep RI end\" is optional, applying the RI approximation to CASSCF and CASPT2. RI variants need a /C or /JK aux basis. ORCA 6.1 has only single-state FIC-CASPT2 and CASPT2-K, with no MS-, XMS- or QD-CASPT2; for state mixing use QD-SC-NEVPT2 or DCD-CAS(2).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "any CASPT2 or CASPT2-K run"
+  },
+  "keywords": [
+   "CASPT2",
+   "CASPT2K",
+   "RI-CASPT2",
+   "RI-CASPT2K"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17 CASPT2 and CASPT2-K / 3.17.2 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The keywords and PTMethod values match caspt2.txt 3.17 and 3.17.2. '(unlike for F12)' imports a NEVPT2-F12 condition into a CASPT2 card where no F12 exists, which is confusing. Missing: !RI-CASPT2/K and TrafoStep RI need a /C or /JK basis in AuxC, as for RI-NEVPT2. There is no MS-, XMS- or QD-CASPT2 in ORCA 6.1 (the manual names (X)MS-CASPT2 as possible future work), so an agent must not try them."
+ },
+ {
+  "id": "caspt2.iterations-may-not-converge",
+  "topic": "caspt2",
+  "kind": "check",
+  "severity": "error",
+  "statement": "The program prints CASPT2-D results before entering the CASPT2 iterations, and in case of intruder states the residual equation may not converge -- but the program will NOT abort. It is therefore important to check convergence for every CASPT2 run: confirm the line 'CASPT2 calculation converged in N iterations' (an example run shows 'CASPT2 calculation converged in 7 iterations').",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "every CASPT2 run, before using any energy"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17.1 Example Nitrogen molecule"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "caspt2.shifts-default-zero",
+  "topic": "caspt2",
+  "kind": "default",
+  "statement": "FIC-CASPT2 in ORCA is available with real, imaginary and IPEA shifts; all three default to zero, as shown in the PTSettings keyword list and echoed in the output ('CASPT2 Real Levelshift ... 0.00e+00', 'CASPT2 Im. Levelshift ... 0.00e+00', 'CASPT2 IPEA Levelshift ... 0.00e+00'). The PTSettings options are \"CASPT2_ishift\" (imaginary level-shift), \"CASPT2_rshift\" (real level-shift) and \"CASPT2_IPEAshift\" (IPEA shift). Shifts change the CASPT2 energy: any nonzero value must be reported with the result.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "any CASPT2 run, PTSettings sub-block"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17 CASPT2 and CASPT2-K / 3.17.1 Example / 3.17.2 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "caspt2.ipea-shift-disabled-by-default",
+  "topic": "caspt2",
+  "kind": "default",
+  "statement": "The IPEA shift is disabled by default in ORCA (CASPT2_IPEAshift 0.0) because its validity in general remains questionable. Note that the ORCA implementation of the IPEA shift slightly deviates from OpenMOLCAS. OpenMOLCAS defaults to IPEA 0.25 Eh. To compare, set CASPT2_IPEAshift 0.25 explicitly, and expect small residual differences from the different implementation; otherwise compare IPEA = 0 in both codes. The alternative CASPT2-K formulation instead revises the zeroth-order Hamiltonian itself and is less prone to intruder states while more accurate than canonical CASPT2.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "comparing ORCA CASPT2 with OpenMOLCAS, or choosing shift strategies"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17 CASPT2 and CASPT2-K"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "Matches 3.17 (IPEA off by default, ORCA's IPEA differs from OpenMOLCAS, CASPT2-K less intruder-prone and more accurate). For the card's own 'when' (comparing with OpenMOLCAS) it lacks the fact that matters: OpenMOLCAS/Molcas use IPEA = 0.25 Eh by default. A default ORCA CASPT2 (IPEA 0) is therefore systematically different from a default OpenMOLCAS CASPT2, beyond the small implementation difference."
+ },
+ {
+  "id": "caspt2.caspt2k-treg-default",
+  "topic": "caspt2",
+  "kind": "default",
+  "statement": "CASPT2-K (\"PTMethod FIC_CASPT2K\") introduces two additional Fock matrices for excitation classes that add or remove electrons from the active space, derived from generalized Koopmans' matrices for ionization and attachment. Its specific PTSettings option is \"TReg 1e-2\", the default for the Tikhonov regularization.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "CASPT2-K runs"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17 CASPT2 and CASPT2-K / 3.17.2 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "caspt2.smallest-denominators-check",
+  "topic": "caspt2",
+  "kind": "check",
+  "severity": "warning",
+  "statement": "Check the Reference Weight W0 per state; a W0 clearly below that of comparable states, or a drop along a scan, flags an intruder. The CASPT2 output also prints the smallest energy denominators of the perturbation expression per excitation class (lines 'smallest energy denominator IJAB = ...' through 'smallest energy denominator ITUV = ...'). Small denominators may lead to intruder states; inspect them as the second indicator, and if the residual equation fails to converge (it does not abort, see the convergence-check card), mitigate with the level shifts or consider CASPT2-K.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "post-processing any CASPT2 output"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17.1 Example Nitrogen molecule"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The denominator print and the mitigation match 3.17.1. The card leaves out the first check the manual names: 'The printed reference weights should be checked. Small reference weights indicate intruder states' (W0 in the results block, e.g. 0.9477 for N2)."
+ },
+ {
+  "id": "caspt2.ptsettings-defaults",
+  "topic": "caspt2",
+  "kind": "default",
+  "statement": "CASPT2 PTSettings defaults from the keywords list: \"MaxIter 20\" (maximum for the CASPT2 iterations), \"MaxDIIS 7\" (maximum dimension of the DIIS expansion), \"TSmallDenom 1e-2\" (printing threshold for small denominators), \"NThresh 1e-6\" (FIC-CASPT2 cut-off for linear dependencies), \"D4Tpre 1e-12\" (truncation of the 4-pdm), \"D3Tpre 1e-14\" (truncation of the 3-pdm), \"EWIN -3,1000\" (energy window for the frozencore setting fc_ewin), and \"selectedRoots[block]\" to restrict PT2 to selected states (blocks and roots counted from 0).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "CASPT2 PTSettings sub-block"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17.2 Keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "caspt2.scope-more-limited-than-nevpt2",
+  "topic": "caspt2",
+  "kind": "limit",
+  "statement": "Unlike NEVPT2, the CASPT2 formulations require the storage of the entire wave function, so the scope of accessible systems is far more limited than the ORCA NEVPT2 implementation. CASPT2 is iterative, while canonical NEVPT2 is non-iterative (DLPNO-NEVPT2 is iterative) and intruder-free with exact RDMs (approximate RDMs can create false intruders); on the N2 example the FIC-NEVPT2 potential energy surface is very similar and the manual calls NEVPT2 more efficient and robust. There is no DLPNO variant of CASPT2 -- an inference from the 6.1 keyword list, not stated in the manual.",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "method choice between CASPT2 and NEVPT2"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17 CASPT2 and CASPT2-K / 3.17.1 Example"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The storage and scope claim matches 3.17. Two over-generalisations. 'NEVPT2 needs no iterations' holds for canonical SC/FIC-NEVPT2 only; DLPNO-NEVPT2 solves linear equations iteratively (3.16.3). 'Intruder-state-free by construction' holds only with exact RDMs; PS, cumulant and ICE approximations create false intruders (3.16.6). 'No DLPNO variant of CASPT2' is right for 6.1 but is not stated in the manual."
+ },
+ {
+  "id": "caspt2.no-fourth-order-rdm",
+  "topic": "caspt2",
+  "kind": "limit",
+  "statement": "The ORCA CASPT2 implementation employs a reformulation that completely avoids the fourth-order reduced density matrix that would appear in the canonical implementation, allowing calculations with large active spaces without approximating the results (e.g. no cumulant expansion needed).",
+  "orca": ">=6.0,<7",
+  "when": {
+   "context": "large-active-space CASPT2 runs"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/caspt2.html",
+    "section": "3.17 CASPT2 and CASPT2-K"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "casscf.dcdc-cas2-usage",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "DCD-CAS(2) is a post-CASSCF multireference perturbation method of the perturb-then-diagonalize kind: it constructs a dressed CASCI matrix whose diagonalization yields correlated energies and 0th-order states remixed under the effect of dynamic correlation. Basic usage needs only a %casscf block plus the simple-input keyword !DCD-CAS(2) (e.g. '! def2-TZVP DCD-CAS(2)' with !moread and %moinp for converged active orbitals). Where CASSCF already gives a good 0th-order wave function, DCD-CAS(2) energies are comparable to NEVPT2.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "avoided crossings / state remixing where CASSCF state composition is biased"
+  },
+  "keywords": [
+   "DCD-CAS(2)"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/dcdcas2.html",
+    "section": "3.21 Dynamic Correlation Dressed CAS / 3.21.3 Simple example"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "casscf.dcdc-use-bias-corrected-energies",
+  "topic": "casscf",
+  "kind": "check",
+  "severity": "error",
+  "statement": "Because E0 is the ground-state CASSCF energy of each spin, raw DCD-CAS(2) excited-state energies carry a ground-state bias. The difference-dedicated ij->ab treatment (diffded, default) removes most of it, and the first-order correction (corrorder 1, default) removes the rest. Use the energies under BIAS-CORRECTED (ORDER 1) STATE AND TRANSITION ENERGIES.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "every DCD-CAS(2) run with excited states"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/dcdcas2.html",
+    "section": "3.21.1 Theory of Nonrelativistic DCD-CAS(2) / 3.21.3 Simple example"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The conclusion (use the BIAS-CORRECTED (ORDER 1) energies) is correct, and severity error is acceptable. The causal sentence is wrong. The ground-state bias comes from choosing E0 as the ground-state CASSCF energy. The difference-dedicated treatment, in which ij->ab does not contribute to excitation energies, REMOVES the largest part of that bias. The first-order perturbative correction removes the rest, from the other classes (3.21.1). The card makes the ij->ab treatment the cause."
+ },
+ {
+  "id": "casscf.dcdc-cost-scaling",
+  "topic": "casscf",
+  "kind": "limit",
+  "statement": "The computational cost of a DCD-CAS(2) calculation scales as roughly the 3rd power of the size of the CASCI space, which makes active spaces containing more than a few hundred CSFs very expensive.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "sizing a DCD-CAS(2) calculation"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/dcdcas2.html",
+    "section": "3.21.3 Simple example (Warning)"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "casscf.dcdc-keyword-defaults",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "DCD-CAS(2) %casscf keywords: \"dcdcas true\" switches DCD-CAS(2) on (what !DCD-CAS(2) does; off by default). Defaults in the 6.1 keyword list: \"diffded true\" (difference-dedicated DCD-CAS(2) for the ij->ab class), \"corrorder 1\" (maximum order of the perturbative bias correction; lower orders come for free), \"dcd_ritrafo false\", \"dcd_soc false\" (relativistic DCD-CAS(2) with spin-orbit coupling), \"dcd_ssc false\" (relativistic DCD-CAS(2) with direct electronic spin-spin coupling), \"dcd_cascimode false\" (run in CASCI mode without the dynamic correlation dressing), \"dcd_natorbs false\" (natural orbitals per state), \"dcd_populations false\" (population analysis on the DCD-CAS(2) states), \"dcd_domagfield 0\", \"dcd_nmultd 1\", \"dcd_kramerspairs 1\". The remaining dcd_* flags (dcd_dtensor, dcd_gmatrix, dcd_amatrix, dcd_magnetization) are property keywords, default false. DCD_EDIAG exists for CASCI mode.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "DCD-CAS(2) input in the %casscf block"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/dcdcas2.html",
+    "section": "3.21.4 List of keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The 3.21.4 list is a list of usable keywords, and 'dcdcas true' there is the switch, not a default. If dcdcas defaulted to true, every CASSCF would run DCD-CAS(2). A card titled 'defaults' that lists 'dcdcas true' is wrong. The card also leaves out listed keywords: dcd_domagfield 0, dcd_dtensor, dcd_nmultd 1, dcd_gmatrix, dcd_amatrix, dcd_kramerspairs 1, dcd_magnetization, DCD_EDIAG for CASCI mode."
+ },
+ {
+  "id": "casscf.dcdc-ssc-needs-auxiliary-basis",
+  "topic": "casscf",
+  "kind": "requirement",
+  "severity": "error",
+  "statement": "In DCD-CAS(2), the calculation of the spin-spin coupling (\"dcd_ssc true\") requires the definition of an auxiliary basis set, because SSC is only implemented in conjunction with RI integrals.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "DCD-CAS(2) with spin-spin coupling"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/dcdcas2.html",
+    "section": "3.21.4 List of keywords"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "casscf.casdft-in-trah-module",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "Since ORCA 6.1, the CASSCF-DFT hybrid methods MCPDFT and srDFT are implemented in the TRAH-CASSCF module and are invoked by adding the desired functional keyword to a standard CASSCF input, e.g. !TRAH followed by !ctPBE for MCPDFT, or !TRAH followed by !sr-ctPBE for srDFT. Available MCPDFT functionals are tLDA, tPBE, tPBE0, ctLDA, ctPBE and ctPBE0; available srDFT functionals are srLDA, srPBE, srPBE0, sr-ctLDA, sr-ctPBE and sr-ctPBE0. Only the CSF CI solver is supported by TRAH; no dispersion keywords (CASSCF aborts). The spellings tLDA/tPBE/tPBE0/srLDA/srPBE/srPBE0 are taken from the manual tables and not confirmed by the parser (the changelog writes sr-LDA); verify with an ORCA run before use.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "CASSCF-DFT hybrid calculations (MCPDFT, srDFT)"
+  },
+  "keywords": [
+   "TRAH",
+   "ctPBE",
+   "sr-ctPBE",
+   "ctPBE0"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/casdft.html",
+    "section": "3.18 CASSCF and DFT / 3.18.2 Computational Aspects / Table 3.47 / Table 3.48"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The module, the invocation and the function lists match casdft.txt 3.18.1 and 3.18.2. Three issues. (1) Only ctPBE, ctPBE0, sr-ctLDA, sr-ctPBE and CI-sr-ctPBE are confirmed in the keyword catalog; tLDA, tPBE, srLDA and srPBE are not, and the 6.1 changelog spells the sr functionals 'sr-LDA, sr-PBE, sr-PBE0'. The exact spelling of the plain t and sr keywords is unverified. (2) 6.1 aborts when an unsupported CI solver is requested with TRAH (changelog 1.2.3), so ICE, DMRG and ACCCI references are out. (3) 6.1 aborts CASSCF combined with a dispersion correction (changelog 1.2.2), so no !D3/D4 o..."
+ },
+ {
+  "id": "casscf.casdft-rijk-unavailable-and-rij-not-default",
+  "topic": "casscf",
+  "kind": "incompatibility",
+  "severity": "error",
+  "statement": "RIJK is not available for CASDFT (MCPDFT, srDFT) in 6.1.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "CASDFT runs"
+  },
+  "keywords": [],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/casdft.html",
+    "section": "3.18.2 Computational Aspects"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "Both facts match 3.18.2, but severity 'error' covers the whole card while only the RIJK part is a hard limit. RIJ or RIJCOSX not being on by default is plain information. In the manual's example, RIJCOSX is given with only def2-TZVP/C; AuxJ falls back to def2/J."
+ },
+ {
+  "id": "casscf.casdft-rangesepmu-default",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "The empirical short-range damping parameter mu of srDFT is set with \"RangeSepMu 0.40\" in the %method block; 0.40 is the default value. Setting mu to 0 restores the single-reference Kohn-Sham DFT energy, and increasing mu to very large values (mu > 100) effectively recovers the CASSCF solution.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "srDFT calculations"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/casdft.html",
+    "section": "3.18.1.2 Long-Range CASSCF Short-Range DFT / 3.18.2 Computational Aspects"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "casscf.casdft-complex-translation",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "In MCPDFT, functionals prefixed with t (tLDA, tPBE, tPBE0) use the original translated scheme that approximates regions where rho^2 < 2*Pi by rho_alpha/beta = rho/2; functionals prefixed with ct (ctLDA, ctPBE, ctPBE0) use complex functional translation, handling those regions without approximation. sr-ctLDA/sr-ctPBE/sr-ctPBE0 are complex-translated sr functionals (default). The plain translated sr variant is obtained by the same keyword plus \"%method CASDFT ComplexTranslation false end end\". Do not set it when the complex-translated functional is wanted.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "choosing translated vs complex-translated functionals"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/casdft.html",
+    "section": "3.18.1.1 Multi-Configurational Pair Density Functional Theory / 3.18.2 Computational Aspects"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2",
+  "review_note": "The t versus ct description is correct (3.18.1.1). The sr part is wrong. The card calls sr-ctLDA, sr-ctPBE and sr-ctPBE0 'translated sr functionals' and says complex translation 'has to be switched off for them'. The manual says that to get the (plain) translated sr functionals you keep the sr-ct keyword and set ComplexTranslation false. sr-ctPBE itself is complex-translated (Table 3.48). An agent following the card would add ComplexTranslation false to every sr-ct run and compute a different functional."
+ },
+ {
+  "id": "casscf.casdft-excited-states-false-minima",
+  "topic": "casscf",
+  "kind": "recommendation",
+  "severity": "warning",
+  "statement": "For excited-state CASDFT: srDFT energies from state-specific (SS) densities may produce false minima (shown for twisted ethylene), and MCPDFT suffers from similar issues. The mitigation is the CI-DFT variant, specified either as a simple keyword (e.g. CI-sr-ctPBE) or via \"OrthogonalCI true\" in the %method CASDFT block; available CI-DFT keywords in ORCA 6.1 are CI-ctLDA, CI-ctPBE, CI-ctPBE0, CI-srLDA, CI-srPBE, CI-srPBE0, CI-sr-ctLDA, CI-sr-ctPBE, CI-sr-ctPBE0. The CI-DFT variant resolves the false-minimum problem and agrees best with MRCI+Q.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "state-averaged / excited-state CASDFT runs"
+  },
+  "keywords": [
+   "CI-sr-ctPBE"
+  ],
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/casdft.html",
+    "section": "3.18.3 Excited States"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "casscf.casdft-excited-state-density-provenance",
+  "topic": "casscf",
+  "kind": "default",
+  "statement": "Excited states in CASDFT are calculated with state-averaged methods as in standard CASSCF. For MCPDFT, energies are evaluated from state-specific one- and two-body densities of a converged SA-CASSCF calculation. For srDFT, an approximate energy is first minimized using the averaged densities; final srDFT energies are then evaluated from state-specific (SS) densities.",
+  "orca": ">=6.1",
+  "when": {
+   "context": "excited-state CASDFT, interpreting energies"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/casdft.html",
+    "section": "3.18.3 Excited States"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ },
+ {
+  "id": "casscf.mcpdft-not-variational",
+  "topic": "casscf",
+  "kind": "limit",
+  "statement": "The original MCPDFT is not variational. A variational form that minimizes the MCPDFT energy is not yet available in ORCA (as of 6.1). In contrast, srDFT is variationally minimized with respect to orbital and CI coefficients -- currently only for exchange-correlation functionals dependent on one-electron densities (total density rho for singlets; rho, spin density m and their derivatives for other multiplicities).",
+  "orca": ">=6.1",
+  "when": {
+   "context": "method choice between MCPDFT and srDFT"
+  },
+  "sources": [
+   {
+    "type": "manual",
+    "version": "6.1",
+    "page": "contents/modelchemistries/casdft.html",
+    "section": "3.18.1.1 Multi-Configurational Pair Density Functional Theory (Note) / 3.18.1.2 Long-Range CASSCF Short-Range DFT"
+   }
+  ],
+  "status": "verified",
+  "author": "w14",
+  "verified_by": "expert-nevpt2"
+ }
+]

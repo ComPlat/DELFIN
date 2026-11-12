@@ -376,6 +376,13 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
 
     chunks: list[str] = []
     tool_calls: list[dict] = []
+    # Set True once a tool_use event arrives; reset False on each text
+    # chunk. True at return means the turn's final text was followed by a
+    # tool call, i.e. the turn ended ON a tool round, not on the text.
+    # Carried on the ENGINE, not in the returned dict: the dict's keys are
+    # pinned to repl.TURN_KEYS by an existing test, so a private
+    # attribute is the contract-preserving channel for this internal flag.
+    _nonlocal: dict[str, bool] = {"tools_after_last_text": False}
     error = ""
 
     if emit is not None:
@@ -391,6 +398,43 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     def _mode() -> str:
         perms = getattr(engine, "kit_permissions", None)
         return str(getattr(perms, "mode", "") or "")
+
+    # The progress watchdog (hg1): a stall's class and age, reported as
+    # one stream-json event + one status line per entered stall and per
+    # reporting cadence. Ticked by the wait/notice callbacks; never
+    # acts (the per-class safe action is in the event's `action` field,
+    # for the caller to honour). Settings are read here, per turn, the
+    # same way run_limits reads its knobs.
+    from . import progress_watchdog as _pw
+    try:
+        from delfin.user_settings import load_settings as _lw
+        _agent_cfg = (_lw() or {}).get("agent") or {}
+    except Exception:
+        _agent_cfg = {}
+    _watchdog = _pw.ProgressWatchdog(
+        limits=_pw.resolve_limits(_agent_cfg),
+        tick_s=_pw.resolve_tick_s(_agent_cfg))
+    _gate_state = {"seen": False}   # a slot-wait notice has gone by
+
+    def _watchdog_tick():
+        """One classification tick on the engine's activity snapshot.
+
+        The snapshot is the state the engine's own stream loop writes
+        (activity.py); a stub engine without one keeps working. The
+        gate-queue latches from the slot-wait notice: the tick right
+        after it classifies as gate-queue, then the latch clears so a
+        later plain model-wait is named as such."""
+        snap = getattr(getattr(engine, "activity", None),
+                       "snapshot", lambda: None)()
+        if snap is None:
+            return
+        gate = "waiting for a slot" if _gate_state["seen"] else ""
+        _gate_state["seen"] = False
+        ev, line = _watchdog.tick(snap, gate_notice=gate)
+        if ev is not None and emit is not None:
+            emit(ev)
+            if line:
+                emit({"type": "notice", "text": line})
 
     observer = turn_outcome.TurnObserver(
         emit=emit, mode=_mode,
@@ -408,6 +452,11 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
     def _on_token(text: str) -> None:
         if text:
             chunks.append(text)
+            # The turn's LAST text chunk is the final assistant message; a
+            # tool call arriving after it means that message was followed
+            # by a tool round, so it did not close the turn. Reset here,
+            # set in _on_tool_use, read by _continue_announced.
+            _nonlocal["tools_after_last_text"] = False
             if emit is not None:
                 emit({"type": "text", "text": text})
 
@@ -417,6 +466,12 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         # model's answer, and _run_once's return contract says "text"
         # is the answer. Emitted with its own type so stream-json
         # readers and the CLI renderer can tell the two apart.
+        if "waiting for a slot on" in str(text or ""):
+            # The endpoint gate is queueing this request (endpoint_gate
+            # wait_notice): the next watchdog tick classifies as
+            # gate-queue, not model-wait. Cleared by any later tick
+            # that follows a slot being taken.
+            _gate_state["seen"] = True
         if text and emit is not None:
             emit({"type": "notice", "text": text})
 
@@ -427,6 +482,7 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         # record. A stream-json consumer can now overwrite its status
         # field instead of appending sixty entries that differ only in
         # the number of seconds.
+        _watchdog_tick()
         if text and emit is not None:
             emit({"type": "wait", "text": text})
 
@@ -436,6 +492,7 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         except (json.JSONDecodeError, TypeError):
             inp = {"raw": str(input_json)}
         tool_calls.append({"name": name, "input": inp})
+        _nonlocal["tools_after_last_text"] = True
         observer.saw_tool_use(name)
         if emit is not None:
             emit({"type": "tool_use", "name": name, "input": inp})
@@ -515,6 +572,22 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
 
     in_after = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
+    # The internal "did a tool follow the last text" flag rides on the
+    # engine, not the returned dict (whose keys are pinned to TURN_KEYS).
+    try:
+        setattr(engine, "_tools_after_last_text",
+                bool(_nonlocal["tools_after_last_text"]))
+    except (AttributeError, TypeError):
+        pass
+
+    # The model switches this turn made live on the engine's client
+    # (api_client._turn_model_switches: {before, after, reason}). Read them
+    # defensively -- a stub engine without a client (the scheduler and
+    # benchmark test doubles) must keep working and report []. The read is
+    # of the client the engine owns, so `engine.client` is the only route.
+    _model_switches = getattr(
+        getattr(engine, "client", None), "_turn_model_switches", None)
+    model_switches = (list(_model_switches) if _model_switches else [])
 
     return {
         "text": (full_text or "".join(chunks)).strip(),
@@ -522,11 +595,135 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
         "input_tokens": max(0, in_after - in_before),
         "output_tokens": max(0, out_after - out_before),
         "error": error,
+        "model_switches": model_switches,
         **observer.summary(
             error=error,
             engine_stop_reason=str(
                 getattr(engine, "last_turn_stop_reason", "") or "")),
     }
+
+
+#: Continuations for a headless run whose answer ends by announcing work
+#: it did not do. Env over ``agent.announce_continuations`` over this
+#: default; invalid keeps the default, 0 disables. Read per run, like the
+#: other run knobs, never written into anyone's settings file.
+_ANNOUNCE_CONTINUATIONS_DEFAULT = 5
+
+
+def _resolve_announce_continuations() -> int:
+    try:
+        env = str(os.environ.get("DELFIN_ANNOUNCE_CONTINUATIONS") or "").strip()
+        if env:
+            return max(0, int(env))
+    except (TypeError, ValueError):
+        pass
+    try:
+        from delfin.user_settings import load_settings
+        raw = (load_settings() or {}).get("agent", {}) or {}
+        val = int(raw.get("announce_continuations",
+                          _ANNOUNCE_CONTINUATIONS_DEFAULT))
+    except Exception:
+        val = _ANNOUNCE_CONTINUATIONS_DEFAULT
+    return val if val >= 0 else _ANNOUNCE_CONTINUATIONS_DEFAULT
+
+
+_ANNOUNCE_CONT_PROMPT = (
+    "You ended this run by announcing an action and did not take it. "
+    "Take it NOW with the tool call you described, and continue until "
+    "the run's task is done. If the action is risky or you are unsure "
+    "it is wanted, say clearly in your answer that it is not done "
+    "instead of announcing it.")
+
+
+def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
+                        max_tokens: int, emit: Any = None) -> dict[str, Any]:
+    """Keep a headless run going while its final reply announces undone
+    work.
+
+    Input: ``out`` -- the ``TURN_KEYS``-shaped dict ``_run_once`` returned
+    for the one-shot run's turn (``chat -p`` / ``run``), plus the internal
+    flag ``tools_after_last_text``; ``engine`` -- the run's engine, whose
+    ceilings ``run_limits.ceiling_reason`` reads; ``max_tokens`` -- the
+    per-turn token bound cmd_run was given; ``emit`` -- the JSON-line
+    renderer or None.
+
+    Output: the LAST turn's dict, same shape. Each continuation is a full
+    ``_run_once`` turn: its tokens are billed, its rounds draw the same
+    per-turn tool-round budget, and ``ceiling_reason`` counts it against
+    the run's ceilings -- the first reached ceiling ends the loop the way
+    it would end any further turn.
+
+    The turn's internal ``tools_after_last_text`` flag is read off the
+    ENGINE (set by ``_run_once``), not from ``out``: the returned dict's
+    keys are pinned to ``repl.TURN_KEYS`` and cannot carry it.
+
+    Semantics: the decision is about the turn's FINAL assistant message
+    only, not the turn as a whole -- a run that made many tool calls and
+    then closed on an announcement is exactly the failure this fixes, so
+    ``out["tool_calls"]`` must not veto. The turn continues when the
+    final text announces an action and that text was the turn's last
+    output (no tool call followed it); a turn that ended ON a tool round
+    is already mid-work and gets none. Bounded by
+    ``agent.announce_continuations`` (env ``DELFIN_ANNOUNCE_CONTINUATIONS``
+    over settings; default 5; 0 disables). Stops on: a real final answer,
+    a ceiling, a non-"done" stop reason, an error, or a no-tool
+    continuation that STILL announces -- a real-final no-tool continuation
+    is the task finishing, not a stall. Attended sessions never come
+    through here: the terminal and the dashboard drive ``repl.run_turn``,
+    not ``cmd_run``.
+
+    Rejected: keying the decision on ``out["tool_calls"]`` being empty --
+    that is the turn-wide count, and it would have left precisely the
+    measured failure (tools, then an announcing close) unfixed. Editing
+    api_client's in-turn ``_announced`` guard instead -- that path serves
+    attended sessions too, and the headless loop belongs to the CLI.
+    """
+    allowed = _resolve_announce_continuations()
+    try:
+        from .api_client import _announces_an_action
+    except Exception:
+        return out
+    if allowed <= 0 or not isinstance(out, dict) or out.get("error"):
+        return out
+    if str(out.get("stop_reason") or "done") != "done":
+        return out
+    if not _announces_an_action(str(out.get("text") or "")):
+        return out
+    # The announcement'd final message must carry NO following tool call.
+    # Read off the engine (set by _run_once): a turn that ended ON a tool
+    # round is already mid-work and gets no nudge.
+    if bool(getattr(engine, "_tools_after_last_text", False)):
+        return out
+    used = 0
+    while used < allowed:
+        try:
+            from .run_limits import ceiling_reason
+            if ceiling_reason(engine):
+                break
+        except Exception:
+            pass
+        used += 1
+        if emit is not None:
+            try:
+                emit({"type": "notice", "text":
+                      "\n↻ announced an action → continuing the run "
+                      f"({used}/{allowed})\n"})
+            except Exception:
+                pass
+        out = _run_once(engine, _ANNOUNCE_CONT_PROMPT,
+                        max_tokens=max_tokens, emit=emit)
+        tools_after = bool(getattr(engine, "_tools_after_last_text", False))
+        if out.get("error") or str(out.get("stop_reason") or "done") != "done":
+            break
+        if not _announces_an_action(str(out.get("text") or "")):
+            # A real answer -- with or without tool calls -- ends it.
+            break
+        if tools_after:
+            continue
+        # No tool call AND still announcing: nudging again would only
+        # repeat the same sentence.
+        break
+    return out
 
 
 def _display_messages(engine, limit: int = 200) -> list[dict[str, str]]:
@@ -835,6 +1032,14 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
     out = _run_once(engine, prompt_sent,
                     max_tokens=int(getattr(args, "max_tokens", 0) or 0),
                     **_emit)
+    # A one-shot run stops for good after this answer; one that ends by
+    # announcing work it did not do must keep going here, bounded (see
+    # _continue_announced). Attended sessions are unaffected: they never
+    # pass through cmd_run.
+    out = _continue_announced(engine, prompt_sent, out,
+                              max_tokens=int(getattr(args, "max_tokens", 0)
+                                             or 0),
+                              emit=_emit.get("emit"))
     sid = _save_session(engine, repo)
 
     _end_session(engine, sid, repo, task=prompt, failed=bool(out["error"]),
@@ -918,11 +1123,14 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
     # there. Read raw, like the kit files: load_settings() fills in a
     # value nobody chose. A value that is no mode (an old profile name)
     # is no setting.
+    # In the launcher's people mode the account's defaults file lies under
+    # the person's own (settings_layers: personal first).
     try:
-        from delfin.user_settings import get_settings_path
+        from delfin.user_settings import settings_layers
         from .launch_guard import _VALID_MODES
-        own = get_settings_path()
-        if own.exists():
+        for own in settings_layers():
+            if not own.exists():
+                continue
             agent_block = json.loads(own.read_text()).get("agent") or {}
             declared = agent_block.get("permission_mode")
             if isinstance(declared, str) and declared in _VALID_MODES:
@@ -948,6 +1156,62 @@ def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
         if declared:
             return declared, _tilde(path)
     return "", ""
+
+
+def _profile_default_mode() -> tuple[str, str]:
+    """``(mode, where it came from)`` of the stored dashboard profile
+    (``agent.permission_profile``, permission_profile.PROFILE_TO_MODE --
+    the dashboard's own table), or ``("", "")`` when none is stored.
+
+    The start mode when no ``--permission-mode`` is given and no mode
+    setting names one (``_persisted_default_mode`` returns ""). A profile
+    of ``all_free`` gives ``bypassPermissions`` and counts as the
+    confirmation ``--unattended`` gives a flag: the profile is the
+    dashboard's Bypass rung, chosen by a person (or the host's installer)
+    in the user settings file, which lies outside every writable root and
+    is a protected path besides (an agent write there is asked, never
+    automatic), and the dashboard already starts every session from it. A
+    persisted *mode* of bypass (``agent.permission_mode``,
+    ``kit.default_mode``) stays non-inherited, as before: the
+    permissions tool call persists ``kit.default_mode``, and a checked-out
+    repository can carry one.
+    ``--permission-mode bypassPermissions`` without ``--unattended`` stays
+    refused. Rejected: requiring ``--unattended`` for the profile too --
+    every headless and terminal session of such a host then runs in a
+    mode its owner did not choose, and the field test measured that as
+    one refusal per command off the auto-allow list. What the profile
+    cannot lift: the managed policy (coerce_mode on every assignment of
+    the mode), the isolation start check (bypass falls back to default
+    without a layer unless confirmed), the roots, the deny list and the
+    write path gate. Never raises."""
+    try:
+        from .permission_profile import SETTING, mode_for, stored_profile
+        profile, path = stored_profile()
+        mode = mode_for(profile)
+    except Exception:
+        return "", ""
+    if not mode:
+        return "", ""
+    return mode, f"{_tilde(path)} agent.{SETTING} = {profile}"
+
+
+def _start_posture(workspace: Path, flag_mode: str,
+                   unattended: bool) -> tuple[str, str]:
+    """``(mode, why)`` an attended session starts in, before the managed
+    policy: the flag, else a mode setting, else the stored profile
+    (_profile_default_mode), else ``launch_guard.DEFAULT_MODE``. Shared by
+    ``_start_interactive_session`` and ``boundaries.resolve_mode``."""
+    from . import launch_guard
+    flag_mode = str(flag_mode or "").strip()
+    persisted, persisted_from = _persisted_default_mode(workspace)
+    if not flag_mode and not persisted:
+        mode, source = _profile_default_mode()
+        if mode:
+            return mode, source
+    return launch_guard.resolve_posture(
+        flag_mode=flag_mode, persisted_mode=persisted,
+        unattended_opt_in=unattended,
+        settings_path=persisted_from or "~/.delfin/settings.json")
 
 
 def _claim_session(sid: str) -> bool:
@@ -1787,9 +2051,15 @@ def _headless_posture(args: argparse.Namespace,
       (``DEFAULT_MODE``), said on stderr. Taking the settings default
       there would give a headless run more than an interactive session
       with the same flags.
+    * No flag and no mode setting: the stored dashboard profile's mode
+      (``_profile_default_mode``; ``all_free`` gives bypass, the profile
+      being the confirmation -- see there).
     * Otherwise the flag, or ``""`` when none is passed, so the engine
       resolves the settings default (or ``default``) exactly as before --
       the same start posture the terminal now has.
+
+    ``note`` is always one line naming the mode and where it came from
+    (printed on stderr at start).
     """
     from . import launch_guard
 
@@ -1800,10 +2070,19 @@ def _headless_posture(args: argparse.Namespace,
                     "--unattended, on a headless run as in a terminal "
                     "session."), True
     if flag:
-        return flag, "", False
+        return flag, f"permission mode {flag} from --permission-mode", False
     persisted, source = _persisted_default_mode(workspace)
+    if not persisted:
+        # No flag, no mode setting: the stored dashboard profile, the same
+        # table and the same rule as an interactive start
+        # (_profile_default_mode).
+        p_mode, p_source = _profile_default_mode()
+        if p_mode:
+            return p_mode, f"permission mode {p_mode} from {p_source}", False
+        return "", (f"permission mode {launch_guard.DEFAULT_MODE} "
+                    "(nothing configured it)"), False
     if persisted != "bypassPermissions":
-        return "", "", False
+        return "", f"permission mode {persisted} from {source}", False
     source = source or "~/.delfin/settings.json"
     if not unattended:
         return "", (
@@ -1924,15 +2203,14 @@ def _start_interactive_session(args: argparse.Namespace, report,
     layer the host lacks, refuses the start); chdir to ``workspace``; the
     launch grants; the isolation flags; the engine; the session open
     (resume / continue / fork / claim); the starting posture
-    (launch_guard.resolve_posture, then managed_policy.coerce_mode); the
+    (_start_posture: the flag, a mode setting, the stored dashboard
+    profile, else default; then managed_policy.coerce_mode); the
     isolation start check (isolation_posture.apply_at_start).
 
     Output: an ``InteractiveStart``. Raises ``InteractiveStartRefused``;
     the working directory is then the one before the call. On success the
     process stays in ``workspace``; the caller moves it back.
     """
-    from . import launch_guard
-
     # The administrator's managed policy, before anything is built: a mode
     # the person named on the command line that the policy disallows, or a
     # required isolation layer this host lacks, ends an attended start here
@@ -1967,13 +2245,9 @@ def _start_interactive_session(args: argparse.Namespace, report,
             pass
         raise
 
-    persisted, persisted_from = _persisted_default_mode(workspace)
-    posture, why = launch_guard.resolve_posture(
-        flag_mode=getattr(args, "permission_mode", "") or "",
-        persisted_mode=persisted,
-        unattended_opt_in=bool(getattr(args, "unattended", False)),
-        settings_path=persisted_from or "~/.delfin/settings.json",
-    )
+    posture, why = _start_posture(
+        workspace, getattr(args, "permission_mode", "") or "",
+        bool(getattr(args, "unattended", False)))
     try:
         from . import managed_policy as _mp
         _managed_posture = _mp.coerce_mode(posture)
@@ -2188,6 +2462,18 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 os.chdir(_cwd_before)
             except Exception:
                 pass
+
+
+def _run_prcheck_subcommand(args: argparse.Namespace) -> int:
+    """The `prcheck` subcommand body (package PC1): delegate to the
+    owned module so the check itself is tested outside cli.py."""
+    from .cli_prcheck import main as prcheck_main
+    argv = []
+    if getattr(args, "base", "origin/main") != "origin/main":
+        argv += ["--base", args.base]
+    for partner in getattr(args, "partner", []):
+        argv += ["--partner", partner]
+    return prcheck_main(argv)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -2417,7 +2703,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
         if result.n_samples > 1:
             extra = (f"  N={result.n_samples}  "
                      f"σ={result.quality_stdev:.1f}  "
-                     f"rate={result.success_rate:.0%}")
+                     f"rate={result.success_rate:.0%}  "
+                     f"pass@k={result.pass_at_k}  "
+                     f"pass^k={result.pass_pow_k}")
         print(f"  [{mark}] {task.id:<28} q={result.quality_0_100:>3}  "
               f"{result.duration_s:>5.1f}s  ${result.cost_usd:.4f}  "
               f"tool={result.tool_calls}{extra}",
@@ -2513,6 +2801,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
           f"avg-quality {s['avg_quality']:.1f}   "
           f"total ${s['total_cost_usd']:.4f}   "
           f"{s['total_duration_s']:.1f}s")
+    # The stricter, alongside readings over the same repeats (empty only
+    # in a no-op run, so guard the keys a summarise_run always now emits).
+    if s.get("n_tasks"):
+        print(f"   pass@k {s['n_pass_at_k']}/{s['n_tasks']} "
+              f"({s['pass_at_k_rate']:.0%} >=1 repeat)   "
+              f"pass^k  {s['n_pass_pow_k']}/{s['n_tasks']} "
+              f"({s['pass_pow_k_rate']:.0%} ALL repeats)")
     # Said out loud, never folded into the rate: a run that could not
     # reach the model measured nothing, and a summary that hides that is
     # how an outage becomes a baseline.
@@ -3681,8 +3976,13 @@ def _print_stop_all_check(report: dict) -> int:
     print(f"  Outlived their start:    {len(outlived) or 'none'}")
     for row in outlived:
         print(f"    pid {row['pid']} ({row['why']}): {row['command']}")
+    service = report.get("agent_service")
+    print("  Agent service:           " + (
+        f"pid {service['pid']}, {service['sessions']} session(s) running, "
+        f"{service['asleep']} asleep -- they run on without any window "
+        "(dashboard, terminal, phone) on purpose" if service else "none"))
     running = bool(
-        fresh or schedules or here or outlived
+        fresh or schedules or here or outlived or (service and service["sessions"])
         or any(r.get("alive_here") for r in kept)
         or any(r.get("alive_here") for r in daemons.values()))
     if running:
@@ -4163,6 +4463,30 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace(args: argparse.Namespace) -> int:
+    """One run read as a trace: turns, model calls, tool calls (OT1).
+
+    Text timeline from the existing stores only (tool_trace, turn_metrics,
+    session_store) — no new store, nothing sent anywhere.
+    """
+    from .otel_export import spans, timeline, write_otlp_json
+
+    session_id = args.session_id
+    if args.otlp:
+        path = write_otlp_json(session_id, args.otlp)
+        if path is None:
+            print(f"(could not write {args.otlp})")
+            return 1
+        print(f"OTLP/JSON written: {path}")
+    print(timeline(session_id))
+    # A trace with no recorded tool calls and no turns is likely a wrong
+    # session id; the note says so instead of leaving a blank screen.
+    if not spans(session_id):
+        print(f"(no spans for session {session_id!r} — check the id with "
+              "'delfin-agent sessions')")
+    return 0
+
+
 def cmd_where(args: argparse.Namespace) -> int:
     """Say where the dashboard is and how to walk back into it."""
     from . import where as _where
@@ -4495,6 +4819,40 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ops_stalls(args):
+    """`delfin-agent ops stalls` -- read-only, one line per stalled session.
+
+    Input: the rows session_health.collect() produces (falling back to
+    ops_interface.sessions()). Output: one line ``<name>  <class>
+    <age>  <action>`` per stalled session, or one clear line when
+    nothing is stalled. Nothing is mutated.
+    """
+    import time as _t
+
+    from . import activity as _activity
+    from . import ops_interface as _oi
+    from . import progress_watchdog as _pw
+    from . import session_health as _sh
+    try:
+        records = _sh.collect()
+    except Exception:
+        records = _oi.sessions()
+    now = _t.time()
+    rows = []
+    for rec in records:
+        out = _pw.stall_class(rec, now)
+        if out["stall"]:
+            rows.append((rec.get("name") or rec.get("session_id")
+                         or "?", out))
+    if not rows:
+        print("no stalled sessions", flush=True)
+        return 0
+    for name, out in rows:
+        print(f"{name}  {out['class']}  {_activity.fmt_s(out['age_s'])}"
+              f"  {out['action']}", flush=True)
+    return 0
+
+
 def _subcommand_names(parser: argparse.ArgumentParser) -> frozenset[str]:
     """The subcommands the parser really registers.
 
@@ -4770,6 +5128,29 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force", action="store_true",
                       help="Overwrite existing files")
     init.set_defaults(func=cmd_init)
+
+    # new-adapter (WB3): the hook is exactly these two lines; everything
+    # else lives in delfin/agent/cli_new_adapter.py.
+    from delfin.agent import cli_new_adapter
+    _na = cli_new_adapter.build_parser(sub)
+    _na.set_defaults(func=cli_new_adapter.handler)
+
+    # new-workflow: the hook is exactly these two lines; everything else
+    # lives in delfin/agent/cli_new_workflow.py.
+    from delfin.agent import cli_new_workflow
+    _nw = cli_new_workflow.build_parser(sub)
+    _nw.set_defaults(func=cli_new_workflow.handler)
+
+    # prcheck (package PC1)
+    prcheck = sub.add_parser(
+        "prcheck", help="The pre-PR self-check: run, verify, then hand over")
+    prcheck.add_argument(
+        "--base", default="origin/main",
+        help="Branch to diff against (default: origin/main)")
+    prcheck.add_argument(
+        "--partner", action="append", default=[],
+        help="Reviewer branch that must be merged in; repeatable")
+    prcheck.set_defaults(func=_run_prcheck_subcommand)
 
     # bench — canned-task benchmark suite
     bench = sub.add_parser(
@@ -5090,6 +5471,13 @@ def build_parser() -> argparse.ArgumentParser:
                           "add <slug> <text>")
     kno.set_defaults(func=cmd_knowledge)
 
+    # lab — device control behind the safety kernel (delfin/lab/cli.py)
+    lab_p = sub.add_parser(
+        "lab", help="Lab devices: e-stop, approvals, manifest, daemons "
+                    "(delfin-agent lab --help)", add_help=False)
+    lab_p.add_argument("lab_args", nargs=argparse.REMAINDER)
+    lab_p.set_defaults(func=cmd_lab)
+
     # approvals — the other side of a supervised headless session
     appr = sub.add_parser(
         "approvals",
@@ -5212,6 +5600,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     bug.set_defaults(func=cmd_bug, bug_action="ls")
 
+    # schedule -- the user's own schedules, run by the agent service
+    user_sched = sub.add_parser(
+        "schedule",
+        help="Your schedules (run by the agent service): list | add <when> <task> | "
+             "show | ok | pause | resume | delete | run | log | autostart")
+    user_sched.add_argument("words", nargs=argparse.REMAINDER,
+                            help="e.g. add täglich 07:30 --cwd ~/proj Fasse die Jobs zusammen")
+
+    def _cmd_user_schedule(args):
+        from .schedule_commands import cli_main
+        return cli_main(list(args.words or []))
+    user_sched.set_defaults(func=_cmd_user_schedule)
+
     # scheduler — headless executor for schedule_wakeup / cron entries
     sched = sub.add_parser(
         "scheduler",
@@ -5281,6 +5682,15 @@ def build_parser() -> argparse.ArgumentParser:
     resume_p = sub.add_parser("resume", help="Resume a paused session")
     resume_p.add_argument("session", help="The session's -n name")
     resume_p.set_defaults(func=cmd_resume)
+
+    # swarm -- build and run agent swarms (package SW1). The body lives
+    # in cli_swarm.py, owned and tested there; this is the only hunk in
+    # cli.py (same pattern as the prcheck subcommand).
+    from .cli_swarm import main as _swarm_main
+    _swarm_p = sub.add_parser(
+        "swarm",
+        help="Build and run agent swarms (init/plan/start/status)")
+    _swarm_p.set_defaults(func=_swarm_main)
 
     pins_p = sub.add_parser(
         "mcp-pins",
@@ -5506,6 +5916,22 @@ def build_parser() -> argparse.ArgumentParser:
                                  "(Ctrl-C to stop)")
     sessions_p.set_defaults(func=cmd_sessions)
 
+    # trace — one run read as a trace (OT1): text timeline from the
+    # existing tool_trace / turn_metrics / session_store records, plus
+    # an OTLP/JSON file with --otlp. Read-only; nothing is sent anywhere.
+    trace_p = sub.add_parser(
+        "trace",
+        help="One run as a trace: turns, model calls, tool calls "
+             "(text timeline; --otlp writes an OTLP/JSON file)",
+    )
+    trace_p.add_argument("session_id",
+                         help="Session id to render (see 'delfin-agent "
+                              "sessions')")
+    trace_p.add_argument("--otlp", default="", metavar="PATH",
+                         help="Also write the span tree as an OTLP/JSON "
+                              "file a collector can import (no network)")
+    trace_p.set_defaults(func=cmd_trace)
+
     # jobs — the cluster's jobs, read-only, without starting a session.
     # Same query and watch files the monitor daemon uses (cli_jobs is
     # the surface, job_monitor the mechanism).
@@ -5618,6 +6044,9 @@ def build_parser() -> argparse.ArgumentParser:
             _sh.pause_watch(interval)
             stop = _sa.last_stop()
 
+    # _cmd_ops_stalls is a module-level function (read-only, tested
+    # directly); only its registration lives here.
+
     ops_health_p = ops_sub.add_parser(
         "health",
         help="One line per open session: verdict (working / waiting on "
@@ -5633,6 +6062,14 @@ def build_parser() -> argparse.ArgumentParser:
     ops_health_p.add_argument("--interval", type=int, default=60,
                               help="Seconds between --wait ticks (min 60)")
     ops_health_p.set_defaults(func=_cmd_ops_health)
+
+    ops_stalls_p = ops_sub.add_parser(
+        "stalls",
+        help="Read-only: one line per open session with its stall class "
+             "(approval-wait / model-wait / gate-queue / tool-running / "
+             "idle / unclassified) and its age",
+    )
+    ops_stalls_p.set_defaults(func=_cmd_ops_stalls)
 
     # The supervisor's side of running sessions, as data
     # (delfin/agent/ops_interface.py): events and state to read; a message,
@@ -5770,7 +6207,15 @@ def build_parser() -> argparse.ArgumentParser:
     # on use so an import error there cannot break every other command.
     def _cmd_test_on_slurm(args):
         from delfin.agent.slurm_tests import cmd_test_on_slurm
-        return cmd_test_on_slurm(args)
+        try:
+            return cmd_test_on_slurm(args)
+        except ValueError as exc:
+            # A refused run dir is a usage error, not a crash: the promised
+            # exit 2 with the refusal message, nothing submitted. The
+            # refusal itself stays fail-closed in cmd_test_on_slurm, so a
+            # non-CLI caller can never ignore it.
+            print(exc)
+            return 2
 
     t6 = sub.add_parser(
         "test-on-slurm",
@@ -5854,6 +6299,33 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Lines of the log to show (logs)")
     svc.set_defaults(func=_cmd_service)
 
+    # Durable sessions (package F1): the supervisor as a SLURM job instead
+    # of on the login node. Offline commands only -- rendering and status
+    # touch the shared filesystem, never submit anything; the rendered
+    # script is submitted by the person with sbatch (delfin does not
+    # submit from this path). Handler imported on use, like _cmd_service.
+    def _cmd_durable(args):
+        from delfin.agent.service.durable_host import cmd_durable
+        return cmd_durable(args)
+
+    dur = sub.add_parser(
+        "durable",
+        help="Durable sessions: render the SLURM job that runs the agent "
+             "service on a compute node, and read its supervisor heartbeat",
+    )
+    dur.add_argument("durable_action", nargs="?", default="status",
+                     choices=["render", "status"])
+    dur.add_argument("--walltime", default="12:00:00",
+                     help="render: the job's walltime (hh:mm:ss)")
+    dur.add_argument("--partition", default=None,
+                     help="render: SLURM partition")
+    dur.add_argument("--qos", default=None, help="render: SLURM QOS")
+    dur.add_argument("--signal-minutes", dest="signal_minutes", type=int,
+                     default=5,
+                     help="render: minutes before the walltime end for the "
+                          "checkpoint signal (0..60)")
+    dur.set_defaults(func=_cmd_durable)
+
     return p
 
 
@@ -5877,6 +6349,13 @@ def _stop_own_background_shells() -> None:
         pass
 
 
+def cmd_lab(args) -> int:
+    """``delfin-agent lab ...``: handed whole to ``delfin.lab.cli``."""
+    from delfin.lab.cli import main as lab_main
+    return int(lab_main(list(getattr(args, "lab_args", None) or ["--help"]))
+               or 0)
+
+
 def main(argv: list[str] | None = None) -> int:
     # A probe or an interview driven through here is nobody's session:
     # with DELFIN_SCRATCH_STATE set it keeps its history, memory, profile
@@ -5887,6 +6366,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
+    # Never on a shared cluster login node (account suspension 2026-11-10,
+    # issue #640): a session, a turn or the TUI started there moves onto a
+    # compute node (srun --pty); a swarm start or the schedule daemon is
+    # refused. Light commands stay. Off a login node this does nothing.
+    from delfin import hpc_guard as _hpc_guard
+    _hpc_guard.keep_cli_off_login_node(getattr(args, "func", None), args, argv)
     if getattr(args, "func", None) in (cmd_chat, cmd_run):
         guard_principles_or_exit()
         # An agent in a terminal ends with an emergency stop given anywhere

@@ -1063,6 +1063,28 @@ def _as_preopt_mode(value: Any) -> str:
     raise ValueError("must be none/no, xtb, crest, or goat")
 
 
+def _as_mlp_preopt(value: Any) -> str:
+    """The ML potential the start geometry is relaxed with before ORCA.
+
+    ``none`` (default, the shipped behaviour: no MLP runs at all) or the
+    canonical name of one of the backends delfin.mlp_tools.calculators
+    knows; aliases are normalised (``mace`` -> ``mace_off``).
+    """
+    from delfin.mlp_tools.calculators import _BACKEND_ALIASES
+
+    text = str(value or "none").strip().lower()
+    if not text or text in {"no", "false", "off", "0", "none"}:
+        return "none"
+    canon = _BACKEND_ALIASES.get(text)
+    if canon is None:
+        raise ValueError(
+            "mlp_preopt must be none or an MLP backend name ("
+            + ", ".join(sorted(set(_BACKEND_ALIASES.values())))
+            + "; aliases accepted, e.g. 'mace' = 'mace_off'), got "
+            + repr(value))
+    return canon
+
+
 def _as_global_optimizer(value: Any) -> str:
     """GOAT, CREST, or nothing at all.
 
@@ -1079,6 +1101,102 @@ def _as_global_optimizer(value: Any) -> str:
     if upper in {"GOAT", "CREST"}:
         return upper
     raise ValueError("must be GOAT, CREST, or none")
+
+
+#: orca-mlips plugins GOAT can run with (delfin/mlp_tools/orca_mlips.py).
+_GLOBAL_OPT_MLIP_BACKENDS = ("uma", "mace", "orb", "aimnet2")
+_GLOBAL_OPT_METHOD_HINT = (
+    "must be empty (GOAT with the xTB_method), mlip:uma, mlip:mace, mlip:orb "
+    "or mlip:aimnet2 (an orca-mlips MLIP through ORCA's ExtOpt)"
+)
+_MLIP_MODEL_TOKEN = re.compile(r"^[A-Za-z0-9_.+\-]{1,80}$")
+
+
+def _as_global_opt_method(value: Any) -> str:
+    """The method GOAT optimises with: "" (the xTB_method) or mlip:<plugin>.
+
+    Empty, none and xtb all keep the classic xTB GOAT, whose input stays
+    byte-identical.  ``mlip:<plugin>`` names an orca-mlips plugin; the
+    value comes back lower-case without spaces (``MLIP: UMA`` ->
+    ``mlip:uma``).
+    """
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "no", "off", "false", "0", "xtb"}:
+        return ""
+    low = text.lower().replace(" ", "")
+    head, sep, plugin = low.partition(":")
+    if head == "mlip" and sep and plugin in _GLOBAL_OPT_MLIP_BACKENDS:
+        return f"mlip:{plugin}"
+    raise ValueError(_GLOBAL_OPT_METHOD_HINT)
+
+
+def _as_global_opt_mlip_model(value: Any) -> str:
+    """Optional model name for the orca-mlips plugin (``--model``); "" = its default.
+
+    A single token of letters, digits and ``_ . + -`` (it is written into
+    the ORCA input's Ext_Params string, so no spaces or quotes).
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not _MLIP_MODEL_TOKEN.match(text):
+        raise ValueError(
+            "model must be one token of letters, digits, '_', '.', '+', '-' "
+            "(at most 80 characters), e.g. uma-s-1p1"
+        )
+    return text
+
+
+def _as_global_opt_mlip_device(value: Any) -> str:
+    """cuda (default: the node running the workflow has the GPU) or cpu."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return "cuda"
+    if text in {"cuda", "cpu"}:
+        return text
+    raise ValueError("must be cuda or cpu")
+
+
+def _valid_global_opt_mlip(validated: Mapping[str, Any]) -> str:
+    """``mlip:<plugin>`` when the value passed its field check, else ""."""
+    try:
+        method = _as_global_opt_method(validated.get("global_opt_method"))
+    except ValueError:
+        return ""  # the field check reports it
+    return method if method.startswith("mlip:") else ""
+
+
+def _global_opt_method_errors(validated: Mapping[str, Any]) -> list[str]:
+    """Cross-key errors of the GOAT method choice (empty when none applies).
+
+    An MLIP method with CREST is refused: CREST runs xTB only.  An MLIP
+    whose weights are non-commercially licensed is refused when
+    refuse_noncommercial_weights=yes (LICENSE_GUARD.md family 4).
+    """
+    method = _valid_global_opt_mlip(validated)
+    if not method:
+        return []
+    errors: list[str] = []
+    optimizer = str(validated.get("global_optimizer") or "").upper()
+    crest_on = optimizer == "CREST" or (
+        not optimizer and str(validated.get("CREST", "no")).lower() == "yes")
+    if crest_on:
+        errors.append(
+            f"global_opt_method={method} applies to GOAT only: CREST runs "
+            "xTB only -- set global_optimizer=GOAT or clear global_opt_method"
+        )
+    plugin = method.split(":", 1)[1]
+    if str(validated.get("refuse_noncommercial_weights", "no")).lower() == "yes":
+        from delfin.mlp_tools.orca_mlips import mlips_weight_licence
+
+        lic = mlips_weight_licence(plugin)
+        if lic.get("non_commercial"):
+            errors.append(
+                f"global_opt_method={method} uses non-commercial model weights "
+                f"({lic['name']}); refuse_noncommercial_weights=yes refuses them "
+                "-- choose mlip:orb, mlip:aimnet2 or mlip:uma"
+            )
+    return errors
 
 
 def _as_response_engine(value: Any) -> str:
@@ -1876,6 +1994,7 @@ def _as_ap_method(value: Any) -> int | None:
 #: accepted because a CONTROL file written before the rename is still a valid
 #: CONTROL file, and the run it describes has not changed.
 _SMILES_CONVERTER_PLACEHOLDERS = (
+    "[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]",
     "[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]",
     "[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY]",
     "[QUICK|NORMAL|MANTA|ARCHITECTOR]",
@@ -1888,7 +2007,8 @@ _SMILES_CONVERTER_PLACEHOLDERS = (
 #: ranking on top.  The rename says what it was already doing.
 _SMILES_CONVERTER_ALIASES = {"GUPPY": "MANTA"}
 
-_SMILES_CONVERTER_MODES = ("QUICK", "NORMAL", "MANTA", "ARCHITECTOR", "MOLSIMPLIFY", "MACE")
+_SMILES_CONVERTER_MODES = ("QUICK", "NORMAL", "MANTA", "ARCHITECTOR", "MOLSIMPLIFY", "MACE",
+                           "RXEMBED", "MOLASSEMBLER", "METALLOGEN")
 
 
 def _as_manta_quality(value: Any) -> str:
@@ -2076,7 +2196,8 @@ def _as_smiles_converter(value: Any) -> str:
 
     normalized = _SMILES_CONVERTER_ALIASES.get(text.upper(), text.upper())
     if normalized not in _SMILES_CONVERTER_MODES:
-        raise ValueError("must be QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, or MACE")
+        raise ValueError("must be QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, MACE, "
+                         "RXEMBED, MOLASSEMBLER, or METALLOGEN")
     return normalized
 
 
@@ -2198,6 +2319,26 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("XTB_OPT", _as_yes_no, default="no"),
     FieldSpec("XTB_GOAT", _as_yes_no, default="no"),
     FieldSpec("CREST", _as_yes_no, default="no"),
+    # GOAT method choice (opt-in; absent = GOAT with the xTB_method, the
+    # input unchanged). Not in the shipped template, like mlp_preopt.
+    FieldSpec("global_opt_method", _as_global_opt_method, default="",
+              help="Method GOAT optimises with: empty = the xTB_method "
+                   "(default), or mlip:uma | mlip:mace | mlip:orb | "
+                   "mlip:aimnet2 -- an orca-mlips machine-learned potential "
+                   "through ORCA's ExtOpt, run inside the workflow's job (the "
+                   "node needs the GPU for device=cuda). A screen: the "
+                   "ensemble's MLIP energies are not final numbers. CREST "
+                   "stays xTB-only. Weights: UMA gated (own HF login), MACE "
+                   "non-commercial (Academic Software License)."),
+    FieldSpec("global_opt_mlip_model", _as_global_opt_mlip_model, default="",
+              help="Model name passed to the orca-mlips plugin as --model; "
+                   "empty = the plugin's default."),
+    FieldSpec("global_opt_mlip_device", _as_global_opt_mlip_device, default="cuda",
+              help="cuda (default) or cpu. cuda without a visible GPU stops "
+                   "the GOAT step; there is no silent CPU fallback."),
+    FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
+              help="yes refuses an MLIP whose weights are non-commercially "
+                   "licensed (global_opt_method=mlip:mace)."),
     FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default=""),
     FieldSpec("solvent", _as_solvent, default=""),
     FieldSpec("functional", _as_functional, default="PBE0"),
@@ -2280,7 +2421,156 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("logK_exp", _as_str, default=""),
     FieldSpec("thdy_smiles_converter", _as_smiles_converter, default="NORMAL"),
     FieldSpec("thdy_preopt", _as_preopt_mode, default="xtb"),
+    # MLP pre-optimisation (wave19 m4): opt-in. The default keeps the
+    # shipped behaviour -- the ORCA steps run on the geometry as built.
+    FieldSpec("mlp_preopt", _as_mlp_preopt, default="none",
+              help="ML potential the start geometry is relaxed with before "
+                   "the ORCA steps: none (default) or ani2x, aimnet2, "
+                   "mace_off, chgnet, m3gnet. A screening step only: the "
+                   "geometry is a starting guess, every final energy comes "
+                   "from DFT."),
 )
+
+
+def _metals_in_smiles(smiles: str) -> list[str]:
+    """Transition-metal element symbols named in a SMILES string.
+
+    Uses the same element-token rule as delfin/utils.py:140-145 (a bare
+    1-2 letter element token, case-normalised).  Not a full SMILES parse:
+    bracket atoms like [Pd] and plain tokens both resolve, and a 2-letter
+    match requires the second letter to be lower-case, so ``C``/``Cl`` and
+    ``N``/``Na`` do not confuse it.  Good enough to answer "would the
+    auto-relativity policy apply to this system?" -- the exact question
+    delfin/utils.py:203-217 (_should_use_rel) answers from a geometry file.
+    """
+    from delfin.utils import _TM_LIST
+
+    text = str(smiles or "")
+    found: list[str] = []
+    for match in re.finditer(r"[A-Z][a-z]?", text):
+        sym = match.group(0)
+        if sym in _TM_LIST and sym not in found:
+            found.append(sym)
+    return found
+
+
+def cross_key_consistency_notes(config: Mapping[str, Any]) -> list[str]:
+    """Cross-key consistency findings, advisory only.
+
+    Each finding fires ONLY when a key is explicitly present and its
+    meaning is CONTRADICTED by the companions or the chosen mode.  A key a
+    workflow merely does not read is not a finding: those keys were written
+    knowingly or carry defaults, and warning about them would be noise
+    (QS ruling, CT1 wave 24).
+
+    The three findings, each traced to where its contradiction bites:
+
+    1. ``solvent`` without ``implicit_solvation_model`` -- the solvation
+       keyword builder returns "" with no word (delfin/common/solvation.py:31-32)
+       and the run goes gas phase, while the reverse case (model without
+       solvent) IS warned at :34-44.  The user asked for a solvent and
+       silently does not get one.
+    2. A relativistic ``relativity`` value on a light-element system --
+       delfin/cli.py:1989-1994 overwrites it to ``none`` with an info log,
+       so the CONTROL file's value is not what runs.  The auto policy
+       (delfin/utils.py:203-217, classify_tm_presence :152-170) decides
+       relativity from the metals; the value on a heavy-metal system is
+       consistent and never warns, and a MISSING value never warns: that
+       direction is the policy's job, not a contradiction.
+    3. OCCUPIER-specific keys with an explicit non-OCCUPIER ``method`` --
+       those keys are read by the OCCUPIER workflow only, so with
+       method=classic/manually they are inert in a way the writer probably
+       did not intend.
+    """
+    notes: list[str] = []
+
+    # 1. solvent asked for, no solvation model -> silently gas phase.
+    solvent = str(config.get("solvent", "") or "").strip()
+    model = str(config.get("implicit_solvation_model", "") or "").strip()
+    if solvent and not model:
+        notes.append(
+            f"solvent={solvent} is set but implicit_solvation_model is not: "
+            f"the run goes gas phase (no CPCM/SMD keyword is written, "
+            f"delfin/common/solvation.py:31-32). Set implicit_solvation_model=CPCM or SMD, "
+            f"or clear solvent for an intentional gas-phase run."
+        )
+
+    # 2. relativity contradicted by the system's metals.
+    relativity = str(config.get("relativity", "") or "").strip().lower()
+    if relativity and relativity not in ("none", ""):
+        metals = _metals_in_smiles(config.get("SMILES", ""))
+        if metals:
+            from delfin.utils import classify_tm_presence
+
+            tm_class = classify_tm_presence(metals)
+            use_rel = tm_class in ("4d5d", "4f5f", "mixed")
+        else:
+            # No transition metals at all: cli.py:1990-1994 forces
+            # relativity=none for every metal-free system, so an explicitly
+            # relativistic value is contradicted here too.
+            use_rel = False
+            tm_class = "none"
+        if not use_rel:
+            description = (f"metals: {', '.join(metals)}, class {tm_class}"
+                           if metals else "no transition metals in the SMILES")
+            notes.append(
+                f"relativity={relativity} on a light-element system "
+                f"({description}): the run "
+                f"deactivates it and continues with relativity=none "
+                f"(delfin/cli.py:1989-1994, delfin/utils.py:203-217). "
+                f"The file's value will not run as written."
+            )
+
+    # 3. OCCUPIER keys inert under an explicit non-OCCUPIER method -- but only
+    # for a NON-DEFAULT value. The template ships OCCUPIER_compare=FSPE and
+    # OCCUPIER_method=auto, so a default-valued OCCUPIER key under
+    # method=classic is a normal file, not a contradiction (pinned by
+    # tests/test_occupier_compare_names_what_it_compares.py:201-210: a valid
+    # field is left alone -- that test pins OCCUPIER_compare explicitly, so
+    # OCCUPIER_compare is NOT watched here; its value decision is always the
+    # user's). A deliberately chosen OCCUPIER setting (a manual method, a
+    # sequence) under method=classic IS a finding.
+    method = str(config.get("method", "") or "").strip().lower()
+    if method and method != "occupier":
+        schema_defaults = {spec.name: spec.default for spec in CONTROL_FIELD_SPECS}
+        # Compare the COERCED value, not the raw one: a raw spelling that the
+        # key's own coercer maps to the default ("false"/"0"/" off " -> "no"
+        # for _as_yes_no, control_validator.py:1041-1043) is NOT a non-default
+        # setting. The production caller passes the coerced config
+        # (validate_control_config wires cross_key_consistency_notes(validated)
+        # after coercion), but the function also accepts a raw mapping.
+        coercer_by_key = {
+            "OCCUPIER_method": _as_occupier_method,
+            "frequency_calculation_OCCUPIER": _as_yes_no,
+            "geom_opt_OCCUPIER": _as_geom_opt,
+        }
+        occupier_keys = []
+        for key in ("OCCUPIER_method", "frequency_calculation_OCCUPIER",
+                    "geom_opt_OCCUPIER"):
+            if key not in config:
+                continue
+            default = schema_defaults.get(key)
+            try:
+                value = coercer_by_key[key](config.get(key))
+            except ValueError:
+                # An invalid value is the validator's error to raise elsewhere
+                # (the coercers run on the full config during validation); the
+                # consistency note only speaks about values that would run.
+                continue
+            if value and value.lower() != str(default or "").strip().lower():
+                occupier_keys.append(key)
+        for key in ("even_seq", "odd_seq"):
+            if config.get(key):
+                occupier_keys.append(key)
+        if occupier_keys:
+            notes.append(
+                f"OCCUPIER keys {', '.join(occupier_keys)} are set (non-default) but "
+                f"method={method}: "
+                f"they are read by the OCCUPIER workflow only and are inert here "
+                f"(method is what selects the workflow, delfin/common/control_validator.py:2188)."
+            )
+
+    return notes
 
 
 def _manta_funnel_notes(validated: Mapping[str, Any]) -> list[str]:
@@ -2535,7 +2825,8 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                     for text in _SMILES_CONVERTER_PLACEHOLDERS)
         ):
             errors.append(
-                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, MANTA, ARCHITECTOR, MOLSIMPLIFY, or MACE."
+                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, MANTA, "
+                "ARCHITECTOR, MOLSIMPLIFY, MACE, RXEMBED, MOLASSEMBLER, or METALLOGEN."
             )
         if (
             "thdy_preopt" not in config
@@ -2598,10 +2889,26 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                 "G" if legacy.lower() in ("yes", "true", "1", "on") else "FSPE"
             )
 
+    errors.extend(_global_opt_method_errors(validated))
+    _method = _valid_global_opt_mlip(validated)
+    if _method and not _global_opt_method_errors(validated):
+        from delfin.mlp_tools.orca_mlips import mlips_weight_licence
+
+        _lic = mlips_weight_licence(_method.split(":", 1)[1])
+        if _lic.get("non_commercial") or _lic.get("gated"):
+            logger.warning(
+                "CONTROL global_opt_method=%s: model weights %s (%s)%s",
+                _method, _lic["name"], _lic["url"],
+                " -- non-commercial use only" if _lic.get("non_commercial")
+                else " -- gated: needs the user's own access")
+
     for name, text in explanations:
         logger.warning("CONTROL %s=? -> %s", name, text)
 
     for note in _manta_funnel_notes(validated):
+        logger.warning("CONTROL validation: %s", note)
+
+    for note in cross_key_consistency_notes(validated):
         logger.warning("CONTROL validation: %s", note)
 
     if errors:

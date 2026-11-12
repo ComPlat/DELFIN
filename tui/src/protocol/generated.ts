@@ -11,6 +11,7 @@ export const ERRORS = {
   NOT_ALLOWED: -32003,
   UNKNOWN_SESSION: -32004,
   WORKER_GONE: -32005,
+  NEEDS_LOCAL_PROJECT: -32006,
   INVALID_REQUEST: -32600,
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
@@ -48,6 +49,8 @@ export interface PermissionReplyParams {
   "reason"?: string | null
   "persist"?: boolean | null
   "text"?: string | null
+  "command"?: string | null
+  "client"?: string | null
 }
 export interface SessionCommandsParams {}
 export interface SessionCompletePathParams {
@@ -155,6 +158,7 @@ export interface SessionInfoEvent {
   "workspace": string
   "provider": string
   "model": string
+  "effort"?: string | null
   "mode": string
   "approval": string
   "title"?: string | null
@@ -164,6 +168,7 @@ export interface SessionInfoEvent {
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
   "auto"?: string | null
+  "background"?: Record<string, unknown>[] | null
   "type": "session.info"
   "session": string
   "ts": number
@@ -173,11 +178,13 @@ export interface SessionUpdatedEvent {
   "approval"?: string | null
   "model"?: string | null
   "effort"?: string | null
+  "mode"?: string | null
   "title"?: string | null
   "tasks"?: Record<string, unknown>[] | null
   "bypassBlocked"?: string | null
   "bypassConfirmed"?: boolean | null
   "auto"?: string | null
+  "background"?: Record<string, unknown>[] | null
   "type": "session.updated"
   "session": string
   "ts": number
@@ -345,6 +352,8 @@ export interface PermissionAskedEvent {
   "multiSelect"?: boolean | null
   "suggestion"?: string | null
   "readDir"?: string | null
+  "purpose"?: string | null
+  "command"?: string | null
   "type": "permission.asked"
   "session": string
   "ts": number
@@ -354,6 +363,7 @@ export interface PermissionResolvedEvent {
   "requestId": string
   "decision": string
   "by": string
+  "client"?: string | null
   "type": "permission.resolved"
   "session": string
   "ts": number
@@ -420,10 +430,22 @@ export interface SessionCreateParams {
   "attach"?: boolean | null
   "brief"?: string | null
   "briefTitle"?: string | null
+  "worktree"?: boolean | null
+  "initProject"?: boolean | null
+  "untitled"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
   "turns"?: number | null
+}
+export interface SessionWorktreesParams {
+  "cwd": string
+}
+export interface SessionMergeParams {
+  "path": string
+}
+export interface SessionPendingParams {
+  "sessionId": string
 }
 export interface SessionDetachParams {
   "sessionId": string
@@ -440,6 +462,27 @@ export interface SessionsPastParams {
 export interface ServiceStatusParams {}
 export interface ServiceShutdownParams {
   "restart"?: boolean | null
+}
+export interface BranchListParams {
+  "workspace": string
+  "view"?: string | null
+  "text"?: string | null
+  "refresh"?: boolean | null
+}
+export interface BranchPullParams {
+  "workspace": string
+}
+export interface BranchTestParams {
+  "workspace": string
+  "ref": string
+  "keep"?: boolean | null
+}
+export interface BranchCleanupParams {
+  "workspace": string
+  "includeUnmerged"?: boolean | null
+  "refresh"?: boolean | null
+  "delete"?: string[] | null
+  "confirm"?: boolean | null
 }
 export interface AttentionListParams {}
 export interface AttentionAnswerParams {
@@ -469,16 +512,58 @@ export interface JobDetailParams {
   "session"?: string | null
   "group"?: string | null
 }
+export interface SwarmStatusParams {
+  "spec"?: Record<string, unknown> | null
+  "specYaml"?: string | null
+}
+export interface SwarmPlanParams {
+  "spec"?: Record<string, unknown> | null
+  "specYaml"?: string | null
+}
+export interface SwarmValidateParams {
+  "spec"?: Record<string, unknown> | null
+  "specYaml"?: string | null
+}
+export interface SwarmStartParams {
+  "spec"?: Record<string, unknown> | null
+  "specYaml"?: string | null
+  "dryRun"?: boolean | null
+  "confirm"?: boolean | null
+}
+export interface SwarmPauseParams {}
+export interface SwarmResumeParams {}
+export interface SwarmTriageListParams {
+  "queue": Record<string, unknown>[]
+}
+export interface SwarmTriageAnswerParams {
+  "item": Record<string, unknown>
+  "answer": string
+}
+export interface SwarmObserveOverviewParams {
+  "source"?: Record<string, unknown> | null
+  "sourcePath"?: string | null
+}
+export interface SwarmObserveFeedParams {
+  "session": string
+  "since"?: number | null
+}
 export interface ServiceRequests {
   "hello": HelloParams
   "sessions.list": SessionsListParams
   "session.create": SessionCreateParams
   "session.attach": SessionAttachParams
+  "session.worktrees": SessionWorktreesParams
+  "session.merge": SessionMergeParams
+  "session.pending": SessionPendingParams
   "session.detach": SessionDetachParams
   "session.message": SessionMessageParams
   "sessions.past": SessionsPastParams
   "service.status": ServiceStatusParams
   "service.shutdown": ServiceShutdownParams
+  "branch.list": BranchListParams
+  "branch.pull": BranchPullParams
+  "branch.test": BranchTestParams
+  "branch.cleanup": BranchCleanupParams
   "attention.list": AttentionListParams
   "attention.answer": AttentionAnswerParams
   "attention.dismiss": AttentionDismissParams
@@ -488,6 +573,16 @@ export interface ServiceRequests {
   "jobs.list": JobsListParams
   "cluster.detail": ClusterDetailParams
   "job.detail": JobDetailParams
+  "swarm.status": SwarmStatusParams
+  "swarm.plan": SwarmPlanParams
+  "swarm.validate": SwarmValidateParams
+  "swarm.start": SwarmStartParams
+  "swarm.pause": SwarmPauseParams
+  "swarm.resume": SwarmResumeParams
+  "swarm.triage.list": SwarmTriageListParams
+  "swarm.triage.answer": SwarmTriageAnswerParams
+  "swarm.observe.overview": SwarmObserveOverviewParams
+  "swarm.observe.feed": SwarmObserveFeedParams
 }
 export interface HelloResult {
   "protocolVersion": number
@@ -508,6 +603,16 @@ export interface SessionCreateResult {
   "state": string
   "pending": Record<string, unknown>[]
   "events": Record<string, unknown>[]
+  "worktree"?: Record<string, unknown> | null
+}
+export interface SessionWorktreesResult {
+  "worktrees": Record<string, unknown>[]
+}
+export interface SessionMergeResult {
+  "status": string
+  "files": string[]
+  "target": string
+  "message": string
 }
 export interface SessionAttachResult {
   "session": Record<string, unknown>
@@ -515,6 +620,9 @@ export interface SessionAttachResult {
   "pending": Record<string, unknown>[]
   "events": Record<string, unknown>[]
   "summary": Record<string, unknown>
+}
+export interface SessionPendingResult {
+  "pending": Record<string, unknown>[]
 }
 export interface SessionDetachResult {
   "detached": boolean
@@ -577,11 +685,61 @@ export interface JobDetailResult {
   "sections": Record<string, unknown>[]
   "error"?: string | null
 }
+export interface SwarmStatusResult {
+  "schema_version": number
+  "goal": string
+  "packages": Record<string, unknown>[]
+  "waiting_for_user": Record<string, unknown>[]
+}
+export interface SwarmPlanResult {
+  "goal": string
+  "members": Record<string, unknown>[]
+  "start_spacing_s"?: number | null
+  "memory_gate"?: boolean | null
+  "dry_run_text": string
+}
+export interface SwarmValidateResult {
+  "valid": boolean
+  "errors": string[]
+}
+export interface SwarmStartResult {
+  "dry_run": boolean
+  "goal": string
+  "members"?: Record<string, unknown>[] | null
+  "dry_run_text"?: string | null
+  "started": Record<string, unknown>[]
+  "refused"?: string | null
+}
+export interface SwarmPauseResult {
+  "available": boolean
+  "reason": string
+}
+export interface SwarmResumeResult {
+  "available": boolean
+  "reason": string
+}
+export interface SwarmTriageListResult {
+  "items": Record<string, unknown>[]
+}
+export interface SwarmTriageAnswerResult {
+  "answered": boolean
+  "item_id"?: string | null
+  "logged"?: string | null
+}
+export interface SwarmObserveOverviewResult {
+  "rows": Record<string, unknown>[]
+}
+export interface SwarmObserveFeedResult {
+  "entries": Record<string, unknown>[]
+}
 export interface ServiceResults {
   "hello": HelloResult
   "sessions.list": SessionsListResult
   "session.create": SessionCreateResult
+  "session.worktrees": SessionWorktreesResult
+  "session.merge": SessionMergeResult
   "session.attach": SessionAttachResult
+  "session.pending": SessionPendingResult
   "session.detach": SessionDetachResult
   "session.message": SessionMessageResult
   "sessions.past": SessionsPastResult
@@ -596,6 +754,16 @@ export interface ServiceResults {
   "jobs.list": JobsListResult
   "cluster.detail": ClusterDetailResult
   "job.detail": JobDetailResult
+  "swarm.status": SwarmStatusResult
+  "swarm.plan": SwarmPlanResult
+  "swarm.validate": SwarmValidateResult
+  "swarm.start": SwarmStartResult
+  "swarm.pause": SwarmPauseResult
+  "swarm.resume": SwarmResumeResult
+  "swarm.triage.list": SwarmTriageListResult
+  "swarm.triage.answer": SwarmTriageAnswerResult
+  "swarm.observe.overview": SwarmObserveOverviewResult
+  "swarm.observe.feed": SwarmObserveFeedResult
 }
 export interface SessionSummaryEvent {
   "summary": Record<string, unknown>
@@ -648,6 +816,8 @@ export interface SessionSummary {
   "activity"?: string | null
   "waiting"?: string | null
   "answer"?: string | null
+  "name"?: string | null
+  "lastInput"?: number | null
 }
 
 export interface AttentionItem {

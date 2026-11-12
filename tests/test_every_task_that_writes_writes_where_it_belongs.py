@@ -282,9 +282,151 @@ def test_the_counts_still_match_what_was_measured():
     # the guard.
     # behavior 16 -> 18 on 2026-10-19: two act tasks (behavior_act) in
     # tasks_auto_behavior.yaml, editing the behaviour workspace's game.html.
+    #
+    # chemistry 5 -> 11 on 2026-10-24: the six XT1 xtb-method practice
+    # tasks (tasks_w20_xt1.yaml, wave 20, agent/s10-xt1b). Each grades a
+    # system from setup/w20_xt1_start_geometries.py on the physics by
+    # recomputation (accept/w20_xt1_minimum.py and the per-system
+    # wrappers, plus the uhf trap accept/w20_xt1_uhf_trap.py); the
+    # fixtures stay in the task workspace the guard installs and removes.
+    # chemistry 5 -> 12 on 2026-10-20: tasks_w20_workflows.yaml (wave 20,
+    # package CB0B) -- one practice task per workflow family, setup
+    # scripts w20_classic_opt_freq.py and w20_rest.py write only
+    # <workspace>/w20_<family>_1/ and refuse to overwrite.
+    # chemistry 5 -> 10 on 2026-10-20 (OR1, wave 20, agent/s14-or1b):
+    # five TS/scan tasks in tasks_w20_or1.yaml (HCN<->HNC TS, methyl
+    # rotation scan, SN2 identity, a second TS verification, one trap
+    # task whose two-imaginary-mode "TS" must be REFUSED). Each setup
+    # builds its own folder under chem/ in the chemistry workspace; the
+    # guard cleans it. The acceptance scripts re-derive the physics
+    # (imaginary-mode counts, IRC endpoints, barrier bands) instead of
+    # trusting prose.
+    #
+    # RECLASS (F-CI-1, operator CI finding on the PR-ready check at
+    # c7b6f13f, 2026-10-24): OR1's tasks expect real ORCA runs, which
+    # test_chemistry_is_graded_on_the_physics forbids in the chemistry
+    # class (the cheap xtb-physics suite). All five move to
+    # science_analysis — the class the rule does not cover — so
+    # chemistry 10 -> 5 and science 23 -> 28. The artifact grading,
+    # budget caps (<= 2 USD, <= 1800 s, <= 20 atoms) and verify scripts
+    # are unchanged; workspace mapping science_analysis ->
+    # science_workspace (benchmark_runner.workspace_for) means the
+    # chem/ folders now live under the science workspace fixture, and
+    # the setup-ownership guard cases for w20_or1 setups run for real
+    # instead of skipping.
+    # chemistry 5 -> 10 on 2026-10-24: the five tasks_w20_or2.yaml tasks
+    # (package OR2, wave 20 — spectra, spin states, redox). Each setup
+    # writes its own fixture folder under the chemistry workspace
+    # (or2/formaldehyde, or2/spin, or2/redox, or2/redox_mixed);
+    # MAX_ATOMS <= 20 in every setup.
+    # science 23 -> 27 on 2026-10-20 (CE1, wave 20, agent/s11-ce1b): the
+    # four tasks_w20_ce1.yaml tasks (science_analysis), offline over the
+    # fixture ensembles from setup/w20_ce1_ensemble_fixture.py -- lowest
+    # conformer, Boltzmann weights at a stated temperature, the
+    # two-levels trap, CENSO-style threshold handoff. Each writes only
+    # into its own w20_ce1_ensemble/ folder under the workspace; the
+    # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
+    #
+    # science 28 -> 34 on 2026-10-25: the six wave-21 workflow-BUILDING
+    # tasks (tasks_w21_build.yaml, package WB0) -- the agent builds a
+    # DELFIN pipeline spec (spec.json) for a chemist's brief and justifies
+    # deviations in answer.txt; w21_build_verify.py grades the spec with
+    # workflow_grader.grade(), no calculation. Class science_analysis
+    # (writing class -> confined science_workspace; the "chemistry" class
+    # is reserved for the cheap-xtb physics suite whose signals forbid
+    # orca, tests/test_chemistry_is_graded_on_the_physics.py:57). One
+    # setup script (setup/w21_build_fixtures.py) writes all six folders
+    # and refuses an existing one.
+    #
+    # science 34 -> 37 on 2026-10-25 (WB0 phase 3): the three real-run
+    # tasks w21_run_methanol / w21_run_water_ir / w21_run_hcl_spectrum
+    # in the same file -- the agent builds the workflow AND runs it
+    # through DELFIN's own submit path; accept/w21_run_verify.py grades
+    # BOTH halves (spec via workflow_grader, run via CB0A's
+    # run_evidence.collect + grade_run, max_cores=2). Setup
+    # setup/w21_run_fixtures.py (<= 6 atoms, CONTROL pins charge/mult).
+    # science 23 -> 27 on 2026-10-20 (CE1, wave 20, agent/s11-ce1b): the
+    # four tasks_w20_ce1.yaml tasks (science_analysis), offline over the
+    # fixture ensembles from setup/w20_ce1_ensemble_fixture.py -- lowest
+    # conformer, Boltzmann weights at a stated temperature, the
+    # two-levels trap, CENSO-style threshold handoff. Each writes only
+    # into its own w20_ce1_ensemble/ folder under the workspace; the
+    # acceptance script reads artifacts only (accept/w20_ce1_verify.py).
+    # other 71 -> 77 on 2026-10-25 (SP1, wave 22, agent/s13-sp1b): the six
+    # explore-pilot tasks of pilot_tasks_sp1.yaml (solo, read-only). This
+    # test globs every pack/benchmark/*.yaml; the production suite loads
+    # only tasks_*.yaml, so the pilot never runs in a normal bench run.
+    #
+    # chemistry 26 -> 29 on 2026-10-31 (OC1, wave 24, agent/s3-oc1b): the
+    # three tasks_w24_oc1.yaml tasks over DELFIN's OCCUPIER workflow (spin
+    # scan, broken-symmetry J, metallocene redox). No setup scripts
+    # (operator-confirmed); each accept script grades the run's physics
+    # from oc1/<case>/ outputs + result.txt. "+3 chemistry".
+    #
+    # science 41 -> 44 on 2026-10-31 (SH1, wave 24, agent/s9-sh1b): the three
+    # self-healing routing tasks in tasks_w24_sh1.yaml -- GSTEP constraint
+    # failure, unconverged scan step + SHARK abort, Cu(NH3)4 imaginary mode
+    # -> IMAG route; offline, no setup script; accept/sh1_w24_0N_*.py.
+    #
+    # chemistry 23 -> 26 on 2026-10-31 (CAS1, wave 25, agent/s6-cas1b): the
+    # three tasks_w25_cas1.yaml tasks -- CASSCF active-space proposals for
+    # ozone and stretched N2 (graded by re-running ActiveSpaceProposal.validate
+    # on proposal.json, accept/cas1_verify.py) and one trap task (invented
+    # Nactel/Nactorb keywords + a 24-orbital space that must be refused naming
+    # RAS/ICE/DMRG). Offline, no setup script, no calculation.
+    #
+    # other 77 -> 81 on 2026-10-31 (MN1, wave 25, agent/s9-mn1b): the four
+    # tasks_w25_mn1.yaml watch-and-wait tasks (wait for a line, wait for a
+    # file, notice a failure, act on the first of two jobs); task_class
+    # coding, graded on the transcript's actions (no busy polling).
+    #
+    # science 44 -> 48 on 2026-10-31 (SL1, wave 25, agent/s13-sl1b): the four
+    # tasks_w25_sl1.yaml SLURM-operation tasks (resources + partitions, a
+    # pending job's reason, a failed job classified and sent to DELFIN's
+    # recalc path, efficiency from sacct); recorded scheduler text, no load.
+    #
+    # chemistry 29 -> 32 on 2026-10-31 (ES1, wave 24, agent/s7-es1b): the
+    # three tasks_w24_es1.yaml ESD/TADF tasks, graded on the run's physics
+    # (state order, Delta E_ST against the cited experimental band, ISC rate
+    # at the matched level); synthetic fixtures only.
+    #
+    # other 81 -> 85 on 2026-11-01 (SH2, wave 26, agent/s6-sh2b): the four
+    # tasks_w26_sh2.yaml shell tasks (metacharacters passed safely, a failing
+    # first command not hidden by a pipe, a long command reported, a request
+    # that would destroy uncommitted work answered safely); graded on actions.
+    #
+    # generalist 22 -> 26 on 2026-11-01 (GH1, wave 26, agent/s1-gh1b): the
+    # four tasks_w26_gh1.yaml GitHub-operation tasks in a throw-away local repo
+    # (own files only, red CI log reproduced, cross-review on a scratch
+    # branch, count-like conflict resolved by summing); graded on repo state.
+    #
+    # other 85 -> 88 on 2026-11-01 (SW1, wave 27, agent/s6-sw1b): the three
+    # tasks_w27_sw1.yaml swarm tasks (overlapping scopes refused, a valid
+    # spec's dry run lists the right members/branches/scopes, triage
+    # auto-answers a partner message but escalates a push request).
+    #
+    # science 48 -> 51 on 2026-11-01 (CM1, wave 26, agent/s9-cm1b): the three
+    # tasks_w26_cm1.yaml Code Mode adoption tasks (run-tree census, failure
+    # triage, per-method statistics over a 20-folder recorded fixture); setup
+    # cm1_run_tree_fixture.py; accept/cm1_{census,triage,methods}_verify.py.
+    #
+    # other 88 -> 90 on 2026-11-02 (SA0, wave 27, agent/s5-sa0b): the two
+    # tasks_w27_sa0.yaml delegation tasks (a dummy expert delegated to end
+    # to end; graded on artifacts, no live model).
+    #
+    # science 51 -> 54 on 2026-11-02 (SRC1, wave 26, agent/s3-src1b): the
+    # three tasks_w26_src1.yaml source-verification tasks (real DOI, invented
+    # DOI refused, PubChem value with CID), graded on recorded API responses.
+    # science 54 -> 55 on 2026-11-03 (BT1, wave 28, swarm/wave20/bt1): the
+    # tasks_w28_bt1.yaml butane rotation-profile task (scan + TS + movie,
+    # graded on the artifact tree).
+    # other 90 -> 96 on 2026-11-07 (F2, wave 28, agent/s3-f2b): the six
+    # tasks_w28_lh.yaml long_horizon tasks (no dedicated bucket yet).
+    # science 55 -> 58 on 2026-11-09 (TF1, wave 28, agent/s9-tf1b): the three
+    # tasks_w28_tf1.yaml ts-finder tasks, graded on recorded artifacts.
     assert counts == {"office": 13, "behavior": 18, "generic_project": 24,
-                      "science": 23, "chemistry": 5, "generalist": 22,
-                      "other": 71}, counts
+                      "science": 58, "chemistry": 32, "generalist": 26,
+                      "other": 96}, counts
 
 
 # ---------------------------------------------------------------------------

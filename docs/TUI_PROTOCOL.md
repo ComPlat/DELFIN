@@ -80,7 +80,7 @@ types are generated from that. This page explains what the messages mean.
 | `session.completePath` | `fragment` | `paths[]` | What `@fragment` completes to, under the workspace only. |
 | `session.choices` | `what`: `model`, `effort`, `mode` or `args`; `command?` (with `args`) | `current`, `choices[]`: `value`, `detail?`, `usage?` | What a picker offers; with `args`, what may follow `command`. |
 | `session.toggleTasks` | | `showTasks` | ctrl+t: the open task list at the end of each turn, on or off, as in the REPL (a notice says which). |
-| `session.setTitle` | `title` | `title` | What the session is called: what it is saved under and every window shows (a `session.updated` follows); one plain line of at most 80 characters (escapes and control characters become spaces). Its address -- the `name` it started with, or its id, by which mail, approvals and its presence record reach it -- does not change. Answered for a sleeping session too, without waking it. |
+| `session.setTitle` | `title` | `title` | What the session is called: what it is saved under and every window shows (a `session.updated` follows); one plain line of at most 50 characters, SimpleX's group-name limit (escapes and control characters become spaces). Nothing printable left (`""`) puts the default name back: the folder name and the id's first eight characters (`scan-a · 0123abcd`). Its address -- the `name` it started with, or its id, by which mail, approvals and its presence record reach it -- does not change. Answered for a sleeping session too, without waking it. |
 
 ### Completion and pickers
 
@@ -213,7 +213,7 @@ carry their final values.
 | `error` | `text` | ✓ |
 | `usage` | `inputTokens`, `outputTokens`, `costUsd`: session totals, sampled during a turn | |
 | `permission.asked` | `requestId`, `kind`, `tool`, `preview`, `options[]`, `flags`, `suggestion?`, `readDir?`; for a question also `question`, `header?`, `choices[]`, `choiceDetails[]`, `multiSelect` | ✓ |
-| `permission.resolved` | `requestId`, `decision`, `by`: `client`, `outside`, `expired` or `abort` | ✓ |
+| `permission.resolved` | `requestId`, `decision`, `by`: `client`, `outside`, `expired` or `abort`; `client?`: with `by` `client`, the hello name of the window whose answer landed | ✓ |
 
 **Field details:**
 
@@ -273,7 +273,7 @@ and each key means what it means there.
 
 | kind | answer |
 |---|---|
-| `confirm` | `choice`: `y` yes, `n` no, `A` always this exact command, `k` always commands like this (see `suggestion`), `R` always read this directory (see `readDir`), `e` stop asking about writes this session, `a` abort (refuse and end the turn), `?` explain |
+| `confirm` | `choice`: `y` yes, `n` no, `A` always this exact command, `k` always commands like this (see `suggestion`), `R` always read this directory (see `readDir`), `e` stop asking about writes this session, `c` change the command (with `command`), `a` abort (refuse and end the turn), `?` explain |
 | `plan` | `choice`: `d` approve, then default; `e` approve, then acceptEdits; `n` reject |
 | `ask` | `answers`: the chosen labels out of `choices`; none dismisses the question |
 
@@ -284,6 +284,21 @@ and each key means what it means there.
   not one of its labels or is given twice, and more than one answer to a
   question that is not `multiSelect`.
 - An unknown or already-resolved `requestId` is refused with code -32002.
+- `c` answers a shell request with the user's own `command` (the event's
+  `command` field is the command to start from; absent when it holds a
+  secret the preview masks). The request is
+  refused as asked; the model reads the changed command and is told to run
+  it. Its next call with exactly that command and tool is approved once,
+  within 600 s, and only as a plain question: a guard, calculation,
+  outside-read or widening question is asked as usual, and every check
+  before the question still runs. An empty, unchanged, control-character
+  or over-4000-character command is refused (-32602); so is `command`
+  with any other key. `permission.resolved` then says `changed`.
+  The same rules hold on every surface (`terminal_confirm.checked_change`,
+  `ChangeGrants`): the REPL (key `c`), this protocol, the phone
+  (`ändern: …`), the dashboard's approval row (Change…) and the CLI
+  backend's hook, whose question carries the command and whose answer
+  carries the change.
 - `A` and `k` save a rule that is global and permanent. The REPL asks a
   second time before saving it; here the second yes is `persist: true`.
   Without it the command is approved just this once, and `message` says so.
@@ -359,8 +374,10 @@ closes; the next window attaches to them again.
 |---|---|---|
 | `hello` | `protocolVersion`, `client?` | `protocolVersion`, `serviceVersion`, `release`, `pid`, `host`, `mayAct`, `sessions[]`. Must come first. `serviceVersion` says what the service does beyond the protocol (2: a dry-run `session.shutdown`; a service before it ignores `dryRun` and would end the session, so a launcher never asks it. 3: the `attention.*` requests and event, and `session.create`'s `brief`. 4: `clusters.list`, `cluster.login`, `cluster.logout`, `jobs.list`. 5: `cluster.detail`, `job.detail`). |
 | `sessions.list` | | `sessions[]` (summaries), `elsewhere[]`: other open DELFIN sessions (dashboards, terminals) with `key`, `sessionId?`, `title?`, `workspace`, `host` |
-| `session.create` | `cwd`, `name?`, `title?`, `model?`, `provider?`, `effort?`, `mode?`, `permissionMode?`, `resume?`, `continue?`, `fork?`, `addDirs?`, `readDirs?`, `isolate?`, `noIsolate?`, `fake?`, `fakeDelay?`, `fakeSave?`, `attach?`, `brief?`, `briefTitle?` | `sessionId`, `session`, `state`, `pending[]`. Starts a worker with chat's own flags; the creating window is attached unless `attach: false`. A resumed or copied session whose conversation this service's event log has nothing of (it ran in the dashboard or the REPL; a copy has a new id) shows it as it opens: a notice, then its last 20 turns as `user.message`, `tool.started`/`tool.ended` and `text.ended` events (durable: a later attach replays them), without the rows the harness wrote. `fake` sessions (tests) are scripted and not saved, unless `fakeSave`; resumed, they restore what the store kept, and `fork` copies them under a new id. `name` is the session's address (chat's `-n`), `title` what it is called (the name when not given; a session resumed without either comes back under the title it was saved with, never under the store's stand-in, its first message). A session that cannot start is refused with its reason (-32005); one another process writes is refused with a hint to open a copy (`resume` with `fork`). `brief`: what the session is started to look into (an item of the agent view's list): the worker gets it in `initialize`, not on its command line (every user of a login node can read that), shows it as a durable `context` event (`title` is `briefTitle`) and puts it in front of the first ordinary prompt (not a `/command` or `!` line); the `user.message` event keeps what was typed. |
+| `session.create` | `cwd`, `name?`, `title?`, `model?`, `provider?`, `effort?`, `mode?`, `permissionMode?`, `resume?`, `continue?`, `fork?`, `addDirs?`, `readDirs?`, `isolate?`, `noIsolate?`, `fake?`, `fakeDelay?`, `fakeSave?`, `attach?`, `brief?`, `briefTitle?`, `worktree?`, `initProject?` | `sessionId`, `session`, `state`, `pending[]`, `worktree?`. Starts a worker with chat's own flags; the creating window is attached unless `attach: false`. A resumed or copied session whose conversation this service's event log has nothing of (it ran in the dashboard or the REPL; a copy has a new id) shows it as it opens: a notice, then its last 20 turns as `user.message`, `tool.started`/`tool.ended` and `text.ended` events (durable: a later attach replays them), without the rows the harness wrote. `fake` sessions (tests) are scripted and not saved, unless `fakeSave`; resumed, they restore what the store kept, and `fork` copies them under a new id. `name` is the session's address (chat's `-n`), `title` what it is called (the name when not given; a session resumed without either comes back under the title it was saved with, never under the store's stand-in, its first message). A session that cannot start is refused with its reason (-32005); one another process writes is refused with a hint to open a copy (`resume` with `fork`). `worktree`: the session runs in its own worktree and `session/...` branch of `cwd`'s repository (under `<repo>/.delfin/worktrees`, as the dashboard's "Own worktree"), returned as `worktree` (`path`, `worktree`, `branch`, `base_ref`, `repo`); a `cwd` without git is refused with -32006 (`NEEDS_LOCAL_PROJECT`), the error text being the question for the user, unless `initProject` says the user agreed to make it a local project (`git init`, `.gitignore`, first commit, no remote). `brief`: what the session is started to look into (an item of the agent view's list): the worker gets it in `initialize`, not on its command line (every user of a login node can read that), shows it as a durable `context` event (`title` is `briefTitle`) and puts it in front of the first ordinary prompt (not a `/command` or `!` line); the `user.message` event keeps what was typed. |
 | `session.attach` | `sessionId`, `turns?` | `session`, `state`, `pending[]`, `summary`, `events[]`: the replay of the last `turns` turns (all for 0), then live events. |
+| `session.worktrees` | `cwd` | `worktrees[]`: the session worktrees (`session/...` branches) of `cwd`'s repository, each `path`, `branch`, `head` and the `sessions` of this service working in it. |
+| `session.merge` | `path` | `status` (`ok`, `conflict`, `error`), `files[]`, `target`, `message`: the worktree's commits and changes since its branch point applied to the main checkout's working tree, uncommitted (the `worktree_merge` executor: per-file write gate, clean apply or nothing). A clean merge removes the tree and its branch; a conflict leaves both and the checkout untouched. Refused while a session works in the tree. |
 | `session.detach` | `sessionId` | `detached` |
 | `session.message` | `key`, `text` | `sent`: the text goes into that session's inbox, as a message from another session (`session_messages`) |
 | `sessions.past` | `workspace?`, `query?`, `limit?` | `sessions[]`: saved sessions, newest first, with `sessionId`, `title`, `workspace`, `model`, `provider`, `updatedAt`, `messages`, `costUsd` and `running` (whether it runs in this service). `workspace` scopes the list, `query` searches titles and first messages (the session store's own listing and search). |
@@ -411,7 +428,7 @@ Events from the service itself, to every window:
 
 | Event | Fields |
 |---|---|
-| `session.summary` | `summary`: `sessionId`, `title?`, `workspace`, `provider`, `model`, `approval`, `state`, `pending` (open questions), `costUsd`, `createdAt`, `lastActivity`, `pid`, and what a row says about it, taken from its events (no model writes them): `lastPrompt?` (the last message sent to it), `activity?` (what it does now: "bash  pytest -q", "writing…"), `waiting?` (the question it waits on), `answer?` (the first line of its last answer). Sent whenever one of them changes: what the agent view draws. |
+| `session.summary` | `summary`: `sessionId`, `title?`, `workspace`, `provider`, `model`, `approval`, `state`, `pending` (open questions), `costUsd`, `createdAt`, `lastActivity`, `pid`, and what a row says about it, taken from its events (no model writes them): `lastPrompt?` (the last message sent to it), `activity?` (what it does now: "bash  pytest -q", "writing…"), `waiting?` (the question it waits on), `answer?` (the first line of its last answer), `name?` (what every window calls it: the title, else the default name; service version 4). Sent whenever one of them changes: what the agent view draws. |
 | `session.removed` | `reason`, `exitCode`: the session's worker ended (shut down, exited, or failed). |
 | `attention.updated` | `items[]`: all of them, as `attention.list` has them; `version`, as there. |
 
@@ -425,7 +442,13 @@ seen end.
 
 **Answers.** An approval may be answered from any window attached to the
 session. The worker takes the first answer; a later one is refused with
--32002, and every window gets `permission.resolved`.
+-32002, and every window gets `permission.resolved`. Its `client` names
+the window that answered, as that window named itself: the service sets
+`permission.reply`'s `client` from the hello of the connection the reply
+came on (one plain line, at most 64 characters), so a reply cannot claim
+another name than its own connection's. The hello's name itself is not
+proven -- any process of the user may give any -- and windows show the
+known ones by role and any other as given, marked.
 
 | Code | Meaning |
 |---|---|

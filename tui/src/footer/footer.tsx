@@ -7,6 +7,8 @@
  *             the blocks that finished but are not in the rows yet
  *   status    spinner · what it does · elapsed · tokens · cost · esc
  *   tasks     the session's task list while a task is open (tasks.tsx)
+ *   background  what the session still has out: shells, watched jobs,
+ *             background agents, wake-ups, with their ages (background.tsx)
  *   approval  the open question, with exactly the keys the session offers
  *   composer  ❯ the prompt (grows to 8 rows; completion and search above);
  *             "!" in front: a shell line, said on the box's top border.
@@ -31,6 +33,8 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type 
 import { AgentViewPanel, agentHelp, takesAnswer, type AgentView } from "../agents/view"
 import { LoginView, loginHelp, type Login } from "../clusters/login"
 import { ClustersPanel, clustersHelp, type ClustersView } from "../clusters/view"
+import { SwarmPanel, type SwarmView } from "../swarm/panel"
+import { SwarmWatchPanel, type SwarmWatchView } from "../swarm/watch_panel"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
@@ -44,6 +48,7 @@ import { fenceOf, liveBlocks, liveRows } from "./live"
 import { ApprovalPanel, approvalRows, type ApprovalUi } from "./approval"
 import { PickerView, type Picker } from "./picker"
 import { TasksPanel, taskLines } from "./tasks"
+import { BackgroundPanel, backgroundLines } from "./background"
 
 export { TAIL_MAX } from "./live"
 
@@ -73,6 +78,11 @@ export interface FooterProps {
   clusters?: ClustersView
   /** The masked login field, while it is open. */
   login?: Login
+  /** The swarm view (SW2b); while open it has the footer. */
+  swarm?: SwarmView
+  /** The read-only /swarm watch (package SWV, phase 2b); while open it
+   *  has the footer: the member table (or a member's feed), no input. */
+  watch?: SwarmWatchView
   /** The view is drawn on the alternate screen: all of it is the view's,
    *  and the footer keeps its height for the way back. */
   agentsOnOwnScreen?: boolean
@@ -224,7 +234,8 @@ export function Footer(props: FooterProps): JSX.Element {
   // The agent view's ages: once a second is enough (its rows are drawn
   // again on each change of it).
   const [clock, setClock] = createSignal(Date.now())
-  const viewOpen = () => Boolean(props.agents?.state.open)
+  const viewOpen = () => Boolean(props.agents?.state.open || props.swarm?.state.open
+                                 || props.watch?.state.open)
   /** /clusters or /jobs: in the view's place. */
   const screenOpen = () => Boolean(props.clusters?.state.open)
   /** The view or a screen: the window's rows and live area make way. */
@@ -247,6 +258,21 @@ export function Footer(props: FooterProps): JSX.Element {
     }
   })
   onCleanup(() => timer && clearInterval(timer))
+  // The background list's ages: once a second while anything is out.
+  const [bgNow, setBgNow] = createSignal(Date.now())
+  let bgTimer: ReturnType<typeof setInterval> | undefined
+  createEffect(() => {
+    const out = (props.session()?.background?.length ?? 0) > 0
+    if (out && !bgTimer) {
+      setBgNow(Date.now())
+      bgTimer = setInterval(() => setBgNow(Date.now()), 1000)
+      ;(bgTimer as { unref?: () => void }).unref?.()
+    } else if (!out && bgTimer) {
+      clearInterval(bgTimer)
+      bgTimer = undefined
+    }
+  })
+  onCleanup(() => bgTimer && clearInterval(bgTimer))
 
   const style = themedStyle(props.renderer, t)
   const asked = () => props.session()?.pending[0]
@@ -286,6 +312,11 @@ export function Footer(props: FooterProps): JSX.Element {
   const tasks = createMemo(() => panelOpen() ? []
     : taskLines(props.session()?.tasks ?? [], Boolean(props.tasksFolded?.()), cols(), term().height,
                 props.keymap.label("tasks") || "ctrl+t"))
+  /** What is still out: not in the agent view or a screen either. */
+  const background = createMemo(() => panelOpen() ? []
+    : backgroundLines(props.session()?.background ?? [], cols(), bgNow()))
+  /** The rows the two lists above the prompt take. */
+  const listRows = () => tasks().length + background().length
   const full = () => Boolean(props.screen)
   createEffect(() => {
     // Full screen has no footer of a height: the window is all of it.
@@ -293,7 +324,7 @@ export function Footer(props: FooterProps): JSX.Element {
     props.renderer.footerHeight = panelOpen() && !props.agentsOnOwnScreen
       ? agentFooterRows(term())
       : footerRows(props.session(), term(), note(), props.composer.height(),
-                   props.approval, (props.picker?.height() ?? 0) + loginRows(), tasks().length)
+                   props.approval, (props.picker?.height() ?? 0) + loginRows(), listRows())
   })
   /** The agent view's list (or a screen's): its rows less the message, the
    *  login field, the composer and its rules, and the hints. */
@@ -319,13 +350,18 @@ export function Footer(props: FooterProps): JSX.Element {
   })
 
   const budget = () => approvalBudget(props.session(), term(), note(), props.composer.height(),
-                                      (props.picker?.height() ?? 0) + loginRows(), tasks().length)
+                                      (props.picker?.height() ?? 0) + loginRows(), listRows())
 
   // Nothing in the footer shrinks: what does not fit is cut at the top
   // (the composer and the keys are at the bottom), never drawn over.
   const placeholder = () => {
     if (screenOpen()) return `the keys are the screen's: ${props.clusters!.backKeys()} goes back`
     const v = props.agents
+    if (props.swarm?.state.open) {
+      if (props.swarm.state.pendingAnswer) return "the answer…"
+      if (props.swarm.state.pendingStart) return "y to start · n lets it go"
+      return "a new swarm's goal… (or /swarm again to close)"
+    }
     if (v?.state.open) {
       if (v.state.renaming) return "the new name…"
       const peeked = v.state.peek ? v.rows().find((r) => r.id === v.state.peek!.id) : undefined
@@ -357,8 +393,16 @@ export function Footer(props: FooterProps): JSX.Element {
     <box flexDirection="column" width="100%" height="100%" justifyContent="flex-end" overflow="hidden"
          paddingLeft={GUTTER}>
       <Show when={viewOpen()}>
-        <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
-                        keymap={props.keymap} />
+        <Show when={props.swarm?.state.open} fallback={
+          <Show when={props.watch?.state.open} fallback={
+            <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
+                            keymap={props.keymap} />
+          }>
+            <SwarmWatchPanel view={props.watch!} theme={t} width={cols} height={panelRows} />
+          </Show>
+        }>
+          <SwarmPanel view={props.swarm!} theme={t} width={cols} height={panelRows} />
+        </Show>
       </Show>
       <Show when={screenOpen() && !viewOpen()}>
         <ClustersPanel view={props.clusters!} theme={t} width={cols} height={panelRows} />
@@ -403,6 +447,7 @@ export function Footer(props: FooterProps): JSX.Element {
         )}
       </Show>
       <TasksPanel lines={tasks} theme={t} />
+      <BackgroundPanel lines={background} theme={t} />
       <Show when={asked()} keyed>
         {(a: Asked) => <ApprovalPanel asked={a} ui={props.approval} theme={t} width={cols} maxRows={budget} />}
       </Show>

@@ -117,6 +117,18 @@ def _probe_energy_marker(metal: str) -> float:
     std_xyz = f"{len(lines)}\n\n" + "\n".join(lines) + "\n"
     ob_mol = sc.pybel.readstring("xyz", std_xyz)
     ff = sc.pybel.ob.OBForceField.FindForceField("uff")
+    # ISOLATION: every FindForceField("uff") call hands back a NEW SWIG
+    # wrapper around ONE shared C++ force-field object (verified
+    # 2026-11-01: a SetConstraints on wrapper 'a' is visible through
+    # wrapper 'b' — GetConstraints().GetFixedBitVec().CountBits() == 1 on
+    # both).  A predecessor call that left constraints on the shared
+    # object (the optimize path's SetConstraints in
+    # delfin/manta/openbabel_optimize.py) would otherwise leak into this
+    # probe's Setup.  Reset to a pristine constraint set so the probe
+    # measures this molecule's parameterisation only.  The probe inside
+    # _optimize_xyz_openbabel cannot do this for itself because it runs
+    # BEFORE that call's own constraint application.
+    ff.SetConstraints(sc.pybel.ob.OBFFConstraints())
     assert ff.Setup(ob_mol.OBMol), f"OB UFF setup failed for {metal}"
     return float(ff.Energy())
 

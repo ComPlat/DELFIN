@@ -9,7 +9,8 @@ The other client backends only relay model output:
 
 - ``CLIClient`` delegates the whole surface to an external agent CLI
   process (that process brings its own tools, permission handling and
-  MCP support; DELFIN's gates and journals never see its actions).
+  MCP support). Its file and shell calls pass DELFIN's gate first, as a
+  PreToolUse hook (cli_gate); DELFIN's journals and scans never see them.
 - ``APIClient`` (Anthropic SDK) streams text/thinking only — its
   request carries no tools parameter at all.
 - ``CodexCLIClient`` spawns a per-turn external process whose sandbox
@@ -152,13 +153,15 @@ _MATRIX: dict[str, dict[str, tuple[str, str]]] = {
         )),
         CAP_FILE_TOOLS: (CONDITIONAL, (
             "the external CLI's own file tools (optionally restricted via "
-            "--allowedTools); DELFIN's sandboxed executors and change "
-            "previews are bypassed"
+            "--allowedTools) behind DELFIN's file gate (cli_gate): the "
+            "read/write boundary and its questions apply, DELFIN's "
+            "executors and undo journal do not"
         )),
         CAP_BASH: (CONDITIONAL, (
-            "the external CLI's own shell tool under its own permission "
-            "mode; DELFIN's deny-list and secret/egress scans are not "
-            "applied"
+            "the external CLI's own shell tool behind DELFIN's gate "
+            "(cli_gate: permission rules, read and write paths, a question "
+            "for a command off the auto-allow list); it runs outside "
+            "DELFIN's cage, and the secret/egress scans are not applied"
         )),
         CAP_SUBAGENTS: (CONDITIONAL, (
             "only what the external CLI itself provides; DELFIN's "
@@ -413,7 +416,14 @@ def degradation_notice(
             + "; ".join(perm_gaps) + "."
         )
     delegated = _delegated_labels(canon)
-    if delegated and canon != BACKEND_OPENAI:
+    if delegated and canon == BACKEND_CLI:
+        lines.append(
+            "Delegated to the external process: " + "; ".join(delegated)
+            + ". Its file and shell calls still pass DELFIN's gate (the "
+            "read/write boundary, permission rules and the questions); "
+            "DELFIN's journals and scans do not apply."
+        )
+    elif delegated and canon != BACKEND_OPENAI:
         lines.append(
             "Delegated to the external process (DELFIN gating and "
             "journaling do not apply): " + "; ".join(delegated) + "."

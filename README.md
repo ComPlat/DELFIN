@@ -11,7 +11,7 @@
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
-**DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
+**DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design, with a focus on enabling small, open-weight AI models to produce scientifically meaningful data. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform.
 
 **DELFIN is operated by AI agents.** They configure and submit calculations, monitor them, interpret the outputs, and modify DELFIN's own code where a workflow has to be extended. Work that stands on its own is delegated to subagents running in parallel, each with its own tools and permissions.
 
@@ -248,6 +248,7 @@ ctx = create_dashboard(backend="auto")   # SLURM when available, else local
 | **Job Status** | Queue monitoring (local/SLURM), resource usage, fairshare and limits, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc CENSO/ANMR` |
 | **Archive** | Archive browser with statistics |
+| **Review** | Rate structures by eye, frame by frame (pass or block, defect categories, the atoms of each defect); team review: [docs/REVIEW_TEAM_GUIDE.md](docs/REVIEW_TEAM_GUIDE.md) |
 | **Remote Archive** | Browse and transfer results on a remote machine over SSH |
 | **Office** | Documents and spreadsheets, with an agent that has no chemistry tools |
 | **Literature** | The indexed literature corpus |
@@ -402,7 +403,7 @@ The DOCX and JSON reports are written at the end of every main run; a failure th
 Which builder runs is decided by one CONTROL key, and a SMILES run must set it:
 
 ```ini
-smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|MOLASSEMBLER|METALLOGEN]
 ```
 
 | Value | What it does | Best for |
@@ -413,12 +414,17 @@ smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR|MOLSIMPLIFY|MACE]
 | `ARCHITECTOR` | [architector](https://github.com/lanl/Architector) automated 3D generation; needs a metal-containing SMILES. | Metal complexes, instant preview |
 | `MOLSIMPLIFY` | [molSimplify](https://molsimplify.mit.edu/), one structure per geometry of the coordination number; needs a metal-containing SMILES. | Metal complexes |
 | `MACE` | [epic-MACE](https://github.com/EPiCs-group/epic-mace) (Chernyshov & Pidko, JCTC 2024): every stereomer of the geometries that fit the donor sites, ten conformers each; runs in its own Python 3.7 environment. | Metal complexes, hapto ligands |
+| `RXEMBED` | [rxembed](https://github.com/aligfellow/rxembed) (MIT): `rx.embed(rx.isomers(smiles))` -- every stereoisomer and coordination arrangement on its default polyhedron of the coordination number, its default conformers; runs in its own Python 3.12 / RDKit 2026.9 environment. | Organic molecules and metal complexes |
+| `MOLASSEMBLER` | [Molassembler](https://github.com/qcscine/molassembler) (Sobez & Reiher, JCIM 2020; BSD-3): every stereoisomer, ten seeded distance-geometry conformers each; reads charge-separated SMILES only (no `->`); runs in its own environment. | Inorganic stereoisomers |
+| `METALLOGEN` | [MetalloGen](https://github.com/kyunghoonlee777/MetalloGen) (Lee et al., JCIM 2025; BSD-3): every arrangement of the donors on the usual geometries of the site count, generated and relaxed with GFN2-xTB through ORCA; needs ORCA; runs in its own environment. | Metal complexes, xTB-relaxed |
+
+rxembed, Molassembler and MetalloGen are installed like epic-MACE, each into an environment of its own under `~/.delfin/ai_tools/.mamba_env/<name>`: `python -m delfin.installer --install rxembed` (pinned GitHub commit 9c0ba5a6, version 0.2.0; it needs Python >= 3.12 and RDKit >= 2026.9.1, newer than DELFIN's own), `--install molassembler` (scine-molassembler 3.0.1) and `--install metallogen` (pinned GitHub commit fa26e2ad); `DELFIN_RXEMBED_PYTHON`, `DELFIN_MOLASSEMBLER_PYTHON` and `DELFIN_METALLOGEN_PYTHON` point to another interpreter. rxembed and Molassembler take the SMILES as written; Molassembler's SMILES reader does not parse dative bonds, so `N->[Pt](<-N)(Cl)Cl` is refused and `[NH3+][Pt-2]([NH3+])(Cl)Cl` builds. MetalloGen's default calculator is xTB through Gaussian; DELFIN uses only its ORCA calculator (GFN2-xTB through ORCA's `otool_xtb`) and never Gaussian, so it needs ORCA. MetalloGen builds the one arrangement its m-SMILES writes; DELFIN writes one m-SMILES per distinct arrangement of the donor sites (proper rotations, ligand automorphisms and swaps of identical ligands identify arrangements, mirror images are kept, donors of one ligand at most four bonds apart are never trans; at most 48 per geometry, flagged `truncated` when cut) on the usual polyhedra of the site count (SP + TET for 4, TBP + SPY for 5, OH for 6, ...), and every frame carries its GFN2-xTB energy. Its random embeddings are seeded per m-SMILES; the xTB relaxations through ORCA can still differ in the last digits, so the frame count of an arrangement can vary between builds. Its time limit is 7200 s; a build that hits it keeps the finished arrangements in a partial xyz and names it. Paths with blanks or shell characters (ORCA, work directory) are refused, because MetalloGen hands them to the shell unquoted. Molassembler counts every stereoisomer once (meso forms included), as the benchmark runner does.
 
 epic-MACE (Chernyshov & Pidko, *J. Chem. Theory Comput.* 2024, 20, 2313; [EPiCs-group/epic-mace](https://github.com/EPiCs-group/epic-mace), GPL-3.0) needs Python 3.7 and RDKit 2020.09, so it is never installed beside DELFIN: `python -m delfin.installer --install epic-mace` (or `install.sh --only epic-mace`, or the Install button in Settings) builds an environment of its own with micromamba under `~/.delfin/ai_tools/.mamba_env/epic_mace` (from the pinned GitHub commit efb5778e, which adds hapto ligands and the TET/SPY/TBP/SAN geometries to the octahedron and square of the PyPI release), and DELFIN calls it there as an external program; `DELFIN_MACE_PYTHON` points it to another interpreter. The geometry follows from the number of donor sites (a hapto ligand is one site): OH for 6, SP + TET for 4, SPY + TBP for 5, SAN for two hapto ligands. Every stereomer (enantiomers kept) gets ten conformers; MACE has no random seed, so two builds can differ.
 
 In the Submit tab the same choice appears as the converter dropdown, next to `BUILD COMPLEX` (stepwise assembly using ORCA's `%DOCKER`, submitted as a job) and the `CONVERT SMILES`, `QUICK CONVERT SMILES` and `CONVERT SMILES + UFF` buttons of the structure editor.
 
-For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousands -- `delfin cluster` builds with MANTA, Architector, molSimplify or epic-MACE as a sharded, resumable Slurm array (or shard by shard on a workstation) and merges the result into one multi-frame xyz archive, with code and environment recorded for reproduction: see [docs/CONSTRUCTION_BATCH.md](docs/CONSTRUCTION_BATCH.md).
+For many SMILES at once -- a list of `ID;SMILES` lines, up to hundreds of thousands -- `delfin cluster` builds with MANTA, Architector, molSimplify, epic-MACE, rxembed, Molassembler or MetalloGen as a sharded, resumable Slurm array (or shard by shard on a workstation) and merges the result into one multi-frame xyz archive, with code and environment recorded for reproduction: see [docs/CONSTRUCTION_BATCH.md](docs/CONSTRUCTION_BATCH.md).
 
 ### MANTA
 
@@ -464,6 +470,7 @@ DELFIN is configured by `CONTROL.txt` in the working directory. `delfin --define
 * `MANTA_*` — the MANTA builder and its funnel: construction quality, gates, screening, optimisation, refinement, time budget
 * `XTB_preOPT = yes | no` / `global_optimizer = GOAT | CREST`
   * the older spellings `XTB_OPT` / `XTB_GOAT` / `CREST` are still accepted
+  * `global_opt_method = mlip:uma | mlip:mace | mlip:orb | mlip:aimnet2` (optional, GOAT only) runs GOAT with an orca-mlips MLIP on the job's GPU; `global_opt_mlip_model`, `global_opt_mlip_device = cuda | cpu`, `refuse_noncommercial_weights = yes | no`
 * `XTB_SOLVATOR = yes | no`
 
 ### Resource management
@@ -547,7 +554,7 @@ DELFIN's workflows (ORCA, xTB, CREST and the other engines) run on your machines
 |------|-------------|-------------------------|
 | Hosted model providers | the provider's API; the KIT Toolbox provider uses the fixed endpoint `https://ki-toolbox.scc.kit.edu/api/v1` | choose a local model server |
 | Agent tools `web_search` and `web_fetch` | a fixed set of public search services (`delfin/agent/web_tools.py`) and the URL fetched | not available; the other tools are unaffected |
-| CLI terminal tab (`delfin-voila --claude-terminal`) | the browser loads xterm.js from `cdn.jsdelivr.net` (pinned version, SRI hash); the CLI it runs talks to its own provider | not available; no local copy of xterm.js is supported yet |
+| CLI terminal panel (`delfin-voila --agent-terminal COMMAND`) | the browser loads xterm.js from `cdn.jsdelivr.net` (pinned version, SRI hash); the CLI it runs talks to its own provider | not available; no local copy of xterm.js is supported yet |
 | Diagrams in the agent chat | mermaid from `cdn.jsdelivr.net` (pinned version, SRI hash), fetched only when a diagram appears | place `mermaid.min.js` in `delfin/dashboard/static/`; without it the diagram is shown as source text |
 | 3D structure viewers | none: the bundled `delfin/dashboard/static/3Dmol-min.js` is loaded at start, and no viewer fetches a copy from elsewhere (the page's Content-Security-Policy would refuse it) | works with the bundled copy |
 | Ketcher editor, xtb and g-xTB installers | GitHub, once, on first use and after confirmation (Ketcher and every binary or source archive an installer fetches itself: one pinned version, refused unless its SHA-256 matches; packages installed through conda or pip: see docs/RELEASING.md) | install on a machine with network access and copy the files |
@@ -741,7 +748,7 @@ delfin/
   # ── Tool integrations ──
   tools/                   # step and pipeline system, 25 adapters, mcp_server.py
   mlp_tools/               # ML potentials (ANI-2x, MACE, CHGNet, M3GNet, …)
-  ai_tools/                # AI/ML tool registry (21 tools across 9 categories)
+  ai_tools/                # AI/ML tool registry (25 tools across 9 categories)
   analysis_tools/          # cclib, Packmol, Multiwfn, CENSO, morfeus wrappers
   csp_tools/               # crystal structure generation (Genarris)
   qm_tools/                # external QM binary management
@@ -891,10 +898,13 @@ Of the AI/ML tools listed below, DELFIN detects and installs all of them, and **
 [DeepChem](https://deepchem.io/),
 [ADMETlab](https://admetlab3.scbdd.com/)
 
-**AI/ML — Metal Complex ML (3):**
+**AI/ML — Metal Complex ML (6):**
 [molSimplify](https://molsimplify.mit.edu/),
 [architector](https://github.com/lanl/Architector),
-[epic-MACE](https://github.com/EPiCs-group/epic-mace)
+[epic-MACE](https://github.com/EPiCs-group/epic-mace),
+[rxembed](https://github.com/aligfellow/rxembed),
+[Molassembler](https://github.com/qcscine/molassembler),
+[MetalloGen](https://github.com/kyunghoonlee777/MetalloGen)
 
 **Analysis / Post-Processing (15):**
 [cclib](https://cclib.github.io/),

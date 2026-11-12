@@ -136,7 +136,7 @@ def world(tmp_path, monkeypatch):
     (w.home / "delfin" / "jobs" / "run1").mkdir(parents=True)
     (w.home / "delfin" / "jobs" / "run1" / "out.log").write_text("step 1\nstep 2\nTHE END\n")
     (w.home / ".ssh").mkdir()
-    (w.home / ".ssh" / "id_rsa").write_text("-----BEGIN PRIVATE KEY-----\n")
+    (w.home / ".ssh" / "id_rsa").write_text("-----BEGIN PRIVATE KEY-----\n")  # secret-guard: allow (a fake key header: the test checks it is never read)
     (w.home / "delfin" / "jobs" / "keys").symlink_to(w.home / ".ssh")
     (w.home / "notes.txt").write_text("my notes\n")
     (w.home / ".bash_history").write_text("export TOKEN=1\n")

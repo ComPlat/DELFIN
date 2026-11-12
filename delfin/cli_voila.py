@@ -13,11 +13,14 @@ import importlib.util
 import importlib.resources
 import ipaddress
 import os
+import re
 import socket
 import shutil
+import stat
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -522,6 +525,153 @@ def _default_voila_root() -> Path:
     return _secure_cache_dir("voila-root").resolve()
 
 
+def _kernel_transport_args() -> list:
+    """The server's kernels talk over Unix sockets, not loopback TCP.
+
+    Over TCP every kernel channel is a port on 127.0.0.1, which any user
+    of the machine can connect to. The key in the connection file signs
+    messages, it does not encrypt them, and the IOPub channel publishes to
+    any subscriber: measured 2026-10-20, a client without the key read a
+    kernel's printed output over TCP (ipykernel 7.3, jupyter_client 8.10).
+    With ``ipc`` the sockets are files beside the connection file, in the
+    Jupyter runtime directory, which is the user's own (mode 0700), so no
+    other user can reach them. ipykernel 7 also stops warning about an
+    unencrypted TCP kernel. Windows has no ipc transport and keeps TCP.
+    ``DELFIN_KERNEL_TRANSPORT=tcp`` restores TCP (a kernel on another
+    machine, a remote debugger).
+
+    A socket path is at most 107 bytes on Linux and 103 on macOS
+    (sockaddr_un), and each one is ``<runtime>/kernel-<uuid>-ipc-<port>``;
+    under a deep runtime directory no kernel could start. Then the server
+    keeps TCP and says so, instead of a dashboard that never loads."""
+    if os.name == "nt":
+        return []
+    transport = os.environ.get("DELFIN_KERNEL_TRANSPORT", "ipc").strip().lower()
+    if transport != "ipc":
+        return []
+    try:
+        from jupyter_core.paths import jupyter_runtime_dir
+        runtime = os.path.realpath(jupyter_runtime_dir())
+    except Exception:
+        return []
+    try:
+        import zmq
+        limit = int(getattr(zmq, "IPC_PATH_MAX_LEN", 0) or 0)
+    except Exception:
+        limit = 0
+    limit = limit or (103 if sys.platform == "darwin" else 107)
+
+    def fits(path: str) -> bool:
+        longest = (len(os.fsencode(path)) + len("/kernel-") + 36
+                   + len("-ipc-") + 5)
+        return longest <= limit
+
+    if fits(runtime) and _is_private_dir(runtime):
+        return ["--KernelManager.transport=ipc"]
+    moved = _private_runtime_dir(fits)
+    if moved is None:
+        print(f"Note: kernels talk over loopback TCP, which other users of "
+              f"this machine can reach: {runtime} is too long for a Unix "
+              "socket or readable by others, and neither $XDG_RUNTIME_DIR "
+              "nor /tmp gave a private directory. Set JUPYTER_RUNTIME_DIR "
+              "to a short private directory (mode 0700) to keep them "
+              "private.", file=sys.stderr)
+        return []
+    # Read by the server, which is started with this process's
+    # environment (main() copies it into the server's env).
+    os.environ["JUPYTER_RUNTIME_DIR"] = moved
+    print(f"Kernels use private sockets under {moved} (the default "
+          f"runtime directory is too long for a socket or not private).",
+          file=sys.stderr)
+    return ["--KernelManager.transport=ipc"]
+
+
+def _is_private_dir(path: str) -> bool:
+    """A directory, not a symlink, owned by this user, no group or other
+    permissions: where connection files (the kernels' keys) and sockets
+    may live."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
+            and not st.st_mode & 0o077)
+
+
+#: Where the fixed and the one-off runtime directories are made: short on
+#: every Unix, unlike $TMPDIR on macOS (/var/folders/...).
+#: ``DELFIN_PRIVATE_TMP`` replaces it (the test suite points it at a
+#: directory of its own, so no test server writes the user's real
+#: /tmp/delfin-k-<uid>); the same checks apply to it.
+_TMP_ROOT = "/tmp"
+PRIVATE_TMP_ENV = "DELFIN_PRIVATE_TMP"
+
+
+def _private_runtime_dir(fits) -> str | None:
+    """A short private directory for the kernels' connection files and
+    sockets, or None.
+
+    In order:
+    - ``$XDG_RUNTIME_DIR/delfin-jupyter`` when ``$XDG_RUNTIME_DIR`` is this
+      user's private directory (on Linux a tmpfs per login, mode 0700);
+    - ``/tmp/delfin-k-<uid>``, made 0700 by this user. It is the same
+      directory on every start, which the login store in it needs: a
+      restart keeps the logins (a fresh directory per start ended them);
+    - a new directory from ``mkdtemp`` under /tmp, made 0700 with a name
+      nobody can take first, removed when this process exits; only when
+      the fixed name exists and is not this user's private directory.
+    Every candidate is checked after it exists: a symlink, another owner
+    or open permissions is refused, not repaired.
+
+    The rules are the established ones for a per-user socket directory:
+    the XDG Base Directory Specification's runtime directory (owned by the
+    user, mode 0700), and in a shared /tmp the pattern tmux and ssh-agent
+    use (a fixed per-user name, accepted only when it is the user's own
+    0700 directory and not a symlink; CWE-377/CWE-379). /tmp itself must
+    carry the sticky bit or belong to the user: without it, any user
+    could rename or replace a directory in it, so neither the fixed name
+    nor a mkdtemp directory is used there.
+    """
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg and _is_private_dir(xdg):
+        candidate = os.path.join(xdg, "delfin-jupyter")
+        try:
+            os.mkdir(candidate, 0o700)
+        except FileExistsError:
+            pass
+        except OSError:
+            candidate = ""
+        if candidate and _is_private_dir(candidate) and fits(candidate):
+            return candidate
+    root = os.environ.get(PRIVATE_TMP_ENV, "").strip() or _TMP_ROOT
+    base = root if os.path.isdir(root) else tempfile.gettempdir()
+    try:
+        bst = os.lstat(base)
+    except OSError:
+        return None
+    if not (stat.S_ISDIR(bst.st_mode)
+            and (bst.st_mode & stat.S_ISVTX or bst.st_uid == os.getuid())):
+        return None
+    fixed = os.path.join(base, f"delfin-k-{os.getuid()}")
+    try:
+        os.mkdir(fixed, 0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        fixed = ""
+    if fixed and _is_private_dir(fixed) and fits(fixed):
+        return fixed
+    try:
+        made = tempfile.mkdtemp(prefix="delfin-k-", dir=base)
+    except OSError:
+        return None
+    if not (_is_private_dir(made) and fits(made)):
+        shutil.rmtree(made, ignore_errors=True)
+        return None
+    atexit.register(shutil.rmtree, made, True)
+    return made
+
+
 def _file_allowlist() -> str:
     from delfin.dashboard.web_security import FILE_ALLOWLIST
 
@@ -562,44 +712,91 @@ def _login_logo_data_uri() -> str:
     return ""
 
 
-def _prepare_login_template_dir() -> str | None:
-    """Materialise the DELFIN-branded ``login.html`` for jupyter_server.
+def _render_login_template(template: str, logo_uri: str) -> str:
+    """``template`` with the DELFIN logo inlined as a ``data:`` URI, or
+    without its logo tile when there is no logo (no broken image)."""
+    if logo_uri:
+        return template.replace("__DELFIN_LOGO_URI__", logo_uri)
+    import re
 
-    Reads the shipped template, inlines the DELFIN logo as a ``data:`` URI, and
-    writes the result into a private 0700 directory that is handed to
-    jupyter_server via ``extra_template_paths`` (searched before the packaged
-    template, so ours wins). Returns the directory path, or ``None`` if the
-    template is unavailable (jupyter_server then falls back to its own page —
-    auth is unaffected either way).
+    return re.sub(
+        r"<!--LOGO_TILE_START-->.*?<!--LOGO_TILE_END-->",
+        "",
+        template,
+        flags=re.DOTALL,
+    ).replace("__DELFIN_LOGO_URI__", "")
+
+
+def _prepare_login_template_dir() -> str | None:
+    """Materialise the DELFIN-branded sign-in and sign-out pages for
+    jupyter_server.
+
+    Reads every shipped template in ``voila_assets/login_templates``
+    (``login.html``, ``logout.html`` and the card style they include),
+    inlines the DELFIN logo as a ``data:`` URI, and writes the results into
+    a private 0700 directory that is handed to jupyter_server via
+    ``extra_template_paths`` (searched before the packaged templates, so
+    ours win). Returns the directory path, or ``None`` if ``login.html`` is
+    unavailable (jupyter_server then falls back to its own pages — auth is
+    unaffected either way). ``logout.html`` used to be jupyter_server's own:
+    an unstyled "Successfully logged out. Proceed to the login page."
     """
     try:
-        src = importlib.resources.files("delfin.voila_assets").joinpath(
-            "login_templates", "login.html"
-        )
-        template = src.read_text(encoding="utf-8")
+        folder = importlib.resources.files("delfin.voila_assets").joinpath(
+            "login_templates")
+        templates = {f.name: f.read_text(encoding="utf-8")
+                     for f in folder.iterdir()
+                     if f.name.endswith(".html") and f.is_file()}
     except Exception:
+        return None
+    if "login.html" not in templates:
         return None
 
     logo_uri = _login_logo_data_uri()
-    if logo_uri:
-        rendered = template.replace("__DELFIN_LOGO_URI__", logo_uri)
-    else:
-        # No logo available: drop the whole tile so no broken image shows.
-        import re
-
-        rendered = re.sub(
-            r"<!--LOGO_TILE_START-->.*?<!--LOGO_TILE_END-->",
-            "",
-            template,
-            flags=re.DOTALL,
-        ).replace("__DELFIN_LOGO_URI__", "")
-
     try:
         target_dir = _secure_cache_dir("voila-login")
-        (target_dir / "login.html").write_text(rendered, encoding="utf-8")
+        for name, template in templates.items():
+            (target_dir / name).write_text(
+                _render_login_template(template, logo_uri), encoding="utf-8")
         return str(target_dir)
     except Exception:
         return None
+
+
+#: The dashboard's own Voila page template (``voila_assets/jupyter_data/
+#: nbconvert/templates/delfin``): Voila's ``lab`` template without the two
+#: Font Awesome stylesheets it links from a CDN, which the page CSP refuses.
+#: Font Awesome itself is bundled in Voila's ``voila-style.js`` and served
+#: from the dashboard's own origin.
+PAGE_TEMPLATE = "delfin"
+
+
+def _page_template_args(env: dict) -> list[str]:
+    """Select the dashboard's page template; return the server arguments.
+
+    Voila finds templates only in the Jupyter data directories, so the
+    shipped data directory is put first on ``JUPYTER_PATH`` in *env* (an
+    existing ``JUPYTER_PATH`` is kept behind it). The template lives under
+    ``nbconvert/templates``, which Voila searches too, and not under
+    ``voila/``: Voila takes its data directory (the themes) from the first
+    ``voila`` directory on the path, and that must stay its own.
+
+    Returns ``[]`` (Voila's ``lab`` template, as before) when the shipped
+    directory cannot be found as a real directory.
+    """
+    try:
+        root = Path(str(importlib.resources.files("delfin.voila_assets")
+                        .joinpath("jupyter_data")))
+    except Exception:
+        return []
+    if not (root / "nbconvert" / "templates" / PAGE_TEMPLATE
+            / "index.html.j2").is_file():
+        return []
+    existing = env.get("JUPYTER_PATH", "")
+    parts = [str(root)] + [p for p in existing.split(os.pathsep)
+                           if p and p != str(root)]
+    env["JUPYTER_PATH"] = os.pathsep.join(parts)
+    return [f"--VoilaConfiguration.template={PAGE_TEMPLATE}"]
 
 
 def _prepare_published_dir() -> str | None:
@@ -651,6 +848,17 @@ _BENIGN_STDERR_SUBSTRINGS = (
 )
 
 
+#: A server warning with no text: jupyter_server logs ``str(e)`` of the
+#: ``WebSocketClosedError`` raised for each kernel message that reaches a
+#: browser connection which has closed, and that exception has no text.
+_EMPTY_WARNING_RE = re.compile(rb"^(\[W [^\]]*\])\s*$")
+
+_CLOSED_CONNECTION_NOTE = (
+    b" kernel output reached a browser connection that had closed (page "
+    b"reloaded, tab closed or connection lost); repeats directly after "
+    b"it are not shown\n")
+
+
 def _forward_filtered_stderr(stream) -> None:
     """Forward the child's stderr to ours, dropping only benign noise lines.
 
@@ -659,11 +867,23 @@ def _forward_filtered_stderr(stream) -> None:
     hidden (fail-loud preserved). A ``warnings.warn`` header is printed with an
     indented source snippet on the next line; that snippet is dropped too when
     its header was dropped.
+
+    A run of warnings without text (``_EMPTY_WARNING_RE``) is printed once,
+    with what it means, instead of one empty header per kernel message.
     """
     drop_indented_continuation = False
+    in_empty_run = False
     out = getattr(sys.stderr, "buffer", None)
     try:
         for raw in iter(stream.readline, b""):
+            empty = _EMPTY_WARNING_RE.match(raw)
+            if empty:
+                if in_empty_run:
+                    continue
+                in_empty_run = True
+                raw = empty.group(1) + _CLOSED_CONNECTION_NOTE
+            else:
+                in_empty_run = False
             text = raw.decode("utf-8", "replace")
             if drop_indented_continuation and text[:1].isspace():
                 drop_indented_continuation = False
@@ -742,12 +962,14 @@ def main(argv=None):
         help="Fail if the requested port is occupied instead of choosing another (SSH launchers).",
     )
     parser.add_argument(
-        "--claude-terminal",
-        action="store_true",
+        "--agent-terminal",
+        metavar="COMMAND",
+        default="",
         help=(
-            "Offer the Claude Code CLI in a terminal panel of the Agent tab. "
-            "Loopback only; the terminal runs the claude command and nothing "
-            "else."
+            "Offer COMMAND (a coding-agent CLI, by name on PATH or as a "
+            "path) in a terminal panel of the Agent tab. Loopback only; the "
+            "terminal runs that program and nothing else, and never a shell "
+            "or an interpreter."
         ),
     )
     parser.add_argument(
@@ -837,13 +1059,43 @@ def main(argv=None):
             "connection costs nothing. Prints how to come back."
         ),
     )
+    parser.add_argument(
+        "--list", action="store_true",
+        help="List your dashboard jobs (node, time left, kept sessions).")
+    parser.add_argument(
+        "--attach", nargs="?", const="latest", default=None, metavar="JOB",
+        help="Reconnect to a running dashboard job (the newest without JOB).")
+    parser.add_argument(
+        "--stop", nargs="?", const="latest", default=None, metavar="JOB",
+        help="End a dashboard job (JOB, or 'all').")
+    parser.add_argument(
+        "--job", action="store_true",
+        help=("Run the dashboard as a SLURM job on a compute node and tunnel "
+              "to it (reconnects to a running one). For more than the one "
+              "agent session a login node allows."))
+    parser.add_argument(
+        "--new", action="store_true",
+        help="With --job: start another dashboard job although one runs.")
     args = parser.parse_args(argv)
+    if (args.job or args.list or args.attach is not None
+            or args.stop is not None):
+        # A dashboard in a SLURM job (issue #640): any number of agent
+        # sessions, reached through a tunnel, managed by these flags. On a
+        # login node the dashboard itself runs here as before, with ONE
+        # agent session (agent_sessions.login_node_refusal) whose tests and
+        # builds go to SLURM.
+        from delfin import dashboard_job
+        return dashboard_job.main(
+            args, list(argv) if argv is not None else sys.argv[1:])
     if getattr(args, "keep", False):
-        _rc = _reexec_under_tmux(argv)
-        if _rc is not None:
-            return _rc
-        # Inside tmux now (or tmux was unavailable and we said so): the
-        # sessions this dashboard opens arm themselves.
+        # tmux keeps a TERMINAL's dashboard alive; a batch job has no
+        # terminal and outlives everything already.
+        if sys.stdin.isatty():
+            _rc = _reexec_under_tmux(argv)
+            if _rc is not None:
+                return _rc
+        # Inside tmux now (or tmux was unavailable and we said so, or a
+        # batch job): the sessions this dashboard opens arm themselves.
         os.environ["DELFIN_KEEP_SESSIONS"] = "1"
     # This process carries the user's environment, which may hold an
     # exported provider key; the commands the dashboard runs are processes
@@ -914,25 +1166,31 @@ def main(argv=None):
         )
         sys.exit(2)
 
-    # -- Claude terminal (opt-in) ---------------------------------------------
+    # -- Agent terminal (opt-in) ----------------------------------------------
     # A terminal is a process under the user's account, outside the agent's
     # sandbox. Only on a loopback bind -- never with --allow-remote-bind --
-    # and only when the CLI exists: no command, no terminal, never a shell.
-    _claude_argv: list[str] = []
-    if args.claude_terminal:
+    # only when the program exists, and never a shell or an interpreter
+    # (agent_terminal.refusal): no command, no terminal.
+    _term_argv: list[str] = []
+    if args.agent_terminal:
+        from delfin.dashboard import agent_terminal as _at
         if not _is_loopback_bind(args.ip):
-            print("Error: --claude-terminal is only offered on a loopback "
+            print("Error: --agent-terminal is only offered on a loopback "
                   f"bind, not on {args.ip}.", file=sys.stderr)
             sys.exit(2)
-        _claude = shutil.which("claude") or next(
-            (str(p) for p in (Path.home() / ".local/bin/claude",
-                              Path.home() / ".claude/local/claude")
-             if p.is_file() and os.access(p, os.X_OK)), "")
-        if not _claude:
-            print("Error: --claude-terminal needs the claude command on PATH "
-                  "(or in ~/.local/bin).", file=sys.stderr)
+        _wanted = os.path.expanduser(args.agent_terminal)
+        _found = (_wanted if os.path.isfile(_wanted)
+                  and os.access(_wanted, os.X_OK) else shutil.which(_wanted))
+        if not _found:
+            print(f"Error: --agent-terminal: {args.agent_terminal!r} is not "
+                  "an executable on PATH or a path to one.", file=sys.stderr)
             sys.exit(2)
-        _claude_argv = [os.path.abspath(_claude)]
+        _found = os.path.realpath(os.path.abspath(_found))
+        _why = _at.refusal(_found) or _at.refusal(args.agent_terminal)
+        if _why:
+            print(f"Error: --agent-terminal: {_why}.", file=sys.stderr)
+            sys.exit(2)
+        _term_argv = [_found]
 
     # -- Token-based authentication ----------------------------------------
     # Auto-generate a token by default. On shared multi-user hosts (HPC login
@@ -943,9 +1201,12 @@ def main(argv=None):
     if args.no_token:
         print(_refuse_insecure_no_token(args.ip), file=sys.stderr)
         sys.exit(2)
-    elif args.token:
+    elif args.token or os.environ.get("DELFIN_VOILA_TOKEN"):
+        # DELFIN_VOILA_TOKEN: set by a dashboard job's launcher, so the token
+        # is in no command line; not passed on to the kernels.
         try:
-            _token = _validate_access_token(args.token)
+            _token = _validate_access_token(
+                args.token or os.environ.pop("DELFIN_VOILA_TOKEN"))
         except ValueError as exc:
             print(f"Error: insecure --token: {exc}.", file=sys.stderr)
             sys.exit(2)
@@ -1049,17 +1310,17 @@ def main(argv=None):
     _extensions = (
         "{'voila': True, 'jupyterlab': False, 'notebook': False, "
         "'jupyter_lsp': False, 'jupyter_server_terminals': "
-        + ("True" if _claude_argv else "False") + ", "
+        + ("True" if _term_argv else "False") + ", "
         "'delfin.dashboard.server_guard': True}"
     )
-    if _claude_argv:
+    if _term_argv:
         import json as _json
-        from delfin.dashboard import claude_terminal as _ct
-        env[_ct.ARGV_ENV] = _json.dumps(_claude_argv)
+        from delfin.dashboard import agent_terminal as _ct
+        env[_ct.ARGV_ENV] = _json.dumps(_term_argv)
         env[_ct.CWD_ENV] = os.environ.get("DELFIN_LAUNCH_CWD") or os.getcwd()
         env[_ct.ENABLED_ENV] = "1"
     else:
-        env.pop("DELFIN_CLAUDE_TERMINAL", None)
+        env.pop("DELFIN_AGENT_TERMINAL", None)
     import json
 
     from delfin.dashboard.web_security import NO_TYPESETTING_ROUTE
@@ -1091,6 +1352,7 @@ def main(argv=None):
         # a grace, unless the session was kept. The flags switch the
         # culler on; the rule itself lives in the kernel manager above.
         *(_resume.cull_config_args() if kernel_manager_class else []),
+        *_kernel_transport_args(),
         f"--port={args.port}",
         *(["--ServerApp.port_retries=0"] if args.strict_port else []),
         f"--ServerApp.ip={args.ip}",
@@ -1121,13 +1383,14 @@ def main(argv=None):
         "--VoilaConfiguration.file_allowlist=" + _file_allowlist(),
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
-        # Shrink the RCE surface: no server terminals, unless the Claude
+        # Shrink the RCE surface: no server terminals, unless the agent
         # terminal was asked for -- and then only through the manager that
-        # runs the claude command and nothing else (claude_terminal.py).
+        # runs the one configured program and nothing else
+        # (agent_terminal.py).
         *(["--ServerApp.terminals_enabled=True",
             "--TerminalsExtensionApp.terminal_manager_class="
-            "delfin.dashboard.claude_terminal.ClaudeOnlyTerminalManager"]
-          if _claude_argv else ["--ServerApp.terminals_enabled=False"]),
+            "delfin.dashboard.agent_terminal.OneCommandTerminalManager"]
+          if _term_argv else ["--ServerApp.terminals_enabled=False"]),
         # Ctrl+C stops immediately instead of prompting "Shut down (y/[n])?".
         "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",
@@ -1192,6 +1455,10 @@ def main(argv=None):
         cmd.append(
             "--ServerApp.extra_template_paths=" + json.dumps([_login_dir])
         )
+
+    # The page template: Voila's lab template without its CDN links to
+    # Font Awesome (refused by the page CSP; the font is bundled locally).
+    cmd.extend(_page_template_args(env))
 
     # The drawing editor, published from where it is kept instead of being
     # copied into the directory the dashboard was started in. The dashboard
@@ -1316,6 +1583,11 @@ def main(argv=None):
     # daemons watch it, and what runs detached is on its ledger.
     from delfin.agent import lifeline as _lifeline
     env.update(_lifeline.claim_root())
+    # The private runtime directory _kernel_transport_args chose, when the
+    # default one was too long for a socket or not private: env was copied
+    # from os.environ before the choice was made.
+    if os.environ.get("JUPYTER_RUNTIME_DIR"):
+        env["JUPYTER_RUNTIME_DIR"] = os.environ["JUPYTER_RUNTIME_DIR"]
     proc = subprocess.Popen(
         cmd, env=env, stderr=subprocess.PIPE,
         preexec_fn=_lifeline.parent_death_signal if os.name == "posix" else None,

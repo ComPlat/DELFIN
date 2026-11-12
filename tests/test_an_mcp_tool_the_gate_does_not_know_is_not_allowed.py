@@ -147,6 +147,17 @@ def test_an_unrecognised_mcp_tool_is_refused_head_less(tmp_path, tool):
     assert "read-only" in out
 
 
+def test_a_calculation_refused_head_less_says_both_reasons(tmp_path,
+                                                           monkeypatch):
+    """A failed calculation check adds its reason to the refusal; the
+    refusal still says the tool is not a read-only one."""
+    monkeypatch.chdir(tmp_path)
+    out = _gate("mcp__delfin-ops__pipeline_run", {},
+                _perms(tmp_path, "default"))
+    assert out is not None and "read-only" in out
+    assert "no CONTROL.txt" in out
+
+
 def test_a_self_supplied_allow_mutate_does_not_change_the_verdict(tmp_path):
     """The ops server's consent model, seen from the gate: the flag is the
     model's own word about the model, so it must not move the decision."""
@@ -194,9 +205,11 @@ def test_bypass_permissions_still_asks_nothing(tmp_path):
     assert asked == []
 
 
-def test_a_dry_run_needs_no_decision(tmp_path):
+def test_a_dry_run_flag_is_not_a_decision(tmp_path):
+    # No server is known to honour check_only; one that drops the key runs
+    # the call (tests/test_a_dry_run_flag_no_server_honours_is_not_a_dry_run.py).
     assert _gate("mcp__github__create_pull_request", {"check_only": True},
-                 _perms(tmp_path, "default")) is None
+                 _perms(tmp_path, "default")) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +286,36 @@ _EXPECTED_READ_ONLY = {
     "search_calcs", "get_calc_info", "calc_summary",
     # delfin-ops
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
+    # mlp_list_backends (2026-11-02): reads the backend availability
+    # table from delfin.mlp_tools; computes and writes nothing. The MLP
+    # run tools (mlp_single_point, mlp_optimize, mlp_rank,
+    # mlp_preoptimize) deliberately stay off this list: they compute.
+    "mlp_list_backends",
+    # mlp_setup_probe / _plan / _verify_result (2026-11-03): inventory,
+    # proposal, result-file read; write nothing. mlp_setup_configure and
+    # mlp_setup_verify write (settings, job directory) and stay off.
+    "mlp_setup_probe", "mlp_setup_plan", "mlp_setup_verify_result",
     # calc_status (2026-09-11): one folder's state with the evidence; reads
     # markers, logs, the state file and the output's tail, writes nothing.
     # extract_spectra_table (2026-09-11): the spectroscopy overview over
     # many folders; reads outputs, writes nothing.
     "parse_orca_output", "calc_status", "extract_spectra_table",
     "find_orca_errors", "extract_thermochem",
+    # result_checks (2026-11-01): reads a finished run; writes nothing.
+    "result_checks",
+    # frame_lineage (2026-11-10): reads the .xyz frames of the given stage
+    # directories and compares them; writes nothing, runs nothing.
+    "frame_lineage",
+    # geometry_edit (2026-11-01): xyz text in, xyz text out; no write.
+    "geometry_read_xyz", "geometry_set_bond", "geometry_set_angle",
+    "geometry_set_dihedral", "geometry_translate", "geometry_rotate",
+    "geometry_add_atom", "geometry_remove_atoms",
+    "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
+    "geometry_merge", "geometry_freeze", "geometry_constraints_block",
+    "geometry_build_smiles", "geometry_write_orca_block",
+    # trajectory_xyz (2026-11-03): ORCA output -> multi-frame xyz text;
+    # pure parse, no write.
+    "trajectory_xyz",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",

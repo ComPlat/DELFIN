@@ -463,7 +463,7 @@ def test_what_a_cluster_folder_holds_cannot_reach_beyond_the_results(world):
     world.submit()
     world.leave(DONE)
     (world.home / ".ssh").mkdir()
-    (world.home / ".ssh" / "id_ed25519").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n")
+    (world.home / ".ssh" / "id_ed25519").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n")  # secret-guard: allow (a fake key header: the test checks it is never fetched)
     (world.remote / "keys.out").symlink_to(world.home / ".ssh" / "id_ed25519")
     (world.remote / "odd\nname.out").write_text("x\n")
     (world.remote / "..evil.out").write_text("x\n")

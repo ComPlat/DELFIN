@@ -44,6 +44,13 @@ updates:
       prefix: "ci"
     labels:
       - dependencies
+    groups:
+      # init and analyze must run the same release ("Loaded a configuration
+      # file for version 4.39.1, but running version 4.39.0"): one pull
+      # request for all of github/codeql-action, or each one fails alone.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
 
   - package-ecosystem: docker
     directory: "/.github/ci/agent-container"

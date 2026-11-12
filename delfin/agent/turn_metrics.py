@@ -520,8 +520,14 @@ def record_request(
     system_hash: str = "",
     prefix_hash: str = "",
     served_model: str = "",
+    model_switches: list | None = None,
+    purpose: str = "",
 ) -> None:
     """Append one request's timing and token counts. Never raises.
+
+    ``purpose`` names a request that is not the turn's own model call
+    (``"classifier"``: the action classifier's verdict), so a count of the
+    endpoint's request quota can be split by what spent it.
 
     ``model`` is the name DELFIN asked for, ``served_model`` the model id
     the response reports (OpenAI-compatible ``model`` field), written only
@@ -564,9 +570,16 @@ def record_request(
         if prefix_hash:
             entry["prefix_hash"] = str(prefix_hash)
         served = "".join(c for c in str(served_model or "")
-                         if c.isprintable())[:120].strip()
+                           if c.isprintable())[:120].strip()
         if served:
             entry["served_model"] = served
+        if purpose:
+            entry["purpose"] = str(purpose)[:40]
+        if model_switches:
+            entry["model_switches"] = [
+                {k: str(v) for k, v in sw.items() if isinstance(v, (str, bytes))}
+                for sw in model_switches if isinstance(sw, dict)
+            ]
         with open_append(p) as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         secure_file(p)
@@ -592,9 +605,18 @@ def read_requests(session: str, *, last_n: int | None = None) -> list[dict]:
 
 
 def format_requests(entries: list[dict], *, limit: int = 40) -> str:
-    """A totals line, then one line per request; cold ones flagged."""
+    """A totals line, then one line per request; cold ones flagged.
+
+    Requests with a ``purpose`` (the action classifier's verdicts) are
+    counted in the totals line on their own and left out of the per-request
+    lines, whose cold-cache reasoning compares a request with the turn's
+    previous one."""
     if not entries:
         return ""
+    side = [e for e in entries if e.get("purpose")]
+    entries = [e for e in entries if not e.get("purpose")]
+    if not entries:
+        return f"0 request(s); {len(side)} classifier request(s)"
     total_in = sum(_int(e, "input_tokens") for e in entries)
     total_cached = sum(_int(e, "cached_tokens") for e in entries)
     cold = [e for e in entries
@@ -604,6 +626,7 @@ def format_requests(entries: list[dict], *, limit: int = 40) -> str:
         f"{len(entries)} request(s)  cached={_pct(total_cached, total_in)} of "
         f"{total_in} input tokens  cold={len(cold)}  "
         f"waited for first token={waited / 1000:.0f}s"
+        + (f"  +{len(side)} classifier request(s)" if side else "")
     ]
     shown = entries[-limit:]
     for idx, e in enumerate(shown):

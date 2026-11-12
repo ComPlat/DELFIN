@@ -431,6 +431,37 @@ def _added_lines(old: str, new: str) -> str:
     return "\n".join(added).strip("\n")
 
 
+def _ends_announcing(answer: str) -> bool:
+    """Whether *answer* closes by announcing a step it does not show done.
+
+    Either detector of an announcement (turn_continuation for the engine's
+    follow-up, api_client for the tool loop's), or a last paragraph that
+    speaks in the first person and ends on a colon -- "Ich lese die Imports
+    (Z.1-50) und den _build-Bereich, um meine Edits anzusetzen:" escaped
+    both, the line reference read as a sentence end. Used only to TELL the
+    user nothing runs, never to start a round, so a wider net costs a line
+    at most."""
+    import re as _re
+    text = str(answer or "").rstrip().rstrip("*_`").rstrip()
+    if not text:
+        return False
+    try:
+        from delfin.agent.turn_continuation import announced_action
+        if announced_action(text):
+            return True
+    except Exception:
+        pass
+    try:
+        from delfin.agent.api_client import _announces_an_action
+        if _announces_an_action(text):
+            return True
+    except Exception:
+        pass
+    last = _re.split(r"\n\s*\n", text)[-1]
+    return (last.endswith(":") and bool(_re.search(
+        r"(?i)\b(?:ich|wir|i|we|let me|lass mich|lasst uns)\b", last)))
+
+
 class AgentEngine:
     """Core orchestration engine for the DELFIN agent.
 
@@ -732,18 +763,24 @@ class AgentEngine:
         self._claim_guard_active: bool = False
         self._claim_guard_spent: bool = False
         self._claim_guard_corrected: bool = False
-        # One-shot DSML re-request latch (U5 phase 3): a final answer that
-        # IS a leaked <invoke name=...>...</invoke> call written as text is
-        # re-requested (asked to call the tool) at most once per turn; if
-        # the correction leaks again the answer is annotated, never looped.
+        # DSML re-request budget (LK1): a final answer that IS a leaked
+        # <invoke name=...>...</invoke> call written as text is re-requested
+        # per the policy in leak_recovery.py -- a bounded number per real
+        # user turn, provided a real tool call ran since the last re-request.
+        # None until the first real user turn arms one (the re-arm block
+        # below rebuilds it fresh, so the budget never crosses turns).
+        self._dsml_policy = None
+        # Backward-compatible marker: whether this turn already issued at
+        # least one DSML re-request (kept for the session-evidence listing;
+        # the real budget is _dsml_policy, which gates the re-request).
         self._dsml_leak_spent: bool = False
         # Reentrancy guard for the DSML re-request's nested ``stream_response``
         # call (U5 phase 3): that nested call is a fresh user turn to the
         # engine, so WITHOUT this flag the fresh-turn re-arm block below would
-        # clear ``_dsml_leak_spent`` and the correction would re-request over
-        # and over (1478 stream calls on the never-loops test).  Set True only
-        # around the nested call, reset in ``finally``; while it is set, no
-        # re-arm and no second DSML check happens.
+        # rebuild the budget and the correction would re-request over and over
+        # (1478 stream calls on the never-loops test).  Set while a turn's
+        # re-request loop runs, reset in ``finally``; while it is set, no
+        # re-arm and no second outer DSML check happens.
         self._dsml_guard_active: bool = False
         # One stall guard per engine (per conversation), fed with how each
         # turn ended; `agent.stall_guard.repeats` identical dead endings in a
@@ -1225,22 +1262,26 @@ class AgentEngine:
         except Exception as exc:
             return False, f"persist failed: {exc}"
         # Apply to live perms so the next call benefits without restart.
+        # The running turn is told only about a rule that is new: a grant
+        # repeated for a rule already in force changed nothing, and saying
+        # it again (field report 20261020-140059, twice in one turn) told
+        # the agent that something had opened when nothing had.
         if kind == "allow":
             if pattern not in perms.bash_auto_allow_patterns:
                 perms.bash_auto_allow_patterns = (
                     perms.bash_auto_allow_patterns + (pattern,)
                 )
-            self._tell_the_running_turn(
-                f"[permissions] The user just allowed {pattern!r} for good, "
-                f"mid-turn. It no longer needs a confirmation. If you gave "
-                f"up on something because that command was refused, it is "
-                f"available now.")
+                self._tell_the_running_turn(
+                    f"[permissions] The user just allowed {pattern!r} for "
+                    f"good, mid-turn. It no longer needs a confirmation. If "
+                    f"you gave up on something because that command was "
+                    f"refused, it is available now.")
         else:
-            self._tell_the_running_turn(
-                f"[permissions] The user just denied {pattern!r} for good, "
-                f"mid-turn. Do not attempt it again; find another route or "
-                f"say what you cannot do without it.")
             if pattern not in perms.bash_deny_patterns:
+                self._tell_the_running_turn(
+                    f"[permissions] The user just denied {pattern!r} for "
+                    f"good, mid-turn. Do not attempt it again; find another "
+                    f"route or say what you cannot do without it.")
                 perms.bash_deny_patterns = (
                     perms.bash_deny_patterns + (pattern,)
                 )
@@ -1365,6 +1406,11 @@ class AgentEngine:
             "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
+            # The endpoint's hourly token quota, when a quota 429 was seen
+            # (tokens): a person reads how close the key is to the reset.
+            "quota_tokens_used": getattr(self.client, "quota_tokens_used", None),
+            "quota_tokens_limit": getattr(
+                self.client, "quota_tokens_limit", None),
             # The model second opinion: switch, model, scope, last failure.
             "watcher": self._watcher_status(),
         }
@@ -3118,10 +3164,12 @@ class AgentEngine:
                 and not _is_guard_feedback):
             self._claim_guard_corrected = False
             self._claim_guard_spent = False
-            # A fresh REAL user turn re-arms the DSML one-shot re-request:
-            # the latch is per TURN.  The DSML correction's nested call is
+            # A fresh REAL user turn re-arms the DSML re-request budget: the
+            # policy is per TURN.  The DSML correction's nested call is
             # not a fresh turn (see _dsml_guard_active), so while it is
-            # running this block is skipped and the latch stays spent.
+            # running this block is skipped and the budget stays spent.
+            from delfin.agent.leak_recovery import DSMLReplayPolicy
+            self._dsml_policy = DSMLReplayPolicy()
             self._dsml_leak_spent = False
             # The ambiguity ledger is per TURN: the question is whether
             # THIS answer totals a column THIS turn was told it could not
@@ -3202,10 +3250,26 @@ class AgentEngine:
             # returned THIS turn. Kept apart from the ledger above because
             # the evidence has a different shape -- an ORCA output is text
             # a tool returned, not a result dict it filled in.
+            # The unit is the REQUEST, not the engine turn: a turn the
+            # harness starts (job or scheduled wake-up, auto mode, mail)
+            # continues the request the person last sent, and the final
+            # table it writes quotes what that request's earlier turns
+            # returned -- a literature value searched before the jobs were
+            # submitted. Such a turn gets the request's evidence back; the
+            # next message a person sends starts a fresh pool.
             try:
                 from . import verify_guard as _vg_numbers
-                _vg_numbers.reset_observed_numbers()
-                _vg_numbers.reset_keyed_values()
+                # Only inside the conversation that produced it: after
+                # reset_cycle cleared the history there is no request left
+                # to continue.
+                _carried = getattr(self, "_request_evidence", None)
+                if (isinstance(user_message, HarnessText) and _carried
+                        and self.messages):
+                    _vg_numbers.restore_evidence(_carried)
+                else:
+                    self._request_evidence = None
+                    _vg_numbers.reset_observed_numbers()
+                    _vg_numbers.reset_keyed_values()
             except Exception:
                 pass
 
@@ -3305,6 +3369,18 @@ class AgentEngine:
             self._stop_requested = False
             self._stop_owner_turn = None
         _turn_id = self._turn_id
+        # The step journal numbers its steps per turn, and the executor
+        # sees only the permissions object, so the turn travels on it. A
+        # fresh random key rather than _turn_serial: the serial restarts
+        # at 1 in every process, and a resumed session's first turn would
+        # read as the turn the crashed process was in.
+        try:
+            _kp = self.kit_permissions
+            if _kp is not None:
+                import uuid as _uuid
+                _kp.step_turn_key = _uuid.uuid4().hex
+        except Exception:
+            pass
 
         # This turn's delegated spend starts at zero, and every delegated
         # run from here is routed through a counter that knows which turn
@@ -3794,6 +3870,12 @@ class AgentEngine:
                 elif event.type == "tool_result":
                     # A tool ran: the dead-turn count starts over.
                     self._stall_progress()
+                    # LK1: a REAL tool call completed counts as progress that
+                    # lets a later leaked call in this user turn be
+                    # re-requested (the policy's "real call since the last
+                    # re-request" condition).
+                    if self._dsml_policy is not None:
+                        self._dsml_policy.note_real_tool_call()
                     _activity.tool_end(event.tool_name)
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
@@ -3822,8 +3904,10 @@ class AgentEngine:
                     # rather than against the fact that something ran.
                     try:
                         from . import verify_guard as _vg_numbers
+                        # What the model was given, not the UI preview.
+                        _seen = str(getattr(event, "seen_text", "") or _out)
                         _vg_numbers.record_tool_numbers(
-                            _out,
+                            _seen,
                             truncated=bool(
                                 getattr(event, "output_truncated", False)))
                         # The same numbers, keyed by record and field, so
@@ -3838,7 +3922,10 @@ class AgentEngine:
                             if _pn == event.tool_name:
                                 _src = str(_pi)
                                 break
-                        _vg_numbers.record_keyed_values(_out, source=_src)
+                        _vg_numbers.record_keyed_values(_seen, source=_src)
+                        # Kept on the engine for the harness turns that
+                        # continue this request (see the turn start).
+                        self._request_evidence = _vg_numbers.evidence_state()
                     except Exception:
                         pass
                     # And whether the model saw the whole result. A count
@@ -4358,10 +4445,12 @@ class AgentEngine:
             # into full_response, and judging it drew 8 false notes in 10
             # (report 20261012-082746). A NEED_CONTEXT re-answer replaces
             # the text, so then the replacement is judged.
-            self._note_turn_continuation(
-                "".join(chunks[_chunks_at_last_tool:])
-                if _turn_tool_calls and full_response is _answer_streamed
-                else full_response)
+            _judged_answer = ("".join(chunks[_chunks_at_last_tool:])
+                              if _turn_tool_calls
+                              and full_response is _answer_streamed
+                              else full_response)
+            self._note_turn_continuation(_judged_answer)
+            self._say_nothing_runs(_judged_answer, on_token)
         elif self._stop_requested:
             # Stop before any answer text — during thinking, or before the
             # first token. The message appended at the top of this turn has
@@ -4493,11 +4582,14 @@ class AgentEngine:
             except Exception:
                 pass
 
-        # DSML leak re-request (U5 phase 3): a final answer that IS a leaked
-        # <invoke name=...>...</invoke> tool call written as text never ran —
-        # it is not an answer. Ask exactly once (latch _dsml_leak_spent); a
-        # corrected answer that leaks AGAIN falls through to the normal
-        # return and is annotated, never a second re-request (no loop).
+        # DSML leak re-request (U5 phase 3, LK1): a final answer that IS a
+        # leaked <invoke name=...>...</invoke> tool call written as text never
+        # ran -- it is not an answer.  Re-request it per the DSMLReplayPolicy
+        # budget: the first leak of the turn needs the answer to dominate;
+        # later ones also need a real tool call since the last re-request AND
+        # room in the per-turn budget (max_per_turn).  A corrected answer that
+        # leaks again without such progress falls through to the normal return
+        # and is annotated, never an unbounded re-request (no loop).
         if (full_response and not _empty_turn and not self._stop_requested
                 and not self._claim_guard_active and not self._dsml_guard_active):
             _dsml_name = None
@@ -4512,7 +4604,9 @@ class AgentEngine:
                     leaked_tool_call_dominates(full_response) or (None, {}))
             except Exception:
                 _dsml_name = None
-            if _dsml_name and not self._dsml_leak_spent and not self._dsml_guard_active:
+            if (_dsml_name and not self._dsml_guard_active
+                    and self._dsml_policy is not None
+                    and self._dsml_policy.allowed_for(True)):
                 # Every leak feeds the stall guard. The fingerprint is the
                 # tool, not the wording: the sentences around a leaked call
                 # differ every time, the call that never runs is the same.
@@ -4614,37 +4708,115 @@ class AgentEngine:
         except Exception:
             pass
 
+        # VR1 (verify-before-report): trace number+unit claims in the finished
+        # answer to the run's real output before it is returned.  Mismatch /
+        # no-source verdicts append a short "could not be verified" caveat, and
+        # the machine-readable verification record is kept on
+        # ``self.last_claim_verification`` so the caller can show it next to
+        # the answer.  Best-effort: a verification failure never breaks the
+        # turn; a turn with no calc evidence is a no-op (no false alarms).
+        try:
+            full_response = self._append_claim_verification(full_response)
+        except Exception:
+            pass
+
         return full_response + _guard_note
 
-    def _note_session_language(self, user_message: str) -> None:
-        """Fix the session's language from the FIRST message that says one.
+    def _append_claim_verification(self, response_text: str) -> str:
+        """VR1: trace number+unit claims in a finished answer to the run output.
 
-        The rule the user asked for, in their words: the language you start
-        writing in is the one the session runs in. It is stronger than
-        "the language of the latest message" for the case that actually
-        hurt — a long unattended run where the answer arrives minutes
-        later — because it can be STATED UP FRONT rather than checked
-        afterwards.
+        Scans the answer for ``number+unit`` claims (:func:`delfin.agent.
+        claim_locator.locate_claims`) and verifies each against the real
+        ``*.out`` of the turn's calc folder(s) -- ``_doc_executor.
+        _calc_evidence`` (the live run ledger, Welle 10) -- via
+        :func:`delfin.agent.claim_locator.verify_claim`.  The machine-readable
+        verification record (claim -> file, line, unit, value, tolerance,
+        verdict) is kept on ``self.last_claim_verification`` so the caller can
+        show it next to the answer.  When a claim could not be verified
+        (``mismatch`` / ``no-source``), one short caveat is appended so the
+        answer says it could not be verified; ``estimate`` numbers (counts,
+        years, settings) are never flagged.
 
-        Set once. A later message in another language does not move it;
-        that is the point of a session language, and it is what stops an
-        English run drifting German halfway through.
+        A turn whose calc evidence is empty -- a conversation with no run -- is
+        a no-op: prose numbers are not claims, so no false alarm.
         """
-        if getattr(self, "_session_language", ""):
-            return
+        try:
+            from .api_client import _doc_executor
+            from delfin.agent.claim_locator import locate_claims, verify_claim
+        except Exception:
+            return response_text
+        if not response_text:
+            self.last_claim_verification = []
+            return response_text
+        folders = [
+            rec.get("folder") for rec in getattr(_doc_executor, "_calc_evidence", None) or []
+            if rec.get("folder")
+        ]
+        self.last_claim_verification = []
+        if not folders:
+            return response_text
+        records: list[dict] = []
+        unverified: list[dict] = []
+        for claim in locate_claims(response_text):
+            record: dict | None = None
+            for folder in folders:
+                rec = verify_claim(claim.value, claim.unit, folder)
+                record = rec.to_dict()
+                if rec.verdict == "verified":
+                    break
+                if rec.verdict == "estimate":
+                    record = None
+                    break
+            if record is None:
+                continue
+            records.append(record)
+            if record["verdict"] not in ("verified",):
+                unverified.append(record)
+        self.last_claim_verification = records
+        if not unverified:
+            return response_text
+        caveat = "\n\n[verify] " + "; ".join(
+            f"{r['quantity']} value {r['value']} {r['unit']} could not be "
+            f"verified against the run's output ({r['verdict']})"
+            for r in unverified
+        ) + "."
+        return response_text.rstrip() + caveat
+
+    def _note_session_language(self, user_message: str) -> None:
+        """Set the answer language from the user's latest message that says one.
+
+        Input: one turn's message. A message the user typed that
+        ``detect_language`` can place (three function words of one
+        language, twice the other's; three words at least) sets the
+        language -- the first such message and every later one. A message
+        it cannot place ("ok", "hi", "ja mach das") keeps the current one,
+        and so does a turn the system starts (HarnessText: a finished job,
+        a wake-up, a message from another session), so a long unattended
+        run does not drift.
+
+        Decided by the user on 2026-10-22, replacing "the first message
+        sets it for good": in a field session the first long message was
+        an English task, the user then asked "was kannst du?" in German,
+        and the model, told English by the pin and asked in German, wrote
+        both. A change of language changes the system prompt once, and
+        that turn's prompt is not served from the cache.
+        """
+        try:
+            from .harness_rows import HarnessText as _HT
+            if isinstance(user_message, _HT):
+                return                  # the system talking, not the user
+        except Exception:
+            pass
         text = str(user_message or "")
-        if text.lstrip().startswith(("[Verify]", "[Message from the session")):
+        if text.lstrip().startswith(("[Verify]", "[Message from the session",
+                                     "[watch", "[auto")):
             return                      # the harness talking, always English
         try:
             from . import verify_guard as _vg
-            # A lower floor than the answer-judging default: see
-            # detect_language. The question here is which language the
-            # user opened in, and the hit-count and margin rules already
-            # refuse a fragment.
-            # Five words: "kannst du die tabelle prüfen?" is five, and the
-            # three-hit, two-to-one rule below is what keeps a fragment
-            # from pinning anything.
-            found = _vg.detect_language(text, min_words=5)
+            # Three words: "was kannst du?" and "what can you do?" are
+            # placed; "ok danke" and "ja mach das" are not, and the
+            # three-hit, two-to-one rule keeps a fragment from moving it.
+            found = _vg.detect_language(text, min_words=3)
         except Exception:
             found = ""
         if found:
@@ -4673,13 +4845,14 @@ class AgentEngine:
         if not name:
             return ""
         return (
-            f"SESSION LANGUAGE: {name}. Every answer in this session is "
-            f"written in {name} — the first message set it, and a later "
-            f"message in another language does not change it. It outranks "
-            f"a remembered language preference and any rule about the "
-            f"latest message. This covers what you SAY. What goes into "
-            f"code is English either way: comments, docstrings, "
-            f"identifiers, log and error strings."
+            f"SESSION LANGUAGE: {name}. Answer in {name} — the language "
+            f"of the user's latest message that says one; a turn the "
+            f"system starts (a finished job, a wake-up) keeps it. One "
+            f"answer is in one language: never the same text twice in two "
+            f"languages. It outranks a remembered language preference. "
+            f"This covers what you SAY. What goes into code is English "
+            f"either way: comments, docstrings, identifiers, log and error "
+            f"strings."
         )
 
     def _nudge_language_if_wrong(self, chunks) -> None:
@@ -5768,72 +5941,102 @@ class AgentEngine:
         on_tool_result_meta: Callable[[str, dict], None] | None = None,
         on_wait: Callable[[str], None] | None = None,
     ) -> str:
-        """Re-request once when the whole answer is a leaked DSML tool call.
+        """Re-request a leaked DSML tool call, bounded by the per-turn policy.
 
         Deepseek-v4-flash sometimes writes a tool call as literal
         ``<invoke name=...>...</invoke>`` XML in the text channel instead of
         calling the tool, so the call never ran and the turn would end
-        standing still. The answer is not the answer — ask the model exactly
-        once to call the tool instead of typing it.
+        standing still. The answer is not the answer — ask the model to call
+        the tool instead of typing it.
 
-        One retry only: ``_dsml_leak_spent`` is set before the nested call,
-        so a corrected answer that leaks AGAIN (or a nested continuation
-        re-entering the guard) falls through to the normal return with a
-        visible caveat naming the leaked tool — never a loop.
+        The re-request budget is the DSMLReplayPolicy (leak_recovery.py): the
+        first re-request of a turn needs the answer to dominate the leak; a
+        later one also needs a REAL tool call since the last re-request AND
+        room in the per-turn budget (``agent.leak_recovery.max_per_turn``,
+        default 3).  A leak that follows real progress is re-requested again;
+        two back-to-back leaks are annotated and stopped — never a loop.
         """
-        if self._dsml_leak_spent:
-            # A nested continuation (or a re-request that leaked) is already
-            # here: annotate and never re-request a second time.
-            _caveat = (f"\n\n⚠️ the call to {tool_name} was written as "
-                       f"text again after one re-request; it did not run.\n")
-            try:
-                if on_token:
-                    on_token(_caveat)
-            except Exception:
-                pass
-            return response_text + _caveat
-
-        self._dsml_leak_spent = True
-        _feedback = (
-            f"The text you just wrote is a tool call to "
-            f"<tool>{tool_name}</tool> expressed as literal markup, so it "
-            f"never ran. Call the tool (do not type its tags). Say what it "
-            f"returned, or make your answer plain text."
-        )
+        # Keep the reentry guard set for the WHOLE turn's re-requests.  Each
+        # nested stream_response is a fresh user turn to the engine; without
+        # the guard its fresh-turn block would rebuild the policy and clear
+        # the budget, and an unbounded re-request loop (the 1478-call defect
+        # of U5) would come back.  The policy budget itself is the hard bound.
+        _answer = response_text
+        _name = tool_name
+        _guard_was = self._dsml_guard_active
         self._dsml_guard_active = True
         try:
-            try:
-                if on_token:
-                    on_token("\n\n")
-            except Exception:
-                pass
-            try:
-                correction = self.stream_response(
-                    user_message=_feedback,
-                    memory_context=memory_context,
-                    on_token=on_token,
-                    on_tool_use=on_tool_use,
-                    on_tool_result=on_tool_result,
-                    on_permission_denied=on_permission_denied,
-                    on_thinking=on_thinking,
-                    thinking_budget=thinking_budget,
-                    max_tokens=max_tokens,
-                    on_notice=on_notice,
-                    on_tool_result_meta=on_tool_result_meta,
-                    on_wait=on_wait,
+            while _name:
+                if self._dsml_policy is None \
+                        or not self._dsml_policy.allowed_for(True):
+                    # Not allowed to re-request: no real tool call since the
+                    # last re-request, or the per-turn budget is spent.  The
+                    # leak is annotated and the turn ends, exactly as today;
+                    # the notice names the bound (LK1 target 5).
+                    from delfin.agent.leak_recovery import dsml_leak_notice
+                    _caveat = dsml_leak_notice(_name, limit_reached=True)
+                    try:
+                        if on_token:
+                            on_token(_caveat)
+                    except Exception:
+                        pass
+                    return _answer + _caveat
+                self._dsml_policy.spend()
+                self._dsml_leak_spent = True
+                _feedback = (
+                    f"The text you just wrote is a tool call to "
+                    f"<tool>{_name}</tool> expressed as literal markup, so it "
+                    f"never ran. Call the tool (do not type its tags). Say "
+                    f"what it returned, or make your answer plain text."
                 )
-            except Exception:
-                correction = ""
+                try:
+                    if on_token:
+                        on_token("\n\n")
+                except Exception:
+                    pass
+                try:
+                    correction = self.stream_response(
+                        user_message=_feedback,
+                        memory_context=memory_context,
+                        on_token=on_token,
+                        on_tool_use=on_tool_use,
+                        on_tool_result=on_tool_result,
+                        on_permission_denied=on_permission_denied,
+                        on_thinking=on_thinking,
+                        thinking_budget=thinking_budget,
+                        max_tokens=max_tokens,
+                        on_notice=on_notice,
+                        on_tool_result_meta=on_tool_result_meta,
+                        on_wait=on_wait,
+                    )
+                except Exception:
+                    correction = ""
+                if not correction:
+                    return _answer + (
+                        f"\n\n⚠️ the call to {_name} was written as text and "
+                        f"the re-request produced nothing; it did not run.\n")
+                _answer = correction
+                # If the correction is itself still a leaked call, loop to
+                # consider another re-request; a real answer returns here.
+                _next_name, _next_args = (None, {})
+                try:
+                    from delfin.agent.text_sanitize import (
+                        leaked_tool_call_dominates)
+                    _next_name, _next_args = (
+                        leaked_tool_call_dominates(correction) or (None, {}))
+                except Exception:
+                    _next_name = None
+                if _next_name is None:
+                    return correction
+                _name = _next_name
+                continue
+            return response_text
         finally:
-            # The nested call is over: a REAL next user turn may re-arm and
-            # ask again.  While the flag is set no re-arm and no second
-            # DSML check ran, so one correction never spawns another.
-            self._dsml_guard_active = False
-        if not correction:
-            return response_text + (
-                f"\n\n⚠️ the call to {tool_name} was written as text and "
-                f"the re-request produced nothing; it did not run.\n")
-        return correction
+            # The re-request loop is over: a REAL next user turn may re-arm
+            # and ask again.  While the guard was set no re-arm and no second
+            # outer DSML check ran, so one turn's corrections never spawn an
+            # unbounded chain.
+            self._dsml_guard_active = _guard_was
 
     def trace_session(self) -> str:
         """Stable key for this engine's tool-call trace — the backend session
@@ -7514,9 +7717,19 @@ class AgentEngine:
         # silent — an empty id is not an error, it is the unscoped bucket.
         # Anything that does not declare the capability exactly gets an id,
         # which is the safe direction.
-        if getattr(self.client, "supplies_session_id", False) is True:
-            return ""
         import uuid as _u
+        if getattr(self.client, "supplies_session_id", False) is True:
+            # One that can be told the id of a conversation not begun yet
+            # (the Claude CLI: --session-id) gets it now: a service session
+            # needs its id before the first turn, it keys the event log.
+            # It must be a UUID in its canonical form there.
+            sid = str(_u.uuid4())
+            try:
+                if self.client.preset_session_id(sid) is True:
+                    return sid
+            except Exception:
+                pass
+            return ""
         return _u.uuid4().hex
 
     def _sync_task_session(self) -> None:
@@ -7980,6 +8193,33 @@ class AgentEngine:
                     self._stall_guard_stopped = _stopped
                     self.clear_turn_continuation()
 
+    #: Shown when a turn ends on an announced step and no follow-up is
+    #: queued: the turn is over, nothing works in the background.
+    NOTHING_RUNS_NOTICE = (
+        "\n\n⏸ Nothing is running now: this turn ended on a step the agent "
+        "announced but did not take. Send \"weiter\" (or say what to change) "
+        "to continue.")
+
+    def _say_nothing_runs(self, answer: str, on_token) -> None:
+        """Tell the user the turn is over when *answer* closes by announcing
+        a next step and no follow-up turn is queued.
+
+        Bug report davh 414e5a17 (2026-10-20): "he says he is solving it now,
+        and then there is no feedback at all -- no progress bar, no sign; I
+        cannot tell whether he works or the model hangs". The turn had ended
+        on "Ich speichere zuerst ..., dann implementiere ich:"; the indicator
+        went out, correctly, and nothing said why. Not shown when a
+        follow-up is pending (it will run), nor when the stall guard stopped
+        follow-ups (its own message says so). Never raises."""
+        try:
+            if (not answer or self.pending_turn_continuation
+                    or getattr(self, "_stall_guard_stopped", "")):
+                return
+            if callable(on_token) and _ends_announcing(answer):
+                on_token(self.NOTHING_RUNS_NOTICE)
+        except Exception:
+            pass
+
     def _honour_pause(self) -> bool:
         """Request a stop when ``delfin-agent pause`` flagged this session.
         True when it did. Never raises."""
@@ -8322,6 +8562,21 @@ class AgentEngine:
         # session" is the user's call, not ours -- asking once too often is
         # the safe side of that question.
         out["refusals"] = self._export_refusals()
+        # The system prompt as the model was given it, so a resume in a new
+        # process sends the same bytes and the endpoint's cache of the whole
+        # history stays warm; what changed since goes into the next turn's
+        # tail (_held_system_prompt). Not a declared field: a session saved
+        # before it existed has lost nothing a resume must report.
+        held = getattr(self, "_held_prompt", None)
+        if isinstance(held, dict) and held.get("prompt"):
+            # Saved through save_session's **extra (persisted verbatim).
+            out["held_system_prompt"] = dict(
+                role=str(held.get("role") or ""),
+                prompt=str(held["prompt"]),
+                sections={str(k): str(v) for k, v in
+                          (held.get("sections") or {}).items()},
+                carriers=[str(c) for c in held.get("carriers") or ()],
+            )
         return out
 
     def _export_refusals(self) -> dict:
@@ -8566,6 +8821,23 @@ class AgentEngine:
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")
+        # The held system prompt (export_state): kept only when well formed;
+        # _held_system_prompt still rebuilds it when the role changed or a
+        # carrier of an earlier update is gone from the restored history.
+        _held = data.get("held_system_prompt")
+        try:
+            if isinstance(_held, dict) and str(_held.get("prompt") or ""):
+                self._held_prompt = {
+                    "role": str(_held.get("role") or ""),
+                    "prompt": str(_held["prompt"]),
+                    "sections": {str(k): str(v) for k, v in
+                                 dict(_held.get("sections") or {}).items()},
+                    "carriers": [str(c) for c in _held.get("carriers") or ()],
+                }
+            else:
+                self._held_prompt = None
+        except Exception:
+            self._held_prompt = None
         ev = self._restore_evidence(data)
         # The denials come back onto the permission object, not onto the
         # engine: that is where every gate reads them. The object is
@@ -8706,6 +8978,12 @@ class AgentEngine:
         # as a lesson from the user's past. Found in the user's real
         # history on 2026-09-11.
         if str(user_task or "").lstrip().startswith("[Verify]"):
+            return {}
+        # A turn the provider refused before any work (an expired key, no
+        # connection, an unknown model) says nothing about the task; see
+        # outcome_tracker.NOT_A_TASK_ERRORS.
+        from delfin.agent.outcome_tracker import is_task_outcome
+        if not is_task_outcome(error_type):
             return {}
         duration = 0.0
         if start_time:

@@ -2,4 +2,23 @@
 
 # Knowledge index
 
-(no entries yet)
+## delfin-development
+
+| entry | scope | provenance | review by |
+|---|---|---|---|
+| [bash_jobs fixes its index path when it is imported](bash-jobs-fixes-its-index-path-when-it-is-imported.md) | delfin-development | delfin-maintainers 2026-10-20 | 2027-04-18 |
+| [Dashboard layout is measured in a real browser page](dashboard-layout-is-measured-in-a-real-browser-page.md) | delfin-development | delfin-maintainers 2026-10-20 | 2027-04-18 |
+| [Dashboard startup JavaScript goes through ctx.add_init_js](dashboard-startup-javascript-goes-through-ctx-add-init-js.md) | delfin-development | delfin-maintainers 2026-10-20 | 2027-04-18 |
+
+## git-and-prs
+
+| entry | scope | provenance | review by |
+|---|---|---|---|
+| [Run the failing check on the base commit before blaming the change](run-the-failing-check-on-the-base-commit-before-blaming-the.md) | always | delfin-maintainers 2026-10-20 | 2027-04-18 |
+
+## tools-and-sandbox
+
+| entry | scope | provenance | review by |
+|---|---|---|---|
+| [Long commands run in the background and report back](long-commands-run-in-the-background-and-report-back.md) | always | delfin-maintainers 2026-10-20 | 2027-04-18 |
+| [Temporary files come from mktemp or tempfile, not a fixed system path](temporary-files-come-from-mktemp-or-tempfile-not-a-fixed-sys.md) | always | delfin-maintainers 2026-10-20 | 2027-04-18 |

@@ -161,6 +161,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### 1.3 COD crystal structures in the review sets
+
+- File: `review_sets/kalib_2026_10/structures.xyz.gz` (blinded review set; not
+  part of the wheel). Besides MANTA and competitor constructions it holds 600
+  crystal structures from the Crystallography Open Database
+  (<https://www.crystallography.net/cod/>; S. Gražulis et al., *Nucleic Acids
+  Res.* 2012, 40, D420–D427), H positions normalised to standard bond lengths.
+- Licence of the COD coordinates: CC0-1.0 (public domain dedication). SPDX of
+  the file: `LGPL-3.0-or-later AND CC0-1.0`.
+- The COD identifiers are withheld while the set is blinded; they are released
+  with the ratings.
+
 ## 2. Downloaded at install time, not distributed
 
 DELFIN's installers fetch these programs from their upstream into
@@ -184,6 +196,9 @@ their Corresponding Source or a written offer for it.
 | Bun | <https://github.com/oven-sh/bun> | MIT; statically links JavaScriptCore/WebKit (LGPL-2.0) and further libraries listed in its `LICENSE.md` | `tui/scripts/install-bun.sh`, `delfin-agent tui` (version- and SHA-256-pinned) |
 | npm packages of the terminal window (`@opentui/*`, `solid-js`, `web-tree-sitter`) | npm registry, versions in `tui/bun.lock` | MIT | `bun install --frozen-lockfile` into `~/.delfin/tools` |
 | epic-MACE | <https://github.com/EPiCs-group/epic-mace> | GPL-3.0 | `python -m delfin.installer --install epic-mace` (own environment, run as an external program) |
+| rxembed | <https://github.com/aligfellow/rxembed> (commit 9c0ba5a6) | MIT | `python -m delfin.installer --install rxembed` (own environment, run as an external program) |
+| Molassembler (scine-molassembler 3.0.1) | <https://github.com/qcscine/molassembler> | BSD-3-Clause | `python -m delfin.installer --install molassembler` (own environment, run as an external program) |
+| MetalloGen | <https://github.com/kyunghoonlee777/MetalloGen> (commit fa26e2ad) | BSD-3-Clause | `python -m delfin.installer --install metallogen` (own environment, run as an external program with ORCA) |
 | ORCA | <https://www.faccts.de/> | proprietary (ORCA EULA) | never downloaded; each user installs a licensed copy |
 
 A compiled terminal window (`tui/scripts/build-binary.ts`, `bun build --compile`)

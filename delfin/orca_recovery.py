@@ -35,6 +35,45 @@ _JOB_BANNER = re.compile(r"\${4,}\s+JOB NUMBER\s+(\d+)\s+\$")
 _ERROR_SCAN_TAIL_BYTES = 2 * 1024 * 1024
 
 
+def _own_geometry_atoms(xyz_file: Path):
+    """The run's own geometry, via delfin.orca_read with the old parser as
+    the text fallback.
+
+    Pre-switch semantics kept exactly: rows of ``<base>.xyz`` as
+    (element, x, y, z) tuples; ``None`` (keep the input's coordinates)
+    when the file is missing, unreadable or not a well-formed xyz of
+    this job. Under ``orca.reader=text`` the old parser answers directly.
+    """
+    from delfin import orca_read
+
+    if orca_read._reader_mode() == "text":
+        return _own_geometry_atoms_direct(xyz_file)
+    try:
+        reading = orca_read.read(xyz_file.parent, xyz_file.stem,
+                                 orca_read.Quantity.FINAL_GEOMETRY)
+    except Exception:
+        return _own_geometry_atoms_direct(xyz_file)
+    if reading.value is None:
+        return _own_geometry_atoms_direct(xyz_file)
+    return [tuple(a) for a in reading.value]
+
+
+def _own_geometry_atoms_direct(xyz_file: Path):
+    """The pre-switch parser: rows of the ORCA-written xyz, or None."""
+    try:
+        rows = xyz_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        n_atoms = int(rows[0].split()[0])
+        atoms = []
+        for row in rows[2:2 + n_atoms]:
+            parts = row.split()
+            atoms.append((parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
+        if len(atoms) != n_atoms:
+            raise ValueError("fewer atoms than announced")
+        return atoms
+    except (ValueError, IndexError, OSError):
+        return None
+
+
 class OrcaErrorType(Enum):
     """Classification of ORCA error types."""
 
@@ -98,6 +137,27 @@ class OrcaErrorType(Enum):
 
     TRANSIENT_SYSTEM_ERROR = "transient_system"
     """Temporary system errors (disk full, network issues, etc.) - retry without modification."""
+
+    SCAN_CONSTRAINT_ERROR = "scan_constraint_error"
+    """ORCA could not impose a scan's initial constraints (GSTEP).
+
+    The scan's start geometry cannot satisfy the requested constraints
+    (e.g. a start dihedral 180 degrees away from the constrained start
+    value). Nothing a retry changes: the same input fails identically.
+    Reported to the user with ORCA's own wording.
+    """
+
+    SCAN_STEP_NOT_CONVERGED = "scan_step_not_converged"
+    """A constrained scan step's optimisation ran out of cycles.
+
+    Inside a relaxed scan each step is a constrained optimisation; when
+    one cannot converge (e.g. on a +-180 degree dihedral wrap) the
+    PROPERTIES/SHARK stage then often fails on the half-written files.
+    The plain-optimisation fixes (trust radius, LooseOpt) do not target
+    this: the coordinate is driven, not free. Reported with the real
+    cause, and the user decides (start the scan from the other side,
+    more steps, or a smaller step width).
+    """
 
     UNKNOWN = "unknown"
     """Unknown or unclassified error."""
@@ -232,6 +292,46 @@ class OrcaErrorDetector:
             ],
             "all_required": True,
             "priority": 5,
+        },
+        # Relaxed-scan failures. Both outrank the generic geometry rule:
+        # a scan's failure cause is the driven coordinate, and the plain-optimisation
+        # fixes (trust radius, LooseOpt) answer the wrong question.
+        # ORCA's wording (real v3.out, qcgstep.cpp): the start geometry cannot
+        # satisfy the constraints — an input/setup problem, no retry changes it.
+        {
+            "type": OrcaErrorType.SCAN_CONSTRAINT_ERROR,
+            "patterns": [
+                "GSTEP: could not impose initial constraints",
+            ],
+            "all_required": False,
+            "priority": 4,
+        },
+        # A constrained scan step that ran out of cycles: ORCA's own warning
+        # (real v4.out) followed by the SHARK/PROPERTIES abort on the
+        # half-written step files. Requires BOTH the warning and the scan
+        # context, so a plain optimisation that ran out of cycles is still
+        # GEOMETRY_NOT_CONVERGED and keeps its existing fixes.
+        {
+            "type": OrcaErrorType.SCAN_STEP_NOT_CONVERGED,
+            "patterns": [
+                "The optimization did not converge but reached the maximum number of",
+                "Relaxed Surface Scan",
+            ],
+            "all_required": True,
+            "priority": 4,
+        },
+        # The same failure seen from its tail alone: SHARK cannot read the
+        # step's half-written input and PROPERTIES aborts the run. Both
+        # wordings together only occur after an unconverged constrained
+        # step; a healthy PROPERTIES stage has no SHARK read error.
+        {
+            "type": OrcaErrorType.SCAN_STEP_NOT_CONVERGED,
+            "patterns": [
+                "ERROR (SHARK): Failed to read input file",
+                "ORCA finished by error termination in PROPERTIES",
+            ],
+            "all_required": True,
+            "priority": 4,
         },
         # Frequency failures
         {
@@ -628,7 +728,42 @@ class RecoveryStrategy:
         elif self.error_type in (OrcaErrorType.ESD_RATE_UNPHYSICAL, OrcaErrorType.ESD_WINDOW_TRUNCATED):
             return self._esd_rate_fixes()
 
+        elif self.error_type == OrcaErrorType.SCAN_CONSTRAINT_ERROR:
+            # No mechanical fix: the same input fails identically. The
+            # caller stops and shows reason_for_user() instead of retrying.
+            return {"stop_for_user": True}
+
+        elif self.error_type == OrcaErrorType.SCAN_STEP_NOT_CONVERGED:
+            # A driven coordinate cannot converge by trust-radius tuning;
+            # nothing is changed and the user decides.
+            return {"stop_for_user": True}
+
         return {}
+
+    def reason_for_user(self) -> Optional[str]:
+        """What the user is told when this failure is theirs to decide.
+
+        Returned for the failures no mechanical fix answers (a scan whose
+        constraints cannot hold, an unconverged scan step); None for the
+        classes the recovery loop heals itself. Sourced from the run's own
+        output when the caller set ``output_file``.
+        """
+        if self.error_type == OrcaErrorType.SCAN_CONSTRAINT_ERROR:
+            return ("The scan's start geometry cannot satisfy its initial "
+                    "constraints (ORCA: 'GSTEP: could not impose initial "
+                    "constraints'). The scan needs a different start "
+                    "geometry or constraints; retrying the same input "
+                    "fails identically. DELFIN did not change anything.")
+        if self.error_type == OrcaErrorType.SCAN_STEP_NOT_CONVERGED:
+            return ("A constrained scan step ran out of optimization cycles "
+                    "(ORCA: 'the optimization did not converge but reached "
+                    "the maximum number of optimization cycles'); the "
+                    "PROPERTIES/SHARK stage then aborted on the incomplete "
+                    "step. The driven coordinate is why the step cannot "
+                    "converge — trust-radius changes do not apply. Options "
+                    "are yours to choose: more or smaller scan steps, or "
+                    "the scan started from the other side of the coordinate.")
+        return None
 
     def _printed_esd_grid(self) -> tuple:
         """(number of points, maximum time in a.u.) the failed ESD run printed, or (None, None)."""
@@ -1384,15 +1519,11 @@ class OrcaInputModifier:
     def _continue_from_own_geometry(items, xyz_file: Path) -> None:
         if not xyz_file.exists():
             return
+        atoms = _own_geometry_atoms(xyz_file)
+        if atoms is None:
+            logger.info("Keeping the input's coordinates; %s is not this job's geometry", xyz_file.name)
+            return
         try:
-            rows = xyz_file.read_text(encoding="utf-8", errors="replace").splitlines()
-            n_atoms = int(rows[0].split()[0])
-            atoms = []
-            for row in rows[2:2 + n_atoms]:
-                parts = row.split()
-                atoms.append((parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
-            if len(atoms) != n_atoms:
-                raise ValueError("fewer atoms than announced")
             orca_input.with_coordinates(items, atoms)
         except (ValueError, IndexError, orca_input.OrcaInputError) as exc:
             logger.info("Keeping the input's coordinates; %s is not this job's geometry (%s)", xyz_file.name, exc)

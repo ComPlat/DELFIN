@@ -617,6 +617,121 @@ def unsafe_install_refusal(cmd: str, session_python: str, *,
     return None
 
 
+#: conda / mamba / micromamba subcommands that write an environment
+#: (``env create|update|remove`` included).
+_CONDA_PROGRAMS = frozenset({"conda", "mamba", "micromamba"})
+_CONDA_WRITING_SUBCOMMANDS = frozenset({
+    "create", "install", "update", "upgrade", "remove", "uninstall"})
+#: Short options that take a value; in a cluster the value is the rest of
+#: the word (``-yp /x``, ``-nmlip``).
+_CONDA_SHORT_VALUE_OPTS = frozenset("npcfr")
+#: Options whose value is the next word, passed over when looking for the
+#: subcommand (``micromamba -r /root create``).
+_CONDA_VALUE_OPTS = frozenset({
+    "-r", "--root-prefix", "--rc-file", "-n", "--name", "-p", "--prefix",
+    "-c", "--channel", "-f", "--file"})
+
+
+def conda_env_writes(rest: list[str]) -> Optional[tuple[str, list[str], bool]]:
+    """What a conda / mamba / micromamba argument list writes, or None.
+
+    Input: the arguments after the program name, quotes removed. Output
+    for a writing subcommand (``_CONDA_WRITING_SUBCOMMANDS``, also after
+    ``env``): (subcommand, the directories named by ``-p`` / ``--prefix``
+    / ``--prefix=`` / ``p`` in a short cluster, whether the environment
+    lies under the program's root prefix). Under the root prefix means:
+    ``-r`` / ``--root-prefix`` given, or no directory named and either
+    ``-n`` / ``--name`` given or the subcommand is ``create`` (``env create
+    -f FILE`` takes the name from the file). None for every other
+    subcommand and for ``-h`` / ``--help``.
+
+    The root prefix is the program's configuration (``MAMBA_ROOT_PREFIX``,
+    ``.condarc``), not the command text, so no path can be judged; the
+    caller asks instead (api_client, own-dialog tier).
+    """
+    if any(a in ("-h", "--help") for a in rest):
+        return None
+    words: list[str] = []
+    skip = False
+    for a in rest:
+        if skip:
+            skip = False
+            continue
+        if a in _CONDA_VALUE_OPTS:
+            skip = True
+            continue
+        if not a.startswith("-"):
+            words.append(a)
+    sub = words[1] if words[:1] == ["env"] and len(words) > 1 else (
+        words[0] if words else "")
+    if sub not in _CONDA_WRITING_SUBCOMMANDS:
+        return None
+    prefixes: list[str] = []
+    named = root = False
+    for i, a in enumerate(rest):
+        nxt = rest[i + 1] if i + 1 < len(rest) else ""
+        if a in ("-p", "--prefix"):
+            if nxt:
+                prefixes.append(nxt)
+        elif a.startswith("--prefix="):
+            prefixes.append(a.split("=", 1)[1])
+        elif a in ("-n", "--name") or a.startswith("--name="):
+            named = True
+        elif a in ("-r", "--root-prefix") or a.startswith("--root-prefix="):
+            root = True
+        elif a.startswith("-") and not a.startswith("--"):
+            for k, ch in enumerate(a[1:], start=1):
+                if ch in _CONDA_SHORT_VALUE_OPTS:
+                    val = a[k + 1:].lstrip("=") or nxt
+                    if ch == "p" and val:
+                        prefixes.append(val)
+                    elif ch == "n":
+                        named = True
+                    elif ch == "r":
+                        root = True
+                    break
+    under_root = root or (not prefixes and (named or sub == "create"))
+    return sub, prefixes, under_root
+
+
+def root_prefix_env_command(cmd: str, _depth: int = 0) -> str:
+    """The first conda / mamba / micromamba command in *cmd* that writes an
+    environment under the program's root prefix (:func:`conda_env_writes`),
+    as ``"<program> <subcommand>"``, or "".
+
+    Read like :func:`unsafe_install_refusal`: per shell segment after
+    quote removal, leading assignments and wrappers dropped, ``sh -c`` /
+    ``eval`` payloads and command substitutions read as commands.
+    """
+    if not cmd or not cmd.strip() or _depth > 3:
+        return ""
+    for m in _SUBSTITUTION_RE.finditer(cmd):
+        hit = root_prefix_env_command(m.group(1) or m.group(2) or "",
+                                      _depth + 1)
+        if hit:
+            return hit
+    for seg in _segments(cmd):
+        argv = _strip_prefix(seg, set())
+        if not argv:
+            continue
+        base = os.path.basename(argv[0])
+        rest = argv[1:]
+        if base in _SHELLS and "-c" in rest:
+            at = rest.index("-c") + 1
+            hit = root_prefix_env_command(
+                rest[at] if at < len(rest) else "", _depth + 1)
+        elif base == "eval":
+            hit = root_prefix_env_command(" ".join(rest), _depth + 1)
+        elif base in _CONDA_PROGRAMS:
+            got = conda_env_writes(rest)
+            hit = f"{base} {got[0]}" if got and got[2] else ""
+        else:
+            hit = ""
+        if hit:
+            return hit
+    return ""
+
+
 def _session_python() -> str:
     """:func:`delfin.installer.session_python`, or '' when it cannot load."""
     try:
@@ -977,15 +1092,23 @@ def _unsandboxed_argv(cmd: str, repo_dir: Path, mode: str, *,
     conf = confinement(SandboxConfig(mode, allow_network, 0))
     if conf.filesystem != "landlock":
         return base
-    from .api_client import _landlock_hide_paths, _private_tmp_dir
+    from .api_client import (_landlock_hide_paths, _private_tmp_dir,
+                             _session_scratch_dir)
     from . import landlock_exec as _ll
     repo = str(Path(repo_dir).resolve())
     argv = [sys.executable, "-I", str(Path(_ll.__file__).resolve()),
             "--write", repo]
+    # The session scratch dir: writable, and the tmpdir the helper maps.
+    try:
+        scratch = _session_scratch_dir()
+        argv += ["--write", scratch]
+        tmpdir = scratch
+    except Exception:
+        tmpdir = _private_tmp_dir()
     for h in _landlock_hide_paths([repo, _private_tmp_dir()]):
         argv += ["--hide", h]
     strict = "1" if conf.network_restricted else "0"
-    return argv + ["--tmpdir", _private_tmp_dir(),
+    return argv + ["--tmpdir", tmpdir,
                    "--net", conf.landlock_net,
                    "--strict", strict, "--"] + base
 
@@ -1020,7 +1143,59 @@ _HOME_SECRET_DIRS = (
     # the real ones wherever ctun keeps them.
     ".config/cluster-tunnel",
     ".cache/cluster-tunnel",
+    ".delfin/messenger_sessions",
+    # The user's schedules (delfin.agent.schedules): what runs unattended
+    # is the user's to write and confirm, never an agent's.
+    ".delfin/user_schedules",
+    # The workspace freedom profiles (delfin.agent.workspace_profiles)
+    # share the schedules directory.
+    ".delfin/user_schedules/workspace_profiles.json",
 )
+
+
+#: Paths a run hides from its own cage: absolute paths joined by
+#: ``os.pathsep``, set by whoever starts the session (a swarm launcher).
+RUN_HIDE_ENV = "DELFIN_CAGE_HIDE"
+
+
+def run_hidden_paths() -> list[str]:
+    """The existing absolute paths named by ``DELFIN_CAGE_HIDE``, resolved.
+
+    Input: the environment of the session that builds the cage. Output:
+    each entry that is absolute and exists, resolved, once. Semantics:
+    hiding only removes access -- every cage layer masks these AFTER its
+    binds like the home secret directories, and the file tools refuse them
+    inside a readable root. Relative, empty and missing entries are
+    ignored (a mount point must exist). Read per cage build, from the
+    session's own environment, so a command inside the cage cannot change
+    what its cage hides. Never raises."""
+    out: list[str] = []
+    for raw in str(os.environ.get(RUN_HIDE_ENV) or "").split(os.pathsep):
+        raw = raw.strip()
+        if not raw or not os.path.isabs(raw):
+            continue
+        try:
+            p = Path(raw).resolve()
+            if p.exists() and str(p) not in out:
+                out.append(str(p))
+        except OSError:
+            continue
+    return out
+
+
+def _bwrap_hide_args(paths) -> list[str]:
+    """bubblewrap masks for ``paths``: tmpfs over a directory, /dev/null
+    over a file -- the same two forms the home secret paths use."""
+    args: list[str] = []
+    for p in paths:
+        try:
+            if os.path.isdir(p):
+                args += ["--tmpfs", p]
+            elif os.path.isfile(p):
+                args += ["--ro-bind", "/dev/null", p]
+        except OSError:
+            continue
+    return args
 
 
 def runtime_masked_dirs() -> list[str]:
@@ -1052,6 +1227,12 @@ def runtime_masked_dirs() -> list[str]:
         out += [d for d in _ctun_dirs() if d not in out]
     except Exception:
         pass
+    # Not the messenger's activation records: they live in
+    # ~/.delfin/messenger_sessions, masked with the other home secrets
+    # (_HOME_SECRET_DIRS) and refused by the path deny globs, like the trust
+    # store. As a runtime mask the directory was created on every cage build,
+    # and a workspace containing it (a workspace at $HOME) lost its write
+    # root under Landlock, which cannot carve a hole into an allowed tree.
     return out
 
 
@@ -1091,8 +1272,22 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
         elif is_file:
             args += ["--ro-bind", "/dev/null", str(p)]
     args += ["--bind", repo, repo]
+    # The session scratch dir: bound read-write, TMPDIR/TMP/TEMP point at
+    # it (in-cage path == host path, "/" is bound at itself), so a file
+    # one command writes survives to the next and the file tools reach it.
+    try:
+        from .api_client import _session_scratch_dir
+        scratch = _session_scratch_dir()
+        args += ["--bind-try", scratch, scratch]
+        args += ["--setenv", "TMPDIR", scratch,
+                 "--setenv", "TMP", scratch,
+                 "--setenv", "TEMP", scratch]
+    except Exception:
+        pass
     for d in late_masks:
         args += ["--tmpfs", d]
+    # The run's own hidden paths, after every bind like the masks above.
+    args += _bwrap_hide_args(run_hidden_paths())
     args += [
         "--chdir", repo,
         "--unshare-pid",
@@ -1140,8 +1335,35 @@ def _firejail_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
     ]
     if not allow_network:
         args.append("--net=none")
+    for p in run_hidden_paths():
+        if any(ch in _FIREJAIL_PATTERN_CHARS or ord(ch) < 0x20 for ch in p):
+            raise ValueError(
+                f"firejail cannot blacklist {p!r}: it contains a pattern or "
+                "control character")
+        args.append(f"--blacklist={p}")
     args += [f"--chdir={repo}", "bash", "-c", cmd]
     return args
+
+
+def _command_env(mode: str) -> dict:
+    """The scrubbed environment for a command run under sandbox ``mode``.
+
+    ``_scrubbed_bash_env`` points TMPDIR/TMP/TEMP at the session scratch dir,
+    which is correct for the layers that bind that dir read-write into their
+    cage (bwrap, Landlock, Seatbelt, and no lock): a file one command writes
+    to $TMPDIR survives to the next and the file tools reach it. firejail is
+    the exception: it runs ``--private-tmp`` and does not bind the scratch
+    dir, so inside its cage a TMPDIR naming the host scratch would point at a
+    path that does not exist and mktemp plus every TMPDIR/TMP/TEMP user would
+    fail. For firejail keep the variables at /tmp (firejail's private
+    writable tmp), restoring the behaviour that predates the scratch dir.
+    """
+    from .api_client import _scrubbed_bash_env
+    env = _scrubbed_bash_env()
+    if mode == "firejail":
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            env[key] = "/tmp"
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -1296,13 +1518,14 @@ def run_agent_command(
     try:
         # Every mode: the shell's scrubbed environment (no provider keys),
         # its own session and process group, no terminal, the whole group
-        # ended at exit and at the timeout.
-        from .api_client import _scrubbed_bash_env
+        # ended at exit and at the timeout. TMPDIR points at the session
+        # scratch dir except under firejail (which does not bind it): see
+        # ``_command_env`` (which applies _scrubbed_bash_env itself).
         from . import contained_run as _contained
         proc = _contained.run(
             argv,
             cwd=str(repo_dir),
-            env=_scrubbed_bash_env(),
+            env=_command_env(cfg.mode),
             timeout=cfg.timeout_s,
             budget=True,
         )

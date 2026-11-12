@@ -1,0 +1,208 @@
+# W20 OR1: transition-state tasks (nacht-s14, package OR1).
+#
+# Five tasks, tiny systems only (<= 20 atoms, <= 3 heavy atoms mostly),
+# each graded on the PHYSICS its artifact carries, in the chem_*
+# pattern (tasks_chem.yaml): an acceptance script re-derives the
+# verdict from the artifact the run left behind, and the prose is
+# additionally judged on the values it states (expected_values bands).
+#
+# Grading invariants per task:
+#  - the "TS" carries exactly one imaginary mode (a trap task with two
+#    must be REFUSED, never graded as a pass);
+#  - the IRC endpoints are the stated minima;
+#  - the barrier is quoted within a literature band, at ONE level of
+#    theory, with ZPE from the same level.
+#
+# Literature bands (cited, marked as bands, not single numbers):
+#  - HCN <-> HNC isomerisation barrier (TS relative to HCN): ~48-50
+#    kcal/mol at correlated levels (e.g. ~48.6 kcal/mol, cc-pVTZ
+#    quality; sources: E. Herbst, and later CCSD(T) studies). Band
+#    used below: 45-53 kcal/mol, flagged as an estimate band for
+#    grading only.
+#  - SN2 identity F- + CH3F -> FCH3 + F-: gas phase, symmetric, the
+#    central barrier relative to SEPARATED REACTANTS is SUBMERGED:
+#    -0.45 +/- 0.10 kcal/mol classical central barrier height (best
+#    estimate; source: Szabo & Czako, J. Chem. Phys. 142, 244301
+#    (2015), DOI 10.1063/1.4921857). Band used below: -2 to +2
+#    kcal/mol relative to separated reactants (centred on the
+#    verified value, widened for the DFT levels a practice run uses).
+#    Regime corroboration only (no numbers quoted): Glukhovtsev et
+#    al., JACS 1996, 118, 11258-11264, DOI 10.1021/ja9620191.
+#
+# Offline grading: the acceptance scripts run through DELFIN's own
+# adapters with a mocked run layer where no compute is available, and
+# through the real runner on a compute node (DELFIN_CHEM_SLURM=1).
+
+tasks:
+
+  # ── TS task: the HCN <-> HNC isomerisation ────────────────────────────
+  - id: or1_hcn_hnc_ts_and_irc
+    # NOT task_class chemistry: that class is the cheap xtb-physics
+    # suite (test_chemistry_is_graded_on_the_physics forbids ORCA
+    # expectations there). OR1 runs real ORCA through DELFIN's own
+    # adapters, graded on the artifact, so it takes the class the
+    # rule does not cover (F-CI-1, operator finding on the
+    # PR-ready check at c7b6f13f; QS-informed, s14's recommendation
+    # (b) adopted — grading on inputs only would drop the artifact
+    # physics). Workspace mapping science_analysis -> science_workspace
+    # and the setup guard + count dict were updated in the same
+    # commit.
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In chem/hcn_hnc/ are start.xyz (linear HCN, the more stable
+      isomer) and hnc_guess.xyz (linear HNC). Find the transition
+      state of the HCN <-> HNC hydrogen-transfer isomerisation with
+      DELFIN's orca_ts_opt (OptTS, state your hessian_mode), verify it
+      with orca_ts_freq_check (exactly one imaginary mode, moving along
+      the H-transfer coordinate), run orca_ts_irc in both directions
+      from the TS, re-optimise both IRC endpoints and confirm they are
+      the two isomers. Report the barrier in kcal/mol relative to HCN
+      at ONE level of theory, with the ZPE correction from the same
+      level, and compare against the literature band 45-53 kcal/mol
+      (cited). Everything through DELFIN's steps; state the level used.
+    setup: w20_or1_seed.py
+    verify: w20_or1_ts_hcn_verify.py
+    expected_signals:
+      - pattern: '(?i)barrier (is|of|height)'
+        against: text
+      - pattern: '(?i)(orca_ts_opt|hessian_mode)'
+        against: text
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+      - pattern: '(?i)(kcal)'
+        against: text
+    forbidden_signals:
+      # Two imaginary modes means the structure is NOT a TS; calling
+      # it one is the failure mode this suite exists to catch.
+      - pattern: '(?i)(two|2|second)\s+(imaginary|imag)'
+        against: text
+    max_duration_s: 1800
+    max_cost_usd: 2.00
+    max_tool_calls: 40
+
+  # ── scan task: methyl rotation in ethane ──────────────────────────────
+  - id: or1_ethane_methyl_rotation_scan
+    # See the comment at or1_hcn_hnc_ts_and_irc: real-ORCA TS tasks are
+    # graded on the artifact, so not the chemistry class (F-CI-1).
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In chem/ethane/ there is start.xyz of ethane. Set up a relaxed
+      dihedral scan of the H-C-C-H torsion through 360 degrees
+      (ORCA %geom constraint scan, through DELFIN's adapters with the
+      constraint in the input), report the barrier for the eclipsed
+      conformation in kcal/mol relative to staggered, and state the
+      level of theory. Pre-optimise with xtb_opt first (cheap-first),
+      final level stated.
+    setup: w20_or1_seed.py
+    verify: w20_or1_scan_ethane_verify.py
+    expected_signals:
+      - pattern: '(?i)barrier (is|of|height)'
+        against: text
+      - pattern: '(?i)(xtb)'
+        against: any
+      - pattern: '(?i)(scan|constraint)'
+        against: text
+      - pattern: '(?i)(kcal)'
+        against: text
+    expected_values:
+      # Ethane rotational barrier: experimental ~2.9 kcal/mol (well
+      # known); xTB and DFT both land in 2.5-3.2. Wide band, grading only.
+      - label: ethane_rotation_barrier_kcal
+        value: 2.9
+        tolerance: 0.6
+        against: text
+    max_duration_s: 1200
+    max_cost_usd: 1.00
+    max_tool_calls: 30
+
+  # ── SN2 identity reaction: symmetric TS ───────────────────────────────
+  - id: or1_sn2_identity_barrier
+    # See the comment at or1_hcn_hnc_ts_and_irc (F-CI-1).
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In chem/sn2/ are start.xyz (CH3F) and f_anion.xyz (F-, charge
+      -1). Find the symmetric TS of the identity SN2 reaction
+      F- + CH3F -> FCH3 + F- with DELFIN's orca_ts_opt, verify exactly
+      one imaginary mode with orca_ts_freq_check (it must be the C-F
+      stretching coordinate), and report the barrier in kcal/mol
+      relative to separated reactants (gas phase; note the central
+      barrier for this identity reaction is submerged, near 0) at one
+      level with ZPE same level; literature band -2 to +2 kcal/mol
+      relative to separated reactants (cited: Szabo & Czako, JCP
+      2015, DOI 10.1063/1.4921857).
+    setup: w20_or1_seed.py
+    verify: w20_or1_ts_sn2_verify.py
+    expected_signals:
+      - pattern: '(?i)barrier (is|of|height)'
+        against: text
+      - pattern: '(?i)(orca_ts_opt|hessian_mode)'
+        against: text
+      - pattern: '(?i)(imaginary|imag)'
+        against: text
+    expected_values:
+      # Barrier relative to separated reactants, gas phase; the
+      # central barrier is submerged (-0.45 +/- 0.10, DOI
+      # 10.1063/1.4921857), so the graded band is centred on ~0, not
+      # on a positive 15.0. Marked as an estimate band for grading
+      # only, widened for the DFT levels a practice run uses.
+      - label: sn2_central_barrier_vs_reactants_kcal
+        value: 0.0
+        tolerance: 2.0
+        against: text
+    max_duration_s: 1800
+    max_cost_usd: 2.00
+    max_tool_calls: 40
+
+  # ── verification-only task: judge a given TS candidate ────────────────
+  - id: or1_ts_candidate_verdict
+    # See the comment at or1_hcn_hnc_ts_and_irc (F-CI-1).
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In chem/ts_candidate/ there is ts_candidate.xyz, a candidate
+      transition state from a previous run. Run orca_ts_freq_check on
+      it at a stated level and report the verdict: is it a transition
+      state (exactly one imaginary mode, moving along the stated
+      coordinate) or not? Report n_imag and the imaginary frequency in
+      cm-1 as printed (negative). Do NOT call it a TS unless the
+      verdict is a real TS.
+    setup: w20_or1_seed.py
+    verify: w20_or1_ts_verdict_verify.py
+    expected_signals:
+      - pattern: '(?i)(orca_ts_freq_check|n_imag)'
+        against: text
+      - pattern: '(?i)cm(\.|\s|\u00b7)?-?1'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.00
+    max_tool_calls: 20
+
+  # ── the trap: a two-imaginary-mode "TS" must be refused ───────────────
+  - id: or1_two_imaginary_trap_refused
+    # See the comment at or1_hcn_hnc_ts_and_irc (F-CI-1).
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In chem/trap_ts/ there is ts_trap.xyz, which a colleague calls
+      "the transition state". Verify it with orca_ts_freq_check at a
+      stated level. If it is not a TS (for example two imaginary
+      modes), say so plainly and DO NOT report a barrier for it; state
+      what you would do next instead (displace along the spurious mode
+      and re-optimise). Never hide the mode count.
+    setup: w20_or1_trap_seed.py
+    verify: w20_or1_trap_verify.py
+    expected_signals:
+      - pattern: '(?i)(not a (true |valid )?(transition state|ts)|two imaginary|2 imaginary|second imaginary|higher.order)'
+        against: text
+      - pattern: '(?i)(imaginary|n_imag)'
+        against: text
+    forbidden_signals:
+      # A barrier for a structure that is not a TS.
+      - pattern: '(?i)(barrier (is|of|=)\s*[0-9])'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.00
+    max_tool_calls: 20

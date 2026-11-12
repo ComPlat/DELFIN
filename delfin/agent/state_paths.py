@@ -642,6 +642,12 @@ def workspace_state_dir(workspace: Any) -> Path:
 
 #: ``(module, attribute, relative path under the redirected home)``.
 USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
+    ("delfin.messenger.activation", "_DIR", "messenger_sessions"),
+    # The user's schedules: a test's entry would run in the real service.
+    ("delfin.agent.schedules", "_DIR", "user_schedules"),
+    # The workspace freedom profiles share that directory: a test's "free"
+    # profile would open the caged bypass for a real scheduled run.
+    ("delfin.agent.workspace_profiles", "_DIR", "user_schedules"),
     ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
     # `delfin-agent pause <session>` flags. A test's flag would pause a real
     # session of the same name.

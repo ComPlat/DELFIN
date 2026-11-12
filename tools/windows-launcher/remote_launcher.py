@@ -1,4 +1,4 @@
-"""Executed in memory through the authenticated SSH connection; no upload/install."""
+"""Server half of the Windows launcher: a plain file the app copies once per version to ~/.cache/delfin-launcher/<version>/ and remote_bootstrap.sh runs."""
 import base64
 import os
 import re
@@ -46,10 +46,19 @@ def return_url(record, sessions):
 
 
 def shell_environment():
-    """Pass the selected environment explicitly; tmux may have an older server environment."""
-    return ' '.join(shlex.quote(key + '=' + os.environ[key])
-                    for key in ('PATH', 'VIRTUAL_ENV', 'CONDA_PREFIX', 'PYTHONPATH', 'PS1')
-                    if key in os.environ)
+    """Pass the selected environment explicitly; tmux may have an older server environment.
+
+    HOME and DELFIN_* too: the tmux server keeps the environment of whoever
+    started it, and with several people on one account (DELFIN_PERSON) that
+    is someone else's home, state and agent service."""
+    keys = ['PATH', 'VIRTUAL_ENV', 'CONDA_PREFIX', 'PYTHONPATH', 'PS1', 'HOME']
+    keys += sorted(key for key in os.environ if key.startswith('DELFIN_'))
+    return ' '.join(shlex.quote(key + '=' + os.environ[key]) for key in keys if key in os.environ)
+
+
+#: `python -c` puts the current directory first on sys.path; a plain folder
+#: named "delfin" there would shadow the package (remote_bootstrap.sh).
+NO_CWD = 'import sys; sys.path[:] = [p for p in sys.path if p not in ("", ".")]; '
 
 
 def working_shell_command(directory):
@@ -180,7 +189,8 @@ def main():
     tunnel_path = sys.argv[4] if len(sys.argv) > 4 else ''
     keep = len(sys.argv) <= 5 or sys.argv[5] == '1'
     working = len(sys.argv) > 6 and sys.argv[6] == '1'
-    name = f'delfin-win-{preferred}'
+    person = os.environ.get('DELFIN_PERSON', '')
+    name = f'delfin-win-{person}-{preferred}' if re.fullmatch(r'[a-z0-9_-]{1,32}', person) else f'delfin-win-{preferred}'
     port = preferred
     tmux = shutil.which('tmux')
     record = where.dashboard()
@@ -212,7 +222,7 @@ def main():
                        + ' && exec env DELFIN_AGENT_SANDBOX=auto DELFIN_AGENT_SANDBOX_NETWORK=0 '
                        + ('DELFIN_KEEP_SESSIONS=1 ' if keep else 'DELFIN_KEEP_SESSIONS=0 ')
                        + shell_environment() + ' ' + shlex.quote(python)
-                       + ' -c ' + shlex.quote('from delfin.cli_voila import main; raise SystemExit(main())')
+                       + ' -c ' + shlex.quote(NO_CWD + 'from delfin.cli_voila import main; raise SystemExit(main())')
                        + f' --no-browser --ip 127.0.0.1 --strict-port --port {port}'
                        + (' --keep --resume latest' if keep else ''))
             subprocess.run([tmux, 'new-session', '-d', '-s', name, '-x', '240', '-y', '50',

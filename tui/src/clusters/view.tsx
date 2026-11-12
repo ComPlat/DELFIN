@@ -1,7 +1,7 @@
 /**
  * DELFIN's clusters and what runs in the background: two screens of the
  * window's own, from the agent service's clusters.list and jobs.list
- * (serviceVersion 4 and later).
+ * (serviceVersion 5 and later).
  *
  *   /clusters   every cluster of remote.clusters: logged in, logged out or
  *               refused, its target, and while logged in the session
@@ -40,10 +40,10 @@ import type { Theme } from "../theme/theme"
 export type Screen = "clusters" | "jobs"
 
 /** The first service that answers clusters.list, cluster.login/logout and jobs.list. */
-export const CLUSTERS_SERVICE_VERSION = 4
+export const CLUSTERS_SERVICE_VERSION = 5
 
 /** The first that answers cluster.detail and job.detail (space). */
-export const DETAILS_SERVICE_VERSION = 5
+export const DETAILS_SERVICE_VERSION = 6
 
 /** How often an open screen asks the service again. */
 export const CLUSTERS_POLL_MS = 5000

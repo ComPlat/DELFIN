@@ -45,7 +45,8 @@ export const DEFAULT_KEYS: Readonly<Record<Action, readonly string[]>> = {
   agentsPeek: ["space"],            // with nothing typed
   agentsBack: ["escape", "left"],   // left with nothing typed
   agentsStop: ["ctrl+x"],
-  agentsRename: ["ctrl+r"],
+  // F2 too, the common rename key: no plain letter can rename here.
+  agentsRename: ["ctrl+r", "f2"],
   agentsPin: ["ctrl+t"],
   // /clusters and /jobs: back to the conversation, as from the agent view.
   clustersBack: ["escape", "left"],

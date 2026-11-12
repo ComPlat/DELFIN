@@ -91,10 +91,14 @@ def _page_csp() -> str:
         implements CSP Level 3 matches ``ws:``/``wss:`` to the page's own
         origin under ``'self'``.
 
-    Not allowed, and measured to cost nothing: Voila's template links
-    Font Awesome from ``cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@^5``
-    (a version range, no SRI). The same font is bundled in Voila's and the
-    widget manager's own scripts and renders from there.
+    Not allowed: Font Awesome from ``cdn.jsdelivr.net/npm/@fortawesome/
+    fontawesome-free@^5`` (a version range, no SRI), which Voila's ``lab``
+    template links. The same Font Awesome 5.15.4 with its v4 shims is
+    bundled in Voila's ``voila-style.js`` and its fonts are served from
+    this origin (``'self'``), so the icons render from there; the
+    dashboard's page template (``voila_assets/jupyter_data/nbconvert/
+    templates/delfin``, selected by ``cli_voila``) drops the two links, so
+    the page no longer asks for them and logs no violation.
     """
     scripts = " ".join(_pinned_cdn.urls("script"))
     styles = " ".join(_pinned_cdn.urls("style"))

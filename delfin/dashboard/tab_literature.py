@@ -19,6 +19,7 @@ import ipywidgets as widgets
 
 from . import text_view as _text_view
 from . import upload_limits as _upload_limits
+from .select_state import replace_options as _replace_options
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +515,19 @@ def create_tab(ctx):
                     setTimeout(function() {{ initLitSplitter((attempt||0)+1); }}, 100);
                     return;
                 }}
+                // Built before it is shown: wait for this tab's root rather
+                // than giving up after 4 s (the splitter stayed unbound).
+                var waits = (window.__delfinLitRootWaits = window.__delfinLitRootWaits || {{}});
+                if (!waits['{scope_id}']) {{
+                    waits['{scope_id}'] = new MutationObserver(function() {{
+                        if (document.querySelector('.{scope_id}')) {{
+                            waits['{scope_id}'].disconnect();
+                            delete waits['{scope_id}'];
+                            initLitSplitter(0);
+                        }}
+                    }});
+                    waits['{scope_id}'].observe(document.body, {{childList: true, subtree: true}});
+                }}
                 return;
             }}
             /* --- Register this tab for the shared explorer upload bridge --- */
@@ -710,7 +724,7 @@ def create_tab(ctx):
 
         cur = _cur_dir()
         if not cur.exists():
-            lit_file_list.options = ['(Folder not found)']
+            _replace_options(lit_file_list, ['(Folder not found)'])
             lit_copy_path_btn.disabled = True
             return
 
@@ -741,17 +755,17 @@ def create_tab(ctx):
             items = ['(Permission denied)']
 
         state['all_items'] = items
-        lit_file_list.options = items if items else ['(Empty — drop files here)']
+        _replace_options(lit_file_list, items if items else ['(Empty — drop files here)'])
 
     # ── Filter ────────────────────────────────────────────────────────
 
     def filter_list(change=None) -> None:
         query = lit_filter.value.strip().lower()
         if not query:
-            lit_file_list.options = state['all_items'] or ['(Empty — drop files here)']
+            _replace_options(lit_file_list, state['all_items'] or ['(Empty — drop files here)'])
             return
         filtered = [it for it in state['all_items'] if query in it.lower()]
-        lit_file_list.options = filtered if filtered else ['(No matches)']
+        _replace_options(lit_file_list, filtered if filtered else ['(No matches)'])
 
     # ── Open / preview file ───────────────────────────────────────────
 

@@ -111,7 +111,7 @@ dependencies = [
     "voila>=0.5.6,<0.6",
     "jupyter-server>=2.20.0,<3",
     "tornado>=6.5.9,<7",
-    "Pillow>=10,<13",
+    "Pillow>=13,<14",
     # PyMuPDF (the PDF viewer) is the [pdf] extra below, not a core
     # dependency: it is AGPL-3.0, stronger copyleft than DELFIN's own
     # licence.
@@ -145,6 +145,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+messenger = ["websockets"]
 # PyMOL renders the ESP, dipole-moment and orbital pictures of the Word and
 # ESD reports (delfin/reporting/esp_report.py, delfin_docx_report.py). Without
 # it those pictures are skipped with a logged notice and every other part of
@@ -220,8 +221,11 @@ analysis = [
 # property file's JSON WITHOUT its energies and without a word, so
 # get_final_energy() returns None for an energy that exists. DELFIN's
 # text parser stays the reader of record; OPI is the structured witness.
+# One exact version everywhere (tests/test_opi_is_the_same_everywhere.py):
+# an input another OPI would build differently is another calculation.
+# delfin.doctor.OPI_VERSION names the same version.
 orca = [
-    "orca-pi>=2,<3",
+    "orca-pi==2.0.0",
 ]
 ai-foundation = [
     "transformers",
@@ -335,7 +339,7 @@ dev = [
     # and a test of "any text" should not change verdict with the tool.
     # 6.168.3 is the newest that still supports Python 3.10 (6.169 needs
     # 3.11) and was more than two weeks old on 2026-10-16.
-    "hypothesis==6.168.3",
+    "hypothesis==6.168.5",
     # The [pdf] extra, written out for the same reason, so the PDF tests
     # run in CI (which installs dev) instead of skipping.
     "pymupdf>=1.24,<2",
@@ -360,6 +364,7 @@ delfin-voila = "delfin.cli_voila:main"
 delfin-step = "delfin.cli_step:main"
 delfin-pipeline = "delfin.cli_pipeline:main"
 delfin-docs-index = "delfin.doc_server.indexer:main"
+delfin-dev = "delfin.dev_cli:main"
 delfin-tools-server = "delfin.tools.mcp_server:main"
 delfin-app = "delfin.cli_app:main"
 delfin-agent = "delfin.agent.cli:main"
@@ -404,9 +409,13 @@ include = ["delfin*"]
 "delfin.dashboard" = ["static/*.js", "static/*.txt"]
 "delfin.agent.pack" = ["**/*.md", "**/*.yaml", "skills/*.md"]
 "delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
+# The ORCA knowledge cards and the keyword catalog of the pinned OPI.
+"delfin.orca_knowledge" = ["*.json", "cards/*.json"]
 "delfin.notebooks" = ["*.ipynb"]
-"delfin.manta" = ["*.md"]
-"delfin.voila_assets" = ["login_templates/*.html"]
+# The simulated demo lab: the smoke check and the tests load it as data.
+"delfin.lab" = ["examples/*.yaml"]
+"delfin.manta" = ["*.md", "data/*.tsv", "data/*.json"]
+"delfin.voila_assets" = ["login_templates/*.html", "jupyter_data/nbconvert/templates/delfin/*"]
 
 # Whatever an installer left in the source tree stays out of the wheel even
 # when MANIFEST.in would let it in (MANIFEST.in prunes the same directories
