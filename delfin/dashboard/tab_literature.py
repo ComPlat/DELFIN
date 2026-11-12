@@ -514,6 +514,19 @@ def create_tab(ctx):
                     setTimeout(function() {{ initLitSplitter((attempt||0)+1); }}, 100);
                     return;
                 }}
+                // Built before it is shown: wait for this tab's root rather
+                // than giving up after 4 s (the splitter stayed unbound).
+                var waits = (window.__delfinLitRootWaits = window.__delfinLitRootWaits || {{}});
+                if (!waits['{scope_id}']) {{
+                    waits['{scope_id}'] = new MutationObserver(function() {{
+                        if (document.querySelector('.{scope_id}')) {{
+                            waits['{scope_id}'].disconnect();
+                            delete waits['{scope_id}'];
+                            initLitSplitter(0);
+                        }}
+                    }});
+                    waits['{scope_id}'].observe(document.body, {{childList: true, subtree: true}});
+                }}
                 return;
             }}
             /* --- Register this tab for the shared explorer upload bridge --- */

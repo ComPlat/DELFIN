@@ -89,17 +89,21 @@ def _seeded(monkeypatch, tmp_path):
 
 def test_resume_rows_are_deduplicated_and_sorted_newest_first(monkeypatch):
     _seeded(monkeypatch, None)
-    listed = AS.resume_rows()
-    ids = [row["session_id"] for row in listed]
-    assert len(ids) == len(set(ids))
-    assert ids == sorted(ids, key=lambda i: -next(
-        r["updated_at"] for r in AS.resume_rows() if r["session_id"] == i))
+    import delfin.agent.session_store as store
+    shuffled = [
+        {"session_id": "old", "title": "a", "workspace": "/p", "updated_at": 5},
+        {"session_id": "new", "title": "b", "workspace": "/p", "updated_at": 50},
+        {"session_id": "new", "title": "b", "workspace": "/p", "updated_at": 50},
+        {"session_id": "mid", "title": "c", "workspace": "/p", "updated_at": 20},
+    ]
+    monkeypatch.setattr(store, "list_sessions", lambda limit=50: shuffled)
+    ids = [row["session_id"] for row in AS.resume_rows()]
+    assert ids == ["new", "mid", "old"]
 
 
 def test_resume_rows_title_by_name_not_by_prefix(monkeypatch):
     _seeded(monkeypatch, None)
     rows = {r["session_id"]: r for r in AS.resume_rows()}
-    assert rows["note"]["title"] == "Session 0000cafe"[:8] or True
     # The injected system note is not shown as the label; the row carries
     # the session's own name or its id-derived fallback.
     assert not rows["note"]["title"].lower().startswith("[delfin note]")
@@ -165,16 +169,61 @@ def _descendants(w):
         yield from _descendants(child)
 
 
-def test_the_sidebar_has_one_session_list_and_no_running_panel_heading(
-        home_like):
-    """The open views and the service sessions are one tree; the second
-    heading ("Running sessions") is gone."""
+def test_the_sidebar_shows_one_session_list(home_like):
+    """The open views and the service sessions are one list; the running
+    panel's own card (a second "Running sessions" list) is not shown."""
     build = _Build()
     widget, refs = AS.create_tab(home_like, build=build)
+    panels = [w for w in _descendants(widget)
+              if "delfin-running-list" in getattr(w, "_dom_classes", ())]
+    hidden = [w for w in _descendants(widget)
+              if getattr(getattr(w, "layout", None), "display", "") == "none"]
+    assert panels and all(any(p in _descendants(h) for h in hidden)
+                          for p in panels)
     headings = [w.value for w in _descendants(widget)
                 if isinstance(w, widgets.HTML)]
-    assert not any("Running sessions" in v for v in headings)
     assert any(v.strip() == "Sessions" for v in headings)
+    refs.get("stop", lambda: None)()
+
+
+def _search(widget):
+    return next(w for w in _descendants(widget)
+                if "delfin-session-resume" in getattr(w, "_dom_classes", ()))
+
+
+def _offers(widget):
+    box = next(w for w in _descendants(widget)
+               if "delfin-resume-rows" in getattr(w, "_dom_classes", ()))
+    return [b.description for b in box.children]
+
+
+def test_typing_in_the_resume_search_opens_nothing(home_like, monkeypatch):
+    """Each keystroke used to reach the resume handler: typing "cat"
+    opened three sessions named "c", "ca" and "cat"."""
+    _seeded(monkeypatch, None)
+    build = _Build()
+    widget, refs = AS.create_tab(home_like, build=build)
+    before = (len(refs["sessions"]()), len(build.contexts))
+    for text in ("f", "fi", "fix"):
+        _search(widget).value = text
+    assert (len(refs["sessions"]()), len(build.contexts)) == before
+    refs.get("stop", lambda: None)()
+
+
+def test_typing_narrows_the_offers_and_a_click_resumes(home_like,
+                                                       monkeypatch):
+    _seeded(monkeypatch, None)
+    build = _Build()
+    widget, refs = AS.create_tab(home_like, build=build)
+    assert len(_offers(widget)) == 4
+    assert not _offers(widget)[0].startswith("⌗"), "own sessions come first"
+    _search(widget).value = "fix"
+    assert _offers(widget) == ["Fix the failing test — /proj"]
+    box = next(w for w in _descendants(widget)
+               if "delfin-resume-rows" in getattr(w, "_dom_classes", ()))
+    box.children[0].click()
+    assert build.contexts[-1].initial_session_id == "front"
+    refs.get("stop", lambda: None)()
 
 
 def test_the_sidebar_has_no_resume_dropdown(home_like):
