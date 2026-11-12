@@ -231,7 +231,7 @@ $(nft_part_of)
 User=${GW_USER}
 Group=${GW_USER}
 $(nft_start_line)
-ExecStart=${PREFIX}/bin/simplex-chat -d ${STATE_DIR}/simplex.db --chat-server-port ${API_PORT} --files-folder ${STATE_DIR} --auto-accept-files 0 --create-bot-display-name ${BOT_NAME} --create-bot-allow-files
+ExecStart=${PREFIX}/bin/simplex-chat -d ${STATE_DIR}/simplex.db --chat-server-port ${API_PORT} --files-folder ${STATE_DIR} --temp-folder ${STATE_DIR}/tmp --auto-accept-files 0 --create-bot-display-name ${BOT_NAME} --create-bot-allow-files
 Restart=on-failure
 RestartSec=5
 
@@ -667,6 +667,12 @@ case "${action}" in
     ensure_user
     install -d -m 0755 -o root -g root "${PREFIX}" "${PREFIX}/bin"
     install -d -m 0700 -o "${GW_USER}" -g "${GW_USER}" "${STATE_DIR}"
+    # The daemon's temp folder on the state directory's own filesystem: an
+    # XFTP download is decrypted in the temp folder and then renamed to its
+    # target, and the default (the unit's private /tmp, a tmpfs) made that
+    # rename fail with EXDEV -- no received voice message or file ever
+    # completed (measured on the Pi, 2026-11-12).
+    install -d -m 0700 -o "${GW_USER}" -g "${GW_USER}" "${STATE_DIR}/tmp"
     if [ -x "${PREFIX}/bin/simplex-chat" ]; then
       say "${PREFIX}/bin/simplex-chat already present -- keeping it (delete to re-download)"
     else

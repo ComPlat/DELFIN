@@ -135,6 +135,17 @@ async def _best_effort(what, call):
         print(f'[gateway] {what}: {type(exc).__name__}', file=sys.stderr, flush=True)
 
 
+def _log_media_failure(task):
+    """A failed attachment task: its exception type in the log (never its
+    text, which may carry a path or a name). It was retrieved and dropped,
+    so a voice message that never completed left no trace at all."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        print(f'[gateway] attachment: {type(exc).__name__}', file=sys.stderr, flush=True)
+
+
 def _outcome(result):
     """Record what became of the message being handled (eventlog)."""
     box = _OUTCOME.get()
@@ -2264,7 +2275,7 @@ class Rooms:
                         pending = asyncio.create_task(self.handle(message))
                         media_tasks.add(pending)
                         pending.add_done_callback(media_tasks.discard)
-                        pending.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                        pending.add_done_callback(_log_media_failure)
                     else:
                         await self.handle(message)
         finally:

@@ -135,3 +135,21 @@ def test_a_spoken_answer_to_a_question_is_the_whole_transcript(rig):
     _voice(rooms, "Wasser, bitte.", quote_id=mid)
     answers = [c for c in bridge.calls if c.get("action") == "answer"]
     assert [(c["id"], c["text"]) for c in answers] == [("q1", "Wasser, bitte.")]
+
+
+def test_a_failed_attachment_task_is_logged_by_type(capsys):
+    """An attachment task that raised was dropped without a trace."""
+    import asyncio
+    from delfin.messenger import gateway
+
+    async def boom():
+        raise RuntimeError('/var/lib/secret/path')
+
+    async def run():
+        task = asyncio.create_task(boom())
+        await asyncio.gather(task, return_exceptions=True)
+        gateway._log_media_failure(task)
+
+    asyncio.run(run())
+    err = capsys.readouterr().err
+    assert '[gateway] attachment: RuntimeError' in err and 'secret' not in err
