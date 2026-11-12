@@ -161,12 +161,25 @@ def test_delete_key_deletes_exactly_the_items_it_named(calc):
     calc.key("delete")
     assert calc.confirm_open()
     assert "orca.out" in calc.refs["calc_delete_label"].value
-    # The selection moves on before Yes; Yes still means what it asked.
-    calc.select("input.txt")
     calc.yes.click()
     assert not (calc.root / "gamma" / "orca.out").exists()
     assert (calc.root / "gamma" / "input.txt").exists()
     assert (calc.root / "gamma").is_dir()
+
+
+def test_opening_another_item_closes_the_question_and_deletes_nothing(calc):
+    """Like a modal confirm in Explorer or Finder: the question belongs to
+    what it named. Moving on to another file closes it, and a stray Yes
+    afterwards deletes neither the named item nor the new selection."""
+    calc.enter("gamma")
+    calc.select("orca.out")
+    calc.key("delete")
+    assert calc.confirm_open()
+    calc.select("input.txt")
+    assert not calc.confirm_open()
+    calc.yes.click()
+    assert (calc.root / "gamma" / "orca.out").exists()
+    assert (calc.root / "gamma" / "input.txt").exists()
 
 
 def test_escape_answers_the_delete_question_with_no(calc):
