@@ -44,11 +44,15 @@ class TestLeadTools:
     def test_read_only_tools_are_declared(self):
         # The lead advertises exactly this surface; a name here that is
         # not implemented would be a dead tool on every request.
-        for name in ("swarm_status", "swarm_plan", "swarm_message",
-                     "swarm_triage_list"):
+        # v4 contract (operator, 2026-11-12): swarm_message SENDS a
+        # partner message -- it changes the member's inbox, so it is
+        # state-changing and the lead session confirms it with the
+        # user. The old grouping pinned it read-only; that decision
+        # is v4-superseded.
+        for name in ("swarm_status", "swarm_plan", "swarm_triage_list"):
             assert name in lead.READ_ONLY_TOOLS
-        for name in ("swarm_start", "swarm_pause", "swarm_resume",
-                     "swarm_triage_answer", "swarm_prcheck"):
+        for name in ("swarm_message", "swarm_start", "swarm_pause",
+                     "swarm_resume", "swarm_triage_answer", "swarm_prcheck"):
             assert name in lead.STATE_CHANGING_TOOLS
 
     def test_status_returns_the_schema_report(self):

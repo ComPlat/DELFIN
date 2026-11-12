@@ -6,12 +6,14 @@ operator does today. Every lead tool is a THIN wrapper over SW1
 (delfin/agent/service/swarm_rpc.py) -- no orchestration logic of its
 own -- so the lead, the CLI and the dashboard call the same code.
 
-The contract (swarm/__init__.py:19-23):
-- Read-only: swarm_status, swarm_plan, swarm_message, swarm_triage_list.
-- State-changing: swarm_start, swarm_pause, swarm_resume,
-  swarm_triage_answer, swarm_prcheck -- these always ASK the user in the
-  lead session; the lead carries no execute path that can start, stop or
-  answer anything without that confirmation.
+The contract (swarm/__init__.py:19-23, regrouped by the v4 contract,
+2026-11-12: a message send is state-changing -- it alters the
+member's inbox, so the lead session confirms it with the user):
+- Read-only: swarm_status, swarm_plan, swarm_triage_list.
+- State-changing: swarm_message, swarm_start, swarm_pause,
+  swarm_resume, swarm_triage_answer, swarm_prcheck -- these always ASK
+  the user in the lead session; the lead carries no execute path that
+  can start, stop, send or answer anything without that confirmation.
 - Events (member finished a phase, approval waiting, member stalled or
   ended, PR CI red or green) reach the lead through LeadEventFeed: a
   subscription on swarm.status events, delivered as wake-up messages --
@@ -31,13 +33,16 @@ from .spec import SpecError
 
 #: Read-only lead tools: safe in the lead session's default mode.
 READ_ONLY_TOOLS: frozenset[str] = frozenset({
-    "swarm_status", "swarm_plan", "swarm_message", "swarm_triage_list",
+    "swarm_status", "swarm_plan", "swarm_triage_list",
 })
 
 #: State-changing lead tools: each one asks the user before it acts.
+#: v4 contract (2026-11-12): swarm_message SENDS a partner message --
+#: it changes the member's inbox, so it is state-changing here even
+#: though it is transport-only in the service layer.
 STATE_CHANGING_TOOLS: frozenset[str] = frozenset({
-    "swarm_start", "swarm_pause", "swarm_resume", "swarm_triage_answer",
-    "swarm_prcheck",
+    "swarm_message", "swarm_start", "swarm_pause", "swarm_resume",
+    "swarm_triage_answer", "swarm_prcheck",
 })
 
 
