@@ -255,3 +255,84 @@ def test_stopping_a_delegate_stops_the_running_one(tmp_path, monkeypatch):
         assert cards[0]["status"] == "stopped"
     finally:
         refs["shutdown"](save=False)
+
+
+# ---------------------------------------------------------------------------
+# DELFIN's own delegation tool, ids that arrive with the result, the bridge
+# ---------------------------------------------------------------------------
+
+def test_the_subagent_tool_makes_one_card_that_ends_done(tmp_path, monkeypatch):
+    """On the KIT/OpenAI path the tool is ``subagent``, not ``Agent``; the
+    call has no id yet and the result brings it. One card, done, with the
+    id -- not a running card left behind plus a second done one."""
+    tab, refs, state = _make_tab(tmp_path, monkeypatch)
+    try:
+        refs["on_tool_call"]("subagent", json.dumps({
+            "subagent_type": "explore", "description": "survey",
+            "prompt": "look"}))
+        refs["on_tool_result"]("subagent", json.dumps({
+            "sa_id": "e34d6761", "result": "three lines\nof report",
+            "elapsed_s": 1.5}))
+        cards = [m for m in state["chat_messages"]
+                 if m.get("role") == "delegate"]
+        assert len(cards) == 1, cards
+        assert cards[0]["sa_id"] == "e34d6761"
+        assert cards[0]["status"] == "done"
+    finally:
+        refs["shutdown"](save=False)
+
+
+def test_a_background_start_keeps_the_card_running_without_a_summary(
+        tmp_path, monkeypatch):
+    from delfin.agent import subagents as _sa
+    from delfin.dashboard import tab_agent as T
+    tab, refs, state = _make_tab(tmp_path, monkeypatch)
+    try:
+        refs["on_tool_call"]("subagent", json.dumps({
+            "subagent_type": "explore", "description": "survey",
+            "prompt": "look", "background": True}))
+        refs["on_tool_result"]("subagent", json.dumps({
+            "status": "started_in_background", "sa_id": "bg1",
+            "note": "Running in the background."}))
+        card = next(m for m in state["chat_messages"]
+                    if m.get("role") == "delegate")
+        monkeypatch.setattr(_sa, "read_running", lambda **k: {"bg1": {}})
+        html = T._render_delegate_card_html(card)
+        assert "delfin-delegate-running" in html
+        assert "started_in_background" not in html
+        assert 'data-delfin-delegate-stop="bg1"' in html
+        # Once it is no longer running, the card stops offering Stop.
+        monkeypatch.setattr(_sa, "read_running", lambda **k: {})
+        html = T._render_delegate_card_html(card)
+        assert "delfin-delegate-done" in html
+        assert "data-delfin-delegate-stop" not in html
+        # Its report, collected later, updates this card and adds none.
+        refs["on_tool_result"]("subagent_result", json.dumps({
+            "sa_id": "bg1", "result": "the report"}))
+        cards = [m for m in state["chat_messages"]
+                 if m.get("role") == "delegate"]
+        assert len(cards) == 1 and cards[0]["status"] == "done"
+    finally:
+        refs["shutdown"](save=False)
+
+
+def test_the_card_commands_are_built_ins_not_messages_to_the_model():
+    """A click lands in the input line as /delegate-open|stop <id>; a slash
+    command that is not a built-in goes to the model as text."""
+    from delfin.dashboard import tab_agent as T
+    assert T.slash_command_routes_to_builtin("/delegate-open e34d6761")
+    assert T.slash_command_routes_to_builtin("/delegate-stop e34d6761")
+
+
+def test_the_card_stop_gets_the_workspace_path_not_the_function(
+        tmp_path, monkeypatch):
+    tab, refs, state = _make_tab(tmp_path, monkeypatch)
+    seen = []
+    monkeypatch.setattr(
+        "delfin.agent.background_view.cancel",
+        lambda ws, group, item_id: seen.append(ws) or "ok")
+    try:
+        refs["stop_delegate_card"]("sa-A")
+        assert seen and isinstance(seen[0], str), seen
+    finally:
+        refs["shutdown"](save=False)

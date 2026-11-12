@@ -2944,6 +2944,7 @@ _BUILTIN_SLASH_PREFIXES = frozenset({
     "/trace", "/loop", "/auto",
     "/undo-file", "/profile", "/skill", "/tools",
     "/memory", "/share", "/unshare", "/lessons", "/swarm", "/knowledge",
+    "/delegate-open", "/delegate-stop",
 })
 
 
@@ -7134,6 +7135,12 @@ def _render_subagent_pane_html(calls: list[dict]) -> str:
     )
 
 
+#: The tool names a delegation reaches the tab under: ``Agent`` on the
+#: Anthropic path, ``subagent`` on DELFIN's own (KIT/OpenAI) path, the
+#: namespace already stripped.
+_DELEGATE_TOOLS = frozenset({"Agent", "subagent"})
+
+
 def _delegate_state_for(status: str) -> str:
     """One of the four card states the transcript shows: running, done,
     failed, stopped. Anything unknown runs as running — a card that shows
@@ -7191,10 +7198,12 @@ def _delegate_summary_lines(call: dict, *, max_lines: int = 3) -> str:
     verification notice, when the payload carries one, stays in view.
     """
     output = call.get("output") or ""
-    if not output:
+    status = _delegate_state_for(call.get("status"))
+    if not output or status == "running":
+        # A running delegate has no report yet; what came back so far is
+        # the start notice ("started_in_background"), not a summary.
         return ""
     text = _subagent_report_text(str(output))
-    status = _delegate_state_for(call.get("status"))
     if status == "failed":
         return text.strip() or "the run failed"
     lines = [ln for ln in text.splitlines() if ln.strip()]
@@ -7222,6 +7231,16 @@ def _render_delegate_card_html(call: dict, now: float | None = None) -> str:
     desc = _html.escape(str(call.get("description") or "")[:120])
     model = _html.escape(str(call.get("model") or "")[:60])
     state = _delegate_state_for(call.get("status"))
+    if state == "running" and call.get("background") and sa_id:
+        # A background delegate reports through a later turn, not this
+        # card's call; once it is no longer in the running register the
+        # card stops offering Stop.
+        try:
+            from delfin.agent import subagents as _sa
+            if str(call.get("sa_id")) not in (_sa.read_running() or {}):
+                state = "done"
+        except Exception:
+            pass
     glyph, state_cls, state_word = _DELEGATE_STATE_META[state]
     elapsed = _delegate_elapsed_text(call, now)
 
@@ -7320,6 +7339,16 @@ def _emit_delegate_card(state: dict, call: dict) -> None:
                 m.update(call)
                 _refresh_chat_html_state(state)
                 return
+        # The call's card has no id yet (the id comes with the result):
+        # the result takes over the oldest id-less running card -- the
+        # calls of one round finish in the order they were made.
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "delegate"
+                    and not str(m.get("sa_id") or "")
+                    and _delegate_state_for(m.get("status")) == "running"):
+                m.update(call)
+                _refresh_chat_html_state(state)
+                return
     elif "sa_id" not in call:
         # No id yet: an unmatched id-less call reuses the newest id-less
         # running card rather than stacking a duplicate of itself.
@@ -7356,7 +7385,7 @@ def _on_tool_call_card(state: dict, tool_name, payload):
     the running card in the transcript. Returns the parsed call, or None
     when this is not an Agent call.
     """
-    if str(tool_name) != "Agent":
+    if str(tool_name) not in _DELEGATE_TOOLS:
         return None
     parsed = payload if isinstance(payload, dict) else (
         _agent_payload_of(payload) or {})
@@ -7391,7 +7420,22 @@ def _on_tool_result_card(state: dict, tool_name, payload):
     must not collide into "first running wins". A non-JSON payload still
     falls back to the first running entry (the historical behaviour).
     """
-    if str(tool_name) != "Agent":
+    if str(tool_name) == "subagent_result":
+        # A background delegate's report, collected later: it updates the
+        # card that already carries the id and never adds one.
+        parsed = _agent_payload_of(payload)
+        sa = str((parsed or {}).get("sa_id") or "")
+        if parsed is not None and sa and any(
+                isinstance(m, dict) and m.get("role") == "delegate"
+                and str(m.get("sa_id") or "") == sa
+                for m in state.get("chat_messages", [])):
+            _emit_delegate_card(state, {
+                "sa_id": sa,
+                "status": _delegate_payload_state(parsed, "running"),
+                "elapsed_s": parsed.get("elapsed_s"),
+                "output": payload if isinstance(payload, str) else ""})
+        return parsed
+    if str(tool_name) not in _DELEGATE_TOOLS:
         return None
     text = payload if isinstance(payload, str) else ""
     parsed = _agent_payload_of(payload)
@@ -7406,6 +7450,7 @@ def _on_tool_result_card(state: dict, tool_name, payload):
         _emit_delegate_card(state, {
             "sa_id": str(parsed.get("sa_id") or ""),
             "status": _delegate_payload_state(parsed, "running"),
+            "background": parsed.get("status") == "started_in_background",
             "elapsed_s": parsed.get("elapsed_s"),
             "output": text,
         })
@@ -7415,7 +7460,9 @@ def _on_tool_result_card(state: dict, tool_name, payload):
                 entry["status"] = "done"
                 entry["output"] = text
                 break
-        _emit_delegate_card(state, {"output": text})
+        # A report that is not one JSON object (a verification note
+        # ahead of it, a plain-text runner) still finished the call.
+        _emit_delegate_card(state, {"output": text, "status": "done"})
     return parsed
 
 
@@ -21710,7 +21757,7 @@ def create_tab(ctx):
                             f'<span class="tool-name">$</span> {_e(cmd)}'
                         )
 
-                    elif tool_name == "Agent":
+                    elif tool_name in _DELEGATE_TOOLS:
                         _on_tool_call_card(state, tool_name, parsed)
                         desc = parsed.get("description", "")
                         prompt = parsed.get("prompt", "")[:80]
@@ -21929,7 +21976,9 @@ def create_tab(ctx):
                         return
                     tool_name = _bare
                     # Subagent panel: mark the next running call as done.
-                    if tool_name == "Agent":
+                    if tool_name == "subagent_result":
+                        _on_tool_result_card(state, tool_name, tool_output)
+                    if tool_name in _DELEGATE_TOOLS:
                         # Mark the pane entry and the card of THAT delegate
                         # (the shared path updates both, keyed by sa_id).
                         _on_tool_result_card(state, tool_name, tool_output)
@@ -25001,7 +25050,12 @@ def create_tab(ctx):
 (function() {
   if (window.__delfinDelegateCards) return;
   window.__delfinDelegateCards = true;
-  document.addEventListener('click', function(e) {
+  // The press decides, not the click: the composer gives up its focus on
+  // mousedown and shrinks, the transcript moves under the pointer, and the
+  // mouseup lands on the card's title -- the click event then targets the
+  // card, not the button (measured in the real page). A keyboard
+  // activation has no press and arrives as a click with detail 0.
+  function act(e) {
       var card = e.target.closest ? e.target.closest('.delfin-delegate-card') : null;
       if (!card) return;
       var sa = null;
@@ -25023,6 +25077,12 @@ def create_tab(ctx):
           var sendBtn = window.__delfinQ('.delfin-agent-send-row button');
           if (sendBtn) sendBtn.click();
       }, 50);
+  }
+  document.addEventListener('mousedown', function(e) {
+      if (e.button === 0) act(e);
+  }, true);
+  document.addEventListener('click', function(e) {
+      if (e.detail === 0) act(e);
   }, true);
 })();
 """
@@ -25327,7 +25387,7 @@ def create_tab(ctx):
         "on_tool_result": lambda tool_name, payload: _on_tool_result_card(
             state, tool_name, payload),
         "stop_delegate_card": lambda sa_id: _delegate_stop(
-            state, sa_id, _agent_workspace_path),
+            state, sa_id, _agent_workspace_path()),
     }
 
 
