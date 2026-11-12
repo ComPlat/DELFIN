@@ -248,7 +248,7 @@ def test_jobs_show_state_and_node_and_ask_nothing_without_records(home):
 
     def runner(argv):
         asked.append(argv)
-        return "4242|RUNNING|uc3n045|5:00:00|None\n"
+        return "4242|RUNNING|node-c|5:00:00|None\n"
 
     assert job.jobs(runner=runner) == []
     assert asked == []                      # no record: the scheduler is not asked
@@ -261,7 +261,7 @@ def test_jobs_show_state_and_node_and_ask_nothing_without_records(home):
     assert asked and asked[0][:3] == ["squeue", "-h", "-u"]
     assert "delfin-swarm" in asked[0]
     line = job.status_line(rows[0])
-    assert "running on uc3n045" in line and "1 of 2" in line
+    assert "running on node-c" in line and "1 of 2" in line
 
 
 def test_a_pending_job_says_it_waits_for_a_node(home):
