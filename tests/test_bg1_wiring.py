@@ -275,3 +275,50 @@ def test_a_skipped_budget_is_logged_not_silent(
     assert _budget_args is None
     assert any("calculation_budget" in r.message for r in caplog.records), \
         caplog.text
+
+
+def test_def2_variant_prefixes_are_not_billed_at_the_family_counts(
+        ws, tmp_path, monkeypatch, cluster, no_classifier):
+    """F-A: def2-SVPD/-TZVPD/-TZVPP/-QZVP carry MORE functions than the
+    family their name starts with; billing them at the SVP/TZVP counts
+    UNDER-estimates a runaway calculation. Exact family match: they get
+    NO budget, never a guess. RED pre-patch: ImportError.
+    """
+    from delfin.agent.api_client import _session_budget_verdict_args
+    _set_budget(monkeypatch, tmp_path, budget=0.001)
+    for basis in ("def2-SVPD", "def2-TZVPD", "def2-TZVPP", "def2-QZVP"):
+        folder = ws / f"var_job_{basis}"
+        folder.mkdir(exist_ok=True)
+        (folder / "CONTROL.txt").write_text(
+            _control().replace("main_basisset=def2-SVP",
+                               f"main_basisset={basis}"))
+        (folder / "input.txt").write_text(WATER)
+        _budget_args, job = _session_budget_verdict_args(folder)
+        assert job is None, (
+            f"{basis} starts with a smaller family's name; it must get "
+            f"no budget, not the family's counts (got {job})")
+
+
+def test_smiles_control_gets_no_budget_and_the_skip_is_logged(
+        ws, tmp_path, monkeypatch, cluster, no_classifier, caplog):
+    """F-B pinned: a CONTROL with SMILES= and no geometry file feeds the
+    SMILES string to geometry_text_symbols -> no symbols -> no budget.
+    Fail-safe direction (no budget rather than a wrong one), but it must
+    be VISIBLE: logged with the reason, never silent. RED pre-patch:
+    ImportError.
+    """
+    import logging
+    from delfin.agent.api_client import _session_budget_verdict_args
+    _set_budget(monkeypatch, tmp_path, budget=0.001)
+    folder = ws / "smiles_job"
+    folder.mkdir(exist_ok=True)
+    (folder / "CONTROL.txt").write_text(
+        _control().replace("input.txt", "input.txt")
+        + "SMILES=O\n")
+    with caplog.at_level(logging.WARNING, logger="delfin.agent.api_client"):
+        _budget_args, job = _session_budget_verdict_args(folder)
+    assert job is None, (
+        "a SMILES string is not xyz text; the budget must be skipped "
+        f"(got {job})")
+    assert any("calculation_budget" in r.message for r in caplog.records), \
+        caplog.text
