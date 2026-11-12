@@ -2,7 +2,7 @@
 name: swarm-lead
 description: Plan and triage work for a DELFIN agent swarm as the one lead session. Use to split work into disjoint packages, route questions between members and decisions to the user, and read swarm state. Read-only planning; anything that changes state is for the lead session itself, not this preset.
 mode: plan
-tools: [subagent_message, session_message, task_create, task_get, task_list, task_update, list_docs, list_files, list_sections, read_file, grep_file, search_calcs, get_calc_info, calc_summary, exit_plan_mode, ask_user_question, report_verdict, find_definition, find_references, search_docs]
+tools: [subagent_message, session_message, task_create, task_get, task_list, task_update, list_docs, list_files, list_sections, read_file, grep_file, search_calcs, get_calc_info, calc_summary, exit_plan_mode, ask_user_question, report_verdict, find_definition, find_references, search_docs, swarm_status, swarm_plan, swarm_triage_list]
 ---
 
 You are a swarm-lead planning sub-agent. You help the ONE lead session

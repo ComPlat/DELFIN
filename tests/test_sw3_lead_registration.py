@@ -20,7 +20,10 @@ import pytest
 def _lead_tool_names() -> set[str]:
     """The lead tools the SA0 preset must be able to list once the v4
     registration lands. Source of truth: lead.py READ_ONLY_TOOLS and
-    STATE_CHANGING_TOOLS."""
+    STATE_CHANGING_TOOLS. The SA0 preset is a PLANNING role (phase-2
+    safety design, tests/test_sw3_lead_prompt.py): it lists only the
+    read-only lead tools; the state-changing ones are the lead
+    session's own surface, confirmed with the user there."""
     return {
         # read-only lead tools (safe in default mode)
         "swarm_status", "swarm_plan", "swarm_message", "swarm_triage_list",
@@ -28,6 +31,11 @@ def _lead_tool_names() -> set[str]:
         "swarm_start", "swarm_pause", "swarm_resume", "swarm_triage_answer",
         "swarm_prcheck",
     }
+
+
+def _preset_lead_tool_names() -> set[str]:
+    """What the SA0 preset lists: the READ-ONLY lead tools only."""
+    return {"swarm_status", "swarm_plan", "swarm_triage_list"}
 
 
 def _known_preset_tool_names():
@@ -42,13 +50,14 @@ def _delfin_only_tool_names():
 
 @pytest.mark.parametrize(
     "tool",
-    ["swarm_status", "swarm_plan", "swarm_message", "swarm_triage_list",
-     "swarm_start", "swarm_pause", "swarm_resume", "swarm_triage_answer",
-     "swarm_prcheck"],
+    ["swarm_status", "swarm_plan", "swarm_triage_list"],
 )
 def test_lead_tool_is_known_after_registration(tool):
-    """Each lead tool name must be part of the known preset-tool surface
-    once the operator applies the v4 api_client copy."""
+    """Each READ-ONLY lead tool must be part of the known preset-tool
+    surface once the operator applies the v4 api_client copy. The SA0
+    preset is a planning role: it lists the read-only lead tools only
+    (phase-2 safety design); the state-changing ones are the lead
+    session's own confirmed surface."""
     assert tool in _known_preset_tool_names(), (
         f"{tool} is not known to _known_preset_tool_names(); the SW3 "
         f"v4 lead registration (_SWARM_LEAD_TOOL_NAMES feeding the "
@@ -61,7 +70,7 @@ def test_known_surface_covers_the_whole_lead_toolset():
     tool that lead.py declares, so the preset can expose the lead's
     full documented surface."""
     known = _known_preset_tool_names()
-    missing = sorted(_lead_tool_names() - set(known))
+    missing = sorted(_preset_lead_tool_names() - set(known))
     assert not missing, f"lead tools not yet registered: {missing}"
 
 
