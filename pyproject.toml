@@ -158,6 +158,16 @@ pymol = [
 pdf = [
     "pymupdf>=1.24,<2",
 ]
+# The MQTT transport behind the lab device driver delfin/lab/drivers/mqtt.py
+# (delfin/lab: the safety kernel and its real-device drivers). Optional: the
+# driver imports paho lazily and does not trip on a missing library -- a real
+# MQTT device simply cannot be reached, and the driver's error names this
+# extra. Tests never need it: the driver is exercised against an in-process
+# fake broker. paho-mqtt is dual-licensed EPL-2.0 / EDL-1.0 (BSD-3-Clause)
+# and used under EDL-1.0 (THIRD_PARTY_NOTICES.md).
+lab-mqtt = [
+    "paho-mqtt>=2.0,<3",
+]
 # API keys in the operating system's credential store (macOS Keychain,
 # Secret Service, Windows Credential Manager) instead of the 0600 file
 # ~/.delfin/credentials.json (delfin/agent/credentials.py). Optional: on a
