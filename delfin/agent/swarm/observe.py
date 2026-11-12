@@ -215,8 +215,10 @@ def swarm_overview(source,
 
     steps_fn = steps_fn or _default_steps
     commits_fn = commits_fn or _default_commits
-    # None means "read the real sessions" (the dashboard's Swarm tab and
-    # the TUI's /swarm watch pass nothing); an empty list stays empty.
+    # None means "read the real sessions" (the production path: the service's
+    # swarm.observe.overview, the dashboard's Swarm tab and the TUI's
+    # /swarm watch pass nothing); an empty list stays empty. Never raises:
+    # _default_records answers [] when the stores cannot be read.
     records = _default_records() if records is None else list(records)
     now = now if now is not None else _time.time()
     rec_by_name = {str(r.get("name") or r.get("session_id") or ""): r
@@ -234,7 +236,10 @@ def swarm_overview(source,
 
         commits = {}
         try:
-            commits = commits_fn(name)
+            if commits_fn is _default_commits and rec:
+                commits = commits_fn(name, str(rec.get("workspace") or ""))
+            else:
+                commits = commits_fn(name)
         except Exception:
             commits = {}
         member_commits = commits.get(name) or []
@@ -261,24 +266,26 @@ def swarm_overview(source,
     return rows
 
 
-def _default_commits(member_name: str) -> dict:
+def _default_commits(member_name: str, workspace: str = "") -> dict:
     """Commit subjects of one member's branch behind its base, from safe_git.
 
     A swarm member's branch is ``swarm/<pkg>-<role>`` (launch.py:60) and its
     name is ``<pkg>-<role>``, so the branch is ``swarm/<name>``. The base is
     the branch's merge-base with ``main``; commits beyond it name what the
-    member has added. Never raises, never writes: a missing branch, a closed
-    repo or an error yields an empty list, not an exception.
+    member has added. ``workspace`` names the member's own repo (the
+    presence record's workspace field); without one the calling process's
+    cwd is read -- the service runs with cwd= its runtime directory, where
+    no member's repo is. Never raises, never writes: a missing branch, a
+    closed repo or an error yields an empty list, not an exception.
     """
     from .. import safe_git
     if not member_name:
         return {member_name: []}
     branch = f"swarm/{member_name}"
     try:
-        # The repo root: safe_git resolves the working tree internally; we
-        # hand it the current directory.
-        cwd = os.getcwd()
-        if not safe_git.is_repository(cwd):
+        # The member's repo: its announced workspace, else this cwd.
+        cwd = workspace or os.getcwd()
+        if not workspace and not safe_git.is_repository(cwd):
             return {member_name: []}
         base = safe_git.out(cwd, "merge-base", "main", branch).strip()
         if not base:
