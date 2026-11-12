@@ -1505,6 +1505,11 @@ class Rooms:
             return result.get('error') or t('Voice message delivered as text.')
         if item.get('kind') == 'question':
             reply = await self.session(sid, 'answer', id=item['id'], text=text)
+            if not reply.get('ok') and 'expired or belongs' in str(reply.get('error', '')):
+                # The question behind the card is gone (answered at the
+                # computer, expired, another session's): the phone is told
+                # so and nothing is sent to any session as a prompt.
+                return t('This request is no longer bound here. Show the current one with pending and reply to it.')
         else:
             normalized = text.strip().lower()
             verdict = yes_no(text)

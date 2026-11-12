@@ -65,7 +65,7 @@ def test_an_answer_reaches_only_the_session_whose_turn_detected_the_question():
     assert published == [], 'another session\'s detected question is not pending here'
     reply = ui({'method': 'permission.reply', 'requestId': 'whatever', 'text': 'Eins, zwei, drei.'})
     assert not reply['applied'] and injected == []
-    assert 'no longer' in reply.get('error', '') or 'gone' in reply.get('error', '')
+    assert 'expired' in reply.get('error', '') or 'another session' in reply.get('error', '')
 
 
 def test_a_question_answered_at_the_computer_is_gone_for_the_phone():
@@ -83,7 +83,7 @@ def test_a_question_answered_at_the_computer_is_gone_for_the_phone():
     reply = ui({'method': 'permission.reply', 'requestId': item['requestId'],
                 'text': 'Eins, zwei, drei.'})
     assert not reply['applied'] and injected == []
-    assert 'no longer' in reply.get('error', '') or 'gone' in reply.get('error', '')
+    assert 'expired' in reply.get('error', '') or 'another session' in reply.get('error', '')
 
 
 def test_the_live_question_still_takes_its_answer():
@@ -103,10 +103,19 @@ def test_the_live_question_still_takes_its_answer():
 class Daemon:
     def __init__(self):
         self.sent = []
+        self.groups = []
+        self.invited = []
 
     async def send_chat(self, chat, text):
         self.sent.append((chat, text))
         return {"chatItems": [{"chatItem": {"meta": {"itemId": len(self.sent)}}}]}
+
+    async def create_group(self, title):
+        self.groups.append(title)
+        return '#' + str(100 + len(self.groups))
+
+    async def invite(self, chat, owner):
+        self.invited.append((chat, owner))
 
     async def update_message(self, chat, mid, text):
         self.sent.append(('update', chat, mid, text))
@@ -163,15 +172,27 @@ def _message(chat='#10', text='calculate', sender='7', mid='1'):
 
 def test_the_answer_to_an_old_card_is_never_a_prompt_of_the_new_session(rig):
     """The card was for the EARLIER session's detected question; the chat
-    is bound to the NEW session now. The plain line answers nothing and
-    reaches no session as a prompt."""
+    is bound to the NEW session now. A reply with the reply gesture quotes
+    the old card: it answers nothing and reaches no session as a prompt."""
     state = {'active_session_id': 's-new', '_pending_question': dict(DETECTED),
              '_pending_question_sid': 's-old', '_last_answer_text': 'First question?'}
     injected = []
     ui = adapter('s-new', state, question=lambda text: injected.append(text) or True)
     bridge = Bridge({'s-new': ui})
     rooms = Rooms(Daemon(), bridge)
-    asyncio.run(rooms.handle(_message(text='Eins, zwei, drei.', mid='a')))
+    message = _message(text='Eins, zwei, drei.', mid='a')
+    async def run():
+        # The real sequence: while the OLD session was bound, the phone saw
+        # the card (the gateway published it into _reply_targets); the chat
+        # was then bound to the NEW session and the person replied to the
+        # OLD card with the reply gesture.
+        state['_pending_question_sid'] = 's-new'          # the old session was bound then
+        await rooms.refresh()
+        state['_pending_question_sid'] = 's-old'          # now the binding says s-old
+        old_mid = next(mid for (chat, mid), item in rooms._reply_targets.items()
+                       if item['kind'] == 'question')
+        await rooms.handle({**message, 'quote_id': old_mid, 'id': 'answer-1'})
+    asyncio.run(run())
     assert injected == [], 'the answer went to the new session as a prompt'
     assert bridge.prompts == [], 'the answer reached a session as a prompt'
     reply = rooms.daemon.sent[-1][1] if rooms.daemon.sent else ''

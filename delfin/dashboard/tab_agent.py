@@ -20726,6 +20726,13 @@ def create_tab(ctx):
         - open: Focus input area with hint
         """
         state["_pending_question"] = question_info
+        # The question is bound to the session whose turn detected it: the
+        # tab's state dict is shared by every session the tab shows, and
+        # without the binding the messenger publishes the OLD session's
+        # question for the NEW one too — the misroute this prevents.
+        state["_pending_question_sid"] = str(
+            getattr(state.get("engine"), "session_id", "")
+            or state.get("active_session_id") or "")
         qtype = question_info["type"]
         _n_opts = len(question_info.get("options") or [])
         _set_wait_chip(
