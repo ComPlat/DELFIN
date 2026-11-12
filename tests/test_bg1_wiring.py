@@ -83,7 +83,7 @@ def _folder(ws):
     return folder
 
 
-def _set_budget(monkeypatch, tmp_path, budget, payload=None):
+def _set_budget(monkeypatch, tmp_path, budget=None, payload=None):
     """Write the budget key into the redirected home's settings.
 
     mkdir(parents=True) is required: the helper tests below call this
@@ -121,10 +121,16 @@ def test_over_budget_submission_is_refused_with_the_estimate(
     out, seen = _gate(ws, {
         "folder": str(folder), "mode": "delfin", "pal": 2,
         "maxcore": 2000, "time_limit": "12:00:00"})
-    assert out is not None or "over budget" in str(seen.get("preview")), \
-        "over-budget submission was admitted unasked"
-    reasons = f"{out} {seen.get('preview', '')}"
-    assert "over budget -> ask the person" in reasons, reasons
+    # The budget reason lives in the PREVIEW the callback is shown
+    # (api_client.py:24278-24280); the refusal text itself is the
+    # callback's own "user denied" answer (24295-24298). Assert on the
+    # preview (operator defect 2). Red (unpatched): the verdict admits
+    # before the dialog, seen stays {} and the failure says so.
+    reasons = f"{seen.get('preview', '')} {out}"
+    assert "over budget -> ask the person" in reasons, (
+        f"over-budget submission was admitted unasked (no dialog with the "
+        f"budget estimate was shown: preview={seen.get('preview')!r}, "
+        f"out={out!r})")
     assert "core-hours" in reasons, reasons   # the estimate is shown
 
 
@@ -159,8 +165,11 @@ def test_the_budget_never_silently_shrinks_the_request(
     out, seen = _gate(ws, {
         "folder": str(folder), "mode": "delfin", "pal": 2,
         "maxcore": 2000, "time_limit": "12:00:00"})
-    reasons = f"{out} {seen.get('preview', '')}"
-    assert "over budget -> ask the person" in reasons, reasons
+    reasons = f"{seen.get('preview', '')} {out}"
+    assert "over budget -> ask the person" in reasons, (
+        f"over-budget submission was admitted unasked (no dialog with the "
+        f"budget estimate was shown: preview={seen.get('preview')!r}, "
+        f"out={out!r})")
     assert "core-hours" in reasons, reasons
     assert "is not on the auto-allow list" not in reasons, reasons
 
