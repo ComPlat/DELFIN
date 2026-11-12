@@ -931,7 +931,7 @@ def _finalize_plan_decision(
     repo_root: str,
     save_plan_fn=None,
 ) -> list[str]:
-    """Shared plan approve/reject logic for BOTH the 'Plan akzeptieren'
+    """Shared plan approve/reject logic for BOTH the 'Accept plan & execute'
     button (``_on_plan_accept_phase5``) and the ``/plan approve|reject``
     text fallback, so the two paths can never drift apart.
 
@@ -3404,7 +3404,7 @@ def _md_to_html(text: str) -> str:
 # - has_args: True means the command takes arguments — palette adds a trailing
 #   space so the user starts typing immediately
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
-    ("Session", "/sync", "SimpleX für diese Sitzung on|off|status", True),
+    ("Session", "/sync", "SimpleX for this session: on|off|status", True),
     # Session
     ("Session", "/help", "Show this help", False),
     ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),
@@ -6720,22 +6720,22 @@ def _render_eml_summary(path) -> str | None:
             return str(raw)
 
     rows = [(label, _field(key)) for label, key in
-            (("An", "To"), ("Cc", "Cc"), ("Betreff", "Subject"))]
+            (("To", "To"), ("Cc", "Cc"), ("Subject", "Subject"))]
     rows = [(label, value) for label, value in rows if value]
     if not rows:
         return None
     attachments = sum(
         1 for part in msg.walk() if part.get_filename())
     if attachments:
-        rows.append(("Anhänge", str(attachments)))
+        rows.append(("Attachments", str(attachments)))
     body = "".join(
         f'<div style="font-size:11px;color:#374151;">'
         f'<span style="color:#6b7280;">{_html.escape(label)}:</span> '
         f'{_html.escape(value)}</div>'
         for label, value in rows)
     return (body + '<div style="font-size:11px;color:#6b7280;'
-            'margin-top:4px;">Wird nicht versendet — öffnen und selbst '
-            'senden.</div>')
+            'margin-top:4px;">Not sent — open it and send it '
+            'yourself.</div>')
 
 
 # Which write a tool performs, under every name it is served by. The
@@ -14595,7 +14595,7 @@ def create_tab(ctx):
         engine = _ensure_engine()
         sid = str(getattr(engine, "session_id", "") or state.get("active_session_id") or "")
         if not sid:
-            return "Zuerst eine Sitzung starten, dann /sync eingeben."
+            return "Start a session first, then type /sync."
         adapters = state.setdefault("_messenger_adapters", {})
         if args.strip().lower() in {"off", "status"}:
             return activation.configure(sid, args)
@@ -14605,7 +14605,7 @@ def create_tab(ctx):
             def answer_detected_question(text):
                 if input_textarea.value.strip() or not state.get("_pending_question"):
                     return False
-                input_textarea.value = "Antwort auf deine Rückfrage: " + text
+                input_textarea.value = "Answer to your question: " + text
                 _on_send(None)
                 return not state.get("_pending_question")
             def send(text):
@@ -14629,7 +14629,7 @@ def create_tab(ctx):
         cmd = text.lower().strip()
         if cmd == "/sync" or cmd.startswith("/sync "):
             if state.get("_on_its_own"):
-                _append_system_message("SimpleX kann nur von dir in dieser Sitzung aktiviert werden.")
+                _append_system_message("Only you can turn SimpleX on for this session.")
             else:
                 _append_system_message(_messenger_command(text[5:].strip()))
             return True
@@ -15912,7 +15912,7 @@ def create_tab(ctx):
                         "Switch to /mode plan and ask the agent to draft a plan."
                     )
                     return True
-                # Same shared logic as the 'Plan akzeptieren' button so the
+                # Same shared logic as the 'Accept plan & execute' button so the
                 # two paths are functionally identical (persist + perm flip).
                 for _m in _finalize_plan_decision(
                     state,
