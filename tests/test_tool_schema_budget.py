@@ -278,6 +278,10 @@ _BASELINE_TOKENS = 11_422
 # Rejected: a separate read_files tool (a whole second schema, ~60 tokens,
 # and a second spelling every read gate would have to learn).
 _TOKEN_BUDGET = 10_939
+# 2026-11-12 (SW3): the swarm-lead preset (pack/agents/swarm-lead_subagent.md).
+# Its only schema text is its name in the subagent_type enum, as for the
+# method-reviewer above; measured +3 tokens, 10_939 -> 10_942.
+_TOKEN_BUDGET = 10_942
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
