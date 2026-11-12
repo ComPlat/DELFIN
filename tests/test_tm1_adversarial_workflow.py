@@ -18,6 +18,10 @@ import pytest
 from delfin.tools._registry import get as get_adapter
 
 
+# A converged run writes the energy file in its working directory (real
+# ridft/dscf/jobex do); the TM2 guard treats exit 0 without it as unconverged.
+_CONVERGED_FAKE = "#!/bin/sh\nprintf '$energy      SCF       SCFKIN     SCFPOT\\n     1   -76.0   76.0   -152.0\\n$end\\n' > energy\nexit 0\n"
+
 @pytest.fixture
 def tm_fakes(tmp_path, monkeypatch):
     work_dir = tmp_path / "work"
@@ -26,7 +30,7 @@ def tm_fakes(tmp_path, monkeypatch):
     bin_dir.mkdir()
     for name in ("ridft", "dscf", "jobex"):
         f = bin_dir / name
-        f.write_text("#!/bin/sh\nexit 0\n")
+        f.write_text(_CONVERGED_FAKE)
         f.chmod(f.stat().st_mode | stat.S_IEXEC)
     aof = bin_dir / "aoforce"
     aof.write_text(f"#!/bin/sh\necho '$hessian' > {work_dir}/hessian\nexit 0\n")

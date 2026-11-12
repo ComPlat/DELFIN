@@ -28,7 +28,7 @@ import pytest
 from delfin.agent import api_client as A
 
 
-_SECRET = "sk-ant-api03-THISLOOKSLIKEAKEY0123456789abcdefghijklmnop"
+_SECRET = "sk-ant-api03-THISLOOKSLIKEAKEY0123456789abcdefghijklmnop"  # secret-guard: allow (synthetic DELFIN test sample)
 
 
 # ---------------------------------------------------------------------------

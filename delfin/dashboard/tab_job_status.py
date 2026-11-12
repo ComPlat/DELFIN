@@ -12,7 +12,19 @@ from IPython.display import clear_output
 
 from .constants import STATUS_COLORS, JOB_TABLE_CSS
 from .backend_base import JobInfo
-from .input_processing import parse_inp_resources
+
+
+def _input_processing():
+    """Import .input_processing on first use.
+
+    That module pulls in delfin.smiles_converter and, through it,
+    delfin.manta.ml_tables, whose module level ``import stk`` costs seconds
+    of every process start. Job Status is a lazy tab, but its module still
+    loads with the dashboard package; the reader opens it to watch jobs,
+    not to parse a SMILES.
+    """
+    from . import input_processing
+    return input_processing
 
 
 #: The job table's own styles. Every class starts with ``djs-`` so nothing
@@ -484,7 +496,7 @@ def create_tab(ctx):
         return pal, maxcore, time_limit
 
     def _parse_orca_resources(text):
-        pal, maxcore = parse_inp_resources(text)
+        pal, maxcore = _input_processing().parse_inp_resources(text)
         # tab_job_status historically also accepted bare "maxcore N" without "%".
         if maxcore is None:
             m = re.search(r'^\s*maxcore\s*=?\s*(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)

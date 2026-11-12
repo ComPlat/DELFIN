@@ -205,7 +205,8 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         landed = super().resolve(req, decision)
         if landed:
             by = getattr(self._answered_by, "value", "") or "outside"
-            self._announce_resolved(req, by)
+            self._announce_resolved(req, by, client=(
+                getattr(self._answered_by, "client", "") if by == "client" else ""))
         return landed
 
     def abort_all(self) -> list[tc.ConfirmRequest]:
@@ -232,7 +233,8 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
             self.last_refusal_reason = reason
         super()._audit_dialog(req, by=by)
 
-    def _announce_resolved(self, req: tc.ConfirmRequest, by: str) -> None:
+    def _announce_resolved(self, req: tc.ConfirmRequest, by: str, *,
+                           client: str = "") -> None:
         rid = self.request_id(req)
         if not rid:
             return
@@ -252,8 +254,9 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         with self._ids_lock:
             if self._by_id.pop(rid, None) is None:
                 return            # already announced
+            extra = {"client": client} if client else {}
             self._emit("permission.resolved", requestId=rid, decision=word,
-                       by=by)
+                       by=by, **extra)
         self._waiting_changed()
 
     def _waiting_changed(self) -> None:
@@ -267,7 +270,8 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
     def answer(self, request_id: str, *, choice: str = "",
                answers: list[str] | None = None,
                reason: str = "", persist: bool = False,
-               text: str = "", command: str = "") -> tuple[bool, str]:
+               text: str = "", command: str = "",
+               client: str = "") -> tuple[bool, str]:
         """Apply a window's answer the way the REPL applies a key.
 
         ``text`` is a line typed for a question (ask): resolved as the
@@ -290,6 +294,9 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
         if req is None or req.resolved:
             raise UnknownRequest(f"no open request {request_id!r}")
         self._answered_by.value = "client"
+        # Which window, for permission.resolved (the service's stamp of the
+        # hello name; at most one line of 64 characters).
+        self._answered_by.client = " ".join(str(client or "").split())[:64]
         try:
             return self._apply(req, choice=str(choice or ""),
                                answers=list(answers or []),
@@ -298,6 +305,7 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                                command=str(command or ""))
         finally:
             self._answered_by.value = ""
+            self._answered_by.client = ""
 
     def _apply(self, req: tc.ConfirmRequest, *, choice: str,
                answers: list[str], reason: str,
