@@ -4768,6 +4768,35 @@ def cmd_compare_arms(args: argparse.Namespace) -> int:
     return _pc.exit_code(verdict)
 
 
+def cmd_friction(args: argparse.Namespace) -> int:
+    """Where real use lost turns and time since ``--since``, ranked, with a
+    proposed task per bucket (friction_report). Read only, except that
+    ``--save`` keeps the day's JSON under ~/.delfin/friction/ and shows the
+    change against the last saved day."""
+    import json as _json
+    import time as _time
+
+    from . import friction_report as _fr
+    from . import round_report as _rpt
+    try:
+        since_s = _rpt.parse_since(getattr(args, "since", "") or "24h")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    data = _fr.collect(since_s=since_s)
+    if getattr(args, "json", False):
+        print(_json.dumps(data, indent=1))
+        return 0
+    save_dir = Path.home() / ".delfin" / "friction"
+    previous = _fr.previous_report(
+        save_dir,
+        _time.strftime("%Y-%m-%d", _time.gmtime(data["generated_s"])))
+    print(_fr.render_text(data, previous))
+    if getattr(args, "save", False):
+        print(f"\nsaved: {_fr.save(data, save_dir)}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -5815,6 +5844,21 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
+
+    # friction — ranked refusals, slow turns and silent exits, with tasks
+    fric = sub.add_parser(
+        "friction",
+        help="Where real use lost turns and time, ranked, with a proposed "
+             "task per bucket (read only)")
+    fric.add_argument("--since", default="24h",
+                      help="Window start: 24h / 3d / 2026-11-12 "
+                           "(default 24h)")
+    fric.add_argument("--json", action="store_true",
+                      help="Print the report as JSON")
+    fric.add_argument("--save", action="store_true",
+                      help="Keep the report under ~/.delfin/friction/ and "
+                           "compare with the last saved day")
+    fric.set_defaults(func=cmd_friction)
 
     # provenance / compare-arms -- a paired comparison of two runs that
     # refuses skewed pairs and null tests (paired_compare.py). Read only.
