@@ -99,6 +99,10 @@ _STATE_LOCK_TIMEOUT_S = 5.0
 #: 600 s in the measurement above). Still bounded, so a wedged endpoint
 #: cannot hang a turn forever -- the request raises and the client's own
 #: transient-retry ladder takes over.
+#: The env marker an attended session sets at start (cli.py); the gate
+#: reads it per round to reserve the lowest slot for a person's request.
+INTERACTIVE_ENV = "DELFIN_INTERACTIVE_SESSION"
+
 _SLOT_WAIT_TIMEOUT_S = 900.0
 
 
@@ -260,9 +264,16 @@ class EndpointGate:
     client.
     """
 
-    def __init__(self, base_url: str, model: str = "") -> None:
+    def __init__(self, base_url: str, model: str = "",
+                 interactive: bool = False) -> None:
         self.base_url = base_url or ""
         self.model = model or ""
+        # Interactive = a session a person is talking to (dashboard, TUI,
+        # phone/messenger): it scans only for the reserved lowest slot, so
+        # it never queues behind headless runs (--unattended, swarm). Headless
+        # (the default) never takes slot-0. Read per gate; a request may also
+        # pass ``interactive`` at acquire() to override.
+        self.interactive = bool(interactive)
         # Per-model is the DEFAULT: a slow model's congestion must not
         # throttle the fast models behind the same endpoint. The env var
         # now only DISABLES it (flip falsy -> legacy one-limit-per-endpoint);
@@ -417,8 +428,8 @@ class EndpointGate:
 
     # -- acquire / release ---------------------------------------------------
 
-    def acquire(self, *, timeout_s: float = _SLOT_WAIT_TIMEOUT_S
-                ) -> Optional[int]:
+    def acquire(self, *, timeout_s: float = _SLOT_WAIT_TIMEOUT_S,
+                interactive: Optional[bool] = None) -> Optional[int]:
         """Take one slot, or None when the gate is disabled.
 
         Polls the slot files with non-blocking flocks: slot ``i`` is taken
@@ -428,6 +439,11 @@ class EndpointGate:
         raises except :class:`SlotWaitTimeout` after ``timeout_s`` with no
         slot free anywhere (the caller turns that into the same
         transient-retry path a stalled request already takes).
+
+        ``interactive`` overrides the gate's session kind for one request:
+        an interactive request scans ONLY the reserved lowest slot (never
+        weighs in behind headless runs), a headless request scans slots
+        1..N and never takes slot-0.
 
         With per-model limits on, the request ALSO takes one slot in the
         endpoint's own total-cap gate ``_cap_dir``, so N models each at
@@ -445,6 +461,8 @@ class EndpointGate:
             return None
         limit = self.current_limit(dirpath)
         deadline = time.monotonic() + max(0.0, float(timeout_s))
+        interactive = (self.interactive
+                       if interactive is None else bool(interactive))
         if (getattr(self, "_held_fd", None) is not None
                 or getattr(self, "_cap_fd", None) is not None):
             # Re-entrant acquire would overwrite the outer slot's descriptor
@@ -454,7 +472,8 @@ class EndpointGate:
             raise RuntimeError(
                 "EndpointGate already holds a slot; build a fresh "
                 "EndpointGate for the second request")
-        fd, index = self._take_slot(dirpath, limit, deadline)
+        fd, index = self._take_slot(dirpath, limit, deadline,
+                                    interactive=interactive)
         if fd is None:
             return None                       # gate broken, go ungated
         self._held_fd = fd
@@ -465,7 +484,7 @@ class EndpointGate:
                 return None                   # cap gate broken, ungated
             try:
                 cap_fd, _ = self._take_slot(cap_dir, _config_limit(),
-                                            deadline)
+                                            deadline, interactive=interactive)
             except SlotWaitTimeout:
                 # The endpoint is saturated by OTHER models: never leave a
                 # model slot held ungated. Free it and let the caller treat
@@ -479,19 +498,40 @@ class EndpointGate:
         return index
 
     def _take_slot(self, dirpath: Path, n_slots: int,
-                   deadline: float):
+                   deadline: float, *, interactive: bool = False):
         """Flock one free slot file in ``dirpath`` within ``deadline``.
+
+        ``interactive`` reserves the lowest slot for a person's session:
+        an interactive request scans ONLY ``slot-0``; a headless request
+        scans ``slot-1 .. slot-<n_slots-1>`` and never takes slot-0. So a
+        person talking to the session never queues behind headless runs,
+        headless still progress on the rest of the cap, and the total
+        concurrency never exceeds ``n_slots``.
 
         Returns ``(fd, index)`` on success, ``(None, None)`` when the gate
         is broken (an open or flock error -- the request runs ungated),
         and raises :class:`SlotWaitTimeout` when ``deadline`` passes with
-        every slot held. While it waits it reflects the in-use count into
-        :attr:`wait_notice`, which the stream loop surfaces to the user.
+        every slot of the request's pool held. While it waits it reflects
+        the in-use count into :attr:`wait_notice`, which the stream loop
+        surfaces to the user.
         """
+        # Reserve slot-0 for the person's session: an interactive request
+        # scans ONLY slot-0, a headless request prefers slots 1..N-1 and
+        # takes slot-0 only as the last resort. So slot-0 tends to stay
+        # free for the person while headless keep the FULL capacity when
+        # no interactive session is competing -- a cap of 2 still lets two
+        # headless requests run together, and a person's request still
+        # finds slot-0 free behind a handful of headless runs.
+        if interactive:
+            my_slots = range(1)
+        elif n_slots >= 2:
+            my_slots = [*range(1, n_slots), 0]
+        else:
+            my_slots = range(n_slots)
         announced = False
         while True:
             in_use = 0
-            for i in range(n_slots):
+            for i in my_slots:
                 slot = dirpath / f"slot-{i}"
                 try:
                     fd = os.open(str(slot), os.O_RDWR | os.O_CREAT, 0o600)
@@ -626,12 +666,23 @@ def report_result(gate: Optional["EndpointGate"], *,
         pass
 
 
+def interactive_session(env=None) -> bool:
+    """True when this process serves a person: an attended session set
+    ``DELFIN_INTERACTIVE_SESSION`` at start (cli._start_interactive_
+    session); headless runs -- ``--unattended``, a swarm member, a
+    scheduled entry -- never do. An explicit ``env`` wins (tests)."""
+    env = os.environ if env is None else env
+    return bool(str(env.get(INTERACTIVE_ENV, "") or "").strip())
+
+
 def for_client(base_url: str, model: str) -> Optional[EndpointGate]:
     """The gate a client's request round uses, or None when disabled.
     Constructed per round so a changed setting applies without
-    rebuilding the client."""
+    rebuilding the client. An attended session's requests reserve the
+    gate's lowest slot (never queue behind headless runs)."""
     try:
-        gate = EndpointGate(base_url, model)
+        gate = EndpointGate(base_url, model,
+                            interactive=interactive_session())
         return gate if gate.enabled else None
     except Exception:
         return None

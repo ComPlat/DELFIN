@@ -2278,6 +2278,14 @@ def _start_interactive_session(args: argparse.Namespace, report,
     from .run_limits import apply_unattended
     start_notes += tuple(apply_unattended(
         engine, unattended=bool(getattr(args, "unattended", False))))
+    # The endpoint gate's slot reservation (endpoint_gate) needs to know
+    # whether this process serves a person: an attended session -- every
+    # path through here that is not --unattended -- is interactive, so
+    # its requests reserve the gate's lowest slot and never queue behind
+    # headless runs (a swarm member, a scheduled run). Keyed on the same
+    # argument as apply_unattended, not on can_ask, for the same reason.
+    if not bool(getattr(args, "unattended", False)):
+        os.environ.setdefault("DELFIN_INTERACTIVE_SESSION", "1")
     return InteractiveStart(engine, why, isolation_note, start_notes)
 
 
