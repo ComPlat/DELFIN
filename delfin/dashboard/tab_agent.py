@@ -1031,10 +1031,12 @@ _CHAT_MORPH_JS = (
     "if(shown.getAttribute(a.name)!==a.value)shown.setAttribute(a.name,a.value);});"
     "var want=Array.from(fresh.childNodes).filter(function(n){"
     "return n.nodeType===1||(n.nodeType===3&&n.data.trim());});"
-    "var keys=want.map(function(n){"
-    "return n.nodeType===1?n.outerHTML:'#'+n.data;});"
+    "var keys=want.map(function(n){return key(n);});"
     "var have=Array.from(shown.childNodes);var p=0;"
-    "function key(n){return n.nodeType===1?n.outerHTML:'#'+n.data;}"
+    "function key(n){if(n.nodeType!==1)return '#'+n.data;"
+    "if(n.classList&&n.classList.contains('delfin-chat-turn-steps')){"
+    "var c=n.cloneNode(true);c.removeAttribute('open');return c.outerHTML;}"
+    "return n.outerHTML;}"
     "function stamp(n){n.__delfinKey=key(n);"
     "Array.from(n.childNodes).forEach(function(c){c.__delfinKey=key(c);});return n;}"
     "while(p<want.length&&p<have.length){"
@@ -1510,6 +1512,20 @@ _AGENT_CSS = """\
    here pulled a multi-line command into the row above it. */
 .delfin-chat-tool + .delfin-chat-tool {
     margin-top: 4px;
+}
+/* A finished turn's folded steps: same card base as every message (the
+   element itself carries .delfin-chat-msg), only the one-line summary
+   row is styled here -- same muted tone the chat uses for its meta
+   text, same cursor affordance any expandable row has. */
+.delfin-chat-turn-steps > summary {
+    cursor: pointer;
+    color: var(--delfin-chat-muted, #64748b);
+    font-size: 12px;
+    line-height: 1.5;
+    user-select: none;
+}
+.delfin-chat-turn-steps > summary::marker {
+    color: var(--delfin-chat-muted, #64748b);
 }
 .delfin-chat-user {
     background: #e8f0fe;
@@ -3099,6 +3115,120 @@ def _assistant_turn_is_wordless(msg: dict) -> bool:
     drifting apart is how an empty box ends up before every tool line.
     """
     return not str(msg.get("content") or "").strip()
+
+
+def _format_fold_time(duration_s) -> str:
+    """The fold line's wall time: ``12.4`` -> ``12s``, ``65`` -> ``1m 05s``.
+
+    Past a minute the minutes and seconds go in their own groups, seconds
+    zero-padded to two, so a minute and five seconds does not read as
+    "1m 5s" (which looks like a typo of 15s). Hours are not folded to
+    minutes: a turn that ran 1h 04m keeps the hour visible.
+    """
+    try:
+        seconds = int(round(float(duration_s)))
+    except (TypeError, ValueError, OverflowError):
+        seconds = 0
+    if seconds < 0:
+        seconds = 0
+    elif seconds == 0 and duration_s:
+        # A turn that ran at all took time: 0.5s must not read as 0s.
+        seconds = 1
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m {sec:02d}s"
+
+
+def _render_turn_fold_line(duration_s, outcome: str) -> str:
+    """The one-line fold summary text for a finished turn.
+
+    ``Worked for 12s`` when the turn ended well; ``Stopped after 40s``
+    when it was stopped or ended in an error -- the same wording the
+    end-of-turn summary line uses (``delfin.agent.turn_summary``), so the
+    transcript does not say success and failure in two dialects.
+    """
+    duration = _format_fold_time(duration_s)
+    outcome = str(outcome or "").strip().lower()
+    if outcome in ("ok", "success", "done", ""):
+        return f"Worked for {duration}"
+    return f"Stopped after {duration}"
+
+
+def _render_transcript(msgs, render_single):
+    """Render the transcript, folding finished turns' steps.
+
+    Input: *msgs*, the chat_messages list; *render_single*, the per-message
+    renderer (a closure over the tab's state). Output: the list of HTML
+    parts, one per top-level transcript node, in order.
+
+    Semantics: while a turn runs no message carries a ``turn_fold`` meta,
+    so every message renders on its own exactly as before. A message with
+    ``turn_fold`` ends a turn: the tool and thinking steps since the
+    turn's user message fold behind one native <details>/<summary> line
+    ("Worked for 12s"; "Stopped after 40s" for an error or stopped turn,
+    which stays unfolded). The ending answer itself stays visible below
+    the fold line. Rejected alternative: rendering the fold inside
+    _render_single_msg -- the fold spans several messages, so the grouping
+    must see the whole turn.
+
+    The fold element carries class ``delfin-chat-msg delfin-chat-turn-steps``
+    (the chat's own card base, one 12 px corner) so the chat's layout rules
+    apply unchanged.
+    """
+    def is_step(msg):
+        return msg.get("role") in ("tool", "thinking")
+
+    parts = []
+    i = 0
+    n = len(msgs)
+    while i < n:
+        msg = msgs[i]
+        if not (is_step(msg) or i + 1 < n and is_step(msg)):
+            parts.append(render_single(msg))
+            i += 1
+            continue
+        # A run of steps: check whether it ends in a turn_fold-marked
+        # message (the fold's boundary), otherwise render live as today.
+        # System notices (a retry line, a model switch) inside the turn
+        # belong to its steps; a turn that ends in an error ends on one.
+        j = i
+        while j < n and not msgs[j].get("turn_fold") and (
+                is_step(msgs[j]) or msgs[j].get("role") == "system"
+                or (msgs[j].get("role") == "assistant"
+                    and _assistant_turn_is_wordless(msgs[j]))):
+            j += 1
+        if j == i:
+            # The step itself ends the turn: nothing to fold before it.
+            parts.append(render_single(msg))
+            i += 1
+            continue
+        if j < n and msgs[j].get("turn_fold"):
+            fold = msgs[j]["turn_fold"] or {}
+            folded = [render_single(m) for m in msgs[i:j]]
+            line = _render_turn_fold_line(fold.get("duration_s"),
+                                          fold.get("outcome"))
+            stopped = str(fold.get("outcome") or "").strip().lower() not in (
+                "ok", "success", "done", "")
+            attrs = " open" if stopped else ""
+            parts.append(
+                f'<details class="delfin-chat-msg delfin-chat-turn-steps"'
+                f'{attrs}><summary>{_html.escape(line)}</summary>'
+                + "".join(folded) + "</details>")
+            parts.append(render_single(msgs[j]))
+            i = j + 1
+            continue
+        # No fold: render each message on its own, as before.
+        while i < j:
+            parts.append(render_single(msgs[i]))
+            i += 1
+        if i < n and msgs[i].get("role") == "assistant":
+            parts.append(render_single(msgs[i]))
+            i += 1
+    return parts
 
 
 # The diagram renderer. Pinned to an exact version and to the bytes of that
@@ -13664,7 +13794,10 @@ def create_tab(ctx):
 
         # Fast path: during streaming, only re-render the last message.
         # The prefix (all messages before the last) is cached.
-        if streaming and n > 1 and _html_cache["prefix_count"] == n - 1:
+        # Not for a turn's last message: it carries the fold, which spans
+        # the messages before it, so the cached prefix is stale.
+        if (streaming and n > 1 and _html_cache["prefix_count"] == n - 1
+                and not msgs[-1].get("turn_fold")):
             last_html = _render_single_msg(msgs[-1])
             chat_html.value = _chat_value(
                 _CHAT_OPEN
@@ -13675,10 +13808,13 @@ def create_tab(ctx):
             )
             return
 
-        # Full rebuild: render all messages and cache the prefix
-        parts = []
-        for msg in msgs:
-            parts.append(_render_single_msg(msg))
+        # Full rebuild: render all messages and cache the prefix.
+        # A message that carries a ``turn_fold`` meta ends a turn: the
+        # tool and thinking steps between the turn's user message and it
+        # fold behind one summary line (see _render_turn_fold_line).
+        # While a turn runs no message carries the meta, so the steps
+        # render live exactly as before.
+        parts = _render_transcript(msgs, _render_single_msg)
 
         # Cache everything except the last message
         if n > 1:
@@ -22597,11 +22733,12 @@ def create_tab(ctx):
                         _rj = len(_bj.running_jobs_for_workspace(_ws))
                         _outcome = ("stopped" if getattr(
                             engine, "_stop_requested", False) else "ok")
+                        _dur = (time.monotonic()
+                                - float(state.get(
+                                    "_turn_started_monotonic")
+                                or time.monotonic()))
                         _summary_line = format_turn_summary(
-                            duration_s=(time.monotonic()
-                                        - float(state.get(
-                                            "_turn_started_monotonic")
-                                        or time.monotonic())),
+                            duration_s=_dur,
                             ended_at=_datetime.datetime.now().astimezone(),
                             outcome=_outcome,
                             running_jobs=_rj,
@@ -22612,12 +22749,20 @@ def create_tab(ctx):
                                 == "assistant"):
                             _meta = dict(state["chat_messages"][-1])
                             _meta["turn_summary"] = _summary_line
+                            _meta["turn_fold"] = {"duration_s": _dur,
+                                                  "outcome": _outcome}
                             state["chat_messages"][-1] = _meta
                         else:
                             _meta = {"role": "assistant", "content": "",
                                      "role_label": role_label,
-                                     "turn_summary": _summary_line}
+                                     "turn_summary": _summary_line,
+                                     "turn_fold": {"duration_s": _dur,
+                                                   "outcome": _outcome}}
                             state["chat_messages"].append(_meta)
+                        # The fold spans the turn's earlier messages: draw
+                        # it now, not on the next event (a finished turn
+                        # has none).
+                        _refresh_chat_html()
                     except Exception:
                         pass
 
@@ -23693,6 +23838,24 @@ def create_tab(ctx):
                     )
                 else:
                     _append_system_message(f"Error: {error_text}")
+                # The turn ended in an error: its steps fold too, but
+                # stay unfolded and say so ("Stopped after Ns"), the
+                # same wording the summary line uses.
+                try:
+                    _emsgs = state["chat_messages"]
+                    if _emsgs:
+                        _emsgs[-1] = dict(_emsgs[-1])
+                        _emsgs[-1]["turn_fold"] = {
+                            "duration_s": (
+                                time.monotonic()
+                                - float(state.get(
+                                    "_turn_started_monotonic")
+                                    or time.monotonic())),
+                            "outcome": "error",
+                        }
+                        _refresh_chat_html()
+                except Exception:
+                    pass
             finally:
                 # Restore the user's model after a routed turn so the
                 # dropdown stays the source of truth for the next send.
