@@ -65,6 +65,22 @@ BUCKETS: list[tuple[str, re.Pattern[str], str, str]] = [
      "Allowed by the rules, then refused by the action watcher",
      "Replay the refused command heads against the watcher prompt; a "
      "read-only head refused more than once is a prompt or rule defect."),
+    # Before "timeout": an approval window running out is a person away,
+    # not a command that ran too long.
+    ("approval_unanswered",
+     # Upper case on purpose: the approval broker writes "TIMED OUT", the
+     # command limit "timed out after".
+     re.compile(r"TIMED OUT|(?i:the user is away|approval window)"),
+     "Asked a person, nobody answered in time",
+     "Sort these asks into those a rule could have decided (read-only, "
+     "inside the workspace) and the rest; the rest should reach the "
+     "person where they are (phone) instead of timing out."),
+    ("guarded_location",
+     re.compile(r"where approvals are answered|secret-deny|\.ssh|"
+                r"credential", re.I),
+     "Touched a guarded location (approvals, secrets)",
+     "Refused by design: check that the refusal says what to do instead "
+     "and that no session repeats it after the first refusal."),
     ("refusal_pause",
      re.compile(r"three actions were refused", re.I),
      "Session paused after three refusals",

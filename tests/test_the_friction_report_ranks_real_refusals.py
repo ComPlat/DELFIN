@@ -105,6 +105,18 @@ def test_each_real_reason_shape_lands_in_its_bucket():
     assert fr.bucket_of(REFUSED.format(cmd="grep x")) == "watcher_refused"
     assert fr.bucket_of(PAUSE.format(cmd="true")) == "refusal_pause"
     assert fr.bucket_of(STASH) == "deny_pattern"
+    # A person away is not a command that ran too long.
+    assert fr.bucket_of(
+        "blocked: this command would print '/x'. read of '/x' TIMED OUT "
+        "— the user is away, this is NOT a denial.") == "approval_unanswered"
+    assert fr.bucket_of(
+        "command timed out after 120s and was ended") == "timeout"
+    assert fr.bucket_of(
+        "bash command references a secret-deny path ('~/.ssh/id')"
+    ) == "guarded_location"
+    assert fr.bucket_of(
+        "blocked: the command names the location where approvals are "
+        "answered.") == "guarded_location"
     assert fr.bucket_of("something nobody wrote a bucket for") == "other"
 
 
