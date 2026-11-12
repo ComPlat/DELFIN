@@ -67,6 +67,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
     from .helpers import (
+        DASHBOARD_TABS_CLASS,
         _append_js,
         self_running_html,
         apply_branding,
@@ -76,6 +77,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         disable_spellcheck_global,
         hand_over_tabs,
         keep_scroll_position,
+        name_page_controls,
     )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
 
@@ -644,6 +646,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             spec['widget'] = tab8
             break
 
+    # Unnamed selects and slider handles take their widget's words as an
+    # accessible name; every tab takes its full name as a tooltip.
+    name_page_controls(ctx)
+
     # Every tab's startup script goes out in ONE ctx.run_js() call: run_js
     # clears its output first, so a second call would wipe the first tab's
     # script before the browser ever executed it.
@@ -863,6 +869,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         selected_index = titles.index(selected_title) if selected_title in titles else None
         if ctx.tabs_widget is None:
             ctx.tabs_widget = widgets.Tab(children=children)
+            ctx.tabs_widget.add_class(DASHBOARD_TABS_CLASS)
             for i, title in enumerate(titles):
                 ctx.tabs_widget.set_title(i, title)
             if selected_index is not None:

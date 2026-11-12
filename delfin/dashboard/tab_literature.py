@@ -296,6 +296,7 @@ def create_tab(ctx):
     lit_sort = widgets.Dropdown(
         options=[('A-Z', 'name'), ('Newest', 'date_desc'), ('Oldest', 'date_asc')],
         value='name',
+        tooltip='Sort files',
         layout=widgets.Layout(width='90px', min_width='90px', height='26px', margin='0 0 0 4px'),
     )
     lit_filter_sort_row = widgets.HBox(

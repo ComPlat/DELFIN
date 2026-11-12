@@ -879,6 +879,7 @@ def create_tab(ctx):
     calc_sort_dropdown = widgets.Dropdown(
         options=[('A-Z', 'name'), ('Newest', 'date_desc'), ('Oldest', 'date_asc')],
         value='name',
+        tooltip='Sort files',
         layout=widgets.Layout(width='90px', min_width='90px', height='26px', margin='0 0 0 4px'),
     )
     # A dot folder is bookkeeping -- DELFIN's, or the system's. Over a home

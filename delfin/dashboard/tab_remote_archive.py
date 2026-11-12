@@ -184,6 +184,7 @@ def create_tab(ctx):
     sort_dropdown = widgets.Dropdown(
         options=[("A-Z", "name"), ("Newest", "date_desc"), ("Oldest", "date_asc")],
         value="name",
+        tooltip="Sort files",
         layout=widgets.Layout(width="98px", height="28px"),
     )
     file_list = widgets.SelectMultiple(
