@@ -68,6 +68,12 @@ CONFIRM = "confirm"
 ASK = "ask"
 PLAN = "plan"
 
+#: Why a question ended without an answer (``unanswered`` in its result):
+#: the run was stopped, or its one-time code was spent by wrong answers.
+#: An expiry names the seconds waited (TerminalConfirmBroker._wait).
+STOPPED = "no answer (the question was stopped)"
+EXPIRED = "no answer (the question expired)"
+
 _WRITE_TOOLS = frozenset({
     "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
     "edit_sheet", "create_docx", "create_pdf", "fill_pdf_form",
@@ -879,7 +885,7 @@ class TerminalConfirmBroker:
                 kind=ASK, tool="ask_user_question",
                 payload=dict(payload or {})))
             answer = self._wait(req)
-        return answer if isinstance(answer, dict) else {"answers": []}
+        return answer if isinstance(answer, dict) else {"answers": [], "unanswered": STOPPED}
 
     def approve_plan(self, plan: str) -> dict:
         with _activity.awaiting_person(self.activity, _activity.APPROVAL):
@@ -896,7 +902,7 @@ class TerminalConfirmBroker:
         with self._lock:
             if self.aborted:
                 req.resolved = True
-                req.decision = self._refusal_for(req)
+                req.decision = self._refusal_for(req, STOPPED)
                 return req
             self._queue.append(req)
         try:
@@ -925,6 +931,7 @@ class TerminalConfirmBroker:
         import time as _time
         deadline = (_time.monotonic() + self.timeout_s) if self.timeout_s else None
         got = False
+        spent = False
         while True:
             slice_s = self.poll_s
             if deadline is not None:
@@ -946,6 +953,7 @@ class TerminalConfirmBroker:
                 self._audit_dialog(req, by="outside")
                 return req.decision
             if code_spent(req.published):
+                spent = True
                 break           # three unsigned answers: expired
             if deadline is not None and _time.monotonic() >= deadline:
                 break
@@ -953,7 +961,10 @@ class TerminalConfirmBroker:
             if not got and not req.resolved:
                 req.expired = True
                 req.resolved = True
-                req.decision = self._refusal_for(req)
+                req.decision = self._refusal_for(
+                    req, EXPIRED if spent else
+                    f"no answer (timed out after {int(self.timeout_s or 0)} s)",
+                    timed_out=not spent)
                 self.last_timed_out = True
                 if req in self._queue:
                     self._queue.remove(req)
@@ -1013,11 +1024,18 @@ class TerminalConfirmBroker:
             pass
 
     @staticmethod
-    def _refusal_for(req: ConfirmRequest) -> Any:
+    def _refusal_for(req: ConfirmRequest, why: str = STOPPED,
+                     timed_out: bool = False) -> Any:
+        """The decision of a request that ended without an answer. A
+        question says why (``unanswered``): an empty answer list alone is
+        what a dismissal returns, and the model cannot tell them apart."""
         if req.kind == PLAN:
             return {"approved": False, "new_mode": "plan"}
         if req.kind == ASK:
-            return {"answers": []}
+            out: dict = {"answers": [], "unanswered": why}
+            if timed_out:
+                out["timed_out"] = True
+            return out
         return False
 
     # -- consumer side (the main thread, and only it) ---------------------
@@ -1072,7 +1090,7 @@ class TerminalConfirmBroker:
             pending = [r for r in self._queue if not r.resolved]
             for req in pending:
                 req.resolved = True
-                req.decision = self._refusal_for(req)
+                req.decision = self._refusal_for(req, STOPPED)
             self._queue.clear()
         for req in pending:
             try:
