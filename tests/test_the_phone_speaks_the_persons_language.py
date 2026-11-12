@@ -95,7 +95,7 @@ def test_the_cards_follow_the_persons_language(acct):
         finally:
             _PERSON.reset(token)
     asyncio.run(go())
-    assert "Antworte mit *ja* oder *nein*." in last(acct, "#a1")
+    assert "oder antworte auf der Karte mit *ja* / *nein*." in last(acct, "#a1")
 
 
 def test_what_the_agent_wrote_is_never_translated(acct):

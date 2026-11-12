@@ -17,6 +17,7 @@ import asyncio
 import contextvars
 import os
 import re
+import secrets
 import sys
 import time
 from collections import deque
@@ -713,6 +714,9 @@ class Rooms:
                 _PERSON.reset(token)
         if quote_id is not None:
             return await self.reply(text, room, chat, quote_id)
+        tapped = await self.tap_answer(text, room, chat)
+        if tapped is not None:
+            return tapped
         if text.split()[:1] != ['stop'] and yes_no(text) is not None:
             plain = await self.plain_decision(text, room, chat)
             if plain is not None:
@@ -1395,8 +1399,44 @@ class Rooms:
             lines.append(text)
         return '\n\n'.join(lines) or t('Nothing open.')
 
+    #: How long a card's tap token answers it: as long as a reply to it.
+    TAP_TTL_S = 600.0
+
     async def send_request(self, chat, room, item):
-        await self.send(chat, self.pending_text([item]), request=item)
+        """A request card. An approval the phone may give gets a tap token:
+        /'ja TOKEN' and /'nein TOKEN' on the card are tappable, and a tap
+        answers exactly this card (it is a new message, not a reply, so the
+        token is what binds it)."""
+        tap = None
+        if item.get('kind') in {'confirm', 'plan'} and item.get('phoneApproval'):
+            taps = self.__dict__.setdefault('_taps', {})
+            tap = secrets.token_hex(2)
+            while (chat, tap) in taps:
+                tap = secrets.token_hex(2)
+            item = {**item, '_tap': tap}
+        sent = await self.send(chat, self.pending_text([item]), request=item)
+        if tap and sent:
+            taps = self._taps
+            taps[(chat, tap)] = (sent[0], time.monotonic())
+            while len(taps) > 512:
+                taps.pop(next(iter(taps)))
+
+    async def tap_answer(self, text, room, chat):
+        """``/ja TOKEN`` / ``/nein TOKEN`` tapped on a card: the card's
+        answer, through the same checks as a reply to it. None when the line
+        is not a tap of a card in this chat (then it is for the agent)."""
+        words = text.strip().lstrip('/').split()
+        if len(words) != 2 or yes_no(words[0]) is None:
+            return None
+        hit = self.__dict__.get('_taps', {}).get((chat, words[1].lower()))
+        if hit is None:
+            return None
+        mid, when = hit
+        if time.monotonic() - when > self.TAP_TTL_S:
+            self._taps.pop((chat, words[1].lower()), None)
+            return t('This request is no longer bound here. Show the current one with pending and reply to it.')
+        self._taps.pop((chat, words[1].lower()), None)
+        return await self.reply(words[0], room, chat, mid)
 
     async def reply(self, text, room, chat, quote_id):
         target = self._reply_targets.get((chat, str(quote_id)))

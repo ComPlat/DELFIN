@@ -94,9 +94,20 @@ def approval_card(item: dict, machine: str = '') -> str:
             f"`{o['key']}` {o.get('label', '')}".strip() for o in extra))
     if not item.get('phoneApproval'):
         out.append(t('Approve this at the computer; not from the phone.'))
+    elif item.get('_tap'):
+        out.append(tap_line(str(item['_tap'])))
     else:
         out.append(t('Reply *yes* or *no*.'))
     return '\n'.join(out)
+
+
+def tap_line(token: str) -> str:
+    """The card's answer line with two tappable commands (SimpleX 6.4.3+
+    highlights /'...' in a bot's message; a tap sends it). The token binds
+    the tap to this one card in this one chat (gateway._taps)."""
+    yes, no = ('yes', 'no') if english() else ('ja', 'nein')
+    return t("Tap /'{yes} {token}' or /'{no} {token}', or reply *yes* / *no* on the card.").format(
+        yes=yes, no=no, token=token)
 
 
 def preview_block(item: dict) -> str:

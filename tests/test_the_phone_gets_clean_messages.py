@@ -74,7 +74,7 @@ def test_a_short_approval_is_one_compact_card(acct):
     assert lines[0].startswith("🔐 *run a command*"), card
     assert "list the results" in card
     assert "```\n$ ls -l results\n```" in card
-    assert lines[-1] == "Reply *yes* or *no*.", card
+    assert re.fullmatch(r"Tap /'yes [0-9a-f]{4}' or /'no [0-9a-f]{4}', or reply \*yes\* / \*no\* on the card\.", lines[-1]), card
     assert len(lines) <= 8 and len(card) <= 400, card
 
 

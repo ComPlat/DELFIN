@@ -461,6 +461,8 @@ DE = {
     # -- several people, each with their own phones (multi-person pairing) --------
     'account owner': 'Kontoinhaber',
     'Not done: unclear for which person.': 'Nicht ausgeführt: unklar, für welche Person.',
+    "Tap /'{yes} {token}' or /'{no} {token}', or reply *yes* / *no* on the card.":
+    "Tippe /'{yes} {token}' oder /'{no} {token}', oder antworte auf der Karte mit *ja* / *nein*.",
     'new NAME: task starts a new session on the phone.':
     'neu NAME: Aufgabe startet eine neue Sitzung auf dem Handy.',
     'No running sessions. new NAME starts one.': 'Keine laufenden Sitzungen. neu NAME startet eine.',
