@@ -67,9 +67,6 @@ def test_the_parser_takes_continue_and_resume_with_an_id():
     assert not args.session and not args.continue_session
 
 
-@pytest.mark.xfail(reason="needs the protected cli.py change: --resume nargs='?' "
-                          "const=cli_service.RESUME_PICK (see the OPERATOR_A note)",
-                   strict=False)
 def test_the_parser_takes_a_bare_resume():
     from delfin.agent.cli import build_parser
 

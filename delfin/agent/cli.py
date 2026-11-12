@@ -6256,10 +6256,13 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--effort", default="")
     tui.add_argument("--permission-mode", default="",
                      choices=["", "plan", "default", "acceptEdits"])
-    tui.add_argument("--session", "--resume", dest="session", default="",
-                     help="Resume this saved session")
-    tui.add_argument("--continue", dest="continue_session", action="store_true",
-                     help="Resume the latest session in the workspace")
+    # A bare --resume opens the resume picker before any session: its
+    # const is cli_service.RESUME_PICK (a test holds the two equal).
+    tui.add_argument("-r", "--resume", "--session", dest="session", default="",
+                     nargs="?", const=":pick", metavar="ID",
+                     help="Open this session; without an id, pick one from a list first")
+    tui.add_argument("-c", "--continue", dest="continue_session", action="store_true",
+                     help="Open the latest session of this folder")
     tui.add_argument("--add-dir", dest="add_dirs", action="append", default=[])
     tui.add_argument("--read-dir", dest="read_dirs", action="append", default=[])
     tui.add_argument("--isolate", action="store_true")
