@@ -174,6 +174,27 @@ def _recent_user_processes(user):
     return _user_process_snapshot[1]
 
 
+#: The heading icon of each browser clone, by the tab's title.
+_BROWSER_ICONS = {'Office': '📁', 'Archive': '🗄️', 'Home': '🏠'}
+
+
+def _browser_heading(ctx, is_office_tab):
+    """The tab's heading: its own name, the one on its tab.
+
+    Archive, Home and Office are this browser on another root. Each passes
+    its tab's title as ``ctx.browser_title``; before, only Office had a
+    heading of its own and Archive and Home were headed "Calculations
+    Browser". Without a title the root decides, as it did.
+    """
+    title = str(getattr(ctx, 'browser_title', '') or '').strip()
+    if not title:
+        title = 'Office' if is_office_tab else ''
+    if not title:
+        return '<h3>📂 Calculations Browser</h3>'
+    icon = _BROWSER_ICONS.get(title, '📂')
+    return f'<h3>{icon} {_html.escape(title)}</h3>'
+
+
 def create_tab(ctx):
     """Create the Calculations Browser tab.
 
@@ -887,6 +908,7 @@ def create_tab(ctx):
     calc_sort_dropdown = widgets.Dropdown(
         options=[('A-Z', 'name'), ('Newest', 'date_desc'), ('Oldest', 'date_asc')],
         value='name',
+        tooltip='Sort files',
         layout=widgets.Layout(width='90px', min_width='90px', height='26px', margin='0 0 0 4px'),
     )
     # A dot folder is bookkeeping -- DELFIN's, or the system's. Over a home
@@ -16220,10 +16242,7 @@ def create_tab(ctx):
 
     tab_widget = widgets.VBox([
         calc_css,
-        widgets.HTML(
-            '<h3>📁 Office</h3>' if _is_office_tab
-            else '<h3>📂 Calculations Browser</h3>'
-        ),
+        widgets.HTML(_browser_heading(ctx, _is_office_tab)),
         widgets.HBox(
             [calc_left, calc_splitter, calc_right],
             layout=widgets.Layout(

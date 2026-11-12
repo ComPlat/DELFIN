@@ -126,9 +126,10 @@ def _page_csp() -> str:
 #: a browser applies.
 PAGE_CSP = _page_csp()
 
-#: A same-origin, empty script the launcher hands Voila as ``mathjax_url``
-#: (the dashboard typesets nothing; see ``cli_voila``), so ``script-src``
-#: needs no ``data:``.
+#: A same-origin script that typesets nothing (:data:`NO_TYPESETTING_JS`),
+#: which the launcher hands Voila as ``mathjax_url`` (the dashboard
+#: typesets nothing; see ``cli_voila``), so ``script-src`` needs no
+#: ``data:``.
 NO_TYPESETTING_ROUTE = "/delfin/no-typesetting.js"
 
 #: For a file that is a download or a passive image: nothing in it runs.
@@ -382,8 +383,36 @@ def _make_transform():
 SecurityHeadersTransform = _make_transform()
 
 
+#: What :data:`NO_TYPESETTING_ROUTE` serves: a MathJax that typesets nothing.
+#:
+#: The page's typesetter loads the URL it is given and then calls MathJax 2
+#: on it (``Hub.Config``, ``Hub.Register.StartupHook``, ``Hub.Configured``,
+#: later ``Hub.Queue``). An empty script left those calls to throw
+#: "MathJax is not defined" into the console on every load. Every call is
+#: answered here and does nothing, so the page still typesets nothing --
+#: a ``$`` in a job log stays a dollar sign -- and says nothing about it.
+#: A MathJax that is already on the page is never replaced.
+NO_TYPESETTING_JS = (
+    "// no typesetting: MathJax's calls are answered and do nothing\n"
+    "(function (w) {\n"
+    "  var none = function () {};\n"
+    "  var m = w.MathJax || (w.MathJax = {});\n"
+    "  if (!m.Hub) {\n"
+    "    m.Hub = {Config: none, Configured: none, Queue: none,\n"
+    "             Typeset: none, Register: {StartupHook: none,\n"
+    "                                       MessageHook: none}};\n"
+    "  }\n"
+    "  if (!m.typeset) { m.typeset = none; }\n"
+    "  if (!m.typesetPromise) {\n"
+    "    m.typesetPromise = function () { return Promise.resolve(); };\n"
+    "  }\n"
+    "})(window);\n"
+)
+
+
 def install_no_typesetting_route(web_app: Any) -> None:
-    """Serve :data:`NO_TYPESETTING_ROUTE`: a constant, empty script."""
+    """Serve :data:`NO_TYPESETTING_ROUTE`: the constant
+    :data:`NO_TYPESETTING_JS`."""
     from jupyter_server.base.handlers import JupyterHandler
     from jupyter_server.utils import url_path_join
     from tornado import web
@@ -393,7 +422,7 @@ def install_no_typesetting_route(web_app: Any) -> None:
         def get(self):
             self.set_header("Content-Type", "text/javascript; charset=utf-8")
             self.set_header("Cache-Control", "max-age=86400")
-            self.finish("// no typesetting\n")
+            self.finish(NO_TYPESETTING_JS)
 
     base = web_app.settings.get("base_url", "/")
     web_app.add_handlers(".*$", [(url_path_join(base, NO_TYPESETTING_ROUTE),
