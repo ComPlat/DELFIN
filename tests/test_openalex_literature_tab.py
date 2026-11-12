@@ -121,17 +121,18 @@ def test_add_without_open_pdf_keeps_only_the_record(tab, monkeypatch):
     files = sorted(p.name for p in refs["lit_dir"].iterdir())
     assert files == ["Becke1993_Density_functional_thermochemistry_III_The_role.md"]
     assert "no open-access PDF found" in (refs["lit_dir"] / files[0]).read_text()
+    assert "no open-access PDF found" in refs["lit_search_status"].value
     assert called == []
 
 
 def test_pdf_with_closed_licence_is_linked_not_stored(tab):
     refs, _net = tab
-    rec = {"title": "Closed", "authors": ["A B"], "year": 2020, "doi": "10.1/x",
+    rec = {"title": "Closed", "authors": ["Ann Bee"], "year": 2020, "doi": "10.1/x",
            "pdf_url": "https://p.example.org/x.pdf", "pdf_license": "publisher-specific-oa",
            "sources": ["openalex"]}
     refs["lit_search_add"](rec)
     files = [p.name for p in refs["lit_dir"].iterdir()]
-    assert files == ["B2020_Closed.md"]
+    assert files == ["Bee2020_Closed.md"]
     assert "does not allow keeping a copy" in (refs["lit_dir"] / files[0]).read_text()
 
 

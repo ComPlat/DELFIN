@@ -57,6 +57,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -969,7 +970,8 @@ def suggest_basename(rec: dict) -> str:
     year = str(rec.get("year") or "nd")
     words = re.findall(r"[A-Za-z0-9]+", rec.get("title") or "")[:6]
     base = f"{last}{year}_" + "_".join(words)
-    base = re.sub(r"[^A-Za-z0-9_\-]", "", base.encode("ascii", "ignore").decode())
+    base = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode()
+    base = re.sub(r"[^A-Za-z0-9_\-]", "", base)
     return (base or "reference")[:70].rstrip("_-")
 
 
@@ -1011,7 +1013,7 @@ def to_markdown(rec: dict, *, retrieved: "str | None" = None,
     if pdf_file:
         lines.append(f"- Local copy: {pdf_file}")
     if pdf_note:
-        lines.append(f"- PDF: {pdf_note}")
+        lines.append(f"- Note: {pdf_note}")
     names = [SOURCES[s].label if s in SOURCES else s.title()
              for s in rec.get("sources") or []]
     lines.append(f"- Found in: {', '.join(names)}")
@@ -1046,9 +1048,15 @@ def download_open_pdf(rec: dict, *, timeout_s: float = 30.0,
         "User-Agent": web_tools._USER_AGENT, "Accept": "application/pdf"})
     with source_apis._HostSlot(host, timeout_s):
         source_apis._rate_limit(host)
-        with web_tools._guarded_opener().open(req, timeout=timeout_s) as resp:
-            ctype = str(resp.headers.get("Content-Type", "")).lower()
-            body = resp.read(max_bytes + 1)
+        try:
+            with web_tools._guarded_opener().open(req, timeout=timeout_s) as resp:
+                ctype = str(resp.headers.get("Content-Type", "")).lower()
+                body = resp.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            # Publisher hosts often refuse scripted downloads (403); that is
+            # their call, never something to work around.
+            raise ValueError(f"the host refused the download (HTTP {exc.code}); "
+                             "open the PDF link in the browser") from exc
     if len(body) > max_bytes:
         raise ValueError("PDF larger than the {} MB limit".format(max_bytes // 2**20))
     if not body.startswith(b"%PDF-"):

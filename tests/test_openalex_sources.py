@@ -486,8 +486,20 @@ def test_crossref_retries_without_select_on_http_400(net, monkeypatch):
 
 @pytest.mark.parametrize("author,stem", [
     ("Jane Doe", "Doe"), ("Doe J", "Doe"), ("Doe JA", "Doe"), ("Doe, Jane", "Doe"),
-    ("Axel D. Becke", "Becke"),
+    ("Axel D. Becke", "Becke"), ("Ana Hernández", "Hernandez"),
 ])
 def test_file_name_uses_the_surname(author, stem):
     rec = {"authors": [author], "year": 2020, "title": "A title"}
     assert ss.suggest_basename(rec) == f"{stem}2020_A_title"
+
+
+def test_a_host_refusing_the_download_is_one_clear_line(monkeypatch):
+    def refuse(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+    monkeypatch.setattr(web_tools, "_check_url", lambda url: None)
+    monkeypatch.setattr(web_tools, "_guarded_opener",
+                        lambda: types.SimpleNamespace(open=refuse))
+    monkeypatch.setattr(source_apis, "_LAST_REQUEST", {})
+    with pytest.raises(ValueError, match=r"refused the download \(HTTP 403\)"):
+        ss.download_open_pdf({"pdf_url": "https://p.example.org/a.pdf",
+                              "pdf_license": "cc-by"})

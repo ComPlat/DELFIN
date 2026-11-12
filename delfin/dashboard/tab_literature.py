@@ -1429,14 +1429,14 @@ def create_tab(ctx):
                 _upload_limits.write_new_bytes(pdf_path, data)
                 pdf_name = pdf_path.name
             except Exception as exc:
-                pdf_note = f'not stored ({exc})'
+                pdf_note = f'PDF not stored: {exc}'
         else:
             pdf_note = 'no open-access PDF found'
         text = ss.to_markdown(rec, pdf_file=pdf_name, pdf_note=pdf_note)
         _upload_limits.write_new_bytes(md_path, text.encode('utf-8'))
         if pdf_name:
             return f'Added {md_path.name} and {pdf_name}', '#2e7d32'
-        return f'Added {md_path.name} \u2014 PDF {pdf_note}', '#2e7d32'
+        return f'Added {md_path.name} \u2014 {pdf_note}', '#2e7d32'
 
     lit_mode.observe(on_mode, names='value')
     lit_q.observe(run_search, names='value')
