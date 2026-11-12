@@ -32,6 +32,12 @@ class JobInfo:
 class JobBackend(ABC):
     """Abstract interface for job submission/management backends."""
 
+    #: Set by the dashboard (DashboardContext): a callable that answers True
+    #: while a view that shows jobs is on screen.  Backends that query a
+    #: shared cluster service use it to keep periodic refreshes off that
+    #: service while nobody is looking.  None: no dashboard, always "visible".
+    jobs_view_visible = None
+
     @abstractmethod
     def submit_delfin(self, job_dir, job_name, mode='delfin',
                       time_limit='48:00:00', pal=40, maxcore=6000,
