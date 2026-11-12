@@ -153,12 +153,20 @@ def request_triage_answer(item: dict[str, Any], *, answer: str,
 
 def request_prcheck(pr_number: int, *, confirmed: bool = False) -> dict:
     """Read the PR's CI state -- a read, but an outward one, so the lead
-    asks the user first (wave rule: no gh, the operator reads CI)."""
+    asks the user first (wave rule: no gh, the operator reads CI).
+
+    Even confirmed, the lead itself carries no gh/CI path: the call is
+    dispatched to the service layer (swarm.prcheck), which reports what
+    the operator's CI read returns. Here that path is the structured
+    hand-off, never a crash -- a tool call must end in a dict.
+    """
     if confirmed is not True:
         return {"action": "ask_user", "pr": pr_number,
                 "refused": "checking a PR's CI goes through the user"}
-    raise NotImplementedError(
-        "swarm_prcheck executes through the operator's CI path, not here")
+    return {"action": "delegate", "pr": pr_number, "checks": [],
+            "refused": "the lead session reads CI through the service "
+                       "layer's swarm.prcheck handler, which reports the "
+                       "operator's CI read; no direct gh here"}
 
 
 def format_event(event: dict[str, Any]) -> str:
@@ -250,13 +258,16 @@ class LeadEventFeed:
         key = _event_identity(event)
         if key in self._seen:
             return
-        self._seen.add(key)
         now = self._now()
         if now - self._window_start >= self.window_s:
             self._window_start = now
             self._window_count = 0
         if self._window_count >= self.max_per_window:
+            # A throttle drop is not a delivery: the event stays unseen,
+            # so a re-emission after the window resets is delivered (the
+            # dedup only catches retries of DELIVERED events).
             return
+        self._seen.add(key)
         self._window_count += 1
         if self.on_deliver is not None:
             self.on_deliver(format_event(event))
