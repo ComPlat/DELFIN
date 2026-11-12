@@ -25,7 +25,6 @@ from IPython.display import HTML, clear_output, display
 
 
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
-from delfin.reporting.delfin_docx_report import _orca_plot_binary
 from delfin.ssh_transfer_jobs import (
     create_transfer_job,
     ensure_jobs_dir,
@@ -87,6 +86,14 @@ from .molecule_viewer import (
     structure_viewer_fullscreen_kind_js,
     viewer_disabled_html,
 )
+
+def _orca_plot_binary():
+    """``delfin_docx_report._orca_plot_binary``, imported on first use: the
+    report module loads python-docx and the report builders (a few tenths
+    of a second), which the tab's build does not need."""
+    from delfin.reporting.delfin_docx_report import _orca_plot_binary as find
+    return find()
+
 
 ORCA_CPCM_TOP10_SOLVENTS = (
     "chloroform",
