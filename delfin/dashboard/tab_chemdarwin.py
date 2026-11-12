@@ -47,10 +47,13 @@ try:
 except ImportError:
     py3Dmol = None
 
+# Whether stk is installed, found without importing it: the import alone
+# takes about two seconds and this module never calls stk, while the tab
+# is built at every dashboard start.
 try:
-    import stk  # noqa: F401
-    STK_AVAILABLE = True
-except ImportError:
+    import importlib.util as _ilu
+    STK_AVAILABLE = _ilu.find_spec('stk') is not None
+except (ImportError, ValueError):
     STK_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
