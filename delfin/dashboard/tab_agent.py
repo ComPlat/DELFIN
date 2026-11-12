@@ -1035,7 +1035,7 @@ _CHAT_MORPH_JS = (
     "var have=Array.from(shown.childNodes);var p=0;"
     "function key(n){if(n.nodeType!==1)return '#'+n.data;"
     "if(n.classList&&n.classList.contains('delfin-chat-turn-steps')){"
-    "n.removeAttribute('open');return n.outerHTML;}"
+    "var c=n.cloneNode(true);c.removeAttribute('open');return c.outerHTML;}"
     "return n.outerHTML;}"
     "function stamp(n){n.__delfinKey=key(n);"
     "Array.from(n.childNodes).forEach(function(c){c.__delfinKey=key(c);});return n;}"
@@ -3193,15 +3193,20 @@ def _render_transcript(msgs, render_single):
             continue
         # A run of steps: check whether it ends in a turn_fold-marked
         # message (the fold's boundary), otherwise render live as today.
+        # System notices (a retry line, a model switch) inside the turn
+        # belong to its steps; a turn that ends in an error ends on one.
         j = i
-        while j < n and (is_step(msgs[j])
-                         or msgs[j].get("role") == "assistant"):
-            if (msgs[j].get("role") == "assistant"
-                    and not _assistant_turn_is_wordless(msgs[j])):
-                break
+        while j < n and not msgs[j].get("turn_fold") and (
+                is_step(msgs[j]) or msgs[j].get("role") == "system"
+                or (msgs[j].get("role") == "assistant"
+                    and _assistant_turn_is_wordless(msgs[j]))):
             j += 1
-        if j < n and msgs[j].get("role") == "assistant" and msgs[j].get(
-                "turn_fold"):
+        if j == i:
+            # The step itself ends the turn: nothing to fold before it.
+            parts.append(render_single(msg))
+            i += 1
+            continue
+        if j < n and msgs[j].get("turn_fold"):
             fold = msgs[j]["turn_fold"] or {}
             folded = [render_single(m) for m in msgs[i:j]]
             line = _render_turn_fold_line(fold.get("duration_s"),
@@ -13789,7 +13794,10 @@ def create_tab(ctx):
 
         # Fast path: during streaming, only re-render the last message.
         # The prefix (all messages before the last) is cached.
-        if streaming and n > 1 and _html_cache["prefix_count"] == n - 1:
+        # Not for a turn's last message: it carries the fold, which spans
+        # the messages before it, so the cached prefix is stale.
+        if (streaming and n > 1 and _html_cache["prefix_count"] == n - 1
+                and not msgs[-1].get("turn_fold")):
             last_html = _render_single_msg(msgs[-1])
             chat_html.value = _chat_value(
                 _CHAT_OPEN
@@ -22751,6 +22759,10 @@ def create_tab(ctx):
                                      "turn_fold": {"duration_s": _dur,
                                                    "outcome": _outcome}}
                             state["chat_messages"].append(_meta)
+                        # The fold spans the turn's earlier messages: draw
+                        # it now, not on the next event (a finished turn
+                        # has none).
+                        _refresh_chat_html()
                     except Exception:
                         pass
 

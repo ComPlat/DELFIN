@@ -187,3 +187,61 @@ def test_the_morph_key_ignores_the_fold_blocks_open_state():
     assert "delfin-chat-turn-steps" in js
     # The key for a fold element is computed without its open attribute.
     assert "open" in js
+
+
+# ---------------------------------------------------------------------------
+# Found in the real page (headless Chromium against the scripted model)
+# ---------------------------------------------------------------------------
+
+def test_an_error_turn_ending_on_its_system_line_folds_its_steps():
+    """The error path marks the LAST message, which is the system line
+    "Error: ...", with retry notices between it and the tool steps."""
+    msgs = [{"role": "user", "content": "go"},
+            {"role": "tool", "content": "$ ls"},
+            {"role": "system", "content": "retrying 1/7 in 2s"},
+            {"role": "system", "content": "Error: broken",
+             "turn_fold": {"duration_s": 3.0, "outcome": "error"}}]
+    parts = T._render_transcript(msgs, lambda m: f"<p>{m['content']}</p>")
+    assert parts[1].startswith('<details class="delfin-chat-msg '
+                               'delfin-chat-turn-steps" open>')
+    assert "$ ls" in parts[1] and "retrying" in parts[1]
+    assert parts[2] == "<p>Error: broken</p>"
+
+
+def test_a_step_that_ends_the_turn_itself_renders_and_returns():
+    msgs = [{"role": "user", "content": "go"},
+            {"role": "tool", "content": "$ ls",
+             "turn_fold": {"duration_s": 1.0, "outcome": "ok"}}]
+    parts = T._render_transcript(msgs, lambda m: f"<p>{m['content']}</p>")
+    assert parts == ["<p>go</p>", "<p>$ ls</p>"]
+
+
+def test_the_morph_key_does_not_close_the_shown_fold():
+    """Removing ``open`` on the node itself closed the reader's fold on
+    every re-render (four a second while a turn streams)."""
+    js = _key_js()
+    assert "cloneNode(true)" in js
+    assert "n.removeAttribute('open')" not in js
+
+
+def test_a_finished_turn_draws_its_fold_on_the_streaming_path(tmp_path,
+                                                              monkeypatch):
+    """The turn's last refresh may come through the streaming fast path,
+    which re-renders the last message only; the fold spans the messages
+    before it, so that path must not be taken for the fold's message."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    ctx = _ctx(tmp_path)
+    widget, refs = T.create_tab(ctx)
+    try:
+        msgs = _turn_msgs()
+        msgs[-1].pop("turn_fold")
+        refs["state"]["chat_messages"].extend(msgs)
+        refs["refresh_chat"](streaming=False)
+        assert "delfin-chat-turn-steps" not in _template_body(
+            _host(widget).value)
+        msgs[-1]["turn_fold"] = {"duration_s": 4.0, "outcome": "ok"}
+        refs["refresh_chat"](streaming=True)
+        assert "Worked for 4s" in _template_body(_host(widget).value)
+    finally:
+        refs["shutdown"]()
