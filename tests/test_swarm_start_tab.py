@@ -40,6 +40,9 @@ def repo(tmp_path, monkeypatch):
     r = tmp_path / "repo"
     r.mkdir()
     _git(r, "init", "-q")
+    # A swarm starts only with a configured git identity.
+    _git(r, "config", "user.name", "t")
+    _git(r, "config", "user.email", "t@example.org")
     (r / "README").write_text("x\n")
     _git(r, "add", "README")
     _git(r, "commit", "-q", "-m", "init")

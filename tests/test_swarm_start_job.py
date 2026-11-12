@@ -65,6 +65,10 @@ def repo(tmp_path, home):
     r = tmp_path / "repo"
     r.mkdir()
     _git(r, "init", "-q")
+    # A swarm starts only with a configured git identity (the members'
+    # commits are made as it); a guessed one names the compute node.
+    _git(r, "config", "user.name", "t")
+    _git(r, "config", "user.email", "t@example.org")
     (r / "README").write_text("x\n")
     _git(r, "add", "README")
     _git(r, "commit", "-q", "-m", "init")

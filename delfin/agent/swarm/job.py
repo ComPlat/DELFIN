@@ -294,6 +294,58 @@ def repo_of(spec_path: Path | str) -> Path:
     return Path(top)
 
 
+#: Environment a member's commits take their author and committer from.
+IDENTITY_ENV = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
+
+#: Environment variable that names a swarm run (delfin.agent.swarm_memory).
+RUN_ENV = "DELFIN_SWARM_RUN"
+
+
+def git_identity(repo: Path | str) -> dict:
+    """``{"name", "email"}`` the members' commits are made as, or ``{}``.
+
+    What ``git config`` gives in *repo*: the repository's own setting
+    first, then the person's global one. Without both, git guesses an
+    identity from the login and the host name -- on a compute node that
+    puts the node's name into every commit, and the commit is no longer
+    the person's. A swarm therefore never starts on a guess."""
+    out = {}
+    for key in ("name", "email"):
+        r = _git(Path(repo), "config", "--get", f"user.{key}")
+        value = (r.stdout or "").strip() if r.returncode == 0 else ""
+        if not value:
+            return {}
+        out[key] = value
+    return out
+
+
+def identity_env(identity: dict) -> dict:
+    """The GIT_AUTHOR_*/GIT_COMMITTER_* variables for *identity*."""
+    if not identity.get("name") or not identity.get("email"):
+        return {}
+    return {"GIT_AUTHOR_NAME": identity["name"],
+            "GIT_COMMITTER_NAME": identity["name"],
+            "GIT_AUTHOR_EMAIL": identity["email"],
+            "GIT_COMMITTER_EMAIL": identity["email"]}
+
+
+def _no_identity(repo: Path | str) -> str:
+    return (f"No git identity for the members' commits in {repo}: git would "
+            "guess one from the login and the compute node's host name. Set "
+            "it first: `git config user.name \"Your Name\"` and `git config "
+            "user.email you@example.org` (in the repository, or with "
+            "--global).")
+
+
+#: What each member permission mode means, for the confirmation.
+MODE_WORDS = {
+    "acceptEdits": "writes its package's files without asking",
+    "default": "asks before every write",
+    "plan": "plans only, writes nothing",
+}
+
+
 def _parse(spec_text: str) -> dict:
     import yaml
     from .spec import SPEC_VERSION, SpecError
@@ -331,6 +383,7 @@ def preflight(spec_text: str, spec_path: Path | str, *,
         "route": route_ or route(env, prefer_job=prefer_job),
         "repo": "", "head": "", "resources": {}, "goal": "",
         "spacing_s": 15, "steps": [], "spec_path": str(spec_path or ""),
+        "modes": {}, "git_identity": {},
     }
     errors, warnings = out["errors"], out["warnings"]
     try:
@@ -341,6 +394,7 @@ def preflight(spec_text: str, spec_path: Path | str, *,
         return out
     members = plan["members"]
     out["members"] = [m["name"] for m in members]
+    out["modes"] = {m["name"]: m["permission_mode"] for m in members}
     out["goal"] = plan["goal"]
     out["spacing_s"] = plan["start_spacing_s"]
     if out["route"] == "here" and host_kind(env) == "login_node":
@@ -381,6 +435,9 @@ def preflight(spec_text: str, spec_path: Path | str, *,
     if not out["head"]:
         errors.append(f"{repo} has no commit yet: the members branch off "
                       "HEAD, so commit something first.")
+    out["git_identity"] = git_identity(repo)
+    if not out["git_identity"]:
+        errors.append(_no_identity(repo))
     for m in members:
         wt = repo / m["worktree"]
         if wt.exists():
@@ -417,12 +474,34 @@ def preflight(spec_text: str, spec_path: Path | str, *,
     return out
 
 
+def _modes_line(pre: dict) -> str:
+    modes = pre.get("modes") or {}
+    parts = [f"{name}: {modes.get(name, 'default')} "
+             f"({MODE_WORDS.get(modes.get(name, 'default'), '')})"
+             for name in pre["members"]]
+    return ("Permission modes, as the spec names them per package (never "
+            "bypass): " + "; ".join(parts) + ". A write outside the "
+            "package's own files is refused in every mode.")
+
+
+def approvals_line() -> str:
+    """Where an approval a member still asks for is answered."""
+    return ("An approval a member still asks for waits for you, since nobody "
+            "sits at its terminal: answer it in the dashboard's Swarm Watch "
+            "tab, or list it with `delfin-agent approvals` and answer with "
+            "`delfin-agent approvals approve <id> --code <code>` (the id and "
+            "code also stand in the member's log).")
+
+
 def _steps(pre: dict) -> list:
     """What will happen, step by step, for the confirmation."""
     n = len(pre["members"])
     names = ", ".join(pre["members"])
     repo = pre["repo"]
     sp = pre["spacing_s"]
+    ident = pre.get("git_identity") or {}
+    commits = (f"Their commits are made as {ident['name']} <{ident['email']}> "
+               "(your git config)." if ident else "")
     if pre["route"] == "job":
         res = pre["resources"]
         return [
@@ -432,9 +511,10 @@ def _steps(pre: dict) -> list:
             "free; nothing runs on this login node.",
             f"On the node: create {n} git worktree(s) under {repo}/.swarm, "
             f"each on its own branch from {pre['head'] or 'HEAD'}.",
-            f"Start {n} member session(s), {sp} s apart: {names}. Each may "
-            "only write the files its package owns and asks before anything "
-            "else (permission mode 'default', never bypass).",
+            (f"Start {n} member session(s), {sp} s apart: {names}. "
+             + commits).strip(),
+            _modes_line(pre),
+            approvals_line(),
             "The job ends when every member session has ended, at the time "
             "limit, or when you stop it. Nothing is merged or pushed: you "
             "review each branch yourself.",
@@ -446,6 +526,7 @@ def _steps(pre: dict) -> list:
         f"Members: {names}. Their sessions are not started here: open each "
         "worktree in an agent session (it reads its role prompt from "
         "delfin/agent/swarm/prompts.py).",
+        _modes_line(pre),
     ]
 
 
@@ -506,11 +587,22 @@ def submit(spec_text: str, pre: dict, *, run: Callable | None = None,
     res = pre["resources"]
     repo = pre["repo"]
     state = state_dir()
-    frozen = state / f"spec-{secrets.token_hex(6)}.yaml"
+    identity = pre.get("git_identity") or {}
+    if not identity_env(identity):
+        raise SwarmJobError(_no_identity(repo))
+    token = secrets.token_hex(6)
+    frozen = state / f"spec-{token}.yaml"
     _write_private(frozen, spec_text)
+    # The identity checked now is the one the members commit as; it goes to
+    # the job in a private file, not on the command line the scheduler
+    # shows to everybody.
+    ident_file = state / f"spec-{token}.identity.json"
+    _write_private(ident_file, json.dumps(
+        {"name": identity["name"], "email": identity["email"]}))
     python = cwd_python or sys.executable
     inner = [python, "-m", "delfin.agent.swarm.job", "run",
-             "--spec", str(frozen), "--repo", repo]
+             "--spec", str(frozen), "--repo", repo,
+             "--identity", str(ident_file)]
     cmd = [_SBATCH, "--parsable", f"--job-name={JOB_NAME}",
            f"--partition={res['partition']}", f"--time={res['time']}",
            "--nodes=1", "--ntasks=1", f"--cpus-per-task={int(res['cpus'])}",
@@ -533,6 +625,7 @@ def submit(spec_text: str, pre: dict, *, run: Callable | None = None,
             f"is kept at {frozen}.")
     rec = {"job": jid, "goal": pre["goal"], "repo": repo,
            "spec_path": pre.get("spec_path", ""), "spec_copy": str(frozen),
+           "identity_file": str(ident_file),
            "members": list(pre["members"]), "resources": res,
            "head": pre.get("head", ""), "submitted_at": time.time(),
            "log": str(log_path(jid))}
@@ -699,7 +792,13 @@ def member_launch_script(member: dict, repo: Path, prompt_file: Path,
             f"\"$(cat {shlex.quote(str(prompt_file))})\"\n")
 
 
+def run_id_for(job: str) -> str:
+    """The swarm run id of the members of swarm job *job*."""
+    return f"swarm-{job}"
+
+
 def run_in_job(spec_file: Path | str, repo: Path | str, *,
+               identity_file: Path | str | None = None,
                env: dict | None = None,
                tmux: Callable = _tmux,
                sleep: Callable[[float], None] = time.sleep,
@@ -712,7 +811,10 @@ def run_in_job(spec_file: Path | str, repo: Path | str, *,
 
     Refuses outside a SLURM job: the members must run on a compute node.
     The member sessions are tied to this process (it is their lifeline),
-    so they end with the job."""
+    so they end with the job. Each member gets the git identity recorded
+    at submit (*identity_file*; else the repository's git config, and no
+    start without one) and the run id ``swarm-<job>``, which
+    ``swarm status`` uses to tell this run's members from earlier ones."""
     env = os.environ if env is None else env
     job = str(env.get("SLURM_JOB_ID") or "").strip()
     if not job:
@@ -732,10 +834,17 @@ def run_in_job(spec_file: Path | str, repo: Path | str, *,
         say(f"Refused: {len(members)} member sessions, at most "
             f"{MAX_MEMBERS_PER_JOB} per swarm job.")
         return 2
+    identity = _read_json(Path(identity_file)) if identity_file else {}
+    git_env = identity_env(identity) or identity_env(git_identity(repo))
+    if not git_env:
+        say("Refused: " + _no_identity(repo))
+        return 2
     import socket
     node = socket.gethostname().split(".")[0]
+    run_id = run_id_for(job)
     progress = {"job": job, "node": node, "phase": "worktrees",
-                "started": [], "at": time.time()}
+                "run": run_id, "started": [], "started_at": {},
+                "at": time.time()}
 
     def _save() -> None:
         progress["at"] = time.time()
@@ -758,6 +867,8 @@ def run_in_job(spec_file: Path | str, repo: Path | str, *,
         tenv.pop(key, None)
     os.environ.pop(_lifeline.ENV_PID, None)
     tenv.update(_lifeline.claim_root())
+    tenv.update(git_env)
+    tenv[RUN_ENV] = run_id
     session = f"delfin-swarm-{job}"
     if tmux("new-session", "-d", "-s", session, "-n", "hub",
             env=tenv).returncode != 0:
@@ -793,6 +904,7 @@ def run_in_job(spec_file: Path | str, repo: Path | str, *,
                else shlex.quote(str(launch)))
         tmux("new-window", "-t", session, "-n", m["name"], cmd, env=tenv)
         progress["started"].append(m["name"])
+        progress["started_at"][m["name"]] = time.time()
         _save()
         say(f"{m['name']}: started in {m['worktree']} (log {log})")
     progress["phase"] = "running"
@@ -826,8 +938,11 @@ def main(argv: list | None = None) -> int:
     r = sub.add_parser("run", help="Run the swarm inside this SLURM job")
     r.add_argument("--spec", required=True)
     r.add_argument("--repo", required=True)
+    r.add_argument("--identity", default="",
+                   help="Private file with the git identity checked at submit")
     args = parser.parse_args(argv)
-    return run_in_job(args.spec, args.repo)
+    return run_in_job(args.spec, args.repo,
+                      identity_file=args.identity or None)
 
 
 if __name__ == "__main__":

@@ -330,7 +330,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
     except SpecError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    report = collect_status(spec)
+    from .swarm import job as _job
+    # The swarm jobs started from here, asked once: a RUNNING job of this
+    # spec is where its members' state comes from (its progress file and
+    # their session records), and the list is printed below.
+    rows = _job.jobs() if _job.host_kind() != "workstation" else None
+    report = collect_status(spec, jobs=rows)
     if args.as_json:
         print(_status.to_json(report))
     else:
@@ -341,12 +346,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
             print(f"  {pkg['name']}: {pkg['phase']} -- {members}")
         if report["waiting_for_user"]:
             print(f"waiting for you: {len(report['waiting_for_user'])} "
-                  f"item(s)")
-        from .swarm import job as _job
-        if _job.host_kind() != "workstation":
-            rows = _job.jobs()
-            if rows:
-                print(_job.format_jobs(rows))
+                  f"item(s): " + "; ".join(
+                      f"{w['member']} waits on {w['waits_on']}"
+                      for w in report["waiting_for_user"]))
+            print("  " + _job.approvals_line())
+        if rows:
+            print(_job.format_jobs(rows))
     problems = _status.validate_report(report)
     if problems:
         print("WARNING: status report failed its schema check: "

@@ -352,6 +352,15 @@ FIELD_HELP: tuple[tuple[str, str], ...] = (
                          "(e.g. delfin/foo/**). Two packages may not own "
                          "the same file, and DELFIN's safety files cannot "
                          "be owned."),
+    ("packages[].permission_mode", "How much the package's builder may do "
+                                   "without asking: acceptEdits (writes its "
+                                   "owned files without asking; proposed for "
+                                   "builders, since nobody sits at a member's "
+                                   "terminal in a swarm job), default (asks "
+                                   "before every write) or plan. Never "
+                                   "bypass. Writes outside the owned files "
+                                   "are refused in every mode; reviewer and "
+                                   "qs stay at default."),
     ("packages[].task", "What this package's members should do, in plain "
                         "words. It becomes part of their first message."),
     ("packages[].roles", "Who works on the package: builder (writes the "
@@ -651,7 +660,9 @@ def create_tab(ctx: Any):
             waits_box.children = ()
             return
         spec = load_spec(Path(spec_path))
-        report = _collect_status(spec)
+        # The jobs _refresh_jobs just read: a RUNNING job of this spec is
+        # where its members' state comes from.
+        report = _collect_status(spec, jobs=state.get("jobs"))
         rows = []
         for card in board_cards(report):
             healths = ", ".join(
@@ -679,13 +690,14 @@ def create_tab(ctx: Any):
     def _refresh(_b=None) -> None:
         state["_at"] = _time.time()
         try:
+            _refresh_jobs()
+        except Exception as exc:
+            state["jobs"] = None
+            _say(job_html, f"Could not read the swarm jobs: {exc}", "#b91c1c")
+        try:
             _refresh_board()
         except Exception as exc:  # a broken spec/report must not kill the tab
             _say(status_html, str(exc), "#b91c1c")
-        try:
-            _refresh_jobs()
-        except Exception as exc:
-            _say(job_html, f"Could not read the swarm jobs: {exc}", "#b91c1c")
 
     refresh_btn.on_click(_refresh)
 

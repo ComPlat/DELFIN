@@ -56,6 +56,7 @@ def plan_members(spec: dict[str, Any]) -> list[dict[str, Any]]:
     for pkg in spec["packages"]:
         roles = pkg.get("roles") or {"builder": True}
         for role in roles:
+            mode = member_mode(pkg, role)
             name = f"{pkg['name']}-{role}"
             branch = f"swarm/{pkg['name']}-{role}"
             worktree = f"{WORKTREE_DIR}/{pkg['name']}-{role}"
@@ -68,7 +69,7 @@ def plan_members(spec: dict[str, Any]) -> list[dict[str, Any]]:
                 "owned": list(pkg["owned"]),
                 "task": pkg.get("task", ""),
                 "goal": spec["goal"],
-                "permission_mode": "default",
+                "permission_mode": mode,
                 "role_prompt": f"delfin/agent/swarm/prompts/{role}.md",
                 "prompt_text": _prompts.render(role, {
                     "goal": spec["goal"],
@@ -80,6 +81,21 @@ def plan_members(spec: dict[str, Any]) -> list[dict[str, Any]]:
                 "memory_gate": True,
             })
     return members
+
+
+def member_mode(pkg: dict[str, Any], role: str) -> str:
+    """The permission mode a member of *pkg* in *role* starts in.
+
+    The package's ``permission_mode`` (the person's decision, validated
+    by the spec: never bypass) applies to its builder, the member that
+    writes the owned files. Reviewer and QS read and run; they stay at
+    ``default`` unless the package says ``plan``, which holds for all.
+    Without the key every member starts at ``default``.
+    """
+    mode = str(pkg.get("permission_mode") or "default")
+    if role == "builder" or mode == "plan":
+        return mode
+    return "default"
 
 
 def plan_launch(spec: dict[str, Any]) -> dict[str, Any]:
@@ -180,6 +196,7 @@ limits:
 packages:
   - name: core
     owned: ["delfin/agent/swarm/**"]   # write scope, enforced by the gate
+    permission_mode: acceptEdits   # builder writes its owned files unasked; never bypass
     task: |
       Build the swarm core package. Red test first; commit per thought.
     roles:
@@ -187,6 +204,7 @@ packages:
       reviewer: true
   - name: ui
     owned: ["delfin/agent/dashboard/**"]
+    permission_mode: acceptEdits   # builder writes its owned files unasked; never bypass
     task: |
       Build the dashboard view on the status API.
     roles:
@@ -216,8 +234,10 @@ def write_member_settings(member: dict[str, Any], repo_dir: Path,
     - ``write_allow_globs`` is narrowed to the member's owned scope
       INTERSECTED with whatever is already there (never widened); a fresh
       member gets exactly its owned scope,
-    - the permission mode is never written as bypass (the member starts at
-      the default mode -- only the person grants more trust),
+    - the permission mode is never written as bypass: the member starts
+      in the mode the person named for its package in the spec
+      (``permission_mode``, see :func:`member_mode`), else ``default`` --
+      only the person grants more trust,
     - an unknown role is refused before anything is written.
 
     The role policy comes from :func:`delfin.agent.swarm.policy` so a
