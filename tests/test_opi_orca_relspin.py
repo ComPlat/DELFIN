@@ -619,3 +619,66 @@ class TestLiveRunFindings:
         first = res.data["soc_states"][1]
         assert first["fosc"] == pytest.approx(0.02)
         assert first["mult"] == pytest.approx(1.0)
+
+    def test_soc_tddft_without_the_soc_table_is_a_failed_step(
+            self, tmp_path, monkeypatch):
+        # Fail closed: ORCA ended normally but no SOC-corrected states were
+        # printed -> FAILED with the reason, never SUCCESS with no data.
+        import delfin.tools.adapters.orca_relspin_opi as mod
+
+        def fake_launch(wdir, base):
+            (wdir / f"{base}.out").write_text(
+                "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+                "      SOC CORRECTED ABSORPTION SPECTRUM VIA TRANSITION "
+                "ELECTRIC DIPOLE MOMENTS\n\n"
+                "                             ****ORCA TERMINATED NORMALLY****\n")
+            TestLiveRunFindings._opi_rejected_jsons(wdir, base)
+            return None
+        monkeypatch.setattr(mod, "_launch", fake_launch)
+        res = OrcaRelSpinOpiAdapter().execute(
+            tmp_path, cores=1, job="soc_tddft", functional="B3LYP",
+            **_JOB_KWARGS["soc_tddft"])
+        assert not res.ok
+        assert res.status.value == "failed"
+        assert "SOC-corrected states" in (res.error or ""), res.error
+
+    def test_rel_sp_with_an_unconverged_scf_is_refused(self, tmp_path,
+                                                       monkeypatch):
+        import delfin.tools.adapters.orca_relspin_opi as mod
+
+        class _Out:
+            def terminated_normally(self):
+                return True
+
+            def get_final_energy(self):
+                return -1.0
+
+        monkeypatch.setattr(mod, "_read_output_with_reason",
+                            lambda wdir, base: (_Out(), None))
+        (tmp_path / "u.out").write_text(
+            "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+            "                   SCF NOT CONVERGED AFTER 125 CYCLES\n"
+            "                             ****ORCA TERMINATED NORMALLY****\n")
+        res = read_rel_sp_result(tmp_path, "u")
+        assert res.ok is False and res.energy_Eh is None
+        assert "SCF did not converge" in (res.error or ""), res.error
+
+    def test_rel_sp_with_a_converged_scf_reports_the_energy(self, tmp_path,
+                                                            monkeypatch):
+        import delfin.tools.adapters.orca_relspin_opi as mod
+
+        class _Out:
+            def terminated_normally(self):
+                return True
+
+            def get_final_energy(self):
+                return -1.0
+
+        monkeypatch.setattr(mod, "_read_output_with_reason",
+                            lambda wdir, base: (_Out(), None))
+        (tmp_path / "c.out").write_text(
+            "# SYNTHETIC test fixture written for DELFIN -- not ORCA output\n"
+            "               *           SCF CONVERGED AFTER  10 CYCLES          *\n"
+            "                             ****ORCA TERMINATED NORMALLY****\n")
+        res = read_rel_sp_result(tmp_path, "c")
+        assert res.ok and res.energy_Eh == pytest.approx(-1.0)

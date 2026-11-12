@@ -522,6 +522,17 @@ def _terminated_normally(wdir: Path, base_name: str) -> bool:
     return _terminated_normally_text(wdir / f"{base_name}.out")
 
 
+def _scf_converged(wdir: Path, base_name: str) -> bool:
+    """DELFIN's own SCF-convergence text check (delfin.orca_read)."""
+    from delfin.orca_read import _scf_converged_text
+
+    try:
+        text = (wdir / f"{base_name}.out").read_text(errors="replace")
+    except OSError:
+        return False
+    return _scf_converged_text(text)
+
+
 # ---------------------------------------------------------------------------
 # run_* entry points (one per job mode).  Each validates, writes the OPI
 # input, launches ORCA through DELFIN's existing launcher, and reads the
@@ -536,7 +547,12 @@ def read_rel_sp_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
         out, "terminated_normally", lambda: False
     )()
     energy = None
-    if ok:
+    if ok and not _scf_converged(wdir, base_name):
+        # An unconverged SCF still prints an energy; never report it.
+        ok = False
+        reason = ("the SCF did not converge (no 'SCF CONVERGED' in the "
+                  "output); the energy is not reported")
+    elif ok:
         energy = out.get_final_energy()
     elif reason is None:
         reason = "ORCA did not terminate normally"
@@ -782,15 +798,24 @@ def read_soc_tddft_result(wdir: Path, base_name: str) -> OrcaRelSpinResult:
                                  job="soc_tddft", terminated_normally=False,
                                  error="ORCA did not terminate normally")
     states = read_soc_states(wdir, base_name)
+    if not states:
+        # Fail closed: a SOC-TDDFT step without its SOC-corrected states
+        # has no result, however normally ORCA ended.
+        return OrcaRelSpinResult(
+            ok=False, work_dir=wdir, output_file=wdir / f"{base_name}.out",
+            job="soc_tddft", terminated_normally=True, meaningful=False,
+            error=("no SOC-corrected states: the 'SOC CORRECTED ABSORPTION "
+                   "SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS' table "
+                   "is missing or empty in the output"),
+        )
     return OrcaRelSpinResult(
         ok=True,
         work_dir=wdir,
         output_file=wdir / f"{base_name}.out",
         job="soc_tddft",
         terminated_normally=True,
-        meaningful=bool(states),
-        soc_states=tuple(states) if states else None,
-        error=None if states else "no SOC-corrected spectrum table in the output",
+        meaningful=True,
+        soc_states=tuple(states),
     )
 
 
