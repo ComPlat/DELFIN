@@ -433,8 +433,11 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
 # Files from the phone land in a session's workspace, sessions it starts
-# get a folder, /sync records live in ~/.delfin: the service home only.
-ReadWritePaths=${SERVICE_HOME}
+# get a folder, /sync records live in ~/.delfin: the service home. And the
+# socket's own directory: ProtectSystem=strict makes /run read-only, and
+# without it bind() failed with "Read-only file system" (the RuntimeDirectory=
+# this replaced had made it writable as a side effect).
+ReadWritePaths=${SERVICE_HOME} -/run/delfin-messenger-bridge
 # The agent service socket is in the host's private per-user /tmp directory.
 PrivateTmp=no
 PrivateDevices=yes
