@@ -1080,10 +1080,12 @@ def _run_smiles_build(cleaned_data, *, quick, apply_uff, rank=False, quality_mod
 
 
 def _run_external_build(cleaned_data, tool):
-    """The build behind the ARCHITECTOR / MOLSIMPLIFY / MACE buttons, without any widget.
+    """The build behind the ARCHITECTOR / MOLSIMPLIFY / MACE / RXEMBED /
+    MOLASSEMBLER / METALLOGEN buttons, without any widget.
 
     One definition per tool lives in :mod:`delfin.common.external_builders`,
-    shared with ``smiles_converter=ARCHITECTOR|MOLSIMPLIFY|MACE`` in CONTROL,
+    shared with ``smiles_converter=ARCHITECTOR|MOLSIMPLIFY|MACE|RXEMBED|
+    MOLASSEMBLER|METALLOGEN`` in CONTROL,
     with the same settings (nothing is passed here that CONTROL does not pass
     either).  Every
     frame the tool returns comes back as an isomer, in the result shape
@@ -1114,7 +1116,8 @@ class Editor:
         """The widgets a tab hands out, under the names they have here."""
         keep = ('mol_output', 'mol_status', 'mol_status_fs', 'manta_button',
                 'manta_settings_row', 'architector_button', 'molsimplify_button',
-                'mace_button',
+                'mace_button', 'rxembed_button', 'molassembler_button',
+                'metallogen_button',
                 'convert_smiles_button',
                 'convert_smiles_quick_button', 'convert_smiles_uff_button',
                 'isomer_nav_row', 'isomer_label', 'isomer_prev_btn',
@@ -21205,6 +21208,32 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 'environment: python -m delfin.installer --install epic-mace, or '
                 'DELFIN_MACE_PYTHON pointing to a Python that has it.',
     )
+    rxembed_button = widgets.Button(
+        description='RXEMBED', button_style='warning',
+        layout=widgets.Layout(width='150px'),
+        tooltip='rxembed (aligfellow/rxembed): build the SMILES with rx.embed(rx.isomers(...)) '
+                '-- every isomer on its default polyhedron of the coordination number, its '
+                'default conformers. Runs in its own environment (Python >= 3.12, RDKit >= '
+                '2026.9): python -m delfin.installer --install rxembed, or '
+                'DELFIN_RXEMBED_PYTHON pointing to a Python that has it.',
+    )
+    molassembler_button = widgets.Button(
+        description='MOLASSEMBLER', button_style='warning',
+        layout=widgets.Layout(width='150px'),
+        tooltip='Molassembler (Sobez & Reiher, JCIM 2020): every stereoisomer of the SMILES, '
+                'ten distance-geometry conformers each. Dative bonds (->) cannot be read; '
+                'write the complex charge-separated. Runs in its own environment: python -m '
+                'delfin.installer --install molassembler, or DELFIN_MOLASSEMBLER_PYTHON.',
+    )
+    metallogen_button = widgets.Button(
+        description='METALLOGEN', button_style='warning',
+        layout=widgets.Layout(width='150px'),
+        tooltip='MetalloGen (Lee et al., JCIM 2025): every arrangement of the donors on the '
+                'common geometries, generated and relaxed with GFN2-xTB through ORCA (its '
+                'ORCA calculator; its default one needs Gaussian). Needs ORCA. Runs in its own '
+                'environment: python -m delfin.installer --install metallogen, or '
+                'DELFIN_METALLOGEN_PYTHON.',
+    )
 
     # --- MANTA settings (the 5 keys a user actually needs; MANTA button sits BELOW) ---
     # Power-user knobs are CLI-only and pinned in _MANTA_DASH_DEFAULTS (module level).
@@ -21307,6 +21336,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 architector_button,
                 molsimplify_button,
                 mace_button,
+                rxembed_button,
+                molassembler_button,
+                metallogen_button,
                 isomer_prev_btn,
                 isomer_next_btn,
             ],
@@ -22101,7 +22133,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _convert_smiles(apply_uff=True)
 
     def _start_external_build(tool):
-        """ARCHITECTOR / MOLSIMPLIFY / MACE: the SMILES in the box, built by that tool.
+        """ARCHITECTOR / MOLSIMPLIFY / MACE / RXEMBED / MOLASSEMBLER / METALLOGEN: the SMILES
+        in the box, built by that tool.
 
         The input is read the way the convert buttons read it, and the result
         goes through the same ``_apply_smiles_conversion_result`` as MANTA's
@@ -22142,6 +22175,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def handle_mace(button):
         _start_external_build('mace')
 
+    def handle_rxembed(button):
+        _start_external_build('rxembed')
+
+    def handle_molassembler(button):
+        _start_external_build('molassembler')
+
+    def handle_metallogen(button):
+        _start_external_build('metallogen')
+
 
     def _clean_xyz_block(raw_xyz):
         text = (raw_xyz or '').strip()
@@ -22166,6 +22208,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     architector_button.on_click(handle_architector)
     molsimplify_button.on_click(handle_molsimplify)
     mace_button.on_click(handle_mace)
+    rxembed_button.on_click(handle_rxembed)
+    molassembler_button.on_click(handle_molassembler)
+    metallogen_button.on_click(handle_metallogen)
 
     isomer_prev_btn.on_click(handle_isomer_prev)
     isomer_next_btn.on_click(handle_isomer_next)
