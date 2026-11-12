@@ -183,8 +183,8 @@ def create_tab(ctx):
     # (@jupyter-widgets/controls 5 sets the title only when the description
     # is empty), and the tooltip is where each choice is explained.
     _goat_tip = _goat_method.tooltip()
-    _model_tip = ('global_opt_mlip_model: the model the orca-mlips plugin loads '
-                  '(--model); empty = the plugin default.')
+    _model_tip = ('global_opt_mlip_model: the model the MLIP loads (--model); '
+                  'empty = its default.')
     goat_method_label = widgets.Label('GOAT method:', tooltip=_goat_tip)
     goat_method_widget = widgets.Dropdown(
         options=_goat_method.options(

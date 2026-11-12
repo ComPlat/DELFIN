@@ -1,9 +1,11 @@
 """The Submit tab's GOAT-method selector: CONTROL text <-> choice, and availability.
 
-GOAT optimises with the ``xTB_method`` unless CONTROL.txt names an orca-mlips
-machine-learned potential in ``global_opt_method=mlip:<plugin>`` (validated by
+GOAT optimises with the ``xTB_method`` unless CONTROL.txt names a
+machine-learned potential in ``global_opt_method=mlip:<backend>`` (validated by
 delfin.common.control_validator); ``global_opt_mlip_model`` optionally names
-the model the plugin loads.  Only GOAT's method changes: every later step of
+the model it loads.  The selector chooses the model only: which program runs
+it through ORCA's ExtOpt (orca-mlips, or FACCT's orca-external-tools) is
+DELFIN's choice, and either one installed counts as available.  Only GOAT's method changes: every later step of
 the CONTROL runs as before.  An MLIP GOAT runs on the GPU of the node the
 DELFIN job runs on, so the submission sends the whole job to a GPU partition
 (delfin.mlp_tools.goat_gpu_submit).
@@ -53,6 +55,14 @@ METHODS = (
 )
 
 _BY_VALUE = {value: (name, line) for value, name, line in METHODS}
+
+#: Measured, said where the choice is made.
+SPEED_NOTE = ("For large molecules (~80 atoms, e.g. an NLO chromophore) an MLIP GOAT "
+              "through orca-mlips measured about 10x slower than the xTB GOAT, so xTB "
+              "stays the default; an MLIP is for accuracy, and its speed depends on the "
+              "provider.")
+PROVIDER_NOTE = ("The choice names the model; DELFIN picks the program that runs it "
+                 "(orca-mlips or FACCT's orca-external-tools).")
 
 _LINE = r"(?m)^[ \t]*{key}[ \t]*=(.*)$"
 
@@ -237,6 +247,8 @@ def tooltip() -> str:
     lines += [f"{name}: {line}" for _value, name, line in METHODS]
     lines.append("Only GOAT changes; every later step of the CONTROL runs as before. "
                  "An MLIP GOAT sends the whole DELFIN job to a GPU partition.")
+    lines.append(PROVIDER_NOTE)
+    lines.append(SPEED_NOTE)
     return "\n".join(lines)
 
 
@@ -254,9 +266,13 @@ def status_html(value: str, status: Mapping, raw: str = "", model_problem: str =
     if plugin:
         entry = status.get(plugin) or {}
         if entry.get("installed"):
+            by = entry.get("by_provider") or {}
+            names = entry.get("providers") or ([entry["provider"]] if entry.get("provider") else [])
+            via = ", ".join(
+                f"{esc(str(n))} {esc(str((by.get(n) or {}).get('version') or ''))}".strip()
+                for n in names) or "orca-mlips"
             parts.append(
-                '<span style="color:#2e7d32;">Installed</span> (orca-mlips '
-                f"{esc(str(entry.get('orca_mlips_version') or ''))}, "
+                f'<span style="color:#2e7d32;">Installed</span> (via {via}; '
                 f"{esc(str(entry.get('stack')))} {esc(str(entry.get('stack_version') or ''))}).")
         elif entry:
             parts.append(
@@ -281,6 +297,7 @@ def status_html(value: str, status: Mapping, raw: str = "", model_problem: str =
             parts.append(f"Model: empty = {esc(str(model))}.")
         parts.append("Only GOAT changes; later steps run as before. An MLIP GOAT sends "
                      "the whole DELFIN job to a GPU partition (--gres=gpu:1).")
+        parts.append(esc(SPEED_NOTE))
     if model_problem:
         parts.append(f'<span style="color:#b71c1c;">Model: {esc(model_problem)}</span>')
     return '<span style="font-size:12px;">' + " ".join(parts) + "</span>"

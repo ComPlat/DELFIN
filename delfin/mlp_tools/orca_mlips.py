@@ -252,7 +252,9 @@ def _site_dists(python: str) -> dict:
     listing per site-packages); that interpreter is never started and no
     METADATA file is opened -- this runs while the dashboard builds.
     """
-    prefix = Path(python).resolve().parent.parent
+    # Not resolved: a venv's python is a link to the base interpreter, whose
+    # prefix is not the venv's.
+    prefix = Path(python).absolute().parent.parent
     found: dict = {}
     for site in sorted(prefix.glob("lib/python*/site-packages")):
         try:
@@ -318,49 +320,114 @@ def hf_token_present(environ: Optional[Mapping[str, str]] = None) -> bool:
     return False
 
 
-def mlips_backend_status(environ: Optional[Mapping[str, str]] = None) -> dict:
-    """Whether each orca-mlips plugin can run here, and what is missing.
+#: The programs that can run a ``global_opt_method=mlip:<backend>`` GOAT
+#: through ORCA's ExtOpt, in DELFIN's order of preference.  The CONTROL key
+#: names the model (the backend); which provider runs it is DELFIN's choice.
+#: ``command`` is the ProgExt console script per backend.  FACCT's
+#: orca-external-tools (github.com/faccts/orca-external-tools, distribution
+#: ``oet``, scripts ``oet_aimnet2`` / ``oet_mace`` / ``oet_uma``) is only
+#: recognised here, from its metadata, never imported.
+MLIP_PROVIDERS = (
+    {"name": "orca-mlips", "dist": ORCA_MLIPS_DIST, "command": "orca-mlips-{backend}",
+     "backends": _MLIPS_BACKENDS, "programs": ()},
+    {"name": "orca-external-tools", "dist": "oet", "command": "oet_{backend}",
+     "backends": ("aimnet2", "mace", "uma"), "programs": ("oet", "orca_external_tools"),
+     "python_env": "DELFIN_OET_PYTHON"},
+)
 
-    Per plugin (``aimnet2``, ``orb``, ``mace``, ``uma``): ``installed``
-    (orca-mlips, the plugin's model stack and its ``orca-mlips-<plugin>``
-    command are all in one of its environments), ``python``, ``progext``
-    (absolute command), ``stack`` / ``stack_version``, ``install`` (the
-    exact command), ``licence`` (the weight-licence record), ``gpu`` (an
-    MLIP GOAT runs on a GPU node), and for ``uma`` ``hf_login`` (a
-    HuggingFace token is there).  ``missing`` says in one line what stands
-    in the way ("" when nothing does).
+
+def _provider_pythons(provider: Mapping, backend: str,
+                      environ: Optional[Mapping[str, str]]) -> list:
+    """The interpreters whose environments may hold *provider* for *backend*."""
+    import os
+    import sys
+
+    from delfin.common import external_builders
+
+    found: list = []
+    if provider["name"] == "orca-mlips":
+        programs = MLIPS_ENVS[backend]
+    else:
+        programs = tuple(p for p in provider["programs"] if p in external_builders.PROGRAMS)
+        programs += MLIPS_ENVS[backend]
+    for program in programs:
+        python = _program_python(program, environ)
+        if python and python not in found:
+            found.append(python)
+    if provider["name"] != "orca-mlips":
+        env = os.environ if environ is None else environ
+        named = (env.get(provider.get("python_env", "")) or "").strip()
+        if named and os.access(named, os.X_OK) and named not in found:
+            found.append(named)
+        # DELFIN's own environment, where a pip install of oet would land.
+        own = str(Path(sys.prefix) / "bin" / "python")
+        if own not in found:
+            found.append(own)
+    return found
+
+
+def mlips_backend_status(environ: Optional[Mapping[str, str]] = None) -> dict:
+    """Whether each MLIP GOAT backend can run here, and what is missing.
+
+    Per backend (``aimnet2``, ``orb``, ``mace``, ``uma``): ``installed``
+    (a provider of :data:`MLIP_PROVIDERS`, the backend's model stack and the
+    provider's command for it are all in one environment), ``provider`` (the
+    first that is), ``providers`` (every one that is), ``by_provider``
+    (``{name: {python, command, version}}``), ``python``, ``progext``
+    (absolute command of ``provider``), ``stack`` / ``stack_version``,
+    ``install`` (the exact command of DELFIN's installer), ``licence`` (the
+    weight-licence record), ``gpu`` (an MLIP GOAT runs on a GPU node), and
+    for ``uma`` ``hf_login`` (a HuggingFace token is there).  ``missing``
+    says in one line what stands in the way ("" when nothing does).
 
     Metadata only, as :func:`detect_orca_mlips`: directory listings of the
-    environments, nothing imported (no torch), nothing started.
+    environments, nothing imported (no torch, no provider), nothing started.
     """
     out: dict = {}
-    pythons: dict = {}
+    listings: dict = {}
+
+    def dists_of(python: str) -> dict:
+        if python not in listings:
+            listings[python] = _site_dists(python)
+        return listings[python]
+
     for backend in _MLIPS_BACKENDS:
         stack = MLIPS_STACK_DIST[backend]
         entry = {
-            "backend": backend, "installed": False, "python": "", "progext": "",
+            "backend": backend, "installed": False, "provider": "", "providers": [],
+            "by_provider": {}, "python": "", "progext": "",
             "stack": stack, "stack_version": "", "orca_mlips_version": "",
             "install": MLIPS_INSTALL[backend], "licence": mlips_weight_licence(backend),
             "default_model": MLIPS_DEFAULT_MODEL[backend], "gpu": True, "missing": "",
         }
         any_env = False
-        for program in MLIPS_ENVS[backend]:
-            if program not in pythons:
-                python = _program_python(program, environ)
-                pythons[program] = (python, _site_dists(python) if python else {})
-            python, dists = pythons[program]
-            if not python:
+        for provider in MLIP_PROVIDERS:
+            if backend not in provider["backends"]:
                 continue
-            any_env = True
-            exe = Path(python).parent / f"orca-mlips-{backend}"
-            have_mlips = _norm_dist(ORCA_MLIPS_DIST) in dists
-            have_stack = _norm_dist(stack) in dists
-            if have_mlips and have_stack and exe.is_file():
-                entry.update(installed=True, python=python, progext=str(exe),
-                             stack_version=dists[_norm_dist(stack)],
-                             orca_mlips_version=dists[_norm_dist(ORCA_MLIPS_DIST)])
-                break
-        if not entry["installed"]:
+            for python in _provider_pythons(provider, backend, environ):
+                dists = dists_of(python)
+                if not dists:
+                    continue
+                if provider["name"] == "orca-mlips":
+                    any_env = True
+                exe = Path(python).parent / provider["command"].format(backend=backend)
+                if (_norm_dist(provider["dist"]) in dists and _norm_dist(stack) in dists
+                        and exe.is_file()):
+                    entry["by_provider"][provider["name"]] = {
+                        "python": python, "command": str(exe),
+                        "version": dists[_norm_dist(provider["dist"])],
+                        "stack_version": dists[_norm_dist(stack)]}
+                    entry["providers"].append(provider["name"])
+                    break
+        if entry["providers"]:
+            first = entry["providers"][0]
+            chosen = entry["by_provider"][first]
+            entry.update(installed=True, provider=first, python=chosen["python"],
+                         progext=chosen["command"], stack_version=chosen["stack_version"])
+            mlips = entry["by_provider"].get("orca-mlips")
+            if mlips:
+                entry["orca_mlips_version"] = mlips["version"]
+        else:
             entry["missing"] = (
                 f"{stack} is not installed" if any_env else "orca-mlips is not installed")
         if backend == "uma":
@@ -389,8 +456,9 @@ def resolve_progext(backend: str, environ: Optional[Mapping[str, str]] = None) -
     (name,) = mlips_progext_names([backend])
     plugin = name[len("orca-mlips-"):]
     ready = mlips_backend_status(environ).get(plugin, {})
-    if ready.get("installed") and ready.get("progext"):
-        return ready["progext"]
+    mine = ready.get("by_provider", {}).get("orca-mlips")
+    if mine and mine.get("command"):
+        return mine["command"]
     found = detect_orca_mlips(environ).get("progext_paths", {})
     path = found.get(plugin)
     if path:

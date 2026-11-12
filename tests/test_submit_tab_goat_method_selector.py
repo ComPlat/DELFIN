@@ -175,7 +175,8 @@ def ai_root(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("DELFIN_AI_TOOLS_ROOT", str(root))
     monkeypatch.setenv("HOME", str(home))
-    for var in ("DELFIN_ORCA_MLIPS_PYTHON", "DELFIN_ORCA_MLIPS_UMA_PYTHON", "HF_TOKEN",
+    for var in ("DELFIN_ORCA_MLIPS_PYTHON", "DELFIN_ORCA_MLIPS_UMA_PYTHON", "DELFIN_OET_PYTHON",
+                "HF_TOKEN",
                 "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH", "HF_HOME", "XDG_CACHE_HOME"):
         monkeypatch.delenv(var, raising=False)
     return root
@@ -245,11 +246,63 @@ def test_uma_needs_its_environment_and_a_huggingface_login(ai_root, monkeypatch)
     assert om.mlips_backend_status()["uma"]["hf_login"] is True
 
 
+def _oet_env(root: Path, dists: dict, scripts=("aimnet2", "mace", "uma")) -> Path:
+    """An environment holding FACCT's orca-external-tools (distribution oet)."""
+    prefix = root / "oet_env"
+    (prefix / "bin").mkdir(parents=True)
+    python = prefix / "bin" / "python"
+    python.write_text("#!/bin/sh\nexit 1\n")
+    python.chmod(0o755)
+    site = prefix / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    for dist, version in dists.items():
+        _dist(site, dist, version)
+    for backend in scripts:
+        exe = prefix / "bin" / f"oet_{backend}"
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+    return python
+
+
+def test_either_provider_installed_counts_and_the_choice_stays_the_model(ai_root, monkeypatch):
+    """The selector names the model; orca-mlips or FACCT's orca-external-tools
+    may run it, and either one installed makes it available (metadata only)."""
+    _env(ai_root, "orca_mlips", {"orca_mlips": "1.3.0", "aimnet": "0.2.6", "orb_models": "0.5.5"})
+    python = _oet_env(ai_root, {"oet": "1.2.0", "mace_torch": "0.3.17"})
+    monkeypatch.setenv("DELFIN_OET_PYTHON", str(python))
+    status = om.mlips_backend_status()
+    mace = status["mace"]
+    assert mace["installed"] and mace["provider"] == "orca-external-tools"
+    assert mace["progext"].endswith("/oet_env/bin/oet_mace")
+    assert "via orca-external-tools 1.2.0" in gm.status_html("mlip:mace", status)
+    # ExtOpt through orca-mlips never names another provider's command.
+    assert not om.resolve_progext("mace").endswith("oet_mace")
+    # Both there: orca-mlips first, both listed.
+    _dist(python.parent.parent / "lib" / "python3.12" / "site-packages", "aimnet", "0.2.6")
+    aim = om.mlips_backend_status()["aimnet2"]
+    assert aim["providers"] == ["orca-mlips", "orca-external-tools"] and aim["provider"] == "orca-mlips"
+    # orca-external-tools has no ORB script: ORB is orca-mlips' alone.
+    assert om.mlips_backend_status()["orb"]["providers"] == ["orca-mlips"]
+
+
+def test_the_help_says_who_picks_the_provider_and_what_an_mlip_costs():
+    tip = gm.tooltip()
+    assert "orca-external-tools" in tip and "DELFIN picks" in tip
+    assert "10x slower" in tip and "xTB stays the default" in tip and "~80 atoms" in tip
+    status = {"orb": {"installed": True, "stack": "orb-models", "stack_version": "0.5.5",
+                      "provider": "orca-mlips", "providers": ["orca-mlips"],
+                      "by_provider": {"orca-mlips": {"version": "1.3.0"}},
+                      "licence": {"name": "Apache-2.0"}}}
+    html = gm.status_html("mlip:orb", status)
+    assert "10x slower" in html and "via orca-mlips 1.3.0" in html
+    assert "10x slower" not in gm.status_html(gm.XTB, status)
+
+
 def test_availability_imports_no_torch():
     code = ("import sys\n"
             "from delfin.dashboard import goat_method as gm\n"
             "gm.availability(refresh=True)\n"
-            "print('torch' in sys.modules)\n")
+            "print('torch' in sys.modules or 'oet' in sys.modules)\n")
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                           timeout=300)
     assert done.returncode == 0, done.stderr[-800:]
