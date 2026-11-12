@@ -108,8 +108,6 @@ def approval_card(item: dict, machine: str = '') -> str:
     elif lines:
         out.append(t('Whole action: reply `{cmd}`.').format(
             cmd='show' if english() else 'zeige'))
-    else:
-        out.append(t('Whole action: reply `more`.'))
     extra = [o for o in item.get('options') or [] if o.get('key') not in {'y', 'n', 'd', 'e', '?', 'c'}]
     if any(o.get('key') == 'c' for o in item.get('options') or []):
         out.append(t('\n'

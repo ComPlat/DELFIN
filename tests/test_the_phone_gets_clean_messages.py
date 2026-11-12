@@ -139,6 +139,15 @@ def test_the_show_hint_names_the_command_in_the_phones_language(acct, monkeypatc
     assert "line 19" in full, full
 
 
+def test_a_card_without_a_preview_offers_no_whole_action():
+    # Nothing to show: no 'show' and no 'more' hint ('more' continues a
+    # cut message, it never shows an action).
+    from delfin.messenger.render import approval_card
+    card = approval_card({"kind": "confirm", "tool": "bash", "text": "",
+                          "phoneApproval": True})
+    assert "Whole action" not in card and "`more`" not in card, card
+
+
 def test_a_long_approval_shows_its_preview_on_show(acct):
     preview = "\n".join(f"+line {i}" for i in range(20))
     acct.service.pending["s-anna"] = [{
