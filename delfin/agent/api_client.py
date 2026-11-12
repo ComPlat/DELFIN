@@ -8093,6 +8093,189 @@ def _with_calculation_note(result: str, notes: list) -> str:
     return json.dumps(data)
 
 
+#: Basis functions per neutral atom, counted by ORCA 6.1.1 ('Number of
+#: basis functions', spherical).  Source: the operator's count from ORCA
+#: 6.1.1 itself (def2 definition, Weigend/Ahlrichs 2005,
+#: doi:10.1039/b508541a; counts checked H2O SVP 24, TZVP 43, CH4 SVP 34).
+#: Elements beyond Kr use ECPs in def2 and are NOT in this table: an
+#: element or basis outside it gives no budget (None) -- never a guess.
+_BASIS_FUNCTION_COUNTS: dict[str, dict[str, int]] = {
+    "H": {"def2-SVP": 5, "def2-TZVP": 6},
+    "He": {"def2-SVP": 5, "def2-TZVP": 6},
+    "Li": {"def2-SVP": 9, "def2-TZVP": 14},
+    "Be": {"def2-SVP": 9, "def2-TZVP": 19},
+    "B": {"def2-SVP": 14, "def2-TZVP": 31},
+    "C": {"def2-SVP": 14, "def2-TZVP": 31},
+    "N": {"def2-SVP": 14, "def2-TZVP": 31},
+    "O": {"def2-SVP": 14, "def2-TZVP": 31},
+    "F": {"def2-SVP": 14, "def2-TZVP": 31},
+    "Ne": {"def2-SVP": 14, "def2-TZVP": 31},
+    "Na": {"def2-SVP": 15, "def2-TZVP": 32},
+    "Mg": {"def2-SVP": 18, "def2-TZVP": 32},
+    "Al": {"def2-SVP": 18, "def2-TZVP": 37},
+    "Si": {"def2-SVP": 18, "def2-TZVP": 37},
+    "P": {"def2-SVP": 18, "def2-TZVP": 37},
+    "S": {"def2-SVP": 18, "def2-TZVP": 37},
+    "Cl": {"def2-SVP": 18, "def2-TZVP": 37},
+    "Ar": {"def2-SVP": 18, "def2-TZVP": 37},
+    "K": {"def2-SVP": 24, "def2-TZVP": 33},
+    "Ca": {"def2-SVP": 24, "def2-TZVP": 36},
+    "Sc": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Ti": {"def2-SVP": 31, "def2-TZVP": 45},
+    "V": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Cr": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Mn": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Fe": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Co": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Ni": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Cu": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Zn": {"def2-SVP": 31, "def2-TZVP": 48},
+    "Ga": {"def2-SVP": 32, "def2-TZVP": 48},
+    "Ge": {"def2-SVP": 32, "def2-TZVP": 48},
+    "As": {"def2-SVP": 32, "def2-TZVP": 48},
+    "Se": {"def2-SVP": 32, "def2-TZVP": 48},
+    "Br": {"def2-SVP": 32, "def2-TZVP": 48},
+    "Kr": {"def2-SVP": 32, "def2-TZVP": 48},
+}
+
+
+def _budget_basis_functions(symbols: list, basis_name: str) -> "int | None":
+    """Summed per-element counts from the ORCA 6.1.1 table, or None.
+
+    The basis name is matched case-blind against the table's families
+    (``def2-SVP``/``def2-TZVP``); a name the table does not carry (another
+    family, a recontracted variant, a basis on an element beyond Kr) is
+    not guessed: the caller then grants no budget.
+
+    EXACT family match after normalisation, never a prefix: the
+    recontracted/heavier variants (def2-SVPD, def2-TZVPD, def2-TZVPP)
+    carry more basis functions than the family they start with, so a
+    prefix match would UNDER-estimate a runaway calculation -- the
+    wrong direction for a budget guard (reviewer finding F-A, v5).
+    """
+    b = (basis_name or "").strip().lower().replace("_", "-")
+    if b == "def2-svp":
+        column = "def2-SVP"
+    elif b == "def2-tzvp":
+        column = "def2-TZVP"
+    else:
+        return None
+    table = _BASIS_FUNCTION_COUNTS
+    total = 0
+    for s in symbols:
+        per = table.get(s)
+        if per is None:
+            return None
+        total += per[column]
+    return total
+
+
+def _budget_partitions() -> list:
+    """The partitions DELFIN's submit path would use, in its own order.
+
+    Same source the ops submit reads: ``slurm_submit.configured_partitions``
+    (``runtime.slurm.partitions`` in the settings, else the env, else the
+    site profile).  The estimate asks the FIRST candidate -- the same
+    earliest-start rule the submit path applies first.
+    """
+    try:
+        from delfin.slurm_submit import configured_partitions
+        found = list(configured_partitions())
+    except Exception:
+        found = []
+    return found
+
+
+def _session_budget_verdict_args(folder: Path) -> tuple:
+    """The session Budget and the job dict for ``judge_delfin_submission``.
+
+    The budget is the user's own setting (``agent.
+    calculation_budget_core_hours`` core-hours in DELFIN's user settings
+    file ``~/.delfin_settings.json``, user_settings.py:16/518, read
+    through DELFIN's settings loader under the redirected home).  The
+    key is opt-in: absent or unreadable -> ``(None, None)`` and the verdict
+    is exactly what it was without BG1.
+
+    The job dict comes from the folder's own CONTROL.txt and geometry, read
+    with DELFIN's readers (``check_delfin_control``'s CONTROL parse and
+    ``geometry_text_symbols``).  Basis functions are summed per element
+    from the ORCA 6.1.1 count table (``_BASIS_FUNCTION_COUNTS``); an
+    element/basis outside the table, or a job whose size cannot be read,
+    gets NO budget (None) -- never a guess -- and the skip is logged with
+    its reason, because a user who set a budget must see it was not
+    applied.  The partition is the first of DELFIN's configured partitions
+    (the submit path's own source), not a hard-coded name.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from delfin import user_settings
+        from delfin.agent import calc_budget
+        limit = float((user_settings.load_settings().get("agent") or {})
+                      .get("calculation_budget_core_hours") or 0)
+        if limit <= 0:
+            logger.warning("calculation_budget: no budget set (limit=%r) "
+                           "for %s", limit, folder)
+            return None, None
+        from delfin.agent import calc_policy as _cp
+        text = (Path(folder) / "CONTROL.txt").read_text(
+            encoding="utf-8", errors="replace")
+        cores, _mc, problem = _cp.check_delfin_control(text, Path(folder))
+        if problem or cores <= 0:
+            logger.warning("calculation_budget skipped for %s: CONTROL "
+                           "problem: %s", folder, problem)
+            return None, None
+        try:
+            from delfin.config import parse_control_text
+            cfg = parse_control_text(text)
+        except Exception as exc:
+            logger.warning("calculation_budget skipped for %s: CONTROL "
+                           "cannot be parsed: %s", folder, exc)
+            return None, None
+        smiles = str(cfg.get("SMILES") or "").strip()
+        name = str(cfg.get("input_file") or "input.txt").strip()
+        geometry_text = smiles
+        if not geometry_text:
+            try:
+                geometry_text = _cp._resolve(Path(folder), name).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError as exc:
+                logger.warning("calculation_budget skipped for %s: geometry "
+                               "%s unreadable: %s", folder, name, exc)
+                return None, None
+        symbols = _cp.geometry_text_symbols(geometry_text)
+        if not symbols:
+            logger.warning("calculation_budget skipped for %s: geometry "
+                           "format not readable", folder)
+            return None, None
+        basis_functions = _budget_basis_functions(
+            symbols, str(cfg.get("main_basisset") or ""))
+        if basis_functions is None:
+            logger.warning(
+                "calculation_budget skipped for %s: element/basis outside "
+                "the ORCA 6.1.1 count table (basis %r)", folder,
+                str(cfg.get("main_basisset") or ""))
+            return None, None
+        partitions = _budget_partitions()
+        job = {
+            "n_atoms": len(symbols),
+            "basis_functions": basis_functions,
+            "method": str(cfg.get("functional") or cfg.get("method") or ""),
+            "partition": partitions[0] if partitions else "",
+            "pal": int(cfg.get("PAL") or cores),
+            "maxcore": int(cfg.get("maxcore") or 0),
+        }
+        return calc_budget.Budget(limit_core_hours=limit), job
+    except Exception as exc:
+        # The budget never blocks a submission it could not size: the
+        # existing setup/resource checks decide alone (and refuse what
+        # they must).  Opt-out stays, but never silently: the user who
+        # set a budget sees why it was not applied.
+        logger.warning("calculation_budget skipped for %s: %s: %s",
+                       folder, type(exc).__name__, exc)
+        return None, None
+
+
 def _mcp_calculation_verdict(base: str, args: dict):
     """calc_policy's verdict for an ops tool that starts a calculation.
 
@@ -8117,10 +8300,13 @@ def _mcp_calculation_verdict(base: str, args: dict):
             return calc_policy.judge_orca_run(Path(str(a["input_file"])))
         if base == "submit_calculation" and str(a.get("mode") or "delfin") \
                 == "delfin":
+            folder_path = Path(str(a.get("folder") or ""))
+            budget, job = _session_budget_verdict_args(folder_path)
             return calc_policy.judge_delfin_submission(
-                Path(str(a.get("folder") or "")), int(a.get("pal") or 12),
+                folder_path, int(a.get("pal") or 12),
                 int(a.get("maxcore") or 6000),
-                str(a.get("time_limit") or "12:00:00"))
+                str(a.get("time_limit") or "12:00:00"),
+                budget=budget, job=job)
         if base == "pipeline_run":
             control = Path(str(a.get("control_file") or "CONTROL.txt"))
             if (a.get("define") or a.get("extra_args") or a.get("overwrite")
