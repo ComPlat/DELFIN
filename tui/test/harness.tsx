@@ -8,6 +8,7 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { render } from "@opentui/solid"
 import { Pins } from "../src/agents/pins"
 import { App, type AppProps, type Requester } from "../src/app"
+import type { History } from "../src/composer/history"
 import type { AttentionItem } from "../src/protocol/generated"
 import { Keymap } from "../src/keymap/keymap"
 import { createScreenItems } from "../src/scrollback/screenview"
@@ -47,6 +48,10 @@ export async function mountWindow(options: {
   /** Inline under GNU screen: a resize (or ctrl+o) cannot write the
    *  session again. */
   divider?: boolean
+  /** The prompt history (App's own, in memory, when not given). */
+  history?: History
+  /** How often an open /clusters or /jobs asks again (App's own, 5 s, when not given). */
+  clustersPollMs?: number
 } = {}) {
   const t = await createTestRenderer({
     width: options.width ?? 100, height: options.height ?? 30,
@@ -75,14 +80,14 @@ export async function mountWindow(options: {
     view.show(sid)
   }
   await render(() => (
-    <App renderer={t.renderer} store={store} keymap={new Keymap()} theme={theme} client={client}
+    <App renderer={t.renderer} store={store} keymap={new Keymap()} theme={theme} client={client} history={options.history}
          onQuit={() => { quits++ }} onRedraw={() => {}} onExpand={() => view.expandLast()}
          details={view.details} canShowDetails={() => view.canShowDetails} onDetails={() => view.toggleDetails()}
          onLines={(title, lines) => view.lines(title, lines)}
          onResume={options.onResume} onNewSession={options.onNewSession} pins={options.pins}
          onOpenItem={options.onOpenItem} arrival={options.arrival ?? { shownMs: 5000, quietMs: 600_000 }}
          answerPauseMs={options.answerPauseMs ?? 0} clickPauseMs={options.clickPauseMs ?? 0} screen={screen}
-         resumeAtStart={options.resumeAtStart} />
+         clustersPollMs={options.clustersPollMs} resumeAtStart={options.resumeAtStart} />
   ), t.renderer)
   const settle = async () => {
     store.flush()

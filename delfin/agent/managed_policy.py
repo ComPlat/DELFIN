@@ -118,7 +118,7 @@ CONTAINER_BACKENDS = ("", "bwrap")
 BACKENDS = ("openai", "cli", "anthropic_api", "codex_cli")
 _KEYS = {"version", "permissions", "disallowed_modes", "require_isolation",
          "disallowed_backends",
-         "auto_ssh_hosts_max",
+         "auto_ssh_hosts_max", "clusters",
          "container_backend", "network", "disable_classifier_off",
          "audit_log", "knowledge_admins", "comment"}
 
@@ -164,6 +164,15 @@ class Policy:
     #: Read from trusted files only: an admin list is a grant, and a file
     #: the user names through the environment grants nothing.
     knowledge_admins: tuple = ()
+    #: DELFIN's HPC clusters (delfin/agent/cluster_tools.py), each a ceiling:
+    #: one tuple of names per file that sets ``clusters.allowed`` (a cluster
+    #: must be in each); ``clusters.auto_install: false`` in any file; one
+    #: ``clusters.max_core_hours_per_batch`` per file (the smallest holds).
+    #: Turning a cluster tool off is a deny rule: "permissions": {"deny":
+    #: ["cluster_run"]}.
+    clusters_allowed: tuple = ()
+    cluster_auto_install_off: bool = False
+    max_core_hours_per_batch: tuple = ()
     errors: list = field(default_factory=list)
 
     @property
@@ -340,6 +349,28 @@ def _merge(pol: Policy, data: dict, src: Source) -> None:
         pol.auto_ssh_hosts_max += (tuple(
             h.strip().lower().rstrip(".")
             for h in _strings(data.get("auto_ssh_hosts_max"))),)
+    clusters = data.get("clusters")
+    if clusters is not None and not isinstance(clusters, dict):
+        errors.append(f"{where}: 'clusters' is not an object")
+    elif clusters is not None:
+        for key in clusters:
+            if key not in ("allowed", "auto_install", "max_core_hours_per_batch"):
+                errors.append(f"{where}: clusters.{key} is not a managed cluster key "
+                              "(allowed, auto_install, max_core_hours_per_batch)")
+        if clusters.get("allowed") is not None:
+            pol.clusters_allowed += (tuple(c.strip() for c in _strings(clusters.get("allowed"))),)
+        if clusters.get("auto_install") is False:
+            pol.cluster_auto_install_off = True
+        if clusters.get("max_core_hours_per_batch") is not None:
+            try:
+                ceiling = float(clusters["max_core_hours_per_batch"])
+                if ceiling < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                errors.append(f"{where}: clusters.max_core_hours_per_batch is not a number >= 0; "
+                              "no batch is allowed")
+                ceiling = 0.0
+            pol.max_core_hours_per_batch += (ceiling,)
     audit = str(data.get("audit_log") or "").strip()
     if audit:
         if not src.trusted:
@@ -428,6 +459,23 @@ def network_ceiling_active() -> bool:
 
 def classifier_forced_on() -> bool:
     return load().disable_classifier_off
+
+
+def cluster_allowed(name: str) -> bool:
+    """Whether the agent may act on cluster ``name``: it is in every
+    ``clusters.allowed`` list (none set: any cluster)."""
+    return all(name in allowed for allowed in load().clusters_allowed)
+
+
+def cluster_auto_install() -> bool:
+    """Whether DELFIN may install itself on a cluster unasked before a submit."""
+    return not load().cluster_auto_install_off
+
+
+def cluster_core_hours_ceiling():
+    """The most core-hours one batch may ask for, or None for no ceiling."""
+    values = load().max_core_hours_per_batch
+    return min(values) if values else None
 
 
 def _first_source(pol: Policy) -> str:

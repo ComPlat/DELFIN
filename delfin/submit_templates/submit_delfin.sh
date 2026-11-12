@@ -213,9 +213,16 @@ if [ -n "${DELFIN_REPO:-}" ] && [ -f "${DELFIN_REPO}/pyproject.toml" ] && [ -d "
     DELFIN_DIR="$DELFIN_REPO"
 fi
 
-# Normalise SLURM scratch hints early
+# Normalise SLURM scratch hints early. A submit from DELFIN's PC
+# (delfin.remote.jobs) brings no TMPDIR of the login node -- one there need
+# not exist here -- and names the node's own /tmp (DELFIN_TMP_FALLBACK) to
+# take before the network /scratch below.
 if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
     export TMPDIR="$SLURM_TMPDIR"
+fi
+if { [ -z "${TMPDIR:-}" ] || [ ! -d "$TMPDIR" ]; } && [ -n "${DELFIN_TMP_FALLBACK:-}" ] \
+        && [ -d "$DELFIN_TMP_FALLBACK" ] && [ -w "$DELFIN_TMP_FALLBACK" ]; then
+    export TMPDIR="$DELFIN_TMP_FALLBACK"
 fi
 STAGE_BASE="${TMPDIR:-${BEEOND_MOUNTPOINT:-}}"
 

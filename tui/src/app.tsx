@@ -1,7 +1,10 @@
 /**
  * The window: one session in view, its scrollback, and the footer.
  *
- * Keys go to the agent view while it is open (its arrows and ctrl keys;
+ * Keys go to the masked login field while it is open, every one of them
+ * (what is typed there is a password: clusters/login.tsx); to /clusters or
+ * /jobs while one is open (clusters/view.tsx). Then to the agent view
+ * while it is open (its arrows and ctrl keys;
  * letters are a new session's prompt). With a question open the prompt
  * keeps the keys: the question takes its own keys from an empty prompt
  * (approval.tsx), everything else is typing, and a line sent is the
@@ -14,10 +17,13 @@
  */
 import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
+import { batch, createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
 import { existsSync } from "node:fs"
-import { WINDOW_COMMANDS, WINDOW_ONLY_NAMES, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead,
+import { createAddForm, type Proposal } from "./clusters/add"
+import { createLogin } from "./clusters/login"
+import { CLUSTERS_SERVICE_VERSION, SETUP_SERVICE_VERSION, createClustersView, type Screen } from "./clusters/view"
+import { WINDOW_COMMANDS, WINDOW_ONLY_NAMES, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, screenOf, shellLead,
          unknownCommandNote, unknownCommandOf } from "./commands"
 import { createSwarmView } from "./swarm/view"
 import { createSwarmWatch } from "./swarm/watch"
@@ -98,6 +104,9 @@ export interface AppProps {
   /** How long a new item names itself at the bottom right, and for how
    *  long after the window opens nothing is news (tests shorten them). */
   arrival?: { shownMs: number; quietMs: number }
+  /** How often an open /clusters or /jobs asks again (clusters/view.tsx
+   *  CLUSTERS_POLL_MS); tests shorten it. */
+  clustersPollMs?: number
   /** Full screen: the session's rows in the window (session.ts), scrolled
    *  by the wheel and the keys; a selection is copied when the drag ends. */
   screen?: ScreenItems
@@ -334,6 +343,12 @@ export function App(props: AppProps): JSX.Element {
   const send = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     if (agents.state.open) {
       typingAt = 0
+      // /clusters, /jobs: in the view's place, never a new session's prompt.
+      const screen = screenOf(text)
+      if (screen) {
+        if (canShow(screen)) batch(() => { agents.close(); clusters.open(screen) })
+        return true
+      }
       // /rename here names the session peeked at, else the one selected --
       // it is never a new session's first prompt (nor a model's turn).
       const named = naming(text)
@@ -376,6 +391,14 @@ export function App(props: AppProps): JSX.Element {
   /** A prompt for the session in view (or the one starting). */
   const deliver = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     typingAt = 0
+    // The window's own screens -- also while the session starts, and with
+    // the key that steers: never the turn's (the session's own /jobs takes
+    // an argument: `/jobs watch on` goes to it as typed).
+    const screen = screenOf(text)
+    if (screen) {
+      if (canShow(screen)) clusters.open(screen)
+      return true
+    }
     if (!sid() || store.state.starting) {
       if (!store.state.starting) return false
       early.push({ text, shown })
@@ -557,8 +580,23 @@ export function App(props: AppProps): JSX.Element {
     return Boolean(result.ok)
   }
   /** → on an item: shown in this window; a new session about it gets its
-   *  suggested prompt in the box -- sent only when enter is pressed. */
-  const openItem = async (item: AttentionItem) => {
+   *  suggested prompt in the box -- sent only when enter is pressed. A
+   *  login item opens the masked login field for its cluster instead (over
+   *  the view): what is typed for it is a password. */
+  const openItem = async (item: AttentionItem, typed?: string) => {
+    if (item.kind === "login") {
+      if (canShow("clusters")) login.openFor(item.cluster ?? "", typed)
+      return
+    }
+    if (item.kind === "addCluster") {
+      // An agent's proposal: the add form filled in, over /clusters, for
+      // the person to check and send -- never an answer to a model.
+      if (!canShow("clusters")) return
+      if (store.state.serviceVersion < SETUP_SERVICE_VERSION) return say("restart the agent service to add clusters here")
+      clusters.open("clusters")
+      addForm.open((item.proposal as Proposal | null | undefined) ?? { name: item.cluster ?? "" })
+      return
+    }
     const suggested = await (props.onOpenItem?.(item) ?? Promise.resolve(null))
     if (suggested && !composer.value().trim() && !agents.state.open) composer.setText(suggested)
   }
@@ -587,14 +625,55 @@ export function App(props: AppProps): JSX.Element {
     },
     message: (row, text) => void sendTo(row, text),
     newSession: (text) => void startNew(text),
-    openItem: (item) => void openItem(item),
+    openItem: (item, typed) => void openItem(item, typed),
     dismiss: (item) => settle("attention.dismiss", { id: item.id }, "not dismissed"),
-    answer: (item, text) => settle("attention.answer", { id: item.id, text }, "not answered"),
+    // Never a login: an answer goes to a model, and what is typed for a
+    // login is a password -- its masked field opens instead.
+    answer: (item, text) => {
+      if (item.kind !== "login" && item.kind !== "addCluster") {
+        return settle("attention.answer", { id: item.id, text }, "not answered")
+      }
+      void openItem(item)
+      return Promise.resolve(false)
+    },
     draft: () => composer.value(),
     setDraft: (text) => (text ? composer.setText(text) : composer.clear()),
     say,
   })
   viewOpen = () => agents.state.open
+  // -- /clusters, /jobs and the login field ----------------------------------------
+  const clusters = createClustersView({
+    request: (method, params) => props.client.request(method, params),
+    keymap: props.keymap,
+    say,
+    login: (row) => login.open(row),
+    add: () => addForm.open(),
+    pinKey: (row) => addForm.openPin(row.name),
+    serviceVersion: () => store.state.serviceVersion,
+    pollMs: props.clustersPollMs,
+  })
+  const addForm = createAddForm({
+    request: (method, params) => props.client.request(method, params),
+    keymap: props.keymap,
+    say,
+    // Added: /clusters asks again; with its key pinned, its login field.
+    added: (name, pinned) => {
+      clusters.refresh()
+      if (pinned) login.openFor(name)
+    },
+  })
+  const login = createLogin({
+    request: (method, params) => props.client.request(method, params),
+    keymap: props.keymap,
+    say,
+    loggedIn: () => clusters.refresh(),
+  })
+  /** Whether the service answers the screens (and logins); else it says so. */
+  const canShow = (screen: Screen): boolean => {
+    if (store.state.serviceVersion >= CLUSTERS_SERVICE_VERSION) return true
+    say(`the agent service is too old for /${screen}; restart it`)
+    return false
+  }
   // The swarm view (SW2b): the window's own, over the service's swarm.*
   // requests. It has the footer while it is open (the agents view's
   // pattern), and its keys there too.
@@ -633,10 +712,10 @@ export function App(props: AppProps): JSX.Element {
     draft: () => composer.value(),
   })
   const watchOpen = () => watch.state.open
-  // The alternate screen, while the view is open.
+  // The alternate screen, while the view or a screen is open.
   createEffect(() => {
     if (!props.agentScreen) return
-    if (agents.state.open) void props.agentScreen.enter()
+    if (agents.state.open || clusters.state.open) void props.agentScreen.enter()
     else props.agentScreen.leave()
   })
   // A peeked session that moves on is peeked again (at most twice a second).
@@ -856,6 +935,8 @@ export function App(props: AppProps): JSX.Element {
       { label: "mode…", detail: "the agent mode", value: "pick:mode" },
       { label: "resume…", detail: "a saved session, in this window", value: "pick:resume" },
       { label: "rename…", detail: "name this session (/rename)", value: "type:/rename" },
+      { label: "clusters…", detail: "DELFIN's clusters; log in to one (/clusters)", value: "run:/clusters" },
+      { label: "jobs…", detail: "what runs in the background (/jobs)", value: "run:/jobs" },
       { label: props.thinking?.() ? "hide thinking" : "show thinking", detail: "the model's thinking, dimmed", value: "do:thinking" },
       ...(props.canShowDetails?.() === false ? [] : [{ label: props.details?.() ? "hide tool details" : "show tool details",
         detail: props.keymap.label("details"), value: "do:details" }]),
@@ -1025,6 +1106,29 @@ export function App(props: AppProps): JSX.Element {
     const s = session()
     const km = props.keymap
     const asked = s?.pending[0]
+    // The login field has every key while it is open: what is typed there
+    // is a password, for its one cluster.login -- never the prompt, a
+    // question's answer or an item's.
+    if (login.state.open) {
+      key.preventDefault()
+      login.handleKey(key)
+      return
+    }
+    // The add form too: what is typed there is a cluster's entry, sent only
+    // as the form's one cluster.add.
+    if (addForm.state.open) {
+      key.preventDefault()
+      addForm.handleKey(key)
+      return
+    }
+    // A screen has the keys as a picker has (ctrl+c leaves it too).
+    if (clusters.state.open) {
+      key.preventDefault()
+      if (key.ctrl && key.name === "c") clusters.close()
+      else if (km.matches("quit", key) && !draft()) props.onQuit()
+      else clusters.handleKey(key)
+      return
+    }
     if (props.screen) {
       // The conversation's own scroll keys (a drag copies on release, so
       // ctrl+c keeps its ladder).
@@ -1228,6 +1332,9 @@ export function App(props: AppProps): JSX.Element {
       offerYes={BYPASS_YES}
       onOfferClick={() => void clickOffer()}
       agents={agents}
+      clusters={clusters}
+      login={login}
+      addForm={addForm}
       swarm={swarm}
       watch={watch}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
@@ -1236,7 +1343,7 @@ export function App(props: AppProps): JSX.Element {
       onOthersClick={() => {
         if (!agents.state.open) agents.open()
       }}
-      focused={() => !picker.state.open}
+      focused={() => !picker.state.open && !login.state.open && !addForm.state.open && !clusters.state.open}
       screen={props.screen}
       scrollRef={(box) => { scrollBox = box }}
       onUserScroll={() => { userScrolled = true }}
