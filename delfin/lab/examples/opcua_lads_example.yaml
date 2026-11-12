@@ -1,29 +1,44 @@
----
-# Example device manifest for an OPC UA LADS instrument.
-# No credentials are stored here; addresses use the standard example domains.
-
-module:
-  product: "OPCUA LADS Device"
-  scope: per-process
-
-functions:
-  - id: opcua_lads_demo
-    driver: opcua_lads
-    model: "pump"
-    address:
-      endpoint: opc.tcp://192.0.2.10:4840
-      security: SignAndEncrypt
-      timeout_s: 3.0
-      # Provide your credential reference here:
-      # secret_ref: "cred:opcua_lads_cert"
-    stale_after_s: 5
-    deadman_s: 30
-    device_watchdog: true
-    reads:
-      flow: {unit: mL/min}
-    writes:
-      flow: {unit: mL/min, min: 0, max: 10, max_step: 5, level: hazardous, tolerance: 0.01}
-      power: {states: [on, off], level: benign}
-    safe_state:
-      flow: 0
-      power: off
+# Example: an OPC UA instrument (a pump FunctionalUnit) behind the safety
+# kernel. Copy to <lab_dir>/manifest.yaml, review, then pin:
+#   delfin-agent lab manifest pin
+# The endpoint 192.0.2.10 is a documentation address. The device is reached
+# with Basic256Sha256 SignAndEncrypt (or Sign); unencrypted endpoints are
+# refused. secret_ref names a JSON value in DELFIN's secret store:
+#   {"cert": "<client certificate>", "key": "<client private key>",
+#    "server_cert": "<the device's certificate, pinned>"}
+# plus optionally key_password, username, password. Nothing secret is inline.
+lab_manifest: 1
+installation: opcua-lab
+version: 1
+nodes:
+  - id: edge_synth
+    description: synthesis module controller
+modules:
+  - id: synthesis
+    node: edge_synth
+    min_level: benign
+    devices:
+      # Variables flow, power and WatchdogTimeout on the FunctionalUnit
+      # "pump" (browse path <ns>:pump/<ns>:<variable>, ns from the namespace
+      # URI). A write to WatchdogTimeout is the device-side timer: the pump
+      # goes to flow 0 / power off when it is not re-armed in time.
+      - id: opcua_pump
+        driver: opcua_lads
+        model: pump
+        address:
+          endpoint: opc.tcp://192.0.2.10:4840
+          security: SignAndEncrypt
+          namespace: urn:example:lads:pump
+          timeout_s: 3.0
+          secret_ref: cred:opcua_pump
+        stale_after_s: 5
+        deadman_s: 30
+        device_watchdog: true
+        reads:
+          flow: {unit: mL/min}
+          power: {states: [on, off]}
+        writes:
+          flow: {unit: mL/min, min: 0, max: 10, max_step: 5,
+                 level: hazardous, tolerance: 0.01}
+          power: {states: [on, off], level: benign}
+        safe_state: {flow: 0, power: off}

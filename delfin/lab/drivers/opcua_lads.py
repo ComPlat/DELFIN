@@ -83,7 +83,7 @@ class OpcUaLadsTransport(Protocol):
     """
 
     def connect(self, endpoint: str, secret: str, security: str,
-                timeout_s: float) -> None: ...
+                timeout_s: float, namespace: Optional[str] = None) -> None: ...
 
     def read(self, functional_unit: str, variable: str,
              timeout_s: float) -> Tuple[Any, float]: ...
@@ -147,8 +147,13 @@ class OpcUaLadsDriver(Driver):
             # resolution and no dialling happen here).
             return self._transport
         endpoint, timeout_s, security, transport = self._resolve(device)
-        transport.connect(endpoint, _credential(device.address["secret_ref"]),
-                          security, timeout_s)
+        ref = (device.address or {}).get("secret_ref")
+        if not ref:
+            raise DriverError(f"{device.id}: address needs secret_ref "
+                              "(the client certificate, key and the "
+                              "device's certificate)")
+        transport.connect(endpoint, _credential(ref), security, timeout_s,
+                          namespace=(device.address or {}).get("namespace"))
         return transport
 
     def _functional_unit(self, device) -> str:
@@ -165,7 +170,11 @@ class OpcUaLadsDriver(Driver):
             out = {}
             for channel in device.reads.values():
                 value, ts = transport.read(fu, channel.name, timeout_s)
-                if ts is None:
+                if ts is None or channel.name in device.writes:
+                    # A setpoint or state the device just reported is
+                    # current although its source timestamp is the time it
+                    # was last changed; only a pure measurement keeps the
+                    # source timestamp, so a frozen sensor still reads stale.
                     ts = self._clock()
                 out[channel.name] = Reading(value, channel.unit, float(ts))
             return out
@@ -232,95 +241,180 @@ DEFAULT_EXTRA = ("the lab-opcua extra provides the OPC UA client"
                  "reach a real LADS device -- this module works against an "
                  "injected transport without it")
 
+#: Security modes a lab device is reached with. ``None`` (no signature, no
+#: encryption) is refused: a setpoint must not travel unauthenticated.
+SECURITY_MODES = ("SignAndEncrypt", "Sign")
+_POLICY = "Basic256Sha256"
+
 
 def _default_transport() -> OpcUaLadsTransport:
-    raise DriverError(
-        "no OPC UA transport is connected and asyncua is not installed: " +
-        DEFAULT_EXTRA)
+    return _AsyncUaTransport()
+
+
+def _secret_fields(secret: str) -> dict:
+    """The credential's JSON: ``cert``, ``key`` (the client's application
+    certificate and private key), ``server_cert`` (the device's certificate,
+    pinned) and optionally ``key_password``, ``username``, ``password``."""
+    import json
+    try:
+        doc = json.loads(secret)
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict):
+        raise DriverError("the OPC UA credential must be a JSON object with "
+                          "cert, key and server_cert")
+    missing = [k for k in ("cert", "key", "server_cert") if not doc.get(k)]
+    if missing:
+        raise DriverError("the OPC UA credential lacks " + ", ".join(missing)
+                          + "; a device is reached signed and encrypted, "
+                          "with its certificate pinned")
+    return doc
+
+
+def _application_uri(cert_path: str) -> Optional[str]:
+    """The URI in the client certificate's subjectAltName: the server
+    refuses a session whose application URI differs from it."""
+    try:
+        from cryptography import x509
+        data = open(cert_path, "rb").read()
+        cert = (x509.load_pem_x509_certificate(data) if data.lstrip()
+                .startswith(b"-----") else x509.load_der_x509_certificate(data))
+        san = cert.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName).value
+        uris = san.get_values_for_type(x509.UniformResourceIdentifier)
+        return uris[0] if uris else None
+    except Exception:
+        return None
 
 
 class _AsyncUaTransport:
-    """Transport over ``asyncua``'s Client (lazy import on first connect).
+    """Transport over ``asyncua``'s Client (lazy import on first use).
 
-    One event loop per open connection. Written against asyncua's stable
-    surface: ``Client(url)``, ``set_security_string``, ``connect``,
-    ``get_child``, ``read_data_value`` / ``read_value``, ``call_method``,
-    ``write_value``. CI never imports this -- tests inject an in-process
-    fake -- so the real-device path is exercised only where asyncua exists.
+    ``connect`` checks and keeps the connection settings; every operation
+    then opens one session, does its work and closes it (``asyncio.run`` in
+    a worker thread, so it works whether or not the calling thread runs an
+    event loop). Nothing stays open between kernel calls: the kernel loads
+    a new driver for every call and never closes one.
+
+    Security: ``Basic256Sha256`` with ``Sign`` or ``SignAndEncrypt``, the
+    client's own certificate and key, and the device's certificate pinned
+    (a server presenting another certificate fails the handshake). The
+    application URI sent is the one in the client certificate. Browse paths
+    are ``<ns>:<FunctionalUnit>/<ns>:<child>`` with ``ns`` the index of
+    ``address.namespace`` (a URI), or 2 without one.
     """
 
-    def __init__(self, cert: Optional[str] = None, key: Optional[str] = None):
-        self._cert = cert
-        self._key = key
-        self._loop = None
-        self._client = None
+    def __init__(self):
+        self._cfg: Optional[dict] = None
 
-    def connect(self, endpoint, secret, security, timeout_s):
+    def connect(self, endpoint, secret, security, timeout_s, namespace=None):
+        if security not in SECURITY_MODES:
+            raise DriverError(
+                f"OPC UA security {security!r} is refused; use one of "
+                f"{', '.join(SECURITY_MODES)}")
+        fields = _secret_fields(secret)
         try:
-            from asyncua import Client
+            import asyncua  # noqa: F401
         except ImportError as exc:
             raise DriverError(DEFAULT_EXTRA) from exc
-        self._loop = asyncio.new_event_loop()
-        self._client = Client(endpoint, timeout=timeout_s)
-        if self._cert and self._key:
-            self._client.set_security_string(
-                f"{security},Basic256Sha256,{self._cert},{self._key}")
-        try:
-            self._run(self._client.connect())
-        except Exception as exc:
-            self.close()
-            raise DriverError(f"opcua connect failed: {exc}") from exc
+        self._cfg = {"endpoint": endpoint, "security": security,
+                     "timeout_s": float(timeout_s), "namespace": namespace,
+                     **fields}
+
+    def _session(self, op):
+        cfg = self._cfg
+        if cfg is None:
+            raise DriverError("OPC UA transport used before connect")
+        result: dict = {}
+
+        async def run():
+            from asyncua import Client
+            client = Client(cfg["endpoint"], timeout=cfg["timeout_s"])
+            uri = _application_uri(cfg["cert"])
+            if uri:
+                client.application_uri = uri
+            key = cfg["key"]
+            if cfg.get("key_password"):
+                key = f"{key}::{cfg['key_password']}"
+            await client.set_security_string(
+                f"{_POLICY},{cfg['security']},{cfg['cert']},{key},"
+                f"{cfg['server_cert']}")
+            if cfg.get("username"):
+                client.set_user(cfg["username"])
+                client.set_password(cfg.get("password") or "")
+            async with client:
+                ns_uri = cfg.get("namespace")
+                ns = (await client.get_namespace_index(ns_uri)
+                      if ns_uri else 2)
+                return await op(client, ns)
+
+        def worker():
+            try:
+                result["value"] = asyncio.run(asyncio.wait_for(
+                    run(), timeout=cfg["timeout_s"] * 4))
+            except BaseException as exc:          # noqa: BLE001
+                result["error"] = exc
+
+        import threading
+        t = threading.Thread(target=worker, daemon=True,
+                             name="delfin-opcua-op")
+        t.start()
+        t.join(cfg["timeout_s"] * 4 + 5)
+        if t.is_alive():
+            raise DriverError("OPC UA operation timed out")
+        if "error" in result:
+            exc = result["error"]
+            raise DriverError(f"OPC UA: {type(exc).__name__}: {exc}") from None
+        return result.get("value")
+
+    @staticmethod
+    async def _child(client, ns, functional_unit, child):
+        return await client.nodes.objects.get_child(
+            [f"{ns}:{functional_unit}", f"{ns}:{child}"])
 
     def read(self, functional_unit, variable, timeout_s):
-        node = self._fu_node(functional_unit, variable)
-        dv = self._run(node.read_data_value())
-        value = None
-        source_ts = None
-        if getattr(dv, "Value", None) is not None:
-            value = dv.Value.Value
-        if getattr(dv, "SourceTimestamp", None) is not None:
-            source_ts = dv.SourceTimestamp.timestamp()
-        return value, source_ts
+        async def op(client, ns):
+            node = await self._child(client, ns, functional_unit, variable)
+            dv = await node.read_data_value()
+            ts = dv.SourceTimestamp or dv.ServerTimestamp
+            return dv.Value.Value, (ts.timestamp() if ts else None)
+        return self._session(op)
 
     def write(self, functional_unit, channel, value, timeout_s):
-        node = self._fu_node(functional_unit, channel)
-        if getattr(node, "nodeid", None) is not None \
-                and "Method" in str(type(node)):
-            result = self._run(node.call_method(node, value))
-            return str(result)
-        self._run(node.write_value(value))
-        return "ok"
+        async def op(client, ns):
+            from asyncua import ua
+            node = await self._child(client, ns, functional_unit, channel)
+            if await node.read_node_class() == ua.NodeClass.Method:
+                parent = await client.nodes.objects.get_child(
+                    [f"{ns}:{functional_unit}"])
+                return str(await parent.call_method(node, value))
+            vtype = await node.read_data_type_as_variant_type()
+            if vtype in (ua.VariantType.Double, ua.VariantType.Float):
+                value_ = float(value)
+            elif vtype == ua.VariantType.String:
+                value_ = str(value)
+            else:
+                value_ = value
+            await node.write_value(ua.DataValue(ua.Variant(value_, vtype)))
+            return f"opcua-write-{functional_unit}.{channel}"
+        return self._session(op)
 
     def supports_watchdog(self, functional_unit):
-        return True
+        async def op(client, ns):
+            try:
+                await self._child(client, ns, functional_unit,
+                                  "WatchdogTimeout")
+                return True
+            except Exception:
+                return False
+        return bool(self._session(op))
 
     def set_watchdog(self, functional_unit, seconds, timeout_s):
-        # A server-side lock timeout on the FunctionalUnit.
-        node = self._fu_node(functional_unit, "WatchdogTimeout")
-        self._run(node.write_value(float(seconds)))
+        self.write(functional_unit, "WatchdogTimeout", float(seconds),
+                   timeout_s)
 
     def clear_watchdog(self, functional_unit, timeout_s):
-        node = self._fu_node(functional_unit, "WatchdogTimeout")
-        self._run(node.write_value(0.0))
+        self.write(functional_unit, "WatchdogTimeout", 0.0, timeout_s)
 
     def close(self):
-        if self._client is not None and self._loop is not None:
-            try:
-                self._run(self._client.disconnect())
-            except Exception:
-                pass
-        self._client = None
-        self._loop = None
-
-    def _fu_node(self, functional_unit, child):
-        objects = self._run(self._client.get_objects_node())
-        return self._run(objects.get_child([
-            f"{objectids_Defaults_Namespace}:{functional_unit}",
-            f"{objectids_Defaults_Namespace}:{child}"]))
-
-    def _run(self, awaitable):
-        return self._loop.run_until_complete(awaitable)
-
-
-# asyncua browses the default namespace (ns=2) for a LADS device's objects.
-objectids_Defaults_Namespace = "ns=2"
+        self._cfg = None

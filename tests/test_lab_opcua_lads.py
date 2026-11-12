@@ -140,7 +140,8 @@ def lab_opcua_fixture(tmp_path, monkeypatch):
 
     server = FakeOpcUaServer()
     # The transport is injected so the driver never constructs a real client.
-    REGISTRY["opcua_lads"] = lambda: OpcUaLadsDriver(transport=server)
+    monkeypatch.setitem(REGISTRY, "opcua_lads",
+                        lambda: OpcUaLadsDriver(transport=server))
 
     from delfin.lab import manifest, store
     from delfin.lab.safety import pin
@@ -248,3 +249,76 @@ def test_health_reports_unreachable_device(lab_opcua):
     h = drv.health(device)
     assert h.ok is False
     assert h.detail
+
+
+# -- the real transport: what it refuses before any network -------------------
+
+def test_the_default_transport_is_the_asyncua_one():
+    """It raised for every device: no real instrument could be reached."""
+    from delfin.lab.drivers import opcua_lads
+    assert isinstance(opcua_lads._default_transport(),
+                      opcua_lads._AsyncUaTransport)
+
+
+@pytest.mark.parametrize("security", ["None", "", "none"])
+def test_an_unencrypted_endpoint_is_refused(security):
+    from delfin.lab.drivers import opcua_lads
+    from delfin.lab.drivers.base import DriverError
+    with pytest.raises(DriverError, match="refused"):
+        opcua_lads._AsyncUaTransport().connect(
+            "opc.tcp://192.0.2.10:4840", '{"cert": "c", "key": "k", '
+            '"server_cert": "s"}', security, 1.0)
+
+
+@pytest.mark.parametrize("secret, missing", [
+    ("not json", "JSON object"),
+    ('{"cert": "c", "key": "k"}', "server_cert"),
+    ('{"server_cert": "s"}', "cert, key"),
+])
+def test_the_credential_needs_both_certificates_and_the_key(secret, missing):
+    """Without its own certificate the client cannot sign; without the
+    device's it trusts whatever answers."""
+    from delfin.lab.drivers import opcua_lads
+    from delfin.lab.drivers.base import DriverError
+    with pytest.raises(DriverError, match=missing):
+        opcua_lads._AsyncUaTransport().connect(
+            "opc.tcp://192.0.2.10:4840", secret, "SignAndEncrypt", 1.0)
+
+
+def test_a_device_without_secret_ref_is_a_driver_error(lab_opcua):
+    from delfin.lab.drivers.base import DriverError
+    from delfin.lab.drivers.opcua_lads import OpcUaLadsDriver
+    from delfin.lab.safety import Kernel
+    device = Kernel.load().manifest.devices["pump"]
+    device.address.pop("secret_ref")
+    with pytest.raises(DriverError, match="secret_ref"):
+        OpcUaLadsDriver()._connect_once(device)
+
+
+def test_a_setpoint_reads_fresh_and_a_measurement_keeps_its_source_time(
+        lab_opcua):
+    """A setpoint the device just reported is current although its source
+    timestamp is the time it last changed; a pure measurement keeps the
+    source timestamp so a frozen sensor still reads stale."""
+    server, _ws = lab_opcua
+    from delfin.lab.drivers.opcua_lads import OpcUaLadsDriver
+    from delfin.lab.safety import Kernel
+    device = Kernel.load().manifest.devices["pump"]
+    server._ts = 1_000.0                       # last changed long ago
+    drv = OpcUaLadsDriver(transport=server, clock=lambda: 5_000.0)
+    assert drv.read(device)["flow"].ts == 5_000.0      # flow is written too
+    device.writes.pop("flow")                          # now a measurement
+    assert drv.read(device)["flow"].ts == 1_002.0
+
+
+def test_the_shipped_example_is_a_valid_manifest():
+    """It used keys no manifest has (module, functions) and could not be
+    pinned; power was written but not read, so its readback was unknown."""
+    from delfin.lab import manifest
+    path = (Path(__file__).resolve().parents[1] / "delfin" / "lab"
+            / "examples" / "opcua_lads_example.yaml")
+    m = manifest.load(path)
+    dev = m.devices["opcua_pump"]
+    assert dev.driver == "opcua_lads"
+    assert set(dev.writes) <= set(dev.reads)
+    assert dev.address["security"] == "SignAndEncrypt"
