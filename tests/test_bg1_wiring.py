@@ -84,18 +84,26 @@ def _folder(ws):
 
 
 def _set_budget(monkeypatch, tmp_path, budget=None, payload=None):
-    """Write the budget key into the redirected home's settings.
+    """Write the budget key into the redirected home's settings file.
 
-    mkdir(parents=True) is required: the helper tests below call this
-    before anything else created home/.delfin (operator defect 1).
+    DELFIN's user settings live in ~/.delfin_settings.json
+    (user_settings.py:16 SETTINGS_FILE_NAME, :518 get_settings_path =
+    Path.home()/SETTINGS_FILE_NAME) — NOT ~/.delfin/settings.json, a
+    path v3 invented and load_settings() never read (operator v3 run:
+    budget never seen, verdict silently (None, None)).
     """
     home = tmp_path / "home"
-    (home / ".delfin").mkdir(parents=True, exist_ok=True)
+    home.mkdir(parents=True, exist_ok=True)
     if payload is None:
         payload = {}
         if budget is not None:
             payload = {"agent": {"calculation_budget_core_hours": budget}}
-    (home / ".delfin" / "settings.json").write_text(json.dumps(payload))
+    from delfin import user_settings
+    monkeypatch.setattr(
+        user_settings, "get_settings_path", lambda base=None: home /
+        user_settings.SETTINGS_FILE_NAME)
+    user_settings.save_settings(payload, home /
+                                user_settings.SETTINGS_FILE_NAME)
 
 
 def _gate(ws, args):
