@@ -24,12 +24,12 @@ def _rec(name, host, **kw):
 
 
 def test_sessions_of_other_nodes_are_listed_with_their_host():
-    recs = [_rec("nacht-s1", "uc3n001.localdomain"),
-            _rec("nacht-s5", "uc3n034.localdomain")]
+    recs = [_rec("nacht-s1", "node-a.cluster.example"),
+            _rec("nacht-s5", "node-b.cluster.example")]
     rows = T.running_session_rows(recs, now=NOW, settings={},
                                   beats={"nacht-s1": NOW - 20, "nacht-s5": NOW - 40})
     assert [(r["name"], r["host"]) for r in rows] == [
-        ("nacht-s1", "uc3n001"), ("nacht-s5", "uc3n034")]
+        ("nacht-s1", "node-a"), ("nacht-s5", "node-b")]
     assert rows[0]["model"] == "kit.glm"
 
 

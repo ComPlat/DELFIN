@@ -1271,6 +1271,20 @@ def create_tab(ctx):
     calc_file_info = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
+    # One line, as a file header is today: a long name ends in an ellipsis
+    # (hover shows it whole) instead of breaking anywhere onto a second line
+    # beside the action buttons.
+    calc_file_info.add_class('calc-file-info')
+
+    def _calc_file_info_tooltip(change):
+        # The whole header as plain text on hover, for a name cut short.
+        text = re.sub(r'<[^>]+>', '', str(change.get('new') or ''))
+        try:
+            calc_file_info.tooltip = _html.unescape(text).strip() or None
+        except Exception:
+            pass
+
+    calc_file_info.observe(_calc_file_info_tooltip, names='value')
     calc_path_display = widgets.HTML(
         value='', layout=widgets.Layout(width='100%', overflow_x='hidden'),
     )
@@ -16090,6 +16104,11 @@ def create_tab(ctx):
         '.calc-left .widget-vbox { overflow:hidden !important; }'
         '.calc-left code { display:block !important; overflow:hidden !important;'
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
+        '.calc-file-info { flex:1 1 auto !important; min-width:0 !important; }'
+        '.calc-file-info .widget-html-content { white-space:nowrap; overflow:hidden;'
+        ' text-overflow:ellipsis; }'
+        '.calc-file-info .widget-html-content span[style*="break-all"]'
+        ' { word-break:normal !important; }'
         '.calc-splitter { width:8px; height:100%; cursor:col-resize; touch-action:none;'
         ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
         ' border-radius:4px; display:block;'
@@ -16282,10 +16301,24 @@ def create_tab(ctx):
                     }}, 100);
                     return;
                 }}
+                // Built before it is shown (the agent tab builds the tabs it
+                // drives; the dashboard warms it): the tab's DOM appears only
+                // on its first open. Giving up after 4 s left the splitter and
+                // the explorer's clicks unbound for good. Wait for THIS tab's
+                // root instead -- one observer per scope, gone once bound.
                 // No fallback to the first .calc-tab on the page: with three
-                // browsers open that is somebody else's tab, and binding this
-                // tab's splitter and upload target to it is worse than not
-                // binding at all.
+                // browsers open that is somebody else's tab.
+                var waits = (window.__delfinCalcRootWaits = window.__delfinCalcRootWaits || {{}});
+                if (!waits[scopeKey]) {{
+                    waits[scopeKey] = new MutationObserver(function() {{
+                        if (document.querySelector('.' + scopeKey)) {{
+                            waits[scopeKey].disconnect();
+                            delete waits[scopeKey];
+                            initCalcScopeBind(0);
+                        }}
+                    }});
+                    waits[scopeKey].observe(document.body, {{childList: true, subtree: true}});
+                }}
                 return;
             }}
             window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
