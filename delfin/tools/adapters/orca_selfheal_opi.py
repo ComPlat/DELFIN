@@ -38,6 +38,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+from delfin.orca_recovery import _OPT_GAVE_UP
+
 #: Chemistry-surface keys an escalation must never touch (the task's "never
 #: change method, basis, charge, multiplicity or electronic state").
 _CHEMISTRY_KEYS = frozenset({
@@ -72,7 +74,10 @@ _MARKERS: List[tuple[SelfHealFailure, Sequence[str]]] = [
     (
         SelfHealFailure.GEOMETRY_NOT_CONVERGED,
         (
-            "maximum number of optimization cycles reached",
+            # Reuse the recovery module's canonical gave-up marker: ORCA 6.1.1
+            # prints "The optimization did not converge but reached the maximum
+            # number of optimization cycles." and still terminates normally.
+            _OPT_GAVE_UP,
             "convergence failure",
             "geometry has not yet converged",
             "optimization has not converged",
@@ -135,7 +140,10 @@ def classify_failure(output_text: str) -> SelfHealFailure:
         return SelfHealFailure.NONE
     lowered = output_text.lower()
     for failure, markers in _MARKERS:
-        if any(m in lowered for m in markers):
+        # Match case-insensitively: canonical recovery markers like the
+        # mixed-case _OPT_GAVE_UP ("The optimization did not converge") must
+        # match the lowercased tail, not just the lowercase hand-written ones.
+        if any(m.lower() in lowered for m in markers):
             return failure
     return SelfHealFailure.NONE
 
@@ -150,24 +158,26 @@ def _scf_ladder(step: int) -> Escalation:
     # %scf option is asserted catalog-known in the tests.
     tables: Dict[int, Dict[str, Any]] = {
         1: {
-            "keywords": ["SlowConv"],
+            "keywords": ["SlowConv", "TightSCF"],
             "scf": {"maxiter": 300},
             "why": "SlowConv (manual scf 2.6.2) raises SCF iterations and "
-                   "relaxes the damping; the first, mildest rung.",
+                   "relaxes the damping; TightSCF pins a convergence level "
+                   "tighter than the default so every rung converges to the "
+                   "same energy. The first, mildest rung.",
         },
         2: {
-            "keywords": ["VerySlowConv", "KDIIS"],
+            "keywords": ["VerySlowConv", "KDIIS", "TightSCF"],
             "scf": {"maxiter": 500, "dampfac": 0.9, "damperr": 0.02},
             "why": "VerySlowConv + Kolmar DIIS (manual 2.6.5) plus high damping "
                    "(dampfac 0.9, manual 2.6.2) for a stubborn SCF.",
         },
         3: {
-            "keywords": ["VerySlowConv"],
+            "keywords": ["VerySlowConv", "TightSCF"],
             "scf": {"maxiter": 800, "cnvsoscf": "true",
                     "dampfac": 0.95, "damperr": 0.001},
             "why": "Second-order SCF via CNVSOSCF (manual 2.6.6) with "
-                   "very high damping (dampfac 0.95, damperr 0.001) — "
-                   "the last SCF rung.",
+                   "very high damping (dampfac 0.95, damperr 0.001) and the "
+                   "same TightSCF convergence pin — the last SCF rung.",
         },
     }
     cfg = tables[step]
@@ -215,23 +225,24 @@ def _frequency_ladder(step: int) -> Escalation:
     # tightening that SCF (mirrors orca_recovery._leanscf_convergence_fixes).
     tables: Dict[int, Dict[str, Any]] = {
         1: {
-            "keywords": ["SlowConv"],
+            "keywords": ["SlowConv", "TightSCF"],
             "scf": {"maxiter": 400},
             "why": "Frequency's coupled-perturbed SCF did not converge; "
-                   "tighten it with SlowConv and more iterations.",
+                   "tighten it with SlowConv, TightSCF (convergence level "
+                   "tighter than default, same on every rung) and more iterations.",
         },
         2: {
-            "keywords": ["VerySlowConv", "KDIIS"],
+            "keywords": ["VerySlowConv", "KDIIS", "TightSCF"],
             "scf": {"maxiter": 600, "dampfac": 0.9, "damperr": 0.02},
             "why": "VerySlowConv + Kolmar DIIS + high damping for the "
-                   "frequency's SCF.",
+                   "frequency's SCF, with the TightSCF convergence pin.",
         },
         3: {
-            "keywords": ["VerySlowConv"],
+            "keywords": ["VerySlowConv", "TightSCF"],
             "scf": {"maxiter": 1000, "cnvsoscf": "true",
                     "dampfac": 0.95, "damperr": 0.001},
-            "why": "Second-order SCF with very heavy damping; the last "
-                   "frequency SCF rung.",
+            "why": "Second-order SCF with very heavy damping and the "
+                   "TightSCF pin; the last frequency SCF rung.",
         },
     }
     cfg = tables[step]

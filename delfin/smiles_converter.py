@@ -4810,6 +4810,42 @@ def smiles_to_xyz_mace(smiles: str) -> Tuple[Optional[str], Optional[str]]:
     return build_first_xyz('mace', smiles)
 
 
+def smiles_to_xyz_rxembed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Convert a SMILES to XYZ using rxembed (first frame).
+
+    Same shared build as the dashboard's RXEMBED button: ``rx.embed(rx.isomers(smiles))``
+    (every isomer on rxembed's default polyhedron), in rxembed's own environment
+    (``DELFIN_RXEMBED_PYTHON``, or the one the installer built).  The first frame is the
+    first conformer of the first species rxembed lists.
+    """
+    from delfin.common.external_builders import build_first_xyz
+    return build_first_xyz('rxembed', smiles)
+
+
+def smiles_to_xyz_molassembler(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Convert a SMILES to XYZ using Molassembler (first frame).
+
+    Same shared build as the dashboard's MOLASSEMBLER button: every stereoisomer,
+    ten distance-geometry conformers each, in Molassembler's own environment
+    (``DELFIN_MOLASSEMBLER_PYTHON``).  Dative bonds (``->``) cannot be read by
+    Molassembler; such a SMILES is an error, never another builder.
+    """
+    from delfin.common.external_builders import build_first_xyz
+    return build_first_xyz('molassembler', smiles)
+
+
+def smiles_to_xyz_metallogen(smiles: str) -> Tuple[Optional[str], Optional[str]]:
+    """Convert a metal-complex SMILES to XYZ using MetalloGen (lowest-energy frame).
+
+    Same shared build as the dashboard's METALLOGEN button: every arrangement of the
+    donors on the common geometries of the site count, generated and relaxed with
+    MetalloGen's ORCA calculator (GFN2-xTB through ORCA; its default calculator needs
+    Gaussian), in MetalloGen's own environment (``DELFIN_METALLOGEN_PYTHON``).
+    """
+    from delfin.common.external_builders import build_first_xyz
+    return build_first_xyz('metallogen', smiles)
+
+
 # ---------------------------------------------------------------------------
 # Package SX1: post-conversion check (findings only, never a silent fix).
 # ---------------------------------------------------------------------------

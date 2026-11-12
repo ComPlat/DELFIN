@@ -422,6 +422,8 @@ def run_server(argv: Optional[list[str]] = None) -> None:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from delfin.hpc_guard import exit_on_login_node
+    exit_on_login_node("the DELFIN tools server", "it starts with an agent session inside a SLURM job")
     run_server(argv)
     return 0
 

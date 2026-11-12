@@ -1406,6 +1406,11 @@ class AgentEngine:
             "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
+            # The endpoint's hourly token quota, when a quota 429 was seen
+            # (tokens): a person reads how close the key is to the reset.
+            "quota_tokens_used": getattr(self.client, "quota_tokens_used", None),
+            "quota_tokens_limit": getattr(
+                self.client, "quota_tokens_limit", None),
             # The model second opinion: switch, model, scope, last failure.
             "watcher": self._watcher_status(),
         }
@@ -4700,7 +4705,79 @@ class AgentEngine:
         except Exception:
             pass
 
+        # VR1 (verify-before-report): trace number+unit claims in the finished
+        # answer to the run's real output before it is returned.  Mismatch /
+        # no-source verdicts append a short "could not be verified" caveat, and
+        # the machine-readable verification record is kept on
+        # ``self.last_claim_verification`` so the caller can show it next to
+        # the answer.  Best-effort: a verification failure never breaks the
+        # turn; a turn with no calc evidence is a no-op (no false alarms).
+        try:
+            full_response = self._append_claim_verification(full_response)
+        except Exception:
+            pass
+
         return full_response + _guard_note
+
+    def _append_claim_verification(self, response_text: str) -> str:
+        """VR1: trace number+unit claims in a finished answer to the run output.
+
+        Scans the answer for ``number+unit`` claims (:func:`delfin.agent.
+        claim_locator.locate_claims`) and verifies each against the real
+        ``*.out`` of the turn's calc folder(s) -- ``_doc_executor.
+        _calc_evidence`` (the live run ledger, Welle 10) -- via
+        :func:`delfin.agent.claim_locator.verify_claim`.  The machine-readable
+        verification record (claim -> file, line, unit, value, tolerance,
+        verdict) is kept on ``self.last_claim_verification`` so the caller can
+        show it next to the answer.  When a claim could not be verified
+        (``mismatch`` / ``no-source``), one short caveat is appended so the
+        answer says it could not be verified; ``estimate`` numbers (counts,
+        years, settings) are never flagged.
+
+        A turn whose calc evidence is empty -- a conversation with no run -- is
+        a no-op: prose numbers are not claims, so no false alarm.
+        """
+        try:
+            from .api_client import _doc_executor
+            from delfin.agent.claim_locator import locate_claims, verify_claim
+        except Exception:
+            return response_text
+        if not response_text:
+            self.last_claim_verification = []
+            return response_text
+        folders = [
+            rec.get("folder") for rec in getattr(_doc_executor, "_calc_evidence", None) or []
+            if rec.get("folder")
+        ]
+        self.last_claim_verification = []
+        if not folders:
+            return response_text
+        records: list[dict] = []
+        unverified: list[dict] = []
+        for claim in locate_claims(response_text):
+            record: dict | None = None
+            for folder in folders:
+                rec = verify_claim(claim.value, claim.unit, folder)
+                record = rec.to_dict()
+                if rec.verdict == "verified":
+                    break
+                if rec.verdict == "estimate":
+                    record = None
+                    break
+            if record is None:
+                continue
+            records.append(record)
+            if record["verdict"] not in ("verified",):
+                unverified.append(record)
+        self.last_claim_verification = records
+        if not unverified:
+            return response_text
+        caveat = "\n\n[verify] " + "; ".join(
+            f"{r['quantity']} value {r['value']} {r['unit']} could not be "
+            f"verified against the run's output ({r['verdict']})"
+            for r in unverified
+        ) + "."
+        return response_text.rstrip() + caveat
 
     def _note_session_language(self, user_message: str) -> None:
         """Set the answer language from the user's latest message that says one.
@@ -8482,6 +8559,21 @@ class AgentEngine:
         # session" is the user's call, not ours -- asking once too often is
         # the safe side of that question.
         out["refusals"] = self._export_refusals()
+        # The system prompt as the model was given it, so a resume in a new
+        # process sends the same bytes and the endpoint's cache of the whole
+        # history stays warm; what changed since goes into the next turn's
+        # tail (_held_system_prompt). Not a declared field: a session saved
+        # before it existed has lost nothing a resume must report.
+        held = getattr(self, "_held_prompt", None)
+        if isinstance(held, dict) and held.get("prompt"):
+            # Saved through save_session's **extra (persisted verbatim).
+            out["held_system_prompt"] = dict(
+                role=str(held.get("role") or ""),
+                prompt=str(held["prompt"]),
+                sections={str(k): str(v) for k, v in
+                          (held.get("sections") or {}).items()},
+                carriers=[str(c) for c in held.get("carriers") or ()],
+            )
         return out
 
     def _export_refusals(self) -> dict:
@@ -8726,6 +8818,23 @@ class AgentEngine:
 
         s_restored, s_missing, s_failed = self._load_declared_fields(
             data, section="state")
+        # The held system prompt (export_state): kept only when well formed;
+        # _held_system_prompt still rebuilds it when the role changed or a
+        # carrier of an earlier update is gone from the restored history.
+        _held = data.get("held_system_prompt")
+        try:
+            if isinstance(_held, dict) and str(_held.get("prompt") or ""):
+                self._held_prompt = {
+                    "role": str(_held.get("role") or ""),
+                    "prompt": str(_held["prompt"]),
+                    "sections": {str(k): str(v) for k, v in
+                                 dict(_held.get("sections") or {}).items()},
+                    "carriers": [str(c) for c in _held.get("carriers") or ()],
+                }
+            else:
+                self._held_prompt = None
+        except Exception:
+            self._held_prompt = None
         ev = self._restore_evidence(data)
         # The denials come back onto the permission object, not onto the
         # engine: that is where every gate reads them. The object is

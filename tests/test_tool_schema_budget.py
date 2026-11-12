@@ -269,7 +269,15 @@ _BASELINE_TOKENS = 11_422
 # 10_598 -> 10_922. Rejected: one `lab` tool with an action enum (a single
 # schema whose arguments change meaning by action is the shape models
 # mis-call most; the refusal reasons are per-tool).
-_TOKEN_BUDGET = 10_922
+# read_file `paths` (2026-11-11): several files in one call, because the
+# measured model sends one tool call per request 91 % of the time, so each
+# further file read cost a full model round trip. The property costs 27
+# tokens (14 structure, 13 its one-clause text); 10 were returned by
+# dropping the `path` description ("Relative or absolute."), which the
+# tool description already says. Main measured 10_922; the budget moves +17, to 10_939.
+# Rejected: a separate read_files tool (a whole second schema, ~60 tokens,
+# and a second spelling every read gate would have to learn).
+_TOKEN_BUDGET = 10_939
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

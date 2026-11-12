@@ -131,7 +131,7 @@ def test_overview_state_map_all_six_cases(audit_log):
                        last_turn={"stopped": True}),
         _health_record("p-d", open_approvals=["r1"]),                 # NEEDS APPROVAL
         _health_record("p-e", paused=True),                           # paused
-        _health_record("p-f", idle_s=200, resume_planned=False,       # waiting for message?
+        _health_record("p-f", idle_s=200, resume_planned=False,       # waiting for a message
                        last_turn={"stopped": False}),
     ]
     rows = _observe.swarm_overview(source, records=records,
@@ -142,7 +142,7 @@ def test_overview_state_map_all_six_cases(audit_log):
     assert states["c"] == "ended"
     assert states["d"] == "NEEDS APPROVAL"
     assert states["e"] == "paused"
-    assert states["f"] == "working"
+    assert states["f"] == "waiting for a message"
 
 
 def test_overview_last_tool_call_and_activity_age_from_audit_log(audit_log):
@@ -192,16 +192,58 @@ def test_overview_roster_source_plain_file(audit_log, tmp_path):
     assert by_name["reviewer"]["package"] == "ops"
 
 
+def test_overview_roster_source_plain_dict(audit_log):
+    """The same roster handed over as an object (the RPC's ``source``)."""
+    roster = {"ops-1": {"package": "ops", "role": "builder"}}
+    rows = _observe.swarm_overview(roster, records=[_health_record("ops-1")],
+                                   steps_fn=lambda *a, **k: ([], 0))
+    assert [(r["name"], r["package"], r["role"]) for r in rows] == [
+        ("ops-1", "ops", "builder")]
+
+
+def test_overview_spec_file_source(audit_log, tmp_path):
+    """A swarm.yaml path gives its members, not an empty table."""
+    spec = tmp_path / "swarm.yaml"
+    spec.write_text(json.dumps({"packages": [
+        {"name": "alpha", "roles": {"builder": True, "reviewer": True}}]}),
+        encoding="utf-8")
+    rows = _observe.swarm_overview(str(spec), records=[],
+                                   steps_fn=lambda *a, **k: ([], 0))
+    assert sorted(r["name"] for r in rows) == ["alpha-builder", "alpha-reviewer"]
+
+
 def test_overview_missing_member_never_lies(audit_log):
-    """A member with no session record still has a row, its state the safe
-    fallback ('working'/'paused' from absence cannot be claimed) — fail
-    closed, never invent a liveness."""
+    """A member with no session record still has a row, its state 'no
+    session': absence proves neither work nor a pause -- never invent a
+    liveness."""
     source = _spec([{"name": "swv", "roles": {"builder": True}}])
     rows = _observe.swarm_overview(source, records=[],  # no record at all
                                    steps_fn=lambda *a, **k: ([], 0))
     assert len(rows) == 1
-    # No open approvals, not paused, nothing to prove a wait -> working.
-    assert rows[0]["state"] == "working"
+    assert rows[0]["state"] == "no session"
+
+
+def test_overview_defaults_to_the_real_health_records(monkeypatch):
+    """Without explicit ``records=`` (the production path: the service's
+    swarm.observe.overview passes only ``source``), the overview reads the
+    REAL session_health.collect() records -- its docstring promises this.
+    A member whose record is open (NEEDS APPROVAL / paused / ended) shows
+    that state, not the absence-fallback "working"."""
+    source = _spec([{"name": "swv", "roles": {"builder": True}}])
+    real = [_health_record("swv-builder", open_approvals=["r1"])]
+    monkeypatch.setattr(_observe, "_default_records", lambda: real)
+    rows = _observe.swarm_overview(source, steps_fn=lambda *a, **k: ([], 0))
+    assert rows[0]["state"] == "NEEDS APPROVAL"
+
+
+def test_overview_default_records_match_roster_names(monkeypatch):
+    """Roster names are matched against collect()'s records by name, so a
+    paused member found by name shows "paused" through the default path."""
+    roster = {"rr4-stop": {"package": "rr4", "role": "stop"}}
+    real = [_health_record("rr4-stop", paused=True)]
+    monkeypatch.setattr(_observe, "_default_records", lambda: real)
+    rows = _observe.swarm_overview(roster, steps_fn=lambda *a, **k: ([], 0))
+    assert rows[0]["state"] == "paused"
 
 
 # ---------------------------------------------------------------------------
@@ -218,10 +260,29 @@ def test_feed_steps_newest_last_with_result_status(audit_log):
     feed = _observe.member_feed("swv-builder", since=0,
                                 records=[_health_record("swv-builder")],
                                 steps_fn=_al.steps_since, log_path=path)
-    # newest last
-    kinds = [e["kind"] for e in feed]
-    assert kinds[-1] in ("tool", "refusal")
+    # newest last -- pin the REAL order, not a vacuous kind check. The
+    # steps are written into the log oldest-first (bash, write_file,
+    # run_tests) and steps_since returns them the same way, so the newest
+    # step (run_tests) must be the LAST feed entry. The old check
+    # `kinds[-1] in ("tool", "refusal")` was always true and never caught
+    # the blanket entries.reverse() that flipped the steps to newest-first
+    # (F1), mixing them with the commits.
+    step_texts = [e["text"] for e in feed if e["kind"] in ("tool", "refusal")]
+    assert step_texts[0] == "git status"    # oldest step first
+    assert step_texts[-1] == "tests/t.py"   # newest step last
     assert all(e["kind"] in ("tool", "refusal", "commit") for e in feed)
     # the denial is present and marked as a refusal
     denied = [e for e in feed if e["kind"] == "refusal"]
     assert denied and "outside scope" in denied[0]["text"]
+
+
+def test_overview_without_records_reads_the_real_sessions(monkeypatch):
+    """The dashboard and the TUI call swarm_overview(source) with no records:
+    it must read the live sessions, not treat every member as missing (the
+    whole running wave showed 'no session')."""
+    monkeypatch.setattr(_observe, "_default_records",
+                        lambda: [_health_record("ops-1")])
+    rows = _observe.swarm_overview({"ops-1": {"package": "ops", "role": "builder"}},
+                                   steps_fn=lambda *a, **k: ([], 0),
+                                   commits_fn=lambda name: {})
+    assert rows[0]["state"] == "working"

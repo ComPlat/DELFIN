@@ -40,12 +40,12 @@ def records():
 
 def configure(sid, args='', *, endpoint=None):
     if not sid:
-        return 'Noch keine Sitzung. Zuerst eine Sitzung starten.'
+        return 'No session yet. Start a session first.'
     args = args.strip().lower()
     if args not in {'', 'on', 'off', 'status'}:
-        return 'Verwendung: /sync on | off | status. Gilt nur für diese Sitzung.'
+        return 'Usage: /sync on | off | status. Applies to this session only.'
     if args == 'status':
-        return 'SimpleX für diese Sitzung: ' + ('aktiviert.' if enabled(sid) else 'ausgeschaltet.')
+        return 'SimpleX for this session: ' + ('on.' if enabled(sid) else 'off.')
     from delfin.agent.state_paths import write_text_atomic
     old = record(sid)
     on = args != 'off'
@@ -57,8 +57,8 @@ def configure(sid, args='', *, endpoint=None):
     elif endpoint is None and old.get('endpoint'):
         value['endpoint'] = old['endpoint']
     write_text_atomic(_path(sid), json.dumps(value))
-    return ('SimpleX für diese Sitzung aktiviert. Der eingerichtete Messenger lädt dich in ihren Chat ein.'
-            if on else 'SimpleX für diese Sitzung ausgeschaltet. Keine Nachrichten oder Handyfreigaben mehr.')
+    return ('SimpleX is on for this session. The configured messenger invites you to its chat.'
+            if on else 'SimpleX is off for this session. No more messages or phone approvals.')
 
 
 class LocalSession:
