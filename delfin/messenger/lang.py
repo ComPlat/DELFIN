@@ -567,6 +567,7 @@ DE = {
     'Waiting for an answer.': 'Wartet auf eine Antwort.',
     'Whole action: reply `show`.': 'Ganze Aktion: mit `show` antworten.',
     'Whole action: reply `{cmd}`.': 'Ganze Aktion: mit `{cmd}` antworten.',
+    'Whole action: reply `more`.': 'Ganze Aktion: mit `more` antworten.',
     'File: {name}': 'Datei: {name}',
     'Other answers: ': 'Weitere Antworten: ',
     'Approve this at the computer; not from the phone.': 'Nur am Rechner freizugeben.',
