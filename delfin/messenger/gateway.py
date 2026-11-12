@@ -1829,7 +1829,11 @@ class Rooms:
             await self.send(chat, t('📎 Attachment saved. ') +
                 (t('Delivered to the session.') if result.get('ok') and not result.get('error') else
                  t('Input not taken; please refer to the attachment in a message later.')))
-        except Exception:
+        except Exception as exc:
+            # Type and masked text in the log: this answer used to be all
+            # there was, and a failing step could not be told from another.
+            print(f'[gateway] attachment failed: {type(exc).__name__}: {pairing.mask(str(exc))[:300]}',
+                  file=sys.stderr, flush=True)
             await self.send(chat, t('The attachment could not be taken. Please check the status and send it '
                                     'again if needed.'))
 
