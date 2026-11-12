@@ -25,7 +25,6 @@ from IPython.display import HTML, clear_output, display
 
 
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
-from delfin.reporting.delfin_docx_report import _orca_plot_binary
 from delfin.ssh_transfer_jobs import (
     create_transfer_job,
     ensure_jobs_dir,
@@ -88,6 +87,14 @@ from .molecule_viewer import (
     structure_viewer_fullscreen_kind_js,
     viewer_disabled_html,
 )
+
+def _orca_plot_binary():
+    """``delfin_docx_report._orca_plot_binary``, imported on first use: the
+    report module loads python-docx and the report builders (a few tenths
+    of a second), which the tab's build does not need."""
+    from delfin.reporting.delfin_docx_report import _orca_plot_binary as find
+    return find()
+
 
 ORCA_CPCM_TOP10_SOLVENTS = (
     "chloroform",
@@ -165,6 +172,27 @@ def _recent_user_processes(user):
         return None
     _user_process_snapshot[:] = [now, result.stdout or '']
     return _user_process_snapshot[1]
+
+
+#: The heading icon of each browser clone, by the tab's title.
+_BROWSER_ICONS = {'Office': '📁', 'Archive': '🗄️', 'Home': '🏠'}
+
+
+def _browser_heading(ctx, is_office_tab):
+    """The tab's heading: its own name, the one on its tab.
+
+    Archive, Home and Office are this browser on another root. Each passes
+    its tab's title as ``ctx.browser_title``; before, only Office had a
+    heading of its own and Archive and Home were headed "Calculations
+    Browser". Without a title the root decides, as it did.
+    """
+    title = str(getattr(ctx, 'browser_title', '') or '').strip()
+    if not title:
+        title = 'Office' if is_office_tab else ''
+    if not title:
+        return '<h3>📂 Calculations Browser</h3>'
+    icon = _BROWSER_ICONS.get(title, '📂')
+    return f'<h3>{icon} {_html.escape(title)}</h3>'
 
 
 def create_tab(ctx):
@@ -248,6 +276,8 @@ def create_tab(ctx):
         # so the viewer can re-render without re-running orca_plot.
         'spin_display': None,
         'delete_current': False,
+        'delete_names': [],
+        'delete_dir': '',
         'table_col_defs': [
             {'name': 'Value 1', 'type': 'text', 'pattern': '', 'occ': 'last'},
         ],
@@ -880,6 +910,7 @@ def create_tab(ctx):
     calc_sort_dropdown = widgets.Dropdown(
         options=[('A-Z', 'name'), ('Newest', 'date_desc'), ('Oldest', 'date_asc')],
         value='name',
+        tooltip='Sort files',
         layout=widgets.Layout(width='90px', min_width='90px', height='26px', margin='0 0 0 4px'),
     )
     # A dot folder is bookkeeping -- DELFIN's, or the system's. Over a home
@@ -8953,7 +8984,9 @@ def create_tab(ctx):
 
     # -- delete helpers -----------------------------------------------------
     def calc_delete_hide_confirm():
+        # A question that is closed has no answer left: forget what it named.
         state['delete_current'] = False
+        state['delete_names'] = []
         calc_delete_confirm.layout.display = 'none'
         calc_delete_status.value = ''
 
@@ -10967,35 +11000,74 @@ def create_tab(ctx):
             msg = result.stderr or result.stdout or 'Unknown error'
             calc_recalc_status.value = f'<span style="color:#d32f2f;">{_html.escape(msg)}</span>'
 
+    def _calc_delete_item_name(name):
+        """The name of one entry *inside* the current folder, or ''.
+
+        Deleting goes ``current folder / name``.  A name that is empty, ``.``,
+        ``..`` or holds a path separator would point that at the current folder
+        itself or above it, so such a name is never a delete target.
+        """
+        name = str(name or '').strip()
+        if not name or name in {'.', '..'} or '/' in name or '\\' in name:
+            return ''
+        return name
+
     def calc_on_delete_click(button=None):
         real = _calc_selected_labels()
-        if real:
-            names = [_calc_label_to_name(s) for s in real]
+        names = [n for n in (_calc_delete_item_name(_calc_label_to_name(s)) for s in real) if n]
+        if names:
             label_str = ', '.join(f'<code>{_html.escape(n)}</code>' for n in names)
             calc_delete_label.value = f'<b>Delete {len(names)} item(s)?</b> {label_str}'
             state['delete_current'] = False
+            # Yes deletes exactly what this prompt names, in the folder it was
+            # asked in -- not whatever is selected by the time Yes is clicked.
+            state['delete_names'] = list(names)
+            state['delete_dir'] = state['current_path']
             calc_delete_confirm.layout.display = 'flex'
             return
+        state['delete_names'] = []
         if state['current_path']:
             calc_delete_label.value = (
                 f'<b>Delete current folder?</b> '
                 f'<code>{_html.escape(state["current_path"])}</code>'
             )
             state['delete_current'] = True
+            state['delete_dir'] = state['current_path']
             calc_delete_confirm.layout.display = 'flex'
         else:
             calc_delete_status.value = '<span style="color:#d32f2f;">No item selected.</span>'
 
+    def calc_on_delete_key():
+        """Delete key (or Cmd/Ctrl+Backspace): the selection, and only that.
+
+        Finder, Explorer, VS Code and JupyterLab all delete the selected items
+        from the keyboard and nothing else.  With nothing selected a key press
+        never offers the folder you are in -- that stays an explicit click on
+        the Delete button -- and it closes any confirm that is still open, so
+        the next Yes cannot belong to an earlier, different question.
+        """
+        if _calc_selected_labels():
+            calc_on_delete_click()
+            return
+        calc_delete_hide_confirm()
+        state['delete_names'] = []
+        calc_delete_status.value = (
+            '<span style="color:#555;">Select the items to delete first.</span>'
+        )
+
     def calc_on_delete_yes(button):
         if not state.get('delete_current', False):
-            real = _calc_selected_labels()
-            if not real:
+            names = [n for n in (_calc_delete_item_name(x) for x in (state.get('delete_names') or [])) if n]
+            state['delete_names'] = []
+            if state.get('delete_dir', state['current_path']) != state['current_path']:
+                # The folder changed under the prompt; its names mean nothing here.
+                names = []
+            if not names:
                 calc_delete_status.value = '<span style="color:#d32f2f;">Nothing to delete.</span>'
                 calc_delete_confirm.layout.display = 'none'
                 return
             errors, deleted = [], []
-            for label in real:
-                name = _calc_label_to_name(label)
+            for name in names:
                 full_path = (
                     (_calc_dir() / state['current_path'] / name)
                     if state['current_path']
@@ -11026,8 +11098,10 @@ def create_tab(ctx):
             calc_file_list.value = ()
             _calc_refresh_related_explorers()
             return
-        # delete_current fallback (delete the folder we are inside)
-        if not state['current_path']:
+        # delete_current fallback (delete the folder we are inside), reached
+        # only from the Delete button.  It deletes the folder the question
+        # named; if the view has moved since, it deletes nothing.
+        if not state['current_path'] or state.get('delete_dir') != state['current_path']:
             calc_delete_status.value = '<span style="color:#d32f2f;">No current folder.</span>'
             calc_delete_confirm.layout.display = 'none'
             state['delete_current'] = False
@@ -14502,7 +14576,13 @@ def create_tab(ctx):
         elif action == 'paste':
             calc_on_explorer_paste()
         elif action == 'delete':
-            calc_on_delete_click()
+            calc_on_delete_key()
+        elif action == 'up':
+            # Backspace / Alt+Up: one folder up, as in Explorer and Finder.
+            # A delete question asked in the folder being left goes with it.
+            if calc_delete_confirm.layout.display != 'none':
+                calc_delete_hide_confirm()
+            calc_on_back(None)
         elif action == 'rename':
             calc_on_explorer_start_rename()
         elif action == 'open':
@@ -14511,6 +14591,9 @@ def create_tab(ctx):
                 calc_on_dblclick({'new': labels[0]})
         elif action == 'deselect':
             calc_file_list.value = ()
+            # Esc also answers an open delete question with No.
+            if calc_delete_confirm.layout.display != 'none':
+                calc_delete_hide_confirm()
 
     # -- wiring -------------------------------------------------------------
     calc_back_btn.on_click(calc_on_back)
@@ -15500,7 +15583,10 @@ def create_tab(ctx):
                 if ((e.ctrlKey || e.metaKey) && e.key === 'c') action = 'copy';
                 else if ((e.ctrlKey || e.metaKey) && e.key === 'x') action = 'cut';
                 else if ((e.ctrlKey || e.metaKey) && e.key === 'v') action = 'paste';
-                else if (e.key === 'Delete' || e.key === 'Backspace') action = 'delete';
+                /* Delete (Cmd+Backspace on a Mac) acts on the selection only;
+                 * Backspace and Alt+Up go one folder up (Explorer, Finder). */
+                else if (e.key === 'Delete' || (e.key === 'Backspace' && (e.metaKey || e.ctrlKey))) action = 'delete';
+                else if (e.key === 'Backspace' || (e.altKey && e.key === 'ArrowUp')) action = 'up';
                 else if (e.key === 'Enter') action = 'open';
                 else if (e.key === 'Escape') action = 'deselect';
                 else if (e.key === 'F2') action = 'rename';
@@ -16213,10 +16299,7 @@ def create_tab(ctx):
 
     tab_widget = widgets.VBox([
         calc_css,
-        widgets.HTML(
-            '<h3>📁 Office</h3>' if _is_office_tab
-            else '<h3>📂 Calculations Browser</h3>'
-        ),
+        widgets.HTML(_browser_heading(ctx, _is_office_tab)),
         widgets.HBox(
             [calc_left, calc_splitter, calc_right],
             layout=widgets.Layout(
@@ -16678,6 +16761,10 @@ def create_tab(ctx):
         'calc_update_download_btn': calc_update_download_btn,
         # Delete (exposed for blocking only — agent must NOT click)
         'calc_delete_btn': calc_delete_btn,
+        'calc_delete_confirm': calc_delete_confirm,
+        'calc_delete_label': calc_delete_label,
+        'calc_delete_status': calc_delete_status,
+        'calc_keyboard_action_input': calc_keyboard_action_input,
         # Batch from XYZ
         'xyz_batch_prepare_export': _calc_xyz_batch_prepare_export,
         'xyz_batch_state': state,
