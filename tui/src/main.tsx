@@ -4,8 +4,12 @@
  *
  *   DELFIN_TUI_SOCKET  the service's socket
  *   DELFIN_TUI_START   the first session's settings, as JSON (chat's flags)
+ *   DELFIN_TUI_ENTRY   optional: "continue" or "resume" (the picker), as
+ *                      the flags --continue and a bare --resume say
  *
- * It connects, starts the first session (or attaches to `resume`), and
+ * It connects, starts the first session (or attaches to `resume`, opens
+ * the folder's latest for `continue`, or the resume picker first:
+ * entry.ts), and
  * draws it inline: finished output goes into the terminal's own scrollback,
  * only the footer is live. Leaving the window leaves the sessions running.
  */
@@ -20,9 +24,11 @@ import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
 import { worktreeRetryOf } from "./commands"
+import { START_HINT, entryOf, settingsFor } from "./entry"
 import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
+import { EmptySessions } from "./empty"
 import { leavingNote } from "./leaving"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
@@ -48,6 +54,10 @@ try {
 } catch {
   console.error("DELFIN_TUI_START is not JSON; starting with defaults")
 }
+// A new session, --continue, --resume <id>, or the picker first (entry.ts);
+// what the service is given carries none of the picker's markers.
+const entry = entryOf(start)
+start = settingsFor(start, entry)
 
 // DELFIN_TUI_DEBUG=<file>: when each startup step was reached (a window
 // that is slow to come up says where it waits).
@@ -94,7 +104,14 @@ const startService = Array.isArray(serviceCommand) && serviceCommand.length && s
     }
   : undefined
 const connection = new ServiceConnection(socket, undefined, { startService })
-connection.rpc.onEvent((event) => store.push(event))
+/** Sessions this window started new (not resumed, not continued): one of
+ *  them that was never asked anything is not kept when the window lets
+ *  it go (empty.ts). */
+const empties = new EmptySessions()
+connection.rpc.onEvent((event) => {
+  empties.saw(event)
+  store.push(event)
+})
 connection.onState((state) => store.update((d) => { d.connection = state }))
 
 step("config read")
@@ -167,6 +184,7 @@ const view = startSessionView(renderer, store, theme, { showThinking, replayTurn
 store.update((d) => {
   d.mayAct = Boolean(hello.mayAct)
   d.host = String(hello.host ?? "")
+  d.serviceVersion = Number(hello.serviceVersion ?? 0)
 })
 // Every session the service runs, for the agent view (each summary that
 // follows keeps its row up to date).
@@ -275,6 +293,9 @@ async function openFirst(): Promise<string> {
     () => connection.rpc.request("session.create", { ...settings, cwd: String(start.cwd ?? process.cwd()) }),
     (answer) => {
       const id = answer.sessionId as string
+      // A new one -- not --continue nor --resume <id>: those open one that
+      // was asked before.
+      if (!start.continue && !start.resume) empties.started(id)
       store.update((d) => {
         const s = ensureSession(d, id, answer.session)
         s.state = answer.state
@@ -374,8 +395,12 @@ async function switchTo(id: string, workspace: string, options: SwitchOptions = 
  * and its row lives on its summaries. What the window knew of its turn is
  * let go -- no turn.ended would ever end it here.
  */
-async function leave(id: string): Promise<void> {
-  await connection.rpc.request("session.detach", { sessionId: id }).catch(() => undefined)
+async function leave(id: string, keepEmpty = false): Promise<void> {
+  // A new session nobody asked anything ends (unless it works after all);
+  // any other runs on, detached. keepEmpty: its first prompt is on its way.
+  if (keepEmpty || !(await endIfEmpty(id))) {
+    await connection.rpc.request("session.detach", { sessionId: id }).catch(() => undefined)
+  }
   store.update((d) => {
     const s = d.sessions[id]
     if (!s || s.state === "ended") return
@@ -385,6 +410,25 @@ async function leave(id: string): Promise<void> {
     s.wait = ""
     s.pending = []
   })
+}
+
+/**
+ * A session this window started that was never asked anything: ended, not
+ * kept running nor saved (the worker saves no session without a message),
+ * as Claude Code keeps no empty conversation. Only when it is idle: a
+ * message on its way (queued) or a question keeps it (session.shutdown
+ * ifIdle). True when it ends.
+ */
+async function endIfEmpty(id: string, timeoutMs = 2000): Promise<boolean> {
+  if (!id || !store.state.mayAct || !empties.isEmpty(id, store.state.sessions[id]?.summary)) return false
+  try {
+    const answer = await connection.rpc.request("session.shutdown", { sessionId: id, ifIdle: true }, { timeoutMs })
+    if (answer?.closing === false) return false
+    empties.ended(id)
+    return true
+  } catch {
+    return false
+  }
 }
 
 interface NewOptions {
@@ -440,6 +484,9 @@ async function startSession(options: NewOptions = {}): Promise<Started> {
                                                        cwd: options.cwd || String(start.cwd ?? process.cwd()) }),
       (answer) => {
         id = answer.sessionId as string
+        // A plain new one; one about an attention item carries what it is
+        // about (its brief) and is kept like an asked one.
+        if (!options.brief) empties.started(id)
         store.update((d) => {
           const s = ensureSession(d, id, answer.session)
           s.state = answer.state
@@ -454,8 +501,9 @@ async function startSession(options: NewOptions = {}): Promise<Started> {
         return [{ type: "session.info", session: id, ts: Date.now() / 1000, seq: 0, ...answer.session } as never,
                 ...((answer.events ?? []) as unknown as AnyEvent[])]
       }, eventsOfUnknown(store))
-    // Asked for something else meanwhile: it runs on, in the agent view.
-    if (!shown && letGo(id)) await leave(id)
+    // Asked for something else meanwhile: it runs on, in the agent view
+    // (its first prompt follows: the agent view's typing + enter).
+    if (!shown && letGo(id)) await leave(id, true)
     return { id, superseded: !shown, error: "" }
   } catch (error) {
     // A plain folder: the service asks whether it should become a local
@@ -568,7 +616,7 @@ function quit(): void {
   // The scrollback is held while the agent view has the alternate screen.
   agentScreen?.leave()
   void (async () => {
-    if (current) {
+    if (current && !(await endIfEmpty(current, 1000))) {
       await connection.rpc.request("session.detach", { sessionId: current }, { timeoutMs: 1000 }).catch(() => undefined)
     }
     store.flush()
@@ -594,7 +642,8 @@ function printWhenGone(): void {
   const s = current ? store.state.sessions[current] : undefined
   const note = leavingNote({
     problem: connection.problem || undefined,
-    session: s ? { id: s.id, title: s.title || s.summary?.title || "", state: s.state, ended: s.ended } : undefined,
+    session: s ? { id: s.id, title: s.title || s.summary?.title || "", state: s.state, ended: s.ended,
+                   discarded: empties.wasEnded(s.id) } : undefined,
   })
   if (!note) return
   process.once("exit", () => {
@@ -631,6 +680,12 @@ renderer.on("destroy", () => {
   quitting = true
   // The shell's way: a window ended by a signal exits with 128 + its number.
   if (signalled) process.exitCode = 128 + signalled
+  // A new session nobody asked anything is not left running: asked to end
+  // on the way out (written before the socket closes; nothing waits).
+  if (current && store.state.mayAct && empties.isEmpty(current, store.state.sessions[current]?.summary)) {
+    void connection.rpc.request("session.shutdown", { sessionId: current, ifIdle: true }).catch(() => undefined)
+    empties.ended(current)
+  }
   // A hangup has no terminal left to print to; any other end says the way back.
   if (signalled !== 1) printWhenGone()
   connection.close()
@@ -648,6 +703,18 @@ const pins = Pins.load()
 const agentScreen = full || (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.env.STY ? "footer" : "alternate")) === "footer"
   ? undefined : createAgentScreen(renderer, view.queue)
 
+// `--resume` without an id: the picker comes first; what is picked is
+// opened, esc starts a new session as a plain start does.
+let pickedAtStart: (picked: { id: string; workspace: string } | null) => void = () => {}
+const startPick = entry.kind === "pick"
+  ? new Promise<{ id: string; workspace: string } | null>((resolve) => { pickedAtStart = resolve })
+  : null
+const resumeAtStart = startPick ? {
+  workspace: String(start.cwd ?? process.cwd()),
+  onPick: (id: string, workspace: string) => pickedAtStart({ id, workspace }),
+  onCancel: () => pickedAtStart(null),
+} : undefined
+
 // The window takes keys from the start: a session that is slow to start
 // (MCP servers, a long resume) can still be left with ctrl+d or ctrl+c.
 await render(() => (
@@ -658,29 +725,48 @@ await render(() => (
        onResume={(id, ws) => void switchTo(id, ws)}
        onNewSession={() => newSession()} onOpenItem={openItem} pins={pins} agentScreen={agentScreen} screen={screen}
        onThinking={(on) => view.setShowThinking(on)} thinking={() => view.showThinking}
-       onLines={(title, lines) => view.lines(title, lines)} />
+       onLines={(title, lines) => view.lines(title, lines)} resumeAtStart={resumeAtStart} />
 ), renderer)
 
 step("window rendered")
-store.update((d) => { d.starting = true })
-try {
-  await openFirst()
-} catch (error) {
-  if (quitting) {
-    // Left while it started: nothing to say (the session, if it started,
-    // runs on in the agent service).
-    leaveNow()
-  } else {
-    // Nothing to show: say why on a terminal that is the user's again.
-    connection.close()
-    renderer.destroy()
-    await Bun.sleep(50)
-    process.stderr.write(`The session could not start: ${(error as Error).message}\n`)
-    process.exit(3)
+// `--resume` without an id: the session picked is opened; esc -- or a pick
+// that cannot be opened (the note says why) -- leaves it to the plain
+// start below: a new session.
+if (startPick) {
+  const picked = await startPick
+  if (picked && !quitting) {
+    store.update((d) => { d.starting = true })
+    await switchTo(picked.id, picked.workspace)
+    store.update((d) => { d.starting = false })
+    step(current ? "picked session open" : "picked session not opened")
   }
-} finally {
-  store.update((d) => { d.starting = false })
-  step(current ? "session open" : "no session")
+}
+if (!current && !quitting) {
+  store.update((d) => { d.starting = true })
+  try {
+    await openFirst()
+    // A new session's first screen says how to get back to another one.
+    if (entry.kind !== "resume" && entry.kind !== "continue" && current) {
+      store.flush()
+      view.note(START_HINT)
+    }
+  } catch (error) {
+    if (quitting) {
+      // Left while it started: nothing to say (the session, if it started,
+      // runs on in the agent service).
+      leaveNow()
+    } else {
+      // Nothing to show: say why on a terminal that is the user's again.
+      connection.close()
+      renderer.destroy()
+      await Bun.sleep(50)
+      process.stderr.write(`The session could not start: ${(error as Error).message}\n`)
+      process.exit(3)
+    }
+  } finally {
+    store.update((d) => { d.starting = false })
+    step(current ? "session open" : "no session")
+  }
 }
 
 // After a reconnect: the session is attached again (a new service wakes it
@@ -688,7 +774,8 @@ try {
 // not shown twice (the store drops seen sequence numbers), and what it
 // knew of a turn that ended meanwhile is let go.
 connection.onUp(async (again) => {
-  // What this (maybe new) service runs is what the window knows now.
+  // What this (maybe new) service runs and does is what the window knows now.
+  store.update((d) => { d.serviceVersion = Number(again.serviceVersion ?? 0) })
   listed(store, (again.sessions ?? []) as { sessionId?: string }[])
   void loadAttention(again)
   if (!current) return

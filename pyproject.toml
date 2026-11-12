@@ -130,10 +130,32 @@ dependencies = [
     # all. Its own requirements (numpy, scipy, packaging, periodictable)
     # move nothing DELFIN pins.
     "cclib>=1.8.1,<1.9",
+    # cluster-tunnel (ctun, github.com/aimat-lab/cluster-tunnel, MIT) keeps
+    # the logged-in ssh connection to an HPC cluster that DELFIN sends its
+    # calculations through from the user's PC: a person logs in once with
+    # password and OTP, DELFIN then runs, transfers and submits over that
+    # connection through ctun's Python API. 0.10.0: the API with host-key
+    # pinning (0.7.0), a login with the password and OTP the window's
+    # masked field hands over (0.8.0), and the presets, add_cluster,
+    # remove_cluster and pinning only an expected fingerprint that the
+    # window's add form uses (delfin.remote.setup); the ceiling is the next
+    # minor, since a 0.x minor release may change the API
+    # (tests/test_ctun_runs_commands_on_a_cluster_through_a_fake_ssh.py pins
+    # the parts DELFIN uses). Pure Python; it adds rich-click and appdirs
+    # (both MIT) and moves nothing DELFIN pins.
+    "cluster-tunnel>=0.10,<0.11",
 ]
 
 [project.optional-dependencies]
 messenger = ["websockets"]
+# The Raspberry Pi 5 GPIO relay/input driver (delfin/lab/drivers/gpio.py)
+# talks to the RP1 header through libgpiod v2. gpiod only runs on Linux with
+# a /dev/gpiochip* and can only be exercised there, so it is an extra; without
+# it the driver imports lazily and fails with a message naming this extra.
+# libgpiod is LGPL-2.1-or-later (the C library and the Python bindings).
+lab-gpio = [
+    "gpiod>=2.0",
+]
 # PyMOL renders the ESP, dipole-moment and orbital pictures of the Word and
 # ESD reports (delfin/reporting/esp_report.py, delfin_docx_report.py). Without
 # it those pictures are skipped with a logged notice and every other part of
@@ -158,6 +180,16 @@ pymol = [
 pdf = [
     "pymupdf>=1.24,<2",
 ]
+# The MQTT transport behind the lab device driver delfin/lab/drivers/mqtt.py
+# (delfin/lab: the safety kernel and its real-device drivers). Optional: the
+# driver imports paho lazily and does not trip on a missing library -- a real
+# MQTT device simply cannot be reached, and the driver's error names this
+# extra. Tests never need it: the driver is exercised against an in-process
+# fake broker. paho-mqtt is dual-licensed EPL-2.0 / EDL-1.0 (BSD-3-Clause)
+# and used under EDL-1.0 (THIRD_PARTY_NOTICES.md).
+lab-mqtt = [
+    "paho-mqtt>=2.0,<3",
+]
 # API keys in the operating system's credential store (macOS Keychain,
 # Secret Service, Windows Credential Manager) instead of the 0600 file
 # ~/.delfin/credentials.json (delfin/agent/credentials.py). Optional: on a
@@ -173,6 +205,17 @@ keyring = [
 # fetches the browser once.
 browser = [
     "playwright>=1.40,<2",
+]
+# The OPC UA LADS device driver (delfin/lab/drivers/opcua_lads.py): an
+# instrument facing the OPC Foundation LADS companion spec (OPC 30500) is
+# reached over OPC UA with SignAndEncrypt. opcua-asyncio (asyncua) is
+# "GNU Lesser General Public License v3.0 or later" -- LGPL, not GPL/AGPL,
+# and so compatible with DELFIN's own license. It stays an OPTIONAL extra,
+# like pymupdf above, so whoever installs a LADS device takes it on by
+# choice: the driver imports asyncua lazily and works against an in-process
+# transport for everything else, and the test suite never needs it.
+lab-opcua = [
+    "asyncua>=1.0,<2",
 ]
 csp = [
     "mpi4py",
@@ -366,6 +409,8 @@ include = ["delfin*"]
 [tool.setuptools.package-data]
 "delfin" = [
     "installers/*.sh",
+    # Fed over the tunnel by delfin/remote/install.py.
+    "remote/scripts/*.sh",
     "logo/*.png",
     "logo/*.PNG",
     # The submit tab loads MANTA_readme_demo.gif through importlib.resources
@@ -401,7 +446,7 @@ include = ["delfin*"]
 # The simulated demo lab: the smoke check and the tests load it as data.
 "delfin.lab" = ["examples/*.yaml"]
 "delfin.manta" = ["*.md", "data/*.tsv", "data/*.json"]
-"delfin.voila_assets" = ["login_templates/*.html"]
+"delfin.voila_assets" = ["login_templates/*.html", "jupyter_data/nbconvert/templates/delfin/*"]
 
 # Whatever an installer left in the source tree stays out of the wheel even
 # when MANIFEST.in would let it in (MANIFEST.in prunes the same directories

@@ -19,7 +19,9 @@
  *             for a moment what just arrived
  *
  * The agent view (←) takes the whole terminal but its last row: its list
- * in place of the tail, status and question, the composer under it.
+ * in place of the tail, status and question, the composer under it; so do
+ * /clusters and /jobs (clusters/view.tsx). The masked login field
+ * (clusters/login.tsx) is a box above the prompt, over either.
  *
  * Every line is cut to the terminal's width, so the footer knows exactly
  * how many rows it takes (`footerRows`), at any width: a footer taller
@@ -29,7 +31,11 @@ import { TextAttributes, infoStringToFiletype, type CliRenderer, type Renderable
          type SyntaxStyle } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type Accessor, type JSX } from "solid-js"
 import { AgentViewPanel, agentHelp, takesAnswer, type AgentView } from "../agents/view"
+import { AddView, addHelp, type AddForm } from "../clusters/add"
+import { LoginView, loginHelp, type Login } from "../clusters/login"
+import { ClustersPanel, clustersHelp, type ClustersView } from "../clusters/view"
 import { SwarmPanel, type SwarmView } from "../swarm/panel"
+import { SwarmWatchPanel, type SwarmWatchView } from "../swarm/watch_panel"
 import { ComposerView, type Composer } from "../composer/composer"
 import type { Keymap } from "../keymap/keymap"
 import type { Asked, SessionState, TurnLive } from "../store/state"
@@ -69,8 +75,17 @@ export interface FooterProps {
   tasksFolded?: () => boolean
   /** The agent view; while open it has the footer. */
   agents?: AgentView
+  /** /clusters and /jobs: drawn where the agent view is. */
+  clusters?: ClustersView
+  /** The masked login field, while it is open. */
+  login?: Login
+  /** The add form of /clusters, while it is open. */
+  addForm?: AddForm
   /** The swarm view (SW2b); while open it has the footer. */
   swarm?: SwarmView
+  /** The read-only /swarm watch (package SWV, phase 2b); while open it
+   *  has the footer: the member table (or a member's feed), no input. */
+  watch?: SwarmWatchView
   /** The view is drawn on the alternate screen: all of it is the view's,
    *  and the footer keeps its height for the way back. */
   agentsOnOwnScreen?: boolean
@@ -222,7 +237,14 @@ export function Footer(props: FooterProps): JSX.Element {
   // The agent view's ages: once a second is enough (its rows are drawn
   // again on each change of it).
   const [clock, setClock] = createSignal(Date.now())
-  const viewOpen = () => Boolean(props.agents?.state.open || props.swarm?.state.open)
+  const viewOpen = () => Boolean(props.agents?.state.open || props.swarm?.state.open
+                                 || props.watch?.state.open)
+  /** /clusters or /jobs: in the view's place. */
+  const screenOpen = () => Boolean(props.clusters?.state.open)
+  /** The view or a screen: the window's rows and live area make way. */
+  const panelOpen = () => viewOpen() || screenOpen()
+  /** The login field's rows and the add form's (boxes over the prompt, like a picker). */
+  const loginRows = () => (props.login?.height() ?? 0) + (props.addForm?.height() ?? 0)
   let timer: ReturnType<typeof setInterval> | undefined
   createEffect(() => {
     const running = Boolean(props.session()?.turn) || viewOpen()
@@ -290,11 +312,11 @@ export function Footer(props: FooterProps): JSX.Element {
 
   /** The task list's lines: none in the agent view, which is another
    *  session's place. */
-  const tasks = createMemo(() => viewOpen() ? []
+  const tasks = createMemo(() => panelOpen() ? []
     : taskLines(props.session()?.tasks ?? [], Boolean(props.tasksFolded?.()), cols(), term().height,
                 props.keymap.label("tasks") || "ctrl+t"))
-  /** What is still out: not in the agent view either. */
-  const background = createMemo(() => viewOpen() ? []
+  /** What is still out: not in the agent view or a screen either. */
+  const background = createMemo(() => panelOpen() ? []
     : backgroundLines(props.session()?.background ?? [], cols(), bgNow()))
   /** The rows the two lists above the prompt take. */
   const listRows = () => tasks().length + background().length
@@ -302,15 +324,15 @@ export function Footer(props: FooterProps): JSX.Element {
   createEffect(() => {
     // Full screen has no footer of a height: the window is all of it.
     if (full()) return
-    props.renderer.footerHeight = viewOpen() && !props.agentsOnOwnScreen
+    props.renderer.footerHeight = panelOpen() && !props.agentsOnOwnScreen
       ? agentFooterRows(term())
       : footerRows(props.session(), term(), note(), props.composer.height(),
-                   props.approval, props.picker?.height() ?? 0, listRows())
+                   props.approval, (props.picker?.height() ?? 0) + loginRows(), listRows())
   })
-  /** The agent view's list: its rows less the message, the composer and
-   *  its rules, and the hints. */
+  /** The agent view's list (or a screen's): its rows less the message, the
+   *  login field, the composer and its rules, and the hints. */
   const panelRows = () => Math.max(2, (props.agentsOnOwnScreen || full() ? term().height : agentFooterRows(term()))
-    - (note() ? 1 : 0) - 3 - props.composer.height())
+    - (note() ? 1 : 0) - loginRows() - 3 - props.composer.height())
 
   const status = (turn: TurnLive) => {
     const s = props.session()
@@ -331,11 +353,12 @@ export function Footer(props: FooterProps): JSX.Element {
   })
 
   const budget = () => approvalBudget(props.session(), term(), note(), props.composer.height(),
-                                      props.picker?.height() ?? 0, listRows())
+                                      (props.picker?.height() ?? 0) + loginRows(), listRows())
 
   // Nothing in the footer shrinks: what does not fit is cut at the top
   // (the composer and the keys are at the bottom), never drawn over.
   const placeholder = () => {
+    if (screenOpen()) return `the keys are the screen's: ${props.clusters!.backKeys()} goes back`
     const v = props.agents
     if (props.swarm?.state.open) {
       if (props.swarm.state.pendingAnswer) return "the answer…"
@@ -346,6 +369,7 @@ export function Footer(props: FooterProps): JSX.Element {
       if (v.state.renaming) return "the new name…"
       const peeked = v.state.peek ? v.rows().find((r) => r.id === v.state.peek!.id) : undefined
       if (peeked?.kind === "attention") {
+        if (peeked.item?.kind === "login") return `type to log in to ${peeked.item.cluster || "the cluster"} (a masked field)…`
         return takesAnswer(peeked.item) ? `the answer for ${peeked.name}…`
           : `${props.keymap.label("agentsOpen")} opens it in a session`
       }
@@ -373,18 +397,25 @@ export function Footer(props: FooterProps): JSX.Element {
          paddingLeft={GUTTER}>
       <Show when={viewOpen()}>
         <Show when={props.swarm?.state.open} fallback={
-          <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
-                          keymap={props.keymap} />
+          <Show when={props.watch?.state.open} fallback={
+            <AgentViewPanel view={props.agents!} theme={t} width={cols} height={panelRows} tick={tick} now={clock}
+                            keymap={props.keymap} />
+          }>
+            <SwarmWatchPanel view={props.watch!} theme={t} width={cols} height={panelRows} />
+          </Show>
         }>
           <SwarmPanel view={props.swarm!} theme={t} width={cols} height={panelRows} />
         </Show>
+      </Show>
+      <Show when={screenOpen() && !viewOpen()}>
+        <ClustersPanel view={props.clusters!} theme={t} width={cols} height={panelRows} />
       </Show>
       {/* Mounted for as long as the window is full screen -- hidden while
           the agent view has the screen, so closing the view keeps its
           scroll position and does not lay out every row again. */}
       <Show when={full()}>
         <TranscriptView renderer={props.renderer} screen={props.screen!} theme={t} width={cols} height={() => term().height}
-                        visible={() => !viewOpen()} ref={props.scrollRef} onUserScroll={props.onUserScroll} />
+                        visible={() => !panelOpen()} ref={props.scrollRef} onUserScroll={props.onUserScroll} />
       </Show>
       <Show when={note()}>
         <text flexShrink={0} fg={props.offer?.() ? t().err : t().warn} wrapMode="none"
@@ -392,7 +423,7 @@ export function Footer(props: FooterProps): JSX.Element {
               onMouseDown={offerHit.onMouseDown} onMouseUp={offerHit.onMouseUp}
               onMouseDrag={offerHit.onMouseDrag}>{fit(note(), cols() - 1)}</text>
       </Show>
-      <Show when={!viewOpen()}>
+      <Show when={!panelOpen()}>
       {/* The answer's unfinished block, under the rows in both screens: a
           delta lays out this box only, never the whole conversation. A
           block that finishes stays until its rows are drawn, with the
@@ -426,6 +457,12 @@ export function Footer(props: FooterProps): JSX.Element {
       <Show when={props.picker?.state.open && !asked()}>
         <PickerView picker={props.picker!} theme={t} width={cols} />
       </Show>
+      </Show>
+      <Show when={props.login?.state.open}>
+        <LoginView login={props.login!} theme={t} width={cols} />
+      </Show>
+      <Show when={props.addForm?.state.open}>
+        <AddView form={props.addForm!} theme={t} width={cols} />
       </Show>
       <text flexShrink={0} wrapMode="none">
         <span style={{ fg: ruleTone() }}>{topRule().head}</span>
@@ -523,7 +560,7 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
   const t = props.theme
   /** What needs the user, at the right end (not while the agent view is
    *  open: its own head says it). At most half the line. */
-  const corner = createMemo(() => props.agents?.state.open ? attentionCorner(undefined, 0)
+  const corner = createMemo(() => props.agents?.state.open || props.clusters?.state.open ? attentionCorner(undefined, 0)
     : attentionCorner(props.attention?.(), Math.floor((props.cols() - 1) / 2)))
   const cornerWidth = () => {
     const c = corner()
@@ -534,6 +571,16 @@ function Hints(props: FooterProps & { cols: () => number }): JSX.Element {
    *  spaces up to the corner. */
   const line = createMemo(() => {
     const room = Math.max(0, props.cols() - 1 - (cornerWidth() ? cornerWidth() + 2 : 0))
+    if (props.login?.state.open) {
+      return { lead: fit("  " + loginHelp(props.login), room), posture: null, rest: "", agents: "" }
+    }
+    if (props.addForm?.state.open) {
+      return { lead: fit("  " + addHelp(props.addForm), room), posture: null, rest: "", agents: "" }
+    }
+    if (props.clusters?.state.open) {
+      const keys = { add: props.keymap.label("clustersAdd"), remove: props.keymap.label("clustersRemove") }
+      return { lead: fit("  " + clustersHelp(props.clusters, props.cols() - 3, keys), room), posture: null, rest: "", agents: "" }
+    }
     if (props.agents?.state.open) {
       return { lead: fit("  " + agentHelp(props.agents, props.keymap, props.cols() - 3), room), posture: null, rest: "",
                agents: "" }

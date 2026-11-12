@@ -2029,6 +2029,9 @@ class TerminalAgent:
             self._start_fresh()
         if result.quit:
             self._quit = True
+        if result.title:
+            # The title the saves carry (the worker's setTitle sets the same).
+            self.session_title = result.title
         return result.prompt
 
     def _ctx(self):
@@ -2533,9 +2536,10 @@ class TerminalAgent:
         if not options:
             self._apply(req, {"answers": []})
             return
+        from .approval_answers import answer_hint
         self.transcript.chrome(self.transcript.theme.dim(
-            f"  1-{len(options)} picks · or type your own answer and press "
-            "Enter · esc skips"))
+            "  " + answer_hint(len(options), bool(payload.get("multiSelect")))
+            + " Enter sends, Esc skips."))
         allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
         while True:
             # Same as _answer_request: an answer from outside ends the
@@ -2548,6 +2552,11 @@ class TerminalAgent:
             if not key:
                 continue                # answered while waiting
             if isinstance(key, tuple):  # ("text", line)
+                from .approval_answers import range_problem
+                problem = range_problem(key[1], payload)
+                if problem:
+                    self.transcript.chrome(self.transcript.theme.yellow("  " + problem))
+                    continue
                 if self._apply(req, typed_answer(key[1], payload)):
                     self.transcript.chrome(
                         f"  → {rr.strip_control(key[1])}")
@@ -3339,7 +3348,8 @@ class TerminalAgent:
             if engine is None:
                 return
             from .cli import _save_session
-            _save_session(engine, Path(self.opts.cwd))
+            _save_session(engine, Path(self.opts.cwd),
+                          title=str(getattr(self, "session_title", "") or ""))
         except Exception:
             pass
 
@@ -4467,6 +4477,19 @@ class TerminalAgent:
                 self._watch_last_look = _now
                 done = done + job_wake.finished_watched_jobs(
                     _ws, seen, session_id=sid)
+            # This session's own wake-ups (schedule_wakeup): the dashboard
+            # registers a fire listener; here the idle prompt pulls them,
+            # or they waited "due" forever and their row never left.
+            if sid:
+                try:
+                    from . import scheduler as _sch_mod
+                    _woken = _sch_mod.get_scheduler().take_due(lambda owner: owner == sid)
+                except Exception:
+                    _woken = []
+                if _woken:
+                    self._wake_kind = "schedule"
+                    return HarnessText("\n\n".join(
+                        f"[scheduled] {e.reason or e.prompt}\n\n{e.prompt}" for e in _woken))
             # A turn that ended blocked leaves its note here, so the
             # next prompt opens on the state and not on a task list
             # with no sentence about it (wave-10: an hour at a

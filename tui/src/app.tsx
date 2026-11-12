@@ -1,7 +1,10 @@
 /**
  * The window: one session in view, its scrollback, and the footer.
  *
- * Keys go to the agent view while it is open (its arrows and ctrl keys;
+ * Keys go to the masked login field while it is open, every one of them
+ * (what is typed there is a password: clusters/login.tsx); to /clusters or
+ * /jobs while one is open (clusters/view.tsx). Then to the agent view
+ * while it is open (its arrows and ctrl keys;
  * letters are a new session's prompt). With a question open the prompt
  * keeps the keys: the question takes its own keys from an empty prompt
  * (approval.tsx), everything else is typing, and a line sent is the
@@ -14,9 +17,14 @@
  */
 import type { CliRenderer, KeyEvent, ScrollBoxRenderable, Selection } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
+import { batch, createEffect, createSignal, onCleanup, untrack, type JSX } from "solid-js"
 import { Pins } from "./agents/pins"
-import { WINDOW_COMMANDS, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, shellLead } from "./commands"
+import { existsSync } from "node:fs"
+import { createAddForm, type Proposal } from "./clusters/add"
+import { createLogin } from "./clusters/login"
+import { CLUSTERS_SERVICE_VERSION, SETUP_SERVICE_VERSION, createClustersView, type Screen } from "./clusters/view"
+import { WINDOW_COMMANDS, WINDOW_ONLY_NAMES, nameFromPrompt, nameOf, mergeOf, renameOf, resumeOf, screenOf, shellLead,
+         unknownCommandNote, unknownCommandOf } from "./commands"
 import { createSwarmView } from "./swarm/view"
 import { createSwarmWatch } from "./swarm/watch"
 import type { ArgumentChoices } from "./composer/complete"
@@ -29,6 +37,7 @@ import { History } from "./composer/history"
 import { ANSWER_PAUSE_MS, createApprovalUi, setFullPreviewKey } from "./footer/approval"
 import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
+import { resumeRowsOf } from "./entry"
 import { editPrompt } from "./composer/editor"
 import { keyTable, type Keymap } from "./keymap/keymap"
 import type { AttentionItem } from "./protocol/generated"
@@ -82,6 +91,11 @@ export interface AppProps {
   thinking?: () => boolean
   /** Lines of the window's own, into the scrollback (/keys). */
   onLines?: (title: string, lines: string[]) => void
+  /** `delfin-agent tui --resume` without an id: the resume picker opens
+   *  before any session, over the sessions of `workspace`. A pick is
+   *  handed to `onPick`; esc (or ctrl+c) to `onCancel` -- the window then
+   *  starts a new session, as a plain start does. */
+  resumeAtStart?: { workspace: string; onPick: (sessionId: string, workspace: string) => void; onCancel: () => void }
   /** The pause before a key answers a question (approval.tsx); tests set 0. */
   answerPauseMs?: number
   /** The pause before a click answers a question or picks from a list
@@ -90,6 +104,9 @@ export interface AppProps {
   /** How long a new item names itself at the bottom right, and for how
    *  long after the window opens nothing is news (tests shorten them). */
   arrival?: { shownMs: number; quietMs: number }
+  /** How often an open /clusters or /jobs asks again (clusters/view.tsx
+   *  CLUSTERS_POLL_MS); tests shorten it. */
+  clustersPollMs?: number
   /** Full screen: the session's rows in the window (session.ts), scrolled
    *  by the wheel and the keys; a selection is copied when the drag ends. */
   screen?: ScreenItems
@@ -156,6 +173,43 @@ export function App(props: AppProps): JSX.Element {
     }
   }
   const sid = () => store.state.current ?? ""
+
+  // -- unknown /commands: answered here, never sent ------------------------------
+  /** The command names the session listed last (session.commands), per
+   *  session, asked again after a minute (a skill or a user command added
+   *  meanwhile). */
+  const commandNames = new Map<string, { at: number; names: string[] }>()
+  /** Every command `id` knows, or null when the session cannot say (a
+   *  service that does not answer session.commands, an empty list): then
+   *  nothing is judged and the line goes out as before. */
+  const knownCommands = async (id: string): Promise<string[] | null> => {
+    const hit = commandNames.get(id)
+    if (hit && Date.now() - hit.at < 60_000) return hit.names
+    let listedNames: string[] = []
+    try {
+      const got = await props.client.request("session.commands", { sessionId: id })
+      listedNames = ((got?.commands ?? []) as { name?: unknown }[]).map((c) => String(c?.name ?? "")).filter(Boolean)
+    } catch {
+      return null
+    }
+    if (!listedNames.length) return null
+    const names = [...new Set([...WINDOW_COMMANDS.map((c) => c.name), ...WINDOW_ONLY_NAMES, ...listedNames])]
+    commandNames.set(id, { at: Date.now(), names })
+    return names
+  }
+  /** True when `text` is an unknown /command for session `id`: said in the
+   *  window (with the command it was probably meant to be), never sent --
+   *  the line stays in the prompt to be put right. A path ("/home/…")
+   *  is no command and goes out. */
+  const refusedAsUnknown = async (text: string, id: string): Promise<boolean> => {
+    if (!text.trim().startsWith("/") || !id) return false
+    const known = await knownCommands(id)
+    if (!known) return false
+    const unknown = unknownCommandOf(text, known, existsSync)
+    if (!unknown) return false
+    say(unknownCommandNote(unknown))
+    return true
+  }
 
   // -- full screen: scrolling and copying ----------------------------------------
   let scrollBox: ScrollBoxRenderable | null = null
@@ -289,6 +343,12 @@ export function App(props: AppProps): JSX.Element {
   const send = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     if (agents.state.open) {
       typingAt = 0
+      // /clusters, /jobs: in the view's place, never a new session's prompt.
+      const screen = screenOf(text)
+      if (screen) {
+        if (canShow(screen)) batch(() => { agents.close(); clusters.open(screen) })
+        return true
+      }
       // /rename here names the session peeked at, else the one selected --
       // it is never a new session's first prompt (nor a model's turn).
       const named = naming(text)
@@ -331,6 +391,14 @@ export function App(props: AppProps): JSX.Element {
   /** A prompt for the session in view (or the one starting). */
   const deliver = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     typingAt = 0
+    // The window's own screens -- also while the session starts, and with
+    // the key that steers: never the turn's (the session's own /jobs takes
+    // an argument: `/jobs watch on` goes to it as typed).
+    const screen = screenOf(text)
+    if (screen) {
+      if (canShow(screen)) clusters.open(screen)
+      return true
+    }
     if (!sid() || store.state.starting) {
       if (!store.state.starting) return false
       early.push({ text, shown })
@@ -402,9 +470,13 @@ export function App(props: AppProps): JSX.Element {
         picker.open("merge back a session worktree", rows, (c) => void mergeWorktreeBack(c.value))
         return true
       }
+    // An unknown /command is answered here and never sent (a paid turn
+    // about a typo); with the key that steers too. The line stays.
+    const target = sid()
+    if (await refusedAsUnknown(text, target)) return false
     // The session strips the text it shows, as a typed line is stripped.
     if (shown) props.sentAs?.set(text.trim(), shown)
-    const result = await call("session.prompt", how ? { sessionId: sid(), text, how } : { sessionId: sid(), text })
+    const result = await call("session.prompt", how ? { sessionId: target, text, how } : { sessionId: target, text })
     return result !== undefined
   }
 
@@ -415,8 +487,8 @@ export function App(props: AppProps): JSX.Element {
   const sendTyped = async (text: string, how?: "steer", shown?: string): Promise<boolean> => {
     const asked = agents.state.open ? undefined : session()?.pending[0]
     // Session routing must remain switchable while a question is waiting.
-    // /sync is a local control, never the text answer to that question.
-    if (asked && !how && shellLead(text) < 0 && !/^\/sync(?:\s|$)/i.test(text.trim())) {
+    // /sync and /pair are local controls, never the text answer to that question.
+    if (asked && !how && shellLead(text) < 0 && !/^\/(?:sync|pair)(?:\s|$)/i.test(text.trim())) {
       const took = approval.submitText(asked, text)
       if (took === "reflex") {
         say("sent as the question opened: not taken as its answer -- enter again to answer with it")
@@ -461,11 +533,24 @@ export function App(props: AppProps): JSX.Element {
       if (await call("session.message", { key: row.id, text })) say(`sent to ${row.name}`)
       return
     }
+    // An unknown /command is not sent to that session either; the line
+    // comes back into the prompt.
+    if (await refusedAsUnknown(text, row.id)) {
+      composer.setText(composer.value() ? `${composer.value()}\n${text}` : text)
+      return
+    }
     const result = await call("session.prompt", { sessionId: row.id, text })
     if (!result) return
     say(result.queued ? `queued for ${row.name}: it goes out when its turn ends` : `sent to ${row.name}`)
   }
   const startNew = async (text: string) => {
+    // An unknown /command starts no session (judged by the commands of the
+    // session in view: the builtins are every session's).
+    if (await refusedAsUnknown(text, sid())) {
+      agents.open()
+      composer.setText(composer.value() ? `${composer.value()}\n${text}` : text)
+      return
+    }
     if (store.state.starting) {
       // The first session is still starting: this one follows it (the
       // window then shows this one, the latest asked for).
@@ -495,8 +580,23 @@ export function App(props: AppProps): JSX.Element {
     return Boolean(result.ok)
   }
   /** → on an item: shown in this window; a new session about it gets its
-   *  suggested prompt in the box -- sent only when enter is pressed. */
-  const openItem = async (item: AttentionItem) => {
+   *  suggested prompt in the box -- sent only when enter is pressed. A
+   *  login item opens the masked login field for its cluster instead (over
+   *  the view): what is typed for it is a password. */
+  const openItem = async (item: AttentionItem, typed?: string) => {
+    if (item.kind === "login") {
+      if (canShow("clusters")) login.openFor(item.cluster ?? "", typed)
+      return
+    }
+    if (item.kind === "addCluster") {
+      // An agent's proposal: the add form filled in, over /clusters, for
+      // the person to check and send -- never an answer to a model.
+      if (!canShow("clusters")) return
+      if (store.state.serviceVersion < SETUP_SERVICE_VERSION) return say("restart the agent service to add clusters here")
+      clusters.open("clusters")
+      addForm.open((item.proposal as Proposal | null | undefined) ?? { name: item.cluster ?? "" })
+      return
+    }
     const suggested = await (props.onOpenItem?.(item) ?? Promise.resolve(null))
     if (suggested && !composer.value().trim() && !agents.state.open) composer.setText(suggested)
   }
@@ -525,14 +625,55 @@ export function App(props: AppProps): JSX.Element {
     },
     message: (row, text) => void sendTo(row, text),
     newSession: (text) => void startNew(text),
-    openItem: (item) => void openItem(item),
+    openItem: (item, typed) => void openItem(item, typed),
     dismiss: (item) => settle("attention.dismiss", { id: item.id }, "not dismissed"),
-    answer: (item, text) => settle("attention.answer", { id: item.id, text }, "not answered"),
+    // Never a login: an answer goes to a model, and what is typed for a
+    // login is a password -- its masked field opens instead.
+    answer: (item, text) => {
+      if (item.kind !== "login" && item.kind !== "addCluster") {
+        return settle("attention.answer", { id: item.id, text }, "not answered")
+      }
+      void openItem(item)
+      return Promise.resolve(false)
+    },
     draft: () => composer.value(),
     setDraft: (text) => (text ? composer.setText(text) : composer.clear()),
     say,
   })
   viewOpen = () => agents.state.open
+  // -- /clusters, /jobs and the login field ----------------------------------------
+  const clusters = createClustersView({
+    request: (method, params) => props.client.request(method, params),
+    keymap: props.keymap,
+    say,
+    login: (row) => login.open(row),
+    add: () => addForm.open(),
+    pinKey: (row) => addForm.openPin(row.name),
+    serviceVersion: () => store.state.serviceVersion,
+    pollMs: props.clustersPollMs,
+  })
+  const addForm = createAddForm({
+    request: (method, params) => props.client.request(method, params),
+    keymap: props.keymap,
+    say,
+    // Added: /clusters asks again; with its key pinned, its login field.
+    added: (name, pinned) => {
+      clusters.refresh()
+      if (pinned) login.openFor(name)
+    },
+  })
+  const login = createLogin({
+    request: (method, params) => props.client.request(method, params),
+    keymap: props.keymap,
+    say,
+    loggedIn: () => clusters.refresh(),
+  })
+  /** Whether the service answers the screens (and logins); else it says so. */
+  const canShow = (screen: Screen): boolean => {
+    if (store.state.serviceVersion >= CLUSTERS_SERVICE_VERSION) return true
+    say(`the agent service is too old for /${screen}; restart it`)
+    return false
+  }
   // The swarm view (SW2b): the window's own, over the service's swarm.*
   // requests. It has the footer while it is open (the agents view's
   // pattern), and its keys there too.
@@ -561,6 +702,8 @@ export function App(props: AppProps): JSX.Element {
   const watch = createSwarmWatch({
     keymap: props.keymap,
     now: () => Date.now() / 1000,
+    // The envelope unwrapped here, like askTriage's: the request returns
+    // { rows: [...] } (protocol.py), the watch state holds the rows.
     askOverview: () => props.client.request("swarm.observe.overview",
       { sourcePath: watchSource }).then((r) => (r as any)?.rows ?? []) as never,
     askFeed: (name) => props.client.request("swarm.observe.feed", { session: name })
@@ -569,10 +712,10 @@ export function App(props: AppProps): JSX.Element {
     draft: () => composer.value(),
   })
   const watchOpen = () => watch.state.open
-  // The alternate screen, while the view is open.
+  // The alternate screen, while the view or a screen is open.
   createEffect(() => {
     if (!props.agentScreen) return
-    if (agents.state.open) void props.agentScreen.enter()
+    if (agents.state.open || clusters.state.open) void props.agentScreen.enter()
     else props.agentScreen.leave()
   })
   // A peeked session that moves on is peeked again (at most twice a second).
@@ -710,32 +853,30 @@ export function App(props: AppProps): JSX.Element {
       .filter((c) => c.value)
       .map((c) => ({ label: c.value, detail: c.detail, value: `${command} ${c.value}`, current: c.value === got.current }))
   }
-  const age = (secs: number) => {
-    const d = Math.max(0, Date.now() / 1000 - secs)
-    return d < 3600 ? `${Math.round(d / 60)}m ago` : d < 86400 ? `${Math.round(d / 3600)}h ago` : `${Math.round(d / 86400)}d ago`
-  }
   /** Where each listed session works (a saved one is started there). */
   const workspaces = new Map<string, string>()
-  /** The sessions running in the service first, then the saved ones of
-   *  this workspace (the resume picker, `/resume `'s menu). */
-  const resumeRows = (s: SessionState) => Promise.all([
+  /** The sessions the service runs first, then the sleeping and the saved
+   *  ones of `workspace`, each group newest first (entry.ts resumeRowsOf:
+   *  the resume picker, `/resume `'s menu). */
+  const resumeRows = (workspace: string, currentId: string) => Promise.all([
     props.client.request("sessions.list", {}).catch(() => ({ sessions: [] })),
-    props.client.request("sessions.past", { workspace: s.workspace, limit: 50 }),
+    props.client.request("sessions.past", { workspace, limit: 50 }),
   ]).then(([listed, past]) => {
-    const running = ((listed?.sessions ?? []) as any[]).map((r) => ({
-      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
-      detail: ["running here", r.state, r.model, String(r.sessionId).slice(0, 8)].filter(Boolean).join(" · "),
-      current: r.sessionId === s.id,
-    }))
-    const saved = ((past?.sessions ?? []) as any[]).filter((r) => !r.running).map((r) => ({
-      id: String(r.sessionId), workspace: String(r.workspace ?? ""), title: String(r.title || "(untitled)"),
-      detail: [age(r.updatedAt), r.model, `${r.messages} messages`, String(r.sessionId).slice(0, 8)]
-        .filter(Boolean).join(" · "),
-      current: false,
-    }))
-    for (const r of [...running, ...saved]) workspaces.set(r.id, r.workspace)
-    return [...running, ...saved]
+    const rows = resumeRowsOf((listed?.sessions ?? []) as unknown[], (past?.sessions ?? []) as unknown[], currentId)
+    for (const r of rows) workspaces.set(r.id, r.workspace)
+    return rows
   })
+  /** The resume picker: type to filter (title, folder, id), ↑ ↓, enter
+   *  opens, esc closes. */
+  const openResumePicker = (workspace: string, currentId: string, title: string,
+                            onPick: (id: string, workspace: string) => void, onCancel?: () => void) => {
+    picker.open(title, resumeRows(workspace, currentId).then((rows) => rows.map((r) => ({
+      label: r.title, detail: r.detail, search: r.search, value: `${r.id}\t${r.workspace}`, current: r.current,
+    }))), (c) => {
+      const [id, ws] = c.value.split("\t")
+      if (id) onPick(id, ws ?? "")
+    }, undefined, onCancel)
+  }
   /** What may follow a command on the prompt: the window's own commands
    *  here, the session's from session.choices ("args"). */
   const argumentChoices = async (command: string): Promise<ArgumentChoices> => {
@@ -744,7 +885,7 @@ export function App(props: AppProps): JSX.Element {
     if (command === "/name") return { current: "", choices: [], usage: "/name [name]  (no name: folder and short id)" }
     if (command === "/resume") {
       if (!s) return { current: "", choices: [], usage: "" }
-      const rows = await resumeRows(s)
+      const rows = await resumeRows(s.workspace, s.id)
       return { current: s.id, usage: "/resume <session id>",
                choices: rows.map((r) => ({ value: r.id, label: r.title, detail: r.detail })) }
     }
@@ -775,14 +916,16 @@ export function App(props: AppProps): JSX.Element {
         })
         return
       case "resume":
-        picker.open("resume a session", resumeRows(s).then((rows) => rows.map((r) => ({
-          label: r.title, detail: r.detail, value: `${r.id}\t${r.workspace}`, current: r.current,
-        }))), (c) => {
-          const [id, workspace] = c.value.split("\t")
-          if (id && id !== sid()) props.onResume?.(id, workspace ?? "")
+        openResumePicker(s.workspace, s.id, "resume a session", (id, workspace) => {
+          if (id !== sid()) props.onResume?.(id, workspace)
         })
         return
     }
+  }
+  // `--resume` without an id: the picker before any session.
+  if (props.resumeAtStart) {
+    const at = props.resumeAtStart
+    openResumePicker(at.workspace, "", "resume a session · esc starts a new one", at.onPick, at.onCancel)
   }
   const openPalette = () => {
     const actions: Choice[] = [
@@ -792,6 +935,8 @@ export function App(props: AppProps): JSX.Element {
       { label: "mode…", detail: "the agent mode", value: "pick:mode" },
       { label: "resume…", detail: "a saved session, in this window", value: "pick:resume" },
       { label: "rename…", detail: "name this session (/rename)", value: "type:/rename" },
+      { label: "clusters…", detail: "DELFIN's clusters; log in to one (/clusters)", value: "run:/clusters" },
+      { label: "jobs…", detail: "what runs in the background (/jobs)", value: "run:/jobs" },
       { label: props.thinking?.() ? "hide thinking" : "show thinking", detail: "the model's thinking, dimmed", value: "do:thinking" },
       ...(props.canShowDetails?.() === false ? [] : [{ label: props.details?.() ? "hide tool details" : "show tool details",
         detail: props.keymap.label("details"), value: "do:details" }]),
@@ -961,6 +1106,29 @@ export function App(props: AppProps): JSX.Element {
     const s = session()
     const km = props.keymap
     const asked = s?.pending[0]
+    // The login field has every key while it is open: what is typed there
+    // is a password, for its one cluster.login -- never the prompt, a
+    // question's answer or an item's.
+    if (login.state.open) {
+      key.preventDefault()
+      login.handleKey(key)
+      return
+    }
+    // The add form too: what is typed there is a cluster's entry, sent only
+    // as the form's one cluster.add.
+    if (addForm.state.open) {
+      key.preventDefault()
+      addForm.handleKey(key)
+      return
+    }
+    // A screen has the keys as a picker has (ctrl+c leaves it too).
+    if (clusters.state.open) {
+      key.preventDefault()
+      if (key.ctrl && key.name === "c") clusters.close()
+      else if (km.matches("quit", key) && !draft()) props.onQuit()
+      else clusters.handleKey(key)
+      return
+    }
     if (props.screen) {
       // The conversation's own scroll keys (a drag copies on release, so
       // ctrl+c keeps its ladder).
@@ -1164,14 +1332,18 @@ export function App(props: AppProps): JSX.Element {
       offerYes={BYPASS_YES}
       onOfferClick={() => void clickOffer()}
       agents={agents}
+      clusters={clusters}
+      login={login}
+      addForm={addForm}
       swarm={swarm}
+      watch={watch}
       agentsOnOwnScreen={Boolean(props.agentScreen)}
       attention={attention}
       others={others}
       onOthersClick={() => {
         if (!agents.state.open) agents.open()
       }}
-      focused={() => !picker.state.open}
+      focused={() => !picker.state.open && !login.state.open && !addForm.state.open && !clusters.state.open}
       screen={props.screen}
       scrollRef={(box) => { scrollBox = box }}
       onUserScroll={() => { userScrolled = true }}

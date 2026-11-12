@@ -4768,6 +4768,35 @@ def cmd_compare_arms(args: argparse.Namespace) -> int:
     return _pc.exit_code(verdict)
 
 
+def cmd_friction(args: argparse.Namespace) -> int:
+    """Where real use lost turns and time since ``--since``, ranked, with a
+    proposed task per bucket (friction_report). Read only, except that
+    ``--save`` keeps the day's JSON under ~/.delfin/friction/ and shows the
+    change against the last saved day."""
+    import json as _json
+    import time as _time
+
+    from . import friction_report as _fr
+    from . import round_report as _rpt
+    try:
+        since_s = _rpt.parse_since(getattr(args, "since", "") or "24h")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    data = _fr.collect(since_s=since_s)
+    if getattr(args, "json", False):
+        print(_json.dumps(data, indent=1))
+        return 0
+    save_dir = Path.home() / ".delfin" / "friction"
+    previous = _fr.previous_report(
+        save_dir,
+        _time.strftime("%Y-%m-%d", _time.gmtime(data["generated_s"])))
+    print(_fr.render_text(data, previous))
+    if getattr(args, "save", False):
+        print(f"\nsaved: {_fr.save(data, save_dir)}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -4877,6 +4906,20 @@ def _route_argv(argv: list[str], known: frozenset[str]) -> list[str]:
         return ["chat"]
     if argv[0] in known or argv[0] in ("-h", "--help", "--version"):
         return list(argv)
+    # A single bare word one or two letters away from a subcommand is a
+    # typo, not a prompt: `delfin-agent stauts` started a billed chat
+    # titled "stauts". As git, gh and kubectl do: say so, offer the
+    # command, exit 2. A prompt of that one word still goes through
+    # `delfin-agent chat <word>` or -p.
+    if len(argv) == 1 and not argv[0].startswith("-") and len(argv[0]) >= 3:
+        import difflib
+        close = difflib.get_close_matches(argv[0], sorted(known), n=1, cutoff=0.75)
+        if close:
+            print(f"delfin-agent: '{argv[0]}' is not a command. Did you mean "
+                  f"'{close[0]}'?\nTo ask the agent that word, use "
+                  f"`delfin-agent chat {argv[0]}` or `delfin-agent -p {argv[0]}`.",
+                  file=sys.stderr)
+            raise SystemExit(2)
     return ["chat", *argv]
 
 
@@ -4960,6 +5003,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="delfin-agent",
         description="The .delfin agent, in a terminal",
     )
+    from delfin import __version__ as _delfin_version
+    p.add_argument("--version", action="version",
+                   version=f"%(prog)s {_delfin_version}",
+                   help="Print the DELFIN version and exit")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     # chat — the implicit subcommand a bare `delfin-agent` routes to
@@ -5471,6 +5518,17 @@ def build_parser() -> argparse.ArgumentParser:
                           "add <slug> <text>")
     kno.set_defaults(func=cmd_knowledge)
 
+    # messenger -- the person's phone pairing (SimpleX), and the admin's
+    # listing and revocation (delfin/messenger/pairing.py cli_main)
+    msg = sub.add_parser(
+        "messenger",
+        help="Phone pairing: pair | phones | unpair LABEL|all; admin: people | "
+             "revoke NAME")
+    msg.add_argument("words", nargs=argparse.REMAINDER,
+                     help="pair | phones | unpair LABEL|all | people | revoke NAME")
+    msg.set_defaults(func=lambda a: __import__(
+        "delfin.messenger.pairing", fromlist=["cli_main"]).cli_main(a.words))
+
     # lab — device control behind the safety kernel (delfin/lab/cli.py)
     lab_p = sub.add_parser(
         "lab", help="Lab devices: e-stop, approvals, manifest, daemons "
@@ -5686,11 +5744,11 @@ def build_parser() -> argparse.ArgumentParser:
     # swarm -- build and run agent swarms (package SW1). The body lives
     # in cli_swarm.py, owned and tested there; this is the only hunk in
     # cli.py (same pattern as the prcheck subcommand).
-    from .cli_swarm import main as _swarm_main
+    from .cli_swarm import configure_parser as _swarm_configure
     _swarm_p = sub.add_parser(
         "swarm",
         help="Build and run agent swarms (init/plan/start/status)")
-    _swarm_p.set_defaults(func=_swarm_main)
+    _swarm_configure(_swarm_p)
 
     pins_p = sub.add_parser(
         "mcp-pins",
@@ -5786,6 +5844,21 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Print the SessionReport as JSON instead of "
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
+
+    # friction — ranked refusals, slow turns and silent exits, with tasks
+    fric = sub.add_parser(
+        "friction",
+        help="Where real use lost turns and time, ranked, with a proposed "
+             "task per bucket (read only)")
+    fric.add_argument("--since", default="24h",
+                      help="Window start: 24h / 3d / 2026-11-12 "
+                           "(default 24h)")
+    fric.add_argument("--json", action="store_true",
+                      help="Print the report as JSON")
+    fric.add_argument("--save", action="store_true",
+                      help="Keep the report under ~/.delfin/friction/ and "
+                           "compare with the last saved day")
+    fric.set_defaults(func=cmd_friction)
 
     # provenance / compare-arms -- a paired comparison of two runs that
     # refuses skewed pairs and null tests (paired_compare.py). Read only.
@@ -6292,7 +6365,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="end: let a running turn finish first (without it, the turn "
                           "is stopped at its next safe point, as ctrl+x twice does)")
     svc.add_argument("--yes", "-y", action="store_true",
-                     help="end: without asking (for scripts)")
+                     help="end, stop, restart: without asking (for scripts)")
     svc.add_argument("--json", action="store_true",
                      help="status: as JSON, for scripts")
     svc.add_argument("--lines", type=int, default=40,

@@ -269,7 +269,31 @@ _BASELINE_TOKENS = 11_422
 # 10_598 -> 10_922. Rejected: one `lab` tool with an action enum (a single
 # schema whose arguments change meaning by action is the shape models
 # mis-call most; the refusal reasons are per-tool).
-_TOKEN_BUDGET = 10_922
+# read_file `paths` (2026-11-11): several files in one call, because the
+# measured model sends one tool call per request 91 % of the time, so each
+# further file read cost a full model round trip. The property costs 27
+# tokens (14 structure, 13 its one-clause text); 10 were returned by
+# dropping the `path` description ("Relative or absolute."), which the
+# tool description already says. Main measured 10_922; the budget moves +17, to 10_939.
+# Rejected: a separate read_files tool (a whole second schema, ~60 tokens,
+# and a second spelling every read gate would have to learn).
+# 2026-10-21: the seven cluster tools (delfin/agent/cluster_tools.py:
+# status, read, fetch, upload, submit, cancel, run), +641. They are
+# advertised only when remote.clusters names a cluster
+# (tool_unavailable_reason), so a session without one pays nothing; a
+# session with one gets the agent's whole way to its clusters. Trimmed
+# before measuring -- descriptions shortened, the batch item's name dropped
+# (a job is named after its folder) -- 689 -> 641. Measured on 10_229 then;
+# merged onto main's 10_939 on 2026-11-12, measured 11_580 (+641).
+# cluster_propose (2026-11-12): an agent proposes a cluster, which opens
+# the window's add form filled in (delfin.remote.setup.propose). Advertised
+# with or without a cluster, since a cluster is proposed before any is
+# configured -- so every request pays it: one clause of description, bare
+# string properties, only `name` required. Measured +95, 11_580 -> 11_675.
+# Rejected: a `propose` action on cluster_status (advertised only with a
+# cluster, the moment it is least needed) and a NEEDS YOU item the agent
+# words itself (the form's fields are what the person must check).
+_TOKEN_BUDGET = 11_675
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
@@ -281,6 +305,8 @@ _POST_COMPACTION_TOOLS = frozenset({
     "fill_series", "merge_pdfs", "split_pdf", "create_pdf", "draft_email",
     "session_message", "session_search", "skill_propose_patch",
     "subagent_message", "show_molecule", "make_plot", "skill_share",
+    "cluster_status", "cluster_read", "cluster_fetch", "cluster_upload",
+    "cluster_submit", "cluster_cancel", "cluster_run", "cluster_propose",
     "verify_source",
     "orca_explain", "orca_check_input", "workflow_candidates",
     "lab_devices", "lab_read", "lab_set", "lab_plan_check", "lab_estop",

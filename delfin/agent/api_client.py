@@ -11,6 +11,7 @@ import importlib
 import itertools
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -196,6 +197,46 @@ _CLAUDE_CLI_KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
                     "CLAUDE_CODE_OAUTH_TOKEN")
 _CODEX_CLI_KEYS = ("OPENAI_API_KEY", "CODEX_API_KEY")
 
+# What the Claude CLI answers instead of a turn when it has no usable
+# login: "Not logged in · Please run /login", "Invalid API key · Please run
+# /login", an expired or revoked OAuth token. It arrives as the turn's
+# result text, so it used to be shown as the model's answer and a headless
+# run exited 0 with an empty error (bug hunt 11.11.2026, #6).
+_CLI_LOGIN_MARKERS = (
+    "Not logged in", "Please run /login", "Invalid API key",
+    "OAuth token has expired", "OAuth token revoked",
+)
+
+
+def _cli_login_failure(text: str, *, is_error: bool) -> bool:
+    """True when *text* is the Claude CLI's own no-login answer.
+
+    Short and either flagged ``is_error`` or naming ``/login``: a model
+    answer that merely mentions logging in is neither."""
+    text = str(text or "").strip()
+    if not text or len(text) > 400:
+        return False
+    if not (is_error or "/login" in text):
+        return False
+    return any(marker in text for marker in _CLI_LOGIN_MARKERS)
+
+
+def _cli_login_message(said: str) -> str:
+    """The error for a Claude CLI without a login, with DELFIN's fixes.
+
+    ``/login`` is a command of the interactive Claude CLI, not of DELFIN;
+    the message says where to run it, and names the API backend, which
+    reads the key DELFIN's own credential store holds."""
+    said = " ".join(str(said or "").split())[:200]
+    # The fix comes first: the dashboard shows the first 200 characters.
+    return (
+        "Not logged in: the `claude` CLI of DELFIN's claude provider "
+        "has no login here. Fix: run `claude` in a terminal, do its "
+        "/login; or `delfin-agent credentials set ANTHROPIC_API_KEY` and "
+        "--backend api."
+        + (f" (claude said: {said})" if said else "")
+    )
+
 
 def _cli_backend_env(own_keys: tuple[str, ...]) -> dict:
     """The environment for an external agent CLI: the shell's scrubbed
@@ -219,6 +260,7 @@ _CLI_SECRET_PATTERNS: tuple[str, ...] = (
     "**/.aws/credentials", "~/.aws/credentials", "**/.npmrc", "**/.pypirc",
     "**/.pgpass", "~/.kube/**", "~/.docker/config.json",
     "~/.delfin/credentials.json", "~/.delfin/trust_store/**",
+    "~/.config/cluster-tunnel/**", "~/.cache/cluster-tunnel/**",
     "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
 )
 
@@ -641,8 +683,18 @@ class CLIClient(_BaseClient):
                         tool_name=str(denial),
                     )
 
+                result_text = data.get("result", "")
+                if not emitted_text and _cli_login_failure(
+                        result_text, is_error=bool(data.get("is_error"))):
+                    # No turn ran: an error, not an answer. The process is
+                    # retired so the next send starts one that sees a
+                    # login made in the meantime.
+                    try:
+                        self.kill()
+                    except Exception:
+                        self._proc = None
+                    raise RuntimeError(_cli_login_message(result_text))
                 if not emitted_text:
-                    result_text = data.get("result", "")
                     if result_text:
                         yield StreamEvent(type="text_delta", text=result_text)
 
@@ -672,10 +724,7 @@ class CLIClient(_BaseClient):
             if rc != 0:
                 stderr = proc.stderr.read() if proc.stderr else ""
                 if "Not logged in" in stderr:
-                    raise RuntimeError(
-                        "Agent CLI is not logged in. "
-                        "Run 'claude' in a terminal and complete login first."
-                    )
+                    raise RuntimeError(_cli_login_message(""))
                 if stderr.strip():
                     raise RuntimeError(
                         f"CLI backend error (exit {rc}): {stderr.strip()[:500]}"
@@ -7352,6 +7401,7 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
     "geometry_merge", "geometry_freeze", "geometry_constraints_block",
     "geometry_build_smiles", "geometry_write_orca_block",
+    "geometry_renumber", "geometry_fix_hydrogens", "geometry_diff",
     # trajectory_xyz (2026-11-03): ORCA output -> multi-frame xyz text;
     # pure parse, no write.
     "trajectory_xyz",
@@ -7390,7 +7440,7 @@ _DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
 _PLAN_MODE_TASK_REJECT = (
     "plan mode (read-only) — creating or starting tasks is blocked while "
     "planning. Present the plan in chat and call exit_plan_mode to submit it "
-    "for approval (the user can also click 'Plan akzeptieren & ausführen' or "
+    "for approval (the user can also click 'Accept plan & execute' or "
     "switch the mode chip to 'acceptEdits'). Tasks are created once the plan "
     "is approved."
 )
@@ -7863,6 +7913,7 @@ def _no_sandbox_refusal(name: str) -> str:
 _PLAN_READONLY_TOOLS: frozenset[str] = frozenset({
     # Reading the world
     "read_file", "grep_file", "list_files", "find_definition",
+    "cluster_status", "cluster_read",
     "find_references", "notebook_read", "view_image", "read_document",
     "compare_tables", "sum_column", "list_docs", "list_sections",
     "read_section",
@@ -8141,6 +8192,189 @@ def _with_calculation_note(result: str, notes: list) -> str:
     return json.dumps(data)
 
 
+#: Basis functions per neutral atom, counted by ORCA 6.1.1 ('Number of
+#: basis functions', spherical).  Source: the operator's count from ORCA
+#: 6.1.1 itself (def2 definition, Weigend/Ahlrichs 2005,
+#: doi:10.1039/b508541a; counts checked H2O SVP 24, TZVP 43, CH4 SVP 34).
+#: Elements beyond Kr use ECPs in def2 and are NOT in this table: an
+#: element or basis outside it gives no budget (None) -- never a guess.
+_BASIS_FUNCTION_COUNTS: dict[str, dict[str, int]] = {
+    "H": {"def2-SVP": 5, "def2-TZVP": 6},
+    "He": {"def2-SVP": 5, "def2-TZVP": 6},
+    "Li": {"def2-SVP": 9, "def2-TZVP": 14},
+    "Be": {"def2-SVP": 9, "def2-TZVP": 19},
+    "B": {"def2-SVP": 14, "def2-TZVP": 31},
+    "C": {"def2-SVP": 14, "def2-TZVP": 31},
+    "N": {"def2-SVP": 14, "def2-TZVP": 31},
+    "O": {"def2-SVP": 14, "def2-TZVP": 31},
+    "F": {"def2-SVP": 14, "def2-TZVP": 31},
+    "Ne": {"def2-SVP": 14, "def2-TZVP": 31},
+    "Na": {"def2-SVP": 15, "def2-TZVP": 32},
+    "Mg": {"def2-SVP": 18, "def2-TZVP": 32},
+    "Al": {"def2-SVP": 18, "def2-TZVP": 37},
+    "Si": {"def2-SVP": 18, "def2-TZVP": 37},
+    "P": {"def2-SVP": 18, "def2-TZVP": 37},
+    "S": {"def2-SVP": 18, "def2-TZVP": 37},
+    "Cl": {"def2-SVP": 18, "def2-TZVP": 37},
+    "Ar": {"def2-SVP": 18, "def2-TZVP": 37},
+    "K": {"def2-SVP": 24, "def2-TZVP": 33},
+    "Ca": {"def2-SVP": 24, "def2-TZVP": 36},
+    "Sc": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Ti": {"def2-SVP": 31, "def2-TZVP": 45},
+    "V": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Cr": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Mn": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Fe": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Co": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Ni": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Cu": {"def2-SVP": 31, "def2-TZVP": 45},
+    "Zn": {"def2-SVP": 31, "def2-TZVP": 48},
+    "Ga": {"def2-SVP": 32, "def2-TZVP": 48},
+    "Ge": {"def2-SVP": 32, "def2-TZVP": 48},
+    "As": {"def2-SVP": 32, "def2-TZVP": 48},
+    "Se": {"def2-SVP": 32, "def2-TZVP": 48},
+    "Br": {"def2-SVP": 32, "def2-TZVP": 48},
+    "Kr": {"def2-SVP": 32, "def2-TZVP": 48},
+}
+
+
+def _budget_basis_functions(symbols: list, basis_name: str) -> "int | None":
+    """Summed per-element counts from the ORCA 6.1.1 table, or None.
+
+    The basis name is matched case-blind against the table's families
+    (``def2-SVP``/``def2-TZVP``); a name the table does not carry (another
+    family, a recontracted variant, a basis on an element beyond Kr) is
+    not guessed: the caller then grants no budget.
+
+    EXACT family match after normalisation, never a prefix: the
+    recontracted/heavier variants (def2-SVPD, def2-TZVPD, def2-TZVPP)
+    carry more basis functions than the family they start with, so a
+    prefix match would UNDER-estimate a runaway calculation -- the
+    wrong direction for a budget guard (reviewer finding F-A, v5).
+    """
+    b = (basis_name or "").strip().lower().replace("_", "-")
+    if b == "def2-svp":
+        column = "def2-SVP"
+    elif b == "def2-tzvp":
+        column = "def2-TZVP"
+    else:
+        return None
+    table = _BASIS_FUNCTION_COUNTS
+    total = 0
+    for s in symbols:
+        per = table.get(s)
+        if per is None:
+            return None
+        total += per[column]
+    return total
+
+
+def _budget_partitions() -> list:
+    """The partitions DELFIN's submit path would use, in its own order.
+
+    Same source the ops submit reads: ``slurm_submit.configured_partitions``
+    (``runtime.slurm.partitions`` in the settings, else the env, else the
+    site profile).  The estimate asks the FIRST candidate -- the same
+    earliest-start rule the submit path applies first.
+    """
+    try:
+        from delfin.slurm_submit import configured_partitions
+        found = list(configured_partitions())
+    except Exception:
+        found = []
+    return found
+
+
+def _session_budget_verdict_args(folder: Path) -> tuple:
+    """The session Budget and the job dict for ``judge_delfin_submission``.
+
+    The budget is the user's own setting (``agent.
+    calculation_budget_core_hours`` core-hours in DELFIN's user settings
+    file ``~/.delfin_settings.json``, user_settings.py:16/518, read
+    through DELFIN's settings loader under the redirected home).  The
+    key is opt-in: absent or unreadable -> ``(None, None)`` and the verdict
+    is exactly what it was without BG1.
+
+    The job dict comes from the folder's own CONTROL.txt and geometry, read
+    with DELFIN's readers (``check_delfin_control``'s CONTROL parse and
+    ``geometry_text_symbols``).  Basis functions are summed per element
+    from the ORCA 6.1.1 count table (``_BASIS_FUNCTION_COUNTS``); an
+    element/basis outside the table, or a job whose size cannot be read,
+    gets NO budget (None) -- never a guess -- and the skip is logged with
+    its reason, because a user who set a budget must see it was not
+    applied.  The partition is the first of DELFIN's configured partitions
+    (the submit path's own source), not a hard-coded name.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from delfin import user_settings
+        from delfin.agent import calc_budget
+        limit = float((user_settings.load_settings().get("agent") or {})
+                      .get("calculation_budget_core_hours") or 0)
+        if limit <= 0:
+            logger.warning("calculation_budget: no budget set (limit=%r) "
+                           "for %s", limit, folder)
+            return None, None
+        from delfin.agent import calc_policy as _cp
+        text = (Path(folder) / "CONTROL.txt").read_text(
+            encoding="utf-8", errors="replace")
+        cores, _mc, problem = _cp.check_delfin_control(text, Path(folder))
+        if problem or cores <= 0:
+            logger.warning("calculation_budget skipped for %s: CONTROL "
+                           "problem: %s", folder, problem)
+            return None, None
+        try:
+            from delfin.config import parse_control_text
+            cfg = parse_control_text(text)
+        except Exception as exc:
+            logger.warning("calculation_budget skipped for %s: CONTROL "
+                           "cannot be parsed: %s", folder, exc)
+            return None, None
+        smiles = str(cfg.get("SMILES") or "").strip()
+        name = str(cfg.get("input_file") or "input.txt").strip()
+        geometry_text = smiles
+        if not geometry_text:
+            try:
+                geometry_text = _cp._resolve(Path(folder), name).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError as exc:
+                logger.warning("calculation_budget skipped for %s: geometry "
+                               "%s unreadable: %s", folder, name, exc)
+                return None, None
+        symbols = _cp.geometry_text_symbols(geometry_text)
+        if not symbols:
+            logger.warning("calculation_budget skipped for %s: geometry "
+                           "format not readable", folder)
+            return None, None
+        basis_functions = _budget_basis_functions(
+            symbols, str(cfg.get("main_basisset") or ""))
+        if basis_functions is None:
+            logger.warning(
+                "calculation_budget skipped for %s: element/basis outside "
+                "the ORCA 6.1.1 count table (basis %r)", folder,
+                str(cfg.get("main_basisset") or ""))
+            return None, None
+        partitions = _budget_partitions()
+        job = {
+            "n_atoms": len(symbols),
+            "basis_functions": basis_functions,
+            "method": str(cfg.get("functional") or cfg.get("method") or ""),
+            "partition": partitions[0] if partitions else "",
+            "pal": int(cfg.get("PAL") or cores),
+            "maxcore": int(cfg.get("maxcore") or 0),
+        }
+        return calc_budget.Budget(limit_core_hours=limit), job
+    except Exception as exc:
+        # The budget never blocks a submission it could not size: the
+        # existing setup/resource checks decide alone (and refuse what
+        # they must).  Opt-out stays, but never silently: the user who
+        # set a budget sees why it was not applied.
+        logger.warning("calculation_budget skipped for %s: %s: %s",
+                       folder, type(exc).__name__, exc)
+        return None, None
+
+
 def _mcp_calculation_verdict(base: str, args: dict):
     """calc_policy's verdict for an ops tool that starts a calculation.
 
@@ -8165,10 +8399,13 @@ def _mcp_calculation_verdict(base: str, args: dict):
             return calc_policy.judge_orca_run(Path(str(a["input_file"])))
         if base == "submit_calculation" and str(a.get("mode") or "delfin") \
                 == "delfin":
+            folder_path = Path(str(a.get("folder") or ""))
+            budget, job = _session_budget_verdict_args(folder_path)
             return calc_policy.judge_delfin_submission(
-                Path(str(a.get("folder") or "")), int(a.get("pal") or 12),
+                folder_path, int(a.get("pal") or 12),
                 int(a.get("maxcore") or 6000),
-                str(a.get("time_limit") or "12:00:00"))
+                str(a.get("time_limit") or "12:00:00"),
+                budget=budget, job=job)
         if base == "pipeline_run":
             control = Path(str(a.get("control_file") or "CONTROL.txt"))
             if (a.get("define") or a.get("extra_args") or a.get("overwrite")
@@ -8741,13 +8978,28 @@ _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     # The account key and the pins beside it (trust_store): DELFIN's own
     # processes outside agent sessions read them, no agent route does.
     "trust_store", "trust_store/**", "**/trust_store", "**/trust_store/**",
+    # cluster-tunnel's config (ssh options and budget scripts DELFIN's own
+    # process uses, pinned host keys) and cache (the control sockets of the
+    # logged-in masters, the sessions with their budget limit): no agent
+    # route reads or writes them (delfin.remote). With the parent's name,
+    # so a checkout of the cluster-tunnel repository stays ordinary.
+    ".config/cluster-tunnel", ".config/cluster-tunnel/**",
+    "**/.config/cluster-tunnel", "**/.config/cluster-tunnel/**",
+    ".cache/cluster-tunnel", ".cache/cluster-tunnel/**",
+    "**/.cache/cluster-tunnel", "**/.cache/cluster-tunnel/**",
     "messenger_sessions", "messenger_sessions/**",
     "**/messenger_sessions", "**/messenger_sessions/**",
+    # Phone pairing requests and answers (delfin.messenger.pairing).
+    "messenger_pairing", "messenger_pairing/**",
+    "**/messenger_pairing", "**/messenger_pairing/**",
     # The user's schedules: written and confirmed by the user only.
     "user_schedules", "user_schedules/**",
     "**/user_schedules", "**/user_schedules/**",
     "workspace_profiles.json", "workspace_profiles.json/**",
     "**/workspace_profiles.json", "**/workspace_profiles.json/**",
+    # The rootless messenger's state and units (delfin.messenger.rootless).
+    "**/.local/share/delfin-messenger", "**/.local/share/delfin-messenger/**",
+    "**/systemd/user/delfin-messenger-*.service",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -11539,7 +11791,6 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative or absolute.",
                     },
                     "offset": {
                         "type": "integer",
@@ -11552,6 +11803,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "around": {
                         "type": "string",
                         "description": "Regex; ±10 lines around its match.",
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Up to 4 more files; same options.",
                     },
                 },
                 "required": ["path"],
@@ -13070,7 +13326,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "push_notification",
             "description": (
-                "Send a local desktop notification. Use sparingly."
+                "Notify the user (desktop, phone). Use sparingly."
             ),
             "parameters": {
                 "type": "object",
@@ -13752,6 +14008,155 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    # DELFIN's HPC clusters (delfin/agent/cluster_tools.py): advertised only
+    # when remote.clusters names one (tool_unavailable_reason).
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_status",
+            "description": (
+                "DELFIN's HPC clusters: login, budget, problems; with cluster, "
+                "its jobs and DELFIN install."
+            ),
+            "parameters": {"type": "object",
+                           "properties": {"cluster": {"type": "string"}}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_read",
+            "description": (
+                "Read a cluster file (first 64 KB, or last tail lines) or list "
+                "a folder; asked outside DELFIN's work dir."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "path": {"type": "string"},
+                               "tail": {"type": "integer"}},
+                "required": ["cluster", "path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_fetch",
+            "description": (
+                "Copy a cluster file or folder into the workspace (dest), at "
+                "most 200 MB."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "path": {"type": "string"},
+                               "dest": {"type": "string"}},
+                "required": ["cluster", "path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_upload",
+            "description": (
+                "Copy workspace files to a folder under the cluster's work dir "
+                "(dest). Asked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "src": {"type": "string"},
+                               "dest": {"type": "string"}},
+                "required": ["cluster", "src"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_submit",
+            "description": (
+                "Submit DELFIN workflows (folder: input.txt, CONTROL.txt) or "
+                "ORCA runs (input: .inp) as one batch; resources default from "
+                "those files. Asked."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cluster": {"type": "string"},
+                    "jobs": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "folder": {"type": "string"},
+                            "kind": {"type": "string", "enum": ["delfin", "orca"]},
+                            "input": {"type": "string"},
+                            "cores": {"type": "integer"},
+                            "mem_gb": {"type": "number"},
+                            "time": {"type": "string"},
+                            "partition": {"type": "string"},
+                        },
+                        "required": ["folder"],
+                    }},
+                },
+                "required": ["cluster", "jobs"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_cancel",
+            "description": "Cancel your queued or running jobs on a cluster. Asked.",
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "job_ids": {"type": "array",
+                                           "items": {"type": "string"}}},
+                "required": ["cluster", "job_ids"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_run",
+            "description": (
+                "Run one command on a cluster's login node (no job submission: "
+                "cluster_submit). Asked every time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"cluster": {"type": "string"},
+                               "command": {"type": "string"},
+                               "timeout": {"type": "integer"}},
+                "required": ["cluster", "command"],
+            },
+        },
+    },
+    # Advertised with or without a cluster (one is proposed before any is
+    # configured): the person checks and sends the window's form; the tool
+    # writes no setting (delfin.remote.setup.propose).
+    {
+        "type": "function",
+        "function": {
+            "name": "cluster_propose",
+            "description": (
+                "Propose a cluster for DELFIN: opens the user's add form "
+                "filled in; writes nothing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"},
+                               "preset": {"type": "string"},
+                               "user": {"type": "string"},
+                               "host": {"type": "string"},
+                               "partition": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -14067,6 +14472,26 @@ class ToolSurfaceContext:
     # Whether this installation has a lab manifest (delfin.lab). Default
     # True like the index flags; the live surface passes the real answer.
     has_lab: bool = True
+    # Whether remote.clusters names a cluster: the cluster tools have none
+    # to act on otherwise (connection.connect refuses every name).
+    has_clusters: bool = True
+
+
+#: The tools that act on DELFIN's HPC clusters (cluster_tools.py).
+_CLUSTER_TOOL_NAMES: frozenset[str] = frozenset({
+    "cluster_status", "cluster_read", "cluster_fetch", "cluster_upload",
+    "cluster_submit", "cluster_cancel", "cluster_run"})
+
+
+def _clusters_configured() -> bool:
+    """Whether the user's settings name a cluster (remote.clusters)."""
+    try:
+        from delfin.user_settings import load_settings
+        remote = load_settings().get("remote")
+        block = remote.get("clusters") if isinstance(remote, dict) else None
+        return isinstance(block, dict) and bool(block)
+    except Exception:
+        return False
 
 
 def tool_unavailable_reason(
@@ -14133,6 +14558,8 @@ def tool_unavailable_reason(
         elif needed and not any(b in available for b in needed):
             missing = ", ".join(_office_package_names(needed))
             return f"needs a package that is not installed ({missing})"
+    if base in _CLUSTER_TOOL_NAMES and not ctx.has_clusters:
+        return "no cluster is configured (remote.clusters)"
     return None
 
 
@@ -14848,6 +15275,130 @@ def _repair_json_args(raw) -> dict | None:
     if isinstance(val, dict):
         return {str(k): v for k, v in val.items()}
     return None
+
+
+# read_file(paths=[...]): files per call, `path` included. Five covers the
+# measured need (2-5 files read back to back, one request each) and keeps
+# the worst case at five per-file results in one round.
+READ_FILE_MAX_PATHS = 5
+_READ_FILE_PATH_KEYS = ("path", "file_path", "filename", "file", "target")
+
+
+def _read_file_targets(arguments: Any) -> tuple[Optional[list[str]], str]:
+    """The files a read_file call names, when it uses ``paths``.
+
+    Input: read_file's arguments. Output ``(files, error)``:
+    ``(None, "")`` for the single-file form (no ``paths``, or an empty
+    ``paths`` beside a ``path``) -- the caller proceeds unchanged;
+    ``(files, "")`` with the path first (``path`` or an alias, as
+    ``_get_path_arg`` takes it) then ``paths``, duplicates dropped;
+    ``(None, error)`` for a malformed list or more than
+    READ_FILE_MAX_PATHS names. The count is taken before duplicates are
+    dropped: the call is refused for what it asked, not for what was left.
+    """
+    if not isinstance(arguments, dict) or arguments.get("paths") is None:
+        return None, ""
+    raw = arguments.get("paths")
+    first = _DocToolExecutor._get_path_arg(arguments)
+    if (not isinstance(raw, list)
+            or not all(isinstance(p, str) and p.strip() for p in raw)
+            or not (raw or first)):
+        return None, (
+            "read_file: paths must be a list of file paths (strings), "
+            f"at most {READ_FILE_MAX_PATHS} together with path.")
+    if not raw:
+        return None, ""
+    named = ([first] if first else []) + [p.strip() for p in raw]
+    if len(named) > READ_FILE_MAX_PATHS:
+        return None, (
+            f"read_file reads at most {READ_FILE_MAX_PATHS} files per call "
+            f"(path and paths together); this call named {len(named)}. "
+            "Nothing was read -- split it into several calls.")
+    return list(dict.fromkeys(named)), ""
+
+
+def _read_file_single_args(arguments: dict, path: str) -> dict:
+    """One file's arguments out of a several-file read_file call: every
+    other argument (offset, limit, around, ...) applies to each file."""
+    single = {k: v for k, v in arguments.items()
+              if k != "paths" and k not in _READ_FILE_PATH_KEYS}
+    single["path"] = path
+    return single
+
+
+def _split_call_id(call_id: str, k: int, taken: set) -> str:
+    """A tool_call id for the k-th file (k >= 1) of a split call.
+
+    Unique within the round. An id of nine letters and digits (the form
+    Mistral-family chat templates require) gets a derived id of the same
+    form; any other id gets a suffix."""
+    import hashlib
+    salt = 0
+    while True:
+        if re.fullmatch(r"[A-Za-z0-9]{9}", call_id):
+            new = hashlib.sha1(
+                f"{call_id}:{k}:{salt}".encode()).hexdigest()[:9]
+        else:
+            new = f"{call_id}_{k}" + (f"_{salt}" if salt else "")
+        if new not in taken:
+            return new
+        salt += 1
+
+
+def _split_multi_read_calls(
+    tc_list: list[dict], raw_args_by_id: dict[str, str],
+) -> tuple[list[dict], dict[str, str]]:
+    """Every read_file call naming several files, as one call per file.
+
+    Input: the round's tool calls as they go into the assistant message,
+    and the raw argument text per call id. Output: the same lists with
+    each such call replaced by single-file read_file calls (the first
+    keeps the original id). Done before the assistant message is written,
+    so the history, the per-call loop (reread note, read ledger, observed
+    files, verification notes, events) and every executor gate see only
+    the single-file form they already handle; no consumer needs to know
+    ``paths``. A call that is malformed or over the cap is left as it is,
+    and the executor answers it with the error.
+
+    Rejected: joining the files into one result inside the loop. Every
+    per-call mechanism there keys on the call's arguments and its one
+    result row, so each would have needed its own list handling, and a
+    gate written for one spelling misses the other. Cost of the split:
+    the model's history shows N single reads where it emitted one call
+    (same request count, a few bytes of call ids per extra file).
+    """
+    if not any((tc.get("function") or {}).get("name", "").strip()
+               == "read_file" for tc in tc_list):
+        return tc_list, raw_args_by_id
+    taken = {tc["id"] for tc in tc_list}
+    out: list[dict] = []
+    raw_out = dict(raw_args_by_id)
+    for tc in tc_list:
+        fn = tc.get("function") or {}
+        if (fn.get("name") or "").strip() != "read_file":
+            out.append(tc)
+            continue
+        raw = raw_args_by_id.get(tc["id"], fn.get("arguments"))
+        if isinstance(raw, dict):
+            args = raw
+        else:
+            try:
+                args = json.loads(raw or "{}")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                args = _repair_json_args(raw)
+        files, err = _read_file_targets(args)
+        if err or not files:
+            out.append(tc)
+            continue
+        for k, path in enumerate(files):
+            cid = tc["id"] if k == 0 else _split_call_id(tc["id"], k, taken)
+            taken.add(cid)
+            text = json.dumps(_read_file_single_args(args, path),
+                              ensure_ascii=False)
+            raw_out[cid] = text
+            out.append({**tc, "id": cid,
+                        "function": {**fn, "arguments": text}})
+    return out, raw_out
 
 
 # A delegate's report is the answer the parent asked for, not bulk tool
@@ -15990,8 +16541,9 @@ def _bypass_screened_action(
     action itself for a message to another session or a web search; for
     a write whose target resolves inside the session workspace or the
     configured agent workspace, the action with the instructing-file
-    question answered on the path RELATIVE to that root; None for
-    everything else, which goes to the model.
+    question answered on the path RELATIVE to that root; for a shell
+    command that runs caged and stays in the workspace, the action itself;
+    None for everything else, which goes to the model.
 
     Relative, because a DELFIN worktree lives under ``.delfin/worktrees``
     and the absolute path of every file in it matched the ``/.delfin/``
@@ -16005,6 +16557,24 @@ def _bypass_screened_action(
     tool = str(action.get("tool") or "")
     if tool in _BYPASS_SCREENED_TOOLS:
         return action
+    if tool in ("bash", "bash_background"):
+        # A command that runs inside the cage and does not leave the
+        # workspace by the deterministic rules (_leaves_workspace: not the
+        # high-risk class, no network, not heavy compute) is workspace work
+        # like a write in the workspace: the cage confines its writes, the
+        # egress proxy its network, the change journal can take it back.
+        # Measured on the Pi on 2026-11-12: 55 of 74 refusals in a day were
+        # such commands (pytest, git add/commit in the session's repo,
+        # grep, true), refused because the confirming model did not answer
+        # under load; 10 more were git grep pipelines the model refused.
+        # Without a cage, the model still judges.
+        try:
+            if _bash_runs_caged(perms) and not _leaves_workspace(
+                    perms, action, True):
+                return action
+        except Exception:
+            return None
+        return None
     if tool not in ("write_file", "edit_file", "multi_edit"):
         return None
     raw = str(action.get("path") or "").strip()
@@ -18286,7 +18856,26 @@ class _DocToolExecutor:
         writes that attribute from its own thread, and the gate used to
         read it two or three times per call, so a flip landing between
         two reads decided one call by two different policies.
+
+        A read_file naming several files (``paths``) runs here as one
+        single-file call per file, each through the whole of
+        ``_execute_pinned`` (rules, hooks, role, mode, read gate, read
+        baseline), under one pin; the results are joined, each under a
+        ``=== <path> ===`` header. The streaming loop splits such calls
+        before they get here (_split_multi_read_calls); this covers the
+        callers that enter the executor directly (Code Mode).
         """
+        if _bare_tool_name(name) == "read_file":
+            files, err = _read_file_targets(arguments)
+            if err:
+                return json.dumps({"error": err})
+            if files is not None:
+                with _pin_permission_mode(permissions):
+                    return "\n\n".join(
+                        f"=== {p} ===\n" + self._execute_pinned(
+                            name, _read_file_single_args(arguments, p),
+                            permissions)
+                        for p in files)
         with _pin_permission_mode(permissions):
             return self._execute_pinned(name, arguments, permissions)
 
@@ -19028,6 +19617,9 @@ class _DocToolExecutor:
             if name == "bash_kill":
                 return self._execute_bash_kill(arguments)
 
+        if name in _CLUSTER_TOOL_NAMES or name == "cluster_propose":
+            return getattr(self, f"_execute_{name}")(arguments, permissions)
+
         if name == "watch_job":
             # Register a long-running job (SLURM id or bash job id) for the
             # LLM-free watcher; completion is injected into a later turn's
@@ -19039,6 +19631,37 @@ class _DocToolExecutor:
             if not ws:
                 return json.dumps({"error": (
                     "watch_job requires permissions to be configured.")})
+            _watch_sid = str(getattr(permissions, "task_session_id", "")
+                             or "")
+            # A job cluster_submit sent is watched already, as
+            # <cluster>:<id> (job_monitor's cluster kind). Its bare id was
+            # taken for a job of a local SLURM, asked of a scheduler a PC
+            # does not have, and every round then said UNAVAILABLE: the
+            # model polled the cluster instead of ending its turn.
+            try:
+                from .job_monitor import _agent_watch_path, load_watched
+                _sent = {k: e for k, e in load_watched(_agent_watch_path(ws))
+                         .get("jobs", {}).items()
+                         if isinstance(e, dict) and e.get("kind") == "cluster"
+                         and job_id in (k, str(e.get("remote_id") or ""))}
+            except Exception:
+                _sent = {}
+            if _sent:
+                mine = sorted(k for k, e in _sent.items() if not _watch_sid
+                              or str(e.get("session_id") or "") == _watch_sid)
+                if not mine:
+                    return json.dumps({"error": (
+                        f"{', '.join(sorted(_sent))} is a cluster job another "
+                        "session submitted; that session is told when it "
+                        "ends. cluster_status shows its state.")})
+                return json.dumps({
+                    "status": "watching", "job_id": ", ".join(mine),
+                    "kind": "cluster",
+                    "note": ("cluster_submit already watches this job: "
+                             "DELFIN's job watcher brings its results back "
+                             "and you are told in a later turn. End your "
+                             "turn instead of polling."),
+                })
             # A bash job id the registry does not know can never
             # complete, so watching it promises a notification that
             # cannot arrive -- and the note below tells the model to end
@@ -19058,8 +19681,6 @@ class _DocToolExecutor:
                 pass
             try:
                 from .job_monitor import register_agent_job
-                _watch_sid = str(getattr(permissions, "task_session_id", "")
-                                 or "")
                 entry = register_agent_job(
                     ws, job_id,
                     str(arguments.get("description", "") or "")[:200],
@@ -19179,7 +19800,7 @@ class _DocToolExecutor:
 
         # Notifications + remote triggers.
         if name == "push_notification":
-            return self._execute_push_notification(arguments)
+            return self._execute_push_notification(arguments, permissions)
         if name == "remote_trigger":
             return self._execute_remote_trigger(arguments, permissions)
 
@@ -19519,6 +20140,13 @@ class _DocToolExecutor:
     def _execute_read_file(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
+        # A several-file call is split in execute() before it gets here.
+        # One that arrives anyway is refused: reading only `path` would
+        # drop the other files without saying so.
+        if arguments.get("paths") is not None:
+            return json.dumps({"error": (
+                "read_file: 'paths' reached the single-file reader; "
+                "nothing was read. Call read_file once per file.")})
         rel_path = self._get_path_arg(arguments)
         if not rel_path:
             return json.dumps({"error": "path is required"})
@@ -21831,6 +22459,13 @@ class _DocToolExecutor:
                 "deny-glob (.ssh/, .env, *.key, credentials, *.pem). "
                 "These are never readable, regardless of mode or confirm."
             )
+        if _in_runtime_masked_dir(resolved):
+            return (
+                f"read denied: '{label or resolved}' lies in a directory DELFIN "
+                "keeps from every agent (cluster-tunnel's state, approval "
+                "codes, the account key store). It is never readable, "
+                "regardless of mode or confirm."
+            )
 
         # A deny rule of the user's on this path, as resolved by the tool.
         _rule_refusal = _rule_denies_path(perms, "read", resolved)
@@ -22223,6 +22858,16 @@ class _DocToolExecutor:
         _rule_refusal = _rule_denies_path(perms, "write", resolved)
         if _rule_refusal:
             return _rule_refusal
+        # The messenger's directory: read-only but for a file offered in
+        # the session's own outbox (messenger.media.internal_write_refusal).
+        from delfin.messenger.media import internal_write_refusal
+        _messenger_refusal = internal_write_refusal(
+            resolved, str(getattr(perms, "task_session_id", "") or ""))
+        if _messenger_refusal:
+            _record_security_event(
+                "messenger_internal_write", name,
+                self._display_path(resolved, perms), blocked=True)
+            return _messenger_refusal
         if not _write_in_scope(resolved, perms):
             _record_security_event(
                 "out_of_write_scope", name, self._display_path(resolved, perms),
@@ -22784,8 +23429,11 @@ class _DocToolExecutor:
         # with a reason is unaffected.
         on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
         try:
+            # The broad scope is the user asking for a second opinion on
+            # everything: there a shell command keeps the model.
             screened = (_bypass_screened_action(perms, action)
-                        if bypass else None)
+                        if bypass and not (cfg.get("broad") and base in (
+                            "bash", "bash_background")) else None)
             if screened is not None:
                 # A message to a sibling session, a web search, a write in
                 # the session or agent workspace: the user's rules and the
@@ -23080,7 +23728,7 @@ class _DocToolExecutor:
                 "Describe the proposed change in chat instead. "
                 "When the plan is complete, call exit_plan_mode to "
                 "submit it for approval; the user can also click "
-                "'Plan akzeptieren & ausführen' or switch the mode "
+                "'Accept plan & execute' or switch the mode "
                 "chip to 'acceptEdits' to proceed."
             )
 
@@ -23729,6 +24377,18 @@ class _DocToolExecutor:
                         "give the user the link to open the pull request. "
                         "Only the user changes the role (`/git role "
                         "maintainer` in that repository).")
+            # A cluster login node is shared (issue #640): tests, builds and
+            # installs run on a compute node, whatever the mode or grant --
+            # the cluster's rule, not the user's to wave through.
+            try:
+                from . import calc_policy as _cp_login
+                _heavy = _cp_login.login_node_heavy(cmd)
+            except Exception:
+                _heavy = ""
+            if _heavy:
+                _record_security_event("login_node_heavy", "bash", cmd[:80],
+                                       blocked=True)
+                return _heavy
             _asked = perms.confirm_callback is not None
             # Opening a pull request publishes the branch. It spends the
             # same one-request grant a push does: the user who asked for a
@@ -24550,6 +25210,11 @@ class _DocToolExecutor:
                 old_text = resolved_path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             old_text = ""
+        if name == "cluster_fetch":
+            # What lands is a cluster's file or folder, not text the model
+            # wrote: the dialog names where it comes from (cluster_tools).
+            return (f"fetch {args.get('cluster', '')}:{args.get('from', '')} "
+                    f"({args.get('size', '')}) into {args.get('path', '')}")
         if name == "apply_patch":
             # The patch itself IS the change preview — show it verbatim rather
             # than a synthetic old→new content diff (the new content isn't in
@@ -27440,13 +28105,26 @@ class _DocToolExecutor:
 
     # ------- Notifications / remote triggers ------------------------------
 
-    def _execute_push_notification(self, arguments: dict) -> str:
+    def _execute_push_notification(self, arguments: dict, perms=None) -> str:
+        """A desktop notification, and a note to the person's phone when
+        this session is on it (messenger.activation.post_note: one per
+        minute; the gateway sends it). ``phone``: True, "rate_limited" or
+        False (not connected)."""
         from . import notify as _n
         title = str(arguments.get("title", "")).strip() or "delfin agent"
         body = str(arguments.get("body", ""))
         urgency = str(arguments.get("urgency", "normal"))
         ok = _n.send_notification(title, body, urgency=urgency)
-        return json.dumps({"status": "ok" if ok else "noop", "sent": ok})
+        phone: Any = False
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        if sid:
+            try:
+                from delfin.messenger.activation import post_note
+                phone = post_note(sid, title, body)
+            except Exception:
+                phone = False
+        return json.dumps({"status": "ok" if ok or phone is True else "noop",
+                           "sent": ok, "phone": phone})
 
     def _execute_remote_trigger(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
@@ -29127,6 +29805,19 @@ class _DocToolExecutor:
                     "The user typed this answer in the chat instead of "
                     "picking an option; it may lie outside the options "
                     "offered. Take it as their answer and continue.")
+        # No answer always says why (``unanswered``): stopped, expired,
+        # timed out, or dismissed. A bare empty list was read as a choice
+        # and the model guessed one (field report, phone session).
+        if not answers:
+            payload["unanswered"] = str(result.get("unanswered") or (
+                "no answer (timed out)" if result.get("timed_out") else
+                "no answer (dismissed without picking an option)"))[:200]
+            if not result.get("timed_out"):
+                payload["note"] = (
+                    f"The question ended with {payload['unanswered']}. The "
+                    "empty answer list is not a choice; do not pick one for "
+                    "the user. Continue only where no answer is needed, or "
+                    "end the turn and say what is waiting.")
         # Surface the UI's timeout flag: empty answers because the user is
         # AWAY must not read like the user actively chose nothing (weak
         # models re-ask the identical question in a loop otherwise).
@@ -29607,6 +30298,50 @@ class _DocToolExecutor:
         except Exception as exc:
             return json.dumps({"error": f"web_search failed: {exc}"})
         return _wrap_untrusted(json.dumps(payload, ensure_ascii=False))
+
+    # -- DELFIN's HPC clusters (cluster_tools.py) ------------------------------
+    # Each names its arguments: the tool's rules -- what is asked, refused,
+    # fenced and audited -- live in cluster_tools, beside the remote layer.
+
+    def _execute_cluster_status(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.status(self, permissions, cluster=arguments.get("cluster"))
+
+    def _execute_cluster_read(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.read_path(self, permissions, cluster=arguments.get("cluster"),
+                                       path=arguments.get("path"), tail=arguments.get("tail"))
+
+    def _execute_cluster_fetch(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.fetch(self, permissions, cluster=arguments.get("cluster"),
+                                   path=arguments.get("path"), dest=arguments.get("dest"))
+
+    def _execute_cluster_upload(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.upload(self, permissions, cluster=arguments.get("cluster"),
+                                    src=arguments.get("src"), dest=arguments.get("dest"))
+
+    def _execute_cluster_submit(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.submit(self, permissions, cluster=arguments.get("cluster"),
+                                    jobs=arguments.get("jobs"))
+
+    def _execute_cluster_cancel(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.cancel(self, permissions, cluster=arguments.get("cluster"),
+                                    job_ids=arguments.get("job_ids"))
+
+    def _execute_cluster_run(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.run(self, permissions, cluster=arguments.get("cluster"),
+                                 command=arguments.get("command"),
+                                 timeout=arguments.get("timeout"))
+
+    def _execute_cluster_propose(self, arguments: dict, permissions) -> str:
+        from . import cluster_tools
+        return cluster_tools.propose(self, permissions, **{
+            k: arguments.get(k) for k in ("name", "preset", "user", "host", "partition")})
 
     def _execute_web_fetch(self, arguments: dict) -> str:
         url = (arguments.get("url", "") or "").strip()
@@ -30090,16 +30825,10 @@ def _session_scratch_dir() -> str:
 
 def _home_secret_paths() -> list[str]:
     try:
-        from delfin.agent.sandbox import _HOME_SECRET_DIRS
+        from delfin.agent.sandbox import home_secret_paths
+        out = list(home_secret_paths())
     except Exception:
-        _HOME_SECRET_DIRS = ()
-    home = Path.home()
-    out = []
-    for rel in _HOME_SECRET_DIRS:
-        try:
-            out.append(str((home / rel).resolve()))
-        except OSError:
-            continue
+        out = []
     # The approval-code directory, created and at its redirected location.
     try:
         from delfin.agent.sandbox import runtime_masked_dirs
@@ -30113,6 +30842,27 @@ def _home_secret_paths() -> list[str]:
     except Exception:
         pass
     return out
+
+
+def _in_runtime_masked_dir(path) -> bool:
+    """Whether ``path`` really lies in a directory every cage masks at run
+    time (``sandbox.runtime_masked_dirs``: the approval codes, the account
+    key store, cluster-tunnel's config and control sockets), whichever
+    granted root it is reached through. The deny globs are matched against
+    the path relative to its root, so a granted ~/.config saw ctun's config
+    as plain "cluster-tunnel/config.yaml", and a glob for that name would
+    also hide every checkout of the cluster-tunnel repository. Fails
+    closed."""
+    try:
+        from delfin.agent.sandbox import runtime_masked_dirs
+        real = Path(path).expanduser().resolve()
+        for d in runtime_masked_dirs():
+            base = Path(d)
+            if real == base or base in real.parents:
+                return True
+        return False
+    except Exception:
+        return True
 
 
 def _landlock_hide_paths(write_roots) -> list[str]:
@@ -30357,6 +31107,18 @@ def _agent_service_door() -> str:
         return os.path.join("/tmp", f"delfin-{os.getuid()}")
 
 
+def _ctun_doors() -> list[str]:
+    """cluster-tunnel's directories (``delfin.remote.state_dirs``): the
+    control sockets of the logged-in cluster masters, through which a
+    command would act on a cluster as the user without any login, and the
+    config whose ssh options DELFIN's own process runs with."""
+    try:
+        from delfin.remote import state_dirs
+        return state_dirs()
+    except Exception:
+        return []
+
+
 def _session_doors() -> list[str]:
     """The sockets through which a command would reach the user's sessions:
     the same set the bubblewrap process cage masks."""
@@ -30366,7 +31128,7 @@ def _session_doors() -> list[str]:
              str(home / ".ssh"),
              os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}"),
              "/var/run/docker.sock", "/run/docker.sock", "/tmp/.X11-unix",
-             _agent_service_door()]
+             _agent_service_door(), *_ctun_doors()]
     agent = os.environ.get("SSH_AUTH_SOCK", "")
     if agent and os.path.basename(os.path.dirname(agent)).startswith("ssh-"):
         doors.append(os.path.dirname(agent))
@@ -30838,8 +31600,10 @@ def _announce_auto_isolation() -> None:
 # * The doors to long-lived servers outside are masked: the systemd user
 #   manager and D-Bus (/run/user/<uid>: `systemd-run --user`), running tmux
 #   and screen servers, the SSH directory (keys, and the control sockets a
-#   dashboard transfer leaves open) and the SSH agent. `crontab` and `at`
-#   cannot use their setuid helpers inside a user namespace.
+#   dashboard transfer leaves open), the SSH agent, and cluster-tunnel's
+#   directories (the control sockets of the logged-in cluster masters).
+#   `crontab` and `at` cannot use their setuid helpers inside a user
+#   namespace.
 #
 # Measured on a bwUniCluster login node, 2026-09-16: every escape above
 # ended with the command; SLURM (sbatch/squeue) keeps working inside, so
@@ -30914,6 +31678,7 @@ def _process_cage_options() -> list[str]:
         str(home / ".ssh"),
         os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp", f"tmux-{uid}"),
         _agent_service_door(),
+        *_ctun_doors(),
     ]
     agent_socket = os.environ.get("SSH_AUTH_SOCK", "")
     # OpenSSH keeps an agent's socket in a directory of its own, ssh-XXXX.
@@ -31860,19 +32625,6 @@ def _bash_isolation_argv(
         pass
     for _key, _sub in _package_cache_dirs():
         args += ["--setenv", _key, f"/tmp/{_sub}"]
-    for rel in _HOME_SECRET_DIRS:
-        p = home / rel
-        try:
-            # resolve() — on HPC, $HOME is often a symlink (/home/... →
-            # /pfs/...); bwrap cannot create mountpoints through symlinked
-            # paths ("Can't mkdir parents").  Mask the REAL path.
-            rp = p.resolve()
-            if rp.is_dir():
-                args += ["--tmpfs", str(rp)]
-            elif rp.is_file():
-                args += ["--ro-bind", "/dev/null", str(rp)]
-        except OSError:
-            continue
     try:
         roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
     except Exception:
@@ -31946,6 +32698,16 @@ def _bash_isolation_argv(
     # every root is read-only already through the "/" bind.
     for room in _rooms:
         args += ["--ro-bind-try", room, room]
+    # The home secrets (credentials, the stores, in people mode every
+    # person's pairing, activation and runtime directories) after every
+    # bind: a granted ~/.delfin or ~/people bound later covered them again.
+    # Resolved paths (on HPC $HOME is often a symlink; bwrap cannot create
+    # mount points through one).
+    try:
+        from delfin.agent.sandbox import _bwrap_home_mask_args
+        args += _bwrap_home_mask_args(home)
+    except Exception:
+        pass
     # The approval-code directory is not readable at all, and masked after
     # every bind so a granted ~/.delfin cannot re-expose it.
     try:
@@ -32141,6 +32903,86 @@ def _transient_retry_delay(attempt: int) -> float:
     except ValueError:
         scale = 1.0
     return max(0.0, d * scale)
+
+
+# The marker the endpoint's hourly token-quota 429 carries in its body.
+# A per-minute rate-limit 429 does not say this, so the marker alone
+# separates the two: a quota means "the key is spent, wait until the
+# reset"; per-minute congestion means "slow down now", which the backoff
+# ladder already cures.
+_QUOTA_429_MARKER = "hourly token quota exceeded"
+
+# The furthest a quota reset may park a run: the quota is HOURLY, so a
+# reset further than 65 minutes away cannot be the body of this hour's
+# quota (a clock skew, a stale proxy cache or a mispelled unit) and is
+# clamped rather than trusted.
+_QUOTA_RESET_MAX_S = 65 * 60
+
+
+def _quota_429_reset(body: str, *, now: float | None = None
+                     ) -> tuple[float, int, int] | None:
+    """Parse the hourly token-quota 429's body, or None.
+
+    Input: the exception's text (the body, whatever ``str(exc)`` embeds).
+    Output: ``(reset_epoch_s, tokens_used, tokens_limit)`` when the body
+    is a quota 429 whose reset could be read, else ``None`` -- and
+    ``None`` for every NON-quota 429, so a plain per-minute rate limit
+    keeps the transient backoff ladder.
+
+    The reset instant prefers the absolute UTC time ("Quota resets at
+    2026-11-09 22:00 UTC"); the relative "in Ns" is the fallback, because
+    the absolute instant survives a stalled run's start-up delay while
+    "in Ns" was measured the moment the endpoint answered. A reset further
+    than :data:`_QUOTA_RESET_MAX_S` away is clamped to the window's edge:
+    an hourly quota cannot reset further out than that. Never raises.
+    """
+    import datetime
+    try:
+        text = str(body or "")
+        low = text.lower()
+        if _QUOTA_429_MARKER not in low:
+            return None
+        t_now = float(now if now is not None else time.time())
+        used = limit = None
+        try:
+            import re
+            m = re.search(r"exceeded:\s*([\d,.\s]+)\s*/\s*([\d,.\s]+)", low)
+            if m:
+                used = int(float(m.group(1).replace(",", "").replace(" ", "")))
+                limit = int(float(m.group(2).replace(",", "").replace(" ", "")))
+        except (ValueError, AttributeError):
+            used = limit = None
+        reset = None
+        try:
+            import re
+            m = re.search(r"quota resets at\s+(\d{4}-\d{2}-\d{2}[ T]"
+                          r"\d{2}:\d{2}(?::\d{2})?)\s*utc\b", low)
+            if m:
+                stamp = m.group(1)
+                fmt = ("%Y-%m-%d %H:%M" if len(stamp) == 16
+                       else "%Y-%m-%d %H:%M:%S")
+                dt = datetime.datetime.strptime(stamp, fmt).replace(
+                    tzinfo=datetime.timezone.utc)
+                reset = dt.timestamp()
+        except (ValueError, AttributeError):
+            reset = None
+        if reset is None:
+            try:
+                import re
+                m = re.search(r"resets in\s+(\d+)\s*s", low)
+                if not m:
+                    m = re.search(r"resets at\s+[^(]*\(in\s+(\d+)\s*s\)", low)
+                if m:
+                    reset = t_now + int(m.group(1))
+            except (ValueError, AttributeError):
+                reset = None
+        if reset is None:
+            return None
+        if reset > t_now + _QUOTA_RESET_MAX_S:
+            reset = t_now + _QUOTA_RESET_MAX_S
+        return (reset, used or 0, limit or 0)
+    except Exception:
+        return None
 
 # How many times a single turn may switch to another model because KIT does
 # not serve the one it asked for (either "Model not found" or "…temporarily
@@ -32939,12 +33781,15 @@ class OpenAIClient(_BaseClient):
         here; a client without one behaves exactly as before.
         """
         probe = getattr(self, "should_stop", None)
-        if probe is None:
-            return False
-        try:
-            return bool(probe())
-        except Exception:
-            return False
+        if probe is not None:
+            try:
+                if bool(probe()):
+                    return True
+            except Exception:
+                pass
+        # The client's own stop flag (set directly by a test harness or
+        # an embedding layer): same semantics as the probe.
+        return bool(getattr(self, "_stop_requested", False))
 
     def _run_ceiling_reached(self, spent: float) -> str:
         """The run ceiling (``run_budget_s`` / ``run_budget_usd``) the
@@ -33570,6 +34415,8 @@ class OpenAIClient(_BaseClient):
                               "run_tests",
                               "watch_job",
                               "session_message",
+                              *_CLUSTER_TOOL_NAMES,
+                              "cluster_propose",
                               "history_search",
                               "history_get",
                               "orchestrate",
@@ -33617,6 +34464,7 @@ class OpenAIClient(_BaseClient):
             session_denied=(
                 getattr(self._permissions, "session_denied_tools", None)
                 or frozenset()),
+            has_clusters=_clusters_configured(),
         )
         advertised_tools = advertisable_tools(advertised_tools, _surface_ctx)
 
@@ -34517,6 +35365,93 @@ class OpenAIClient(_BaseClient):
                         cost_usd=self._estimate_cost(_total_in, _total_out),
                         cached_tokens=_total_cached, stop_reason="stopped")
                     return
+                _quota = _quota_429_reset(str(_stream_exc), now=time.time())
+                if _quota is not None:
+                    # A KIT hourly token-quota 429: the key is spent until
+                    # the reset. This is a spend ceiling, not congestion, so
+                    # it never reaches the transient backoff ladder nor the
+                    # shared endpoint gate (the gate stays at its own limit
+                    # and the round's `finally` has no congestion to report).
+                    # Wait out the reset in ~1 s slices honoring stop, then
+                    # retry the round; the jitter keeps sessions sharing a
+                    # key from all firing at the same second. The wait counts
+                    # toward the run's wall-clock budget, so a budget shorter
+                    # than the reset ends the turn with its own stop reason.
+                    _reset_epoch, _used, _limit = _quota
+                    self.quota_tokens_used = _used
+                    self.quota_tokens_limit = _limit
+                    # A quota wait is a retry, so it consumes the same
+                    # attempt ladder as a transient error: once drained,
+                    # re-raise instead of waiting forever against an
+                    # endpoint that never recovers.
+                    if _stream_attempt >= _STREAM_RETRY_MAX:
+                        raise _stream_exc
+                    _stream_attempt += 1
+                    _remaining = _reset_epoch - time.time()
+                    if _remaining > 0:
+                        _remaining += random.uniform(5.0, 30.0)
+                        import datetime as _dt_mod
+                        _until = _dt_mod.datetime.fromtimestamp(
+                            _reset_epoch, tz=_dt_mod.timezone.utc
+                        ).strftime("%H:%M")
+                        yield StreamEvent(type="notice", text=(
+                            f"\n🪙 KIT token quota used up -- waiting until "
+                            f"{_until} UTC ({max(1, int(_remaining // 60))} "
+                            "min). No request goes out inside the window.\n"))
+                        # Slices are counted, not clocked: each 1 s slice is
+                        # one second of wait regardless of how fast the
+                        # host executes the sleep, so a mocked sleep still
+                        # terminates and a real sleep keeps the wait honest.
+                        while _remaining > 0:
+                            if self._stop_was_requested() or getattr(
+                                    self, "_stop_requested", False):
+                                yield StreamEvent(
+                                    type="message_delta",
+                                    input_tokens=_total_in,
+                                    output_tokens=_total_out,
+                                    cost_usd=self._estimate_cost(
+                                        _total_in, _total_out),
+                                    cached_tokens=_total_cached,
+                                    stop_reason="stopped")
+                                return
+                            _ceiling_hit = self._run_ceiling_reached(
+                                self._estimate_cost(_total_in, _total_out))
+                            if _ceiling_hit:
+                                yield StreamEvent(type="notice", text=(
+                                    "\n🛑 The run's wall-clock budget is "
+                                    "shorter than the quota reset: this "
+                                    "turn stops here and the run starts "
+                                    "no new work. Nothing was lost; the "
+                                    "next run continues.\n"))
+                                yield StreamEvent(
+                                    type="message_delta",
+                                    input_tokens=_total_in,
+                                    output_tokens=_total_out,
+                                    cost_usd=self._estimate_cost(
+                                        _total_in, _total_out),
+                                    cached_tokens=_total_cached,
+                                    stop_reason="quota_wait_exceeds_budget")
+                                return
+                            # 0.25 s sub-slices: a stop/pause must be honored
+                            # within ~1 s, and 4 sub-slices still make one
+                            # logical second (a mocked sleep terminates).
+                            time.sleep(0.25)
+                            _remaining -= 0.25
+                        # The slices are done (a mocked sleep burns them
+                        # in microseconds, before an external stop flag
+                        # can land): still no retry on a stopped turn.
+                        if self._stop_was_requested() or getattr(
+                                self, "_stop_requested", False):
+                            yield StreamEvent(
+                                type="message_delta",
+                                input_tokens=_total_in,
+                                output_tokens=_total_out,
+                                cost_usd=self._estimate_cost(
+                                    _total_in, _total_out),
+                                cached_tokens=_total_cached,
+                                stop_reason="stopped")
+                            return
+                    continue
                 if not _is_stream_unsupported_error(_stream_exc):
                     # Not a stream-format issue. A transient shared-proxy
                     # hiccup (timeout / 5xx / rate-limit) retries the round —
@@ -34921,6 +35856,10 @@ class OpenAIClient(_BaseClient):
                             "arguments": _sendable_tool_args(_raw_emitted),
                         },
                     })
+                # A read_file naming several files becomes one call per
+                # file HERE, before anything records or dispatches it.
+                tc_list, _raw_args_by_id = _split_multi_read_calls(
+                    tc_list, _raw_args_by_id)
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
                 _turn_tool_names.update(

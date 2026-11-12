@@ -71,9 +71,31 @@ def refusal_text(what: str, how: str = "") -> str:
             f"{how}.")
 
 
+#: What runs on a login node after all (the person's decision, 11.11.:
+#: users have to get in again). An interactive session, its agent service
+#: and the small stdio servers it starts are light -- they mostly wait for
+#: the model -- and what they would RUN that is heavy (tests, builds,
+#: installs) the bash gate refuses there and sends to SLURM
+#: (calc_policy.login_node_heavy). Swarms, waves, the schedule daemon,
+#: benchmarks and the pre-PR check stay off the login node.
+#: DELFIN_LOGIN_NODE_STRICT=1 refuses these too.
+LOGIN_NODE_INTERACTIVE = frozenset({
+    "the agent service",
+    "the DELFIN tools server",
+    "the DELFIN ops server",
+    "the DELFIN docs server",
+})
+
+
 def refuse_on_login_node(what: str, how: str = "", *,
                          env: Optional[dict] = None) -> None:
-    """Raise :class:`LoginNodeRefused` when this is a login node."""
+    """Raise :class:`LoginNodeRefused` when this is a login node -- except for
+    the interactive pieces in :data:`LOGIN_NODE_INTERACTIVE`."""
+    e = os.environ if env is None else env
+    strict = str(e.get("DELFIN_LOGIN_NODE_STRICT", "")).strip().lower() in (
+        "1", "true", "yes", "on")
+    if what in LOGIN_NODE_INTERACTIVE and not strict:
+        return
     if on_login_node(env):
         raise LoginNodeRefused(refusal_text(what, how))
 
@@ -160,10 +182,10 @@ def run_on_compute_node(argv: Sequence[str], what: str, *,
 
 #: delfin-agent subcommands (by handler) that run agent turns or tests and
 #: move onto a compute node when started from a terminal on a login node.
+#: An interactive session (chat, run, the TUI) stays on the login node
+#: since 11.11. (LOGIN_NODE_INTERACTIVE); what it runs heavy goes to SLURM
+#: through the bash gate.
 MOVED_COMMANDS = {
-    "cmd_chat": "an agent session",
-    "cmd_run": "an agent turn",
-    "_cmd_tui": "the terminal UI's agent sessions",
     "_run_prcheck_subcommand": "the pre-PR check (it runs tests)",
     "cmd_bench": "a benchmark run",
 }
@@ -176,18 +198,20 @@ def keep_cli_off_login_node(func, args, argv: Sequence[str], *,
     """The delfin-agent entry point's guard, called once its arguments are
     parsed. A session, a turn, the TUI, a pre-PR check or a benchmark moves
     onto a compute node (srun --pty) from a terminal and is refused without
-    one. Starting a swarm or the schedule daemon is refused: their sessions
-    outlive the command, so they belong in an sbatch job. Everything else
-    (status, lists, approvals, watch, where, ...) stays: it is light."""
+    one. Starting the schedule daemon is refused: it outlives the command,
+    so it belongs in an sbatch job. Starting a swarm is handed over to the
+    swarm command, which submits it as a SLURM job itself
+    (delfin.agent.swarm.job; its members never start on a login node:
+    launch.start_members refuses there). Everything else (status, lists,
+    approvals, watch, where, ...) stays: it is light."""
     try:
         ensure_watcher(env=env)
     except Exception:
         pass  # the watcher is a net; it never breaks the command
     name = getattr(func, "__name__", "")
-    is_swarm = getattr(func, "__module__", "") == "delfin.agent.cli_swarm"
-    if is_swarm and "start" in argv:
-        exit_on_login_node("a swarm's member sessions",
-                           "start the swarm from inside an sbatch job", env=env)
+    # `delfin-agent swarm start` on a login node: no refusal here -- the
+    # swarm command checks the spec and submits the swarm as a SLURM job
+    # (delfin.agent.swarm.job.route says "job" on every login node).
     if name == "cmd_scheduler" and getattr(args, "scheduler_action", "") == "start":
         exit_on_login_node("the schedule daemon",
                            "run it inside an sbatch job", env=env)

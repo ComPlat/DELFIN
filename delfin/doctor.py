@@ -7,7 +7,9 @@ Each check is a small function returning a :class:`CheckResult`.  The
 checks are deliberately cheap: they only locate binaries via ``PATH``
 (``shutil.which``), run ``--version`` probes, touch the scratch
 directory, and look at files/keys on disk.  They NEVER start a
-computation and NEVER open a network connection.
+computation and NEVER open a network connection; the one exception is
+``check_clusters(budget=True)`` (``delfin doctor --budget``), which runs a
+cluster's budget script over its open tunnel.
 
 Status values:
     "ok"      — the prerequisite works
@@ -42,6 +44,7 @@ __all__ = [
     "check_docs_index",
     "check_command_isolation",
     "check_no_exported_key",
+    "check_clusters",
     "run_all",
     "exit_code",
 ]
@@ -415,10 +418,70 @@ def check_docs_index() -> CheckResult:
     return CheckResult("docs_index", OK, f"index present at {idx}")
 
 
-def run_all(scratch_dir: str | os.PathLike | None = None) -> list[CheckResult]:
+def check_clusters(*, budget: bool = False, settings: dict | None = None,
+                   ctun_config: str | os.PathLike | None = None) -> list[CheckResult]:
+    """One result per cluster in ``remote.clusters`` (delfin.remote).
+
+    "broken": DELFIN refuses the cluster until its problems are fixed (no
+    pinned host key, a first-word budget guard, a file ctun reads where an
+    agent could write it). "missing": usable, but nobody is logged in.
+    "ok": logged in. Whether it is logged in is asked of the local control
+    socket only; ``budget=True`` also runs the budget script over the open
+    tunnel and reports what is left. No cluster configured: no results.
+    """
+    from delfin.remote import clusters as _clusters
+    from delfin.remote import connection as _connection
+    from delfin.remote.errors import RemoteError, RemoteRefused
+
+    results: list[CheckResult] = []
+    for name, cluster in _clusters.load(settings=settings,
+                                        ctun_config=ctun_config).items():
+        label = f"cluster {name}"
+        if not cluster.usable:
+            results.append(CheckResult(
+                label, BROKEN, "; ".join(cluster.problems),
+                "fix this in ctun's config (`ctun config`) or in remote.clusters "
+                "of ~/.delfin_settings.json"))
+            continue
+        try:
+            conn = _connection.connect(name, settings=settings, ctun_config=ctun_config)
+            live = conn.is_live()
+        except RemoteRefused:
+            results.append(CheckResult(
+                label, OK, f"usable ({cluster.target}); the login is not checked from "
+                "inside an agent session"))
+            continue
+        except RemoteError as exc:
+            results.append(CheckResult(label, BROKEN, str(exc), ""))
+            continue
+        if not live:
+            results.append(CheckResult(
+                label, MISSING, f"usable ({cluster.target}), nobody is logged in",
+                f"ctun login -t {name}"))
+            continue
+        detail = f"logged in ({cluster.target})"
+        if budget:
+            try:
+                decision = conn.budget()
+            except RemoteError as exc:
+                results.append(CheckResult(
+                    label, BROKEN, f"{detail}; the budget probe failed: {exc}",
+                    "check the budget script in ctun's config (`ctun config --validate`)"))
+                continue
+            if decision.limit is None:
+                detail += "; no session budget set"
+            else:
+                detail += f"; budget {decision.used} of {decision.limit} {decision.unit} used"
+        results.append(CheckResult(label, OK, detail))
+    return results
+
+
+def run_all(scratch_dir: str | os.PathLike | None = None, *,
+            cluster_budget: bool = False) -> list[CheckResult]:
     """Run every check and return the results in a stable order.
 
     Never raises: a check that explodes is reported as "broken".
+    ``cluster_budget`` also probes each logged-in cluster's budget.
     """
     checks = [
         check_orca,
@@ -441,6 +504,11 @@ def run_all(scratch_dir: str | os.PathLike | None = None) -> list[CheckResult]:
                 getattr(check, "__name__", "unknown"), BROKEN,
                 f"check crashed: {exc}", "report this as a DELFIN bug",
             ))
+    try:
+        results += check_clusters(budget=cluster_budget)
+    except Exception as exc:  # defensive: the doctor must complete
+        results.append(CheckResult(
+            "clusters", BROKEN, f"check crashed: {exc}", "report this as a DELFIN bug"))
     return results
 
 

@@ -310,6 +310,22 @@ _KIT_CODING_PREFIX = "mcp__kit-coding__"
 # blocks (open tasks, finished jobs, budget, late answers). The pipeline roles
 # run one scripted step each and have no list of their own to keep.
 _STEERING_ROLES = ("solo_agent", "dashboard_agent", "office_agent")
+
+#: The turn-tail line of a session enabled for the messenger (/sync):
+#: without it the model did not know the user reads it on the phone. One
+#: fixed line, in the volatile tail -- never in the system prompt, whose
+#: bytes the prefix cache keeps.
+MESSENGER_LINE = (
+    "[Messenger] This session is connected to the user's phone through SimpleX: "
+    "your replies appear there too. A file you offer for download (in the "
+    "messenger outbox the messenger note names) can be fetched there.")
+#: The rest of the line: the session's outbox and the forum note (formerly
+#: appended by the bridge to every phone prompt). ~330 characters.
+MESSENGER_RULES = (
+    " Offer a file only when the user asks, as a plain file in {outbox} (no secrets, no "
+    "chat export; name it in your reply). An explicit short note to other agents: forum.txt "
+    "there, at most 1400 bytes, passed on only when the user enabled the exchange; never "
+    "answer other agents' notes on your own.")
 # Of those blocks, the ones worth re-sending when they change mid-turn. The
 # project pin never changes within a turn, and the backend notice is a
 # session-opening statement — re-sending either would cost tokens to say
@@ -1406,6 +1422,11 @@ class AgentEngine:
             "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
+            # The endpoint's hourly token quota, when a quota 429 was seen
+            # (tokens): a person reads how close the key is to the reset.
+            "quota_tokens_used": getattr(self.client, "quota_tokens_used", None),
+            "quota_tokens_limit": getattr(
+                self.client, "quota_tokens_limit", None),
             # The model second opinion: switch, model, scope, last failure.
             "watcher": self._watcher_status(),
         }
@@ -1863,7 +1884,10 @@ class AgentEngine:
                     f"{str(ev.get('description', ''))[:80]}"
                     + (f" — signatures: {sig}" if sig else "")
                     + (f" — {degraded}" if degraded else "")
-                    + (f" — {ev['url']}" if ev.get("url") else ""))
+                    + (f" — {ev['url']}" if ev.get("url") else "")
+                    # A cluster job: what became of it and where its
+                    # results came back to (delfin.remote.watch.summary).
+                    + (f" — {ev['results']}" if ev.get("results") else ""))
         except Exception:
             pass
         try:
@@ -2849,7 +2873,8 @@ class AgentEngine:
         # change invalidates nothing before it, and the message keeps its
         # tail as a private key so every later request repeats the bytes
         # the endpoint already holds.
-        volatile = extra_blocks + ([dashboard_state] if dashboard_state else [])
+        volatile = (extra_blocks + ([dashboard_state] if dashboard_state else [])
+                    + ([self.messenger_line()] if self._on_the_phone() else []))
         _last = self.messages[-1] if self.messages else None
         _has_turn = isinstance(_last, dict) and _last.get("role") == "user"
         if volatile and not _has_turn:
@@ -2891,6 +2916,32 @@ class AgentEngine:
         return self.loader.build_system_prompt(
             **self._prompt_build_args(
                 role, memory_context, task_text, live_state, _perm_mode))
+
+    def messenger_line(self) -> str:
+        """MESSENGER_LINE with this session's rules: where a file is offered
+        (its outbox) and the forum note. Stable for the session, so the
+        tail's bytes repeat (the prefix cache); said once per turn."""
+        sid = str(getattr(self, "session_id", "") or "")
+        try:
+            from delfin.messenger.media import ROOT, session_hash
+            perms = getattr(getattr(self, "client", None), "_permissions", None)
+            ws = Path(str(getattr(perms, "workspace", "") or self.repo_dir))
+            outbox = ws / ROOT / session_hash(sid) / "outbox"
+        except Exception:
+            return MESSENGER_LINE
+        return MESSENGER_LINE + MESSENGER_RULES.format(outbox=outbox)
+
+    def _on_the_phone(self) -> bool:
+        """Whether this session is enabled for the messenger (its /sync
+        record, keyed by the session id). Never raises."""
+        sid = str(getattr(self, "session_id", "") or "")
+        if not sid:
+            return False
+        try:
+            from delfin.messenger import activation
+            return activation.enabled(sid)
+        except Exception:
+            return False
 
     def _prompt_build_args(self, role: str, memory_context: str,
                            task_text: str, live_state: str,
@@ -8140,6 +8191,19 @@ class AgentEngine:
         except Exception:
             return 0
 
+    def _session_is_watched(self) -> bool:
+        """Whether DELFIN's job watcher follows a job or batch this session
+        started (cluster_submit, watch_job). False when unknown; never raises."""
+        try:
+            from delfin.agent import job_monitor
+            perms = self.kit_permissions
+            if perms is None:
+                return False
+            return job_monitor.session_is_watched(
+                perms.workspace, str(getattr(perms, "task_session_id", "") or ""))
+        except Exception:
+            return False
+
     def _note_turn_continuation(self, answer: str) -> None:
         """Record one follow-up note when *answer* announces work that it did
         not do while tasks stay open. Never raises; the latch keeps it to one
@@ -8150,7 +8214,8 @@ class AgentEngine:
             return
         try:
             from delfin.agent.turn_continuation import should_continue
-            cont, note = should_continue(answer, self._open_task_count())
+            cont, note = should_continue(answer, self._open_task_count(),
+                                         watched=self._session_is_watched())
         except Exception:
             return
         if cont and note:
@@ -8206,6 +8271,9 @@ class AgentEngine:
         try:
             if (not answer or self.pending_turn_continuation
                     or getattr(self, "_stall_guard_stopped", "")):
+                return
+            # Something does run: DELFIN's watcher follows this session's job.
+            if self._session_is_watched():
                 return
             if callable(on_token) and _ends_announcing(answer):
                 on_token(self.NOTHING_RUNS_NOTICE)

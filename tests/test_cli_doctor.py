@@ -17,7 +17,7 @@ def _results(*rows):
 def test_doctor_prints_one_line_per_check_and_fix_hints(capsys, monkeypatch):
     monkeypatch.setattr(
         "delfin.doctor.run_all",
-        lambda scratch_dir=None: _results(
+        lambda scratch_dir=None, **_: _results(
             ("orca", "ok", "orca 6.0.0 at /opt/orca", ""),
             ("slurm", "missing", "sinfo not found", "install SLURM"),
             ("scratch_dir", "broken", "nope: EACCES", "chmod it"),
@@ -39,7 +39,7 @@ def test_doctor_prints_one_line_per_check_and_fix_hints(capsys, monkeypatch):
 def test_doctor_exit_code_zero_when_only_missing(capsys, monkeypatch):
     monkeypatch.setattr(
         "delfin.doctor.run_all",
-        lambda scratch_dir=None: _results(
+        lambda scratch_dir=None, **_: _results(
             ("orca", "ok", "found", ""),
             ("slurm", "missing", "not found", "optional"),
         ),
@@ -54,7 +54,7 @@ def test_doctor_exit_code_zero_when_only_missing(capsys, monkeypatch):
 def test_doctor_json_outputs_raw_records(capsys, monkeypatch):
     monkeypatch.setattr(
         "delfin.doctor.run_all",
-        lambda scratch_dir=None: _results(
+        lambda scratch_dir=None, **_: _results(
             ("orca", "ok", "found", ""),
             ("xtb", "broken", "crashed", "reinstall"),
         ),
@@ -73,7 +73,7 @@ def test_doctor_json_outputs_raw_records(capsys, monkeypatch):
 def test_doctor_passes_scratch_dir_through(monkeypatch):
     seen = {}
 
-    def fake_run_all(scratch_dir=None):
+    def fake_run_all(scratch_dir=None, **_):
         seen["scratch_dir"] = scratch_dir
         return _results(("scratch_dir", "ok", "fine", ""))
 
@@ -83,10 +83,23 @@ def test_doctor_passes_scratch_dir_through(monkeypatch):
     assert rc == 0
 
 
+def test_doctor_probes_cluster_budgets_only_when_asked(monkeypatch):
+    seen = []
+
+    def fake_run_all(scratch_dir=None, *, cluster_budget=False):
+        seen.append(cluster_budget)
+        return _results(("cluster kcist", "ok", "logged in", ""))
+
+    monkeypatch.setattr("delfin.doctor.run_all", fake_run_all)
+    assert delfin_cli._run_doctor_subcommand([]) == 0
+    assert delfin_cli._run_doctor_subcommand(["--budget"]) == 0
+    assert seen == [False, True]
+
+
 def test_main_dispatches_doctor(monkeypatch, capsys):
     monkeypatch.setattr(
         "delfin.doctor.run_all",
-        lambda scratch_dir=None: _results(("orca", "ok", "found", "")),
+        lambda scratch_dir=None, **_: _results(("orca", "ok", "found", "")),
     )
     rc = delfin_cli.main(["doctor"])
     assert rc == 0

@@ -1,0 +1,38 @@
+# A single-module lab with a Raspberry Pi 5 GPIO relay and an input.
+# The "gpiod" driver runs on the Pi 5 itself (the edge node's own header)
+# through libgpiod v2 -- install DELFIN's optional "lab-gpio" extra.
+# Copy to <lab_dir>/manifest.yaml, review, then pin it:
+#   delfin-agent lab manifest pin
+# The agent user must be in the "gpio" group (see docs/design/lab-control.md).
+lab_manifest: 1
+installation: rpi-reactor-01
+version: 1
+nodes:
+  - id: edge_pi
+    description: Raspberry Pi 5 reactor controller (RP1 header GPIO)
+modules:
+  - id: reactor
+    node: edge_pi
+    min_level: benign
+    positions: [R1]
+    devices:
+      # A de-energise-to-trip relay: the safe state "off" is the de-energised
+      # line, so a dead driver or a powered-down chip means the heater is off.
+      - id: heater
+        driver: gpiod
+        model: relay
+        address: {chip_label: pinctrl-rp1, power: 17, power_active_low: true}
+        deadman_s: 15
+        writes:
+          power: {states: [on, off], level: hazardous}
+        safe_state: {power: off}
+        interlocks:
+          - when: "heater.power == on"
+            requires: "overtemp.power == on"
+      # Input lines read back as on/off from the actual line value.
+      - id: overtemp
+        driver: gpiod
+        model: input
+        address: {chip_label: pinctrl-rp1, power: 22}
+        reads:
+          power: {states: [on, off]}

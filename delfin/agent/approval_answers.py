@@ -135,6 +135,42 @@ def option_labels(options: Any) -> list[str]:
     return out
 
 
+def answer_range(n: int, *, joiner: str = "or") -> str:
+    """The numbers a question of ``n`` options takes, in words: "1",
+    "1 or 2", "1, 2 or 3", "1-N" for N > 3."""
+    n = max(1, int(n))
+    if n == 1:
+        return "1"
+    if n <= 3:
+        head = ", ".join(str(i) for i in range(1, n))
+        return f"{head} {joiner} {n}"
+    return f"1-{n}"
+
+
+def answer_hint(n: int, multi: bool = False) -> str:
+    """The one line every surface shows under a question of ``n`` options:
+    the real range, how to pick several, and that free text is allowed."""
+    if multi:
+        return (f"Reply one or more of {answer_range(n)}, separated by commas "
+                f"(e.g. 1,3), or type your own answer.")
+    return f"Reply {answer_range(n)}, or type your own answer."
+
+
+def range_problem(text: str, payload: Optional[dict] = None) -> Optional[str]:
+    """Why a typed answer is refused, or None: a line of option numbers
+    (one, or comma-separated for a multi-select question) naming a number
+    outside the question's range. Words are never refused here -- they are
+    a label or free text (typed_answer)."""
+    line = " ".join(str(text or "").split())
+    labels = option_labels((payload or {}).get("options"))
+    parts = [p.strip() for p in line.split(",")] if "," in line else [line]
+    if not labels or not parts or not all(p.isdigit() for p in parts if p) or not any(parts):
+        return None
+    if any(not (1 <= int(p) <= len(labels)) for p in parts if p):
+        return f"Not an option: reply {answer_range(len(labels))}."
+    return None
+
+
 def typed_answer(text: str, payload: Optional[dict] = None) -> dict:
     """The ask_user_question result for a line typed into the chat.
 

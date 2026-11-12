@@ -41,10 +41,21 @@ def test_a_workstation_is_not_a_login_node(workstation):
 
 def test_the_refusal_says_what_why_and_what_to_do(cluster):
     with pytest.raises(hpc_guard.LoginNodeRefused) as exc:
-        hpc_guard.refuse_on_login_node("the agent service", "use sbatch", env=LOGIN)
+        hpc_guard.refuse_on_login_node("a swarm's member sessions", "use sbatch", env=LOGIN)
     text = str(exc.value)
-    assert "the agent service" in text and "login node" in text
+    assert "a swarm's member sessions" in text and "login node" in text
     assert "shared" in text and "use sbatch" in text
+
+
+def test_interactive_pieces_run_on_a_login_node_again(cluster):
+    """The person (11.11.): users must get in again -- the agent service the
+    TUI talks to, and its stdio servers, run on a login node; strict mode
+    refuses them as before."""
+    for what in hpc_guard.LOGIN_NODE_INTERACTIVE:
+        hpc_guard.refuse_on_login_node(what, env=LOGIN)        # no raise
+    with pytest.raises(hpc_guard.LoginNodeRefused):
+        hpc_guard.refuse_on_login_node(
+            "the agent service", env=dict(LOGIN, DELFIN_LOGIN_NODE_STRICT="1"))
 
 
 def test_inside_a_job_and_on_a_workstation_nothing_is_refused(cluster, monkeypatch):
@@ -171,15 +182,24 @@ class _Args:
     scheduler_action = "status"
 
 
-def test_delfin_agent_chat_moves_onto_a_compute_node(cluster, monkeypatch):
+def test_the_benchmark_moves_onto_a_compute_node(cluster, monkeypatch):
     monkeypatch.setattr(hpc_guard.shutil, "which", lambda name: "/usr/bin/srun")
     monkeypatch.setattr(hpc_guard, "_read_user_settings", lambda: {})
     ran = []
-    hpc_guard.keep_cli_off_login_node(_handler("cmd_chat"), _Args(), ["chat", "-n", "x"],
+    hpc_guard.keep_cli_off_login_node(_handler("cmd_bench"), _Args(), ["bench", "x"],
                                       env=LOGIN, execvp=lambda f, a: ran.append(a),
                                       isatty=lambda: True)
     assert ran and ran[0][:2] == ["srun", "--pty"]
-    assert ran[0][-5:] == ["-m", "delfin.agent.cli", "chat", "-n", "x"]
+    assert ran[0][-4:] == ["-m", "delfin.agent.cli", "bench", "x"]
+
+
+def test_chat_and_the_tui_stay_on_the_login_node(cluster):
+    ran = []
+    for name in ("cmd_chat", "cmd_run", "_cmd_tui"):
+        hpc_guard.keep_cli_off_login_node(_handler(name), _Args(), [name],
+                                          env=LOGIN, execvp=lambda f, a: ran.append(a),
+                                          isatty=lambda: True)
+    assert ran == []
 
 
 def test_light_delfin_agent_commands_stay_on_the_login_node(cluster):
@@ -193,10 +213,16 @@ def test_light_delfin_agent_commands_stay_on_the_login_node(cluster):
     assert ran == []
 
 
-def test_a_swarm_start_and_the_schedule_daemon_are_refused(cluster):
-    with pytest.raises(SystemExit):
-        hpc_guard.keep_cli_off_login_node(_handler("main", "delfin.agent.cli_swarm"), _Args(),
-                                          ["swarm", "start", "--execute"], env=LOGIN)
+def test_a_swarm_start_is_handed_to_the_swarm_job_and_the_daemon_refused(cluster):
+    """A swarm start passes the guard: the swarm command submits it as a
+    SLURM job itself (delfin.agent.swarm.job), it never runs here."""
+    ran = []
+    hpc_guard.keep_cli_off_login_node(_handler("main", "delfin.agent.cli_swarm"), _Args(),
+                                      ["swarm", "start"], env=LOGIN,
+                                      execvp=lambda f, a: ran.append(a))
+    assert ran == []
+    from delfin.agent.swarm import job
+    assert job.route(LOGIN) == "job"
     args = _Args()
     args.scheduler_action = "start"
     with pytest.raises(SystemExit):

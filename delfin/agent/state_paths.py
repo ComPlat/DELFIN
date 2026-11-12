@@ -128,7 +128,32 @@ def ensure_dir(path: Any, *, mode: int = DIR_MODE) -> Path:
     except OSError:
         return p
     _chmod(p, mode)
+    _tighten_state_root_above(p)
     return p
+
+
+def _tighten_state_root_above(path: Path) -> None:
+    """Make ``~/.delfin`` and every level between it and *path* 0700.
+
+    ``mkdir(parents=True, mode=...)`` gives the mode to the LAST level
+    only; the parents it creates get the umask. On a fresh home under the
+    cluster's umask 002 the first state write therefore made ``~/.delfin``
+    itself 0775 (bug hunt 11.11.2026, #7), and group members could reach
+    everything below it, the memory notes read back into prompts among
+    them. An owner-only root closes the whole tree, whatever the modes
+    further down. Only ``~/.delfin`` and levels inside it: a path
+    elsewhere belongs to the user or to a test. Never raises.
+    """
+    try:
+        root = Path.home() / ".delfin"
+        if path != root and root not in path.parents:
+            return
+        levels = [root, *[a for a in reversed(path.parents)
+                          if root in a.parents]]
+    except Exception:
+        return
+    for level in levels:
+        _chmod(level, DIR_MODE)
 
 
 def secure_file(path: Any, *, mode: int = FILE_MODE) -> Path:
@@ -643,6 +668,9 @@ def workspace_state_dir(workspace: Any) -> Path:
 #: ``(module, attribute, relative path under the redirected home)``.
 USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.messenger.activation", "_DIR", "messenger_sessions"),
+    # Phone pairing requests: a test's request would be answered by the
+    # real gateway with a real invitation.
+    ("delfin.messenger.pairing", "_DIR", "messenger_pairing"),
     # The user's schedules: a test's entry would run in the real service.
     ("delfin.agent.schedules", "_DIR", "user_schedules"),
     # The workspace freedom profiles share that directory: a test's "free"
@@ -777,6 +805,12 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
     ("delfin.agent.session_store", "_bundles_path", "bundles"),
     ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    # The jobs DELFIN submitted to a cluster (delfin.remote.jobs), which the
+    # job watcher follows: a run's fixture jobs must not be watched for real.
+    ("delfin.remote.jobs", "_records_path", "remote_jobs.jsonl"),
+    # What the watcher found of each of them, and the lock of its ticks.
+    ("delfin.remote.watch", "_state_path", "remote_watch.json"),
+    ("delfin.remote.watch", "_lock_path", "remote_watch.lock"),
     # What the user said about themselves, loaded into every prompt. A
     # run reading the real one would test against the developer's own
     # self-description, and a run that drove the Send button would write
