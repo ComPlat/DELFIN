@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — a new commit's install holds no turn, and keeps to the login node's share
+
+- **The first submit of a commit the cluster does not have comes back at
+  once.** `cluster_submit` starts the install and keeps the approved batch
+  (`~/.delfin/remote_pending.json`), and the agent ends its turn. Before,
+  the turn waited for the whole install: 25 minutes on kcist.
+- **DELFIN's job watcher submits the batch once the install is complete**,
+  exactly as approved and without asking again. The files and the budget
+  are checked again first, as for any submit. Its jobs are then watched for
+  the session that sent the batch, and the session reads at its next look
+  that the batch went in.
+- **When the batch cannot go in, nothing is submitted.** That is the case
+  when the install failed or was stopped, a folder changed, or the budget
+  no longer covers it. A notice goes to NEEDS YOU, and the session is woken
+  and told why. Without a login, the batch waits and the login item says
+  so. A service started after the PC was off submits what it finds
+  installed.
+- **The install keeps to the login node's share** (issue #640): one compile
+  or build at a time (hpc_guard's 2-core budget less one for the person's
+  own work), one BLAS/OpenMP thread, `nice -n 19`. `meson compile` (std2)
+  now honours `MAKE_JOBS` too; before, ninja ran nproc+2 jobs.
+- **An install hpc_guard stopped is reported as `stopped`**, not waited for.
+  hpc_guard SIGSTOPs the busiest DELFIN process when a user stays over the
+  budget, and the install's processes count as DELFIN's by their paths.
+  Such an install is never removed as unused.
+
 ### Added — a cluster job's results come back, and the session that sent it is told
 
 - **DELFIN's job watcher** (`delfin/remote/watch.py`) follows every job

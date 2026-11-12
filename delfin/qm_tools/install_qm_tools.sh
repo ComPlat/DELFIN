@@ -615,7 +615,9 @@ build_std2_from_source() {
 
   rm -rf "${build_dir}"
   FC="${fc_bin}" CC="${cc_bin}" "${meson_bin}" setup "${build_dir}" "${src_dir}" -Dla_backend=openblas
-  "${meson_bin}" compile -C "${build_dir}"
+  # ninja runs nproc+2 jobs unless told; MAKE_JOBS caps it as it caps make
+  # (a cluster install on a shared login node gives one or two).
+  "${meson_bin}" compile -C "${build_dir}" ${MAKE_JOBS:+-j "$MAKE_JOBS"}
 
   std2_built="${build_dir}/std2"
   [[ -x "${std2_built}" ]] || die "std2 build finished without executable at ${std2_built}"

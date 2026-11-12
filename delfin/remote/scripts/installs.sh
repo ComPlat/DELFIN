@@ -4,8 +4,15 @@
 #
 #   bash -s -- <action> <args...>
 #
-#   state  DIR          one word: complete | running | failed | partial | absent
-#   start  DIR PREFIX   runs install_delfin.sh in DIR, detached; prints its pid
+#   state  DIR          one word: complete | running | stopped | failed |
+#                       partial | absent (stopped: a process of the running
+#                       install was stopped, as hpc_guard stops DELFIN's
+#                       processes over the login node's core budget)
+#   start  DIR PREFIX [CORES]
+#                       runs install_delfin.sh in DIR, detached, at the
+#                       lowest priority and on CORES cores at most (default
+#                       1): compiles, builds and BLAS threads are capped;
+#                       prints its pid
 #   list   ROOT         one line per install of DELFIN's: <commit> <state>
 #   inuse               the commits the user's queued and running jobs name
 #   remove DIR          deletes one install of DELFIN's (never a running one)
@@ -33,6 +40,9 @@ state_of() {
   if [ -f "$dir/.delfin-install.pid" ]; then
     pid="$(cat "$dir/.delfin-install.pid" 2>/dev/null)"
     if [ -n "$pid" ] && [ ! -f "$dir/.delfin-install.exit" ] && kill -0 "$pid" 2>/dev/null; then
+      # The install runs in a session of its own (setsid): a stopped
+      # process in it holds the whole install.
+      if ps -o stat= -s "$pid" 2>/dev/null | grep -q '^T'; then echo stopped; return; fi
       echo running; return
     fi
   fi
@@ -48,9 +58,11 @@ case "$action" in
   start)
     dir="$(home_path "${2:?start needs a directory}")"
     prefix="$(home_path "${3:?start needs a prefix}")"
+    cores="${4:-1}"
+    case "$cores" in ''|*[!0-9]*|0) echo "cores is a whole number from 1, not $cores" >&2; exit 2 ;; esac
     [ -f "$dir/.delfin-commit" ] && [ -f "$dir/pyproject.toml" ] \
       || { echo "no uploaded DELFIN tree in $dir" >&2; exit 2; }
-    [ "$(state_of "$dir")" = running ] && { cat "$dir/.delfin-install.pid"; exit 0; }
+    case "$(state_of "$dir")" in running|stopped) cat "$dir/.delfin-install.pid"; exit 0 ;; esac
     rm -f "$dir/.delfin-install.exit" "$dir/.delfin-install-complete"
     mkdir -p "$prefix"
     # setsid + nohup: the install outlives this ssh session and the tunnel.
@@ -58,7 +70,14 @@ case "$action" in
     # which a login node may not have). The install is complete when it
     # succeeded, or when its venv imports DELFIN and OpenMPI was set up;
     # what failed then is listed in .delfin-install.warnings.
-    nohup setsid bash -c '
+    # A login node is shared (DELFIN issue #640): the install keeps to the
+    # cores it is given -- make, meson/ninja, pip and uv builds, micromamba's
+    # extraction -- runs one BLAS/OpenMP thread, and at the lowest priority.
+    nohup setsid env MAKE_JOBS="$cores" MAKEFLAGS="-j$cores" \
+      CMAKE_BUILD_PARALLEL_LEVEL="$cores" NPY_NUM_BUILD_JOBS="$cores" MAX_JOBS="$cores" \
+      UV_CONCURRENT_BUILDS="$cores" MAMBA_EXTRACT_THREADS="$cores" \
+      OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+      nice -n 19 bash -c '
       cd "$1" || exit 1
       bash delfin/installers/install_delfin.sh --repo "$1" --prefix "$2" \
         --profile standard --yes
@@ -89,7 +108,7 @@ case "$action" in
   remove)
     dir="$(home_path "${2:?remove needs a directory}")"
     [ -f "$dir/.delfin-commit" ] || { echo "$dir is not an install of DELFIN's" >&2; exit 2; }
-    [ "$(state_of "$dir")" = running ] && { echo "$dir is still installing" >&2; exit 3; }
+    case "$(state_of "$dir")" in running|stopped) echo "$dir is still installing" >&2; exit 3 ;; esac
     rm -rf -- "$dir" ;;
   log)
     dir="$(home_path "${2:?log needs a directory}")"

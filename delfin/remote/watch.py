@@ -38,6 +38,17 @@ Semantics:
 * Each ended job is in exactly one tick's ``ended``; ``outcome`` serves it
   to its session from then on (job_monitor's cluster watches). A job about
   which no answer came for GIVE_UP_DAYS is given up and reported so.
+* A batch that waits for its install (``jobs.queue_after_install``) is
+  followed with the cluster's jobs, ``batch-<id>`` its id: while the
+  install runs it waits; once the install is complete it is submitted --
+  exactly the approved files, the budget asked again (``jobs.submit``),
+  nobody asked -- and its jobs are followed and watched for its session
+  from then on. When the install failed or was stopped, or the files or the
+  budget no longer allow the batch, nothing is submitted: the batch's
+  outcome says why, a notice goes to NEEDS YOU, and it is in the tick's
+  ``ended``, which wakes the session. A batch that went in is reported to
+  its session at its next look and wakes nobody. A tick after the PC was
+  off does the same with what it finds.
 """
 
 from __future__ import annotations
@@ -152,52 +163,75 @@ def tick(*, now: Optional[float] = None, probe_every_s: Optional[float] = None) 
             key = _key(record)
             if key and not (known.get(key) or {}).get("outcome"):
                 open_by_cluster.setdefault(str(record["cluster"]), []).append(record)
+        batches_by_cluster: dict[str, list[dict]] = {}
+        for entry in _jobs.pending():
+            batches_by_cluster.setdefault(str(entry["cluster"]), []).append(entry)
         probes = state.setdefault("probed", {})
-        for name, records in open_by_cluster.items():
+        for name in sorted(set(open_by_cluster) | set(batches_by_cluster)):
+            records = open_by_cluster.get(name, [])
+            batches = batches_by_cluster.get(name, [])
             if now - float(probes.get(name) or 0) < probe_every_s:
-                out.following += sum(1 for r in records
-                                     if (known.get(_key(r)) or {}).get("state") not in ENDED)
+                out.following += len(batches) + sum(
+                    1 for r in records if (known.get(_key(r)) or {}).get("state") not in ENDED)
                 continue
-            if _follow(name, records, state, now, out):
+            if _follow(name, records, state, now, out, batches=batches):
                 probes[name] = now
         _save(state)
     return out
 
 
-def _follow(name: str, records: list[dict], state: dict, now: float, out: Tick) -> bool:
-    """One step for a cluster's open jobs; whether its Slurm was asked. A
-    cluster that cannot be asked keeps its jobs until they are old enough to
-    give up."""
+def _follow(name: str, records: list[dict], state: dict, now: float, out: Tick, *,
+            batches: Optional[list[dict]] = None) -> bool:
+    """One step for a cluster's open jobs and the batches that wait for its
+    install; whether its Slurm was asked. A cluster that cannot be asked
+    keeps its jobs and batches until they are old enough to give up."""
     from delfin.agent import managed_policy
     from . import attention as remote_attention
     from . import connection, slurm
     known = state.setdefault("jobs", {})
+    batches = list(batches or [])
+
+    def give_up(why: str) -> tuple[list[dict], list[dict]]:
+        return ([r for r in records if not _give_up_if_old(r, known, now, out, why)],
+                [b for b in batches if not _give_up_batch_if_old(b, known, now, out, why)])
+
     if not managed_policy.cluster_allowed(name):
-        for record in records:
-            _give_up_if_old(record, known, now, out, f"a managed policy keeps {name} out")
+        give_up(f"a managed policy keeps {name} out")
         return False
     try:
         conn = connection.connect(name)
         live = conn.is_live()
     except RemoteError as exc:
         # Not usable (its settings changed): asked again next tick.
-        for record in records:
-            _give_up_if_old(record, known, now, out, f"{name} is not usable ({exc})")
+        give_up(f"{name} is not usable ({exc})")
         return False
     if not live:
-        waiting = [r for r in records if not _give_up_if_old(
-            r, known, now, out, f"nobody logged in to {name}")]
+        waiting, waiting_batches = give_up(f"nobody logged in to {name}")
         asked = state.setdefault("login_asked", {})
-        if waiting and now - float(asked.get(name) or 0) >= LOGIN_ASK_EVERY_S:
+        if (waiting or waiting_batches) and now - float(asked.get(name) or 0) >= LOGIN_ASK_EVERY_S:
             # Once in a while, not every tick: a login item the user put
             # aside does not come back a minute later.
             asked[name] = now
-            remote_attention.ask_for_login(name, reason=(
-                f"{len(waiting)} DELFIN job(s) on {name} are followed; their results come "
-                "back and their sessions are told once you log in"))
-        if waiting:
+            said = []
+            if waiting:
+                said.append(f"{len(waiting)} DELFIN job(s) on {name} are followed; their results "
+                            "come back and their sessions are told once you log in")
+            if waiting_batches:
+                said.append(f"{len(waiting_batches)} approved batch(es) wait for DELFIN's install "
+                            f"on {name}; they are submitted once you log in and it is done")
+            remote_attention.ask_for_login(name, reason="; ".join(said))
+        if waiting or waiting_batches:
             out.waiting_for_login.append(name)
         return False
+    for entry in batches:
+        if not _give_up_batch_if_old(entry, known, now, out, "its install never completed"):
+            try:
+                _resolve_batch(conn, entry, known, now, out)
+            except LoginRequired:
+                out.waiting_for_login.append(name)
+                return False
+    if not records:
+        return True
     oldest = min(float(r.get("submitted_at") or now) for r in records)
     since = int(min(GIVE_UP_DAYS * 1440, (now - oldest) / 60 + 60))
     try:
@@ -279,6 +313,125 @@ def _retry_after(tries: int) -> float:
     """Seconds to the next fetch after ``tries`` failed ones: 1, 3, 9 ...
     minutes, at most twelve hours."""
     return float(min(12 * 3600, 60 * 3 ** max(0, tries - 1)))
+
+
+# --- a batch that waits for its install ------------------------------------------
+
+
+def _batch_key(entry: dict) -> str:
+    return f"{entry['cluster']}:batch-{entry['id']}"
+
+
+def _resolve_batch(conn, entry: dict, known: dict, now: float, out: Tick) -> None:
+    """One step for a batch that waits for its install: wait, submit it, or
+    say why it was not. Raises LoginRequired when the tunnel went."""
+    from . import install as _install
+    try:
+        current = _install.state(conn, entry["commit"])
+    except LoginRequired:
+        raise
+    except RemoteError:
+        out.following += 1
+        return                              # asked again next tick
+    if current == "running":
+        out.following += 1
+        return
+    done: list[dict] = []
+    if current == "complete":
+        batch = _jobs.batch_from_dict(entry["batch"])
+        batch.install = "complete"
+        try:
+            done = _jobs.submit(conn, batch, session_id=str(entry.get("session_id") or ""),
+                                workspace=entry.get("workspace") or None)
+            why = ""
+        except LoginRequired:
+            raise
+        except _jobs.PartialSubmit as exc:
+            done, why = list(exc.done), str(exc)
+        except RemoteError as exc:
+            why = str(exc)
+    elif current == "stopped":
+        why = f"the install of DELFIN {entry['commit'][:12]} does not go on: {_install.STOPPED_HINT}"
+    else:
+        try:
+            tail = _install.log_tail(conn, entry["commit"]).strip().splitlines()[-3:]
+        except RemoteError:
+            tail = []
+        why = (f"the install of DELFIN {entry['commit'][:12]} on {conn.name} {current}"
+               + (": " + " | ".join(t.strip() for t in tail) if tail else "")
+               + "; see /clusters (space)")
+    ids = [str(d["job_id"]) for d in done]
+    for record in done:
+        _watch_for_session(record)
+    _jobs.settle_pending(entry["id"], state="submitted" if done and not why else "not_submitted",
+                         job_ids=ids, reason=why, settled_at=now)
+    names = ", ".join(entry.get("jobs") or []) or "the batch"
+    if done and not why:
+        text = (f"submitted once DELFIN {entry['commit'][:12]} was installed: job(s) "
+                f"{', '.join(ids)} ({names}); each is followed, and told when it ends")
+        verdict, state = "ok", "SUBMITTED"
+    elif done:
+        text = f"partly submitted: job(s) {', '.join(ids)} went in and are followed -- {why}"
+        verdict, state = "failed", "PARTLY_SUBMITTED"
+    else:
+        text = f"not submitted ({names}): {why}"
+        verdict, state = "failed", "NOT_SUBMITTED"
+    record = {"cluster": entry["cluster"], "job_id": f"batch-{entry['id']}",
+              "name": names, "kind": "batch", "remote_dir": "",
+              "workspace": entry.get("workspace") or "",
+              "session_id": entry.get("session_id") or ""}
+    seen = known.setdefault(_batch_key(entry), {"cluster": entry["cluster"],
+                                                "job_id": record["job_id"]})
+    seen["state"], seen["ended_at"] = state, now
+    seen["outcome"] = _outcome(record, seen, state=state, ok=verdict == "ok", judged={
+        "verdict": verdict, "status": "submitted" if verdict == "ok" else "not_submitted",
+        "outcome": text})
+    seen["outcome"]["job_ids"] = ids
+    if verdict != "ok":
+        # Nothing (or not all) went in: the person hears of it, and the
+        # session is woken to say so. A batch that went in wakes nobody; its
+        # session reads it at its next look, and its jobs when they end.
+        _notify(record, seen["outcome"])
+        out.ended.append(seen["outcome"])
+
+
+def _give_up_batch_if_old(entry: dict, known: dict, now: float, out: Tick, why: str) -> bool:
+    """A batch that waited GIVE_UP_DAYS: given up, reported as not submitted."""
+    if now - float(entry.get("queued_at") or now) <= GIVE_UP_DAYS * 86400:
+        return False
+    text = f"given up after {GIVE_UP_DAYS} days: {why}"
+    _jobs.settle_pending(entry["id"], state="not_submitted", job_ids=[], reason=text,
+                         settled_at=now)
+    record = {"cluster": entry["cluster"], "job_id": f"batch-{entry['id']}",
+              "name": ", ".join(entry.get("jobs") or []) or "the batch", "kind": "batch",
+              "remote_dir": "", "workspace": entry.get("workspace") or "",
+              "session_id": entry.get("session_id") or ""}
+    seen = known.setdefault(_batch_key(entry), {"cluster": entry["cluster"],
+                                                "job_id": record["job_id"]})
+    seen["outcome"] = _outcome(record, seen, state="NOT_SUBMITTED", ok=False, judged={
+        "verdict": "failed", "status": "not_submitted", "outcome": f"not submitted: {text}"})
+    _notify(record, seen["outcome"])
+    out.ended.append(seen["outcome"])
+    return True
+
+
+def _watch_for_session(record: dict) -> None:
+    """A job the watcher submitted, watched for the session that approved its
+    batch (as cluster_submit watches its own). Never raises."""
+    try:
+        from delfin.agent import job_monitor
+        workspace = str(record.get("workspace") or "")
+        if not workspace:
+            return
+        what = "ORCA run" if record.get("kind") == "orca" else "DELFIN workflow"
+        job_monitor.register_agent_job(
+            workspace, f"{record['cluster']}:{record['job_id']}",
+            description=f"{record['name']}: {what} on {record['cluster']}",
+            extra={"kind": "cluster", "cluster": str(record["cluster"]),
+                   "remote_id": str(record["job_id"]),
+                   "session_id": str(record.get("session_id") or "")})
+    except Exception:
+        pass
 
 
 # --- the fetch ---------------------------------------------------------------------
@@ -460,9 +613,14 @@ def _notify(record: dict, ended: dict) -> None:
         said = {"ok": f"finished ({ended['state']})",
                 "unverified": f"finished ({ended['state']}, unverified)"}.get(
                     verdict, f"failed ({ended['state']})")
+        title = f"Job {ended['key']} {said}"
+        if ended.get("kind") == "batch":
+            title = (f"A batch for {ended['cluster']} was partly submitted"
+                     if ended["state"] == "PARTLY_SUBMITTED" else
+                     f"A batch for {ended['cluster']} was not submitted")
         emit_attention("run_failed" if verdict == "failed" else "run_finished",
                        session_id=ended["session_id"],
-                       title=f"Job {ended['key']} {said}",
+                       title=title,
                        detail=f"{ended['name'] or 'job'}: {summary(ended)}",
                        workspace=ended["workspace"] or None)
     except Exception:

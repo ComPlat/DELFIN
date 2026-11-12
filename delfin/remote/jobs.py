@@ -29,9 +29,15 @@ Semantics:
   that exceeds the managed ceiling on core-hours, is refused before anyone
   is asked.
 * The install: when the PC's commit is not installed on the cluster, the
-  batch says so (the dialog shows it) and ``submit`` installs it first --
-  only a published commit, and not when a managed policy turned automatic
-  installs off.
+  batch says so (the dialog shows it) -- only a published commit, and not
+  when a managed policy turned automatic installs off. An approved batch
+  then waits for it without holding anyone: ``queue_after_install`` starts
+  the install (detached, on the login node's share) and keeps the batch,
+  exactly as approved, in ``~/.delfin/remote_pending.json``; the job watcher
+  (delfin.remote.watch) submits it once the install is complete, after the
+  same checks of the files and the budget as ``submit`` makes, and asks
+  nobody again. ``submit`` itself still installs first and waits, for a
+  caller that wants that.
 * Submission: each folder goes to ``<work_dir>/<stamp>-<name>/`` and sbatch
   runs there through ``bash -c``, which ctun's own budget guard reads, with
   ``--export=ALL`` and DELFIN's variables in sbatch's environment (as the
@@ -44,6 +50,7 @@ Semantics:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -171,8 +178,9 @@ class Batch:
         else:
             lines.append("budget: no session limit set")
         if self.install in ("needed", "running"):
-            lines.append(f"first installs DELFIN {self.commit[:12]} on {self.cluster} "
-                         f"(about 20 minutes, once per commit)")
+            lines.append(f"first installs DELFIN {self.commit[:12]} on {self.cluster} (once per "
+                         "commit, on the login node's share: up to an hour); the batch goes "
+                         "in by itself once it is installed")
         lines += self.notes
         return "\n".join(lines)
 
@@ -244,6 +252,9 @@ def plan(conn, workspace: Path, requests: Iterable[dict], *,
         batch.install = "complete"
     elif state == "running":
         batch.install = "running"
+    elif state == "stopped":
+        batch.problems.append(f"the install of DELFIN {commit.sha[:12]} on {cluster.name} does not "
+                              f"go on: {_install.STOPPED_HINT}; see /clusters (space)")
     elif state == "failed":
         batch.problems.append(f"the install of DELFIN {commit.sha[:12]} on {cluster.name} failed "
                               "before; see /clusters (space) and fix it first")
@@ -521,6 +532,130 @@ def _usr1_offset(hours: float) -> int:
     """The dashboard's: USR1 (a final sync) half the time limit before its
     end, at least 30 s and at most 300 s ahead."""
     return max(30, min(300, int(hours * 3600) // 2))
+
+
+# --- a batch that waits for its install -------------------------------------------
+
+
+#: What a kept batch is: waiting for its install, submitted (job ids kept),
+#: or not submitted (the reason kept).
+PENDING_STATES = ("waiting", "submitted", "not_submitted")
+
+
+def batch_to_dict(batch: Batch) -> dict:
+    """An approved batch as it is kept until its install is done."""
+    return {"cluster": batch.cluster, "target": batch.target, "partition": batch.partition,
+            "commit": batch.commit, "install": batch.install, "unit": batch.unit,
+            "requested": batch.requested, "core_hours": batch.core_hours,
+            "used": batch.used, "limit": batch.limit, "notes": list(batch.notes),
+            "jobs": [{"folder": str(j.folder), "kind": j.kind, "input": j.input,
+                      "name": j.name, "cores": j.cores, "mem_mb": j.mem_mb, "time": j.time,
+                      "hours": j.hours, "files": j.files, "size": j.size,
+                      "paths": list(j.paths),
+                      "fingerprint": [list(f) for f in j.fingerprint]} for j in batch.jobs]}
+
+
+def batch_from_dict(data: dict) -> Batch:
+    """The batch ``batch_to_dict`` kept: the jobs, their approved files and
+    the fingerprints the files are checked against before sbatch."""
+    batch = Batch(cluster=str(data["cluster"]), target=str(data.get("target") or ""),
+                  partition=str(data["partition"]), commit=str(data["commit"]),
+                  install=str(data.get("install") or ""), unit=str(data.get("unit") or ""),
+                  requested=float(data.get("requested") or 0.0),
+                  core_hours=float(data.get("core_hours") or 0.0),
+                  used=None if data.get("used") is None else float(data["used"]),
+                  limit=None if data.get("limit") is None else float(data["limit"]),
+                  notes=list(data.get("notes") or []))
+    for j in data.get("jobs") or []:
+        batch.jobs.append(Job(
+            folder=Path(j["folder"]), kind=str(j["kind"]), input=str(j.get("input") or ""),
+            name=str(j["name"]), cores=int(j["cores"]), mem_mb=int(j["mem_mb"]),
+            time=str(j["time"]), hours=float(j["hours"]), files=int(j["files"]),
+            size=int(j["size"]), paths=tuple(str(p) for p in j.get("paths") or ()),
+            fingerprint=tuple((str(p), int(sz), int(mt))
+                              for p, sz, mt in j.get("fingerprint") or ())))
+    return batch
+
+
+def queue_after_install(conn, batch: Batch, *, session_id: str = "", workspace: Any = None,
+                        on_progress: Optional[Callable[[str], None]] = None) -> dict:
+    """An approved ``batch`` whose commit is not installed yet: the install
+    started (detached; one already running is left to run) and the batch
+    kept for the job watcher to submit once it is complete. Returns the
+    kept entry (``id``, ``cluster``, ``commit``, ``jobs``). Raises what the
+    install raises (CommitNotPublished, InstallFailed) before keeping
+    anything."""
+    if not batch.ok:
+        raise RemoteError("a batch with problems is not submitted: " + "; ".join(batch.problems))
+    if batch.install == "running":
+        current = _install.state(conn, batch.commit)
+        if current not in ("running", "complete"):
+            batch.install = "needed"     # it ended since the dialog: start it again
+    if batch.install == "needed":
+        commit = _install.Commit(sha=batch.commit, checkout=_install.pc_commit().checkout,
+                                 dirty=False)
+        _install.ensure_installed(conn, commit=commit, wait=False, on_progress=on_progress)
+    entry = {"id": secrets.token_hex(4), "cluster": conn.cluster.name, "commit": batch.commit,
+             "session_id": session_id, "workspace": str(workspace or ""),
+             "queued_at": time.time(), "state": "waiting",
+             "jobs": [j.name for j in batch.jobs], "batch": batch_to_dict(batch)}
+    with _pending_locked() as kept:
+        kept[entry["id"]] = entry
+    return entry
+
+
+def pending(*, cluster: Optional[str] = None, state: str = "waiting") -> list[dict]:
+    """The batches kept for their install, oldest first (``state`` "" for all)."""
+    with _pending_locked(write=False) as kept:
+        out = [dict(e) for e in kept.values()
+               if (not state or e.get("state") == state)
+               and (cluster is None or e.get("cluster") == cluster)]
+    return sorted(out, key=lambda e: float(e.get("queued_at") or 0))
+
+
+def settle_pending(entry_id: str, **changes: Any) -> None:
+    """Record what became of a kept batch (its state, job ids, reason)."""
+    with _pending_locked() as kept:
+        if entry_id in kept:
+            kept[entry_id].update(changes)
+
+
+def _pending_path() -> Path:
+    # Resolved per call, so the suite's state redirect reaches it (state_paths).
+    return Path.home() / ".delfin" / "remote_pending.json"
+
+
+@contextlib.contextmanager
+def _pending_locked(write: bool = True):
+    """The kept batches, read and (``write``) saved under one lock: the tool
+    that keeps a batch and the watcher that settles it are other processes."""
+    import fcntl
+    from delfin.agent import state_paths
+    path = _pending_path()
+    state_paths.ensure_dir(path.parent)
+    fd = os.open(str(path.with_suffix(".lock")), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(kept, dict):
+                kept = {}
+        except (OSError, ValueError):
+            kept = {}
+        yield kept
+        if write:
+            fd2, tmp = tempfile.mkstemp(prefix=".remote_pending-", dir=str(path.parent))
+            try:
+                with os.fdopen(fd2, "w", encoding="utf-8") as fh:
+                    json.dump(kept, fh, indent=1, sort_keys=True)
+                os.replace(tmp, path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+                raise
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def cancellable(conn, job_ids: Iterable[str]) -> list[str]:
