@@ -392,16 +392,26 @@ def web_fetch(url: str, *, timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:
 
 
 def _openalex_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
-    """Scholarly works from OpenAlex (no key; a mailto joins the polite pool).
+    """Scholarly works from OpenAlex (key optional; mailto only if configured).
 
     Returns [{title, url, snippet, source}] or [] on any failure -- a
     fallback that raises is no fallback.
     """
     try:
-        url = "https://api.openalex.org/works?" + urllib.parse.urlencode({
+        params = {
             "search": query, "per-page": max(1, min(int(max_results), 10)),
-            "select": "title,doi,publication_year,primary_location,authorships",
-            "mailto": "delfin-agent@complat.org"})
+            "select": "title,doi,publication_year,primary_location,authorships"}
+        # The contact address is the person's own, optional setting
+        # (DELFIN_CONTACT_EMAIL / literature.contact_email), never a
+        # built-in one; OpenAlex no longer requires it (terms 2026-11).
+        try:
+            from .scholarly_sources import contact_email
+            mail = contact_email()
+        except Exception:
+            mail = ""
+        if mail:
+            params["mailto"] = mail
+        url = "https://api.openalex.org/works?" + urllib.parse.urlencode(params)
         body = _fetch_bytes(url, timeout_s)[0]
         data = json.loads(body.decode("utf-8", errors="replace"))
     except Exception:
