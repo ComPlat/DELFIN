@@ -44,8 +44,10 @@ function client() {
 
 async function openWatch() {
   w = await mountWindow({ client: client(), width: 110, height: 34 })
-  await w.t.mockInput.typeText("/swarm watch")
-  w.t.mockInput.pressEnter()
+  await w.keys.typeText("/swarm watch scratch/realrun/roster.json")
+  await Bun.sleep(30)
+  await w.settle()
+  w.keys.pressEnter()
   await w.settle()
   await Bun.sleep(30)
   await w.settle()
