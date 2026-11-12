@@ -228,21 +228,22 @@ install_epic_mace() {
 # DELFIN_MOLASSEMBLER_PYTHON and DELFIN_METALLOGEN_PYTHON override that.
 # rxembed (MIT) needs Python >= 3.12 and RDKit >= 2026.9.1, newer than DELFIN's;
 # it comes from a pinned GitHub commit (no PyPI release). Molassembler
-# (scine-molassembler, BSD-3) is a pinned PyPI wheel. MetalloGen (BSD-3) comes
+# (scine-molassembler, BSD-3) is the PyPI wheel for CPython 3.11 on x86_64 Linux, held to its
+# SHA-256 like the archives (no wheel for other platforms). MetalloGen (BSD-3) comes
 # from a pinned GitHub commit; DELFIN runs it only with its ORCA calculator
 # (GFN2-xTB through ORCA), so it needs ORCA, never Gaussian.
 #
 # Every version is exact: the tool itself is installed with --no-deps, its
 # dependencies are named with == (rxembed: the paper benchmark's environment,
 # KONKURRENZ_RXEMBED env_freeze; Molassembler: its benchmark environment), and
-# a GitHub archive is held to its SHA-256 before pip sees it.
+# every downloaded archive or wheel is held to its SHA-256 before pip sees it.
 RXEMBED_REF="${RXEMBED_REF:-9c0ba5a6048bdbcba94450df5d6a68067bd250c8}"
 RXEMBED_URL="${RXEMBED_URL:-https://github.com/aligfellow/rxembed/archive/${RXEMBED_REF}.tar.gz}"
 RXEMBED_SHA256="${RXEMBED_SHA256:-58ad75e9f2fc652843f185540306560eba4258809ac991de10a34b297e2dfea5}"
 RXEMBED_CONDA_SPECS="${RXEMBED_CONDA_SPECS:-python=3.12.16 pip}"
 RXEMBED_PIP_DEPS="${RXEMBED_PIP_DEPS:-numpy==2.2.2 pillow==11.1.0 rdkit==2026.9.1 networkx==3.7 xyzgraph==1.7.0}"
-MOLASSEMBLER_URL="${MOLASSEMBLER_URL:-scine-molassembler==3.0.1}"
-MOLASSEMBLER_SHA256="${MOLASSEMBLER_SHA256:-}"
+MOLASSEMBLER_URL="${MOLASSEMBLER_URL:-https://files.pythonhosted.org/packages/f6/82/9c297a7368b0010dbde0a5b5e0dd5f4186cc59a7664f967b5d8e7580be3e/scine_molassembler-3.0.1-cp311-cp311-manylinux_2_28_x86_64.whl}"
+MOLASSEMBLER_SHA256="${MOLASSEMBLER_SHA256:-b1035ce455ed2418d9b493fb19ebf9411eb7ac0d783ec5ed9081e838d54fec2b}"
 MOLASSEMBLER_CONDA_SPECS="${MOLASSEMBLER_CONDA_SPECS:-python=3.11.18 pip}"
 MOLASSEMBLER_PIP_DEPS="${MOLASSEMBLER_PIP_DEPS:-scine-utilities==10.1.0 numpy==2.4.6 scipy==1.17.1}"
 METALLOGEN_REF="${METALLOGEN_REF:-fa26e2adb996ed2256e528e1c97fbc1c363c0808}"
@@ -316,6 +317,8 @@ install_own_env() {
   local target="${pip_spec}"
   if [ -n "${sha}" ]; then
     target="${env_dir}/${name}-${sha:0:12}.tar.gz"
+    # a wheel keeps its file name: pip reads the Python and platform tags from it
+    case "${pip_spec}" in *.whl) target="${env_dir}/${pip_spec##*/}" ;; esac
     if ! fetch_checked "${pip_spec}" "${sha}" "${target}"; then
       warn "${label} installation failed: the archive could not be fetched and checked; see ${log_file}"
       return 0
