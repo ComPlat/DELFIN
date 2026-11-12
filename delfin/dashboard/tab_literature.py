@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import threading
 from pathlib import Path
 
 import ipywidgets as widgets
@@ -20,6 +21,60 @@ import ipywidgets as widgets
 from . import text_view as _text_view
 from . import upload_limits as _upload_limits
 from .select_state import replace_options as _replace_options
+
+
+def _spawn(fn) -> None:
+    """Run *fn* off the kernel's main path (tests replace this to run inline)."""
+    threading.Thread(target=fn, daemon=True, name='delfin-lit-search').start()
+
+
+def _scholarly():
+    from delfin.agent import scholarly_sources
+    return scholarly_sources
+
+
+def _safe_href(url) -> str:
+    text = str(url or '').strip()
+    return _html.escape(text, quote=True) if text.startswith(('https://', 'http://')) else ''
+
+
+def _format_hit_html(rec: dict) -> str:
+    """One search result, Google-Scholar style: title link, people, venue,
+    year, citations, DOI / PDF links and the sources that found it."""
+    ss = _scholarly()
+    title = _html.escape(rec.get('title') or 'Untitled')
+    href = _safe_href(rec.get('url'))
+    title_html = (f'<a href="{href}" target="_blank" rel="noopener noreferrer">{title}</a>'
+                  if href else title)
+    authors = rec.get('authors') or []
+    people = ', '.join(authors[:4]) + (', \u2026' if len(authors) > 4 else '')
+    meta = [x for x in (people, rec.get('venue') or '', str(rec.get('year') or '')) if x]
+    links = []
+    if rec.get('doi'):
+        doi = _html.escape(rec['doi'])
+        links.append(f'<a href="https://doi.org/{doi}" target="_blank" '
+                     f'rel="noopener noreferrer">DOI {doi}</a>')
+    pdf = _safe_href(rec.get('pdf_url'))
+    if pdf:
+        lic = _html.escape(rec.get('pdf_license') or 'licence unknown')
+        links.append(f'<a href="{pdf}" target="_blank" rel="noopener noreferrer">'
+                     f'[PDF]</a> <span class="lit-hit-lic">{lic}</span>')
+    if rec.get('cited_by') is not None:
+        links.append(f'Cited by {int(rec["cited_by"])}')
+    if rec.get('preprint'):
+        links.append(f'<span class="lit-hit-pre">{_html.escape(rec["preprint"])} preprint</span>')
+    found = ', '.join(ss.SOURCES[k].label if k in ss.SOURCES else k.title()
+                      for k in rec.get('sources') or [])
+    meta_html = _html.escape(' \u2014 '.join(meta))
+    links_html = ' \u00b7 '.join(links)
+    return (
+        '<div class="lit-hit">'
+        f'<div class="lit-hit-title">{title_html}</div>'
+        f'<div class="lit-hit-meta">{meta_html}</div>'
+        f'<div class="lit-hit-links">{links_html}</div>'
+        f'<div class="lit-hit-src">Found in: {_html.escape(found)}</div>'
+        '</div>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -389,11 +444,63 @@ def create_tab(ctx):
     )
     lit_content.add_class('lit-content-area')
 
+    # ── Online search panel (federated: OpenAlex, Crossref, arXiv, ...) ──
+    lit_mode = widgets.ToggleButtons(
+        options=[('Preview', 'preview'), ('\U0001F50E Search online', 'search')],
+        value='preview',
+        tooltips=['Preview the selected file',
+                  'Search OpenAlex, Crossref, arXiv, Europe PMC and more'],
+        layout=widgets.Layout(width='auto'),
+    )
+    lit_mode.style.button_width = 'auto'
+    lit_q = widgets.Text(
+        placeholder='Search papers: title, author, DOI, keywords \u2014 press Enter',
+        continuous_update=False,
+        layout=widgets.Layout(flex='1 1 auto', min_width='0', width='auto', height='28px'),
+    )
+    lit_q.add_class('lit-search-query')
+    lit_q_btn = widgets.Button(
+        description='Search', button_style='primary',
+        layout=widgets.Layout(width='80px', height='28px'),
+    )
+    lit_q_sort = widgets.Dropdown(
+        options=[('Relevance', 'relevance'), ('Newest', 'year'), ('Most cited', 'citations')],
+        value='relevance',
+        layout=widgets.Layout(width='120px', height='28px'),
+    )
+    _ss_mod = _scholarly()
+    _default_src = set(_ss_mod.default_sources())
+    lit_src_boxes = {
+        key: widgets.Checkbox(value=key in _default_src, description=src.label,
+                              indent=False, layout=widgets.Layout(width='auto'))
+        for key, src in _ss_mod.SOURCES.items()
+    }
+    lit_src_boxes['unpaywall'] = widgets.Checkbox(
+        value=bool(_ss_mod.contact_email()), description='Unpaywall (OA PDFs)',
+        indent=False, layout=widgets.Layout(width='auto'),
+        tooltip='Needs a contact e-mail: DELFIN_CONTACT_EMAIL or literature.contact_email',
+    )
+    lit_q_status = widgets.HTML(value='', layout=widgets.Layout(width='100%', overflow_x='hidden'))
+    lit_q_status.add_class('lit-search-status')
+    lit_q_results = widgets.VBox(
+        [], layout=widgets.Layout(width='100%', flex='1 1 0', min_height='0', overflow_y='auto'),
+    )
+    lit_q_results.add_class('lit-search-results')
+    lit_search_panel = widgets.VBox([
+        widgets.HBox([lit_q, lit_q_btn, lit_q_sort],
+                     layout=widgets.Layout(width='100%', gap='6px', align_items='center')),
+        widgets.HBox(list(lit_src_boxes.values()),
+                     layout=widgets.Layout(width='100%', flex_flow='row wrap', gap='4px 12px')),
+        lit_q_status,
+        lit_q_results,
+    ], layout=widgets.Layout(width='100%', display='none', flex='1 1 0', min_height='0'))
+    lit_search_panel.add_class('lit-search-panel')
+
     lit_right = widgets.VBox([
         widgets.HBox([
             lit_file_info,
             widgets.HBox(
-                [lit_copy_path_btn],
+                [lit_mode, lit_copy_path_btn],
                 layout=widgets.Layout(
                     gap='10px',
                     flex_flow='row wrap',
@@ -412,6 +519,7 @@ def create_tab(ctx):
         lit_ops_status,
         lit_status,
         lit_content,
+        lit_search_panel,
     ], layout=widgets.Layout(
         flex='1 1 0', min_width='0', padding='5px',
         overflow_x='hidden', overflow_y='hidden',
@@ -463,6 +571,17 @@ def create_tab(ctx):
         f'.{scope_id} input::-webkit-scrollbar {{ width:0; height:0; display:none; }}'
         f'.{scope_id} input {{ scrollbar-width:none; }}'
         '.lit-file-list select { font-family:monospace !important; font-size:13px !important; }'
+        '.lit-search-panel { display:flex; flex-direction:column; }'
+        '.lit-search-results { overflow-y:auto !important; border-top:1px solid #ddd; }'
+        '.lit-hit { padding:6px 2px; font-size:13px; line-height:1.35; }'
+        '.lit-hit-title { font-size:14px; font-weight:600; }'
+        '.lit-hit-title a { color:#1a0dab; text-decoration:none; }'
+        '.lit-hit-title a:hover { text-decoration:underline; }'
+        '.lit-hit-meta { color:#1e7b34; font-size:12px; }'
+        '.lit-hit-links, .lit-hit-src { color:#555; font-size:12px; }'
+        '.lit-hit-lic, .lit-hit-pre { color:#777; font-style:italic; }'
+        '.lit-hit-row { border-bottom:1px solid #eee; align-items:center; }'
+        '.lit-search-status { font-size:12px; white-space:nowrap; text-overflow:ellipsis; }'
         # Hide the FileUpload widget completely
         '.lit-hidden-upload { position:absolute !important; width:1px !important; height:1px !important;'
         ' opacity:0 !important; overflow:hidden !important; pointer-events:none !important; }'
@@ -772,6 +891,7 @@ def create_tab(ctx):
 
     def open_file(path: Path) -> None:
         state['selected_file'] = path
+        lit_mode.value = 'preview'
         lit_delete_btn.disabled = False
         lit_del_confirm.layout.display = 'none'
         lit_del_status.value = ''
@@ -1192,6 +1312,138 @@ def create_tab(ctx):
     lit_upload_seq.observe(on_upload_seq, names='value')
     lit_upload_trigger.on_click(on_upload_trigger)
 
+    # ── Online search: federated, cached, off the main path ───────────
+
+    search_state = {'gen': 0, 'results': []}
+
+    def _q_status(msg: str, color: str = '#666') -> None:
+        lit_q_status.value = (f'<span style="color:{color}" title="{_html.escape(msg)}">'
+                              f'{_html.escape(msg)}</span>')
+
+    def on_mode(change=None) -> None:
+        searching = lit_mode.value == 'search'
+        lit_search_panel.layout.display = 'flex' if searching else 'none'
+        lit_content.layout.display = 'none' if searching else 'block'
+
+    def _render_results() -> None:
+        ss = _scholarly()
+        recs = ss.sort_records(list(search_state['results']), lit_q_sort.value)
+        rows = []
+        for rec in recs:
+            info = widgets.HTML(_format_hit_html(rec),
+                                layout=widgets.Layout(flex='1 1 auto', min_width='0'))
+            add = widgets.Button(
+                description='Add',
+                tooltip='Add to my literature (record + open-access PDF when its licence allows)',
+                layout=widgets.Layout(width='70px', min_width='70px', height='28px'),
+            )
+            add.on_click(lambda _b, r=rec: on_add(r, _b))
+            row = widgets.HBox([info, add], layout=widgets.Layout(width='100%', gap='8px'))
+            row.add_class('lit-hit-row')
+            rows.append(row)
+        old_rows = lit_q_results.children
+        lit_q_results.children = tuple(rows)
+        for old in old_rows:            # no widget leak across searches
+            for child in old.children:
+                child.close()
+            old.close()
+
+    def run_search(_change=None) -> None:
+        query = (lit_q.value or '').strip()
+        if not query:
+            _q_status('Type a query and press Enter.')
+            return
+        sources = [k for k, box in lit_src_boxes.items() if box.value and k != 'unpaywall']
+        if not sources:
+            _q_status('Choose at least one source.', '#d32f2f')
+            return
+        search_state['gen'] += 1
+        gen = search_state['gen']
+        unpaywall = bool(lit_src_boxes['unpaywall'].value)
+        _q_status(f'Searching {len(sources)} source(s)\u2026', '#1565c0')
+
+        def work():
+            ss = _scholarly()
+            try:
+                out = ss.federated_search(query, sources=sources, max_results=10,
+                                          timeout_s=10.0, unpaywall=unpaywall)
+            except Exception as exc:     # never a frozen or silent tab
+                out = {'results': [], 'status': {}, 'notes': [f'Search failed: {exc}']}
+            if gen != search_state['gen']:
+                return                    # a newer search owns the panel
+            search_state['results'] = out.get('results') or []
+            _render_results()
+            n = len(search_state['results'])
+            problems = ss.status_line(out.get('status') or {}, out.get('notes'))
+            msg = f'{n} result(s)' + (f' \u2014 {problems}' if problems else '')
+            _q_status(msg, '#2e7d32' if n and not problems else ('#b26a00' if n else '#d32f2f'))
+
+        _spawn(work)
+
+    def on_add(rec: dict, btn=None) -> None:
+        if btn is not None:
+            btn.disabled = True
+            btn.description = '\u2026'
+        target = _cur_dir()
+
+        def work():
+            ss = _scholarly()
+            try:
+                msg, color = _store_record(ss, rec, target)
+            except Exception as exc:
+                msg, color = f'Could not add: {exc}', '#d32f2f'
+            _q_status(msg, color)
+            if btn is not None:
+                ok = color == '#2e7d32' or 'Already' in msg
+                btn.description = 'Added' if ok else 'Add'
+                btn.disabled = ok
+            list_directory()
+            _rebuild_index(silent=True)
+
+        _spawn(work)
+
+    def _unique(target: Path, base: str, suffix: str) -> Path:
+        dest = _resolve_literature_path(lit_dir, target / f'{base}{suffix}')
+        c = 2
+        while dest.exists() or dest.is_symlink():
+            dest = _resolve_literature_path(lit_dir, target / f'{base}_{c}{suffix}')
+            c += 1
+        return dest
+
+    def _store_record(ss, rec: dict, target: Path):
+        base = _safe_literature_entry_name(ss.suggest_basename(rec))
+        md_path = _resolve_literature_path(lit_dir, target / f'{base}.md')
+        if md_path.exists():
+            return f'Already in your literature: {md_path.name}', '#666'
+        rec = dict(rec)
+        if rec.get('doi') and not ss.licence_permits_storage(rec.get('pdf_license')) \
+                and lit_src_boxes['unpaywall'].value:
+            got = ss.unpaywall_lookup(rec['doi'])
+            if got.get('status') == 'ok' and got.get('pdf_url') \
+                    and ss.licence_permits_storage(got.get('license')):
+                rec['pdf_url'], rec['pdf_license'] = got['pdf_url'], got['license']
+        pdf_name, pdf_note = '', ''
+        if rec.get('pdf_url'):
+            try:
+                data = ss.download_open_pdf(rec)
+                pdf_path = _unique(target, base, '.pdf')
+                _upload_limits.write_new_bytes(pdf_path, data)
+                pdf_name = pdf_path.name
+            except Exception as exc:
+                pdf_note = f'PDF not stored: {exc}'
+        else:
+            pdf_note = 'no open-access PDF found'
+        text = ss.to_markdown(rec, pdf_file=pdf_name, pdf_note=pdf_note)
+        _upload_limits.write_new_bytes(md_path, text.encode('utf-8'))
+        if pdf_name:
+            return f'Added {md_path.name} and {pdf_name}', '#2e7d32'
+        return f'Added {md_path.name} \u2014 {pdf_note}', '#2e7d32'
+
+    lit_mode.observe(on_mode, names='value')
+    lit_q.observe(run_search, names='value')
+    lit_q_btn.on_click(run_search)
+    lit_q_sort.observe(lambda _c: _render_results(), names='value')
+
     # ── Wire events ───────────────────────────────────────────────────
 
     lit_file_list.observe(on_select, names='value')
@@ -1216,4 +1468,19 @@ def create_tab(ctx):
 
     ctx.add_init_js(_init_js)
 
-    return tab_widget, {}
+    return tab_widget, {
+        'lit_dir': lit_dir,
+        'lit_mode': lit_mode,
+        'lit_search_query': lit_q,
+        'lit_search_button': lit_q_btn,
+        'lit_search_sort': lit_q_sort,
+        'lit_search_sources': lit_src_boxes,
+        'lit_search_status': lit_q_status,
+        'lit_search_results': lit_q_results,
+        'lit_search_panel': lit_search_panel,
+        'lit_content': lit_content,
+        'lit_search_state': search_state,
+        'lit_search_run': run_search,
+        'lit_search_add': on_add,
+        'lit_list_directory': list_directory,
+    }
