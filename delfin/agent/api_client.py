@@ -7400,6 +7400,7 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     "geometry_replace_ligand", "geometry_mirror", "geometry_align_rmsd",
     "geometry_merge", "geometry_freeze", "geometry_constraints_block",
     "geometry_build_smiles", "geometry_write_orca_block",
+    "geometry_renumber", "geometry_fix_hydrogens", "geometry_diff",
     # trajectory_xyz (2026-11-03): ORCA output -> multi-frame xyz text;
     # pure parse, no write.
     "trajectory_xyz",
