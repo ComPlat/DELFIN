@@ -1039,7 +1039,9 @@ def download_open_pdf(rec: dict, *, timeout_s: float = 30.0,
         raise ValueError("the licence ({}) does not allow keeping a copy; "
                          "link only".format(rec.get("pdf_license") or "unknown"))
     host = (urllib.parse.urlsplit(url).hostname or "").lower()
-    if host.endswith("arxiv.org"):
+    # arxiv.org and its subdomains (export., www.), not any host whose name
+    # merely ends in those letters.
+    if host == "arxiv.org" or host.endswith(".arxiv.org"):
         raise ValueError("arXiv e-prints are linked, not stored")
     why = web_tools._check_url(url)
     if why:

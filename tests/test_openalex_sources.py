@@ -448,6 +448,11 @@ def test_download_open_pdf_only_for_open_licences(monkeypatch):
         ss.download_open_pdf(dict(rec, pdf_license="publisher-specific-oa"))
     with pytest.raises(ValueError, match="arXiv"):
         ss.download_open_pdf({"pdf_url": "https://arxiv.org/pdf/1", "pdf_license": "cc-by"})
+    with pytest.raises(ValueError, match="arXiv"):
+        ss.download_open_pdf({"pdf_url": "https://export.arxiv.org/pdf/1", "pdf_license": "cc-by"})
+    # A host that only ends in the same letters is not arXiv.
+    assert ss.download_open_pdf({"pdf_url": "https://notarxiv.org/a.pdf",
+                                 "pdf_license": "cc-by"}).startswith(b"%PDF-")
 
 
 def test_download_refuses_a_landing_page(monkeypatch):
