@@ -83,6 +83,15 @@ _NOT_EXERCISED_HERE = {
     "lab_estop": "tests/test_lab_deadman_and_estop.py",
     # Cluster resources this machine does not have.
     "watch_job": "needs SLURM",
+    "cluster_status": "tests/test_the_agent_reaches_a_cluster_only_through_"
+                      "its_tools_and_a_person.py — needs a cluster behind ctun",
+    "cluster_read": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_fetch": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_upload": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_submit": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_cancel": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_run": "tests/test_the_agent_reaches_a_cluster_only_through_its_tools_and_a_person.py",
+    "cluster_propose": "tests/test_a_cluster_is_added_in_the_window_and_only_proposed_by_an_agent.py",
     "session_message": "tests/test_sessions_can_write_to_each_other.py — "
                        "needs a second open session",
     "run_tests": "would run the suite inside the suite",

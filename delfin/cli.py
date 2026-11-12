@@ -198,7 +198,14 @@ def _run_doctor_subcommand(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="delfin doctor",
         description="Installation self-check: ORCA, xTB, OpenMPI, scratch dir, "
-        "SLURM, KIT key and doc index. No computations, no network.",
+        "SLURM, KIT key, doc index and the clusters in remote.clusters. "
+        "No computations, no network (unless --budget).",
+    )
+    parser.add_argument(
+        "--budget",
+        action="store_true",
+        help="Also probe the compute budget of each logged-in cluster "
+        "(runs its budget script over the tunnel).",
     )
     parser.add_argument(
         "--json",
@@ -214,7 +221,7 @@ def _run_doctor_subcommand(argv: list[str]) -> int:
 
     from .doctor import run_all, exit_code  # lazy: keep CLI startup light
 
-    results = run_all(scratch_dir=args.scratch)
+    results = run_all(scratch_dir=args.scratch, cluster_budget=args.budget)
 
     if args.json:
         print(json.dumps([asdict(r) for r in results], indent=2))

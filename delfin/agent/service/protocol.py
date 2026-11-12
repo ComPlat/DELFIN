@@ -312,6 +312,41 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "attention.list": {},
     "attention.answer": {"id": "string", "text": "string"},
     "attention.dismiss": {"id": "string"},
+    # DELFIN's clusters (delfin.remote, clusters_feed.py): each one in
+    # remote.clusters with its state, budget and job count. cluster.login
+    # carries what a person typed into the window's masked field: the
+    # service hands it to ctun and nowhere else -- never to a worker, into
+    # an event, a log or an error text -- and takes it only from a window.
+    "clusters.list": {},
+    "cluster.login": {"name": "string", "password": "string?", "otp": "string?"},
+    "cluster.logout": {"name": "string"},
+    # What runs in the background: the agents' shells, watches, sub-agents
+    # and wake-ups per session, DELFIN's job monitor, and the active jobs on
+    # each logged-in cluster.
+    "jobs.list": {},
+    # What Space on an entry shows (clusters_feed.cluster_detail and
+    # job_detail): the session, budget, DELFIN's installs and host key of a
+    # cluster; Slurm's facts, where a job runs and its output's tail. Only a
+    # window asks: they read files on a cluster and other sessions' output.
+    # job.detail: source cluster (cluster, id: one of the user's active
+    # jobs), agent (session: an id this service runs, group, id) or monitor.
+    "cluster.detail": {"name": "string"},
+    "job.detail": {"source": "string", "id": "string", "cluster": "string?",
+                   "session": "string?", "group": "string?"},
+    # Adding and removing a cluster (delfin.remote.setup), from the window's
+    # add form only: the entries in ctun's config and remote.clusters decide
+    # where DELFIN's ssh goes. clusters.presets: the clusters ctun knows.
+    # cluster.add writes both entries, then pins a preset's published host
+    # key if the server presents it; else hostKey.offered is the key to show
+    # the person, and cluster.pin pins exactly that one once they confirm it
+    # (cluster.hostkey asks the server again). cluster.remove: both entries.
+    "clusters.presets": {},
+    "cluster.add": {"name": "string", "user": "string", "preset": "string?",
+                    "host": "string?", "requiresOtp": "boolean?", "partition": "string?",
+                    "workDir": "string?", "installRoot": "string?"},
+    "cluster.hostkey": {"name": "string"},
+    "cluster.pin": {"name": "string", "fingerprint": "string"},
+    "cluster.remove": {"name": "string"},
     # Swarm management (package SW2b; the logic is SW1's
     # delfin/agent/swarm/, the wrappers delfin/agent/service/swarm_rpc.py).
     # spec: the spec object, or specYaml: swarm.yaml text. swarm.start is
@@ -367,6 +402,29 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "attention.list": {"items": "[object]", "version": "integer?"},
     "attention.answer": {"ok": "boolean", "error": "string?"},
     "attention.dismiss": {"ok": "boolean", "error": "string?"},
+    "clusters.list": {"clusters": "[object]"},
+    # opened: the tunnel was opened now (false: it was up already). code: a
+    # delfin.remote error code (login_failed, cluster_not_usable, ...).
+    "cluster.login": {"ok": "boolean", "opened": "boolean", "code": "string?",
+                      "error": "string?"},
+    "cluster.logout": {"ok": "boolean", "closed": "boolean", "code": "string?",
+                       "error": "string?"},
+    "jobs.list": {"groups": "[object]", "errors": "[string]"},
+    # sections: each {title, pairs: [[label, value]], lines: [text]}.
+    "cluster.detail": {"sections": "[object]", "error": "string?"},
+    "job.detail": {"sections": "[object]", "error": "string?"},
+    # presets: each {name, title, host, requiresOtp, requiresPassword,
+    # userHint, budget, fingerprint, fingerprintSource, partition}. hostKey:
+    # {pinned, fingerprint, source, offered, expected, error}; code: invalid,
+    # exists, ctun_failed, settings_unreadable, settings_unwritable,
+    # host_key_mismatch, not_pinned, jobs_followed, unknown, not_removed.
+    "clusters.presets": {"presets": "[object]", "error": "string?"},
+    "cluster.add": {"ok": "boolean", "code": "string?", "error": "string?",
+                    "name": "string", "hostKey": "object?"},
+    "cluster.hostkey": {"offered": "string?", "pinned": "boolean", "error": "string?"},
+    "cluster.pin": {"ok": "boolean", "code": "string?", "error": "string?"},
+    "cluster.remove": {"ok": "boolean", "code": "string?", "error": "string?",
+                       "loggedOut": "boolean?", "keysRemoved": "integer?"},
     # The status schema SW1 documents (status.py STATUS_SCHEMA); plan
     # carries the launch plan plus dry_run_text; start is a dry run
     # unless confirm=true. pause/resume answer available=false until SW1
@@ -414,19 +472,23 @@ SERVICE_EVENTS: dict[str, dict[str, str]] = {
 }
 
 #: An attention item (attention.list, attention.updated). kind: question |
-#: confirm | plan | failed | alert | finished | budget | notice; group:
+#: confirm | plan | failed | alert | finished | budget | login | notice; group:
 #: needs | notices; blocking: someone waits for an answer. name: what it is
 #: about (a session's title, "job 4711 failed"); text: one line on what it
 #: needs; detail: what a peek shows. sessionId: the session it belongs to,
 #: if any -- sessionOpen: another process has it open (open a copy),
 #: sessionSaved: the store has it (resume it). job: a job's id, state,
 #: folder, error signatures, the diagnosis session, summary and fix.
+#: cluster: a login item's cluster -- the window opens its masked login
+#: field for it, and never sends attention.answer (a password is no answer).
 ATTENTION_ITEM: dict[str, str] = {
     "id": "string", "kind": "string", "group": "string", "blocking": "boolean",
     "name": "string", "text": "string", "detail": "string", "workspace": "string",
     "host": "string", "sessionId": "string", "sessionTitle": "string?",
     "sessionOpen": "boolean?", "sessionSaved": "boolean?", "createdAt": "number",
-    "options": "[string]", "job": "object?"}
+    "options": "[string]", "job": "object?", "cluster": "string?",
+    # A cluster_add item's (an agent's proposal): the add form's fields.
+    "proposal": "object?"}
 
 #: The fields of a session summary (session.summary, sessions.list). The
 #: last five say what the session is about in a few words, for the agent

@@ -184,6 +184,7 @@ const view = startSessionView(renderer, store, theme, { showThinking, replayTurn
 store.update((d) => {
   d.mayAct = Boolean(hello.mayAct)
   d.host = String(hello.host ?? "")
+  d.serviceVersion = Number(hello.serviceVersion ?? 0)
 })
 // Every session the service runs, for the agent view (each summary that
 // follows keeps its row up to date).
@@ -773,7 +774,8 @@ if (!current && !quitting) {
 // not shown twice (the store drops seen sequence numbers), and what it
 // knew of a turn that ended meanwhile is let go.
 connection.onUp(async (again) => {
-  // What this (maybe new) service runs is what the window knows now.
+  // What this (maybe new) service runs and does is what the window knows now.
+  store.update((d) => { d.serviceVersion = Number(again.serviceVersion ?? 0) })
   listed(store, (again.sessions ?? []) as { sessionId?: string }[])
   void loadAttention(again)
   if (!current) return

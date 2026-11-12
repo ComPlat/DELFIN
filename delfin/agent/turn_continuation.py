@@ -308,7 +308,8 @@ def _is_conditional(text: str) -> bool:
 
 
 def should_continue(answer: str, open_tasks: int,
-                    session_key: str | None = None) -> tuple[bool, str]:
+                    session_key: str | None = None,
+                    watched: bool = False) -> tuple[bool, str]:
     """Whether the session should be nudged to continue, and the note.
 
     One condition: the answer announces agent work it did not do.
@@ -334,6 +335,12 @@ def should_continue(answer: str, open_tasks: int,
     """
     if not announced_action(answer):
         return False, ""
+    # A session whose job or batch DELFIN's watcher follows is parked as a
+    # wait is: "I will report when it is done" after cluster_submit is the
+    # truth, and the watcher brings the session back. Nudging made the model
+    # submit again or poll, and told the person nothing was running.
+    if watched:
+        return False, _WATCH_NOTE
     # A turn that registered a WAIT is not nudged: the wait is the
     # mechanism that brings the session back when its event arrives
     # (wait_registry.due fires it once, with a note naming the event).
@@ -363,6 +370,13 @@ _WAIT_NOTE = (
     "System note: the nudge is suppressed because this turn registered a "
     "wait (wait_registry); the session wakes when the waited-for event "
     "arrives. The person can clear the wait."
+)
+
+
+#: The note for a nudge suppressed by a followed job.
+_WATCH_NOTE = (
+    "System note: the nudge is suppressed because a job this session started "
+    "is being followed; the session is told when it ends."
 )
 
 
