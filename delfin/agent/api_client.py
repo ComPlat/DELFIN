@@ -16167,8 +16167,9 @@ def _bypass_screened_action(
     action itself for a message to another session or a web search; for
     a write whose target resolves inside the session workspace or the
     configured agent workspace, the action with the instructing-file
-    question answered on the path RELATIVE to that root; None for
-    everything else, which goes to the model.
+    question answered on the path RELATIVE to that root; for a shell
+    command that runs caged and stays in the workspace, the action itself;
+    None for everything else, which goes to the model.
 
     Relative, because a DELFIN worktree lives under ``.delfin/worktrees``
     and the absolute path of every file in it matched the ``/.delfin/``
@@ -16182,6 +16183,24 @@ def _bypass_screened_action(
     tool = str(action.get("tool") or "")
     if tool in _BYPASS_SCREENED_TOOLS:
         return action
+    if tool in ("bash", "bash_background"):
+        # A command that runs inside the cage and does not leave the
+        # workspace by the deterministic rules (_leaves_workspace: not the
+        # high-risk class, no network, not heavy compute) is workspace work
+        # like a write in the workspace: the cage confines its writes, the
+        # egress proxy its network, the change journal can take it back.
+        # Measured on the Pi on 2026-11-12: 55 of 74 refusals in a day were
+        # such commands (pytest, git add/commit in the session's repo,
+        # grep, true), refused because the confirming model did not answer
+        # under load; 10 more were git grep pipelines the model refused.
+        # Without a cage, the model still judges.
+        try:
+            if _bash_runs_caged(perms) and not _leaves_workspace(
+                    perms, action, True):
+                return action
+        except Exception:
+            return None
+        return None
     if tool not in ("write_file", "edit_file", "multi_edit"):
         return None
     raw = str(action.get("path") or "").strip()
@@ -22987,8 +23006,11 @@ class _DocToolExecutor:
         # with a reason is unaffected.
         on_error = ("ask" if can_ask else "refuse") if leaves else "allow"
         try:
+            # The broad scope is the user asking for a second opinion on
+            # everything: there a shell command keeps the model.
             screened = (_bypass_screened_action(perms, action)
-                        if bypass else None)
+                        if bypass and not (cfg.get("broad") and base in (
+                            "bash", "bash_background")) else None)
             if screened is not None:
                 # A message to a sibling session, a web search, a write in
                 # the session or agent workspace: the user's rules and the
