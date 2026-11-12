@@ -7391,7 +7391,7 @@ _DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
 _PLAN_MODE_TASK_REJECT = (
     "plan mode (read-only) — creating or starting tasks is blocked while "
     "planning. Present the plan in chat and call exit_plan_mode to submit it "
-    "for approval (the user can also click 'Plan akzeptieren & ausführen' or "
+    "for approval (the user can also click 'Accept plan & execute' or "
     "switch the mode chip to 'acceptEdits'). Tasks are created once the plan "
     "is approved."
 )
@@ -23235,7 +23235,7 @@ class _DocToolExecutor:
                 "Describe the proposed change in chat instead. "
                 "When the plan is complete, call exit_plan_mode to "
                 "submit it for approval; the user can also click "
-                "'Plan akzeptieren & ausführen' or switch the mode "
+                "'Accept plan & execute' or switch the mode "
                 "chip to 'acceptEdits' to proceed."
             )
 
