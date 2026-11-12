@@ -22,8 +22,11 @@ def _parse(out_xyz):
 
 
 def _angle(a, b, c):
-    u = [b[k] - a[k] for k in range(3)]
-    v = [c[k] - a[k] for k in range(3)]
+    # Both legs FROM the vertex b (the earlier u = b - a mixed an
+    # incoming with an outgoing leg and distorted the angle readouts;
+    # operator round-4 finding applies here too).
+    u = [a[k] - b[k] for k in range(3)]
+    v = [c[k] - b[k] for k in range(3)]
     nu = math.sqrt(sum(x * x for x in u))
     nv = math.sqrt(sum(x * x for x in v))
     return math.degrees(math.acos(
@@ -45,7 +48,7 @@ def test_acetylene_sp_h_is_linear_not_trans_bent():
     for c, other in ((c0, c1), (c1, c0)):
         hs = _h_of(atoms, c)
         assert len(hs) == 1, f"C{c} carries {len(hs)} H"
-        ang = _angle(atoms[c][1], atoms[other][1], atoms[hs[0]][1])
+        ang = _angle(atoms[other][1], atoms[c][1], atoms[hs[0]][1])
         assert abs(ang - 180.0) < 3.0, f"C-C-H {ang:.1f}"
 
 
@@ -84,17 +87,17 @@ def test_regression_all_previous_realrun_cases():
     h0 = _h_of(a, 0)
     assert len(h0) == 2
     for h in h0:
-        assert abs(_angle(a[0][1], a[1][1], a[h][1]) - 120.0) < 3.0
+        assert abs(_angle(a[1][1], a[0][1], a[h][1]) - 120.0) < 3.0
     # Methylamine: pyramidal NH2.
     out = fix_hydrogens("2\n\nC  0.0  0.0  0.0\nN  1.47  0.0  0.0\n")
     a = _parse(out["xyz"])
     n = next(i for i, (s, _) in enumerate(a) if s == "N")
     hn = _h_of(a, n)
     assert len(hn) == 2
-    assert abs(_angle(a[n][1], a[hn[0]][1], a[hn[1]][1]) - 106.7) < 4.0
+    assert abs(_angle(a[hn[0]][1], a[n][1], a[hn[1]][1]) - 106.7) < 4.0
     # Lone CH4: C-H 1.09, H-C-H 109.47.
     out = fix_hydrogens("1\n\nC  0.0  0.0  0.0\n")
     a = _parse(out["xyz"])
     hs = [i for i, (s, _) in enumerate(a) if s == "H"]
     assert len(hs) == 4
-    assert abs(_angle(a[0][1], a[hs[0]][1], a[hs[1]][1]) - 109.47) < 2.0
+    assert abs(_angle(a[hs[0]][1], a[0][1], a[hs[1]][1]) - 109.47) < 2.0

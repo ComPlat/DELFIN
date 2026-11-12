@@ -21,8 +21,11 @@ def _parse(out_xyz):
 
 
 def _angle(a, b, c):
-    u = [b[k] - a[k] for k in range(3)]
-    v = [c[k] - a[k] for k in range(3)]
+    # Both legs FROM the vertex b (the earlier u = b - a mixed an
+    # incoming with an outgoing leg and distorted the angle readouts;
+    # operator round-4 finding applies here too).
+    u = [a[k] - b[k] for k in range(3)]
+    v = [c[k] - b[k] for k in range(3)]
     nu = math.sqrt(sum(x * x for x in u))
     nv = math.sqrt(sum(x * x for x in v))
     return math.degrees(math.acos(
@@ -107,7 +110,7 @@ def test_amide_n_is_planar():
     hs = _h_of(atoms, ni)
     assert len(hs) == 2
     a, b = hs
-    ang = _angle(atoms[ni][1], atoms[a][1], atoms[b][1])
+    ang = _angle(atoms[a][1], atoms[ni][1], atoms[b][1])
     assert abs(ang - 120.0) < 6.0, f"H-N-H {ang:.1f} (planar amide)"
 
 
@@ -118,7 +121,7 @@ def test_regression_all_previous_cases():
     for c in range(2):
         hs = _h_of(atoms, c)
         assert len(hs) == 1
-        assert abs(_angle(atoms[c][1], atoms[1 - c][1],
+        assert abs(_angle(atoms[1 - c][1], atoms[c][1],
                           atoms[hs[0]][1]) - 180.0) < 3.0
     out = fix_hydrogens("2\n\nC  0.0  0.0  0.0\nC  1.33  0.0  0.0\n")
     atoms = _parse(out["xyz"])
@@ -126,5 +129,5 @@ def test_regression_all_previous_cases():
     out = fix_hydrogens("1\n\nO  0.0  0.0  0.0\n")
     atoms = _parse(out["xyz"])
     hs = _h_of(atoms, 0)
-    assert abs(_angle(atoms[0][1], atoms[hs[0]][1],
+    assert abs(_angle(atoms[hs[0]][1], atoms[0][1],
                       atoms[hs[1]][1]) - 104.5) < 3.0

@@ -22,8 +22,11 @@ def _parse(out_xyz):
 
 
 def _angle(a, b, c):
-    u = [b[k] - a[k] for k in range(3)]
-    v = [c[k] - a[k] for k in range(3)]
+    # Both legs FROM the vertex b (the earlier u = b - a mixed an
+    # incoming with an outgoing leg and distorted the angle readouts;
+    # operator round-4 finding applies here too).
+    u = [a[k] - b[k] for k in range(3)]
+    v = [c[k] - b[k] for k in range(3)]
     nu = math.sqrt(sum(x * x for x in u))
     nv = math.sqrt(sum(x * x for x in v))
     return math.degrees(math.acos(
@@ -58,8 +61,8 @@ def test_methylamine_amine_n_is_pyramidal_not_planar():
     hn = [i for i, (s, p) in enumerate(atoms)
           if s == "H" and math.dist(p, atoms[n][1]) < 1.3]
     assert len(hn) == 2, f"N carries {len(hn)} H"
-    cnh = [_angle(atoms[n][1], atoms[c][1], atoms[h][1]) for h in hn]
-    hnh = _angle(atoms[n][1], atoms[hn[0]][1], atoms[hn[1]][1])
+    cnh = [_angle(atoms[c][1], atoms[n][1], atoms[h][1]) for h in hn]
+    hnh = _angle(atoms[hn[0]][1], atoms[n][1], atoms[hn[1]][1])
     # Pyramidal amine: C-N-H ~110, H-N-H ~106 (NOT planar 120/120).
     for a in cnh:
         assert abs(a - 110.0) < 4.0, f"C-N-H {a:.1f}"

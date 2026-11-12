@@ -82,6 +82,36 @@ _VALENCE: dict[str, int] = {
 }
 
 
+# Real X-X-H bond angle (degrees) for an atom with ONE heavy neighbour
+# whose H placement is sp3-like but element-specific — linear 180 is
+# wrong for these (operator round-7 rerun: methanol C-O-H 180.0,
+# real ~108.5; methanethiol C-S-H 180.0, real ~96). Absent entries
+# (C, N) keep the sp3/sp2 machinery.
+_BOND_ANGLE_ONE_NEIGHBOUR: dict[str, float] = {
+    "O": 108.5,
+    "S": 96.0,
+}
+
+
+def _filter_graph(nbrs, g, radii):
+    """Drop contacts above 1.05 x the covalent-radii sum. Real covalent
+    bonds sit at <= ~1.01 x (C-C 1.54/1.52, C-S 1.82/1.81; multiple and
+    aromatic bonds well below); ``_bond_graph``'s 0.45-tolerance cutoff
+    is purely geometric and admits phantom bonds: a benzene C-C stretched
+    to 1.75 A passed, giving that carbon 2 H instead of 1 (probe R7-F1
+    v2: 9 H on benzene)."""
+    out: dict[int, list[int]] = {}
+    for i, js in nbrs.items():
+        keep = []
+        for j in js:
+            d = math.dist(g.coords[i], g.coords[j])
+            if d <= 1.05 * (radii[i] + radii[j]):
+                keep.append(j)
+        if keep:
+            out[i] = keep
+    return out
+
+
 def _parse(text: str, what: str = "structure") -> Geom:
     if not isinstance(text, str) or not text.strip():
         raise ValueError(
@@ -203,6 +233,7 @@ def _heavy_neighbour_directions(
 def _h_directions(
     away: list[tuple[float, float, float]], count: int,
     heavy_order: int = 1,
+    polar_override: float | None = None,
 ) -> list[tuple[float, float, float]]:
     """``count`` unit directions for hydrogens on ``atom`` so that the
     placed angles match real hybridisation geometry, measured AT THE
@@ -247,6 +278,12 @@ def _h_directions(
             if heavy_order == 3:
                 return [base]
             return _ring(base, 60.0, 2, offset=180.0)[:1]
+        if heavy_order == 1 and polar_override is not None and count == 1:
+            # O/S with one heavy neighbour is sp3-like: the H sits at the
+            # element's real bond angle from the parent bond (O ~108.5,
+            # S ~96), NOT linear (operator round 7 rerun). polar_override
+            # is the X-X-H angle; the away-axis polar angle is 180-angle.
+            return _ring(base, 180.0 - polar_override, 1)
         return _tetrahedral_from_axis(base, count)
     else:
         # Two heavy neighbours. For ONE H the operator's rule (round 5
@@ -471,7 +508,7 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
     if not (g.comment or "").strip() or atom_like:
         g.comment = "hydrogens fixed"
     radii = _covalent_radii(g)
-    nbrs = _bond_graph(g)
+    nbrs = _filter_graph(_bond_graph(g), g, radii)
     added: list[dict[str, Any]] = []
     new_symbols = list(g.symbols)
     new_coords = list(g.coords)
@@ -490,6 +527,12 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
             1 for j in nbrs.get(i, ()) if g.symbols[j] == "H"
         )
         missing = need - heavy_order - existing_h
+        # Aromatic / partial bond orders make the sum fractional (a
+        # benzene carbon: 3 x 1.5 = 4.5, missing 1.5). The hydrogen
+        # COUNT is an integer: round to nearest, minimum 1 when the
+        # fractional part says at least one H is needed (reviewer
+        # R7-F1: count=1.5 crashed _h_directions with a float slice).
+        missing = int(round(missing))
         if missing <= 0:
             continue
         away = _heavy_neighbour_directions(g, i, nbrs)
@@ -516,7 +559,12 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
                 if carbon_order >= 2:
                     dir_order = 2
         r_h_i = _XH_BOND_LENGTHS.get(sym, radii[i] + _COSMETIC_H_RADIUS)
-        for direction in _h_directions(away, missing, dir_order):
+        # Element-real bond angle for an O/S with one heavy neighbour
+        # (operator round-7 rerun: linear 180 was wrong; O ~108.5,
+        # S ~96). C and N keep the sp3/sp2 machinery.
+        polar_override = _BOND_ANGLE_ONE_NEIGHBOUR.get(sym)
+        for direction in _h_directions(away, missing, dir_order,
+                                       polar_override=polar_override):
             pos = tuple(
                 g.coords[i][k] + direction[k] * r_h_i for k in range(3)
             )
@@ -550,18 +598,60 @@ def fix_hydrogens(xyz_text: str) -> dict[str, Any]:
     }
 
 
+# Hydrogen's parent (the heavy atom it is bonded to): the NEAREST heavy
+# atom. In a fixed-up structure a placed H sits at its real X-H bond
+# length (~0.96-1.09 A) while any other heavy atom is farther away, so
+# "nearest heavy" identifies the parent without a bond table.
+def _parent_index(symbols, coords, h_index: int) -> int | None:
+    parent = None
+    best = None
+    for b, sym in enumerate(symbols):
+        if sym == "H" or b == h_index:
+            continue
+        d = math.dist(coords[h_index], coords[b])
+        if best is None or d < best:
+            best = d
+            parent = b
+    return parent
+
+
+def _covalent_radii_from_symbols(symbols) -> list[float]:
+    """Covalent radii (A) per element symbol, from DELFIN's RDKit-backed
+    table (``_covalent_radii``) with the same fallbacks, so the clash
+    check can run on a plain (symbol, coordinate) pair without a Geom."""
+    from delfin.tools.geometry_edit import Geom as _G
+
+    g = _G(symbols=list(symbols), coords=[(0.0, 0.0, 0.0)] * len(symbols),
+           charge=0, multiplicity=1, comment="radii only")
+    return _covalent_radii(g)
+
+
 def _clash_report(symbols, coords) -> str | None:
-    """First pair closer than 0.8 A between a placed H and any other atom,
-    or any H-H pair below 1.4 A (operator round 4: two hydrogens in a real
-    structure are never closer than ~1.4 A even gauche/ortho); None when
-    nothing clashes."""
+    """First clash between a placed H and the rest of the structure.
+
+    Rules (operator rounds 4 and 7 rerun):
+    - H-H pair below 1.4 A (two hydrogens in a real structure are never
+      closer than ~1.4 A even gauche/ortho);
+    - any pair below 0.8 A (physical overlap);
+    - a placed H closer than 0.9 x the covalent-radii sum to a HEAVY
+      atom that is NOT its parent (ethanol round-7 rerun: a CH2 hydrogen
+      landed 0.42 A from the O and the check stayed silent). The parent
+      is excluded because its X-H bond length (e.g. C-H 1.09 < 0.9 x
+      1.07) is by definition a bond, not a clash.
+    """
     limit_same = 1.4  # two H cannot be this close in a real structure
     limit_any = 0.8
+    radii = _covalent_radii_from_symbols(symbols)
     n = len(symbols)
     for a in range(n):
-        for b in range(a + 1, n):
+        if symbols[a] != "H":
+            continue
+        parent = _parent_index(symbols, coords, a)
+        for b in range(n):
+            if b == a:
+                continue
             d = math.dist(coords[a], coords[b])
-            if symbols[a] == "H" and symbols[b] == "H" and d < limit_same:
+            if symbols[b] == "H" and d < limit_same:
                 return (
                     f"H-H clash {d:.3f} A (< {limit_same} A) between "
                     f"atoms {a} and {b}"
@@ -571,6 +661,15 @@ def _clash_report(symbols, coords) -> str | None:
                     f"clash {d:.3f} A (< {limit_any} A) between atoms "
                     f"{a} ({symbols[a]}) and {b} ({symbols[b]})"
                 )
+            # H..heavy to a NON-parent heavy atom below 0.9 x cov sum.
+            if symbols[b] != "H" and parent is not None and b != parent:
+                cov = 0.9 * (radii[a] + radii[b])
+                if d < cov:
+                    return (
+                        f"H..{symbols[b]} clash {d:.3f} A "
+                        f"(< 0.9 x covalent sum {cov:.3f} A) between "
+                        f"atoms {a} and {b}"
+                    )
     return None
 
 
