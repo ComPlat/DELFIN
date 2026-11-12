@@ -215,13 +215,11 @@ def put_exported_keys_away(names=(), *, home=None) -> str:
     the right key is not this function's to decide.
     """
     names = list(names or exported_provider_keys())
-    if not names:
-        return ""
     # Asked, not done behind the person's back (gh, aws and kubectl only
     # advise; editing someone's shell file is theirs to agree to). On a
     # terminal the default is yes; without one -- a script, a job -- only
     # the advice is given and nothing is changed.
-    if not _may_put_keys_away(names):
+    if names and not _may_put_keys_away(names):
         try:
             return "Note: " + exported_key_advice(names)
         except Exception:
