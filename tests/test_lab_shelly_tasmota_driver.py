@@ -38,7 +38,6 @@ from delfin.lab.drivers.base import DriverError as _DriverError
 
 REALM = "delfin-lab"
 NONCE = "deadbeefcafe"
-OPAQUE = "opaque-session"
 
 SHELLY_USER = "plug-user"
 SHELLY_PASS = "plug-pass"
@@ -60,6 +59,9 @@ class FakePlug:
         self.calls = deque()           # (kind, payload)
         self.fail = False              # drop every call (transport error)
         self.fail_read = False         # read path raises; write path works
+        self.credential = None         # Shelly digest (user, pass)
+        self.scheme = "Digest"
+        self.tasmota_credential = None  # Tasmota query (user, password)
 
     def record(self, kind, payload):
         with self.lock:
@@ -84,22 +86,26 @@ def _authorized(auth, user, pw, method, path):
         for chunk in auth[len("Digest "):].split(","):
             k, _, v = chunk.strip().partition("=")
             parts[k] = v.strip('"')
-        ha1 = hashlib.md5(f"{user}:{REALM}:{pw}".encode()).hexdigest()
-        ha2 = hashlib.md5(f"{method}:{path}".encode()).hexdigest()
-        expected = hashlib.md5(
+        H = {"MD5": hashlib.md5, "SHA-256": hashlib.sha256}[
+            parts.get("algorithm", "MD5")]
+        ha1 = H(f"{user}:{REALM}:{pw}".encode()).hexdigest()
+        ha2 = H(f"{method}:{path}".encode()).hexdigest()
+        expected = H(
             f"{ha1}:{parts.get('nonce','')}:{parts.get('nc','')}:"
             f"{parts.get('cnonce','')}:{parts.get('qop','')}:{ha2}".encode()
         ).hexdigest()
         return (parts.get("response") == expected
-                and parts.get("username") == user)
+                and parts.get("username") == user
+                and parts.get("nonce") == NONCE)
     return False
 
 
 def _challenge(scheme):
     if scheme == "Digest":
+        # Shelly Gen2 firmware: SHA-256 digest
         return {"WWW-Authenticate":
-                f'Digest realm="{REALM}", qop="auth", nonce="{NONCE}", '
-                f'opaque="{OPAQUE}"'}
+                f'Digest qop="auth", realm="{REALM}", nonce="{NONCE}", '
+                f'algorithm=SHA-256'}
     return {"WWW-Authenticate": f'Basic realm="{REALM}"'}
 
 
@@ -122,32 +128,56 @@ class FakeTransport:
 
     def __call__(self, device, method, path, body, headers):
         plug = self.fake
-        auth = headers.get("Authorization")
-        cred = plug.credential              # (user, pass) or None
+        plug.record("http", {"method": method, "path": path})
         if plug.fail:
             raise _DriverError(f"{device.id}: transport error: dropped")
+        if path.startswith("/cm"):
+            # Tasmota: the web password is the user/password query; without
+            # it the device answers 200 with a WARNING, never 401
+            q = {k: v[0] for k, v in parse_qs(path.partition("?")[2]).items()}
+            cmnd = q.get("cmnd", "")
+            plug.record("cmnd", {"cmnd": cmnd, "path": path})
+            cred = plug.tasmota_credential
+            if cred and (q.get("user"), q.get("password")) != cred:
+                return _json(200, {"WARNING": "Need user=<username>&password=<password>"})
+            return self._cmnd(plug, cmnd)
+        auth = headers.get("Authorization")
+        cred = plug.credential              # (user, pass) or None
         if cred and not _authorized(auth, cred[0], cred[1], method, path):
             plug.record("unauth", {"path": path})
             return (401, b"", _challenge(plug.scheme))
-        if plug.fail_read and path.startswith("/rpc/Switch.GetStatus"):
-            raise _DriverError(f"{device.id}: transport error: read dropped")
-        if path == "/rpc/Switch.GetStatus":
-            plug.record("read", {"path": path})
-            return _json(200, {"id": 1, "src": "delfin",
-                               "result": {"output": plug.output,
-                                          "apower": plug.apower}})
-        if path == "/rpc/Switch.Set":
-            params = json.loads((body or b"{}").decode())["params"]
-            if "on" in params:
-                plug.output = bool(params["on"])
-            plug.last_toggle_after = params.get("toggle_after")
-            plug.record("write", {"path": path, "params": params})
-            return _json(200, {"id": 2, "src": "delfin", "result": {}})
-        if path.startswith("/cm"):
-            cmnd = (parse_qs(path.partition("?")[2]).get("cmnd") or [""])[0]
-            plug.record("cmnd", {"cmnd": cmnd, "path": path})
-            return self._cmnd(plug, cmnd)
-        return (404, b"", {})
+        if path != "/rpc" or method != "POST":
+            return (404, b"", {})
+        frame = json.loads((body or b"{}").decode())
+        rpc, params = frame.get("method"), frame.get("params") or {}
+
+        def answer(result=None, error=None):
+            out = {"id": frame.get("id"), "src": "shellyplusplugs-test"}
+            out.update({"error": {"code": error[0], "message": error[1]}}
+                       if error else {"result": result})
+            return _json(200, out)
+
+        if params.get("id") != 0:
+            return answer(error=(-105, "Argument 'id' not found!"))
+        if rpc == "Switch.GetStatus":
+            if plug.fail_read:
+                raise _DriverError(f"{device.id}: transport error: read dropped")
+            plug.record("read", {"params": params})
+            return answer({"id": 0, "output": plug.output,
+                           "apower": plug.apower})
+        if rpc == "Switch.Set":
+            if "on" not in params:
+                return answer(error=(-103, "Missing required argument 'on'!"))
+            ta = params.get("toggle_after")
+            if ta is not None and (isinstance(ta, bool)
+                                   or not isinstance(ta, (int, float))):
+                return answer(error=(-103, "Invalid argument 'toggle_after'!"))
+            was = plug.output
+            plug.output = bool(params["on"])
+            plug.last_toggle_after = ta
+            plug.record("write", {"params": params})
+            return answer({"was_on": was})
+        return answer(error=(-114, f"Method {rpc} failed: not found"))
 
     def _cmnd(self, plug, cmnd):
         # Tasmota: `Power`, `Power On`, `Power Off`, `PulseTime <t>`
@@ -248,8 +278,10 @@ def plug_fixture(tmp_path, monkeypatch):
     try:
         # seed the credential store by reference-name (never in the manifest)
         from delfin.agent import credentials as _cred
-        _cred.set_credential("plug-shelly", f"{SHELLY_USER}:{SHELLY_PASS}")
-        _cred.set_credential("plug-tasmota", f"{TASMOTA_USER}:{TASMOTA_PASS}")
+        _cred.set_credential("plug-shelly", f"{SHELLY_USER}:{SHELLY_PASS}",
+                             store="file")
+        _cred.set_credential("plug-tasmota", f"{TASMOTA_USER}:{TASMOTA_PASS}",
+                             store="file")
         path = _store.manifest_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(manifest_text(80), encoding="utf-8")
@@ -257,6 +289,7 @@ def plug_fixture(tmp_path, monkeypatch):
         _safety.pin(manifest, by="alice")
         transport.fake.credential = (SHELLY_USER, SHELLY_PASS)
         transport.fake.scheme = "Digest"
+        transport.fake.tasmota_credential = (TASMOTA_USER, TASMOTA_PASS)
         server = FakeServer(transport.fake, port=80)
         yield server, tmp_path
     finally:
@@ -307,37 +340,76 @@ def test_shelly_and_tasmota_carry_no_inline_secret(plug):
 
 # -- device-side timer ---------------------------------------------------------
 
-def test_shelly_arm_watchdog_sets_toggle_after(plug):
-    server, ws = plug
+def _shelly(plug):
+    server, _ws = plug
     k = _kernel()
-    d = k.manifest.devices["plug_shelly"]
     drv = _make_driver("shelly_rpc")
     drv.clock = k.clock
-    ok = drv.arm_watchdog(d, 30)
-    assert ok is True
-    writes = server.fake.requests("write")
-    assert writes, "no Switch.Set observed"
-    params = writes[-1][1]["params"]
-    assert params.get("toggle_after") == 30
-    assert server.fake.last_toggle_after == 30
+    return server.fake, k.manifest.devices["plug_shelly"], drv
+
+
+def test_shelly_arm_on_an_off_switch_sends_no_timer(plug):
+    """toggle_after FLIPS the output: on a switch that is off it would turn
+    the load on. Arming an off switch only records the delay."""
+    fake, d, drv = _shelly(plug)
+    assert drv.arm_watchdog(d, 30) is True
+    assert fake.requests("write") == []
+    assert fake.output is False
+
+
+def test_shelly_switch_on_carries_the_armed_timer(plug):
+    fake, d, drv = _shelly(plug)
+    drv.arm_watchdog(d, 30)
+    drv.write(d, "power", "on")
+    params = fake.requests("write")[-1][1]["params"]
+    assert params == {"id": 0, "on": True, "toggle_after": 30.0}
+    drv.write(d, "power", "off")
+    assert fake.requests("write")[-1][1]["params"] == {"id": 0, "on": False}
+
+
+def test_shelly_arm_on_an_on_switch_restarts_the_timer(plug):
+    fake, d, drv = _shelly(plug)
+    fake.output = True
+    assert drv.arm_watchdog(d, 30) is True
+    assert fake.requests("write")[-1][1]["params"] == {
+        "id": 0, "on": True, "toggle_after": 30.0}
 
 
 def test_shelly_disarm_watchdog_clears_the_timer(plug):
-    server, ws = plug
+    fake, d, drv = _shelly(plug)
+    fake.output = True
+    drv.arm_watchdog(d, 30)
+    drv.disarm_watchdog(d)
+    assert fake.requests("write")[-1][1]["params"] == {"id": 0, "on": True}
+    # never a timer with on=false, never a non-numeric toggle_after
+    for _kind, payload in fake.requests("write"):
+        ta = payload["params"].get("toggle_after")
+        assert ta is None or (payload["params"]["on"] is True
+                              and isinstance(ta, float))
+
+
+def test_shelly_rpc_error_is_a_driver_error(plug):
+    server, _ws = plug
     k = _kernel()
     d = k.manifest.devices["plug_shelly"]
+    d.address["slot"] = 3                      # no switch 3 on the plug
     drv = _make_driver("shelly_rpc")
-    drv.clock = k.clock
-    drv.disarm_watchdog(d)
-    writes = server.fake.requests("write")
-    assert writes
-    assert writes[-1][1]["params"].get("toggle_after") is False
+    with pytest.raises(_DriverError, match="Switch.GetStatus refused"):
+        drv.read(d)
+
+
+def test_shelly_digest_uses_the_challenges_algorithm(plug):
+    fake, d, drv = _shelly(plug)
+    drv.read(d)
+    assert fake.requests("unauth"), "the device asked for credentials"
+    assert fake.requests("read"), "the SHA-256 digest was accepted"
+    fake.credential = (SHELLY_USER, "another")
+    with pytest.raises(_DriverError, match="refused the credentials"):
+        drv.read(d)
 
 
 def test_tasmota_arm_watchdog_sends_pulsetime(plug):
     server, ws = plug
-    server.fake.scheme = "Basic"
-    server.fake.credential = None          # Tasmota may run open on a LAN
     k = _kernel()
     d = k.manifest.devices["plug_tasmota"]
     drv = _make_driver("tasmota")
@@ -346,6 +418,38 @@ def test_tasmota_arm_watchdog_sends_pulsetime(plug):
     calls = server.fake.requests("cmnd")
     assert calls
     assert server.fake.last_pulsetime == 130
+
+
+def test_tasmota_password_is_the_query_and_never_shown(plug):
+    server, ws = plug
+    k = _kernel()
+    d = k.manifest.devices["plug_tasmota"]
+    drv = _make_driver("tasmota")
+    assert drv.read(d)["power"].value == "off"
+    path = server.fake.requests("cmnd")[-1][1]["path"]
+    assert f"password={TASMOTA_PASS}" in path and "user=" in path
+    server.fake.tasmota_credential = (TASMOTA_USER, "changed")
+    with pytest.raises(_DriverError) as exc:
+        drv.read(d)
+    assert "refused the command" in str(exc.value)
+    assert TASMOTA_PASS not in str(exc.value)
+    server.fake.fail = True
+    with pytest.raises(_DriverError) as exc:
+        drv.write(d, "power", "on")
+    assert TASMOTA_PASS not in str(exc.value)
+
+
+def test_estop_confirms_a_shelly_through_its_readback_channel(plug):
+    """safe_state names the write channel (power); the Shelly reports it as
+    output. The kernel reads the safe value where the write is read back."""
+    from delfin.lab import estop
+    server, _ws = plug
+    k = _kernel()
+    actor = _safety.Actor.here("s1")
+    assert k.set(actor, "plug_shelly", "power", "on")["ok"]
+    out = estop.trigger(reason="test", by="alice", kernel=k)
+    assert "plug_shelly" in out["stopped"] and out["not_confirmed"] == [], out
+    assert server.fake.output is False
 
 
 # -- read / write / readback ---------------------------------------------------
@@ -365,7 +469,6 @@ def test_shelly_write_read_and_readback(plug):
 
 def test_tasmota_write_read_and_readback(plug):
     server, ws = plug
-    server.fake.scheme = "Basic"
     k = _kernel()
     actor = _safety.Actor.here("s1")
     out = k.set(actor, "plug_tasmota", "power", "on")
@@ -416,7 +519,6 @@ def test_safe_state_keeps_writing_after_a_failure(plug):
     server.fake.output = True
     k = _kernel()
     d = k.manifest.devices["plug_tasmota"]
-    server.fake.scheme = "Basic"
     drv = _make_driver("tasmota")
     drv.clock = k.clock
     drv.safe_state(d)

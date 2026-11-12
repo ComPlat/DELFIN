@@ -23,7 +23,8 @@ modules:
       - id: reactor_heater
         driver: shelly_rpc
         model: shelly_plus_plug_s
-        # HTTP digest auth for the Shelly; the cred holds "user:password"
+        # HTTP digest (SHA-256) for the Shelly; the cred holds "admin:password"
+        # or just the password
         address: {host: 192.0.2.10, port: 80, slot: 0,
                    secret_ref: cred:shelly-reactor}
         stale_after_s: 5
@@ -41,7 +42,8 @@ modules:
       - id: reactor_stirrer
         driver: tasmota
         model: tasmota_plug
-        # Tasmota HTTP basic auth by reference; omit secret_ref for an open LAN
+        # Tasmota web password by reference (sent as the /cm user/password
+        # query, never logged); omit secret_ref for an open LAN
         address: {host: 192.0.2.11, port: 80,
                    secret_ref: cred:tasmota-stirrer}
         stale_after_s: 5

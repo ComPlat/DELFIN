@@ -6,36 +6,56 @@ cloud service. Transport is the standard library (``urllib.request``);
 no third-party HTTP client is imported (see scratch/LICENSE_NOTES.md).
 
 Shelly Gen2 (driver name ``shelly_rpc``)
-    ``write``      POST ``/rpc/Switch.Set`` with ``on`` (and ``toggle_after``
-                   only when arming the device-side timer)
-    ``read``       POST ``/rpc/Switch.GetStatus`` -> ``output`` (on/off) and
+    Every call is one JSON-RPC frame ``{"id", "src", "method", "params"}``
+    POSTed to ``/rpc``; the answer carries ``result`` or ``error``
+    (``{"code", "message"}``), both with HTTP 200. ``address.slot`` is the
+    switch's ``id`` on the device (0 on a single plug).
+    ``write``      ``Switch.Set {id, on}``; ``on`` is required by the device
+    ``read``       ``Switch.GetStatus {id}`` -> ``output`` (on/off) and
                    ``apower`` (W); the readback channel is ``output``
-    auth           HTTP digest, by reference: the manifest address carries
-                   ``secret_ref: cred:<name>``, resolved from the DELFIN
-                   secret store at driver start, never inline
+    auth           HTTP digest as the device sends it: SHA-256 (Gen2
+                   firmware) or MD5, user ``admin``, a fresh cnonce per
+                   request
 Tasmota (driver name ``tasmota``)
     ``write``      GET ``/cm?cmnd=Power On|Off``
     ``read``       GET ``/cm?cmnd=Power`` -> ``{"POWER": "ON"}``; the
                    readback channel is ``power``
-    auth           HTTP basic, by reference the same way
+    auth           Tasmota's web password travels as the ``user`` and
+                   ``password`` query parameters of ``/cm`` (the device
+                   answers HTTP 200 with a ``WARNING`` without them, not 401);
+                   they never appear in an error text or a log line
+Credentials (both)
+    By reference only: ``address.secret_ref: cred:<name>`` names a value in
+    DELFIN's secret store, either ``user:password`` or a bare password (user
+    ``admin``, the fixed web user of both firmwares). An error never names
+    the reference.
 Device-side timer
-    Shelly: ``Switch.Set`` with ``toggle_after`` seconds (the device toggles
-    itself back after the delay; the kernel re-arms every heartbeat).
+    Shelly: ``toggle_after`` FLIPS the output after the delay, so it is only
+    ever sent together with ``on: true``: on a switch that is off it would
+    switch the load on. ``arm_watchdog`` on an output that is on re-sends
+    ``Switch.Set {id, on: true, toggle_after}`` (the device restarts its
+    timer); on an output that is off it only records the delay, and the next
+    ``write(power, on)`` carries it. ``disarm_watchdog`` re-sends ``on: true``
+    without the timer when the output is on.
     Tasmota: ``PulseTime`` -- 1..111 in 0.1 s units, 112..64900 as
-    ``seconds + 100``; a value of 0 clears it.
+    ``seconds + 100``; setting it restarts the running timer, at expiry the
+    relay goes off, 0 clears it.
 
 Safety stays in the kernel: this module only moves a device inside the
 manifest envelope and reports what the device really did (readback). Every
-transport failure -- connection refused, DNS, timeout, non-2xx answer --
-raises ``DriverError`` so the kernel fails closed; ``health`` is the one
-method that never raises. Every call carries a timeout.
+transport failure -- connection refused, DNS, timeout, non-2xx answer, an
+RPC error, a refused password -- raises ``DriverError`` so the kernel fails
+closed; ``health`` is the one method that never raises. Every call carries
+a timeout.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import itertools
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -46,10 +66,14 @@ from .base import Driver, DriverCapabilities, DriverError, Health, Reading
 
 DEFAULT_TIMEOUT_S = 5.0
 
-#: Shelly ``Switch.Set`` params carry the relay id ("slot" in the manifest).
+#: The manifest address key that names the Shelly switch id ("slot").
 SLOT_KEY = "slot"
 
+#: The fixed web user of Shelly Gen2 and Tasmota.
+DEFAULT_USER = "admin"
+
 _SRC = "delfin"
+_RPC_IDS = itertools.count(1)
 
 
 def _base_url(device) -> str:
@@ -62,8 +86,16 @@ def _base_url(device) -> str:
     return f"http://{netloc}"
 
 
+def _switch_id(device) -> int:
+    return int((device.address or {}).get(SLOT_KEY, 0))
+
+
 def _auth_ref(device) -> Optional[tuple[str, str]]:
-    """Resolve ``secret_ref: cred:<name>`` from the DELFIN secret store."""
+    """Resolve ``secret_ref: cred:<name>`` from the DELFIN secret store.
+
+    ``user:password`` or a bare password (user ``admin``). No message
+    names the reference.
+    """
     ref = (device.address or {}).get("secret_ref")
     if not ref:
         return None
@@ -75,14 +107,15 @@ def _auth_ref(device) -> Optional[tuple[str, str]]:
     try:
         value = _cred._stored_value(name)
     except Exception as exc:
-        raise DriverError(f"{device.id}: auth ref {name!r} unreadable: {exc}")
+        raise DriverError(f"{device.id}: the device credential could not be "
+                          f"read ({type(exc).__name__})") from None
     if not value:
-        raise DriverError(f"{device.id}: auth ref {name!r} is empty")
-    user, _, pw = str(value).partition(":")
-    if not pw:
-        raise DriverError(
-            f"{device.id}: auth ref {name!r} must be 'user:password'")
-    return (user, pw)
+        raise DriverError(f"{device.id}: the device credential is empty; "
+                          "refusing to connect")
+    user, sep, pw = str(value).partition(":")
+    if not sep:
+        return (DEFAULT_USER, str(value))
+    return (user or DEFAULT_USER, pw)
 
 
 def _basic_auth(device, user: str, pw: str) -> str:
@@ -90,53 +123,64 @@ def _basic_auth(device, user: str, pw: str) -> str:
     return f"Basic {token}"
 
 
-def _digest_auth(user: str, pw: str, method: str, uri: str,
-                 challenge: str) -> str:
-    """RFC 7616 ``qop="auth"`` digest response from a WWW-Authenticate
-    challenge, computed in the driver so a single authenticated request is
-    sent (no reliance on an HTTP client's 401-replay internals)."""
+def _challenge_fields(challenge: str) -> dict[str, str]:
+    """The ``key=value`` fields of a WWW-Authenticate challenge (quoted
+    values may contain commas)."""
     parts: dict[str, str] = {}
-    # strip scheme token and split on commas, honoring quoted commas
-    rest = challenge.split(None, 1)[1] if " " in challenge else challenge
+    rest = challenge.split(None, 1)[1] if " " in challenge.strip() else ""
     for _ in range(64):
         k, sep, v = rest.partition("=")
-        k = k.strip().strip(",")
-        if not sep:
+        k = k.strip().strip(",").strip()
+        if not sep or not k:
             break
-        v = v.strip()
+        v = v.lstrip()
         if v.startswith('"'):
             v = v[1:]
             i = v.find('"')
-            part = v[:i]
-            rest = v[i + 1:]
+            part, rest = (v[:i], v[i + 1:]) if i >= 0 else (v, "")
         else:
             part, _, rest = v.partition(",")
-        parts[k] = part
+        parts[k.lower()] = part.strip()
         rest = rest.lstrip(", ")
-        if not parts.get(k):
-            break
-    realm = parts.get("realm", "")
-    nonce = parts.get("nonce", "")
-    qop = parts.get("qop", "auth").split(",")[0].strip()
-    ha1 = hashlib.md5(f"{user}:{realm}:{pw}".encode()).hexdigest()
-    ha2 = hashlib.md5(f"{method}:{uri}".encode()).hexdigest()
-    cnonce = NONCE_CNONCE
+    return parts
+
+
+_DIGEST_HASHES = {"md5": hashlib.md5, "sha-256": hashlib.sha256}
+
+
+def _digest_auth(user: str, pw: str, method: str, uri: str,
+                 challenge: str) -> str:
+    """RFC 7616 digest response to a WWW-Authenticate challenge, with the
+    hash the challenge names (``algorithm=SHA-256`` on Shelly Gen2, MD5
+    when absent) and a fresh cnonce, so one authenticated request is sent
+    (no reliance on an HTTP client's 401-replay internals)."""
+    f = _challenge_fields(challenge)
+    algorithm = f.get("algorithm", "MD5")
+    hfun = _DIGEST_HASHES.get(algorithm.lower())
+    if hfun is None:
+        raise DriverError(f"unsupported digest algorithm {algorithm!r}")
+
+    def H(text: str) -> str:
+        return hfun(text.encode()).hexdigest()
+
+    realm, nonce = f.get("realm", ""), f.get("nonce", "")
+    qop = f.get("qop", "")
+    qop = "auth" if "auth" in [q.strip() for q in qop.split(",")] else ""
+    ha1 = H(f"{user}:{realm}:{pw}")
+    ha2 = H(f"{method}:{uri}")
+    cnonce = os.urandom(8).hex()
     nc = "00000001"
     if qop:
-        response = hashlib.md5(
-            f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}".encode()).hexdigest()
+        response = H(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
     else:
-        response = hashlib.md5(
-            f"{ha1}:{nonce}:{ha2}".encode()).hexdigest()
+        response = H(f"{ha1}:{nonce}:{ha2}")
     hdr = (f'Digest username="{user}", realm="{realm}", nonce="{nonce}", '
-           f'uri="{uri}", response="{response}"')
+           f'uri="{uri}", algorithm={algorithm}, response="{response}"')
     if qop:
         hdr += f', qop={qop}, nc={nc}, cnonce="{cnonce}"'
+    if "opaque" in f:
+        hdr += f', opaque="{f["opaque"]}"'
     return hdr
-
-
-#: One cnonce for the whole process is fine for challenge-response signing.
-NONCE_CNONCE = "abcdef0123456789"
 
 
 def _http_transport(device, method: str, path: str, body: Optional[bytes],
@@ -174,14 +218,16 @@ TRANSPORT = _http_transport
 
 
 def _request(device, method: str, path: str,
-             body: Optional[bytes] = None) -> tuple[int, dict]:
+             body: Optional[bytes] = None, *,
+             shown: Optional[str] = None) -> tuple[int, dict]:
     """One HTTP request with explicit auth; raises ``DriverError`` on any
     transport error (kernel fails closed). Returns ``(status, parsed body)``.
     A 401 challenge is answered once with the computed Authorization header.
+    *shown* is the path as an error may print it (without a secret query).
     """
+    shown = shown or path
     user = pw = None
-    secret_ref = (device.address or {}).get("secret_ref")
-    if secret_ref:
+    if (device.address or {}).get("secret_ref"):
         user, pw = _auth_ref(device) or (None, None)
     headers = {"Content-Type": "application/json"} if body is not None else {}
 
@@ -189,7 +235,8 @@ def _request(device, method: str, path: str,
         return TRANSPORT(device, method, path, body, headers)
 
     status, raw, resp_headers = _send()
-    www_auth = resp_headers.get("WWW-Authenticate")
+    www_auth = {k.lower(): v for k, v in resp_headers.items()}.get(
+        "www-authenticate")
     if status == 401 and user is not None and www_auth:
         challenge = www_auth.lstrip()
         if challenge.lower().startswith("basic"):
@@ -202,27 +249,53 @@ def _request(device, method: str, path: str,
         # retry once with the computed Authorization header; the header dict is
         # the same object, so TRANSPORT sees it
         status, raw, resp_headers = _send()
+    if status == 401:
+        raise DriverError(f"{device.id}: the device refused the credentials "
+                          f"(HTTP 401 from {_base_url(device)}{shown})")
     if status >= 400 and not raw:
         raise DriverError(f"{device.id}: HTTP {status} from "
-                          f"{_base_url(device)}{path}")
+                          f"{_base_url(device)}{shown}")
     try:
         return status, json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise DriverError(f"{device.id}: device sent no JSON: {exc}")
 
 
-def _post_json(device, path: str, params: dict) -> dict:
-    """One Shelly RPC call. Raises ``DriverError`` on any transport error."""
-    body = json.dumps({"id": 1, "method": path.rpartition("/")[2],
-                       "src": _SRC, "params": params}).encode()
-    _status, doc = _request(device, "POST", path, body)
-    return doc
+def _rpc(device, method: str, params: dict) -> Any:
+    """One Shelly RPC call as a JSON-RPC frame on ``/rpc``; returns its
+    ``result``. An ``error`` answer raises ``DriverError`` with the
+    device's code and message."""
+    body = json.dumps({"id": next(_RPC_IDS), "src": _SRC, "method": method,
+                       "params": params}).encode()
+    _status, doc = _request(device, "POST", "/rpc", body)
+    if not isinstance(doc, dict):
+        raise DriverError(f"{device.id}: {method}: no RPC frame in the answer")
+    err = doc.get("error")
+    if err is not None:
+        if isinstance(err, dict):
+            raise DriverError(f"{device.id}: {method} refused: "
+                              f"{err.get('message')} ({err.get('code')})")
+        raise DriverError(f"{device.id}: {method} refused: {err}")
+    if "result" not in doc:
+        raise DriverError(f"{device.id}: {method}: answer has no result")
+    return doc["result"]
 
 
 def _get_cmnd(device, cmnd: str) -> dict:
-    """One Tasmota HTTP command. Raises ``DriverError`` likewise."""
-    path = f"/cm?{urllib.parse.urlencode({'cmnd': cmnd})}"
-    _status, doc = _request(device, "GET", path)
+    """One Tasmota HTTP command. Raises ``DriverError`` likewise; a
+    password the device refuses (its ``WARNING`` answer) is an error."""
+    query = {"cmnd": cmnd}
+    shown = f"/cm?{urllib.parse.urlencode(query)}"
+    cred = _auth_ref(device) if (device.address or {}).get("secret_ref") else None
+    if cred is not None:
+        query = {"user": cred[0], "password": cred[1], "cmnd": cmnd}
+    path = f"/cm?{urllib.parse.urlencode(query)}"
+    _status, doc = _request(device, "GET", path, shown=shown)
+    if not isinstance(doc, dict):
+        raise DriverError(f"{device.id}: {cmnd}: unexpected answer")
+    if "WARNING" in doc:
+        raise DriverError(f"{device.id}: the device refused the command "
+                          f"({doc['WARNING']}); check its credential")
     return doc
 
 
@@ -247,14 +320,24 @@ class ShellyDriver(Driver):
 
     def __init__(self, clock=time.time):
         self.clock = clock
+        #: device id -> toggle_after seconds for the next switch-on
+        self._timer: dict[str, float] = {}
 
     # -- Shelly Gen2 RPC ---------------------------------------------------
-    def read(self, device) -> dict:
-        slot = int((device.address or {}).get(SLOT_KEY, 0))
-        doc = _post_json(device, "/rpc/Switch.GetStatus", {"id": slot})
-        result = doc.get("result")
+    def _status(self, device) -> dict:
+        result = _rpc(device, "Switch.GetStatus", {"id": _switch_id(device)})
         if not isinstance(result, dict):
             raise DriverError(f"{device.id}: Switch.GetStatus returned no result")
+        return result
+
+    def _set(self, device, on: bool, toggle_after: Optional[float] = None):
+        params: dict = {"id": _switch_id(device), "on": bool(on)}
+        if on and toggle_after:
+            params["toggle_after"] = float(toggle_after)
+        return _rpc(device, "Switch.Set", params)
+
+    def read(self, device) -> dict:
+        result = self._status(device)
         t = self.clock()
         out = {}
         if "output" in result:
@@ -275,29 +358,26 @@ class ShellyDriver(Driver):
         if spec.states and value not in spec.states:
             raise DriverError(
                 f"{device.id}.{channel}: {value!r} is not one of {spec.states}")
-        params = {SLOT_KEY: int((device.address or {}).get(SLOT_KEY, 0))}
-        if channel == "power":
-            params["on"] = (value == "on")
-        else:
+        if channel != "power":
             raise DriverError(
                 f"{device.id}.{channel}: Shelly switch writes on/off only")
-        doc = _post_json(device, "/rpc/Switch.Set", params)
-        if doc.get("result") is None:
-            raise DriverError(f"{device.id}: Switch.Set refused")
+        on = value == "on"
+        self._set(device, on, self._timer.get(device.id) if on else None)
         return f"shelly-{device.id}-{self.clock():.0f}"
 
     def arm_watchdog(self, device, seconds: float) -> bool:
         if float(seconds) <= 0:
             return False
-        params = {SLOT_KEY: int((device.address or {}).get(SLOT_KEY, 0)),
-                  "toggle_after": float(seconds)}
-        _post_json(device, "/rpc/Switch.Set", params)
+        self._timer[device.id] = float(seconds)
+        if self._status(device).get("output"):
+            # restart the device's flip-back timer on the output that is on
+            self._set(device, True, float(seconds))
         return True
 
     def disarm_watchdog(self, device) -> None:
-        params = {SLOT_KEY: int((device.address or {}).get(SLOT_KEY, 0)),
-                  "toggle_after": False}
-        _post_json(device, "/rpc/Switch.Set", params)
+        self._timer.pop(device.id, None)
+        if self._status(device).get("output"):
+            self._set(device, True)
 
     def health(self, device) -> Health:
         try:
