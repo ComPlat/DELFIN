@@ -955,10 +955,12 @@ _SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 
 def resumable(session_id: str) -> bool:
-    """Whether ``--resume session_id`` names a saved session (or the word
-    ``latest``, chat's own): an unknown id is refused, never started as a
-    new session under that name (``claude --resume`` says "No
-    conversation found"). Never raises."""
+    """Whether ``--resume session_id`` names a session that ran before: a
+    saved one, one the agent service ran (its event log -- a session put
+    to sleep before anything was asked of it is not saved, and wakes under
+    its id), or the word ``latest`` (chat's own). An unknown id is
+    refused, never started as a new session under that name (``claude
+    --resume`` says "No conversation found"). Never raises."""
     sid = str(session_id or "").strip()
     if sid == "latest":
         return True
@@ -966,7 +968,12 @@ def resumable(session_id: str) -> bool:
         return False
     try:
         from .. import session_store
-        return session_store.load_session(sid) is not None
+        if session_store.load_session(sid) is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        return log_path(sid).is_file()
     except Exception:
         return False
 

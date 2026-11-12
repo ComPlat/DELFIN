@@ -145,6 +145,16 @@ def test_the_worker_resumes_only_a_saved_session(store):
     assert not worker.resumable("")
 
 
+def test_a_session_the_service_ran_is_resumable_without_a_save(store, tmp_path, monkeypatch):
+    # Put to sleep before anything was asked of it: not saved, but its
+    # event log is there, and it wakes under its id.
+    monkeypatch.setattr(worker, "log_path", lambda sid: tmp_path / "sessions" / f"{sid}.jsonl")
+    (tmp_path / "sessions").mkdir()
+    (tmp_path / "sessions" / "asleep000001.jsonl").write_text("{}\n")
+    assert worker.resumable("asleep000001")
+    assert not worker.resumable("asleep000002")
+
+
 def test_the_worker_refuses_to_start_an_unknown_id_as_a_new_session(store, tmp_path):
     with pytest.raises(worker.SessionRefused, match="No saved session doesnotexist"):
         worker.open_real_session(argparse.Namespace(resume="doesnotexist"), tmp_path)
