@@ -299,13 +299,13 @@ def test_def2_variant_prefixes_are_not_billed_at_the_family_counts(
             f"no budget, not the family's counts (got {job})")
 
 
-def test_smiles_control_gets_no_budget_and_the_skip_is_logged(
+def test_smiles_control_is_sized_and_unreadable_smiles_is_skipped(
         ws, tmp_path, monkeypatch, cluster, no_classifier, caplog):
-    """F-B pinned: a CONTROL with SMILES= and no geometry file feeds the
-    SMILES string to geometry_text_symbols -> no symbols -> no budget.
-    Fail-safe direction (no budget rather than a wrong one), but it must
-    be VISIBLE: logged with the reason, never silent. RED pre-patch:
-    ImportError.
+    """F-B, corrected by the operator's green run: geometry_text_symbols
+    DOES handle SMILES -- water 'O' sizes as 3 atoms / 24 def2-SVP
+    functions (ORCA's count). Pin the positive: a SMILES CONTROL gets a
+    real estimate, and a SMILES the parser cannot read is skipped WITH a
+    logged reason (never a silent None). RED pre-patch: ImportError.
     """
     import logging
     from delfin.agent.api_client import _session_budget_verdict_args
@@ -313,12 +313,20 @@ def test_smiles_control_gets_no_budget_and_the_skip_is_logged(
     folder = ws / "smiles_job"
     folder.mkdir(exist_ok=True)
     (folder / "CONTROL.txt").write_text(
-        _control().replace("input.txt", "input.txt")
-        + "SMILES=O\n")
+        _control() + "SMILES=O\n")
+    _budget_args, job = _session_budget_verdict_args(folder)
+    assert job is not None, "a readable SMILES CONTROL must be sized"
+    assert job["n_atoms"] == 3, job
+    assert job["basis_functions"] == 24, job
+    # An unreadable SMILES: skipped with a logged reason, not silently.
+    folder2 = ws / "smiles_job_bad"
+    folder2.mkdir(exist_ok=True)
+    (folder2 / "CONTROL.txt").write_text(
+        _control() + "SMILES=not-a-valid-smiles-string\n")
     with caplog.at_level(logging.WARNING, logger="delfin.agent.api_client"):
-        _budget_args, job = _session_budget_verdict_args(folder)
-    assert job is None, (
-        "a SMILES string is not xyz text; the budget must be skipped "
-        f"(got {job})")
+        _budget_args, job2 = _session_budget_verdict_args(folder2)
+    assert job2 is None, (
+        "an unreadable SMILES must be skipped, never guessed: "
+        f"got {job2}")
     assert any("calculation_budget" in r.message for r in caplog.records), \
         caplog.text
