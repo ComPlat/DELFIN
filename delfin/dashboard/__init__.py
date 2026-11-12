@@ -1002,11 +1002,32 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         rollback_delfin_btn.disabled = lock_present
         _draw_hint()
 
-    refresh_git_status_label()
     if branch_panel is not None:
         branch_panel.on_change = refresh_git_status_label
         branch_panel.on_more_closed(rollback_confirm.cancel)
-        branch_panel.refresh()
+
+    def _first_header_read():
+        """The git hint and the branch list, read once beside the page.
+
+        Both are git reads (a branch list of a few hundred branches takes
+        seconds on a cluster file system); the page does not wait for
+        them. Until they land the hint shows its placeholder and the
+        branch menu reads the list again when it is opened. Pull and
+        roll back check the checkout themselves on the click.
+        """
+        try:
+            refresh_git_status_label()
+        except Exception:
+            pass
+        if branch_panel is not None:
+            try:
+                branch_panel.refresh()
+            except Exception:
+                pass
+
+    threading.Thread(target=_first_header_read, daemon=True,
+                     name='delfin-header-first-read').start()
+    if branch_panel is not None:
         branch_panel.start_polling(10.0)
 
     def handle_pull_delfin(button=None):
@@ -1103,6 +1124,19 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     _append_js(ctx, _keys)
 
     # -- display -----------------------------------------------------------
+    class _PageRoot(widgets.VBox):
+        """One of the page's two root boxes, with a short plain-text form.
+
+        display() asks every object for its text/plain form beside the
+        widget view; a widget's default is the repr of its whole tree,
+        every tab's widgets and the startup scripts included -- built on
+        every display and then cut to 110 characters. The page shows the
+        widget view, never that text.
+        """
+
+        def __repr__(self):
+            return f'{type(self).__name__}(DELFIN dashboard)'
+
     title_html = (
         '<div style="display:flex; align-items:center; gap:8px;">'
         + (
@@ -1163,7 +1197,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + ([branch_panel.row] if branch_panel is not None else []),
         [busy_indicator, ctx.agent_status_html],
         _status_group)
-    _header_root = widgets.VBox(([_returning] if _returning else [])
+    _header_root = _PageRoot(([_returning] if _returning else [])
                                 + ([_closing_beacon] if _closing_beacon else [])
                                 + [
         busy_css,
@@ -1175,7 +1209,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + ([branch_panel.box] if branch_panel is not None else []),
         layout=widgets.Layout(width='100%'))
     _header_root.add_class('delfin-hdr')
-    _body_root = widgets.VBox(
+    _body_root = _PageRoot(
         [js_output] + ([_startup_runner] if _startup_runner is not None else [])
         + [tabs])
 
