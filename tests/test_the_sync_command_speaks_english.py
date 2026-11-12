@@ -43,7 +43,9 @@ def test_sync_without_a_session_says_so_in_english(store):
 
 def test_status_names_the_state(store):
     activation.configure("s1", "on", endpoint="")
-    assert activation.configure("s1", "status").endswith("on.")
+    # "on." and, with no messenger bridge on this machine, the notice that
+    # nothing reaches the phone yet
+    assert activation.configure("s1", "status").startswith("SimpleX for this session: on.")
     activation.configure("s1", "off", endpoint="")
     assert activation.configure("s1", "status").endswith("off.")
 

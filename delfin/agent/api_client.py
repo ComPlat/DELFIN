@@ -13081,7 +13081,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "push_notification",
             "description": (
-                "Notify the user (desktop; phone if connected). Use sparingly."
+                "Notify the user (desktop, phone). Use sparingly."
             ),
             "parameters": {
                 "type": "object",
