@@ -326,6 +326,14 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "swarm.resume": {},
     "swarm.triage.list": {"queue": "[object]"},
     "swarm.triage.answer": {"item": "object", "answer": "string"},
+    # SW3 lead tools (builder nacht-s20): the lead session's member
+    # message + PR-readiness check surface. A message send is a plain
+    # partner message through session_messages (no shell, no approval
+    # surface); prcheck delegates to the read-only pre_pr_check report
+    # in the WORKTREE the request names (worktree, optional) -- never
+    # merges, never pushes, never edits a PR, never runs a test.
+    "swarm.message": {"to": "string", "text": "string"},
+    "swarm.prcheck": {"pr": "integer", "worktree": "string?"},
     # Read-only watch (package SWV): pure observe reads. source: an SW1
     # spec object, or a roster file path (name -> {package, role}), so an
     # operator wave with no spec shows too. feed: newest last steps of one
@@ -386,6 +394,11 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
     "swarm.triage.list": {"items": "[object]"},
     "swarm.triage.answer": {"answered": "boolean", "item_id": "string?",
                             "logged": "string?"},
+    # SW3 lead tools: message send confirmation; prcheck result mirrors
+    # the lead tool's structured dict (pr, checks, available, reason).
+    "swarm.message": {"sent": "boolean", "to": "string"},
+    "swarm.prcheck": {"pr": "integer?", "checks": "[object]",
+                      "available": "boolean", "reason": "string"},
     # Read-only watch (package SWV): overview = one row per member
     # ([object]); feed = that member's steps newest last ([object], each
     # {at, kind, text}).

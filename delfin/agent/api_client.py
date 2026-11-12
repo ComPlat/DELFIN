@@ -7432,11 +7432,30 @@ _DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
     "search_calcs", "get_calc_info", "calc_summary",
     "search_docs", "read_section", "list_docs", "list_sections",
     # --- SW3 lead session tools (delfin/agent/swarm/lead.py) ---
-    # Read-only lead tools (safe in default mode):
-    "swarm_status", "swarm_plan", "swarm_message", "swarm_triage_list",
-    # State-changing lead tools (the lead session always asks the user):
-    "swarm_start", "swarm_pause", "swarm_resume", "swarm_triage_answer",
-    "swarm_prcheck",
+    # Registered SEPARATELY, not here: they are not advertised tools of
+    # the normal agent (no schema in the catalogue, workspace filters
+    # and schema budget untouched) -- see _SWARM_LEAD_TOOL_NAMES below.
+    # The lead session's surface is its own: dispatched through the
+    # swarm service surface, known to unknown_tool_names and the T4
+    # grounding set so a listed name is never read as a typo.
+})
+
+# SW3: the nine lead session tool names (delfin/agent/swarm/lead.py).
+# NOT in _DELFIN_ONLY_TOOL_NAMES: the lead tools have no schema in the
+# advertised catalogue (_DOC_TOOLS_OPENAI), so putting them in the
+# workspace-filter set broke every set-consistency test (they can never
+# be advertised, test_tool_schema_budget.py:444 and
+# test_workspace_bias.py:109) and grew the office_agent denylist and
+# the schema budget. The lead surface is its own: dispatched through
+# the swarm service surface; this set feeds only the TYPO check and
+# the T4 grounding, so a listed name is never read as a misspelling.
+_SWARM_LEAD_TOOL_NAMES: frozenset[str] = frozenset({
+    # Read-only in the lead session's default mode:
+    "swarm_status", "swarm_plan", "swarm_triage_list",
+    # State-changing (the lead session always asks the user);
+    # swarm_message sends a partner message -- it is not read-only.
+    "swarm_message", "swarm_start", "swarm_pause", "swarm_resume",
+    "swarm_triage_answer", "swarm_prcheck",
 })
 
 # Refusal returned when a task tool would START execution while in plan mode.
@@ -8783,6 +8802,10 @@ def unknown_tool_names(
     catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
     known = {t.get("function", {}).get("name", "") for t in catalogue}
     known |= set(_ALWAYS_ALLOWED_TOOLS)
+    # The swarm lead tools are dispatched through the swarm service
+    # surface, not the catalogue; a preset listing one is correct, not
+    # a typo.
+    known |= set(_SWARM_LEAD_TOOL_NAMES)
     return sorted(
         n for n in _normalise_tool_names(names)
         if not n.startswith("mcp__") and n not in known
@@ -18751,6 +18774,7 @@ class _DocToolExecutor:
             from . import action_grounding as _ag
             _known = set(_WRITE_TOOL_NAMES)
             _known |= set(_DELFIN_ONLY_TOOL_NAMES)
+            _known |= set(_SWARM_LEAD_TOOL_NAMES)
             _known |= {str(t.get("name") or (t.get("function") or {}).get("name") or "")
                        for t in _DOC_TOOLS_OPENAI}
             _known.discard("")
