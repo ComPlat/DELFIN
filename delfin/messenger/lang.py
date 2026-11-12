@@ -461,10 +461,8 @@ DE = {
     # -- several people, each with their own phones (multi-person pairing) --------
     'account owner': 'Kontoinhaber',
     'Not done: unclear for which person.': 'Nicht ausgeführt: unklar, für welche Person.',
-    'This chat is for setup only. sessions lists your sessions, get N brings one to the phone, /sync sets up '
-    'forum and session chats.':
-    'Dieser Chat dient nur der Einrichtung. sessions zeigt deine Sitzungen, hol N holt eine aufs Handy, '
-    '/sync richtet Forum und Einzelchats ein.',
+    'new NAME: task starts a new session on the phone.':
+    'neu NAME: Aufgabe startet eine neue Sitzung auf dem Handy.',
     'No running sessions. new NAME starts one.': 'Keine laufenden Sitzungen. neu NAME startet eine.',
     'get N or get NAME brings one to the phone.': 'hol N oder hol NAME holt eine aufs Handy.',
     'Verify first: type the 6-digit code from the first message at the computer, where /pair was typed '

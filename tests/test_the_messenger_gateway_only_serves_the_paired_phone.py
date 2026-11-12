@@ -100,10 +100,15 @@ def test_unknown_group_or_sender_is_ignored(rig, chat, sender):
 
 
 def test_old_direct_chat_no_longer_dispatches_tasks(rig):
+    """Text in the direct chat starts nothing. It answers with the person's
+    sessions and the two ways onto the phone (it used to answer only "this
+    chat is for setup", and a person did not know what to do next)."""
     rooms, daemon, bridge = rig
     asyncio.run(rooms.handle(message('@7')))
-    assert not bridge.calls
-    assert 'Einrichtung' in daemon.sent[-1][1]
+    assert not bridge.calls                   # nothing dispatched
+    assert {c['cmd'] for c in bridge.reads} == {'sessions'}   # reads only
+    reply = daemon.sent[-1][1]
+    assert '1. same title' in reply and 'hol N' in reply and 'neu NAME' in reply
 
 
 def test_revoke_stops_running_gateway_and_notifications(rig):

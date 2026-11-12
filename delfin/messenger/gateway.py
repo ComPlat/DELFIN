@@ -822,8 +822,10 @@ class Rooms:
             # chat: the line is its answer (answer_open_question).
             return await self.room_reply(text, chat, card[0], card[1])
         if room is None:
-            return t('This chat is for setup only. sessions lists your sessions, get N brings one to the '
-                     'phone, /sync sets up forum and session chats.')
+            # The direct chat answers what a person most likely wants here:
+            # their sessions and the two ways onto the phone, not a refusal.
+            overview = await self.sessions_text(chat)
+            return overview + '\n' + t('new NAME: task starts a new session on the phone.')
         sid = room['session_id']
         if sid is None and room.get('forum') is False:
             return t('The forum is off. Turn it on with forum on.')
@@ -1665,9 +1667,7 @@ class Rooms:
         import base64
         import hashlib
         import os
-        import secrets
         import stat
-        from pathlib import Path
         if not room or not room.get('session_id'):
             await self.send(message['chat'], t('Please send attachments in the session chat you want.'))
             return
@@ -1750,7 +1750,6 @@ class Rooms:
         from .media import MAX_FILE
         import base64
         import hashlib
-        import secrets
         reply = await self.session(sid, 'download.begin', text=name)
         if not reply.get('ok'):
             return reply.get('error') or t('File not available.')
