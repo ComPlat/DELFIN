@@ -228,3 +228,35 @@ def test_start_stays_off_until_the_check_passes_and_an_edit_turns_it_off(tab, re
     assert "What happens when you click Start" in refs["check_out"].value
     refs["spec_area"].value = GOOD + "# edited\n"
     assert start.disabled
+
+
+def test_a_pause_verb_the_package_offers_gets_a_button_that_calls_it(repo, monkeypatch):
+    """Hunt finding: the Pause/Resume buttons tested the wrong verb names
+    and had no handler -- a button that does nothing. A verb the package
+    exposes is shown AND wired; one it does not expose is not shown."""
+    pytest.importorskip("ipywidgets")
+    import delfin.agent.swarm as swarm_pkg
+
+    called = []
+    monkeypatch.setattr(swarm_pkg, "pause_all", lambda: called.append("pause") or "2 paused",
+                        raising=False)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(job, "route", lambda *a, **k: "here")
+    widget, refs = tab_swarm.create_tab(SimpleNamespace(swarm_spec_path=None))
+    try:
+        buttons = [w for w in _walk(widget) if getattr(w, "description", "") in ("Pause all", "Resume")]
+        assert [b.description for b in buttons] == ["Pause all"]
+        buttons[0].click()
+        assert called == ["pause"]
+        assert "2 paused" in refs["flow_status"].value
+    finally:
+        refs["state"]["_stopped"] = True
+        timer = refs["state"].get("_timer")
+        if timer is not None:
+            timer.cancel()
+
+
+def _walk(widget):
+    yield widget
+    for child in getattr(widget, "children", ()) or ():
+        yield from _walk(child)

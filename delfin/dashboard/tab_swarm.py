@@ -794,10 +794,33 @@ def create_tab(ctx: Any):
 
     actions = available_actions()
     extra = []
+
+    def _verb_button(verb: str, label: str, icon: str):
+        """A button for a verb the swarm package exposes (available_actions
+        lists only those), wired to it -- never a button that does nothing."""
+        btn = widgets.Button(description=label, icon=icon)
+
+        def _click(_b) -> None:
+            import delfin.agent.swarm as _swarm_pkg
+            fn = getattr(_swarm_pkg, verb, None)
+            if fn is None:
+                _say(flow_status, f"{label}: not offered by this version", "#b91c1c")
+                return
+            try:
+                result = fn()
+            except Exception as exc:
+                _say(flow_status, f"{label}: {exc}", "#b91c1c")
+                return
+            _say(flow_status, f"{label}: {result}" if result else f"{label}: done")
+            _refresh()
+
+        btn.on_click(_click)
+        return btn
+
     if "pause_all" in actions:
-        extra.append(widgets.Button(description="Pause all", icon="pause"))
+        extra.append(_verb_button("pause_all", "Pause all", "pause"))
     if "resume_all" in actions:
-        extra.append(widgets.Button(description="Resume", icon="forward"))
+        extra.append(_verb_button("resume_all", "Resume", "forward"))
     if extra:
         step3.children = step3.children + (widgets.HBox(extra),)
 
