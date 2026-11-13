@@ -321,18 +321,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         remote_archive_enabled = False
 
-    # A tab hidden in Settings is built anyway today: the preference drops it
-    # from the bar and nothing else. With lazy building every tab not on
-    # screen is unbuilt until first open -- hidden or not.
-    try:
-        _hidden_at_start = {
-            str(item) for item in
-            (((load_settings().get('ui', {}) or {}).get('tabs', {}) or {})
-             .get('hidden', []) or [])
-        }
-    except Exception:
-        _hidden_at_start = set()
-
     refs6, refs_off, refs_home = {}, {}, {}
 
     def _clone_of_browser_now(build, refs):
@@ -353,17 +341,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         )
 
     def _clone_of_browser(tab_id, build, refs):
-        """The lazy build lambda for a browser clone, or None if Settings
-        has the tab hidden at start (so its spec never builds).
+        """The lazy build lambda for a browser clone.
 
         The clone is built through the spec's ``build`` on first open, like
-        every tab that is not the first visible one. ``refs`` is the dict the
+        every tab that is not the first visible one -- a hidden one is
+        therefore never built, and switching it on in Settings builds it
+        then. (A clone hidden at start used to get no build at all and
+        stayed off the bar until a reload.) ``refs`` is the dict the
         Settings tab is handed by value further down; it is filled in place
         when the build runs, so applying a new Archive or Office folder calls
         back through the same dict.
         """
-        if tab_id in _hidden_at_start:
-            return None
         return lambda: _clone_of_browser_now(build, refs)
 
     tab6 = _clone_of_browser('archive', tab_archive_statistics.create_tab, refs6)
