@@ -414,7 +414,7 @@ bootstrap_python() {
     [ -f "$fetcher" ] || die "no Python 3.10/3.11 here and no fetch_micromamba.sh to fetch one with; pass --python PATH"
     log "no Python 3.10/3.11 here; fetching micromamba"
     bash "$fetcher" "$PREFIX/micromamba/bin/micromamba" \
-      || die "micromamba could not be fetched and verified; pass --python PATH"
+      || die "micromamba could not be downloaded and verified (the [micromamba] line above says why), and this machine has no Python 3.10 or 3.11 for DELFIN's venv. Either fix the download -- no connection, or a proxy this shell does not know: export https_proxy=http://HOST:PORT -- and run the same command again; or name an existing Python 3.10/3.11 with --python PATH (on a cluster often provided as a module)."
     mamba="$PREFIX/micromamba/bin/micromamba"
   fi
   log "creating Python 3.11 at $env_dir"
