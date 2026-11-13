@@ -212,12 +212,22 @@ def _check_real_step(
             messages.append(f"param {p.name}={val!r} not in declared enum — expected one of {allowed}")
 
     # 3. consumed capability ports
+    # A port is satisfied by an upstream producer OR by the parameter it
+    # wires to, given by the pipeline or the step: the wire would deliver
+    # exactly that parameter, so giving it is giving the port. Without
+    # this a step whose input is a file the person already has (cclib_parse
+    # on an existing output, a structure summary of a downloaded file)
+    # could never stand first. The contract's own defaults do not count --
+    # a default is not something anybody supplied.
+    supplied = {**defaults, **spec.kwargs}
     missing_inputs: List[str] = []
     for tag in sorted(contract.consumes):
         if tag == "geometry":
             satisfied = geometry_supplied
         else:
-            satisfied = tag in avail_caps
+            satisfied = tag in avail_caps or any(
+                wired_tag == tag and supplied.get(kwarg) not in (None, "")
+                for wired_tag, kwarg in contract.wires)
         if not satisfied:
             missing_inputs.append(tag)
     if missing_inputs:
