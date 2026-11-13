@@ -66,7 +66,7 @@ def _stand_in_python(tmp_path):
     path.write_text(f"""#!{bash}
 real={sys.executable!s}
 if [ "${{1:-}}" = "-c" ]; then
-  case "${{2:-}}" in *version_info*exit*|*exit*version_info*) exit 0 ;; esac
+  case "${{2:-}}" in *version_info*exit*|*exit*version_info*) exit "${{STANDIN_TOO_NEW:-0}}" ;; esac
 fi
 case "${{1:-}} ${{2:-}}" in
   "-m venv") mkdir -p "$3/bin" && cp "$0" "$3/bin/python" && exit 0 ;;
@@ -231,3 +231,26 @@ def test_a_failed_step_names_itself_and_how_to_go_on(tmp_path):
     logs = sorted((prefix / "logs").glob("delfin-install-*.log"))
     assert logs and str(logs[0]) in err
     assert "delfin-voila" not in done.stdout, "a failed install printed the start instructions"
+
+
+def test_a_failed_micromamba_download_says_what_to_do(tmp_path):
+    """No Python 3.10/3.11 here and the download of micromamba fails (no
+    connection, a proxy): the message used to be only "pass --python PATH"."""
+    failing_curl = ('#!/bin/sh\necho "curl: (7) Failed to connect to github.com port 443" >&2\n'
+                    'exit 7\n')
+    bindir = _host_bin(tmp_path, stubs={"curl": failing_curl})
+    prefix = tmp_path / "software"
+    done, _ = _run(tmp_path, "--profile", "core", "--no-openmpi", "--no-orca",
+                   "--prefix", str(prefix), "--repo", str(_checkout(tmp_path)),
+                   bindir=bindir, env={"STANDIN_TOO_NEW": "1"})
+
+    assert done.returncode != 0
+    err = done.stderr
+    assert "micromamba could not be downloaded" in err, err
+    assert "https_proxy" in err
+    assert "--python PATH" in err
+    assert "run the same command again" in err
+    bindir_mm = prefix / "micromamba" / "bin"
+    assert not (bindir_mm / "micromamba").exists()
+    assert not (bindir_mm.exists() and list(bindir_mm.glob(".micromamba.partial.*")))
+    assert not (tmp_path / "checkout" / ".venv").exists()
