@@ -31,3 +31,11 @@ def test_a_label_column_and_fields_beside_it():
             "{ min-width: 190px; }") in css
     assert ('.delfin-settings .widget-accordion .widget-hbox > .widget-text[style*="width: 100%"] '
             "{ flex: 1 1 280px; }") in css
+
+
+def test_on_a_phone_a_field_is_as_wide_as_the_pane():
+    """At 390 px a field kept its 280 px minimum (its layout) and ran past
+    the pane's right edge; below 600 px the minimum gives way."""
+    css = " ".join(SOURCE.split())
+    assert ("'@media (max-width: 600px) { .delfin-settings .widget-accordion .widget-text "
+            "{ min-width: 0 !important; } }'") in css
