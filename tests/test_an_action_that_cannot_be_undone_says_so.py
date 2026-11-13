@@ -134,6 +134,36 @@ def test_a_rebase_is_recoverable_with_effort(repo):
     assert "reflog" in IR.statement(cons)
 
 
+@pytest.mark.parametrize("command,said", [
+    # What the git-history rule (reversibility, PR #707) refuses or asks:
+    # the remote's old state is in no reflog here, a tag has none, and an
+    # expired reflog is the record itself.
+    ("git push -d origin topic", "Deletes branch topic on origin"),
+    ("git push --prune origin", "Deletes every branch on origin"),
+    ("git push --force-if-includes --force-with-lease origin main",
+     "Replaces the history of branch main on origin"),
+    ("git tag -f v1", "Moves tag v1"),
+    ("git reflog expire --expire=now --all", "Removes git's record"),
+    ("git gc --prune=now", "Removes git's record"),
+    ("git prune", "Removes git's record"),
+])
+def test_what_removes_the_way_back_in_git_says_so(repo, command, said):
+    cons = IR.classify("bash", {"command": command}, cwd=repo)
+    assert cons.level == IR.IRREVERSIBLE, command
+    assert said in IR.statement(cons), IR.statement(cons)
+
+
+def test_a_git_history_dialog_opens_with_the_statement(repo):
+    perms = _perms(repo)
+    A._ask_confirm(perms, "bash",
+                   {"command": "git push --force-with-lease origin main"},
+                   "[GIT HISTORY]\nthe remote's old state is in no reflog\n\n"
+                   "$ git push --force-with-lease origin main")
+    (_, _, preview), = perms.confirm_callback.asked
+    assert preview.startswith(IR.HEAD_IRREVERSIBLE)
+    assert preview.index("Replaces the history") < preview.index("[GIT HISTORY]")
+
+
 def test_a_job_cancel_and_an_upload_are_irreversible(ws):
     assert "Cancels job 4711" in IR.statement(
         IR.classify("bash", {"command": "scancel 4711"}, cwd=ws))
