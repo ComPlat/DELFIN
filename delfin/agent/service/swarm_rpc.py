@@ -22,6 +22,7 @@ turns them into protocol error answers, never tracebacks.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from ..swarm import launch as _launch
@@ -29,6 +30,7 @@ from ..swarm import observe as _observe
 from ..swarm import spec as _spec
 from ..swarm import status as _status
 from ..swarm import triage as _triage
+from .. import session_messages as _session_messages
 
 
 class SwarmRpcError(ValueError):
@@ -175,6 +177,79 @@ def swarm_triage_answer(params: dict[str, Any]) -> dict[str, Any]:
         return _triage.triage_answer(item, {}, answer=answer)
     except _triage.TriageError as exc:
         raise SwarmRpcError(str(exc)) from None
+
+
+def swarm_message(params: dict[str, Any]) -> dict[str, Any]:
+    """swarm.message: send one plain partner message to a member.
+
+    Delivers through session_messages (no shell, no approval surface);
+    the lead's swarm_message tool dispatches here. The lead session
+    confirms state-changing sends with the user before dispatch; this
+    wrapper is transport only.
+    """
+    to_key = str(params.get("to") or "")
+    text = str(params.get("text") or "")
+    if not to_key:
+        raise SwarmRpcError("to is required")
+    if not text:
+        raise SwarmRpcError("text is required")
+    sent = _session_messages.send(to_key, text)
+    return {"sent": bool(sent), "to": to_key}
+
+
+def swarm_prcheck(params: dict[str, Any]) -> dict[str, Any]:
+    """swarm.prcheck: read-only PR status; runs no tests in-process.
+
+    Policy (operator, 2026-11-12, after the login-node suspension
+    #640): the pre-PR check runs tests. On a login node the in-process
+    route would bypass the compute-node rule hpc_guard.MOVED_COMMANDS
+    enforces for the CLI (test-on-slurm, cli.py:6205). So this handler
+    NEVER runs the check itself: on a login node it answers with the
+    structured unavailability and names the compute-node route
+    (delfin prcheck on a compute node, or delfin test-on-slurm);
+    outside a login node it delegates to the read-only git-read report
+    pre_pr_check.run (no tests are executed by it).
+
+    The checked tree is the WORKTREE the request names (params
+    "worktree", required) -- inside the agent service the process cwd
+    is the service's runtime dir, not the swarm repo, so a '.' default
+    would check the wrong tree. Refused when the path does not exist:
+    an absent worktree is a wrong parameter, not an empty report.
+    """
+    pr = params.get("pr")
+    if pr is None:
+        raise SwarmRpcError("pr is required")
+    if not isinstance(pr, int) or isinstance(pr, bool):
+        raise SwarmRpcError("pr cannot be bool; pass an integer")
+    if pr <= 0:
+        raise SwarmRpcError("pr must be a positive integer")
+    worktree = str(params.get("worktree") or "")
+    if not worktree:
+        raise SwarmRpcError(
+            "worktree is required: the repository worktree to check "
+            "(the service process cwd is not the swarm repo)")
+    if not Path(worktree).expanduser().is_dir():
+        raise SwarmRpcError(f"worktree does not exist: {worktree!r}")
+    from .. import pre_pr_check  # delfin.agent.pre_pr_check
+    from delfin.agent import calc_policy as _calc_policy
+    host = _calc_policy.host_kind()
+    if host == "login_node":
+        return {"pr": pr, "checks": [], "available": False,
+                "reason": "login node: the pre-PR check runs tests, so it "
+                          "must not run here in-process; use 'delfin "
+                          "prcheck' on a compute node or 'delfin "
+                          "test-on-slurm' (slurm_tests.py)"}
+    # Read-only git reads only (pre_pr_check.run, pre_pr_check.py:314):
+    # selects the tests, never executes them. Nothing is written to the
+    # checked tree.
+    report = pre_pr_check.run(worktree, base="origin/main")
+    return {"pr": pr,
+            "checks": [{"blocker": b.kind, "detail": b.detail}
+                       for b in report.blockers],
+            "available": report.verdict == "READY",
+            "reason": (f"pre-PR check {report.verdict} on host {host} "
+                       f"({len(report.changed_files)} changed files, "
+                       f"{len(report.selected_tests)} tests selected)")}
 
 
 def swarm_observe_overview(params: dict[str, Any]) -> dict[str, Any]:
