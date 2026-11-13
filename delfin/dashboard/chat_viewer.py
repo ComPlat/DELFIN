@@ -121,12 +121,19 @@ def _bio_facts(path, workspace_root) -> dict:
     except StructureFormatError as exc:
         raise ValueError(str(exc)) from None
     comp = structure.composition()
+    water_names = sorted({
+        residue.name
+        for chain in structure.first_model.chains
+        for residue in chain.waters})
     return {
         "chains": list(comp.chain_ids),
         "n_polymer_residues": comp.n_polymer_residues,
         "hetero_components": {name: n for name, n in comp.hetero_components},
         "n_waters": comp.n_waters,
         "n_atoms": comp.n_atoms,
+        # The residue names the file itself calls water, so the browser
+        # blanks exactly those and nothing else.
+        "water_residue_names": water_names,
     }
 
 
