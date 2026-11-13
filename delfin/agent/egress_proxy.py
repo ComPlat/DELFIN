@@ -935,6 +935,44 @@ _PROXY: Optional[EgressProxy] = None
 _LOCK = threading.Lock()
 
 
+class _External:
+    """The proxy of another, longer-lived process, as the cage sees it.
+
+    A short-lived process that only builds a command's cage (the CLI
+    backend's gate hook, ``cli_gate``) cannot run a proxy of its own: it
+    would close when the hook exits, before the command runs. It binds the
+    socket of the DELFIN process that started the CLI instead, with the
+    token file that process issued for the session's permissions; the
+    decisions stay with that process. Only what the cage argv reads
+    (``socket_path``, ``token_file_for``) exists here."""
+
+    _closed = False
+
+    def __init__(self, socket_path: str, token_file: str) -> None:
+        self.socket_path = socket_path
+        self._token_file = token_file
+
+    def token_file_for(self, perms) -> str:
+        return self._token_file
+
+    def close(self) -> None:
+        pass
+
+
+def use_external(socket_path: str, token_file: str) -> None:
+    """Route this process's cages to another process's proxy (_External).
+
+    A live proxy of this very process is never replaced: the gate code
+    can run inside the DELFIN process that owns the proxy (tests do; any
+    in-process caller could), and swapping its own proxy for a stub left
+    every later cage binding a socket nobody served any more."""
+    global _PROXY
+    with _LOCK:
+        if (isinstance(_PROXY, EgressProxy) and not _PROXY._closed):
+            return
+        _PROXY = _External(socket_path, token_file)  # type: ignore[assignment]
+
+
 def get_proxy() -> EgressProxy:
     """The agent process's proxy, started on first use."""
     global _PROXY
