@@ -107,3 +107,16 @@ def test_seatbelt_denies_writes_to_the_store(ws, monkeypatch):
     prof = next(a for a in argv if "(version 1)" in a)
     for sub in (".undo", ".layers"):
         assert f'(subpath "{ws}/.delfin-trash/{sub}")' in prof, prof
+
+
+def test_the_change_journal_does_not_count_the_store_as_the_commands(ws):
+    """A background command's snapshot walk (shell_changes) saw another
+    command's layer status file appear and journalled it as created by
+    the background job; DELFIN's own store is not the command's change."""
+    from delfin.agent import shell_changes as SC
+    snap = SC.before([ws])
+    (ws / ".delfin-trash" / ".layers" / "9" / "status").write_text("ok")
+    (ws / ".delfin-trash" / ".undo" / "2026-11-13" / "cmd-1" / "n").write_text("n")
+    (ws / "made.txt").write_text("m")
+    names = sorted(Path(c.path).name for c in SC.after(snap))
+    assert names == ["made.txt"], names
