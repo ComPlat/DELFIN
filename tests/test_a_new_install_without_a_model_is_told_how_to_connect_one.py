@@ -143,3 +143,20 @@ def test_the_agent_tab_is_shown_without_a_model():
 def test_the_agent_tab_shows_the_card_when_nothing_is_connected():
     source = (REPO / "delfin" / "dashboard" / "tab_agent.py").read_text()
     assert "no_model_card_html(" in source
+
+
+def test_the_card_takes_the_place_of_the_empty_chat_not_a_row_of_its_own():
+    """Measured 2026-11-13 at 1366x768: a card above the chat pushed the
+    input row below the fold. It is the empty chat's content instead: both
+    places that draw an empty chat draw it, and the tab's root rows do not
+    grow by one."""
+    source = (REPO / "delfin" / "dashboard" / "tab_agent.py").read_text()
+    assert source.count("_empty_chat_html()") >= 2, "both empty-chat sites"
+    assert "*([_no_model_card]" not in source, "the card is still a row of the tab"
+
+
+def test_the_card_is_compact():
+    from delfin.agent import model_setup
+
+    card = model_setup.no_model_card_html("x")
+    assert "max-height" in card and "overflow-y:auto" in card
