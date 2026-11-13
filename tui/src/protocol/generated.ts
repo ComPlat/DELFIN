@@ -562,6 +562,14 @@ export interface SwarmTriageAnswerParams {
   "item": Record<string, unknown>
   "answer": string
 }
+export interface SwarmMessageParams {
+  "to": string
+  "text": string
+}
+export interface SwarmPrcheckParams {
+  "pr": number
+  "worktree"?: string | null
+}
 export interface SwarmObserveOverviewParams {
   "source"?: Record<string, unknown> | null
   "sourcePath"?: string | null
@@ -609,6 +617,8 @@ export interface ServiceRequests {
   "swarm.resume": SwarmResumeParams
   "swarm.triage.list": SwarmTriageListParams
   "swarm.triage.answer": SwarmTriageAnswerParams
+  "swarm.message": SwarmMessageParams
+  "swarm.prcheck": SwarmPrcheckParams
   "swarm.observe.overview": SwarmObserveOverviewParams
   "swarm.observe.feed": SwarmObserveFeedParams
 }
@@ -782,6 +792,16 @@ export interface SwarmTriageAnswerResult {
   "item_id"?: string | null
   "logged"?: string | null
 }
+export interface SwarmMessageResult {
+  "sent": boolean
+  "to": string
+}
+export interface SwarmPrcheckResult {
+  "pr"?: number | null
+  "checks": Record<string, unknown>[]
+  "available": boolean
+  "reason": string
+}
 export interface SwarmObserveOverviewResult {
   "rows": Record<string, unknown>[]
 }
@@ -823,6 +843,8 @@ export interface ServiceResults {
   "swarm.resume": SwarmResumeResult
   "swarm.triage.list": SwarmTriageListResult
   "swarm.triage.answer": SwarmTriageAnswerResult
+  "swarm.message": SwarmMessageResult
+  "swarm.prcheck": SwarmPrcheckResult
   "swarm.observe.overview": SwarmObserveOverviewResult
   "swarm.observe.feed": SwarmObserveFeedResult
 }
