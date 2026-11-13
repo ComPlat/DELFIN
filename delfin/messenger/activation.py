@@ -101,14 +101,26 @@ def clean_name(text):
 #: What /sync understands (German matchers for what the user types).
 SYNC_ON = frozenset({'', 'on', 'an', 'ein', 'enable'})
 SYNC_OFF = frozenset({'off', 'aus', 'ausschalten', 'disable', 'stop'})
-SYNC_USAGE = ('Usage: /sync [on|off|status] or /sync name NAME; '
-              '/sync policy pull on|off for pulling from the phone. Anything else changes nothing.')
+SYNC_USAGE = ('Usage: /sync [on|off|status] or /sync NAME (one word names '
+              'the session); /sync policy pull on|off for pulling from the '
+              'phone. Anything else changes nothing.')
+
+
+def _one_word(raw):
+    """One clean word (no space, no control characters), or ''."""
+    text = str(raw or '').strip()
+    if not text or any(c.isspace() for c in text):
+        return ''
+    return clean_name(text)
 
 
 def parse_sync(args):
     """``/sync`` arguments as (action, name): action on | off | status |
-    usage; a name only after ``name`` or in quotes. Anything else is
-    ``usage`` -- it changes nothing (an unknown word never switches on)."""
+    usage; a name after ``name``, in quotes, or as ONE word -- ``/sync
+    OFFICE`` means "on, named OFFICE" (the person's wording, seen
+    2026-11-12). What is not one clean word -- several words, a bare
+    ``name``, unknown ``policy`` arguments -- is ``usage``: it changes
+    nothing (the guard from review finding 2 stays for those)."""
     raw = str(args or '').strip()
     word = raw.lower()
     if word in SYNC_ON:
@@ -125,6 +137,9 @@ def parse_sync(args):
         return 'on', clean_name(rest)
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in '"\'' and clean_name(raw[1:-1]):
         return 'on', clean_name(raw[1:-1])
+    one = _one_word(raw)
+    if one and word not in SYNC_ON and word not in SYNC_OFF and word != 'name':
+        return 'on', one
     return 'usage', ''
 
 
