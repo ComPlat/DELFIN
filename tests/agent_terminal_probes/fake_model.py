@@ -93,6 +93,9 @@ def plan(messages: list[dict]) -> dict:
             return {"tool": "write_file",
                     "args": {"path": path, "content": (rest[0] if rest else "")
                              + "\n"}}
+        if s.startswith("do-show "):
+            return {"tool": "show_molecule",
+                    "args": {"path": s[8:].strip()}}
         if s == "do-md":
             return {"text": "# Result\n\n- **first** point\n- second point\n\n"
                             "```python\nprint('hi')\n```\n"}
