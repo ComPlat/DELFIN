@@ -599,10 +599,10 @@ def create_tab(ctx):
         description='✏ Rename',
         layout=widgets.Layout(width='92px', height='26px'),
     )
-    calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>')
+    calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_rename_prompt_input = widgets.Text(
         placeholder='New name',
-        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
+        layout=widgets.Layout(flex='1 1 160px', min_width='160px', height='26px'),
     )
     calc_rename_prompt_ok_btn = widgets.Button(
         description='OK',
@@ -620,12 +620,13 @@ def create_tab(ctx):
             calc_rename_prompt_ok_btn,
             calc_rename_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
-    calc_duplicate_prompt_label = widgets.HTML('<b>Duplicate:</b>')
+    calc_duplicate_prompt_label = widgets.HTML('<b>Duplicate:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_duplicate_prompt_input = widgets.Text(
         placeholder='Duplicate folder name',
-        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
+        layout=widgets.Layout(flex='1 1 160px', min_width='160px', height='26px'),
     )
     calc_duplicate_prompt_yes_btn = widgets.Button(
         description='Yes',
@@ -643,12 +644,13 @@ def create_tab(ctx):
             calc_duplicate_prompt_yes_btn,
             calc_duplicate_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
-    calc_new_folder_prompt_label = widgets.HTML('<b>New folder name:</b>')
+    calc_new_folder_prompt_label = widgets.HTML('<b>New folder name:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_new_folder_prompt_input = widgets.Text(
         placeholder='Folder name',
-        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
+        layout=widgets.Layout(flex='1 1 160px', min_width='160px', height='26px'),
     )
     calc_new_folder_prompt_ok_btn = widgets.Button(
         description='Create',
@@ -666,7 +668,8 @@ def create_tab(ctx):
             calc_new_folder_prompt_ok_btn,
             calc_new_folder_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
     calc_transfer_jobs_btn = widgets.Button(
         description='Running Transfers',

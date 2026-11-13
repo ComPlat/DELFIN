@@ -7,9 +7,10 @@ Measured in the real page at 1366 px (page_check driver): the row's
 the HTML label has no minimum -- so the field stood alone without its
 name, and Cancel ran 6 px past the pane's edge.
 
-Output pinned: each label keeps its width (flex 0 0 auto), the field keeps
-at least 160 px, and the row wraps its buttons below on a narrow pane
-instead of overflowing it.
+Output pinned: each label has a line of its own above the field
+(flex 0 0 100% in a wrapping row, as forms label a field), and the field
+(at least 160 px) and its two buttons share the line below, which fits
+the narrowest pane (160 + 70 + 78 px).
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ def test_each_prompt_label_keeps_its_width():
                  "calc_new_folder_prompt_label"):
         call = SOURCE[SOURCE.index(f"    {name} = widgets.HTML("):]
         call = call[:call.index("\n")]
-        assert "flex='0 0 auto'" in call, name
+        assert "flex='0 0 100%'" in call, name
 
 
 def test_each_prompt_field_keeps_a_usable_width():
