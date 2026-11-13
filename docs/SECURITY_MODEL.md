@@ -233,6 +233,21 @@ and `/status`. `DELFIN_CLASSIFIER` overrides the switch for one process,
 except in a process an agent session started (`DELFIN_AGENT_SESSION` is set
 in every agent child), so the agent cannot switch off its own watcher.
 
+Under `bypassPermissions`, before the classifier, a command that would
+destroy a file nothing can restore is refused (`unrestorable.refusal`,
+security event `unrestorable_change`). The command's named targets are
+read -- `rm`, `unlink`, `shred`, `truncate`, `find -delete` / `-exec rm`
+(with its `-name` filter), `dd of=`, `>` redirections, and existing
+`cp`/`mv`/`install`/`ln -f` destinations -- and each must be restorable:
+small enough for the shell change journal, held by git (tracked and
+byte-identical to HEAD; git runs with fsmonitor and hooks off and hashes
+without filters), written by this session, or session scratch. Otherwise
+the refusal names `mv PATH <root>/.delfin-trash/<UTC date>/`; DELFIN
+creates that folder, keeps it out of git and removes days older than seven.
+Files in the trash count as unrestorable, so it cannot be emptied from the
+shell. Not seen: a deletion inside an interpreter or a script, a variable
+as target, a program that opens its own output.
+
 ### 3. Isolation of the shell command
 
 `api_client._bash_isolation_argv` decides how a shell command is run.
