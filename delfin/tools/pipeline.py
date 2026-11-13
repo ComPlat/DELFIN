@@ -1533,6 +1533,11 @@ class Pipeline:
                 cstep.reset_for_retry(attempt_dir=str(new_dir),
                                       end="killed/job gone"
                                       if not cstep.evidence else None)
+                # L6: the retry is a real submission — record it before
+                # run_step, else mark_finished/mark_failed are refused
+                # from 'pending' afterwards (a successful 11-minute run
+                # was thrown away in the live run #3).
+                cstep.mark_submitted(job_id="local")
                 chain.save()
                 # L5: the dir actually used is the NEW attempt dir (never
                 # overwrite the old calculation) — not the numbered dir of

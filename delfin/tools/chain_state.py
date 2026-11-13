@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,11 +91,19 @@ class ChainStep:
                 f"{self.state!r}"
             )
 
-    def mark_submitted(self, job_id: str, inputs_hash: Optional[str] = None) -> None:
+    def mark_submitted(self, job_id: str, inputs_hash: Optional[str] = None,
+                       attempt_no: Optional[int] = None) -> None:
         self._require("pending", "mark_submitted")
         self.state = "submitted"
         self.job_id = job_id
-        self.attempt += 1
+        # The attempt number comes from whoever owns the attempt lifecycle:
+        # a fresh step counts up on its first submission (attempt 1); a
+        # retry's number was already advanced by reset_for_retry (L5/L6 —
+        # double-counting mislabeled the ledger's entry as attempt 3).
+        if attempt_no is not None:
+            self.attempt = attempt_no
+        elif self.attempt == 0:
+            self.attempt = 1
         if inputs_hash is not None:
             self.inputs_hash = inputs_hash
 
@@ -759,9 +768,18 @@ def next_attempt_dir(step: ChainStep, chain_work_dir: str | Path) -> Path:
     )
     if step.work_dir:
         old = Path(step.work_dir)
-        m = old.name.rsplit("_", 1)
-        if m[-1].isdigit() and old.parent.name == step.name:
-            used.append(int(m[-1]))
+        name = old.name
+        # The first attempt's dir is the step's numbered dir NN_<name>
+        # (e.g. 01_orca_opt): the number LEADS, it IS attempt 1, and it
+        # must be counted — else the second attempt is mislabeled
+        # attempt_1 (live run #3).  A previous retry dir attempt_<n> is
+        # counted through its trailing number.
+        m = re.match(r"^(\d{2})_(.+)$", name)
+        if m and m.group(2) == step.name:
+            used.append(1)
+        elif (tail := name.rsplit("_", 1)[-1]).isdigit() \
+                and old.parent.name == step.name:
+            used.append(int(tail))
     n = (used[-1] + 1) if used else 1
     return base / f"attempt_{n}"
 
