@@ -63,12 +63,18 @@ def test_a_hidden_clone_is_not_built(source):
     assert built == [], 'a hidden tab must cost nothing'
 
 
-def test_the_hidden_set_comes_from_settings(source):
-    assert "_hidden_at_start" in source
-    assert "get('hidden', [])" in source
-    # Read before the clones are built, or the decision comes too late.
-    assert source.index('_hidden_at_start = {') < source.index(
-        "tab6 = _clone_of_browser('archive'")
+def test_a_clone_hidden_at_start_can_still_be_switched_on(source):
+    """A clone hidden in the settings at start used to get no build at all
+    (``_hidden_at_start``), so switching it on in Settings later left it
+    off the bar until a reload -- with five tabs by default (tab_defaults)
+    the common case for Archive and Office. Every clone keeps its lazy
+    build; a hidden one still costs nothing, because only the tab shown
+    first is built at start (tab_schedule.startup_specs_to_build) and
+    every other one on its first open."""
+    clone = source.split('def _clone_of_browser(')[1].split('\n    tab6 =')[0]
+    assert 'return lambda: _clone_of_browser_now(build, refs)' in clone
+    assert 'return None' not in clone
+    assert '_hidden_at_start' not in source
 
 
 def test_showing_a_tab_again_builds_it(source):

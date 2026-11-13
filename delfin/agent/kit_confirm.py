@@ -715,6 +715,13 @@ class KitConfirmBroker:
         persist_pat = ""
         persist_kind = ""        # 'allow_pattern' / 'extra_dir' / ''
         persist_disabled_reason = ""
+        from . import irreversible as _irr
+        if _irr.is_irreversible(req.preview):
+            # Nothing permanent for what cannot be undone: the gate puts
+            # it to the person each time (_irreversible_needs_person), so
+            # a saved pattern would only claim a grant that never holds.
+            return "", "", ("This cannot be undone, so it is approved one "
+                            "action at a time; no permanent rule covers it.")
         if tool == "bash":
             persist_pat = _suggest_persist_pattern(cmd, self._session_perms())
             persist_kind = "allow_pattern"
@@ -802,15 +809,35 @@ class KitConfirmBroker:
         )
 
         # ---- 3. Preview ALWAYS visible (not inside <details>) -------
+        # The gate's statement of what cannot be undone (irreversible) is
+        # taken off the preview and shown above it, large and red, so it is
+        # read before the command and before the buttons.
+        from . import irreversible as _irr
+        said, shown = _irr.split(req.preview)
         preview_pre = (
             f'<pre style="max-height:280px; overflow:auto; '
             f'font-size:11px; line-height:1.4; padding:6px; '
             f'background:rgba(127,127,127,0.06); '
             f'border-left:2px solid #94a3b8; margin:4px 0;">'
-            f'{_html_escape(req.preview[:6000])}'
-            f'{"…" if len(req.preview) > 6000 else ""}'
+            f'{_html_escape(shown[:6000])}'
+            f'{"…" if len(shown) > 6000 else ""}'
             f'</pre>'
         )
+        if said is not None:
+            red = said.irreversible
+            items = "".join(f'<li>{_html_escape(s)}</li>'
+                            for s in said.sentences())
+            preview_pre = (
+                f'<div style="border:2px solid {"#b91c1c" if red else "#b45309"}; '
+                f'background:{"#fef2f2" if red else "#fffbeb"}; '
+                f'color:{"#7f1d1d" if red else "#78350f"}; padding:8px 10px; '
+                f'margin:4px 0; font-size:13px; line-height:1.45;">'
+                f'<b>{_html_escape(said.head)}</b>'
+                f'<ul style="margin:4px 0 0 18px; padding:0;">{items}</ul>'
+                + ('<div style="font-size:11px; margin-top:4px;">Nothing here '
+                   'is remembered: the next such action is asked again. With '
+                   'no answer the request is refused.</div>' if red else "")
+                + '</div>' + preview_pre)
 
         # A question that widens the agent's own permissions
         # (api_client._confirm_widening) opens with "⚠" and what a yes
@@ -916,6 +943,15 @@ class KitConfirmBroker:
         # not close). Show only buttons that really act and dismiss the row.
         _can_persist = bool(persist_pat) and self._persist_callback is not None
         _buttons = [approve] + ([approve_persist] if _can_persist else []) + [deny]
+        if said is not None and said.irreversible:
+            # No first button that means yes: Deny leads, and the yes
+            # names what it is.
+            approve.description = "Allow once (cannot be undone)"
+            approve.button_style = "danger"
+            approve.tooltip = ("Runs this one action. It cannot be undone; "
+                               "nothing is remembered for the next one.")
+            deny.button_style = ""
+            _buttons = [deny, approve]
         # The decision buttons stay the last row; Change… sits above them.
         extra = self._change_controls(req, widgets)
         return widgets.VBox(
