@@ -322,8 +322,23 @@ _SENT_LOCK = threading.Lock()
 
 
 def _session_key(perms) -> str:
+    """The count's key: the session id, else a token kept on the
+    permissions object itself. Not id(perms): CPython reuses an id once
+    the object is gone, and a new session then inherited the old one's
+    total (and missed its own first-byte record)."""
     sid = str(getattr(perms, "task_session_id", "") or "")
-    return sid or (f"perms-{id(perms)}" if perms is not None else "process")
+    if sid:
+        return sid
+    if perms is None:
+        return "process"
+    token = getattr(perms, "_egress_count_key", "")
+    if not token:
+        token = "perms-" + secrets.token_hex(8)
+        try:
+            setattr(perms, "_egress_count_key", token)
+        except Exception:
+            return f"perms-{id(perms)}"
+    return token
 
 
 def note_sent(perms, host: str, nbytes: int, via: str) -> None:
