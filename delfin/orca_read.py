@@ -43,13 +43,14 @@ only when ``orca_2json`` is on PATH. It never writes anywhere else.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -883,6 +884,206 @@ def ensure_property_json(work_dir: Union[str, Path], base_name: str) -> Optional
     runner = Runner(working_dir=work_dir)
     runner.create_property_json(base_name)
     return target if target.is_file() else None
+
+
+# ---------------------------------------------------------------------------
+# relativistic / spin-property readers (ZFS via %eprnmr, SOC-TDDFT)
+# ---------------------------------------------------------------------------
+
+ZFS_CM1 = "cm-1"
+
+
+@dataclass
+class ZfsParameters:
+    """Zero-field splitting read from ORCA's ``D_Tensor`` property record.
+
+    ORCA writes the axial and rhombic ZFS parameters into the run's
+    ``.property.json`` under a ``D_Tensor`` record whose ``D`` (axial,
+    cm-1) and ``E`` (rhombic, cm-1) fields are documented in the manual
+    (property-file documentation, ``D_Tensor`` record).  ``E_over_D`` is
+    dimensionless and derived as ``E / D`` when ``D != 0``, else ``None``.
+    """
+
+    d_cm1: Optional[float] = None      # axial ZFS parameter D
+    e_cm1: Optional[float] = None      # rhombic ZFS parameter E
+    e_over_d: Optional[float] = None   # derived, dimensionless (E/D)
+    source: str = "none"               # "opi" | "json" | "none"
+
+    @property
+    def unit(self) -> tuple[str, str, str]:
+        return (ZFS_CM1, ZFS_CM1, "")
+
+
+def _json_find_d_tensor(node: Any, depth: int = 0) -> Optional[dict]:
+    """Return the first nested dict that carries ORCA's ``D_Tensor`` record.
+
+    ORCA's property JSON nests each property record as a flat dict of the
+    documented keys (the ``D_Tensor`` record's ``D``/``E``/``d_raw``/
+    ``d_eigenvalues``/``d_eigenvectors`` plus ``method``/``level``/...
+    -- cf. the manual's property-file documentation).  The nesting depends
+    on the ORCA version, so we locate the record by its keys instead of
+    guessing a fixed path: a dict that carries an axial ``D`` and rhombic
+    ``E`` scalar together with the ``d_raw`` tensor must *be* the record.
+    """
+    if depth > 6:
+        return None
+    if isinstance(node, dict):
+        lo = {k.lower(): v for k, v in node.items()}
+        if "d_tensor" in lo:
+            rec = lo["d_tensor"]
+            # ORCA 6.1.1 writes Geometries[i].D_Tensor as a *list* of
+            # records (real run); the first record is read.
+            if isinstance(rec, list):
+                rec = next((r for r in rec if isinstance(r, dict)), None)
+            if isinstance(rec, dict):
+                return rec
+        if ("d" in lo and "e" in lo
+                and _coerce_float(lo["d"]) is not None
+                and _coerce_float(lo["e"]) is not None):
+            return node
+        for value in node.values():
+            found = _json_find_d_tensor(value, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = _json_find_d_tensor(value, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _json_loads_d_tensor(json_text: str) -> Optional[ZfsParameters]:
+    """ZFS D/E from a *D_Tensor* property-JSON record given as text.
+
+    ``json_text`` is ORCA's ``<base>.property.json`` content (synthetic in
+    tests).  Returns ``None`` when no ``D_Tensor`` record is found.  Never
+    raises on malformed JSON.
+    """
+    try:
+        data = json.loads(json_text)
+    except (ValueError, TypeError):
+        return None
+    node = _json_find_d_tensor(data)
+    if node is None:
+        return None
+    d_f = _coerce_float(node.get("D"))
+    e_f = _coerce_float(node.get("E"))
+    if d_f is None and e_f is None:
+        return None
+    return ZfsParameters(
+        d_cm1=d_f,
+        e_cm1=e_f,
+        e_over_d=(e_f / d_f) if (d_f and d_f != 0.0) else None,
+        source="json",
+    )
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def read_zfs_parameters(work_dir: Union[str, Path],
+                        base_name: str) -> Optional[ZfsParameters]:
+    """ZFS D, E (cm-1) and E/D of a finished ``%eprnmr DTensor`` run.
+
+    ORCA holds the ZFS parameters in the run's ``.property.json`` under a
+    ``D_Tensor`` record (documented fields ``D`` axial, ``E`` rhombic);
+    that record is the authoritative source because the manual documents
+    no stable plain-text ``.out`` table for the two scalars.  Returns
+    ``None`` when the property JSON is absent, unreadable or carries no
+    ``D_Tensor`` record.  Never raises.
+    """
+    json_path = Path(work_dir) / f"{base_name}.property.json"
+    if not json_path.is_file():
+        return None
+    try:
+        text = json_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return _json_loads_d_tensor(text)
+
+
+# section marker of the SOC-corrected spectrum a ``%tddft soc true`` run
+# prints (ORCA 6.1.1, checked against a real run): the transitions from the
+# SOC ground state, one row each, in the layout
+#   ``  0-1.0A  ->  4-3.0A    2.5000   20164.0   495.9   0.000001000  ...``
+# i.e. initial state-multiplicity-irrep, ``->``, final state-multiplicity-
+# irrep, energy in eV, energy in cm-1, wavelength in nm, fosc(D2), then the
+# transition dipole columns.  The multiplicity label is the dominant spin
+# component of the SOC-mixed state.
+_SOC_SPECTRUM_RE = re.compile(
+    r"SOC\s+CORRECTED\s+ABSORPTION\s+SPECTRUM\s+VIA\s+TRANSITION"
+    r"\s+ELECTRIC\s+DIPOLE\s+MOMENTS",
+    re.IGNORECASE,
+)
+_NUM = r"([-+]?\d+\.\d*(?:[eE][-+]?\d+)?)"
+_SOC_STATE_RE = re.compile(
+    r"^\s*(\d+)-(\d+(?:\.\d+)?)(\S*)\s+->\s+(\d+)-(\d+(?:\.\d+)?)(\S*)"
+    r"\s+" + _NUM + r"\s+" + _NUM + r"\s+" + _NUM + r"\s+" + _NUM
+)
+
+
+@dataclass
+class SocState:
+    """One SOC-corrected TD-DFT transition from the SOC ground state."""
+
+    states: int                     # final SOC state index (ground = 0)
+    e_cm1: float                    # transition energy, cm-1
+    e_eV: float                     # transition energy, eV
+    wavelength_nm: Optional[float] = None
+    fosc: Optional[float] = None    # oscillator strength (electric dipole)
+    mult: Optional[float] = None    # dominant spin multiplicity label
+    initial_state: int = 0
+
+    @property
+    def unit(self) -> tuple[str, str]:
+        return ("cm-1", "eV")
+
+
+def _parse_soc_states(text: str) -> list[SocState]:
+    """SOC transitions from the SOC-TDDFT ``.out`` electric-dipole table."""
+    states: list[SocState] = []
+    started = False
+    for line in text.splitlines():
+        if not started:
+            if _SOC_SPECTRUM_RE.search(line):
+                started = True
+            continue
+        m = _SOC_STATE_RE.match(line)
+        if m:
+            states.append(SocState(
+                states=int(m.group(4)),
+                e_cm1=float(m.group(8)),
+                e_eV=float(m.group(7)),
+                wavelength_nm=float(m.group(9)),
+                fosc=float(m.group(10)),
+                mult=float(m.group(5)),
+                initial_state=int(m.group(1)),
+            ))
+        elif states and line.strip():
+            break  # the rule closing the table: section ended
+    return states
+
+
+def read_soc_states(work_dir: Union[str, Path],
+                    base_name: str) -> list[SocState]:
+    """SOC-corrected TD-DFT excited states read from the ``.out`` text.
+
+    Anchors on the ``SOC CORRECTED ABSORPTION SPECTRUM VIA TRANSITION
+    ELECTRIC DIPOLE MOMENTS`` section and reads its transition rows
+    (``0-1.0A -> N-3.0A  <eV>  <cm-1>  <nm>  <fosc> ...``, the layout of a
+    real ORCA 6.1.1 run).  Returns ``[]`` when the section is absent.
+    Never raises.
+    """
+    out_path = Path(work_dir) / f"{base_name}.out"
+    if not out_path.is_file():
+        return []
+    text = _tail_text(out_path)
+    return _parse_soc_states(text)
 
 
 # ---------------------------------------------------------------------------

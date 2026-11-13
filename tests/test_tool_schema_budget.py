@@ -294,6 +294,10 @@ _BASELINE_TOKENS = 11_422
 # cluster, the moment it is least needed) and a NEEDS YOU item the agent
 # words itself (the form's fields are what the person must check).
 _TOKEN_BUDGET = 11_675
+# 2026-11-12 (SW3): the swarm-lead preset (pack/agents/swarm-lead_subagent.md).
+# Its only schema text is its name in the subagent_type enum, as for the
+# method-reviewer above; measured +3 tokens, 11_675 -> 11_678.
+_TOKEN_BUDGET = 11_678
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
