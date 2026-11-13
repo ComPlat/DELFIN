@@ -144,13 +144,24 @@ class ChainStep:
         self.error = error
         self.error_kind = error_kind
 
-    def reset_for_retry(self, attempt_dir: Optional[str] = None) -> None:
+    def reset_for_retry(self, attempt_dir: Optional[str] = None,
+                        end: Optional[str] = None) -> None:
         """Return a ``failed`` step to ``pending`` for a bounded resubmission.
 
         The OLD attempt's work dir is kept untouched (recalc path: never
-        overwrite a calculation); the new attempt directory is recorded.
+        overwrite a calculation) and recorded in ``attempts[]`` with its
+        end reason — L5: the killed attempt must remain visible in the
+        state, not be overwritten by the retry.
         """
         self._require("failed", "reset_for_retry")
+        self.attempts.append({
+            "attempt": self.attempt,
+            "work_dir": self.work_dir,
+            "end": end or self.error or "failed",
+        })
+        # L5: the retry is a NEW attempt — the counter must move, else the
+        # attempt budget and the ledger disagree with the real runs.
+        self.attempt += 1
         self.state = "pending"
         self.job_id = None
         self.error = None

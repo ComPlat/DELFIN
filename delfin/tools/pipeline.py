@@ -1470,6 +1470,27 @@ class Pipeline:
                 else (spec.label or spec.step_name)
             )
             if resume_chain and cstep_name in chain_skip:
+                # L4: an uninterrupted run sets current_geom from the
+                # previous step's result.geometry — the skip path bypasses
+                # that, so the next step started geometry-less ("geometry
+                # is required").  Rehydrate the geometry from the skipped
+                # step's verified output instead (orca-read final xyz,
+                # established chaining semantics); a missing xyz leaves
+                # current_geom as-is and the next step fails honestly.
+                skipped_cstep = (
+                    chain.steps[i] if chain is not None
+                    and i < len(chain.steps) else None
+                )
+                if skipped_cstep is not None:
+                    from delfin.orca_read import _final_geometry_text
+                    from delfin.tools import chain_state as _cs2
+
+                    out_path = _cs2._step_output_path(skipped_cstep, base)
+                    if out_path is not None:
+                        geom_atoms = _final_geometry_text(out_path)
+                        if geom_atoms:
+                            xyz_path = out_path.with_suffix(".xyz")
+                            current_geom = xyz_path
                 logger.info("[%s] chain: skipping verified step '%s'",
                             self.name, spec.label)
                 continue
@@ -1509,9 +1530,14 @@ class Pipeline:
                     "[%s] chain: resubmitting '%s' into %s (%s)",
                     self.name, spec.label, new_dir, decision.reason,
                 )
-                cstep.reset_for_retry(attempt_dir=str(new_dir))
+                cstep.reset_for_retry(attempt_dir=str(new_dir),
+                                      end="killed/job gone"
+                                      if not cstep.evidence else None)
                 chain.save()
-                step_dir = new_dir.parent / f"{i:02d}_{spec.label}"
+                # L5: the dir actually used is the NEW attempt dir (never
+                # overwrite the old calculation) — not the numbered dir of
+                # the first attempt.
+                step_dir = new_dir
 
             result = None
             for attempt in range(spec.retry_max):
