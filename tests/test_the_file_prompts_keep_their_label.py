@@ -9,8 +9,8 @@ name, and Cancel ran 6 px past the pane's edge.
 
 Output pinned: each label has a line of its own above the field
 (flex 0 0 100% in a wrapping row, as forms label a field), and the field
-(at least 160 px) and its two buttons share the line below, which fits
-the narrowest pane (160 + 70 + 78 px).
+(basis 140 px) and its two buttons share the line below (140 + 70 + 78 px
+fit the pane at its default width).
 """
 from __future__ import annotations
 
@@ -35,10 +35,17 @@ def test_each_prompt_label_keeps_its_width():
         assert "flex='0 0 100%'" in call, name
 
 
-def test_each_prompt_field_keeps_a_usable_width():
-    for name in ("calc_rename_prompt_input", "calc_duplicate_prompt_input",
-                 "calc_new_folder_prompt_input"):
-        assert "min_width='160px'" in _call(name), name
+def test_each_prompt_field_shares_its_line_with_the_two_buttons():
+    # The left pane's own rule (.calc-left .widget-text, !important) sets
+    # width:auto, so the input's intrinsic ~210 px decided the wrap and
+    # Cancel took a line of its own (measured); the prompt rows' rule is
+    # more specific and gives the field a 140 px basis.
+    for name in ("calc_rename_prompt_row", "calc_duplicate_prompt_row",
+                 "calc_new_folder_prompt_row"):
+        assert name in SOURCE[SOURCE.index("for _prompt_row in ("):][:200], name
+    assert "_prompt_row.add_class('calc-prompt-row')" in SOURCE
+    assert ("'.calc-left .calc-prompt-row > .widget-text { flex:1 1 140px !important; "
+            "min-width:140px !important; width:auto !important; }'") in SOURCE
 
 
 def test_each_prompt_row_wraps_instead_of_overflowing():

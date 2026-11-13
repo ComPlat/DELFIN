@@ -602,7 +602,7 @@ def create_tab(ctx):
     calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_rename_prompt_input = widgets.Text(
         placeholder='New name',
-        layout=widgets.Layout(flex='1 1 160px', min_width='160px', height='26px'),
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
     )
     calc_rename_prompt_ok_btn = widgets.Button(
         description='OK',
@@ -626,7 +626,7 @@ def create_tab(ctx):
     calc_duplicate_prompt_label = widgets.HTML('<b>Duplicate:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_duplicate_prompt_input = widgets.Text(
         placeholder='Duplicate folder name',
-        layout=widgets.Layout(flex='1 1 160px', min_width='160px', height='26px'),
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
     )
     calc_duplicate_prompt_yes_btn = widgets.Button(
         description='Yes',
@@ -650,7 +650,7 @@ def create_tab(ctx):
     calc_new_folder_prompt_label = widgets.HTML('<b>New folder name:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_new_folder_prompt_input = widgets.Text(
         placeholder='Folder name',
-        layout=widgets.Layout(flex='1 1 160px', min_width='160px', height='26px'),
+        layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
     )
     calc_new_folder_prompt_ok_btn = widgets.Button(
         description='Create',
@@ -16146,6 +16146,11 @@ def create_tab(ctx):
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
         '.calc-left .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
         '.calc-left .widget-text input { width:100% !important; }'
+        # A name prompt's field (calc-prompt-row): basis 140 px, so the
+        # field and its two buttons share the line under the label (140 +
+        # 70 + 78 px); at width:auto the input's intrinsic ~210 px sent
+        # Cancel to a line of its own.
+        '.calc-left .calc-prompt-row > .widget-text { flex:1 1 140px !important; min-width:140px !important; width:auto !important; }'
         '.calc-filter-row { width:100% !important; display:flex !important; }'
         '.calc-filter-row > .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
         '.calc-filter-row > .widget-text input { width:100% !important; min-width:0 !important; }'
@@ -16325,6 +16330,9 @@ def create_tab(ctx):
     calc_nav_selection_row.add_class('calc-nav-selection-row')
     calc_rename_prompt_row.add_class('calc-rename-prompt-row')
     calc_duplicate_prompt_row.add_class('calc-duplicate-prompt-row')
+    for _prompt_row in (calc_new_folder_prompt_row, calc_rename_prompt_row,
+                        calc_duplicate_prompt_row):
+        _prompt_row.add_class('calc-prompt-row')
     calc_content_area.add_class('calc-content-area')
     calc_table_panel.add_class('calc-table-panel')
     calc_table_output.add_class('calc-table-output')
