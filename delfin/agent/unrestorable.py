@@ -300,27 +300,27 @@ def destroyed(cmd: str, cwd: Path) -> list[tuple[str, Path, bool]]:
     return found
 
 
-#: git runs outside the cage here: nothing a repository configures may run
-#: (fsmonitor, hooks), and no filter or diff driver is involved -- the
-#: blob id of HEAD's copy is compared with the file's own, hashed raw.
-_GIT = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
+def _git(args: list[str], cwd) -> subprocess.CompletedProcess:
+    """git on a repository DELFIN does not control: through safe_git, which
+    neutralises every program the repository's configuration names
+    (fsmonitor, hooks, filters, ...) -- git runs outside the cage here."""
+    from . import safe_git
+    return safe_git.run(args, cwd, timeout=60)
 
 
 def _git_holds(path: Path) -> bool:
-    """Tracked by git and byte-identical to HEAD's copy (git gives it back)."""
+    """Tracked by git and byte-identical to HEAD's copy (git gives it back):
+    the blob id of HEAD's copy against the file's own, hashed raw."""
     try:
-        top = subprocess.run([*_GIT, "-C", str(path.parent), "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True, timeout=10)
+        top = _git(["rev-parse", "--show-toplevel"], path.parent)
         if top.returncode != 0:
             return False
         root = top.stdout.strip()
         rel = os.path.relpath(path.resolve(), root)
-        head = subprocess.run([*_GIT, "-C", root, "rev-parse", "--verify", "-q", f"HEAD:{rel}"],
-                              capture_output=True, text=True, timeout=10)
+        head = _git(["rev-parse", "--verify", "-q", f"HEAD:{rel}"], root)
         if head.returncode != 0:
             return False
-        mine = subprocess.run([*_GIT, "-C", root, "hash-object", "--no-filters", "--", rel],
-                              capture_output=True, text=True, timeout=60)
+        mine = _git(["hash-object", "--no-filters", "--", rel], root)
         return mine.returncode == 0 and mine.stdout.strip() == head.stdout.strip()
     except Exception:
         return False
@@ -428,8 +428,7 @@ def prepare_trash(root: Path) -> Path:
     day = trash / datetime.now(timezone.utc).strftime("%Y-%m-%d")
     day.mkdir(parents=True, exist_ok=True)
     try:
-        info = subprocess.run([*_GIT, "-C", str(root), "rev-parse", "--git-path", "info/exclude"],
-                              capture_output=True, text=True, timeout=10)
+        info = _git(["rev-parse", "--git-path", "info/exclude"], root)
         if info.returncode == 0:
             exclude = Path(info.stdout.strip())
             if not exclude.is_absolute():
