@@ -1,5 +1,36 @@
-| same GOAT, submitted as a user does (`submit_calculation`, no sbatch flags added) | routed by DELFIN: `--gres=gpu:1`, the four configured 30-min GPU partitions; ran on an H100 | terminated normally; 5 conformers within 2.5 kcal/mol; `check_goat_e2e` ok | 518.1 s (job 10 min) |
-# MLIP GOAT on a SLURM GPU cluster (orca-mlips)
+# MLIP GOAT on a SLURM GPU cluster (orca-external-tools, orca-mlips)
+
+## In short: what DELFIN does when CONTROL says `global_opt_method=mlip:<backend>`
+
+Everything else is decided by DELFIN, in one place
+(`delfin/mlp_tools/mlip_goat.py`, `plan_goat`), from measurements, and
+written to the job log (`GOAT provider: ...`, `GOAT GPU before/after the
+run: ...`) and to `XTB_GOAT.method.json`.  Every choice has a CONTROL key.
+
+| Decision | Default | From | Override |
+|---|---|---|---|
+| Provider | orca-external-tools (OET) when installed with the backend, else orca-mlips | OET keeps one model server per job; orca-mlips started one model per GOAT worker | `global_opt_mlip_provider` |
+| OET server | one `oet_server <backend> -b 127.0.0.1:<free port> -n W`, started before ORCA, stopped after it | OET README "Server"; ORCA 6.1 tutorial "ORCA with External Methods" | -- |
+| ProgExt | `<oet env>/bin/delfin-oet-client`: runs the documented `oet_client -b <address>`; the address is read from the run directory, so the input does not change between runs (smart recalc) | -- | `mlip_fast_client` |
+| Workers W (OET) | `%pal nprocs W` = GOAT workers = server model processes; W = PAL, at most what the GPU (2 GiB per model planned, 0.8 GiB measured) and the job memory (3 GiB per model) hold, a multiple of 4 | oet_server refuses a request for more cores (NCores) than its `-n`; the initial optimisation asks for all of `%pal` ("Requested 32 cores but only 8 total available", measured) | `goat_max_workers` |
+| Workers (orca-mlips) | `%goat nworkers 8`, `%pal nprocs 8` (fewer on a small GPU) | 40 workers ran the GPU out of memory (orca-mlips restarted its server 259 times), 8 ran | `goat_max_workers` |
+| GPU partition, `--gres` | the configured GPU partitions that hold the time limit (one scontrol query), asked with `sbatch --test-only` | D1 | `runtime.slurm.gpu_partitions`, `DELFIN_MLP_CLUSTER_GPU_PARTITIONS` |
+| Speed switches | off: slim client (curl) and ORCA staged to local disk measured no faster | ethanol, see "Speed" | `mlip_fast_client`; `DELFIN_STAGE_ORCA` |
+
+The ORCA input is the one the ORCA 6.1 tutorial describes for an MLIP GOAT
+(`! GOAT ExtOpt`, `%method ProgExt "<client>"`), with the model and device
+per request in `Ext_Params` (`-d cuda`; `-m <model>` when
+`global_opt_mlip_model` is set).  The GOAT settings are ORCA's own; DELFIN
+changes no method, convergence or GOAT keyword to gain speed.
+
+orca-external-tools (FACCTs, github.com/faccts/orca-external-tools) is
+GPL-3.0 (with a separate commercial licence from FACCTs).  DELFIN installs it
+as a separate program in an environment of its own
+(`python -m delfin.installer --install orca-external-tools`, pinned release
+v2.1.0 held to its SHA-256, the aimnet2 extra) and only starts its commands;
+none of its code is shipped with DELFIN.  Its `mace` (non-commercial
+weights) and `uma` (gated weights; its dependencies conflict with aimnet2)
+extras are not installed.
 
 How to run a GOAT conformer search (and an MLIP optimisation) driven by an
 MLIP through ORCA's ExtOpt interface on a GPU SLURM cluster, using DELFIN's
@@ -217,6 +248,66 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
   orca-mlips' "[Errno 98] Address already in use" (GOAT workers starting the
   model server at once); `check_goat_e2e` reports them as notes.
 
+## Speed: what was measured, and when MLIP GOAT beats xTB GOAT
+
+All runs through the CONTROL path, ORCA 6.1.1, AIMNet2 (default model), one
+GPU, 30-minute GPU partitions unless noted; "step" is ORCA's `Time for
+complete geometry iter`, "E+G" its `Time for energy+gradient` (the external
+call).  A GOAT's total work depends on the worker count (GOAT gives each
+worker at least ~15 optimisations for ethanol, ~34 for the 81-atom
+chromophore), so total run times of runs with different W are not
+comparable; steps and optimisations per minute are.
+
+Ethanol (9 atoms):
+
+| Setup | GPU | Workers | Step (E+G) | GOAT run time |
+|---|---|---|---|---|
+| orca-mlips, PAL 8 | H100 | 8 | -- | 9 min 28 s |
+| orca-mlips, PAL 40, capped (`%pal nprocs 8`, `nworkers 8`) | H100 | 8 | 0.91 s | 8 min 33 s, one server start |
+| orca-mlips, PAL 40, capped, `nprocs 40` (first version) | A100 | 8 | 1.46 s | not finished in 25 min |
+| orca-external-tools, documented client | H100 | 8 | 0.85 s (0.22 s) | 7 min 36 s; 8 model processes held 6.4 GiB GPU |
+| same, ORCA staged to node-local disk | H100 | 8 | 0.85 s | 7 min 7 s (within run-to-run spread) |
+| same, slim client (curl), run directory on the network home | H100 | 8 | 0.93 s | 13 min 10 s |
+| orca-external-tools, PAL 40, job memory 78 GiB | A100 | 24 | 1.24 s (0.36 s) | not finished in 25 min (3x the optimisations of 8 workers) |
+
+An 81-atom push-pull chromophore, gas phase (an archived xTB GOAT of the same input: GFN2-xTB,
+40 workers on 40 cores, 2 h 27 min, 162 conformers, 6.0 kcal/mol window,
+~7000 optimisations, ~48 per minute):
+
+| Setup | GPU | Workers | Step (E+G) | Optimisations per minute | Projected GOAT |
+|---|---|---|---|---|---|
+| orca-mlips, PAL 40, uncapped | H100 | 40 | -- | -- | GPU out of memory after 25 min |
+| orca-mlips, 8 workers | A100 | 8 | 1.0-1.5 s | 3.8 | ~28 h |
+| orca-external-tools, PAL 40 (DELFIN's default), only `global_opt_method` set | H100 | 40 | 1.49 s (0.22 s) | ~24 | ~5 h; 40 model processes held 32 GiB GPU, 73 GB job memory |
+
+Where the time goes: the external energy+gradient is 0.22 s per step with
+orca-external-tools; the rest of every step -- 0.6 s
+for ethanol, 1.3 s with 40 workers on 40 cores for the chromophore -- is
+ORCA's own per-step work outside the optimiser (the optimiser itself takes
+1 ms).  A faster client (curl instead of a Python start-up) and ORCA on
+node-local disk did not shorten the step, so both stay off.
+
+Recommendation, from these numbers:
+
+- **Small and mid-size molecules, many conformers, GPU at hand:** MLIP GOAT
+  with orca-external-tools is practical (ethanol: 7-9 min) and gives
+  ωB97M-D3-trained energies instead of GFN2-xTB.  It is not faster than xTB.
+- **Large chromophores (~80 atoms) on a time-limited GPU partition:** xTB
+  GOAT on 40 CPU cores is about twice as fast (2.5 h against ~5 h projected)
+  and fits CPU partitions; MLIP GOAT needs a GPU partition with a multi-hour
+  limit.  The MLIP route is worth it when the AIMNet2 ranking or geometry is
+  what is wanted, not for speed.
+- **Geometry (bond-length alternation of the push-pull bridge):** a
+  CAM-B3LYP-D3(BJ)/def2-SVP optimisation of the lowest conformer gives
+  0.051 A; GFN2-xTB 0.023 A, AIMNet2 0.087 A.  Neither pre-screen gets it;
+  re-optimise the selected conformers at the DFT level before computing
+  NLO properties.  Heavy-atom RMSD to the DFT minimum: xTB 0.16 A, AIMNet2
+  0.43 A; the bridge torsions of all three agree within ~12 degrees.
+- **Ranking:** on this chromophore the AIMNet2 ranking of the ten lowest
+  xTB conformers kept the same top three as xTB and as CAM-B3LYP-D3(BJ);
+  without dispersion CAM-B3LYP prefers a different conformer family by
+  5.5 kcal/mol.
+
 ## Known limits
 
 - **D1 -- walltime vs partition: fixed in DELFIN** (ExtOpt submit path).
@@ -237,7 +328,16 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
   rendered for orb only.
 - **`! Opt Freq ExtOpt` runs no frequencies** in ORCA 6.1.1 (optimisation
   only, normal termination, no warning).  The block writes `NumFreq`.
-- **Worker sharing** of one model server is not shown (see Measured).
+- **The ORCA 6.1 tutorial's GOAT example** (`! EXTOPT GOAT PAL8` with
+  `oet_server aimnet2 --nthreads 4`; faccts.de/docs/orca/6.1/tutorials/
+  workflows/extopt.html) is refused by orca-external-tools 2.1.0: its server
+  counts each request's NCores against `--nthreads`, and the initial
+  optimisation asks for all 8 ("Requested 32 cores but only 8 total
+  available" in our PAL-32 run).  DELFIN writes `%pal nprocs` equal to the
+  server's `-n`.
+- **Worker sharing -- answered.** orca-mlips does not share: with many
+  workers each started its own model server (the GPU ran out of memory at
+  40); DELFIN caps it at 8. orca-external-tools shares one server per job.
 - **Open-shell / charged systems** are not exercised: ethanol is
   closed-shell neutral.  Whether ORB and AIMNet2 handle a charged,
   open-shell input (e.g. `[Cu(NH3)4]2+`) is not established.

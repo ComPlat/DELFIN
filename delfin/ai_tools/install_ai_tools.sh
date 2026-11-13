@@ -38,6 +38,8 @@ set -euo pipefail
 #   INSTALL_ORCA_MLIPS_UMA       (default: 0)  orca-mlips UMA plugin (fairchem-core), own
 #                                              environment; licensed, never part of INSTALL_ALL:
 #                                              gated weights, needs your own HuggingFace login
+#   INSTALL_ORCA_EXTERNAL_TOOLS  (default: 0)  orca-external-tools (ORCA ExtOpt server, AIMNet2),
+#                                              own environment (Python 3.12, CUDA PyTorch)
 #   INSTALL_PLOTLY               (default: 0)  plotly
 #   INSTALL_ALL                  (default: 0)  Install everything
 #   FORCE_REINSTALL              (default: 0)  Force reinstall
@@ -71,6 +73,7 @@ INSTALL_ORCA_MLIPS="${INSTALL_ORCA_MLIPS:-${INSTALL_ALL}}"
 # Licensed: installed only when named, never by INSTALL_ALL.
 INSTALL_ORCA_MLIPS_MACE="${INSTALL_ORCA_MLIPS_MACE:-0}"
 INSTALL_ORCA_MLIPS_UMA="${INSTALL_ORCA_MLIPS_UMA:-0}"
+INSTALL_ORCA_EXTERNAL_TOOLS="${INSTALL_ORCA_EXTERNAL_TOOLS:-${INSTALL_ALL}}"
 INSTALL_PLOTLY="${INSTALL_PLOTLY:-${INSTALL_ALL}}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
@@ -439,6 +442,30 @@ install_orca_mlips_uma() {
     "${ORCA_MLIPS_UMA_CONDA_SPECS}" "${ORCA_MLIPS_UMA_PIP_DEPS}" "${ORCA_MLIPS_SPEC}" ""
 }
 
+# orca-external-tools (FACCTs, GPL-3.0; github.com/faccts/orca-external-tools),
+# the ExtOpt provider with a server: `oet_server aimnet2` keeps the model
+# resident for a whole job and `oet_client` (ORCA's ProgExt) only forwards each
+# request (its README, "Server"; ORCA 6.1 tutorial "ORCA with External
+# Methods"). Installed in an environment of its own like orca-mlips, from the
+# pinned release v2.1.0 held to its SHA-256 (it is not on PyPI); DELFIN starts
+# its commands and never ships its code. Only the aimnet2 extra (MIT weights):
+# its mace (non-commercial weights) and uma (gated weights; conflicts with
+# aimnet2) extras belong in installations of their own. Every version is exact,
+# as pip resolved oet[aimnet2] 2.1.0 with torch 2.15.0 (the PyPI CUDA build).
+# The archive has no git metadata, so its version is told to setuptools_scm.
+OET_REF="${OET_REF:-v2.1.0}"
+OET_URL="${OET_URL:-https://github.com/faccts/orca-external-tools/archive/refs/tags/${OET_REF}.tar.gz}"
+OET_SHA256="${OET_SHA256:-c939a392232ce418fafc4007319326328109b65ce8ecb4d2a96cac3f4d1a7492}"
+OET_CONDA_SPECS="${OET_CONDA_SPECS:-python=3.12.16 pip}"
+OET_PIP_DEPS="${OET_PIP_DEPS:-torch==2.15.0 aimnet==0.2.6 numpy==2.5.4 flask==3.1.3 waitress==3.0.2 requests==2.34.2 psutil==7.2.2}"
+
+install_oet() {
+  export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_OET="${OET_REF#v}"
+  install_own_env INSTALL_ORCA_EXTERNAL_TOOLS orca-external-tools oet oet \
+    "${OET_CONDA_SPECS}" "${OET_PIP_DEPS}" "${OET_URL}" "${OET_SHA256}"
+  unset SETUPTOOLS_SCM_PRETEND_VERSION_FOR_OET
+}
+
 # ---------------------------------------------------------------------------
 main() {
   local python_bin
@@ -477,6 +504,7 @@ main() {
   install_epic_mace
   install_smiles_tools
   install_orca_mlips
+  install_oet
 
   # Visualization
   pip_install "${python_bin}" INSTALL_PLOTLY "plotly" plotly
@@ -518,7 +546,8 @@ main() {
   fi
   for env_label in "rxembed:rxembed:rxembed" "molassembler:scine_molassembler:Molassembler" \
       "metallogen:MetalloGen:MetalloGen" "orca_mlips:orca_mlips_plugins:orca-mlips" \
-      "orca_mlips:mace:orca-mlips MACE" "orca_mlips_uma:fairchem.core:orca-mlips UMA"; do
+      "orca_mlips:mace:orca-mlips MACE" "orca_mlips_uma:fairchem.core:orca-mlips UMA" \
+      "oet:oet:orca-external-tools"; do
     local env_name="${env_label%%:*}" rest="${env_label#*:}"
     local env_module="${rest%%:*}" env_shown="${rest#*:}"
     if [ -x "${ROOT}/.mamba_env/${env_name}/bin/python" ] \

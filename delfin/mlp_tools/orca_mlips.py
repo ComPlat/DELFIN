@@ -664,8 +664,13 @@ def build_orca_mlips_input(
     neb_end_coordinates: Optional[Sequence[Sequence[float]]] = None,
     scan: Optional[dict] = None,
     xyz_name: Optional[str] = None,
+    ext_params_text: Optional[str] = None,
 ) -> Path:
     """Write a ``! ExtOpt`` ORCA input driven by the orca-mlips command.
+
+    ``wrapper_path`` + ``ext_params_text`` write another provider's ProgExt and
+    Ext_Params instead (orca-external-tools, delfin/mlp_tools/oet.py); the
+    rest of the input is the same.
 
     ``run_type``: one of :data:`MLIPS_RUN_TYPES`.
     ``hessian="two_step"`` (optts | freq | irc): the MLIP dumps its
@@ -742,7 +747,7 @@ def build_orca_mlips_input(
         extra_ext.append(f"--dump-hessian {_HESSIAN_FILE}")
     keywords.extend(str(k) for k in extra_keywords)
 
-    ext_params = ext_params_for(
+    ext_params = ext_params_text if ext_params_text is not None else ext_params_for(
         name, model=model, device=device, solvent=solvent,
         solvent_model=solvent_model, precision=precision, extra=extra_ext,
     )
