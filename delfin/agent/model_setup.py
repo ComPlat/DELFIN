@@ -67,7 +67,7 @@ CLI_MIN_MAJOR = 2
 def cli_program_version(path: str) -> str:
     """The CLI program's version read from its files, or "" -- nothing is run.
 
-    An npm install resolves to .../claude-code/cli.js beside a package.json;
+    An npm install resolves to .../<package>/cli.js beside a package.json;
     a native install to .../versions/<version>.
     """
     try:
@@ -141,7 +141,7 @@ def selection_problem(backend: str, provider: str, model: str = "") -> str:
     if provider == "openai":
         if backend == "cli":
             return "" if shutil.which("codex") else \
-                "the OpenAI CLI backend is selected, but its program (codex) is not on PATH"
+                "the OpenAI CLI backend is selected, but its program is not on PATH"
         return "" if _key("OPENAI_API_KEY") else \
             "OpenAI is selected, but no OPENAI_API_KEY is stored"
     if provider not in ("", "claude", "anthropic"):
