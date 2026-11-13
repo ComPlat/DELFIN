@@ -106,3 +106,17 @@ def test_a_web_fetch_is_counted(tmp_path, monkeypatch):
         assert [r["via"] for r in _audit(tmp_path)] == ["web_fetch"]
     finally:
         p.close()
+
+
+def test_a_new_session_never_inherits_a_gone_ones_count(tmp_path, monkeypatch):
+    """Sessions without an id were keyed by id(perms); CPython reuses an
+    id once the object is gone, so a new session started with the old
+    one's total and missed its own first-byte record (CI, shard 2).
+    Two live objects given the same id stand for that reuse here."""
+    monkeypatch.setattr(audit_log, "_default_log_path",
+                        lambda: tmp_path / "audit.log")
+    monkeypatch.setattr(EP, "id", lambda obj: 4242, raising=False)
+    first = ES.perms_in(tmp_path, mode="default")
+    second = ES.perms_in(tmp_path, mode="default")
+    EP.note_sent(first, "reuse.test", 50000, "proxy")
+    assert EP.sent_by_host(second) == {}
