@@ -11681,7 +11681,13 @@ def create_tab(ctx):
     messenger_phone_btn.on_click(lambda _b: _handle_slash_command("/pair"))
     messenger_code_btn.on_click(_messenger_send_code)
     messenger_cancel_btn.on_click(lambda _b: _handle_slash_command("/pair cancel"))
-    git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
+    # Only where a phone can be paired from: a messenger bridge runs here or
+    # one is set up (stopped for now). On a host without one (an HPC login
+    # node) the button led to 30 s of waiting and "No answer"; /pair typed
+    # there says why at once (delfin.messenger.activation.UNAVAILABLE).
+    from delfin.messenger import activation as _messenger_activation
+    if _messenger_activation.messenger_here():
+        git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
