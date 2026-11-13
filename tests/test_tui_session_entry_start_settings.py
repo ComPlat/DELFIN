@@ -33,6 +33,17 @@ def test_no_flag_starts_a_new_session_as_before(tmp_path):
     assert settings == {"cwd": str(tmp_path)}
 
 
+def test_keep_starts_the_windows_sessions_kept(tmp_path):
+    """`delfin-agent tui --keep`: the sessions this window starts keep
+    running after it closes (Keep session on). Without it they end with
+    the window (ctrl+c twice); /keep on keeps one."""
+    assert cli_service._start_settings(_args(tmp_path, keep=True)) == {
+        "cwd": str(tmp_path), "keep": True}
+    from delfin.agent import cli
+    assert cli.build_parser().parse_args(["tui", "--keep"]).keep is True
+    assert cli.build_parser().parse_args(["tui"]).keep is False
+
+
 def test_continue_and_resume_with_an_id_are_handed_over(tmp_path):
     assert cli_service._start_settings(_args(tmp_path, continue_session=True)) == {
         "cwd": str(tmp_path), "continue": True}

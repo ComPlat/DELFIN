@@ -82,8 +82,11 @@ def main() -> int:
            "DELFIN_RUNTIME_DIR": str(runtime), "PYTHONPATH": str(REPO),
            "PATH": f"{Path.home()}/.bun/bin:{os.environ.get('PATH', '')}"}
     child_env = scrubbed_env(**env)
+    # Started with --keep: what is checked below is read from the agent
+    # service after the window has left, and a window's session ends with it
+    # unless kept (check_fullscreen_tmux checks that).
     command = (f"cd {REPO} && env {' '.join(f'{k}={v}' for k, v in env.items())} "
-               f"{PYTHON} -m delfin.agent.cli tui --fake --cwd {ws}; echo TUI_EXIT=$?")
+               f"{PYTHON} -m delfin.agent.cli tui --fake --keep --cwd {ws}; echo TUI_EXIT=$?")
     problems: list[str] = []
     tmux = Tmux(110, 40)
     sock = runtime / f"delfin-{os.getuid()}" / "agent.sock"
