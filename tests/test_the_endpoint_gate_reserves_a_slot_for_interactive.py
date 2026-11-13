@@ -7,10 +7,12 @@ KIT key. The gate is a poll race over slot-0..N (no FIFO, no priority), so
 interactive and headless contended equally.
 
 The fix reserves the lowest slot (slot-0) for interactive requests:
-``acquire(interactive=True)`` scans ONLY for slot-0; a headless request
-scans slots 1..N and never takes slot-0. A person's session therefore never
-waits behind headless runs, headless still progress on the rest of the cap,
-and total concurrency over the endpoint stays within the configured limit.
+``acquire(interactive=True)`` scans slot-0 first, then any free slot; a
+headless request scans slots 1..N-1 and, with more than one slot, NEVER
+takes slot-0. A person's session therefore never waits behind headless
+runs, two of the person's sessions no longer queue on one slot while the
+rest are free, headless still progress on the rest of the cap, and total
+concurrency over the endpoint stays within the configured limit.
 """
 
 from __future__ import annotations
@@ -40,22 +42,18 @@ def _limit(g: G.EndpointGate, n: int):
     (g._dir() / "state.json").write_text(json.dumps({"limit": n}))
 
 
-def test_an_interactive_request_takes_the_reserved_low_slot(runtime):
-    """A person's request never queues behind a headless holder: it gets
-    slot-0 even when every other slot is taken by headless runs."""
+def test_an_interactive_request_takes_the_reserved_lowest_slot(runtime):
+    """The person's session takes slot-0 when it is free."""
     g = G.EndpointGate(URL, "m")
-    _limit(g, 5)                     # the provider cap
-    holders = [G.EndpointGate(URL, "m") for _ in range(4)]   # headless
-    for h in holders:
-        h.acquire()                  # headless -> slots 1..4
+    _limit(g, 5)
     interactive = G.EndpointGate(URL, "m", interactive=True)
     assert interactive.acquire(timeout_s=1.0) == 0     # the reserved slot
     assert "waiting for a slot" not in interactive.wait_notice
     interactive.release()
 
 
-def test_a_headless_request_prefers_the_high_slots(runtime):
-    """Headless runs take slots 1..N first, so slot-0 tends to stay free
+def test_a_headless_request_takes_the_high_slots(runtime):
+    """Headless runs take slots 1..N-1 first, so slot-0 tends to stay free
     for a person while the total concurrency stays within the cap."""
     g = G.EndpointGate(URL, "m")
     _limit(g, 5)
@@ -83,15 +81,51 @@ def test_one_reserved_slot_serves_a_person_behind_a_fixed_cap(runtime):
         extra.acquire(timeout_s=0.3)
 
 
-def test_a_headless_request_takes_slot_0_only_as_last_resort(runtime):
-    """When every preferred slot is held, a headless request still uses
-    slot-0 -- the reservation must not cut headless capacity."""
+def test_a_headless_request_never_takes_slot_0_under_full_load(runtime):
+    """Even when every preferred slot is held, a headless request must not
+    fall back into the person's slot: under saturation -- the case the
+    reservation exists for -- headless grabbing slot-0 would put the person
+    behind them again. The reservation does cost headless one slot when a
+    person is not competing and the cap is full."""
     g = G.EndpointGate(URL, "m")
     _limit(g, 2)
     holders = [G.EndpointGate(URL, "m") for _ in range(2)]
-    assert [h.acquire() for h in holders] == [1, 0]   # prefer 1, then 0
+    # Only one slot is usable by headless when N==2, so only one headless
+    # holder succeeds; the second must wait rather than take the person's
+    # slot-0.
+    assert holders[0].acquire(timeout_s=1.0) == 1    # headless -> slot 1
+    with pytest.raises(G.SlotWaitTimeout):
+        holders[1].acquire(timeout_s=0.2)
     for h in holders:
         h.release()
+
+
+def test_a_single_slot_still_serves_headless(runtime):
+    """With only one slot there is no second slot to reserve: headless must
+    still be able to use it (a cap of 1 keeps working)."""
+    g = G.EndpointGate(URL, "m")
+    _limit(g, 1)
+    h = G.EndpointGate(URL, "m")
+    assert h.acquire(timeout_s=1.0) == 0
+    h.release()
+
+
+def test_two_interactive_sessions_each_take_a_free_slot(runtime):
+    """Two sessions of the same person (dashboard + phone) must not queue on
+    the single slot-0 while slots 1..N-1 are free: interactive scans slot-0
+    first, then any free slot, so the second interactive request takes the
+    next slot instead of waiting."""
+    g = G.EndpointGate(URL, "m")
+    _limit(g, 4)
+    a = G.EndpointGate(URL, "m", interactive=True)
+    b = G.EndpointGate(URL, "m", interactive=True)
+    taken_a = a.acquire(timeout_s=1.0)
+    taken_b = b.acquire(timeout_s=1.0)
+    assert taken_a == 0                 # the first prefers slot-0
+    assert taken_b != taken_a           # the second takes a different slot
+    assert taken_b in (1, 2, 3)
+    a.release()
+    b.release()
 
 
 def test_per_request_interactive_override_serves_the_person(runtime):

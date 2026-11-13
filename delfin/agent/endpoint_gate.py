@@ -440,10 +440,12 @@ class EndpointGate:
         slot free anywhere (the caller turns that into the same
         transient-retry path a stalled request already takes).
 
-        ``interactive`` overrides the gate's session kind for one request:
-        an interactive request scans ONLY the reserved lowest slot (never
-        weighs in behind headless runs), a headless request scans slots
-        1..N and never takes slot-0.
+        ``interactive`` overrides the gate's session kind for one request
+        (or carries it on the gate when built with ``interactive=True``):
+        an interactive request takes slot-0 first, then any free slot (so
+        it never queues behind headless runs, and two of the person's
+        sessions use two slots); a headless request scans slots 1..N-1
+        only and, with more than one slot, never takes slot-0.
 
         With per-model limits on, the request ALSO takes one slot in the
         endpoint's own total-cap gate ``_cap_dir``, so N models each at
@@ -483,8 +485,15 @@ class EndpointGate:
                 self._close(fd); self._held_fd = None
                 return None                   # cap gate broken, ungated
             try:
+                # NO reservation in the endpoint's total-cap gate: it
+                # protects the endpoint's total and must keep the FULL
+                # capacity for whoever loads it -- a cap of 2 must still
+                # serve two headless requests. The reservation only
+                # decides WHICH per-model slot a person's request takes,
+                # so a person never queues behind that model's headless
+                # runs; the cap gate just counts everyone equally.
                 cap_fd, _ = self._take_slot(cap_dir, _config_limit(),
-                                            deadline, interactive=interactive)
+                                            deadline)
             except SlotWaitTimeout:
                 # The endpoint is saturated by OTHER models: never leave a
                 # model slot held ungated. Free it and let the caller treat
@@ -498,14 +507,26 @@ class EndpointGate:
         return index
 
     def _take_slot(self, dirpath: Path, n_slots: int,
-                   deadline: float, *, interactive: bool = False):
+                   deadline: float, *, interactive=None):
         """Flock one free slot file in ``dirpath`` within ``deadline``.
 
-        ``interactive`` reserves the lowest slot for a person's session:
-        an interactive request scans ONLY ``slot-0``; a headless request
-        scans ``slot-1 .. slot-<n_slots-1>`` and never takes slot-0. So a
-        person talking to the session never queues behind headless runs,
-        headless still progress on the rest of the cap, and the total
+        ``interactive`` selects the pool of slots the request scans:
+
+          - ``True``  a person's session: slot-0 first, then any free slot
+                      (two of the person's sessions use slot-0 and slot-1
+                      instead of queueing on one slot);
+          - ``False`` headless: slots ``1 .. n_slots-1`` only -- with more
+                      than one slot it NEVER takes slot-0, so the person's
+                      slot stays free even under full headless load;
+          - ``None``  no reservation (the endpoint-wide cap gate): every
+                      slot, so the endpoint's total capacity serves whoever
+                      loads it. The session kind is set per gate and per
+                      request by each surface -- not inherited from a
+                      process-wide env var, so headless children of an
+                      attended session are never mistaken for it.
+
+        So a person talking to the session never queues behind headless
+        runs, headless still progress on the rest of the cap, and the total
         concurrency never exceeds ``n_slots``.
 
         Returns ``(fd, index)`` on success, ``(None, None)`` when the gate
@@ -515,19 +536,22 @@ class EndpointGate:
         the in-use count into :attr:`wait_notice`, which the stream loop
         surfaces to the user.
         """
-        # Reserve slot-0 for the person's session: an interactive request
-        # scans ONLY slot-0, a headless request prefers slots 1..N-1 and
-        # takes slot-0 only as the last resort. So slot-0 tends to stay
-        # free for the person while headless keep the FULL capacity when
-        # no interactive session is competing -- a cap of 2 still lets two
-        # headless requests run together, and a person's request still
-        # finds slot-0 free behind a handful of headless runs.
-        if interactive:
-            my_slots = range(1)
-        elif n_slots >= 2:
-            my_slots = [*range(1, n_slots), 0]
-        else:
+        if interactive is None:
+            # The endpoint-wide cap gate: no reservation, full capacity for
+            # whoever loads it -- it protects the endpoint's total, not a
+            # person's queueing position.
             my_slots = range(n_slots)
+        elif interactive:
+            # A person's session: slot-0 first, then any free slot, so two
+            # sessions of the person use two slots rather than queueing on
+            # the single reserved one.
+            my_slots = [*range(1), *range(1, n_slots)]
+        else:
+            # Headless: slots 1..N-1 only. With more than one slot it never
+            # takes slot-0 -- even under saturation, so headless can never
+            # put the person behind them again. A single slot (N==1) has no
+            # second slot to reserve; everyone shares it.
+            my_slots = range(1, n_slots) if n_slots > 1 else range(n_slots)
         announced = False
         while True:
             in_use = 0
