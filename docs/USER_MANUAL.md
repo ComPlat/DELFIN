@@ -1845,6 +1845,10 @@ itself and goes on with its session. After an update, a window of the new
 release moves an idle service over to it; a busy one is left running, and
 `delfin-agent service restart` moves it once its sessions are done.
 
+**Your HPC clusters.** `/clusters` adds your clusters and logs in to them,
+`/jobs` shows what runs there; see [running jobs on a cluster from your
+PC](#from-your-pc-running-jobs-on-a-cluster).
+
 **On a cluster.** Each login node runs its own service; the window tells
 you when sessions of yours are on another login node. Logging out leaves
 the service and its sessions running for as long as the node allows;
@@ -2364,6 +2368,111 @@ delfin_NMR output.out         # 1H NMR: writes NMR_<name>.png
 ---
 
 ## 15. Cluster & HPC Usage
+
+### From your PC: running jobs on a cluster
+
+DELFIN can send its calculations to an HPC cluster while it runs on your
+own PC: you work in `delfin-agent tui`, the agent submits DELFIN workflows
+and ORCA inputs to the cluster as Slurm jobs, and the results come back
+into your workspace. The rest of this section, from "SLURM backend" on, is
+about DELFIN installed and started on a cluster itself, which works as
+before.
+
+Everything goes over one ssh login per cluster that you make, held by
+[cluster-tunnel](https://github.com/aimat-lab/cluster-tunnel) (`ctun`,
+installed with DELFIN). How the login and the agent's limits are protected
+is in [SECURITY_MODEL.md](SECURITY_MODEL.md#hpc-clusters).
+
+**Add a cluster.** Open `/clusters` and press `a`.
+
+1. Pick one of the clusters ctun knows (bwUniCluster 3, HoreKa, HAICORE,
+   KCIST, ...), or "another cluster" to give its login host yourself.
+2. Fill in the name DELFIN uses for it, your user name there (the form
+   shows the cluster's hint, e.g. the `ka_` prefix on bwUniCluster 3), the
+   partition DELFIN's jobs go to, the work dir (default `~/delfin/jobs`)
+   and the install root (default `~/delfin/installs`). The partition is
+   filled in where DELFIN knows a good one; change it if your group uses
+   another. For another cluster, also say what its login asks for:
+   `space` switches between "password" and "password + OTP". A known
+   cluster brings its own.
+3. **The host key.** For bwUniCluster 3, HoreKa and HAICORE the cluster's
+   operators publish their key: when the server presents exactly that key
+   it is pinned at once and the form says so. For any other cluster, or a
+   server that presents a different key, the window shows the key it
+   offers. Compare it with what your cluster's documentation or admins say,
+   then press `y` to pin it, `n` to leave it unpinned (DELFIN will not use
+   the cluster until it is pinned; enter on its row shows the key again)
+   or `r` to ask the server again.
+4. **Log in.** The login field opens. Type your password, and the OTP if
+   the cluster asks for one. The screen shows only dots, and what you type
+   goes to ctun alone, never to the agent. Later logins: enter on a
+   logged-out cluster in `/clusters`; `o` logs out.
+
+A preset cluster comes with ctun's budget guard and its default limit per
+login (200 job-hours on bwUniCluster 3, 100 on KCIST); a cluster you gave
+by host has none. You never edit ctun's config or `~/.delfin_settings.json` by hand.
+
+The agent can suggest a cluster as well ("add bwUniCluster 3 for me"): it
+leaves an item in NEEDS YOU that opens the same form filled in. Check it
+and send it, or press esc. The agent cannot add a cluster by itself.
+
+**ORCA on the cluster.** Your ORCA has to be on the cluster: an unpacked
+`orca_*` directory in your home there, or its `.tar.xz`, which the
+installer unpacks. After you log in, the cluster's row says when DELFIN
+finds no ORCA where its installer looks. DELFIN never copies ORCA for you
+(it is your licence).
+
+**Run a job folder there.** Ask the agent, e.g. "run the DELFIN workflow
+in `opt-freq` on bwuni3 with a 30-minute limit".
+
+- Cores, memory and time come from the folder's CONTROL.txt (`PAL`,
+  `maxcore`, `job_timeout_hours`; DELFIN's defaults where it names none)
+  or from the ORCA input. The batch is checked first: the folders, the
+  partition, the budget left, and whether DELFIN is installed there.
+  What does not fit is refused before you are asked.
+- You get **one dialog per batch**: each job's cores, memory and time, the
+  hours against the budget left, and an install it needs first. Exactly
+  what you approved is uploaded and submitted.
+- **The first submit of a DELFIN version the cluster does not have yet**
+  installs that version there first (one install per commit; ORCA,
+  OpenMPI and the tools are shared). The install runs on the login node
+  on one core, so it can take around an hour. The agent does not wait: it
+  ends its turn, and DELFIN submits your approved batch by itself once the
+  install is done, without asking again. `/jobs` shows such a batch as
+  "waiting for install". If the install fails, or the folder or the
+  budget changed meanwhile, nothing is submitted and NEEDS YOU says why.
+
+**Follow the jobs.** `/jobs` lists everything running in the background,
+the jobs on each logged-in cluster included; ↑/↓ move from job to job and
+`space` opens a job's details (Slurm's state, where it runs, the last lines
+of its output). In both screens esc or ← goes back.
+
+**The results.** When a job ends, DELFIN brings its key results into
+`<job folder>/<cluster>-<id>/` in your workspace: DELFIN_Data.json,
+DELFIN.txt and the report, ORCA outputs, inputs, geometries and logs (at
+most 100 MB a file and 500 MB a job). Wave functions, densities and
+scratch stay on the cluster. NEEDS YOU says how the job ended, and the
+session that sent it is told, also when it was asleep.
+
+**When your PC was off.** The jobs run on regardless. The next time
+DELFIN's agent service starts, it brings back what ended meanwhile and
+submits a batch whose install finished. Without a login it asks for one in
+NEEDS YOU first.
+
+**Remove a cluster.** Select it in `/clusters` and press `x`, then `y`. It
+goes from DELFIN's settings and from ctun's config (its key is unpinned and
+its tunnel closed). DELFIN refuses while it still follows a job there,
+since those results could not come back.
+
+**When something does not work**
+
+| What you see | What it means |
+|---|---|
+| "login required", or a login item in NEEDS YOU | Nobody is logged in to that cluster: enter on it in `/clusters`. |
+| The cluster is "refused": no pinned host key | Enter on its row shows the key; compare and press `y`. |
+| "no ORCA where DELFIN looks" | Put your ORCA into the cluster's home (see above). |
+| An install reported as "stopped" | The login node's guard (hpc_guard) paused it because your processes there used more than their share of cores. Nothing resumes it by itself; the batch waiting for it is not submitted, and NEEDS YOU says so. |
+| A job's results did not come back yet | DELFIN looks once a minute while its agent service runs, and tries a failed fetch again over about a day. |
 
 ### SLURM backend
 
