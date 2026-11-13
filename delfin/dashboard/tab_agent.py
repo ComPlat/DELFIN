@@ -12599,6 +12599,15 @@ def create_tab(ctx):
                 effort=str(effort_dropdown.value or ""),
                 kit_confirm_callback=_kit_callback,
             )
+            # This kernel serves the person at the page: its requests take
+            # the endpoint gate's reserved slot, so they never queue behind
+            # headless runs on the same key (the service and TUI paths set
+            # this in cli._start_interactive_session).
+            try:
+                from delfin.agent.endpoint_gate import set_process_interactive
+                set_process_interactive(True)
+            except Exception:
+                pass
 
             # Configure calc search directories for OpenAI function calling
             try:
