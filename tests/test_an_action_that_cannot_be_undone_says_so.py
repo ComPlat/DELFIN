@@ -201,6 +201,38 @@ def test_an_allow_pattern_does_not_answer_an_irreversible_command(ws, monkeypatc
     assert preview.startswith(IR.HEAD_IRREVERSIBLE)
 
 
+def test_an_allow_rule_does_not_answer_an_irreversible_command(ws, tmp_path, monkeypatch):
+    from delfin import user_settings as US
+    from delfin.agent import permission_rules as PR
+    settings = tmp_path / "home" / US.SETTINGS_FILE_NAME
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"permissions": {"allow": ["bash(rm:*)"]}}))
+    monkeypatch.setenv("HOME", str(settings.parent))
+    monkeypatch.setattr(US, "get_settings_path",
+                        lambda base_path=None: Path(base_path).expanduser()
+                        if base_path else settings)
+    monkeypatch.setattr(A, "_caged_command_may_run_unasked",
+                        lambda *a, **k: False)
+    PR._CACHE.clear()
+    perms = _perms(ws, answer=True)
+    run = A._DocToolExecutor().execute
+    for name in ("small.txt", "big.dat"):       # the read-before-change rule
+        run("read_file", {"path": name, "limit": 1}, perms)
+
+    def command_dialogs():
+        # The command's own dialog ("$ ..."); the write-target question a
+        # delete raises in the default mode is a separate site.
+        return [p for _, _, p in perms.confirm_callback.asked
+                if "$ rm " in p]
+
+    run("bash", {"command": "rm small.txt"}, perms)
+    assert command_dialogs() == []              # the rule answered it
+    run("bash", {"command": "rm big.dat"}, perms)
+    asked, = command_dialogs()
+    assert asked.startswith(IR.HEAD_IRREVERSIBLE)
+    PR._CACHE.clear()
+
+
 # ---------------------------------------------------------------------------
 # The terminal
 # ---------------------------------------------------------------------------
