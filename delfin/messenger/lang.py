@@ -211,6 +211,8 @@ DE = {
     'No files made available yet. Ask the agent to make the result you want available for download.':
     'Noch keine Dateien bereitgestellt. Bitte den Agenten bitten, das gewünschte Ergebnis für den '
     'Download bereitzustellen.',
+    "📎 The session has put *{name}* on the phone.\n/'datei {name}' fetches it.":
+    "📎 Die Sitzung hat *{name}* auf das Telefon gelegt.\n/'datei {name}' holt es.:",
     "Please answer or approve the request in its session's chat. The forum has no collective approval.":
     'Bitte die Anfrage im zugehörigen Einzelchat beantworten oder freigeben. Im Forum gibt es keine Sammelfreigabe.',
     'Syntax: /approve CODE, /deny CODE or /answer CODE text. /pending shows the codes.':
