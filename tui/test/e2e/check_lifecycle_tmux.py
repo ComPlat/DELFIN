@@ -7,8 +7,9 @@ agent service:
 - `delfin-agent service stop` from another shell: the window says the
   service stopped and that the sessions are saved, and leaves cleanly;
   the next service offers the session again, asleep;
-- a hangup of a window (its SSH connection dropped): the window ends, its
-  session runs on in the service.
+- a hangup of a window (its SSH connection dropped, the terminal closed):
+  the window ends, and so does its session (Keep session is off for a
+  session a window starts; /keep on or `tui --keep` keep it).
 
 Only processes this check started are signalled: the service by the pid
 in its private run file, the window by its tmux pane.
@@ -142,8 +143,8 @@ def main() -> int:
             row = next((s for s in c.hello["sessions"] if s["sessionId"] == sid), None)
         if not row or row["state"] != "sleeping":
             problems.append(f"the next service should offer the session asleep: {row}")
-        # A window that hangs up (its SSH connection dropped): it ends, its
-        # session runs on.
+        # A window that hangs up (its SSH connection dropped): it ends, and
+        # the session it started ends with it (not kept).
         tmux.key("C-l")
         tmux.type(command)
         tmux.key("Enter")
@@ -159,11 +160,17 @@ def main() -> int:
         os.kill(bun, signal.SIGHUP)
         if exited(2) is None:
             problems.append("the window did not end on a hangup")
-        with ServiceClient(sock) as c:
-            sessions = c.request("sessions.list")["sessions"]
+        gone_by = time.time() + 30
+        while True:
+            with ServiceClient(sock) as c:
+                sessions = c.request("sessions.list")["sessions"]
             alive = [s for s in sessions if s.get("lastPrompt") == "from the second window"]
-            if not alive or alive[0]["state"] == "sleeping":
-                problems.append(f"the hung-up window's session should run on: {sessions}")
+            if not alive or time.time() > gone_by:
+                break
+            time.sleep(0.5)
+        if alive:
+            problems.append(f"the hung-up window's session should end with it: {sessions}")
+        with ServiceClient(sock) as c:
             c.request("service.shutdown")
     except SystemExit:
         pass
@@ -183,7 +190,7 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: the window outlives a killed service, leaves on a stop, and a hangup leaves its session running")
+    print("PASS: the window outlives a killed service, leaves on a stop, and a hangup ends the session it started (not kept)")
     return 0
 
 
