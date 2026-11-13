@@ -89,7 +89,6 @@ def _cmd_resume(args) -> int:
     # was — the crashed run's submitted/attempt facts are the only
     # record that the first attempt ever happened.
     state_path = Path(args.work_dir) / STATE_FILENAME
-    state_before = state_path.read_bytes()
 
     from delfin.tools import pipeline as pipeline_mod
     from delfin.tools.pipeline import Pipeline
@@ -101,6 +100,16 @@ def _cmd_resume(args) -> int:
     pipe = Pipeline(name=chain.name)
     for step in chain.steps:
         pipe.add(step.tool, label=step.name, **step.params)
+    # L9: the per-step state as it was found.  "Leave the state as it
+    # was" is right for a crash BEFORE anything new is proven — but a
+    # step that FINISHED with evidence during this resume holds a fact,
+    # and that fact must survive a later failure in the same resume.
+    # Restore is therefore per step: a step whose state changed AND
+    # carries no evidence is reset to its pre-resume state; a finished
+    # step with evidence keeps its fact.
+    pre_state = {s.name: (s.state, s.evidence, s.work_dir, s.attempt,
+                          list(s.attempts), s.params, s.inputs_hash)
+                 for s in chain.steps}
     try:
         result = pipe.run(
             cores=args.cores,
@@ -109,9 +118,24 @@ def _cmd_resume(args) -> int:
             chain_state_obj=chain,
         )
     except Exception as exc:
-        # L2: leave the state as it was found; NOTE: one clear line,
+        # L9: per-step restore (see above); NOTE: one clear line,
         # never a traceback at the user.
-        state_path.write_bytes(state_before)
+        for s in chain.steps:
+            before = pre_state.get(s.name)
+            if before is None:
+                continue
+            b_state, b_evidence, b_dir, b_attempt, b_attempts, b_params, \
+                b_hash = before
+            if s.state == b_state:
+                continue
+            if s.state == "finished" and s.evidence:
+                # A verified finish is a fact: keep it.
+                chain.save()
+                continue
+            s.state, s.evidence, s.work_dir = b_state, b_evidence, b_dir
+            s.attempt, s.attempts = b_attempt, b_attempts
+            s.params, s.inputs_hash = b_params, b_hash
+        chain.save()
         logger.error("chain '%s' resume failed: %s", chain.name, exc)
         print(f"chain '{chain.name}' resume failed: {exc}")
         return 1

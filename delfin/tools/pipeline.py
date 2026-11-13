@@ -1097,9 +1097,15 @@ class Pipeline:
                 )
             # Sync trunk additions into the chain (steps added since the
             # last run are appended; existing steps keep their state).
+            # L8: every step's params (+ inputs hash) persist AT CREATION,
+            # not at submission — a chain killed before its later steps
+            # started must still be resumable ('charge' parameter is
+            # required otherwise).  The merged/autowired params are
+            # recorded at submission time as before.
             for i, spec in enumerate(self._trunk):
                 if i >= len(chain.steps):
-                    chain.add_step(spec.label or spec.step_name, spec.step_name)
+                    chain.add_step(spec.label or spec.step_name, spec.step_name,
+                                   params=dict(spec.kwargs))
             plan = _cs.build_resume_plan(chain, work_dir=base)
             if plan.get("wait"):
                 logger.info(
@@ -1122,7 +1128,8 @@ class Pipeline:
                 chain = _cs.ChainState.create(name=self.name, work_dir=base)
             for i, spec in enumerate(self._trunk):
                 if i >= len(chain.steps):
-                    chain.add_step(spec.label or spec.step_name, spec.step_name)
+                    chain.add_step(spec.label or spec.step_name, spec.step_name,
+                                   params=dict(spec.kwargs))
         chain.save()
         chain_skip: set = set()
         if resume_chain:
@@ -1509,8 +1516,11 @@ class Pipeline:
                 cstep.work_dir = str(step_dir)
                 # L1/L3: persist what run_step will actually receive, so a
                 # resume can rebuild a REAL run (validate_params passes) and
-                # the inputs hash hashes real inputs.
-                cstep.params = dict(merged_kwargs)
+                # the inputs hash hashes real inputs.  L7 reviewer note:
+                # only JSON types in the step — _prev_artifacts carries
+                # pathlib.Path values, converted here (the narrow fix),
+                # not only at the write site.
+                cstep.params = _cs.json_safe(dict(merged_kwargs))
                 cstep.inputs_hash = _cs.compute_inputs_hash(
                     geometry=str(geom) if geom else None,
                     **{"cores": cores, **cstep.params},

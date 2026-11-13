@@ -386,6 +386,24 @@ class RunningVerdict:
     reason: str = ""
 
 
+# -- JSON type safety -----------------------------------------------------
+
+def json_safe(value: Any) -> Any:
+    """Convert a value to JSON-safe types (recursively).
+
+    pathlib.Path -> str; dicts/lists recurse; anything JSON-safe passes
+    through.  Used when the chain state is written so no call site can
+    put a non-JSON type into the persisted step.
+    """
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
+
+
 def _read_step_evidence(step: ChainStep, chain_work_dir=None) -> Dict[str, Any]:
     """Re-read a step's own output and return the evidence it carries.
 
