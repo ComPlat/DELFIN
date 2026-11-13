@@ -13818,10 +13818,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "ask_user_question",
             "description": (
-                "Ask the user to choose and wait; returns the chosen "
-                "label(s). Use for every choice left to the user, never a "
-                "prose list. Recommended option first. Not for plan "
-                "approval (exit_plan_mode). Errors without an ask UI."
+                "Ask the user to choose; returns the chosen label(s). "
+                "ALWAYS for a choice the user has and when they ask to "
+                "be asked (\"ask me\", approval); never prose. Recommended "
+                "first. Not plan approval (exit_plan_mode)."
             ),
             "parameters": {
                 "type": "object",
@@ -34960,6 +34960,9 @@ class OpenAIClient(_BaseClient):
         # every tool the turn called.
         _go_ahead_once = False
         _choice_once = False
+        # An "ask me" request, once per turn, like the go-ahead and
+        # prose-choice triggers above.
+        _ask_once = False
         _turn_tool_names: set = set()
         _turn_user_text, _turn_offered = _turn_opening(messages)
         # Completion events that arrive as the turn is ENDING. Both drains
@@ -37285,15 +37288,28 @@ class OpenAIClient(_BaseClient):
                 _go_ahead_once = True
                 _ga_note, _ga_shown = (_ga.GO_AHEAD_NOTE,
                                        "↻ go-ahead given → acting on it")
+            # A person who asked to be asked wants the question, not a
+            # default picked for them: the choice trigger ("pick it and
+            # act") stays out of that turn; the ask trigger below handles it.
             elif (_ga_ok and not _choice_once
                     and "ask_user_question" not in _turn_tool_names
-                    and _ga.is_choice_question(_ga_text)):
+                    and _ga.is_choice_question(_ga_text)
+                    and not _ga.is_ask_request(_turn_user_text)):
                 _choice_once = True
                 _can_ask = getattr(self._permissions, "ask_user_callback",
                                    None) is not None
                 _ga_note, _ga_shown = (
                     _ga.CHOICE_NOTE if _can_ask else _ga.CHOICE_NOTE_NO_UI,
                     "↻ choice written as text → deciding or asking properly")
+            elif (_ga_ok and not _ask_once
+                    and "ask_user_question" not in _turn_tool_names
+                    and _ga.is_ask_request(_turn_user_text)):
+                _ask_once = True
+                _can_ask = getattr(self._permissions, "ask_user_callback",
+                                   None) is not None
+                _ga_note, _ga_shown = (
+                    _ga.ASK_NOTE if _can_ask else _ga.ASK_NOTE_NO_UI,
+                    "↻ ask request → asking with the question card")
             if _ga_note:
                 _auto_cont_count += 1
                 _did_tools_since_cont = False

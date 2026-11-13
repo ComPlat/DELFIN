@@ -2892,7 +2892,7 @@ def resolve_office_workspace(configured) -> Path | None:
 # a directory "always", approve every staged diff, schedule autonomous
 # loops, delete memories or write a user-wide memory.
 _USER_ONLY_SLASH_COMMANDS = frozenset({
-    "/sync", "/perms", "/perm-cycle",
+    "/sync", "/pair", "/perms", "/perm-cycle",
     "/grant", "/hooks", "/mcp", "/approve", "/reject",
     "/loop", "/auto", "/forget", "/profile", "/session", "/init",
     "/undo", "/undo-file", "/git",

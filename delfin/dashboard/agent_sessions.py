@@ -17,6 +17,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -1583,7 +1584,17 @@ def is_background_session(workspace: Any, *, headless: bool = False) -> bool:
     return idx >= 0 and "worktrees" in parts[idx + 1:]
 
 
-def resume_rows(*, open_ids: Any = None, limit: int = 60) -> list[dict]:
+#: How long a saved record the store proves dead ('alive is False': a pid
+#: and process start this host asked about and that is not there) may sit
+#: in the resume offers before it is hidden. Hidden, never deleted: the
+#: chat history stays on disk. A fresh record (the worker may still be
+#: saving) and one whose liveness cannot be judged (another host, an old
+#: record without the fields) are always shown.
+STALE_HIDE_S = 7 * 86400.0
+
+
+def resume_rows(*, open_ids: Any = None, limit: int = 60,
+                now: Optional[float] = None) -> list[dict]:
     """The saved sessions for the resume list: newest first, deduplicated.
 
     Input: the saved store's listing and the ids already open in views.
@@ -1592,8 +1603,11 @@ def resume_rows(*, open_ids: Any = None, limit: int = 60) -> list[dict]:
     relied on) -- one per session id (duplicate ids in the store are
     the same conversation listed twice, not two), titled by
     ``session_display_name``, with the workspace shortened. Sessions that
-    are already open are not offered again.
+    are already open are not offered again. A record the store proves
+    dead and that nobody has touched for ``STALE_HIDE_S`` is hidden: the
+    list does not grow left-over records forever (its file is kept).
     """
+    now = time.time() if now is None else now
     try:
         from delfin.agent.session_store import list_sessions
         saved = list_sessions(limit=limit)
@@ -1609,6 +1623,9 @@ def resume_rows(*, open_ids: Any = None, limit: int = 60) -> list[dict]:
             continue
         seen.add(sid)
         where = str(row.get("workspace") or "")
+        if row.get("alive") is False and \
+                now - float(row.get("updated_at") or 0) >= STALE_HIDE_S:
+            continue                       # provably dead and long untouched
         rows.append({
             "session_id": sid,
             "title": session_display_name(row.get("title"), sid),
@@ -1722,6 +1739,9 @@ _RUNNING_CSS = """<style>
 .delfin-running-rename .jupyter-button { width: auto !important; height: 24px !important;
     padding: 0 6px !important; font-size: 11px; }
 .delfin-running-empty { font-size: 11px; color: #6b7280; padding: 2px 6px; }
+.delfin-running-group-head { font-size: 10px; color: #64748b; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .04em; padding: 6px 6px 0; }
+.delfin-running-item.delfin-running-headless { opacity: .85; }
 </style>"""
 
 
@@ -1734,6 +1754,22 @@ class RunningPanel:
     marks it changed and arms one short timer, nothing polls."""
 
     RENDER_DELAY_S = 0.25
+
+    def _is_headless(self, row: dict) -> bool:
+        """A headless run: the service started it --unattended (a swarm or
+        operator run), or it works in a worktree checkout. Grouped apart
+        from the person's own sessions, never mixed in."""
+        if row.get("unattended"):
+            return True
+        return is_background_session(row.get("workspace") or "")
+
+    def _headless_head(self) -> widgets.HTML:
+        """The one separator above the headless group, rebuilt cheaply."""
+        if getattr(self, "_headless_row", None) is None:
+            head = widgets.HTML("Headless runs")
+            head.add_class("delfin-running-group-head")
+            self._headless_row = head
+        return self._headless_row
 
     def __init__(self, client: Any, on_open: Callable[[str], None],
                  is_open: Callable[[str], bool]) -> None:
@@ -1902,35 +1938,50 @@ class RunningPanel:
 
     def _render(self) -> None:
         rows = self.running.rows()
+        # The person's own sessions first, the headless runs (started
+        # --unattended by a swarm, or working in a worktree) in their own
+        # marked group below -- never mixed in.
+        own = [r for r in rows if not self._is_headless(r)]
+        headless = [r for r in rows if self._is_headless(r)]
         children = []
         needs = 0
-        for r in rows:
-            sid = r["sessionId"]
-            row = self._row(sid)
-            if row["title"].description != r["name"]:
-                row["title"].description = r["name"]
-            row["title"].tooltip = f"{r['name']} ({r['shortId']}): open it here"
-            state = (f'<span class="delfin-running-state">{html.escape(r["state"])}</span>')
-            bits = [html.escape(r["folder"]), html.escape(r["model"]), state, html.escape(r["age"])]
-            if r["needs"] and r["waiting"]:
-                bits.append(html.escape(r["waiting"][:60]))
-            if r["idle"]:
-                bits.append(f'<span class="delfin-running-idle">{html.escape(r["idle"])}</span>')
-            value = " · ".join(b for b in bits if b)
-            if row["info"].value != value:
-                row["info"].value = value
-            wanted = {"delfin-running-needs"} if r["needs"] else set()
-            if self.is_open(sid):
-                wanted.add("delfin-running-here")
-            for cls in ("delfin-running-needs", "delfin-running-here"):
-                if cls in wanted and cls not in row["classes"]:
-                    row["box"].add_class(cls)
-                elif cls not in wanted and cls in row["classes"]:
-                    row["box"].remove_class(cls)
-            row["classes"] = wanted
-            needs += r["needs"]
-            children.append(row["box"])
-        for sid in [s for s in self._rows if s not in {r["sessionId"] for r in rows}]:
+        for group in (own, headless):
+            if not group:
+                continue
+            if group is headless:
+                children.append(self._headless_head())
+            for r in group:
+                sid = r["sessionId"]
+                row = self._row(sid)
+                if row["title"].description != r["name"]:
+                    row["title"].description = r["name"]
+                row["title"].tooltip = f"{r['name']} ({r['shortId']}): open it here"
+                state = (f'<span class="delfin-running-state">{html.escape(r["state"])}</span>')
+                bits = [html.escape(r["folder"]), html.escape(r["model"]), state,
+                        html.escape(r["age"])]
+                if r["needs"] and r["waiting"]:
+                    bits.append(html.escape(r["waiting"][:60]))
+                if r["idle"]:
+                    bits.append(f'<span class="delfin-running-idle">{html.escape(r["idle"])}</span>')
+                value = " · ".join(b for b in bits if b)
+                if row["info"].value != value:
+                    row["info"].value = value
+                wanted = {"delfin-running-needs"} if r["needs"] else set()
+                if group is headless:
+                    wanted.add("delfin-running-headless")
+                if self.is_open(sid):
+                    wanted.add("delfin-running-here")
+                for cls in ("delfin-running-needs", "delfin-running-here",
+                            "delfin-running-headless"):
+                    if cls in wanted and cls not in row["classes"]:
+                        row["box"].add_class(cls)
+                    elif cls not in wanted and cls in row["classes"]:
+                        row["box"].remove_class(cls)
+                row["classes"] = wanted
+                needs += r["needs"]
+                children.append(row["box"])
+        seen_ids = {r["sessionId"] for r in rows}
+        for sid in [s for s in self._rows if s not in seen_ids]:
             self._rows.pop(sid, None)
             for widgets_of in (self.buttons, self.stops, self.confirms, self.confirm_yes,
                                self.confirm_no):
