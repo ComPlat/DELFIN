@@ -98,6 +98,18 @@ FORCE_UNKNOWN = ("Replaces the history of branch {branch} on {remote} "
                  "are removed from it.")
 NEW_BRANCH = ("Instead: push to a new branch and leave {branch} as it is: "
               "git push {remote} HEAD:{branch}-2")
+REMOTE_DELETE = ("Deletes branch {branch} on {remote} ({where}): its commits "
+                 "remain only where someone already fetched them.")
+REMOTE_PRUNE = ("Deletes every branch on {remote} ({where}) that this "
+                "repository does not have: their commits remain only where "
+                "someone already fetched them.")
+TAG_MOVE = ("Moves tag {tag}: git keeps no record of the commit it named "
+            "before.")
+NEW_TAG = ("Instead: create a new tag and leave {tag} as it is: "
+           "git tag {tag}-2")
+HISTORY_DROP = ("Removes git's record of earlier states (the reflog or "
+                "unreachable commits): a commit only this record still "
+                "reaches is gone for good.")
 PR_CREATE = ("Opens a pull request for branch {branch}: its commits and its "
              "description become visible to everyone who can read the "
              "repository.")
@@ -145,7 +157,8 @@ REFLOG = ("Rewrites the history of branch {branch}: the commits it replaces "
 #: each one up in messenger/lang.DE (a test holds every one to an entry).
 TEMPLATES: tuple[str, ...] = (
     HEAD_IRREVERSIBLE, HEAD_RECOVERABLE, DELETE, OVERWRITE, MORE_FILES, TRASH,
-    PUSH, PUSH_NEW, FORCE, FORCE_UNKNOWN, NEW_BRANCH, PR_CREATE, PR_MERGE,
+    PUSH, PUSH_NEW, FORCE, FORCE_UNKNOWN, NEW_BRANCH, REMOTE_DELETE,
+    REMOTE_PRUNE, TAG_MOVE, NEW_TAG, HISTORY_DROP, PR_CREATE, PR_MERGE,
     RELEASE, REPO_DELETE, API_WRITE, HTTP_WRITE, UPLOAD, UPLOAD_DATA, MAIL,
     MESSAGE, NOTIFY, WEBHOOK, CANCEL, CANCEL_ON, KILL, KILL_MATCH, DISCARD,
     SAVE_PATCH, CLEAN, MCP, LAB, REFLOG,
@@ -602,6 +615,20 @@ def _git(acc: _Acc, words: list[str], cwd: Path) -> None:
         _discard(acc, sub, rest, cwd)
     elif sub == "clean":
         _clean_untracked(acc, rest, cwd)
+    elif sub == "tag" and any(w in ("-f", "--force") or (
+            w.startswith("-") and not w.startswith("--") and "f" in w)
+            for w in rest):
+        names = [w for w in rest if not w.startswith("-")]
+        if names:
+            acc.add(IRREVERSIBLE, TAG_MOVE, tag=names[0],
+                    alternative=_fact(NEW_TAG, tag=names[0]))
+    elif (sub == "reflog" and rest[:1] and rest[0] in ("expire", "delete",
+                                                       "drop")) \
+            or (sub == "prune") \
+            or (sub == "gc" and any(
+                w.startswith("--prune") and w.split("=", 1)[-1] in
+                ("now", "all") for w in rest)):
+        acc.add(IRREVERSIBLE, HISTORY_DROP)
     elif (sub == "rebase" and not {"--abort", "--continue", "--skip", "--quit",
                                     "--show-current-patch"} & set(rest)) \
             or (sub == "commit" and "--amend" in rest) \
@@ -615,7 +642,7 @@ def _push(acc: _Acc, words: list[str], cwd: Path) -> None:
         from .api_client import _PUSH_VALUE_OPTS as value_opts
     except Exception:
         value_opts = {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
-    force = False
+    force = delete = prune = False
     positional: list[str] = []
     i = 0
     while i < len(words):
@@ -624,15 +651,26 @@ def _push(acc: _Acc, words: list[str], cwd: Path) -> None:
             i += 2
             continue
         if w.startswith("--"):
-            if w == "--dry-run":
+            # git takes any unambiguous prefix of a long option.
+            name = w[2:].split("=", 1)[0]
+            if len(name) >= 3 and "dry-run".startswith(name):
                 return
-            if w in ("--force", "--mirror") or w.startswith("--force-with-lease"):
+            if len(name) >= 3 and ("force".startswith(name)
+                                   or "force-with-lease".startswith(name)):
                 force = True
+            elif len(name) >= 2 and "mirror".startswith(name):
+                force = prune = True
+            elif len(name) >= 3 and "delete".startswith(name):
+                delete = True
+            elif len(name) >= 3 and "prune".startswith(name):
+                prune = True
         elif w.startswith("-") and len(w) > 1:
-            if "f" in w[1:]:
-                force = True
             if "n" in w[1:]:
                 return                          # --dry-run, short form
+            if "f" in w[1:]:
+                force = True
+            if "d" in w[1:]:
+                delete = True
         else:
             positional.append(w)
         i += 1
@@ -644,13 +682,19 @@ def _push(acc: _Acc, words: list[str], cwd: Path) -> None:
                   or "origin")
     url = _git_run(cwd, "remote", "get-url", remote)
     where = _where(url if url else remote)
-    specs = positional[1:] or ["HEAD"]
+    if prune:
+        acc.add(IRREVERSIBLE, REMOTE_PRUNE, remote=remote, where=where)
+    specs = positional[1:] or ([] if delete or prune else ["HEAD"])
     for spec in specs[:_SHOWN]:
         plus = spec.startswith("+")
         src, _, dst = spec.lstrip("+").partition(":")
         dst = dst or src
-        if not src and dst:
-            continue                            # a delete: refused by the deny list
+        if delete or (not src and dst):
+            gone = (dst[len("refs/heads/"):] if dst.startswith("refs/heads/")
+                    else dst)
+            acc.add(IRREVERSIBLE, REMOTE_DELETE, branch=gone, remote=remote,
+                    where=where)
+            continue
         src = src or "HEAD"
         branch = current if dst == "HEAD" else dst
         if branch.startswith("refs/heads/"):

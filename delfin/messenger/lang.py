@@ -692,7 +692,15 @@ def _cannot_be_undone() -> dict:
                          'die dein Branch nicht enthält, werden dort entfernt.',
         I.NEW_BRANCH: 'Stattdessen: auf einen neuen Branch pushen und {branch} lassen, wie er ist: '
                       'git push {remote} HEAD:{branch}-2',
-        I.PR_CREATE: 'Öffnet einen Pull Request für den Branch {branch}: seine Commits und seine '
+        I.REMOTE_DELETE: 'Löscht den Branch {branch} auf {remote} ({where}): seine Commits bleiben nur dort, '
+                         'wo jemand sie schon geholt hat.',
+        I.REMOTE_PRUNE: 'Löscht jeden Branch auf {remote} ({where}), den dieses Repository nicht hat: ihre '
+                        'Commits bleiben nur dort, wo jemand sie schon geholt hat.',
+        I.TAG_MOVE: 'Verschiebt das Tag {tag}: git merkt sich nicht, welchen Commit es vorher bezeichnete.',
+        I.NEW_TAG: 'Stattdessen: ein neues Tag anlegen und {tag} lassen, wie es ist: git tag {tag}-2',
+        I.HISTORY_DROP: 'Entfernt gits Aufzeichnung früherer Stände (das Reflog oder nicht erreichbare '
+                        'Commits): ein Commit, den nur diese Aufzeichnung noch erreicht, ist endgültig weg.',
+        I.PR_CREATE:'Öffnet einen Pull Request für den Branch {branch}: seine Commits und seine '
                      'Beschreibung werden für alle sichtbar, die das Repository lesen können.',
         I.PR_MERGE: 'Führt Pull Request {pr} auf der Forge in seinen Ziel-Branch zusammen.',
         I.RELEASE: 'Veröffentlicht das Release {tag}: wer das Repository lesen kann, kann es sofort '
