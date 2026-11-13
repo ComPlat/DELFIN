@@ -84,6 +84,10 @@ _KINDS = {
     "permission_mode": ("⏵", "Bypass entered by the user"),
     # An agent's branch move in the checkout DELFIN runs from, refused.
     "shared_checkout_switch": ("⛔", "Branch switch in the shared checkout refused"),
+    # A git act the reflog cannot undo (reversibility.git_history_refusal).
+    "git_history_unrecoverable": ("⛔", "Git history change the reflog cannot undo"),
+    # scancel/qdel/bkill of a job this session did not submit.
+    "job_cancel_foreign": ("⛔", "Cancel of a job this session did not submit"),
     # A second approval of the same kind in a turn whose first one went
     # unanswered: not asked again, refused, and the panel says so.
     "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
@@ -221,6 +225,8 @@ _KINDS = {
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
     "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    # Bypass with no classifier at all: a publish/upload/drop held.
+    "classifier_absent_hold": ("⏸️", "Held: no action classifier in this bypass session"),
     # Off the auto-allow list, no isolation layer, nobody to ask.
     "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
     "unrestorable_change": ("🗑", "Command refused: it would destroy what nothing can restore"),

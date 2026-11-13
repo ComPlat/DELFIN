@@ -1870,6 +1870,13 @@ class AgentEngine:
                 if tail:
                     tail = untrusted.wrap(f"bash_job:{stream}", tail)
                 submitted = ev.get("watched_slurm_jobs") or []
+                if submitted:
+                    from delfin.agent.api_client import (
+                        _record_submitted_jobs)
+                    _record_submitted_jobs(
+                        perms, str(ev.get("command") or ""),
+                        "".join(f"Submitted batch job {j}\n"
+                                for j in submitted))
                 events.append(
                     f"- bash job {ev.get('job_id')} [{state}, "
                     f"{ev.get('runtime_s', 0):.0f}s] "
