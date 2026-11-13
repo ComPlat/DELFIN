@@ -93,8 +93,9 @@ _ENV_CONFIG_RE = re.compile(
 
 _REMOTE_ALTERNATIVE = (
     " Push the work under a NEW branch name instead "
-    "(`git push <remote> HEAD:refs/heads/<new-name>`) and leave replacing "
-    "or deleting the existing branch to the user; say so in your report.")
+    "(`git push <remote> HEAD:refs/heads/<new-name>`), open a pull request "
+    "from it if the work should land, and leave replacing or deleting the "
+    "existing branch to the user; say so in your report.")
 
 _REFLOG_ALTERNATIVE = (
     " The reflog is what makes a moved branch, a rebase or an amended "

@@ -16599,6 +16599,14 @@ _BYPASS_HIGH_RISK_BASH = re.compile(r"""(?x)
   | \btruncate\s+-s\s*0\b
 """)
 
+# The bypass floor without a classifier (_no_watcher_floor) leaves these
+# programs to the deny list, the cage and the delete rules, and holds an
+# scp/rsync only when an operand names a host (`host:path`,
+# `user@host:path`, `rsync://...`), not a copy between local paths.
+_FLOOR_LEAVES_TO_DELETE_RULES = frozenset({
+    "rm", "find", "shred", "truncate", "dd", "mkfs", "unlink"})
+_REMOTE_OPERAND_RE = re.compile(r"(?:[\w.-]+@)?[\w.-]+:(?!//)|\w+://")
+
 # Writes that keep the second look under Bypass wherever they land: a file
 # that configures git or runs hooks. Files that instruct an agent (skills,
 # prompts, settings, memory) are recognised by _classifier_action.
@@ -23355,18 +23363,26 @@ class _DocToolExecutor:
         attached"). Output: None to let the rule result stand, else the
         refusal the model reads.
 
-        Under bypassPermissions a shell command in the high-risk class
-        (_BYPASS_HIGH_RISK_BASH: deletes, publishing, uploads, git
-        commands that drop uncommitted work) is asked when someone can be
-        asked and refused with the route that works when nobody can --
-        what the classifier failing already does for it, so an absent
-        classifier is no weaker than a broken one. Not held: a push or
-        pull request the user asked for in this turn (the push grant is
-        the user's own verdict on exactly the question the classifier
-        would ask), and an ``rm -rf`` of the session's own scratch
-        (_own_scratch_rm_rest). Other modes, and actions that are not
-        shell commands, keep the rule result: there the dialogs and the
-        mode's own rules are the second look.
+        Under bypassPermissions a shell command whose program is in the
+        outward or uncommitted-work part of the high-risk class
+        (_BYPASS_HIGH_RISK_BASH: publishing -- git push, gh pr/release/
+        repo/api --, uploads -- curl/wget sending data, scp/sftp/rsync to
+        a host --, and git commands that drop uncommitted work) is asked
+        when someone can be asked and refused with the route that works
+        when nobody can -- what the classifier failing already does for
+        it, so an absent classifier is no weaker than a broken one. Read
+        on each simple command's words (_command_words), program first:
+        ``echo 'gh pr merge later'`` publishes nothing.
+
+        Not held: a push or pull request the user asked for in this turn
+        (the push grant is the user's own verdict on exactly the question
+        the classifier would ask); a copy between local paths; deletes
+        (rm, find -delete, shred, truncate, dd), which stay with the deny
+        list, the cage and the delete rules -- holding them would refuse
+        every `rm -f` and `find . -delete` of a bypass session that runs
+        without a classifier. Other modes, and actions that are not shell
+        commands, keep the rule result: there the dialogs and the mode's
+        own rules are the second look.
 
         Rejected: the broader "leaves the workspace" rule a classifier
         outage uses. A user who switched the classifier off chose no
@@ -23381,28 +23397,27 @@ class _DocToolExecutor:
             blanked = _prose_blanked(cmd)
             if not _BYPASS_HIGH_RISK_BASH.search(blanked):
                 return None
-            cwd = Path(perms.workspace)
-            if args.get("cwd"):
-                cwd = cwd / str(args.get("cwd"))
-            rest = _own_scratch_rm_rest(cmd, perms, cwd)
-            if rest is not None:
-                blanked = _prose_blanked(rest)
             granted = bool((perms.push_grants or {}).get("push"))
-            held = [
-                seg for seg in (_split_shell_segments(blanked) or [blanked])
-                if _BYPASS_HIGH_RISK_BASH.search(seg)
-                and not (granted and (_is_git_push(seg)
-                                      or _GH_PR_CREATE_RE.search(seg)
-                                      or _GH_PR_MERGE_RE.search(seg)))]
+            held = []
+            for words in _command_words(blanked):
+                if not words or words[0] in _FLOOR_LEAVES_TO_DELETE_RULES:
+                    continue
+                if words[0] in ("scp", "rsync") and not any(
+                        _REMOTE_OPERAND_RE.match(w) for w in words[1:]):
+                    continue
+                seg = shlex.join(words)
+                if not _BYPASS_HIGH_RISK_BASH.match(seg):
+                    continue
+                if granted and (_is_git_push(seg) or _GH_PR_CREATE_RE.search(seg)
+                                or _GH_PR_MERGE_RE.search(seg)):
+                    continue
+                held.append(seg)
             if not held:
                 return None
             seg = " ".join(held[0].split())[:120]
         except Exception:
             return None
-        if re.search(r"\b(?:rm|find|shred|truncate|dd|mkfs)\b", seg):
-            route = ("move what is in the way aside instead (`mv <path> "
-                     "<a scratch directory of this session>/`) or leave it")
-        elif re.search(r"\bgit\b", seg) and not re.search(r"\bpush\b", seg):
+        if re.match(r"git\b", seg) and not re.search(r"\bpush\b", seg):
             route = ("save the uncommitted work first (a commit on a branch "
                      "of your own, or `git diff > <name>.patch`)")
         else:
@@ -23414,7 +23429,7 @@ class _DocToolExecutor:
         cmd = str(args.get("command") or "")
         if perms.confirm_callback is None:
             return (
-                f"blocked: `{seg}` deletes, publishes, uploads or drops "
+                f"blocked: `{seg}` publishes, uploads or drops "
                 "uncommitted work, and no action classifier judges this "
                 f"bypass session ({why}), so nobody looks at it before it "
                 f"runs. Instead, {route}; name the step in your report if "

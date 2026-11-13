@@ -264,15 +264,17 @@ in every agent child), so the agent cannot switch off its own watcher.
 
 With no classifier at all — switched off, or no runner attached — a
 `bypassPermissions` session keeps a floor (`_DocToolExecutor._no_watcher_floor`,
-`classifier_absent_hold`): a shell command in the high-risk class
-(`api_client._BYPASS_HIGH_RISK_BASH`: deletes, publishing, uploads, git
-commands that drop uncommitted work) is asked when someone can be asked and
-refused with nobody to ask, the refusal naming the route that works (move it
-aside, save the work as a commit or patch, keep the result local). Not held:
-a push or pull request the user asked for in the turn (the push grant) and an
-`rm -rf` of the session's own scratch. Other modes and non-shell actions keep
-the rule result. `rebase` and `commit --amend` are not in the class: the
-reflog undoes them.
+`classifier_absent_hold`): a shell command whose program is in the outward
+or uncommitted-work part of the high-risk class
+(`api_client._BYPASS_HIGH_RISK_BASH`: publishing, uploads, `scp`/`rsync` to
+a host, git commands that drop uncommitted work), read program first on each
+simple command, is asked when someone can be asked and refused with nobody
+to ask, the refusal naming the route that works (save the work as a commit
+or patch, keep the result local). Not held: a push or pull request the user
+asked for in the turn (the push grant), a copy between local paths, and
+deletes, which stay with the deny list, the cage and the delete rules. Other
+modes and non-shell actions keep the rule result. `rebase` and
+`commit --amend` are not in the class: the reflog undoes them.
 
 ### 3. Isolation of the shell command
 
@@ -920,9 +922,10 @@ users fall back to the unkeyed form, which they report as unverified.
   Under bypass a narrow high-risk class (`api_client._bypass_failure_asks`:
   deletes, history rewrites, publishing, uploads, remote triggers, writes to
   agent-instruction or git configuration files) asks or is refused as well.
-  With no classifier at all only the shell part of that class is held; a
-  message to another session or a write to an agent-instruction file then
-  runs on the rules alone.
+  With no classifier at all only the outward and uncommitted-work shell
+  part of that class is held; a delete inside the workspace, a message to
+  another session or a write to an agent-instruction file then runs on the
+  rules alone.
 - **Recoverable history is read from the text.** The git rule reads the
   command line: a program that runs git itself, a script file, or a write
   into `.git/logs` by other means (`rm .git/logs/HEAD`, a redirect) is not
