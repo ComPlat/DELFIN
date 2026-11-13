@@ -83,8 +83,9 @@ dependencies = [
     # checkout: 2026.9.1 -> 4 failed / 12 passed over three of those
     # files; 2026.3.5 -> 14 passed, 2 xfailed. The fast gate passes on
     # 2026.9.1; only the construction tests notice. Lift this when they
-    # pass on 2026.9.
-    "rdkit>=2023.3.1,!=2026.3.6,<2026.10",
+    # pass on 2026.9. (The bound read <2026.10 until 2026-11-13, which
+    # admitted 2026.9.x: a fresh install then resolved 2026.9.2.)
+    "rdkit>=2023.3.1,!=2026.3.6,<2026.9",
     "stk>=2024.1,<2027",
     "openbabel-wheel>=3.1.0,<4",
     "ipykernel>=6.0,<8",
