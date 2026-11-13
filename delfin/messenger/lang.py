@@ -541,6 +541,7 @@ DE = {
     'Reply one or more of {range}, separated by commas (e.g. 1,3), or type your own answer.':
     'Antworte mit einer oder mehreren von {range}, durch Kommas getrennt (z. B. 1,3), oder mit eigenem Text.',
     'Please reply with your answer.': 'Bitte mit deiner Antwort antworten.',
+    'Tap {taps}, or type your answer.': 'Tippe {taps} oder schreibe deine Antwort.',
     # One answer closes a request everywhere (room door, answered elsewhere).
     'Answered at the computer.': 'Am Rechner beantwortet.',
     'Please answer the request with yes or no.': 'Bitte mit yes/ja oder no/nein auf die Anfrage antworten.',
@@ -566,10 +567,12 @@ DE = {
     'Ready.': 'Bereit.',
     'Waiting for an answer.': 'Wartet auf eine Antwort.',
     'Whole action: reply `show`.': 'Ganze Aktion: mit `show` antworten.',
+    'Whole action: reply `{cmd}`.': 'Ganze Aktion: mit `{cmd}` antworten.',
+    'File: {name}': 'Datei: {name}',
     'Other answers: ': 'Weitere Antworten: ',
     'Approve this at the computer; not from the phone.': 'Nur am Rechner freizugeben.',
     'Reply *yes* or *no*.': 'Antworte mit *ja* oder *nein*.',
-    'full answer: `more`': 'ganze Antwort: `more`',
+    "full answer: /'{word}'": "ganze Antwort: /'{word}'",
     'A question or approval waits in its chat.': 'Neue Rückfrage/Freigabe im Einzelchat.',
     '⏳ Working …': '⏳ Arbeitet …',
     '✓ Done.': '✓ Fertig.',

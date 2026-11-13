@@ -37,9 +37,21 @@ def question_card(item: dict) -> str:
         question = '\n'.join(lines).strip()
     out = [f'❓ *{question}*' if question else '❓']
     out += [f'{i}. {c}' for i, c in enumerate(choices, 1)]
-    out.append(hint(len(choices), bool(item.get('multiSelect'))) if choices
-               else t('Please reply with your answer.'))
+    if choices and item.get('_tap') and not item.get('multiSelect'):
+        # Each option is tappable (SimpleX 6.4.3+); the token binds the
+        # whole card to this chat, as with an approval's taps.
+        out.append(question_tap_line(len(choices), str(item['_tap'])))
+    else:
+        out.append(hint(len(choices), bool(item.get('multiSelect'))) if choices
+                   else t('Please reply with your answer.'))
     return '\n'.join(out)
+
+
+def question_tap_line(n: int, token: str) -> str:
+    """The answer line of a single-choice question: option 1..n tappable
+    (/'1 TOKEN', /'2 TOKEN', ...), one token for the whole card."""
+    taps = ', '.join(f"/'{i} {token}'" for i in range(1, n + 1))
+    return t('Tap {taps}, or type your answer.').format(taps=taps)
 
 
 #: The tool of an approval, in words (the card's first line).
@@ -63,6 +75,15 @@ def _code(text: str) -> str:
     return '```\n' + text.replace('```', "'''") + '\n```'
 
 
+def _diff_file_name(preview: str) -> str:
+    """The file a diff preview edits, from its ``+++ b/<path>`` header;
+    '' when the preview does not name one."""
+    for line in preview.splitlines():
+        if line.startswith('+++ b/'):
+            return line[6:].strip()
+    return ''
+
+
 def approval_card(item: dict, machine: str = '') -> str:
     """An approval (or a plan) as one compact card: what (a command names
     the ``machine`` it runs on), why, the action when it is short, and how
@@ -82,10 +103,23 @@ def approval_card(item: dict, machine: str = '') -> str:
     out = [head]
     if item.get('purpose'):
         out.append(t('Why, as the agent says (unchecked): {purpose}').format(purpose=item['purpose']))
+    # A write/edit preview is a diff whose first line(s) name the file
+    # (``--- a/p`` / ``+++ b/p``, from api_client._make_diff). The file
+    # name is the person's first decision aid, so it goes on its own
+    # line above the code block instead of inside it; the content stays.
+    if lines and tool in {'write_file', 'edit_file', 'multi_edit', 'notebook_edit'}:
+        file_name = _diff_file_name(preview)
+        if file_name:
+            out.append(t('File: {name}').format(name=file_name))
+            body = '\n'.join(l for l in lines
+                             if not l.startswith(('--- a/', '+++ b/', '@@ ')))
+            body = body.strip('\n') or preview
+            lines, preview = body.splitlines(), body
     if lines and len(lines) <= SHORT_PREVIEW:
         out.append(_code(preview))
     elif lines:
-        out.append(t('Whole action: reply `show`.'))
+        out.append(t('Whole action: reply `{cmd}`.').format(
+            cmd='show' if english() else 'zeige'))
     extra = [o for o in item.get('options') or [] if o.get('key') not in {'y', 'n', 'd', 'e', '?', 'c'}]
     if any(o.get('key') == 'c' for o in item.get('options') or []):
         out.append(t('\n'
@@ -171,7 +205,8 @@ def cut(text: str, limit: int = ANSWER_CUT) -> tuple[str, str]:
 
 
 def more_hint() -> str:
-    return '\n\n… ' + t('full answer: `more`')
+    kw = 'mehr' if not english() else 'more'
+    return '\n\n… ' + t("full answer: /'{word}'").format(word=kw)
 
 
 #: A session's state, in words (status).

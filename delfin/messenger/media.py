@@ -51,7 +51,11 @@ def internal_write_refusal(path, sid=''):
     at = parts.index(ROOT)
     base, rest = Path(*parts[:at + 1]), parts[at + 1:]
     own = session_hash(sid) if sid else ''
-    if len(rest) == 3 and rest[1] == 'outbox' and rest[0] == (own or rest[0]):
+    # A plain file directly in the outbox, and the outbox directory itself
+    # (the mkdir / cp destination a fresh session needs): both writable.
+    # A sub-directory of the outbox is not -- one level only, so nothing
+    # can grow a tree under the place the phone lists.
+    if len(rest) in (2, 3) and rest[1] == 'outbox' and rest[0] == (own or rest[0]):
         return None
     outbox = base / (own or '<session>') / 'outbox'
     return (f"'{path}' is inside the messenger's own directory, which is "

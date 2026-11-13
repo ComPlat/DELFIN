@@ -1214,9 +1214,15 @@ def save_session(
 
     # Auto-title from first user message
     if not title and chat_messages:
+        from delfin.agent.repl_commands import looks_like_command
         for msg in chat_messages:
             if msg.get("role") == "user":
                 text = msg.get("content", "")
+                if looks_like_command(text):
+                    # A builtin command as the first line (/sync, /status,
+                    # /mode plan, ...) is not the session's name; the next
+                    # real user prompt names it instead.
+                    continue
                 title = text[:80].replace("\n", " ").strip()
                 if len(text) > 80:
                     title += "..."
