@@ -432,9 +432,15 @@ security panel and `delfin-agent doctor` say so.
   compose it. A URL that passed is then checked for encoded data
   (`web_tools.url_payload_reason`), and a `web_search` query likewise
   (`web_tools.text_payload_reason`): asked where someone can be asked,
-  refused otherwise (`egress_payload_refused`). The fetch itself refuses
-  private, loopback and metadata addresses and re-checks every redirect
-  target (`web_tools._GuardedRedirectHandler`).
+  refused otherwise (`egress_payload_refused`). Every redirect target gets
+  the same decision and payload check before it is resolved
+  (`web_tools.REDIRECT_GATE`, set per fetch by `api_client._redirect_gate`),
+  so a known host's open redirect or a URL shortener cannot carry the
+  first URL's path to an unknown host; a followed hop is counted in the
+  bytes sent. Cost: a redirect to a signed CDN URL (a long random query)
+  is refused unattended. The fetch itself refuses private, loopback and
+  metadata addresses and re-checks every redirect target's address
+  (`web_tools._GuardedRedirectHandler`).
 - **MCP servers** run as processes DELFIN did not write a command line for;
   the shell isolation does not reach them. A stdio server declared with
   `roots`/`read_roots` starts in a namespace holding only those paths
@@ -920,9 +926,11 @@ users fall back to the unkeyed form, which they report as unverified.
   nscd, kept for user names, also resolves host names where it caches
   them. Landlock without the socket guard does not cover UDP (the
   "Linux, partial" row).
-- **Redirects.** A redirect target is chosen by the server and is not
-  given the host decision again (only the address checks): an open
-  redirect on a known host carries what the original URL carried.
+- **Redirects of other fetchers.** `web_fetch` gives every redirect hop
+  the host decision; DELFIN's literature downloads and source lookups
+  (`scholarly_sources`, `source_apis`) use the same opener without a
+  session and keep the address checks only. Their URLs come from the
+  scholarly APIs, not from the model.
 - **The network of a partially isolated command.** On the "Linux, partial"
   row Landlock ABI 4 restricts TCP by port, not by address, and does not
   cover UDP; with an older ABI the command has the host's network. Only a

@@ -24,6 +24,7 @@ install (no extra ``requests`` / ``beautifulsoup4`` dependency).
 
 from __future__ import annotations
 
+import contextvars
 import html as _html
 import http.client
 import ipaddress
@@ -293,12 +294,34 @@ def _check_url(url: str) -> Optional[str]:
     return None
 
 
+#: Set by the caller for the length of one fetch: ``gate(url)`` returns why
+#: a redirect target must not be followed, or None. The agent's executor
+#: sets the session's egress decision here (api_client._web_egress_refusal)
+#: so a hop gets the host decision and the payload check the first URL got;
+#: unset, a hop gets the address checks only.
+REDIRECT_GATE: contextvars.ContextVar = contextvars.ContextVar(
+    "delfin_web_redirect_gate", default=None)
+
+
 class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Re-validate every redirect target through _check_url. Without this a
-    public URL could 3xx-redirect to http://169.254.169.254/… (cloud metadata)
-    or http://127.0.0.1/… — SSRF that defeats the initial host/IP deny-list."""
+    """Re-validate every redirect target: the caller's egress decision
+    (``REDIRECT_GATE``) first, before the name is resolved, then
+    _check_url. Without the address check a public URL could 3xx-redirect
+    to http://169.254.169.254/… (cloud metadata) or http://127.0.0.1/… —
+    SSRF that defeats the initial host/IP deny-list. Without the egress
+    decision a known host's open redirect, or a URL shortener, carried
+    what the first URL's path held to an unknown host."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        gate = REDIRECT_GATE.get()
+        if gate is not None:
+            try:
+                why = gate(newurl)
+            except Exception as exc:
+                why = f"the egress decision failed ({exc})"
+            if why:
+                raise urllib.error.HTTPError(
+                    newurl, code, f"blocked redirect target: {why}", headers, fp)
         err = _check_url(newurl)
         if err is not None:
             raise urllib.error.HTTPError(

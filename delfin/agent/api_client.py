@@ -8051,6 +8051,38 @@ def _web_egress_refusal(name: str, args: dict, perms) -> Optional[str]:
             "way.")
 
 
+def _redirect_gate(perms):
+    """The ``web_tools.REDIRECT_GATE`` for one web_fetch of the session of
+    ``perms``: each redirect target gets ``_web_egress_refusal`` -- the
+    host decision and the payload check the first URL got, before the
+    target is resolved -- and a followed hop is counted in the bytes sent.
+    None without permissions (a caller with no sandbox keeps the address
+    checks only, as before).
+
+    Measured before (egress probe, bypass, unattended): a web_fetch of
+    http://github.com/r/<marker> was answered 302 to an unknown host and
+    the marker arrived there. Cost: a known host that redirects to a
+    signed CDN URL (a long random query) is refused unattended unless the
+    CDN host is named for uploads; such targets are binary downloads
+    web_fetch does not return anyway."""
+    if perms is None:
+        return None
+
+    def gate(url: str) -> Optional[str]:
+        why = _web_egress_refusal("web_fetch", {"url": url}, perms)
+        if why is None:
+            try:
+                from urllib.parse import urlsplit as _urlsplit
+                from . import egress_proxy as _ep
+                _ep.note_sent(perms, _urlsplit(url).hostname or "",
+                              len(url) + _WEB_FETCH_HEADER_BYTES, "web_fetch")
+            except Exception:
+                pass
+        return why
+
+    return gate
+
+
 #: Request bytes counted for a web_fetch besides its URL: the request
 #: line's method and version and the headers web_tools sends (User-Agent,
 #: Accept, Host, Connection), rounded up. An estimate, said as one.
@@ -20216,7 +20248,13 @@ class _DocToolExecutor:
             if name == "web_search":
                 out = self._execute_web_search(arguments)
             else:
-                out = self._execute_web_fetch(arguments)
+                from . import web_tools as _wt_gate
+                _hop_token = _wt_gate.REDIRECT_GATE.set(
+                    _redirect_gate(permissions))
+                try:
+                    out = self._execute_web_fetch(arguments)
+                finally:
+                    _wt_gate.REDIRECT_GATE.reset(_hop_token)
             _note_web_result(name, arguments, out, permissions)
             return out
 
