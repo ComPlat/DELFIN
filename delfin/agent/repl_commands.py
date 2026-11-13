@@ -2147,6 +2147,31 @@ def _isolation(engine) -> str:
         return "unknown"
 
 
+#: True in the agent service's worker (worker.main): there ``/keep`` is the
+#: service's Keep session switch, which the supervisor applies before the
+#: line arrives here as ``/keep on`` or ``/keep off`` (the state now).
+UNDER_SERVICE = False
+
+
+def _keep(_ctx, args: str) -> CommandResult:
+    """What Keep session means for this session, in its own words."""
+    if not UNDER_SERVICE:
+        return CommandResult(output=(
+            "Keep session belongs to the agent service: this terminal "
+            "session ends when you leave it (it is saved; resume it with "
+            "--resume). Sessions in `delfin-agent tui` and the dashboard's "
+            "agent tab can be kept running."))
+    if args.strip().lower() == "off":
+        return CommandResult(output=(
+            "Keep session: off. This session ends -- saved, resumable -- "
+            "when the last window that has it open closes. /keep on keeps "
+            "it running."))
+    return CommandResult(output=(
+        "Keep session: on. This session keeps running in the agent service "
+        "after its windows close; any window can open it again. /keep off "
+        "ends it with its windows."))
+
+
 BUILTINS: dict[str, ReplCommand] = {
     c.name: c for c in [
         ReplCommand("/help", "session", "List these commands", _help, True),
@@ -2158,6 +2183,8 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/pair", "session", "Connect your phone (SimpleX): /pair, then /pair CODE",
                     _pair, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
+        ReplCommand("/keep", "session", "Keep session on|off: run on after "
+                    "the windows close, or end with them", _keep, True),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
         ReplCommand("/usage", "session", "Token and cost detail, with the rate",
                     _usage),

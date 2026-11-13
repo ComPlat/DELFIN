@@ -394,7 +394,7 @@ def test_keep_session_is_drawn_as_a_switch_with_its_label():
     toggle = next(c for c in strip.children if hasattr(c, "value")
                   and isinstance(getattr(c, "value"), bool))
     assert "delfin-switch" in toggle._dom_classes
-    assert toggle.description == "Keep session"
+    assert toggle.description == "Keep dashboard"
     assert "browser" in toggle.tooltip
     assert ".jupyter-button.delfin-switch.mod-active::after" in HU.HEADER_CSS
 

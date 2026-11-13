@@ -103,19 +103,17 @@ def _leave(manager, kid):
     manager.notify_disconnect(kid)
 
 
-def _age(manager, kid, seconds):
-    """Move a kernel's unwatched-since back in time.
+#: How long a window may be gone before its kernel ends. The window here
+#: DROPPED its connection (no close beacon): since 2026-11-13 a running turn
+#: holds only such a kernel -- a page that said it was closing ends with it
+#: (test_a_closed_window_is_not_a_dropped_connection.py).
+GRACE = R.DROPPED_SECONDS
 
-    The window announced its closing as it went, the way a page being
-    unloaded does: that is what makes the short grace apply at all. A
-    connection that merely dropped is the subject of
-    test_a_closed_window_is_not_a_dropped_connection.py.
-    """
+
+def _age(manager, kid, seconds):
+    """Move a kernel's unwatched-since back in time; its window dropped."""
     since, had = manager._delfin_unwatched()[kid]
     manager._delfin_unwatched()[kid] = (since - seconds, had)
-    if had:
-        manager.delfin_window_closed(kid)
-        manager._delfin_closed()[kid] = since - seconds
 
 
 def _unwatched(manager, kid, seconds):
@@ -142,7 +140,7 @@ def _write_record(root: Path, kid: str, **fields) -> Path:
 
 def test_a_kernel_with_a_turn_running_is_not_ended(manager, turns):
     kid = _run(manager.start_kernel())
-    _unwatched(manager, kid, R.GRACE_SECONDS + 30)
+    _unwatched(manager, kid, GRACE + 30)
     T.mark(True, kid=kid)
     _run(manager.cull_kernel_if_idle(kid))
     assert manager.ended == []
@@ -151,14 +149,14 @@ def test_a_kernel_with_a_turn_running_is_not_ended(manager, turns):
 def test_without_the_record_the_same_kernel_is_ended(manager, turns):
     """The control: everything the same, no turn running."""
     kid = _run(manager.start_kernel())
-    _unwatched(manager, kid, R.GRACE_SECONDS + 30)
+    _unwatched(manager, kid, GRACE + 30)
     _run(manager.cull_kernel_if_idle(kid))
     assert manager.ended == [kid]
 
 
 def test_the_grace_is_served_after_the_turn_not_during_it(manager, turns):
     kid = _run(manager.start_kernel())
-    _unwatched(manager, kid, R.GRACE_SECONDS + 30)
+    _unwatched(manager, kid, GRACE + 30)
     T.mark(True, kid=kid)
     _run(manager.cull_kernel_if_idle(kid))
     assert manager.ended == []
@@ -171,9 +169,9 @@ def test_the_grace_is_served_after_the_turn_not_during_it(manager, turns):
     assert manager.ended == []
 
     seconds, _had = manager._delfin_seconds_unwatched(kid)
-    assert seconds < R.GRACE_SECONDS
+    assert seconds < GRACE
 
-    _age(manager, kid, R.GRACE_SECONDS + 1)
+    _age(manager, kid, GRACE + 1)
     _run(manager.cull_kernel_if_idle(kid))
     assert manager.ended == [kid]
 
@@ -184,7 +182,7 @@ def test_the_kernel_is_kept_for_as_long_as_the_turn_lasts(manager, turns):
     T.mark(True, kid=kid)
     _leave(manager, kid)
     for _ in range(5):
-        _age(manager, kid, R.GRACE_SECONDS * 10)
+        _age(manager, kid, GRACE * 10)
         _run(manager.cull_kernel_if_idle(kid))
     assert manager.ended == []
 
@@ -195,9 +193,9 @@ def test_a_window_that_comes_back_reports_the_next_turn_again(manager, turns,
     kid = _run(manager.start_kernel())
     T.mark(True, kid=kid)
     with caplog.at_level(logging.WARNING, logger="test"):
-        _unwatched(manager, kid, R.GRACE_SECONDS + 1)
+        _unwatched(manager, kid, GRACE + 1)
         _run(manager.cull_kernel_if_idle(kid))
-        _age(manager, kid, R.GRACE_SECONDS + 1)
+        _age(manager, kid, GRACE + 1)
         _run(manager.cull_kernel_if_idle(kid))
         kept = [r for r in caplog.records if "keeping kernel" in r.getMessage()]
         assert len(kept) == 1
@@ -207,7 +205,7 @@ def test_a_window_that_comes_back_reports_the_next_turn_again(manager, turns,
         manager.notify_connect(kid)
         caplog.clear()
         manager.notify_disconnect(kid)
-        _age(manager, kid, R.GRACE_SECONDS + 1)
+        _age(manager, kid, GRACE + 1)
         _run(manager.cull_kernel_if_idle(kid))
         again = [r for r in caplog.records if "keeping kernel" in r.getMessage()]
         assert len(again) == 1
@@ -218,7 +216,7 @@ def test_only_the_kernel_that_runs_a_turn_is_kept(manager, turns):
     other = _run(manager.start_kernel())
     T.mark(True, kid=working)
     for kid in (working, other):
-        _unwatched(manager, kid, R.GRACE_SECONDS + 5)
+        _unwatched(manager, kid, GRACE + 5)
         _run(manager.cull_kernel_if_idle(kid))
     assert manager.ended == [other]
 
@@ -232,7 +230,7 @@ def test_a_record_from_a_dead_kernel_holds_nothing(manager, turns):
     _write_record(turns, kid, pid=gone.pid)
     assert T.running_kernel_ids() == set()
 
-    _unwatched(manager, kid, R.GRACE_SECONDS + 5)
+    _unwatched(manager, kid, GRACE + 5)
     _run(manager.cull_kernel_if_idle(kid))
     assert manager.ended == [kid]
 
@@ -242,7 +240,7 @@ def test_a_record_nobody_refreshed_holds_nothing(manager, turns):
     _write_record(turns, kid, updated_at=time.time() - T.FRESH_SECONDS - 1)
     assert T.running_kernel_ids() == set()
 
-    _unwatched(manager, kid, R.GRACE_SECONDS + 5)
+    _unwatched(manager, kid, GRACE + 5)
     _run(manager.cull_kernel_if_idle(kid))
     assert manager.ended == [kid]
 

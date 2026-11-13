@@ -270,7 +270,11 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
                        # untitled: renamed back to the default name; the
                        # worker takes neither `name` nor a saved title as
                        # its title (a wake of such a session sets it).
-                       "untitled": "boolean?"},
+                       "untitled": "boolean?",
+                       # keep: false -- the session ends (saved) once every
+                       # window that holds it has closed (session.setKeep).
+                       # Absent or true: it runs on after its windows close.
+                       "keep": "boolean?"},
     "session.attach": {"sessionId": "string", "turns": "integer?"},
     # The session worktrees of cwd's repository, and one merged back into
     # the main checkout (uncommitted, for review; a conflict changes
@@ -279,6 +283,12 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "session.merge": {"path": "string"},
     "session.pending": {"sessionId": "string"},
     "session.detach": {"sessionId": "string"},
+    # Keep session. true: the session runs on after its windows close (the
+    # default). false: it ends, saved, once every window that holds it has
+    # closed its connection; a window holds it by switching it off, by
+    # creating it with keep false or by attaching while it is off. A
+    # detach does not let go. Every summary carries "keep".
+    "session.setKeep": {"sessionId": "string", "keep": "boolean"},
     # A message for a session elsewhere (dashboard, another terminal).
     "session.message": {"key": "string", "text": "string"},
     # Saved sessions to resume, newest first: the session store's, scoped
@@ -399,6 +409,7 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
                        "summary": "object"},
     "session.pending": {"pending": "[object]"},
     "session.detach": {"detached": "boolean"},
+    "session.setKeep": {"keep": "boolean"},
     "session.message": {"sent": "boolean"},
     # sessionId, title, workspace, model, provider, updatedAt, running
     "sessions.past": {"sessions": "[object]"},
@@ -523,7 +534,10 @@ SESSION_SUMMARY: dict[str, str] = {
     # When someone last wrote to it (a prompt typed, queued or steered; not
     # one the harness sent), epoch seconds; none yet: absent. What a window
     # tells a session that runs on unattended by.
-    "lastInput": "number?"}
+    "lastInput": "number?",
+    # Keep session (session.setKeep): false once a window switched it off;
+    # it then ends with the windows that hold it.
+    "keep": "boolean?"}
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005
