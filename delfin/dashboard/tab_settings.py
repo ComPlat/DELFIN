@@ -5029,14 +5029,30 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     main_accordion.set_title(8, 'SSH Transfer & Remote Archive')
     main_accordion.selected_index = None  # all settings sections collapsed by default
 
+    # The sections' rows line up: the first label of a row is a column of
+    # its own (at least 190 px), and a full-width field takes the room left
+    # beside it (basis 280 px, growing) instead of a line of its own, so
+    # label, field and Scan share one line where the row is wide enough.
+    # Measured at 1366 px before: each binary field on its own line with
+    # Scan on a third, the Detected dropdowns starting at x = 161 to 186.
+    # The field keeps its own width everywhere else (the rule matches only
+    # a field the code made 100 % wide, directly in a row).
+    settings_css = widgets.HTML(
+        '<style>'
+        '.delfin-settings .widget-accordion .widget-hbox > .widget-html:first-child { min-width: 190px; }'
+        '.delfin-settings .widget-accordion .widget-hbox > .widget-text[style*="width: 100%"] { flex: 1 1 280px; }'
+        '</style>'
+    )
     tab = widgets.VBox(
         [
+            settings_css,
             info_box,
             top_bar,
             main_accordion,
         ],
         layout=widgets.Layout(width='100%', gap='12px', padding='10px'),
     )
+    tab.add_class('delfin-settings')
 
     _apply_sensitive_visibility()
     _load_settings_to_widgets(set_status=True)
