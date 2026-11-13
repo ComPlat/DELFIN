@@ -298,13 +298,14 @@ def test_the_help_says_who_picks_the_provider_and_what_an_mlip_costs():
     assert "10x slower" not in gm.status_html(gm.XTB, status)
 
 
-def test_availability_imports_no_torch():
+def test_availability_imports_no_torch(tmp_path):
+    from conftest import child_env
     code = ("import sys\n"
             "from delfin.dashboard import goat_method as gm\n"
             "gm.availability(refresh=True)\n"
             "print('torch' in sys.modules or 'oet' in sys.modules)\n")
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                          timeout=300)
+                          timeout=300, env=child_env(tmp_path))
     assert done.returncode == 0, done.stderr[-800:]
     assert done.stdout.strip().splitlines()[-1] == "False"
 
