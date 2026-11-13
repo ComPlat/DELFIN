@@ -194,6 +194,36 @@ call, before it runs. It applies, among others:
   cannot be known (`cd $VAR` with the variable unset, `cd -` with no earlier
   `cd`) the command is asked in every mode and refused with nobody to ask
   (`script_dir_unknown`);
+- git history stays recoverable (`reversibility.git_history_refusal`,
+  `git_history_unrecoverable`): what removes the way back is refused under
+  `bypassPermissions` and wherever nobody can be asked, and asked in an
+  attended session of another mode. That is a push that replaces or deletes
+  remote refs in a spelling the deny list lets through
+  (`git push --force-with-lease`, `git push --force-if-includes`, a `+`
+  or `:` refspec, `git push --mirror`, `git push --prune`, `git push -d`,
+  a short bundle with `f` or `d`, an abbreviation git accepts);
+  `reflog expire|delete|drop`; `git gc --prune=<date>` or `git prune` with
+  less than a day of grace; the reflog switched off or shortened (the keys
+  `core.logAllRefUpdates`, `gc.reflogExpire*`, `gc.pruneExpire*` set through
+  `git -c`, `git --config-env`, `GIT_CONFIG_*` or `git config`); a forced
+  or mirror push configured (`remote.<r>.push` with `+`,
+  `remote.<r>.mirror`); moving a tag (`tag -f`, `update-ref refs/tags/…`;
+  tags have no reflog); `update-ref --stdin`. The refusal names the route:
+  a push to a new branch name, leaving gc to git, a new tag name. Ref moves
+  the reflog undoes (`branch -f`, a soft or mixed `reset`, `rebase`,
+  `commit --amend`, `checkout -B`, `switch -C`, `update-ref` of a branch)
+  are free. No backup ref is written before a move: with the reflog
+  guarded it would hold nothing the reflog does not;
+- job cancels (`reversibility.foreign_job_cancels`,
+  `job_cancel_foreign`): `scancel`, `qdel` or `bkill` whose every target is
+  a literal id of a job this session submitted (`KitToolPermissions.
+  submitted_job_ids`, read from the output of a command whose only programs
+  are `sbatch`, `qsub`, `bsub` and `cd`, in memory only) passes this rule;
+  any other target — a
+  foreign id, a variable, a substitution, `xargs scancel`, a filter with no
+  id, `bkill 0`, an option the rule does not know — is asked in every mode,
+  `bypassPermissions` included, and refused with nobody to ask (naming
+  `squeue` and the report). `scancel -u` stays on the deny list;
 - the session tool lists (`--allowed-tools`, `--disallowed-tools`), which can
   only narrow.
 
@@ -246,6 +276,20 @@ once a minute, and `api_client.watcher_status_line` shows DOWN in the banner
 and `/status`. `DELFIN_CLASSIFIER` overrides the switch for one process,
 except in a process an agent session started (`DELFIN_AGENT_SESSION` is set
 in every agent child), so the agent cannot switch off its own watcher.
+
+With no classifier at all — switched off, or no runner attached — a
+`bypassPermissions` session keeps a floor (`_DocToolExecutor._no_watcher_floor`,
+`classifier_absent_hold`): a shell command whose program is in the outward
+or uncommitted-work part of the high-risk class
+(`api_client._BYPASS_HIGH_RISK_BASH`: publishing, uploads, `scp`/`rsync` to
+a host, git commands that drop uncommitted work), read program first on each
+simple command, is asked when someone can be asked and refused with nobody
+to ask, the refusal naming the route that works (save the work as a commit
+or patch, keep the result local). Not held: a push or pull request the user
+asked for in the turn (the push grant), a copy between local paths, and
+deletes, which stay with the deny list, the cage and the delete rules. Other
+modes and non-shell actions keep the rule result. `rebase` and
+`commit --amend` are not in the class: the reflog undoes them.
 
 Under `bypassPermissions`, before the classifier, a command that would
 destroy a file nothing can restore is refused (`unrestorable.refusal`,
@@ -316,6 +360,43 @@ an overlaid root: extended attributes and a directory's own mtime are not
 carried back; hard links between files the command copied up are split; a
 process writing under a root while a command runs is seen by the command
 or not, as the kernel leaves it.
+
+What an approval is about is classified once (`irreversible.classify`):
+reversible (nothing destroyed or sent, or a copy is kept by the undo
+journal, git or the trash), recoverable with effort (git's reflog keeps
+the commits a rebase, `commit --amend` or `reset` replaces) or
+irreversible -- a delete or overwrite of what nothing keeps (judged by
+`unrestorable`), a push, pull request, merge, release or repository
+delete, a mutating forge API call, an upload (`scp`, `rsync`, `sftp`,
+`curl`/`wget` with a body), mail, a session message, a notification, a
+webhook, a job cancel (`scancel`, `qdel`, `bkill`, `cluster_cancel`), a
+process kill, discarding uncommitted changes, `git clean`, an MCP tool
+whose name sends, a hazardous lab write. `api_client._ask_confirm` puts
+the statement at the head of every preview it hands a broker: what
+happens, concretely (the file and its size; the branch, the remote and
+the number of commits published or removed; the host and the bytes; the
+job), that it cannot be undone, and the reversible way where there is one
+(the trash, a new branch, a patch file). The terminal dialog, the
+dashboard row, the service and the phone card show it first; the phone in
+the person's language (`messenger.lang.DE` holds every sentence). For an
+irreversible request none of them offers a grant that outlives it (no
+always / like this / stop asking / Allow + Permanent; the service refuses
+a key that is not offered), Enter in the terminal answers no, and the
+dashboard's expiry answers no. When a person can be asked (a callback;
+default, diff_approval or acceptEdits), no casual grant answers such a
+shell command in their place: not the allow list or a pattern a dialog's
+"always" saved, a read-only shape, an information or calculation
+admission, the cage (`api_client._irreversible_needs_person`, security
+event `irreversible_asked`); it goes to the dialog. An allow rule the
+person wrote (permission_rules, a repository's included) is their
+decision in their own words and still answers it. With nobody to ask the
+grants stand as before (bypass has the trash rule above). `lab pending`
+carries the same statement for a hazardous lab write. Not seen: what an
+interpreter or a script does inside, a target in a variable, an MCP tool
+whose name does not say it sends, a write tool's overwrite (the change
+journal keeps it), and the order of a model's own words -- the shared
+refusal addendum tells every role to name the consequence before it runs
+or asks, and nothing checks that it did.
 
 ### 3. Isolation of the shell command
 
@@ -992,7 +1073,7 @@ inbox. The kinds most relevant to this model:
   `egress_upload_refused`, `egress_payload_refused`, `egress_sent`,
   `network`, `network_missing`
 - approvals: `approval_self_answer`, `approval_from_outside`,
-  `approval_code_refused`, `approval_timeout`
+  `approval_code_refused`, `approval_timeout`, `irreversible_asked`
 - the classifier: `classifier_ask`, `classifier_refuse`, `classifier_error`,
   `classifier_held`, `classifier_down`, `classifier_up`
 - credentials: `key_exported`, `trust_store_refused`
@@ -1115,6 +1196,30 @@ users fall back to the unkeyed form, which they report as unverified.
   Under bypass a narrow high-risk class (`api_client._bypass_failure_asks`:
   deletes, history rewrites, publishing, uploads, remote triggers, writes to
   agent-instruction or git configuration files) asks or is refused as well.
+  With no classifier at all only the outward and uncommitted-work shell
+  part of that class is held; a delete inside the workspace, a message to
+  another session or a write to an agent-instruction file then runs on the
+  rules alone.
+- **Recoverable history is read from the text.** The git rule reads the
+  command line: a program that runs git itself, a script file, or a write
+  into `.git/logs` by other means (`rm .git/logs/HEAD`, a redirect) is not
+  seen by it — the deny list, the path globs for `.git/**` and the cage are
+  what stand there. A bare repository logs no ref moves by default, so ref
+  moves there are not recoverable through the reflog. `fetch --prune` and
+  `remote prune` (they drop remote-tracking refs) and `send-pack --force`
+  are not refused. The reflog keeps unreachable entries 30 days under
+  git's defaults; an amended commit older than that is gone after the next
+  automatic gc.
+- **The job ledger.** Only jobs whose submit output this process read are
+  this session's: after a restart or resume, a job submitted before it
+  counts as foreign (asked, or refused unattended). Only a command whose
+  every program is a submit program or `cd` records ids, so a submit in a
+  line with any other program (`python make.py && sbatch x`) records none
+  and its job is treated as foreign too. A submit script that `sbatch`
+  itself runs still prints what it likes only to the job's own output,
+  never to the submit command's. Other ways of
+  ending a job (`scontrol requeue|hold`, `qsig`, `bstop`, `kill` of a
+  process on a compute node) are not covered by this rule.
 - **Commands run unasked inside the cage.** Under `default` and
   `acceptEdits` a command off the auto-allow list can run without a
   question where bubblewrap and Landlock hold it; what it can do is bounded

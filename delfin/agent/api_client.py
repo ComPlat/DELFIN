@@ -9036,6 +9036,11 @@ def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
         return None
     if call.get("asked"):
         return "the ask rule the user approved for this call"
+    # An allow rule is a decision the person wrote in their own words, so
+    # it answers here even for what cannot be undone (a push in their own
+    # repository). What does not answer such a call is the casual grant:
+    # an allow pattern a dialog's "always" saved, the built-in list, the
+    # cage (_irreversible_needs_person, in the bash gate).
     _, rs = _permission_rules(perms)
     if rs is None:
         return None
@@ -10294,11 +10299,15 @@ def _approval_kind(name: str) -> str:
     return base
 
 
-def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
+def _ask_confirm(perms, name: str, args: dict, preview: str, *,
+                 cwd: Any = None) -> bool:
     """Ask the user through ``perms.confirm_callback``, unless a dialog of
     the same kind already expired unanswered in this turn.
 
-    Input: the call to approve. Output: the answer. Semantics: a latched
+    Input: the call to approve (``cwd``: the directory a command runs in,
+    default the workspace). Output: the answer. A call that cannot be
+    undone, or only with effort, is asked with the plain statement of what
+    happens at the head of its preview (``_with_consequence``). A latched
     kind is answered False at once, and ``_confirm_timed_out`` then says
     "absence", so the caller words it as the user being away and records
     no denial. An expiry latches the kind for ``perms.turn_token``; the
@@ -10324,6 +10333,7 @@ def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
         except Exception:
             pass
         return False
+    preview = _with_consequence(perms, name, args, preview, cwd)
     ok = bool(perms.confirm_callback(name, args, preview))
     if (not ok and isinstance(away, dict) and token
             and _DocToolExecutor._confirm_timed_out(perms)):
@@ -10331,6 +10341,53 @@ def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
     elif not ok and token:
         _note_refusal_in_turn(perms)
     return ok
+
+
+def _with_consequence(perms, name: str, args: dict, preview: str,
+                      cwd: Any = None) -> str:
+    """``preview`` with the plain statement of what cannot be undone at
+    its head (irreversible.statement), or unchanged. Every broker receives
+    the preview, so this one call puts the same sentences on the terminal,
+    the dashboard, the approvals room and the phone. Never raises."""
+    try:
+        from . import irreversible as _irr
+        cons = _irr.classify(name, args or {}, cwd=cwd, perms=perms)
+        return _irr.with_statement(preview, cons)
+    except Exception:
+        return preview
+
+
+def _irreversible_needs_person(perms, name: str, args: dict,
+                               mode: str = "") -> bool:
+    """True when the call cannot be undone and a person can be asked.
+
+    Then no casual grant answers in the person's place: an allow pattern
+    (built-in, or one a dialog's "always" saved), a read-only shape, an
+    information or calculation admission, the cage. The call goes to the
+    dialog, whose preview states the consequence. An allow rule the person
+    wrote (permission_rules, a repository's included) is their decision
+    in their own words and still answers (_rule_answers). With
+    nobody to ask (no callback, bypass, plan) the grants stand as before:
+    bypass has its own floor (unrestorable), and a refusal with nobody to
+    read it would stop an unattended run on a command its owner allowed.
+    Never raises; a failure answers False (the grants stand)."""
+    try:
+        if getattr(perms, "confirm_callback", None) is None:
+            return False
+        mode = mode or str(getattr(perms, "mode", "") or "")
+        if mode not in ("default", "diff_approval", "acceptEdits"):
+            return False
+        from . import irreversible as _irr
+        cons = _irr.classify(name, args or {}, perms=perms)
+        if not cons.irreversible:
+            return False
+        _record_security_event(
+            "irreversible_asked", _bare_tool_name(name),
+            (cons.facts[0].text() if cons.facts else name)[:160],
+            blocked=False)
+        return True
+    except Exception:
+        return False
 
 
 def _note_refusal_in_turn(perms) -> None:
@@ -10594,6 +10651,12 @@ class KitToolPermissions:
     # that went through spends it (_after_push). Shared by reference with
     # sub-agents, like denied_actions, so a child is no way to a second one.
     push_grants: dict[str, int] = field(default_factory=dict)
+    #: Base ids of the cluster jobs this session submitted, read from the
+    #: output of a command that ran sbatch/qsub/bsub (_record_submitted_jobs).
+    #: A cancel of only these runs; any other cancel is asked or refused
+    #: (reversibility.foreign_job_cancels). In memory only, never from a
+    #: file the agent can write; shared by reference with sub-agents.
+    submitted_job_ids: set = field(default_factory=set)
     # Repository keys (git_role.repo_key; "*" for a workspace in none) the
     # user asked to reach through a pull request in a typed message
     # (_note_pr_route): a push onto the default branch and `gh pr merge`
@@ -15112,6 +15175,24 @@ def _auto_watch_submitted_jobs(stdout: str, perms) -> list[str]:
     return ids
 
 
+def _record_submitted_jobs(perms, command: str, stdout: str) -> list[str]:
+    """Add the jobs *command* submitted to the session's cancel ledger.
+
+    Input: the permissions, the command as it ran and its stdout. Output:
+    the base ids added to ``perms.submitted_job_ids``, read only when the
+    command ran a submit program (reversibility.submitted_job_ids). A
+    cancel of exactly these runs without a question; never raises."""
+    try:
+        from . import reversibility as _rv
+        ids = _rv.submitted_job_ids(command, stdout)
+        ledger = getattr(perms, "submitted_job_ids", None)
+        if ids and isinstance(ledger, set):
+            ledger.update(ids)
+        return ids
+    except Exception:
+        return []
+
+
 def _merge_delegate_evidence(observed: set, fn_name: str, result: str) -> None:
     """Union a sub-agent's verified file list into the parent's ledger.
 
@@ -16780,16 +16861,19 @@ def watcher_status_line(perms) -> str:
 # blanked, so a message that mentions `rm -rf` is not a delete. Several of
 # them are refused earlier anyway (deny list, push gate, egress scan); the
 # list is the floor for the spellings those gates let through.
+# `rebase` and `commit --amend` are not in it: they move a branch, and the
+# reflog takes the move back, now that what removes the reflog is refused
+# (reversibility.git_history_refusal). The same floor holds when no
+# classifier exists at all (_no_watcher_floor).
 _BYPASS_HIGH_RISK_BASH = re.compile(r"""(?x)
     (?:^|[\s;&|(`])(?:sudo\s+)?rm\s+(?:\S+\s+)*?
         (?:-[a-zA-Z]*[rRf][a-zA-Z]*|--recursive|--force)\b
   | \bfind\b[^;&|\n]*\s-delete\b
   | \bgit\s+(?:-[Cc]\s+\S+\s+)*
-        (?:push\b|rebase\b|filter-branch\b|filter-repo\b|clean\b
+        (?:push\b|filter-branch\b|filter-repo\b|clean\b
          |reset\s+--hard\b|branch\s+(?:-[dD]\b|--delete\b)|tag\s+-d\b
          |checkout\s+(?:--\s|\.(?:\s|$))|restore\b|stash\s+(?:drop|clear)\b
-         |update-ref\s+-d\b|reflog\s+expire\b|gc\s+--prune\b
-         |commit\s+(?:\S+\s+)*?--amend\b)
+         |update-ref\s+-d\b|reflog\s+expire\b|gc\s+--prune\b)
   | \bgh\s+(?:pr\s+(?:create|merge)|release\s+create|repo\s+(?:create|delete)
          |api\b)
   | \b(?:scp|sftp|rsync)\b
@@ -16800,6 +16884,14 @@ _BYPASS_HIGH_RISK_BASH = re.compile(r"""(?x)
   | \bdd\b[^;&|\n]*\bof=
   | \btruncate\s+-s\s*0\b
 """)
+
+# The bypass floor without a classifier (_no_watcher_floor) leaves these
+# programs to the deny list, the cage and the delete rules, and holds an
+# scp/rsync only when an operand names a host (`host:path`,
+# `user@host:path`, `rsync://...`), not a copy between local paths.
+_FLOOR_LEAVES_TO_DELETE_RULES = frozenset({
+    "rm", "find", "shred", "truncate", "dd", "mkfs", "unlink"})
+_REMOTE_OPERAND_RE = re.compile(r"(?:[\w.-]+@)?[\w.-]+:(?!//)|\w+://")
 
 # Writes that keep the second look under Bypass wherever they land: a file
 # that configures git or runs hooks. Files that instruct an agent (skills,
@@ -23796,6 +23888,105 @@ class _DocToolExecutor:
         return self._classifier_second_opinion(
             perms, name, args, effective_mode(perms))
 
+    def _no_watcher_floor(
+        self, perms: "KitToolPermissions", name: str, args: dict, mode: str,
+        why: str,
+    ) -> Optional[str]:
+        """The bypass floor when no classifier exists to give a verdict.
+
+        Input: a shell action the rules allowed, the mode, and why there is
+        no classifier ("it is switched off", "no classifier model is
+        attached"). Output: None to let the rule result stand, else the
+        refusal the model reads.
+
+        Under bypassPermissions a shell command whose program is in the
+        outward or uncommitted-work part of the high-risk class
+        (_BYPASS_HIGH_RISK_BASH: publishing -- git push, gh pr/release/
+        repo/api --, uploads -- curl/wget sending data, scp/sftp/rsync to
+        a host --, and git commands that drop uncommitted work) is asked
+        when someone can be asked and refused with the route that works
+        when nobody can -- what the classifier failing already does for
+        it, so an absent classifier is no weaker than a broken one. Read
+        on each simple command's words (_command_words), program first:
+        ``echo 'gh pr merge later'`` publishes nothing.
+
+        Not held: a push or pull request the user asked for in this turn
+        (the push grant is the user's own verdict on exactly the question
+        the classifier would ask); a copy between local paths; deletes
+        (rm, find -delete, shred, truncate, dd), which stay with the deny
+        list, the cage and the delete rules -- holding them would refuse
+        every `rm -f` and `find . -delete` of a bypass session that runs
+        without a classifier. Other modes, and actions that are not shell
+        commands, keep the rule result: there the dialogs and the mode's
+        own rules are the second look.
+
+        Rejected: the broader "leaves the workspace" rule a classifier
+        outage uses. A user who switched the classifier off chose no
+        second look on routine work; under it every command off the
+        auto-allow list would ask or be refused.
+        """
+        try:
+            if mode != "bypassPermissions" or _bare_tool_name(name) not in (
+                    "bash", "bash_background"):
+                return None
+            cmd = str(args.get("command") or "")
+            blanked = _prose_blanked(cmd)
+            if not _BYPASS_HIGH_RISK_BASH.search(blanked):
+                return None
+            granted = bool((perms.push_grants or {}).get("push"))
+            held = []
+            for words in _command_words(blanked):
+                if not words or words[0] in _FLOOR_LEAVES_TO_DELETE_RULES:
+                    continue
+                if words[0] in ("scp", "rsync") and not any(
+                        _REMOTE_OPERAND_RE.match(w) for w in words[1:]):
+                    continue
+                seg = shlex.join(words)
+                if not _BYPASS_HIGH_RISK_BASH.match(seg):
+                    continue
+                if granted and (_is_git_push(seg) or _GH_PR_CREATE_RE.search(seg)
+                                or _GH_PR_MERGE_RE.search(seg)):
+                    continue
+                held.append(seg)
+            if not held:
+                return None
+            seg = " ".join(held[0].split())[:120]
+        except Exception:
+            return None
+        if re.match(r"git\b", seg) and not re.search(r"\bpush\b", seg):
+            route = ("save the uncommitted work first (a commit on a branch "
+                     "of your own, or `git diff > <name>.patch`)")
+        else:
+            route = ("keep the result local (committed on a branch of your "
+                     "own) and name what should be published or sent")
+        _record_security_event(
+            "classifier_absent_hold", "bash", f"{seg[:80]} ({why})",
+            blocked=perms.confirm_callback is None)
+        cmd = str(args.get("command") or "")
+        if perms.confirm_callback is None:
+            return (
+                f"blocked: `{seg}` publishes, uploads or drops "
+                "uncommitted work, and no action classifier judges this "
+                f"bypass session ({why}), so nobody looks at it before it "
+                f"runs. Instead, {route}; name the step in your report if "
+                "it is still needed.")
+        try:
+            ok = bool(_ask_confirm(perms, "bash", {"command": cmd},
+                "[NO ACTION CLASSIFIER]\n"
+                f"Bypass runs this command unasked only behind the action "
+                f"classifier's second look, and there is none ({why}).\n\n$ "
+                + cmd))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if ok:
+            return None
+        if self._confirm_timed_out(perms):
+            return ("approval for this command TIMED OUT — the user is away, "
+                    f"this is not a refusal. Do not run it now; {route}.")
+        perms.record_denied_action("bash", cmd)
+        return (f"user denied '{cmd[:120]}'. Do NOT retry it or reach the "
+                "same effect another way." + self._said_why(perms))
+
     def _classifier_second_opinion(
         self, perms: Optional["KitToolPermissions"], name: str, args: dict,
         mode: str,
@@ -23824,12 +24015,16 @@ class _DocToolExecutor:
         breaker after ``_CLASSIFIER_BREAKER_FAILURES``.
         """
         runner = getattr(perms, "classifier_runner", None)
-        if perms is None or runner is None:
+        if perms is None:
             return None
+        if runner is None:
+            return self._no_watcher_floor(perms, name, args, mode,
+                                          "no classifier model is attached")
         try:
             cfg = _classifier_settings()
             if cfg is None:
-                return None
+                return self._no_watcher_floor(perms, name, args, mode,
+                                              "it is switched off")
             from . import action_classifier as _ac
             action = _classifier_action(name, args)
             if _ac.is_plain_read(action):
@@ -24853,6 +25048,86 @@ class _DocToolExecutor:
                         "retry it or work around it." + self._said_why(perms))
                 _approved_here = True
                 _env_root_approved = True
+            # Git history stays recoverable (reversibility.py): a force
+            # push in any spelling the deny list lets through, expiring or
+            # deleting the reflog, an immediate prune, switching the reflog
+            # off, moving a tag. Refused under bypassPermissions and with
+            # nobody to ask, the refusal naming the route that works;
+            # asked in an attended session of another mode (`git reflog
+            # ...` is on the auto-allow list, so the expire ran unasked
+            # there). Ref moves the reflog can undo are not touched.
+            from . import reversibility as _reversibility
+            _history = _reversibility.git_history_refusal(_prose_blanked(cmd))
+            if _history:
+                _no_one = perms.confirm_callback is None
+                _record_security_event(
+                    "git_history_unrecoverable", "bash", cmd[:80],
+                    blocked=_no_one or mode == "bypassPermissions")
+                if _no_one or mode == "bypassPermissions":
+                    return f"blocked: {_history}"
+                try:
+                    ok = bool(_ask_confirm(perms,
+                        "bash", {"command": cmd},
+                        "[GIT HISTORY]\n" + _history + "\n\n$ " + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for this git command TIMED OUT — the "
+                            "user is away, this is not a refusal. Do not "
+                            "run it now; name it in your report.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied '{cmd[:120]}'. Do NOT retry it or reach "
+                        "the same effect another way." + self._said_why(perms))
+                _approved_here = True
+            # Cancelling a job: one this session submitted
+            # (perms.submitted_job_ids) is the session undoing its own work
+            # and passes this rule; any other target may be a job somebody
+            # is waiting on. Asked in every mode where someone can be asked,
+            # bypassPermissions included; refused with nobody to ask.
+            _foreign = _reversibility.foreign_job_cancels(
+                _prose_blanked(cmd), getattr(perms, "submitted_job_ids", ()))
+            if _foreign:
+                _no_one = perms.confirm_callback is None
+                _shown_cancel = "; ".join(_foreign)[:200]
+                _record_security_event("job_cancel_foreign", "bash",
+                                       cmd[:80], blocked=_no_one)
+                if _no_one:
+                    return (
+                        f"blocked: `{_shown_cancel}` cancels a job this "
+                        "session did not submit (or names its jobs by a "
+                        "filter, a variable or a substitution), and nobody "
+                        "can be asked here. Only the jobs this session "
+                        "submitted are cancelled unasked, each named by its "
+                        "literal id. Read the job's state with "
+                        "`squeue -j <id>` or `squeue -u $USER`, and name the "
+                        "job and why it should end in your report for the "
+                        "user.")
+                try:
+                    ok = bool(_ask_confirm(perms,
+                        "bash", {"command": cmd},
+                        "[CANCEL A JOB THIS SESSION DID NOT SUBMIT]\n"
+                        f"`{_shown_cancel}` may end a job somebody else is "
+                        "waiting on.\n\n$ " + cmd))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if not ok:
+                    if self._confirm_timed_out(perms):
+                        return (
+                            "approval for this job cancel TIMED OUT — the "
+                            "user is away, this is not a refusal. Do not "
+                            "cancel it now; name it in your report.")
+                    perms.record_denied_action("bash", cmd)
+                    _remember_refusal(perms, "bash", cmd,
+                                      self._refusal_reason(perms))
+                    return (
+                        f"user denied '{cmd[:120]}'. Do NOT retry it or "
+                        "cancel the job another way." + self._said_why(perms))
+                _approved_here = True
             # A command this session promises to confine (locked scope,
             # forced isolation) on a host where no layer can confine it.
             # _bash_isolation_argv would refuse it at run time; asked here
@@ -25068,7 +25343,8 @@ class _DocToolExecutor:
                     ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         f"$ {cmd}\n(opens a pull request; the user has not "
-                        "asked for one since their last message)"))
+                        "asked for one since their last message)",
+                        cwd=args.get("cwd")))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if not ok:
@@ -25097,8 +25373,9 @@ class _DocToolExecutor:
                 preview = (f"$ {cmd}\n(the user has not asked for a push "
                            "since their last message)")
                 try:
-                    ok = bool(_ask_confirm(perms, 
-                        "bash", {"command": cmd}, preview))
+                    ok = bool(_ask_confirm(perms,
+                        "bash", {"command": cmd}, preview,
+                        cwd=args.get("cwd")))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if not ok:
@@ -25153,7 +25430,13 @@ class _DocToolExecutor:
                 if _lost is not None:
                     return _lost
                 return self._classifier_second_opinion(perms, name, args, mode)
-            if perms.matches_bash_auto_allow(cmd):
+            # What cannot be undone goes to the person whenever one can be
+            # asked: no standing grant below -- the allow list (a remembered
+            # "always" included), a read-only shape, an information or
+            # calculation admission, the cage -- answers in their place.
+            _person_decides = _irreversible_needs_person(
+                perms, "bash", {"command": cmd, "cwd": args.get("cwd")}, mode)
+            if perms.matches_bash_auto_allow(cmd) and not _person_decides:
                 # The list matches the command's spelling, not its purpose.
                 return self._classifier_second_opinion(perms, name, args, mode)
             # A command that is EXACTLY one of a few harmless forms is
@@ -25181,7 +25464,7 @@ class _DocToolExecutor:
                     else "")
             except Exception:
                 _ros_shape = ""
-            if _ros_shape:
+            if _ros_shape and not _person_decides:
                 _record_security_event(
                     "read_only_shape", "bash",
                     f"{_ros_shape}: {cmd[:80]}", blocked=False)
@@ -25201,7 +25484,7 @@ class _DocToolExecutor:
             # no rule of the user's on it; never named as a calculation.
             if (_calc is not None and getattr(_calc, "information", False)
                     and _calc.admit and egress is None
-                    and not _approved_here
+                    and not _approved_here and not _person_decides
                     and _managed_only_allow_admits(perms, cmd)):
                 _info_rule = _permission_rule_hit(perms, "bash",
                                                   {"command": cmd})
@@ -25219,7 +25502,7 @@ class _DocToolExecutor:
                 if _calc_rule is not None and _calc_rule[0] == "deny":
                     return _refuse_by_rule("bash", _calc_rule[1])
                 if (_calc.admit and _calc_rule is None and egress is None
-                        and not _approved_here):
+                        and not _approved_here and not _person_decides):
                     _record_security_event(
                         "calculation_admitted", "bash",
                         _calc.summary[:200], blocked=False)
@@ -25246,7 +25529,7 @@ class _DocToolExecutor:
                 return _refuse_by_rule("bash", _caged_rule[1])
             _cage_cwd = str(args.get("cwd") or "").strip()
             if (caged_admission is not None and not _approved_here
-                    and not _calc_reason
+                    and not _calc_reason and not _person_decides
                     and not _allow_rule_names_bash(perms, name, args)
                     and _caged_command_may_run_unasked(cmd, perms, mode,
                                                        cwd=_cage_cwd)):
@@ -25317,7 +25600,8 @@ class _DocToolExecutor:
                 if _calc_reason:
                     preview += f"\nNot started unasked: {_calc_reason}"
                 try:
-                    ok = bool(_ask_confirm(perms, "bash", {"command": cmd}, preview))
+                    ok = bool(_ask_confirm(perms, "bash", {"command": cmd},
+                                           preview, cwd=args.get("cwd")))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if ok:
@@ -27841,6 +28125,7 @@ class _DocToolExecutor:
                 pass
         if _journal_notes:
             payload["untracked_changes"] = " ".join(_journal_notes)
+        _record_submitted_jobs(perms, cmd, proc.stdout or "")
         watched = _auto_watch_submitted_jobs(proc.stdout or "", perms)
         if watched:
             payload["watched_slurm_jobs"] = watched
@@ -34787,6 +35072,11 @@ class OpenAIClient(_BaseClient):
                 rc = event.get("exit_code")
                 desc = str(event.get("description") or "").strip()
                 submitted = event.get("watched_slurm_jobs") or []
+                if submitted:
+                    _record_submitted_jobs(
+                        perms, str(event.get("command") or ""),
+                        "".join(f"Submitted batch job {j}\n"
+                                for j in submitted))
                 notes.append(
                     f"[background] job {jid}"
                     + (f" ({desc})" if desc else "")
