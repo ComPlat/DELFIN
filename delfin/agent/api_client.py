@@ -2099,6 +2099,13 @@ def _bash_outside_reads(cmd: str, cwd: "str | Path | None" = None,
             if a.startswith("-"):
                 if "=" in a:
                     _add(a.split("=", 1)[1])
+                else:
+                    # A short option carries its value attached just as
+                    # often as spaced: -f/etc/x reads the same file as
+                    # -f /etc/x, which this scanner already reports.
+                    attached = _attached_option_path(a)
+                    if attached:
+                        _add(attached)
                 continue
             if prog == "dd" and a.startswith("if="):
                 _add(a[3:])
@@ -2204,6 +2211,32 @@ def _bash_climbs_out(cmd: str) -> bool:
 _ABS_PATH_RE = re.compile(r"(?<![:/\w])(~?/[\w.\-+/]*[\w.\-+])")
 
 
+def _attached_option_path(token: str) -> str:
+    """The path value written onto a short option, or ``""``.
+
+    Input: one shell token. Output: the path-shaped remainder of a token
+    that begins with ``-``, written with no separator (``-f/etc/x`` ->
+    ``/etc/x``, ``-f./pats.txt`` -> ``./pats.txt``, ``-I~/inc`` ->
+    ``~/inc``), else ``""``. Semantics: a short option takes its value
+    attached or as the next word, and both spellings reach the same file;
+    the scanners saw only the spaced one. Only a remainder that OPENS a
+    path (``/``, ``./``, ``../``, ``~/``) counts, so a flag cluster
+    (``-rn``), a count (``-A3``) and a separator (``-t:``) yield nothing.
+    ``--opt=value`` is not this shape and is read by the callers
+    themselves. A regex pattern that happens to look like a path
+    (``grep -e/usr/bin``) is reported as one: extra friction, never a
+    silent miss. Never raises.
+    """
+    if not token.startswith("-") or token in ("-", "--") or "=" in token:
+        return ""
+    body = token.lstrip("-")
+    for i in range(len(body)):
+        rest = body[i:]
+        if rest.startswith(("/", "./", "../", "~/")):
+            return rest
+    return ""
+
+
 def _bash_paths_outside(cmd: str, workspace: Path) -> list[str]:
     """Absolute paths in *cmd* that point outside *workspace*.
 
@@ -2221,8 +2254,29 @@ def _bash_paths_outside(cmd: str, workspace: Path) -> list[str]:
     out: list[str] = []
     try:
         ws = str(Path(workspace).resolve())
-        for match in _ABS_PATH_RE.finditer(cmd or ""):
-            candidate = match.group(1)
+        candidates = [m.group(1) for m in _ABS_PATH_RE.finditer(cmd or "")]
+        # A value attached to a short option: the regex refuses a match
+        # whose left neighbour is a word character, which is what the
+        # option letter is (-f/etc/x). Taken per token, the relative
+        # forms stay relative -- the regex alone read -f./pats.txt as the
+        # absolute /pats.txt, a path outside the workspace that the
+        # command never names.
+        try:
+            import shlex as _shlex
+            tokens = _shlex.split(cmd or "", comments=True)
+        except ValueError:
+            tokens = (cmd or "").split()
+        for token in tokens:
+            attached = _attached_option_path(token)
+            if attached.startswith(("/", "~/")):
+                candidates.append(attached)
+            elif attached:
+                # ./x and ../x name no absolute path; drop the regex's
+                # reading of them.
+                stripped = _ABS_PATH_RE.search(token)
+                if stripped and stripped.group(1) in candidates:
+                    candidates.remove(stripped.group(1))
+        for candidate in candidates:
             try:
                 expanded = Path(candidate).expanduser()
             except Exception:
