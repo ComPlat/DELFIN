@@ -2289,6 +2289,13 @@ def create_tab(ctx):
         .widget-hbox.submit-form-grid > .jupyter-widgets { width: auto !important;
             min-width: 0; margin: 0; }
         .widget-hbox.submit-form-grid .widget-label { min-width: 84px; }
+        /* A narrow window (a phone, a tall narrow window): form above the
+           preview, each the full width. Side by side at 390 px each pane got
+           ~170 px and the preview's panel painted over the form; at 900 px
+           the form's left pane cut its own buttons. */
+        @media (max-width: 960px) {
+            .submit-split-root.widget-hbox { flex-direction: column !important; }
+            .submit-split-root > .submit-split-pane { flex: 0 0 auto !important; width: 100% !important; max-width: 100% !important; } }
         .submit-split-root, .submit-split-root * {
             box-sizing: border-box;
         }

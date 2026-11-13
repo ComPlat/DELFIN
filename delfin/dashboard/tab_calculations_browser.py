@@ -16084,6 +16084,18 @@ def create_tab(ctx):
         '.calc-right { overflow:hidden !important;'
         ' display:flex !important; flex-direction:column !important; }'
         '.calc-left { display:flex !important; flex-direction:column !important; }'
+        # A narrow window (a phone): the list above, the content below, each
+        # the full width. Side by side the list kept its width and left the
+        # content pane none (measured at 390 px). The splitter drags
+        # sideways only, so it goes.
+        '@media (max-width: 700px) {'
+        ' .calc-tab .calc-main-row { flex-direction:column !important; }'
+        ' .calc-tab .calc-main-row > .calc-left { flex:0 0 45% !important; width:100% !important;'
+        ' min-width:0 !important; max-width:100% !important; }'
+        ' .calc-tab .calc-main-row > .calc-right { flex:1 1 0 !important; width:100% !important;'
+        ' min-width:0 !important; min-height:0 !important; }'
+        ' .calc-tab .calc-main-row > .calc-splitter-host { display:none !important; }'
+        '}'
         '.calc-left .widget-select { flex:1 1 0 !important; min-height:0 !important; }'
         '.calc-left .widget-select select { height:100% !important; }'
         '.calc-left .widget-select-multiple { flex:1 1 0 !important; min-height:0 !important; }'
@@ -16305,17 +16317,20 @@ def create_tab(ctx):
         layout=widgets.Layout(height='100%', width='10px', margin='0', overflow='visible'),
     )
 
+    calc_splitter.add_class('calc-splitter-host')
+    calc_main_row = widgets.HBox(
+        [calc_left, calc_splitter, calc_right],
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            align_items='stretch', gap='12px',
+            flex='1 1 0', min_height='0',
+        ),
+    )
+    calc_main_row.add_class('calc-main-row')
     tab_widget = widgets.VBox([
         calc_css,
         widgets.HTML(_browser_heading(ctx, _is_office_tab)),
-        widgets.HBox(
-            [calc_left, calc_splitter, calc_right],
-            layout=widgets.Layout(
-                width='100%', overflow_x='hidden',
-                align_items='stretch', gap='12px',
-                flex='1 1 0', min_height='0',
-            ),
-        ),
+        calc_main_row,
     ], layout=widgets.Layout(
         padding='10px', overflow_x='hidden',
         width='100%', max_width='100%',
