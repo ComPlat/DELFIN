@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -106,10 +107,26 @@ SYNC_USAGE = ('Usage: /sync [on|off|status] or /sync NAME (one word names '
               'phone. Anything else changes nothing.')
 
 
+#: Words a person types to stop, to answer or to ask for help (German
+#: matchers for what the user types). Never a session name: '/sync nein'
+#: or a typo like '/sync of' switching the phone ON would publish the
+#: session against the person's intent.
+_NOT_A_NAME = frozenset({
+    'of', 'no', 'nein', 'nicht', 'nie', 'never', 'ende', 'beenden',
+    'abschalten', 'stopp', 'halt', 'pause', 'exit', 'quit', 'cancel',
+    'abbrechen', 'help', 'hilfe', 'ja', 'yes', 'true', 'false', 'name',
+    'status', 'policy'})
+
+#: A name word: starts with a letter, then letters, digits, '_' or '-',
+#: 2 to 40 characters. Punctuation ('off!', 'status?') is no name.
+_NAME_WORD = re.compile(r"[^\W\d_][\w-]{1,39}")
+
+
 def _one_word(raw):
-    """One clean word (no space, no control characters), or ''."""
+    """One word that can name a session, or ''."""
     text = str(raw or '').strip()
-    if not text or any(c.isspace() for c in text):
+    if (not text or not _NAME_WORD.fullmatch(text)
+            or text.lower() in _NOT_A_NAME):
         return ''
     return clean_name(text)
 

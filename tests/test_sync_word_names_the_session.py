@@ -20,7 +20,7 @@ def _records(tmp_path, monkeypatch):
     monkeypatch.setattr(activation, "_DIR", tmp_path / "act")
 
 
-@pytest.mark.parametrize("word", ["OFFICE", "office", "Butan", "Lab", "\"Off"])
+@pytest.mark.parametrize("word", ["OFFICE", "office", "Butan", "Lab", "Office-2", "Büro"])
 def test_a_single_word_switches_on_and_names(word):
     assert activation.parse_sync(word) == ("on", word)
     activation.configure("s1", word)
@@ -46,3 +46,13 @@ def test_the_worker_switches_on_and_names_by_one_word():
     worker.Worker._m_session_prompt(host, {"text": "/sync OFFICE"})
     assert activation.enabled("s9") and titles == ["OFFICE"]
     assert "OFFICE" in str(notices[-1])
+
+
+@pytest.mark.parametrize("word", [
+    "nein", "no", "of", "ende", "stopp", "halt", "exit", "help", "hilfe",
+    "ja", "yes", "off!", "status?", "x", "0", "1", "\"Off"])
+def test_a_stop_answer_or_typo_never_switches_the_phone_on(word):
+    # '/sync nein' or a typo of 'off' switching the phone ON would send
+    # the session out against the person's intent: such a word changes
+    # nothing.
+    assert activation.parse_sync(word) == ("usage", "")
