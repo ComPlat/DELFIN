@@ -34,6 +34,29 @@ produced tag 1:1 onto the artifact it injects downstream:
                     (OPI) reads; preferred over regex-parsing the .out file
     json_report   — a machine-readable JSON report
     docx_report   — a generated DOCX report
+
+Biomolecular file ports — the same idea for proteins, nucleic acids and the
+small molecules bound to them.  They are file ports like ``gbw`` and
+``hessian``: a block announces the file it leaves behind, the next block
+declares it consumes it, and the two connect without knowing about each
+other.  :mod:`delfin.tools.bio` is the shared reader/typing layer behind them,
+so a block never has to agree with another on a parser:
+
+    macromolecule — a macromolecular structure file (PDB or mmCIF): chains,
+                    residues with insertion codes and alternate locations,
+                    heteroatoms, waters and the file's own missing-residue and
+                    connection records.  Read with
+                    ``delfin.tools.bio.read_structure``.
+    ligand        — a small-molecule file (SDF/MOL or MOL2) for a bound or
+                    to-be-bound ligand, with its coordinates, bonds and data
+                    fields.  Read with
+                    ``delfin.tools.bio.read_small_molecule``.
+    binding_site  — a binding-site descriptor as JSON: either a centre and an
+                    edge length in Angstrom (``BindingBox``) or the residues
+                    that line the site (``ResidueSelection``).  Both carry
+                    their ``kind``, so a consumer reads
+                    ``delfin.tools.bio.binding_site_from_dict`` and knows
+                    which of the two it was handed.
 """
 
 from __future__ import annotations
