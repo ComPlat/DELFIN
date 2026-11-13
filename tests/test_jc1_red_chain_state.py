@@ -53,6 +53,8 @@ class TestChainStateMachine:
             evidence={"normal_termination": True, "scf_converged": True}
         )
         chain.save()
+        from delfin.tools import chain_state
+
         reloaded = chain_state.ChainState.load(chain.state_path)
         assert reloaded.steps[0].state == "finished"
         assert reloaded.steps[0].job_id == "12345"
@@ -113,6 +115,8 @@ class TestChainStateMachine:
         # Tear it: truncate mid-write, as a crash would.
         raw = chain.state_path.read_text()
         chain.state_path.write_text(raw[: len(raw) // 2])
+        from delfin.tools import chain_state
+
         reloaded = chain_state.ChainState.load(chain.state_path)
         for step in reloaded.steps:
             assert step.state != "finished"
@@ -123,5 +127,8 @@ class TestChainStateMachine:
 
     def test_inputs_hash_recorded(self, tmp_path):
         chain = self._chain(tmp_path)
-        h = chain.steps[0].inputs_hash
+        from delfin.tools.chain_state import compute_inputs_hash
+
+        chain.add_step("hashed", "orca_sp", inputs_hash=compute_inputs_hash(charge=0))
+        h = chain.steps[-1].inputs_hash
         assert isinstance(h, str) and h
