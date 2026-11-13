@@ -37,7 +37,7 @@ structure passed between blocks must not be edited in place by one of them).
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 # Residue names that denote solvent water.  Counted apart from the other
 # hetero components because every downstream block treats them separately
