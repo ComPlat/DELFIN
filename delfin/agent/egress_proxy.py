@@ -947,9 +947,16 @@ class _External:
 
 
 def use_external(socket_path: str, token_file: str) -> None:
-    """Route this process's cages to another process's proxy (_External)."""
+    """Route this process's cages to another process's proxy (_External).
+
+    A live proxy of this very process is never replaced: the gate code
+    can run inside the DELFIN process that owns the proxy (tests do; any
+    in-process caller could), and swapping its own proxy for a stub left
+    every later cage binding a socket nobody served any more."""
     global _PROXY
     with _LOCK:
+        if (isinstance(_PROXY, EgressProxy) and not _PROXY._closed):
+            return
         _PROXY = _External(socket_path, token_file)  # type: ignore[assignment]
 
 

@@ -184,3 +184,13 @@ def test_an_external_proxy_is_what_the_cage_binds(monkeypatch):
     proxy = egress_proxy.get_proxy()
     assert proxy.socket_path == "/run/p/sock"
     assert proxy.token_file_for(object()) == "/run/p/token"
+
+
+def test_this_process_s_own_proxy_is_never_replaced(monkeypatch):
+    """Measured in the suite: the gate run in-process swapped the live
+    proxy for a stub, and a later caged command bound a dead socket."""
+    own = egress_proxy.EgressProxy.__new__(egress_proxy.EgressProxy)
+    own._closed = False
+    monkeypatch.setattr(egress_proxy, "_PROXY", own)
+    egress_proxy.use_external("/run/p/sock", "/run/p/token")
+    assert egress_proxy.get_proxy() is own
