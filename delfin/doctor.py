@@ -191,9 +191,26 @@ def check_opi() -> CheckResult:
 
     Not installed is "missing" (DELFIN still reads ORCA's text output);
     another version is "broken": it may build an input or read an output
-    differently from every other host."""
+    differently from every other host.
+
+    The hint installs OPI alone into the Python running this check, with
+    numpy and rdkit held inside both OPI's and DELFIN's bounds. Rejected:
+    `pip install "delfin-complat[orca]"`, the hint until 2026-11-13: on
+    Python 3.11 (what install.sh builds) the set has no solution -- OPI
+    wants numpy>=2.2.6, mendeleev declares numpy<2 below 3.12 -- and from
+    a source checkout it fetches DELFIN from PyPI over the editable
+    install. Measured in a Python 3.11 venv with DELFIN's pins: without
+    the numpy bound pip takes numpy 2.4.6 (DELFIN admits <2.3); with it,
+    numpy 2.2.6, rdkit 2025.9.6 and OPI install, pip names mendeleev's
+    declared numpy<2, and mendeleev's element data reads as before (the
+    Pi runs the same combination through its overrides)."""
+    import sys
     from importlib import metadata
-    hint = f'pip install "delfin-complat[orca]"  (orca-pi=={OPI_VERSION})'
+    hint = (f'{sys.executable} -m pip install "orca-pi=={OPI_VERSION}" '
+            '"numpy>=2.2.6,<2.3" "rdkit>=2025.3.2,<2026"')
+    if sys.version_info < (3, 12):
+        hint += ("  (pip then reports that mendeleev declares numpy<2 below Python "
+                 "3.12; expected: its data reads the same on numpy 2.2)")
     try:
         found = metadata.version("orca-pi")
     except metadata.PackageNotFoundError:
