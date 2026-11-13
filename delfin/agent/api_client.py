@@ -13818,10 +13818,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "ask_user_question",
             "description": (
-                "Ask the user to choose and wait; returns the chosen "
-                "label(s). Use for every choice left to the user, never a "
-                "prose list. Recommended option first. Not for plan "
-                "approval (exit_plan_mode). Errors without an ask UI."
+                "Ask the user to choose; returns the chosen label(s). "
+                "ALWAYS for a choice the user has and when they ask to "
+                "be asked (\"ask me\", approval); never prose. Recommended "
+                "first. Not plan approval (exit_plan_mode)."
             ),
             "parameters": {
                 "type": "object",
@@ -14843,10 +14843,12 @@ def _begin_observed_ledgers(client) -> None:
     import weakref
 
     client._observed_files = set()
+    client._observed_urls: set = set()
     owner = getattr(client, "_observed_files_ledger_owner", None)
     if owner is not None and owner() is client:
         return
     client._observed_files_session = set()
+    client._observed_urls_session = set()
     try:
         client._observed_files_ledger_owner = weakref.ref(client)
     except TypeError:
@@ -17243,6 +17245,81 @@ def _observe_read_files(
                         observed.add(hit)
     except Exception:
         return
+
+
+# An http(s) URL appearing in content the model saw (a read/grep/shell
+# result, or a web tool's structured payload). Trailing sentence/markdown
+# punctuation is stripped here; the URL scanner normalizes further.
+_URL_IN_CONTENT_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+def _observe_read_urls(
+    observed_urls: set, fn_name: str, fn_args: Any, result: str,
+) -> None:
+    """Record URLs a tool result demonstrably showed this turn.
+
+    Three sources: web_search hit ``url`` fields; the ``url`` of a
+    web_fetch that returned the page (a refused or failed fetch showed
+    nothing of it, so it grounds nothing: an answer citing it as a source
+    would otherwise pass); and every http(s):// address inside the content
+    of a file the model read, grepped or shell-read. The web payload arrives wrapped in
+    the untrusted fence (web_tools payloads route through _wrap_untrusted),
+    so a bare JSON parse is tried first and the fenced form next.
+
+    Best-effort: a parse failure records nothing rather than raising.
+    """
+    try:
+        if not isinstance(fn_args, dict):
+            return
+        text = result or ""
+        tail = fn_name.rsplit("__", 1)[-1]
+
+        if tail in ("web_search", "web_fetch"):
+            data = _untrusted_json(text)
+            if not isinstance(data, dict):
+                return
+            if tail == "web_search":
+                for hit in data.get("results") or ():
+                    u = (hit.get("url") if isinstance(hit, dict) else None)
+                    if isinstance(u, str) and u.strip():
+                        observed_urls.add(u.strip())
+            else:  # web_fetch: the fetched URL, only when the page came back
+                if data.get("error"):
+                    return
+                u = data.get("url")
+                if isinstance(u, str) and u.strip():
+                    observed_urls.add(u.strip())
+            return
+
+        # URLs inside the content of a read-like result the model saw.
+        if (tail in _OBSERVATION_TOOLS
+                or tail in _OFFICE_OBSERVATION_ARGS or tail == "bash"):
+            if text.lstrip().startswith('{"error"'):
+                return
+            for m in _URL_IN_CONTENT_RE.finditer(text):
+                u = m.group(0).rstrip(".,;:)'\">}")
+                if u:
+                    observed_urls.add(u)
+    except Exception:
+        return
+
+
+def _untrusted_json(text: str):
+    """Parse a JSON tool payload whether bare or wrapped in the untrusted
+    fence. Returns the parsed dict (or None when it is not JSON)."""
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        pass
+    try:
+        from . import untrusted
+        inner = untrusted.unwrap(text)
+    except Exception:
+        return None
+    try:
+        return json.loads(inner)
+    except (TypeError, ValueError):
+        return None
 
 
 def _stamp_new_evidence(evidence: list, before: int, workspace: Any) -> None:
@@ -34883,6 +34960,9 @@ class OpenAIClient(_BaseClient):
         # every tool the turn called.
         _go_ahead_once = False
         _choice_once = False
+        # An "ask me" request, once per turn, like the go-ahead and
+        # prose-choice triggers above.
+        _ask_once = False
         _turn_tool_names: set = set()
         _turn_user_text, _turn_offered = _turn_opening(messages)
         # Completion events that arrive as the turn is ENDING. Both drains
@@ -36279,6 +36359,8 @@ class OpenAIClient(_BaseClient):
                             self._observed_files, fn_name, fn_args, result,
                             workspace=getattr(
                                 self._permissions, "workspace", None))
+                        _observe_read_urls(
+                            self._observed_urls, fn_name, fn_args, result)
                         # A delegate's reads and writes are evidence too.
                         # The cross-check already computes files_touched
                         # from the child's OWN trace; it was produced and
@@ -36291,6 +36373,7 @@ class OpenAIClient(_BaseClient):
                         _merge_delegate_evidence(
                             self._observed_files, fn_name, result)
                         self._observed_files_session |= self._observed_files
+                        self._observed_urls_session |= self._observed_urls
                     except Exception:
                         pass
 
@@ -37205,15 +37288,28 @@ class OpenAIClient(_BaseClient):
                 _go_ahead_once = True
                 _ga_note, _ga_shown = (_ga.GO_AHEAD_NOTE,
                                        "↻ go-ahead given → acting on it")
+            # A person who asked to be asked wants the question, not a
+            # default picked for them: the choice trigger ("pick it and
+            # act") stays out of that turn; the ask trigger below handles it.
             elif (_ga_ok and not _choice_once
                     and "ask_user_question" not in _turn_tool_names
-                    and _ga.is_choice_question(_ga_text)):
+                    and _ga.is_choice_question(_ga_text)
+                    and not _ga.is_ask_request(_turn_user_text)):
                 _choice_once = True
                 _can_ask = getattr(self._permissions, "ask_user_callback",
                                    None) is not None
                 _ga_note, _ga_shown = (
                     _ga.CHOICE_NOTE if _can_ask else _ga.CHOICE_NOTE_NO_UI,
                     "↻ choice written as text → deciding or asking properly")
+            elif (_ga_ok and not _ask_once
+                    and "ask_user_question" not in _turn_tool_names
+                    and _ga.is_ask_request(_turn_user_text)):
+                _ask_once = True
+                _can_ask = getattr(self._permissions, "ask_user_callback",
+                                   None) is not None
+                _ga_note, _ga_shown = (
+                    _ga.ASK_NOTE if _can_ask else _ga.ASK_NOTE_NO_UI,
+                    "↻ ask request → asking with the question card")
             if _ga_note:
                 _auto_cont_count += 1
                 _did_tools_since_cont = False

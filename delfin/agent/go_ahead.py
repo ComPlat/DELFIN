@@ -144,6 +144,60 @@ def is_choice_question(answer: str) -> bool:
             or bool(_INLINE_CHOICE_RE.search(last)))
 
 
+# An "ask me" request (wave54/a1, phone session 2026-11-12): the user asks
+# to be asked -- a question, a choice, a question card, an approval prompt --
+# not an answer to one. The live failure: "ask me for an approval, yes or
+# no" was answered "Yes." by the model instead of presenting a card.
+# Only a REQUEST to be asked counts: the imperative at the start of a
+# clause ("frag mich", "ask me"), "stell/mach/gib mir ... eine (Rück)Frage/
+# Anfrage/Auswahl", a question "per Tab/als Karte", a question card. A bare
+# "Anfrage" ("die SQL-Anfrage schlägt fehl") or a report ("mein Chef fragt
+# mich") is no request; each false match costs a corrective round.
+_ASK_ME_RE = re.compile(
+    r"(?i)("
+    r"(?:^|[.!?,;:\-–]\s*|\b(?:bitte|einfach|dann|doch|mal|lieber|please|"
+    r"just|then)\s+)(?:frage?|ask)\s+(?:mich|me)\b"
+    r"|\b(?:stell|mach|gib|schick)\w*\s+mir\s+(?:\w+\s+){0,3}"
+    r"(?:frage|anfrage|rückfrage|rueckfrage|auswahl)\b"
+    r"|\b(?:frage|anfrage|rückfrage|rueckfrage|auswahl)\b(?:\s+\w+){0,2}\s+"
+    r"(?:per|als|mit)\s+(?:tab|karte|card|auswahl|buttons?|optionen)\b"
+    r"|question\s+card)")
+# Asking NOT to be asked always wins ("mach das ohne Rückfrage").
+_ASK_ME_NEG_RE = re.compile(
+    r"(?i)(?:\bfrage?\s+mich\s+nicht\b|\bkeine\s+(?:rück|rueck)?frage"
+    r"|\bohne\s+(?:(?:rück|rueck)?frage|nachzufragen|zu\s+fragen)"
+    r"|\bnicht\s+(?:nach|rück|rueck)?fragen\b|\b(?:don'?t|do\s+not)\s+ask\b"
+    r"|\bwithout\s+asking\b|\bno\s+need\s+to\s+ask\b)")
+
+
+def is_ask_request(text: str) -> bool:
+    """Whether the user's message asks to be asked (a question card with
+    options), rather than answering a question.
+
+    Negative forms ("frag mich nicht", "don't ask me") never count.
+    """
+    t = str(text or "")
+    if _ASK_ME_NEG_RE.search(t):
+        return False
+    return bool(_ASK_ME_RE.search(t))
+
+
+ASK_NOTE = (
+    "The user asked you to ASK them -- present the question with "
+    "ask_user_question: one question, 2-4 options (for a yes/no question "
+    "exactly two: yes and no), your recommendation first and marked "
+    "(Recommended). Do not answer the question yourself and do not write "
+    "the options as prose in the answer."
+)
+
+ASK_NOTE_NO_UI = (
+    "The user asked you to ASK them. You cannot show a question card here, "
+    "so end your answer with the question itself and the options as a short "
+    "numbered list -- and make clear you are waiting for their answer. Do "
+    "not answer the question yourself."
+)
+
+
 GO_AHEAD_NOTE = (
     "The user already told you to go ahead. Do not restate the plan and do "
     "not ask for confirmation again: make the change now with the tools, "
@@ -173,5 +227,5 @@ CHOICE_NOTE_NO_UI = (
 
 
 __all__ = ["ACTING_TOOLS", "is_go_ahead", "ignored_go_ahead",
-           "is_choice_question", "GO_AHEAD_NOTE", "CHOICE_NOTE",
-           "CHOICE_NOTE_NO_UI"]
+           "is_choice_question", "is_ask_request", "GO_AHEAD_NOTE",
+           "CHOICE_NOTE", "CHOICE_NOTE_NO_UI", "ASK_NOTE", "ASK_NOTE_NO_UI"]

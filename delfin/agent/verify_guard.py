@@ -1025,6 +1025,9 @@ _CAVEAT_TEXTS: dict[str, str] = {
                   "unsupported — no file access and no lookup in this "
                   "session covers them: "),
     "unsourced_end": ". Please treat them as unconfirmed.",
+    "unlinked": ("\n\n[verify] Caveat: no tool in this session returned "
+                 "these links: "),
+    "unlinked_end": ". Check them before you open one.",
     "truncated_a": "\n\n> ⚠️ This answer states ",
     "truncated_b": ", but the output of ",
     "truncated_c": (" was truncated in this turn. A number whose only "
@@ -2357,6 +2360,147 @@ def scan_for_ungrounded_location_claims(
     return flags
 
 
+# ---------------------------------------------------------------------------
+# URL claims -- an http(s) link needs a source the session actually saw
+# ---------------------------------------------------------------------------
+#
+# A URL in an answer is an assertion that the address means something the
+# writer can point at: "see this for how to enable OMP". DELFIN's web
+# surface is web_search (DuckDuckGo/Google-CSE result list) + web_fetch —
+# NOT Google. When a model is asked "can you google it?" and answers by
+# linking a page no tool ever returned (observed: the Google Custom-Search
+# overview URL), the address was invented, wherever it came from.
+#
+# Grounding rule (evidence = the observed-URL ledger, i.e. addresses that
+# demonstrably came out of this session's tool results):
+#
+#   a URL is ungrounded unless its NORMALIZED form is in the ledger. The
+#   ledger holds -- web_search hit ``url`` fields, the ``url`` of a
+#   web_fetch that returned the page (a failed fetch grounds nothing), and every
+#   http(s):// address seen in a file the model read or grepped this
+#   session. Comparison is normalized (scheme+host+path, fragment and
+#   trailing slash/punctuation dropped) so ``x/``, ``x/.`` and ``x#frag``
+#   are the same link; two different paths stay two different links.
+#
+# Unlike the location/quantity scanners, hedging does NOT excuse a URL:
+# "I'm not sure, but here is …" still hands the reader an address that has
+# no source. The single correction turn tells the model to remove the link
+# or source it (re-run the search / point at a result it actually holds).
+
+# An http(s) URL: scheme + a run of URL-safe, non-whitespace characters.
+# Stops before markdown/HTML delimiters; trailing sentence punctuation and
+# the closing paren of a markdown link are stripped in normalization.
+_URL_CLAIM_RE = re.compile(r"https?://[^\s<>'\`{}[\]]+", re.IGNORECASE)
+
+
+@lru_cache(maxsize=256)
+def _normalize_url(raw: str) -> str:
+    """Canonical form used for matching a URL claim against the ledger.
+
+    Lowercases, strips surrounding markdown/sentence punctuation (the
+    closing ``)`` of a ``[t](url)`` link, trailing ``.,;:'')[]}>"``),
+    drops the fragment, and drops a trailing ``/``. Root ``https://x/``
+    and ``https://x`` compare equal; two different paths never do.
+    """
+    try:
+        u = str(raw).strip().strip(".,;:)'\"`>}]\u3011")
+        u = re.sub(r"#.*$", "", u)
+        u = u.rstrip("/").rstrip(".").rstrip(":;,").lower()
+        return u
+    except Exception:
+        return str(raw or "").lower()
+
+
+def _url_display(raw: str) -> str:
+    """The URL as shown in the flag: trailing sentence/markdown punctuation
+    (the ``)`` of a ``[t](url)`` link, a final ``.``, ``/)``) stripped, the
+    scheme and stop unchanged. Fragment kept — it is part of the address."""
+    try:
+        return str(raw).strip().rstrip(".,;:)'\"`>}]")
+    except Exception:
+        return str(raw or "")
+
+
+@dataclass(frozen=True)
+class UrlClaimFlag:
+    """One URL in an answer that no tool result of the session produced."""
+
+    url: str          # the URL as displayed (trailing punctuation stripped)
+    kind: str         # "unobserved"
+    normalized: str   # the normalized form, for de-duplication
+
+    def message(self) -> str:
+        return (f"⚠️ Verify: the link '{self.url}' was returned by no tool "
+                f"result this session — never invent a URL. Remove it or "
+                f"re-run a search/fetch that actually returns it.")
+
+
+def scan_for_ungrounded_url_claims(
+    text: str,
+    *,
+    observed_urls: Optional[frozenset[str] | set[str]] = None,
+    ledger_available: bool = True,
+    max_flags: int = 6,
+) -> list[UrlClaimFlag]:
+    """Scan ``text`` for http(s) URLs lacking observed evidence.
+
+    A URL is ungrounded unless its normalized form appears in
+    ``observed_urls`` (addresses returned by this session's web_search /
+    web_fetch, or read out of files the model read). ``ledger_available``
+    mirrors the location guard: a backend that keeps no ledger at all
+    stays silent; a kept-but-empty ledger enforces.
+
+    Fenced blocks and blockquoted lines are scrubbed (they quote other
+    text, not the answer's own claims). Deterministic, order-stable,
+    de-duplicated, capped at ``max_flags``. Never raises.
+    """
+    flags: list[UrlClaimFlag] = []
+    try:
+        if not text or not text.strip() or max_flags <= 0:
+            return []
+        if not ledger_available:
+            return []
+        obs = frozenset(_normalize_url(u) for u in (observed_urls or ()))
+        scrubbed = _scrub_keep_offsets(text)
+        seen: set[str] = set()
+        for m in _URL_CLAIM_RE.finditer(scrubbed):
+            raw = m.group(0)
+            norm = _normalize_url(raw)
+            if not norm.startswith("http"):
+                continue
+            if norm in obs:
+                continue
+            key = norm
+            if key in seen or len(flags) >= max_flags:
+                continue
+            seen.add(key)
+            flags.append(UrlClaimFlag(
+                url=_url_display(raw), kind="unobserved",
+                normalized=norm))
+    except Exception:
+        return flags
+    return flags
+
+
+def url_claim_feedback(flags: list[UrlClaimFlag],
+                       observed_urls=None) -> str:
+    """Feedback message for the forced self-correction turn (URL claims)."""
+    refs = ", ".join(f"'{f.url}'" for f in flags)
+    names = sorted({str(u) for u in (observed_urls or ()) if str(u).strip()})
+    seen = (f" URLs this session actually returned: {', '.join(names[:6])}"
+            + (f" (+{len(names) - 6} more)" if len(names) > 6 else "")
+            if names
+            else " No web_search/web_fetch result or read file this turn "
+                 "returned any URL.")
+    return (
+        "Automatic check, not a message from the user: the links " + refs +
+        " were returned by no tool this session." + seen +
+        " Remove the unsupported link(s) from your answer — or point at a "
+        "URL a tool actually returned this session (re-run the search or "
+        "fetch). Do not apologise; the reader has not said anything."
+    )
+
+
 def location_claim_feedback(flags: list[LocationClaimFlag],
                             observed=None) -> str:
     """Feedback message for the forced self-correction turn.
@@ -2431,6 +2575,7 @@ def grounding_caveat(
     location_flags: list[LocationClaimFlag],
     quantity_flags: list[QuantityClaimFlag],
     arithmetic_flags: list[ArithmeticFlag] | None = None,
+    url_flags: list[UrlClaimFlag] | None = None,
 ) -> str:
     """Visible caveat appended when the single correction turn still lacks
     grounding — the turn is never failed, the reader is warned instead."""
@@ -2438,11 +2583,14 @@ def grounding_caveat(
     items.extend(f"'{f.claim}'" for f in location_flags)
     items.extend(f"'{f.quantity}'" for f in quantity_flags)
     items.extend(f"'{f.equation}'" for f in arithmetic_flags or ())
-    if not items:
-        return ""
-    return (
-        _t("unsourced") + ", ".join(items) + _t("unsourced_end")
-    )
+    # A link is not a figure: it gets its own sentence.
+    links = [f"'{f.url}'" for f in url_flags or ()]
+    out = ""
+    if items:
+        out += _t("unsourced") + ", ".join(items) + _t("unsourced_end")
+    if links:
+        out += _t("unlinked") + ", ".join(links) + _t("unlinked_end")
+    return out
 
 
 # ---------------------------------------------------------------------------
