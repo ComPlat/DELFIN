@@ -56,8 +56,45 @@ def _key(name: str) -> str:
         return os.environ.get(name, "")
 
 
-def cli_program_problem(path: str | None = None) -> str:
-    """'' when the CLI backend's program can run DELFIN's command line, else why not."""
+#: The CLI program's major version below which it is taken as too old without
+#: running it. Measured: 1.0.120 rejects --include-hook-events, 2.1.322 takes
+#: it; the release in between that introduced the flag is not known here, so
+#: a 1.x is too old for the static check (the terminal's --help probe decides
+#: for the program actually found).
+CLI_MIN_MAJOR = 2
+
+
+def cli_program_version(path: str) -> str:
+    """The CLI program's version read from its files, or "" -- nothing is run.
+
+    An npm install resolves to .../claude-code/cli.js beside a package.json;
+    a native install to .../versions/<version>.
+    """
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return ""
+    parent = os.path.dirname(real)
+    package = os.path.join(parent, "package.json")
+    if os.path.isfile(package):
+        try:
+            import json
+            with open(package, encoding="utf-8") as handle:
+                return str(json.load(handle).get("version") or "")
+        except (OSError, ValueError):
+            return ""
+    if os.path.basename(parent) == "versions":
+        return os.path.basename(real)
+    return ""
+
+
+def cli_program_problem(path: str | None = None, *, run_help: bool = True) -> str:
+    """'' when the CLI backend's program can run DELFIN's command line, else why not.
+
+    ``run_help=False`` decides from the files alone (cli_program_version):
+    the dashboard asks while building its tab and starts no program; an
+    unknown version is taken as usable there.
+    """
     path = path or shutil.which(CLI_PROGRAM)
     if not path:
         return f"the CLI backend is selected, but its program ({CLI_PROGRAM}) is not on PATH"
@@ -65,6 +102,17 @@ def cli_program_problem(path: str | None = None) -> str:
         stamp = (os.path.realpath(path), os.stat(path).st_mtime_ns)
     except OSError:
         return f"the CLI backend's program at {path} cannot be read"
+    if not run_help:
+        version = cli_program_version(path)
+        try:
+            major = int(version.split(".")[0]) if version else None
+        except ValueError:
+            major = None
+        if major is not None and major < CLI_MIN_MAJOR:
+            return (f"the CLI backend's program at {path} is version {version}, too old "
+                    f"for DELFIN (it lacks {CLI_REQUIRED_FLAG}); update it, or connect a "
+                    "model another way")
+        return ""
     text = _HELP_CACHE.get(stamp)
     if text is None:
         try:

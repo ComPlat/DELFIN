@@ -8132,11 +8132,12 @@ def create_tab(ctx):
     # Detect which providers are actually usable
     _available_providers: list[tuple[str, str]] = []
     # A CLI program counts only when it runs DELFIN's command line; an
-    # older one answers "unknown option" (model_setup.cli_program_problem).
+    # older one answers "unknown option" (model_setup.cli_program_problem,
+    # from its files: building the tab starts no program).
     _cli_problem = ""
     if not _provider_key("ANTHROPIC_API_KEY") and _cli_available:
         from delfin.agent.model_setup import cli_program_problem as _cli_prog_problem
-        _cli_problem = _cli_prog_problem()
+        _cli_problem = _cli_prog_problem(run_help=False)
     if (_cli_available and not _cli_problem) or _provider_key("ANTHROPIC_API_KEY"):
         _available_providers.append(("Anthropic", "claude"))
     if _codex_cli_available or _provider_key("OPENAI_API_KEY"):

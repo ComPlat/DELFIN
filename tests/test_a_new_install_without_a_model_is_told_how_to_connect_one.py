@@ -54,6 +54,30 @@ def test_an_old_cli_program_is_not_a_model(tmp_path, monkeypatch):
     assert "not on PATH" in model_setup.cli_program_problem()
 
 
+def test_the_dashboard_judges_the_program_from_its_files_without_starting_it(tmp_path):
+    """Building the agent tab starts no program (the suite's agent-CLI
+    tripwire caught a --help probe there)."""
+    from delfin.agent import model_setup
+
+    marker = tmp_path / "was-run"
+    npm = tmp_path / "lib" / "node_modules" / "cli"
+    npm.mkdir(parents=True)
+    (npm / "package.json").write_text('{"version": "1.0.120"}')
+    (npm / "cli.js").write_text(f"#!/bin/sh\ntouch {marker}\n")
+    (npm / "cli.js").chmod(0o755)
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "claude").symlink_to(npm / "cli.js")
+    problem = model_setup.cli_program_problem(str(tmp_path / "bin" / "claude"), run_help=False)
+    assert "1.0.120" in problem and "too old" in problem
+
+    native = tmp_path / "share" / "versions" / "2.1.322"
+    native.parent.mkdir(parents=True)
+    native.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    native.chmod(0o755)
+    assert model_setup.cli_program_problem(str(native), run_help=False) == ""
+    assert not marker.exists(), "a program was started"
+
+
 def test_the_selection_needs_its_own_key_or_program(tmp_path, monkeypatch):
     from delfin.agent import model_setup
 
