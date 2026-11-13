@@ -27379,7 +27379,10 @@ class _DocToolExecutor:
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
         if _push is None and _pr is None:
-            _wrap_err = _note_wrap_failure(_run_argv, proc.returncode,
+            # The bubblewrap argv, also where the overlay helper started
+            # it: the helper execs bwrap, so bwrap's own failure reads the
+            # same.
+            _wrap_err = _note_wrap_failure(_plain_argv, proc.returncode,
                                            proc.stderr or "")
             if _wrap_err:
                 payload["error"] = (
