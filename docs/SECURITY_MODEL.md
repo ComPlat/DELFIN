@@ -86,12 +86,26 @@ with status 2 instead of doing less than it was asked. Settings, hooks and
 MCP servers that come from a checked-out repository are ignored until the
 directory is trusted (`/trust`).
 
+The CLI backend runs its own shell, outside DELFIN's process. In
+`bypassPermissions` it is started with its own checks off, and DELFIN's gate
+hook (`cli_gate`) holds every Bash call: the call passes the whole native
+gate (deny list, push gate, egress scan, the action classifier), and the CLI
+then runs DELFIN's cage around it -- the hook hands back the caged command
+text (`updatedInput`), with isolation forced; with no layer the call is
+refused. The cage's network goes through the egress proxy of the DELFIN
+process that started the CLI (its socket and the session's token file are
+in the hook's state), so the same per-domain decisions hold.
+
 When no filesystem layer holds a shell command (none works on the host, or
 `--no-isolate` / `agent.bash_isolation` = `off`),
-`isolation_posture.apply_at_start` settles the start posture: an attended
-`bypassPermissions` session asks once, naming the consequence (no keeps
-`default`); with nobody to ask it starts in `default`, says so on stderr and
-records `isolation_missing`. In that lowered session a command off the
+`isolation_posture.apply_at_start` settles the start posture: a
+`bypassPermissions` session starts in `default`, attended or not and without
+a question, says so and records `isolation_missing`. Bypass asks nothing per
+command, so it runs only where a layer confines each one; one confirmation
+at the start would confine nothing. Where the command is built
+(`_bash_isolation_argv`) the same rule holds for any other route into
+bypass and for a layer that stops working mid-run: the command is refused,
+never run in a plain shell. In that lowered session a command off the
 auto-allow list that passed every rule is refused and recorded as
 `unisolated_refused` (`api_client._unisolated_fallback_verdict`); no
 classifier verdict lets it run, because without a layer only a reading of
@@ -813,8 +827,7 @@ stopped and its batch is not submitted.
 | **macOS, Seatbelt** | roots + git metadata + private temp; hooks write-denied | unreadable | Unix sockets only in the roots and the private temp | TCP only to the proxy's loopback port; in `open` mode the metadata address is not refused by address | can outlive the command; no process guard (Linux only) | runs isolated |
 | **None** (no bubblewrap, Landlock or Seatbelt — for example Windows, or Linux with neither layer working) | **not restricted** — only the permission gate's reading of the command text | **not restricted** for the shell; the file tools keep their secret-path checks | where seccomp user notification exists, the session doors are refused by the socket guard; otherwise not restricted | egress proxy only, held by the socket guard, where seccomp user notification exists; otherwise **not restricted** | can outlive the command | **refused** |
 
-On a host in the last row a `bypassPermissions` start is asked once when a
-person is present; unattended it starts in `default`
+On a host in the last row a `bypassPermissions` start runs in `default`
 (`isolation_posture.apply_at_start`), where a command off the auto-allow
 list is asked or, with nobody to ask, refused (`unisolated_refused`). Both
 record `isolation_missing`. A locked session refuses its shell commands

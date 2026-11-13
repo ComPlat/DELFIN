@@ -43,7 +43,6 @@ def _host(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     A.set_bash_isolation_override("")
-    monkeypatch.setattr(P, "_BYPASS_CONFIRMED", False)
     yield
     A.set_bash_isolation_override("")
 

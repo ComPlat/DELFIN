@@ -31799,9 +31799,9 @@ def _announce_bypass_without_isolation() -> None:
     try:
         _record_security_event(
             "isolation_missing", "bash",
-            "filesystem isolation is NOT active for this unattended (bypass) "
-            "run: neither bubblewrap nor Landlock works on this host, so "
-            "commands are held only by the path checks", blocked=False)
+            "filesystem isolation is NOT active for this bypass run: "
+            "neither bubblewrap nor Landlock works on this host, so its "
+            "commands are refused", blocked=True)
     except Exception:
         pass
 
@@ -31998,6 +31998,15 @@ _REFUSAL_LOCKED = ("this session is locked to its folder, and neither "
 _REFUSAL_FORCED = ("filesystem isolation is switched on, and neither "
                    "bubblewrap nor Landlock nor Seatbelt can provide it on "
                    "this host")
+#: Bypass asks nothing per command, so it runs only where a layer confines
+#: each one (isolation_posture lowers such a start to default; this is the
+#: same rule where the command is built, for any route into bypass the start
+#: check did not see, and for a layer that stopped working mid-run).
+_REFUSAL_BYPASS = ("this session is in bypassPermissions, which runs a "
+                   "command only where bubblewrap, Landlock or Seatbelt "
+                   "confines it, and none does here (no layer, or isolation "
+                   "switched off). Ask the user to switch to a mode that "
+                   "asks")
 
 
 def _isolation_refusal_reason(perms, mode: str | None = None) -> str:
@@ -32690,8 +32699,8 @@ def _bash_isolation_argv(
     Where bubblewrap cannot run, Landlock (Linux 5.13+) gives the same
     filesystem promise through ``landlock_exec``. A locked scope, or a
     forced isolation, on a host with neither refuses the command instead
-    of running it on the strength of the path checks alone; an unattended
-    (bypass) run there proceeds and says so in the security panel.
+    of running it on the strength of the path checks alone, and so does a
+    bypass session (it asks nothing, so it runs only confined).
     ``extra_write`` names directories a caller needs writable besides the
     workspace roots (the test runner's report directory).
 
@@ -32804,7 +32813,7 @@ def _bash_isolation_argv(
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
             _announce_bypass_without_isolation()
-            return _in_process_cage(_network_only(plain, perms), run_cwd)
+            return _refusal_argv(_REFUSAL_BYPASS)
         else:
             # Nothing here can hold it. The command still runs: refusing
             # every command in an attended session would be secure and
@@ -32827,6 +32836,10 @@ def _bash_isolation_argv(
             return _in_process_cage(plain, run_cwd)
         return _refusal_argv(_REFUSAL_FORCED)
     if kind != "bwrap":
+        # "off" (or a mode naming no layer): a plain shell -- never in
+        # bypass, where nobody reads the command before it runs.
+        if str(getattr(perms, "mode", "") or "").strip() == "bypassPermissions":
+            return _refusal_argv(_REFUSAL_BYPASS)
         return _in_process_cage(plain, run_cwd)
 
     try:
