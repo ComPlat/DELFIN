@@ -566,6 +566,23 @@ def _the_suite_opens_no_browser():
         os.environ["TERM_PROGRAM"] = term
 
 
+@pytest.fixture(autouse=True)
+def _each_test_starts_as_a_headless_process():
+    """The endpoint gate's session kind is a process-wide flag that an
+    attended session start sets (endpoint_gate.set_process_interactive).
+    Many tests start sessions in-process; without a reset the flag of one
+    leaks into every later test, and a gate test then measured an
+    interactive process where it built a headless one."""
+    try:
+        from delfin.agent import endpoint_gate
+    except Exception:
+        yield
+        return
+    endpoint_gate.set_process_interactive(False)
+    yield
+    endpoint_gate.set_process_interactive(False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _the_suite_does_not_write_into_the_checkout():
     """Fail the run when new paths appeared in the checkout.
