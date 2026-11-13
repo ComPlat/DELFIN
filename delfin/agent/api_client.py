@@ -13818,10 +13818,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "ask_user_question",
             "description": (
-                "Ask the user to choose and wait; returns the chosen "
-                "label(s). Use for every choice left to the user, never a "
-                "prose list. Recommended option first. Not for plan "
-                "approval (exit_plan_mode). Errors without an ask UI."
+                "Ask the user to choose; returns the chosen label(s). "
+                "ALWAYS for a choice the user has and when they ask to "
+                "be asked (\"ask me\", approval); never prose. Recommended "
+                "first. Not plan approval (exit_plan_mode)."
             ),
             "parameters": {
                 "type": "object",
