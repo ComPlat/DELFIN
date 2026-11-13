@@ -843,9 +843,10 @@ Start DELFIN (a new shell loads its environment by itself):
   delfin doctor                  check ORCA, xTB, OpenMPI and the rest
   (in a VS Code terminal also: source $VENV_DIR/bin/activate)
 
-The agent needs a language model: choose one in the dashboard under Settings,
-or store an API key with  delfin-agent credentials set KIT_TOOLBOX_API_KEY
-(or OPENAI_API_KEY; delfin-agent credentials list names the others).
+The agent needs a language model: store an API key with
+  delfin-agent credentials set KIT_TOOLBOX_API_KEY   (or OPENAI_API_KEY)
+or run a local OpenAI-compatible server; then choose the provider and the model
+in the dashboard's DELFIN Agent tab (the terminal uses the same choice).
 
 On a remote machine such as a cluster login node the dashboard listens on
 127.0.0.1 only. From your own computer:

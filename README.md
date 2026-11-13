@@ -134,7 +134,7 @@ delfin-voila                  # the dashboard: open the URL it prints
 cd ~/calc && delfin-agent     # the agent in a terminal, working in that folder
 ```
 
-On a cluster login node the dashboard listens on 127.0.0.1 only; from your own computer, `ssh -L 8866:127.0.0.1:8866 USER@LOGIN-NODE`, then open the printed URL there. The agent needs a language model: choose one in the dashboard's Settings, or store a key with `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `OPENAI_API_KEY`). Where `$HOME` has a small quota, clone into a workspace and pass `--prefix` there; the tools of `~/.delfin` (about 1 GB for the default) and the pip cache in `~/.cache` stay in `$HOME`. An older DELFIN venv activated from `~/.bashrc` keeps the new one from being activated; the installer names such a line.
+On a cluster login node the dashboard listens on 127.0.0.1 only; from your own computer, `ssh -L 8866:127.0.0.1:8866 USER@LOGIN-NODE`, then open the printed URL there. The agent needs a language model: store a key with `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `OPENAI_API_KEY`), or run a local OpenAI-compatible server, then choose the provider and model in the dashboard's DELFIN Agent tab; until one is connected, that tab and `delfin-agent` say how. Where `$HOME` has a small quota, clone into a workspace and pass `--prefix` there; the tools of `~/.delfin` (about 1 GB for the default) and the pip cache in `~/.cache` stay in `$HOME`. An older DELFIN venv activated from `~/.bashrc` keeps the new one from being activated; the installer names such a line.
 
 ```bash
 bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks included (several GB)
