@@ -35,7 +35,8 @@ Scenarios:
                      the resume field with a typed filter, and the
                      sidebar's text recorded
     keep             the keep switches measured by process: page A runs
-                     two sessions, one switched to "Keep session"; the
+                     three sessions, one switched to "Keep session" and
+                     working when the page closes; the
                      page is closed; the record says whether A's kernel
                      process ended (pid, not id), which session the
                      agent service runs afterwards, and what a newly
@@ -87,7 +88,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-SCENARIOS = ("composer", "service-session", "sidebar", "keep")
+SCENARIOS = ("composer", "service-session", "sidebar", "keep", "sync")
 
 #: The viewports the sidebar scenario photographs: a laptop and a wide
 #: screen.
@@ -480,14 +481,14 @@ def _open_agent_tab(browser, args, url: str, rec: dict, *, name: str = "",
     # Under a load of several hundred Voila sometimes sends a widget's view
     # before its model ("Error displaying widget: model not found", seen on
     # origin/main as on a branch): that page never renders, and a new one
-    # (a new kernel) is the way on. Twice at most.
+    # (a new kernel) is the way on. Four times at most.
     deadline, reloads = time.time() + WAIT_PAGE, 0
     while True:
         if _visible(page, ".delfin-session-strip, .delfin-sessions"):
             break
         broken = "model not found" in (page.evaluate(
             "() => document.body ? document.body.innerText.slice(0, 2000) : ''") or "")
-        if time.time() > deadline or (broken and reloads >= 2):
+        if time.time() > deadline or (broken and reloads >= 4):
             _shot(page, args, f"not_rendered{name}", rec)
             rec["page_errors"] = errors[:10]
             raise RuntimeError("the dashboard did not render"
@@ -511,13 +512,13 @@ def _open_agent_tab(browser, args, url: str, rec: dict, *, name: str = "",
         raise RuntimeError("no agent tab on the page")
     # The tab is built on first open.
     page.locator(".lm-TabBar-tab").filter(has_text=target).first.click()
-    try:
-        # The agent tab's own composer, or a service session's view.
-        page.wait_for_selector(".delfin-agent-input textarea, .delfin-live-input textarea",
-                               timeout=WAIT_COMPOSER * 1000)
-    except Exception:
+    # The agent tab's own composer, or a service session's view -- the one
+    # on screen: several sessions share the page and the first match may be
+    # a hidden one.
+    if _until(lambda: _visible(page, ".delfin-agent-input textarea, "
+                               ".delfin-live-input textarea"), WAIT_COMPOSER, 2) is None:
         _shot(page, args, f"stuck{name}", rec)
-        raise
+        raise RuntimeError("no composer on screen")
     t[f"composer{name}"] = round(time.time() - t0, 1)
     time.sleep(3)
     return page, errors
@@ -532,6 +533,9 @@ def _drive_page(args, url: str, rec: dict, model_name: str, env: dict,
         try:
             if args.scenario == "keep":
                 _keep_check(browser, args, url, rec, model_name, env, cleanup)
+                return
+            if args.scenario == "sync":
+                _sync_check(browser, args, url, rec, model_name, env)
                 return
             viewport = VIEWPORTS[0] if args.scenario == "sidebar" else (1400, 1000)
             page, errors = _open_agent_tab(browser, args, url, rec, viewport=viewport)
@@ -828,40 +832,86 @@ def _wait_pid_gone(pid: int, timeout: float) -> Optional[float]:
     return None
 
 
+def _type_and_send(page, text: str) -> None:
+    """Type *text* into the visible composer and send it; no wait."""
+    page.evaluate(
+        "(text) => { const ta = (" + _VISIBLE_JS + ")('.delfin-agent-input textarea')[0];"
+        " ta.focus(); ta.value = text;"
+        " ta.dispatchEvent(new Event('input', {bubbles: true})); }", text)
+    time.sleep(1)
+    page.evaluate("() => { const b = (" + _VISIBLE_JS + ")('.delfin-agent-send-row button')[0];"
+                  " b.click(); }")
+
+
+def _new_session(page, env: dict, folder: str, text: str, model_name: str) -> str:
+    """"+", a folder of its own (one folder, one live session), Start, one
+    turn. Returns the reply."""
+    page.locator(".delfin-session-add").first.click()
+    time.sleep(2)
+    where = Path(env["DELFIN_AGENT_WORKSPACE"]).parent / folder
+    where.mkdir(exist_ok=True)
+    page.locator(".delfin-path-input input").first.fill(str(where))
+    time.sleep(3)
+    page.locator(".delfin-session-start").first.click()
+    time.sleep(8)
+    _pick_visible_model(page, model_name)
+    return _send_visible(page, text)
+
+
+def _close_row(page, text: str) -> bool:
+    """x on the sidebar row whose title contains *text*."""
+    return bool(page.evaluate(
+        "(text) => { const rows = Array.from(document.querySelectorAll("
+        "'.delfin-sessions .delfin-session-item')).filter(e => e.offsetParent !== null"
+        " && e.innerText.includes(text)); if (!rows.length) return false;"
+        " const x = Array.from(rows[0].querySelectorAll('button'))"
+        "   .find(b => b.innerText.trim() === '\u00d7'); if (!x) return false;"
+        " x.click(); return true; }", text))
+
+
+def _reopen(browser, args, url: str, rec: dict, env: dict, cleanup, keep: dict,
+            name: str):
+    """A new page; the dashboard server started again first if it stopped
+    with its last window (resume_server), as a person would."""
+    server = rec["_servers"][-1]
+    time.sleep(5)
+    keep[f"server_stopped_before{name}"] = server.poll() is not None
+    if server.poll() is not None:
+        url = start_dashboard(args, env, cleanup, rec, log=f"voila{name}.log")
+    page, errors = _open_agent_tab(browser, args, url, rec, name=name)
+    time.sleep(10)
+    return page, errors, url
+
+
 def _keep_check(browser, args, url: str, rec: dict, model_name: str, env: dict,
                 cleanup: "Cleanup") -> None:
     """The keep scenario (module docstring). Every fact by process or by
     the service's own list, never by a widget's word."""
     keep = rec.setdefault("keep", {})
     runtime = Path(env["DELFIN_RUNTIME_DIR"])
-    # -- page A: two sessions, the first one kept
+    # -- page A: three sessions; the first kept, working when A closes
     page, errors = _open_agent_tab(browser, args, url, rec, name="_a")
     keep["picked_a"] = _pick_visible_model(page, model_name)
     keep["reply_keep"] = _send_visible(page, "keep-me: hello")
-    page.locator(".delfin-session-add").first.click()
-    time.sleep(2)
-    # A folder of its own: a second session in the first one's folder is
-    # refused (one folder, one live session).
-    second = Path(env["DELFIN_AGENT_WORKSPACE"]).parent / "ws2"
-    second.mkdir(exist_ok=True)
-    page.locator(".delfin-path-input input").first.fill(str(second))
-    time.sleep(3)
-    page.locator(".delfin-session-start").first.click()
-    time.sleep(8)
-    keep["picked_a2"] = _pick_visible_model(page, model_name)
-    keep["reply_end"] = _send_visible(page, "end-me: hello")
+    keep["reply_end"] = _new_session(page, env, "ws2", "end-me: hello", model_name)
+    keep["reply_third"] = _new_session(page, env, "ws3", "third-one: hello", model_name)
     keep["clicked_keep_row"] = _click_row(page, "keep-me")
     time.sleep(3)
     keep["switch_a"] = _toggle_keep(page)
     keep["switches_a"] = _switches(page)
+    # Working when the page closes: a long scripted answer (do-slow).
+    _type_and_send(page, "keep-me works on\ndo-slow")
+    time.sleep(4)
     keep["rows_a"] = _sidebar_rows(page)
     _shot(page, args, "keep_page_a", rec)
     _clip(page, args, "keep_sidebar_a", rec, ".delfin-sessions")
     saved = _saved_sessions(args, env)
     keep["saved"] = saved
-    ids = {("keep" if "keep-me" in str(s.get("title")) else
-            "end" if "end-me" in str(s.get("title")) else "other"): s["session_id"]
-           for s in saved}
+    ids = {}
+    for s in saved:
+        for word, tag in (("keep-me", "keep"), ("end-me", "end"), ("third-one", "third")):
+            if word in str(s.get("title")):
+                ids[tag] = s["session_id"]
     keep["ids"] = ids
     kernels = _kernel_pids(url, watched=True)
     keep["kernels_a"] = kernels
@@ -881,32 +931,36 @@ def _keep_check(browser, args, url: str, rec: dict, model_name: str, env: dict,
     keep["service_after_a"] = service
     keep["kept_records_after_a"] = _kept_records(env)
     keep["kept_runs_after_a"] = any(s.get("sessionId") == ids.get("keep") for s in service)
-    keep["ended_is_gone_after_a"] = not any(s.get("sessionId") == ids.get("end")
-                                            for s in service)
-    # -- page B: is it listed as running? A dashboard server whose last
-    # window closed with nothing kept stops (resume_server); a person then
-    # starts it again, and so does this check.
-    server = rec["_servers"][-1]
-    time.sleep(5)
-    keep["server_stopped_after_a"] = server.poll() is not None
-    if keep["server_stopped_after_a"]:
-        url = start_dashboard(args, env, cleanup, rec, log="voila_b.log")
-    page, errors = _open_agent_tab(browser, args, url, rec, name="_b")
-    time.sleep(8)
-    keep["rows_b"] = _sidebar_rows(page)
+    keep["ended_is_gone_after_a"] = not any(
+        s.get("sessionId") in (ids.get("end"), ids.get("third")) for s in service)
+    # -- page B: the same three rows; the kept one running, in front
+    page, errors, url = _reopen(browser, args, url, rec, env, cleanup, keep, "_b")
+    keep["rows_b"] = rows = _sidebar_rows(page)
     keep["switches_b"] = _switches(page)
     _shot(page, args, "keep_page_b", rec)
     _clip(page, args, "keep_sidebar_b", rec, ".delfin-sessions")
-    keep["listed_running_in_b"] = any(
-        "keep-me" in r["text"] and "delfin-state-running" in r["classes"]
-        for r in keep["rows_b"])
-    # -- B switches it off and closes: it must end with B
-    if keep["kept_runs_after_a"]:
-        keep["opened_in_b"] = _click_row(page, "keep-me")
-        time.sleep(10)
-        keep["switch_b"] = _toggle_keep(page)
-        keep["rows_b_after_off"] = _sidebar_rows(page)
-        _shot(page, args, "keep_page_b_off", rec)
+
+    def state(rows, word):
+        row = next((r for r in rows if word in r["text"]), None)
+        if row is None:
+            return "absent"
+        return ("running" if "delfin-state-running" in row["classes"] else
+                "not running" if "delfin-state-stopped" in row["classes"] else "?")
+
+    keep["states_b"] = {w: state(rows, w) for w in ("keep-me", "end-me", "third-one")}
+    keep["listed_running_in_b"] = keep["states_b"]["keep-me"] == "running"
+    keep["three_back_in_b"] = keep["states_b"] == {
+        "keep-me": "running", "end-me": "not running", "third-one": "not running"}
+    keep["no_headers_b"] = not any("delfin-list-divider" in r["classes"] for r in rows)
+    # -- x on one: it leaves the open set
+    keep["closed_third"] = _close_row(page, "third-one")
+    time.sleep(4)
+    # -- B switches the kept one off and closes: it must end with B
+    keep["opened_in_b"] = _click_row(page, "keep-me")
+    time.sleep(6)
+    keep["switch_b"] = _toggle_keep(page)
+    keep["rows_b_after"] = _sidebar_rows(page)
+    _shot(page, args, "keep_page_b_off", rec)
     kernels_b = {k: v for k, v in _kernel_pids(url, watched=True).items()
                  if k not in kernels}
     keep["kernels_b"] = kernels_b
@@ -914,16 +968,113 @@ def _keep_check(browser, args, url: str, rec: dict, model_name: str, env: dict,
     keep["page_errors_b"] = errors[:10]
     _close_page(page)
     keep["kernel_b_ended_after_s"] = _wait_pid_gone(pid_b, WAIT_KERNEL_END)
-    if keep["kept_runs_after_a"]:
-        time.sleep(20)
-        service = _service_sessions(runtime, args.tree)
-        keep["service_after_b"] = service
-        keep["off_session_ended_with_b"] = not any(
-            s.get("sessionId") == ids.get("keep") for s in service)
+    time.sleep(20)
+    service = _service_sessions(runtime, args.tree)
+    keep["service_after_b"] = service
+    keep["off_session_ended_with_b"] = not any(
+        s.get("sessionId") == ids.get("keep") for s in service)
+    # -- page C: two rows (x took one away), neither running now
+    page, errors, url = _reopen(browser, args, url, rec, env, cleanup, keep, "_c")
+    keep["rows_c"] = rows = _sidebar_rows(page)
+    _shot(page, args, "keep_page_c", rec)
+    keep["states_c"] = {w: state(rows, w) for w in ("keep-me", "end-me", "third-one")}
+    keep["page_errors_c"] = errors[:10]
+    keep["two_back_in_c"] = keep["states_c"]["third-one"] == "absent" and all(
+        keep["states_c"][w] != "absent" for w in ("keep-me", "end-me"))
     rec["ok"] = bool(keep["kernel_a_ended_after_s"] is not None
                      and keep["kept_runs_after_a"] and keep["ended_is_gone_after_a"]
-                     and keep["listed_running_in_b"]
-                     and keep.get("off_session_ended_with_b"))
+                     and keep["three_back_in_b"] and keep["no_headers_b"]
+                     and keep.get("off_session_ended_with_b")
+                     and keep["two_back_in_c"])
+
+
+def _row_of(page, text: str) -> dict:
+    """The visible sidebar row whose text contains *text*: its text and
+    classes, or {}."""
+    return next((r for r in _sidebar_rows(page) if text in r["text"]), {})
+
+
+def _until(probe, timeout: float = 30.0, step: float = 1.0):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        got = probe()
+        if got:
+            return round(time.time() - t0, 1)
+        time.sleep(step)
+    return None
+
+
+def _sync_check(browser, args, url: str, rec: dict, model_name: str, env: dict) -> None:
+    """One source of truth: a window of the agent service as the TUI is
+    one (its hello name, a connection held open) and the dashboard page
+    see the same session, its name and its Keep session switch -- each
+    change made in one is read back in the other."""
+    from delfin.agent.service.client import ServiceClient
+    sync = rec.setdefault("sync", {})
+    runtime = Path(env["DELFIN_RUNTIME_DIR"])
+    sock = service_socket(runtime)
+    work = Path(env["DELFIN_AGENT_WORKSPACE"])
+    proc = subprocess.Popen(
+        [str(args.server_python), "-m", "delfin.agent.service.supervisor",
+         "--idle-exit", str(args.timeout)],
+        cwd=str(work), env=env, stdout=open(args.out / "logs" / "service.log", "wb"),
+        stderr=subprocess.STDOUT, start_new_session=True)
+    rec.setdefault("_servers", []).insert(0, proc)
+    t0 = time.time()
+    while not sock.exists() and time.time() - t0 < WAIT_SERVER:
+        time.sleep(0.5)
+    tui = ServiceClient(sock, client="delfin-tui", timeout=30.0)
+    try:
+        sid = tui.request("session.create", {
+            "cwd": str(work), "provider": "ollama", "model": model_name,
+            "title": "from-tui", "attach": True}, timeout=180)["sessionId"]
+        start = len(tui.events)
+        tui.request("session.prompt", {"sessionId": sid, "text": "started in the terminal"})
+        tui.wait_for(lambda e: e.get("type") == "turn.ended" and e.get("session") == sid,
+                     after=start, timeout=WAIT_REPLY)
+        sync["sid"] = sid
+
+        def summary() -> dict:
+            rows = tui.request("sessions.list", timeout=30)["sessions"]
+            return next((s for s in rows if s.get("sessionId") == sid), {})
+
+        page, errors = _open_agent_tab(browser, args, url, rec, name="_sync")
+        sync["tui_session_running_in_dashboard_s"] = _until(
+            lambda: "delfin-state-running" in _row_of(page, "from-tui").get("classes", []), 60)
+        sync["row"] = _row_of(page, "from-tui")
+        _shot(page, args, "sync_listed", rec)
+        # TUI -> dashboard: Keep session off and on, then a new name.
+        tui.request("session.setKeep", {"sessionId": sid, "keep": True})
+        sync["kept_shown_s"] = _until(lambda: "kept" in _row_of(page, "from-tui").get("text", ""))
+        tui.request("session.setKeep", {"sessionId": sid, "keep": False})
+        sync["unkept_shown_s"] = _until(
+            lambda: "kept" not in _row_of(page, "from-tui").get("text", "kept"))
+        tui.request("session.setTitle", {"sessionId": sid, "title": "renamed-in-tui"})
+        sync["tui_rename_shown_s"] = _until(lambda: bool(_row_of(page, "renamed-in-tui")))
+        _shot(page, args, "sync_from_tui", rec)
+        # dashboard -> TUI: a new name typed in the row.
+        renamed = page.evaluate(
+            "() => { const row = Array.from(document.querySelectorAll('.delfin-sessions "
+            ".delfin-session-item')).find(e => e.offsetParent !== null"
+            " && e.innerText.includes('renamed-in-tui')); if (!row) return false;"
+            " const pen = Array.from(row.querySelectorAll('button'))"
+            "  .find(b => b.innerText.trim() === '\u270e'); if (!pen) return false;"
+            " pen.click(); return true; }")
+        time.sleep(2)
+        if renamed:
+            field = page.locator(".delfin-sessions .delfin-running-rename input").first
+            field.fill("renamed-in-dashboard")
+            field.press("Enter")
+        sync["dashboard_rename_in_tui_s"] = _until(
+            lambda: summary().get("title") == "renamed-in-dashboard")
+        _shot(page, args, "sync_from_dashboard", rec)
+        sync["tui_summary"] = {k: summary().get(k) for k in ("title", "name", "keep", "state")}
+        sync["page_errors"] = errors[:10]
+        rec["ok"] = all(sync.get(k) is not None for k in (
+            "tui_session_running_in_dashboard_s", "kept_shown_s", "unkept_shown_s",
+            "tui_rename_shown_s", "dashboard_rename_in_tui_s"))
+    finally:
+        tui.close()
 
 
 def _send_prompt(page, args, rec, model_name: str, t0: float) -> None:

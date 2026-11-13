@@ -24,7 +24,7 @@ nice -n 10 ionice -c3 $MAMBA_ROOT_PREFIX/envs/delfin-voila/bin/python \
 |---|---|
 | `--out DIR` | output directory (required) |
 | `--tree PATH` | DELFIN checkout the dashboard runs from; default: the checkout holding the script |
-| `--scenario` | `composer` (default), `service-session`, `sidebar` or `keep` |
+| `--scenario` | `composer` (default), `service-session`, `sidebar`, `keep` or `sync` |
 | `--timeout S` | hard deadline for the whole check; default 1800 |
 | `--server-python P` | dashboard interpreter; default `$DELFIN_PAGE_CHECK_SERVER_PYTHON`, else the script's own |
 
@@ -62,7 +62,16 @@ where). 2: usage error.
   B then switches the kept session off and is closed: the session must end
   with it. Run on a tree without the switches, the same steps are the
   control and the record says which switch was missing. The window grace is
-  8 s here (`DELFIN_SESSION_GRACE_SECONDS`).
+  8 s here (`DELFIN_SESSION_GRACE_SECONDS`). Page A runs three sessions
+  (the kept one working, a scripted slow answer, when A closes); page B must
+  list all three -- the kept one running, the other two "not running" but
+  present -- in one list without headers; x on one removes it, and page C
+  lists two.
+- **sync**: one source of truth. A window of the agent service named as the
+  TUI names itself creates a session and runs a turn; the dashboard page
+  lists it as running. Keep session switched on and off and a rename from
+  that window show in the page's row; a rename typed in the page's row
+  shows in that window's summary. Seconds to each are recorded.
 
 ## Output
 
