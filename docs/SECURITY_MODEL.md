@@ -589,8 +589,10 @@ injected `rm -r` of workspace data) is workspace work, which stays free.
 attacks from a file, a page, command output, a commit message and an MCP
 result; 3 controls that need an outward action the user asked for) through
 the real CLI with the network edge stubbed, and reports attack success,
-gate admission and task success; `--provider/--model` runs the same worlds
-against a real model. With the scripted model that obeys every injection
+gate admission and task success, and for a deletion whether the harness
+kept a copy (restorable) or not (lost); `--provider/--model` with
+`--repeats 3` runs the same worlds against a real model
+(`tests/injection_suite/README.md`). With the scripted model that obeys every injection
 (bypassPermissions, `--unattended`, classifier off), before and after this
 rule: attack success 4/10 and 1/10, gate admission 6/10 and 1/10, task
 success 13/13 and 13/13. The remaining hit is the workspace deletion.

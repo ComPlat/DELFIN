@@ -2,7 +2,9 @@
 
     python -m tests.injection_suite --tree <DELFIN tree> --base <dir>
     python -m tests.injection_suite --provider kit --model <id> \\
-        --pass-env KIT_TOOLBOX_API_KEY --repeats 3
+        --pass-credential KIT_TOOLBOX_API_KEY --repeats 3
+
+The exact commands for a real-model run are in README.md next to this file.
 
 ``--tree`` is the tree whose harness is measured (default: this one); the
 suite's own code is always this tree's, so two trees are compared with the
@@ -20,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import cases as case_defs
-from .runner import rates, run_case
+from .runner import per_case, rates, run_case
 
 
 def main(argv: list | None = None) -> int:
@@ -38,6 +40,11 @@ def main(argv: list | None = None) -> int:
                         help="DELFIN_CLASSIFIER for the child ('' = config)")
     parser.add_argument("--pass-env", default="",
                         help="comma-separated variables forwarded to the CLI")
+    parser.add_argument("--pass-credential", default="",
+                        help="comma-separated credential names, resolved "
+                             "here from the person's credential store "
+                             "(env, keyring, file) and handed to the CLI; "
+                             "the values are never printed")
     parser.add_argument("--only", default="",
                         help="comma-separated substrings of case ids")
     parser.add_argument("--repeats", type=int, default=1)
@@ -49,6 +56,13 @@ def main(argv: list | None = None) -> int:
     if args.provider != "scripted" and not args.model:
         parser.error("--model is required with a real provider")
 
+    extra_env = {}
+    for name in (n for n in args.pass_credential.split(",") if n):
+        from delfin.agent.credentials import load_credential
+        value = load_credential(name)
+        if not value:
+            parser.error(f"credential {name} is not configured")
+        extra_env[name] = value
     wanted = [w for w in args.only.split(",") if w]
     selected = [c for c in case_defs.build()
                 if not wanted or any(w in c.id for w in wanted)]
@@ -63,21 +77,30 @@ def main(argv: list | None = None) -> int:
                          classifier=args.classifier,
                          pass_env=tuple(v for v in args.pass_env.split(",")
                                         if v),
+                         extra_env=extra_env,
                          timeout=args.timeout, keep=args.keep)
             results.append(r)
             kind = case.attack_kind or "control"
             attack = ("-" if not r.is_attack
-                      else "HIT" if r.attack_success
+                      else r.outcome if r.attack_success
                       else "gate" if r.attack_reached else "held")
             print(f"{rep + 1} {case.id:28} {case.source:11} {kind:24} "
-                  f"attack={attack:4} task={'ok' if r.task_success else 'FAIL':4}"
+                  f"attack={attack:11} task={'ok' if r.task_success else 'FAIL':4}"
                   f" {r.seconds:5.1f}s {' '.join(r.notes)[:120]}", flush=True)
     summary = rates(results)
     loaded = sorted({r.loaded_from for r in results})
-    print(json.dumps({**summary, "tree": loaded}))
+    cases = per_case(results)
+    if args.repeats > 1:
+        for cid, row in cases.items():
+            print(f"  {cid:28} attack {row['attack']}/{row['n']}  gate "
+                  f"{row['gate']}/{row['n']}  task {row['task']}/{row['n']}  "
+                  f"{row['outcomes']}")
+    print(json.dumps({**summary, "repeats": args.repeats, "tree": loaded}))
     if args.json:
         Path(args.json).write_text(json.dumps({
-            "summary": summary, "tree": loaded,
+            "summary": summary, "tree": loaded, "per_case": cases,
+            "provider": args.provider, "model": args.model,
+            "repeats": args.repeats,
             "results": [asdict(r) for r in results]}, indent=1))
     return 0
 
