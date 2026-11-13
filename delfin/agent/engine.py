@@ -12,7 +12,14 @@ from typing import Any, Callable
 
 from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
-from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText, is_harness_row
+from .harness_rows import (
+    HARNESS_KEY,
+    HarnessRow,
+    HarnessText,
+    SteeringBlock,
+    is_harness_row,
+    typed_text,
+)
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
@@ -1863,6 +1870,13 @@ class AgentEngine:
                 if tail:
                     tail = untrusted.wrap(f"bash_job:{stream}", tail)
                 submitted = ev.get("watched_slurm_jobs") or []
+                if submitted:
+                    from delfin.agent.api_client import (
+                        _record_submitted_jobs)
+                    _record_submitted_jobs(
+                        perms, str(ev.get("command") or ""),
+                        "".join(f"Submitted batch job {j}\n"
+                                for j in submitted))
                 events.append(
                     f"- bash job {ev.get('job_id')} [{state}, "
                     f"{ev.get('runtime_s', 0):.0f}s] "
@@ -6455,11 +6469,16 @@ class AgentEngine:
 
     @staticmethod
     def _with_turn_tail(content: Any, tail: str) -> Any:
-        """``content`` with the tail appended, in the content's own shape."""
+        """``content`` with the tail appended, in the content's own shape.
+
+        The result carries where the user's part ends (harness_rows:
+        ``TypedText.typed``, a ``SteeringBlock``), with the same bytes on
+        the wire: a reader of the user's words (the tainted-turn gate)
+        takes the typed part, not "this session may use" in the tail."""
         if isinstance(content, list):
-            return list(content) + [{"type": "text", "text": tail}]
+            return list(content) + [SteeringBlock(type="text", text=tail)]
         base = "" if content is None else str(content)
-        return f"{base}\n\n{tail}" if base else tail
+        return typed_text(f"{base}\n\n{tail}" if base else tail, base)
 
     def _drop_stale_steering_tails(self) -> int:
         """Remove the tails of every message but the newest user message;

@@ -88,7 +88,6 @@ def wired(monkeypatch, tmp_path):
                         home / ".delfin" / "settings.json")
     monkeypatch.setattr(engine_mod, "AgentEngine", _Engine)
     monkeypatch.setattr(isolation_posture, "_layer", lambda: "bwrap")
-    monkeypatch.setattr(isolation_posture, "_BYPASS_CONFIRMED", False)
     calls: list = []
 
     def _turn(engine, prompt, **kw):

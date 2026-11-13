@@ -76,10 +76,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         debounce_input,
         disable_spellcheck_global,
         hand_over_tabs,
+        keep_dashboard_tab_in_view,
         keep_scroll_position,
         name_page_controls,
     )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
+    from .tab_defaults import apply_first_tabs, first_start, resolve_tab_preferences
 
     from . import tab_schedule
 
@@ -319,18 +321,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         remote_archive_enabled = False
 
-    # A tab hidden in Settings is built anyway today: the preference drops it
-    # from the bar and nothing else. With lazy building every tab not on
-    # screen is unbuilt until first open -- hidden or not.
-    try:
-        _hidden_at_start = {
-            str(item) for item in
-            (((load_settings().get('ui', {}) or {}).get('tabs', {}) or {})
-             .get('hidden', []) or [])
-        }
-    except Exception:
-        _hidden_at_start = set()
-
     refs6, refs_off, refs_home = {}, {}, {}
 
     def _clone_of_browser_now(build, refs):
@@ -351,17 +341,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         )
 
     def _clone_of_browser(tab_id, build, refs):
-        """The lazy build lambda for a browser clone, or None if Settings
-        has the tab hidden at start (so its spec never builds).
+        """The lazy build lambda for a browser clone.
 
         The clone is built through the spec's ``build`` on first open, like
-        every tab that is not the first visible one. ``refs`` is the dict the
+        every tab that is not the first visible one -- a hidden one is
+        therefore never built, and switching it on in Settings builds it
+        then. (A clone hidden at start used to get no build at all and
+        stayed off the bar until a reload.) ``refs`` is the dict the
         Settings tab is handed by value further down; it is filled in place
         when the build runs, so applying a new Archive or Office folder calls
         back through the same dict.
         """
-        if tab_id in _hidden_at_start:
-            return None
         return lambda: _clone_of_browser_now(build, refs)
 
     tab6 = _clone_of_browser('archive', tab_archive_statistics.create_tab, refs6)
@@ -520,11 +510,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'title': 'Home',
             'widget': None,
             'default_order': 81,
+            # Off in the view of before 2026-11-13, which an existing user
+            # keeps; one of the five a new installation starts with
+            # (tab_defaults.FIRST_TABS, first_start).
             'default_visible': False,
             'available': True,
             'fixed': False,
             'build': home_build,
-            'reason': 'Off by default: it browses the whole home directory.',
+            'reason': '',
         },
         {
             'id': 'office',
@@ -639,6 +632,24 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         pass
 
+    # A new installation starts with five tabs and Settings; anyone who used
+    # DELFIN before keeps the tabs they had. Decided once, at the first
+    # start, and saved as the person's arrangement before the Settings tab
+    # reads it (tab_defaults.first_start); every other tab is switched on
+    # in Settings > Dashboard Tabs.
+    apply_first_tabs(tab_specs)
+    try:
+        from delfin.agent import session_store as _session_store
+        _sessions_dir = getattr(_session_store, '_SESSIONS_DIR', None)
+    except Exception:
+        _sessions_dir = None
+    try:
+        first_start(tab_specs, calc_dir=ctx.calc_dir, archive_dir=ctx.archive_dir,
+                    sessions_dir=_sessions_dir,
+                    jobs_file=Path.home() / '.delfin_jobs.json')
+    except Exception:
+        pass
+
     ctx.tab_specs = tab_specs
     tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6, office_refs=refs_off)
     for spec in ctx.tab_specs:
@@ -649,6 +660,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # Unnamed selects and slider handles take their widget's words as an
     # accessible name; every tab takes its full name as a tooltip.
     name_page_controls(ctx)
+    # The tab strip, where it scrolls: faded edges, wheel, current tab in view.
+    keep_dashboard_tab_in_view(ctx)
 
     # Every tab's startup script goes out in ONE ctx.run_js() call: run_js
     # clears its output first, so a second call would wipe the first tab's
@@ -699,39 +712,11 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                                   overflow='hidden'))
 
     def _resolve_tab_preferences():
-        specs = ctx.tab_specs or []
-        spec_map = {spec.get('id'): spec for spec in specs}
         try:
             prefs = (load_settings().get('ui', {}) or {}).get('tabs', {}) or {}
         except Exception:
             prefs = {}
-        raw_order = [str(item) for item in (prefs.get('order', []) or []) if str(item).strip()]
-        raw_hidden = {str(item) for item in (prefs.get('hidden', []) or []) if str(item).strip()}
-        order = []
-        seen = set()
-        for tab_id in raw_order:
-            spec = spec_map.get(tab_id)
-            if not spec or spec.get('fixed') or tab_id in seen:
-                continue
-            seen.add(tab_id)
-            order.append(tab_id)
-        for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000)):
-            tab_id = spec.get('id')
-            if not tab_id or spec.get('fixed') or tab_id in seen:
-                continue
-            seen.add(tab_id)
-            order.append(tab_id)
-        hidden = set()
-        saved_ids = set(raw_order)
-        for tab_id in order:
-            spec = spec_map.get(tab_id) or {}
-            if tab_id in saved_ids:
-                if tab_id in raw_hidden:
-                    hidden.add(tab_id)
-            else:
-                if not bool(spec.get('default_visible', True)):
-                    hidden.add(tab_id)
-        return order, hidden
+        return resolve_tab_preferences(ctx.tab_specs or [], prefs)
 
     # A tab that drives other tabs' widgets (through ctx.submit_refs,
     # ctx.orca_builder_refs, ...) needs them built first: the agent fills
