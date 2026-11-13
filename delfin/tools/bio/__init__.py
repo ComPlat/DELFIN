@@ -37,7 +37,8 @@ be edited in place by one of them.  A block that changes a system produces a
 new file and a new structure, which is also what makes the change reviewable.
 """
 
-from delfin.tools.bio._errors import StructureFormatError
+from delfin.tools.bio._errors import (StructureFormatError,
+                                      StructureTooLargeError)
 from delfin.tools.bio._ligand import parse_mol2, parse_sdf
 from delfin.tools.bio._mmcif import parse_mmcif
 from delfin.tools.bio._model import (
@@ -80,6 +81,7 @@ from delfin.tools.bio._site import (
 __all__ = [
     # failure
     "StructureFormatError",
+    "StructureTooLargeError",
     # macromolecular model
     "BioAtom",
     "Residue",

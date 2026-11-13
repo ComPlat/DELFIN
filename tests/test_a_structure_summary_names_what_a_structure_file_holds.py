@@ -353,3 +353,120 @@ def test_a_model_that_is_not_a_number_fails_the_step(tmp_path, model):
     assert direct.status is StepStatus.FAILED
     assert direct.error_kind is ErrorKind.MISSING_PARAM
     assert "model" in direct.error
+
+
+# ---------------------------------------------------------------------------
+# gzip: a compressed structure file is read through the same step
+# ---------------------------------------------------------------------------
+
+
+def _gzip_write(tmp_path, name: str, text: str) -> Path:
+    import gzip
+    path = tmp_path / name
+    path.write_bytes(gzip.compress(text.encode()))
+    return path
+
+
+def test_a_gzipped_pdb_reports_the_same_composition(tmp_path):
+    # Build the gz from the same body as _STRUCTURE so both arms agree.
+    plain = _pdb(tmp_path, "a.pdb", _STRUCTURE)
+    gz = _gzip_write(tmp_path, "a.pdb.gz", _STRUCTURE)
+    first = run_step(STEP, structure_file=str(plain), work_dir=str(tmp_path / "a"))
+    second = run_step(STEP, structure_file=str(gz), work_dir=str(tmp_path / "b"))
+    assert first.ok and second.ok, (first.error, second.error)
+    assert second.data["n_polymer_residues"] == first.data["n_polymer_residues"]
+    assert second.data["hetero_components"] == first.data["hetero_components"]
+    assert second.data["n_waters"] == first.data["n_waters"]
+
+
+def test_a_gzip_file_that_inflates_beyond_the_cap_fails_the_step(tmp_path):
+    from delfin.tools.bio._read import MAX_DECOMPRESSED_BYTES
+
+    huge = "x" * MAX_DECOMPRESSED_BYTES
+    gz = _gzip_write(tmp_path, "big.pdb.gz", huge)
+    result = run_step(STEP, structure_file=str(gz), work_dir=str(tmp_path / "run"))
+    assert result.status is StepStatus.FAILED
+    assert "big.pdb.gz" in result.error
+    assert result.data == {}
+
+
+# ---------------------------------------------------------------------------
+# modified residues: declared, polymer, counted apart
+# ---------------------------------------------------------------------------
+
+
+def _modres_pdb(tmp_path, name: str) -> Path:
+    def line(record, serial, atom, resname, chain, seq, element):
+        buf = [" "] * 80
+
+        def put(col, text):
+            for i, ch in enumerate(text):
+                buf[col - 1 + i] = ch
+
+        put(1, f"{record:<6}")
+        put(7, f"{serial:>5}")
+        put(13, atom if len(atom) >= 4 else f" {atom:<3}")
+        put(18, f"{resname:>3}")
+        put(22, chain)
+        put(23, f"{seq:>4}")
+        put(31, f"{0.0 + serial:>8.3f}")
+        put(39, f"{0.0:>8.3f}")
+        put(47, f"{0.0:>8.3f}")
+        put(77, f"{element:>2}")
+        return "".join(buf).rstrip()
+
+    def modres(resname, chain, seq, stdres):
+        buf = [" "] * 80
+
+        def put(col, text):
+            for i, ch in enumerate(text):
+                buf[col - 1 + i] = ch
+
+        # MODRES on the format-v3.3 grid: resName 8-10, chainID 12-14,
+        # seqNum 16-19, iCode 20, stdRes 22-24.
+        put(1, "MODRES")
+        put(8, resname)
+        put(12, chain)
+        put(16, str(seq))
+        put(22, stdres)
+        return "".join(buf).rstrip()
+
+    return _pdb(tmp_path, name, "\n".join([
+        modres("MSE", "A", 12, "MET"),
+        line("HETATM", 1, "SE", "MSE", "A", 12, "SE"),
+        line("HETATM", 2, "N", "MSE", "A", 12, "N"),
+        line("ATOM", 3, "N", "ALA", "A", 13, "N"),
+        line("HETATM", 4, "ZN", "ZN", "A", 101, "ZN"),
+        "END",
+    ]) + "\n")
+
+
+def test_a_modified_residue_is_reported_as_a_polymer_residue(tmp_path):
+    path = _modres_pdb(tmp_path, "mse.pdb")
+    result = run_step(STEP, structure_file=str(path), work_dir=str(tmp_path / "run"))
+    assert result.ok, result.error
+    data = result.data
+    assert data["n_polymer_residues"] == 2      # MET (was MSE) + ALA
+    assert data["hetero_components"] == {"ZN": 1}
+    assert data["n_modified_residues"] == 1
+    assert data["modified_residues"] == [{"chain_id": "A", "seq_id": 12,
+                                          "insertion_code": "", "name": "MSE",
+                                          "parent_name": "MET"}]
+
+
+def test_a_readable_but_unsuitable_file_is_its_own_error_kind(tmp_path):
+    import gzip
+
+    from delfin.tools.bio._read import MAX_DECOMPRESSED_BYTES
+
+    # Well-formed gzip, well-formed PDB inside — the step refuses it by
+    # policy (it would decompress past the cap), not because it cannot
+    # read it.  That is not PARSE and not MISSING_INPUT.
+    gz_path = tmp_path / "big.pdb.gz"
+    gz_path.write_bytes(gzip.compress(
+        ("ATOM  \n" + "x" * MAX_DECOMPRESSED_BYTES).encode("utf-8")))
+    result = run_step(STEP, structure_file=str(gz_path),
+                      work_dir=str(tmp_path / "run"))
+    assert result.status is StepStatus.FAILED
+    assert result.error_kind is ErrorKind.UNSUITABLE_INPUT
+    assert "big.pdb.gz" in result.error

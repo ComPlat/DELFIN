@@ -21,10 +21,12 @@ ambiguous, the element column is not).
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 
 from delfin.tools.bio._errors import StructureFormatError
 from delfin.tools.bio._model import (
+    _apply_modifications,
     AtomRef,
     BioAtom,
     BondedLigandLink,
@@ -175,6 +177,27 @@ def _parse_atom(line: str, line_no: int, source: str) -> Tuple[Tuple, BioAtom]:
     return key, atom
 
 
+def _parse_modres(line: str, source: str, line_no: int) -> Optional[Tuple[str, int, str, str, str]]:
+    """One MODRES record → (chain, seq, icode, resName, stdRes), or None.
+
+    Columns (format v3.3): record 1-6, resName 8-10, chainID 12-14,
+    seqNum 16-19, iCode 20, stdRes 22-24.  A record that gives no number or
+    no names is skipped: nothing to map to.
+    """
+    padded = line.ljust(80)
+    name = padded[7:10].strip()
+    chain = padded[11:14].strip()
+    icode = padded[19].strip()
+    std = padded[21:24].strip()
+    try:
+        seq = int(padded[15:19])
+    except ValueError:
+        return None
+    if not (name and std):
+        return None
+    return (chain, seq, icode, name, std)
+
+
 def _parse_link(line: str) -> Optional[BondedLigandLink]:
     """One LINK record → a bonded-ligand record, or None when unreadable."""
     padded = line.ljust(80)
@@ -234,6 +257,7 @@ def parse_pdb(text: str, *, source_name: str = "<pdb>") -> MacromolecularStructu
     next_implicit_id = 1
     missing: List[MissingResidue] = []
     links: List[BondedLigandLink] = []
+    modifications: Dict[Tuple[str, int, str], Tuple[str, str]] = {}
     in_missing_table = False
 
     for line_no, raw in enumerate(text.splitlines(), start=1):
@@ -269,6 +293,11 @@ def parse_pdb(text: str, *, source_name: str = "<pdb>") -> MacromolecularStructu
             link = _parse_link(line)
             if link is not None:
                 links.append(link)
+        elif record.startswith("MODRES"):
+            entry = _parse_modres(line, source_name, line_no)
+            if entry is not None:
+                chain, seq, icode, name, std = entry
+                modifications[(chain, seq, icode)] = (name, std)
         elif line.startswith("REMARK 465"):
             payload = line[10:].strip()
             if "SSSEQI" in payload:
@@ -289,6 +318,7 @@ def parse_pdb(text: str, *, source_name: str = "<pdb>") -> MacromolecularStructu
         raise StructureFormatError(
             f"{source_name}: no atom records (ATOM/HETATM) in the file"
         )
+    models = [_apply_modifications(m, modifications) for m in models]
     return MacromolecularStructure(
         models=tuple(models),
         missing_residues=tuple(missing),

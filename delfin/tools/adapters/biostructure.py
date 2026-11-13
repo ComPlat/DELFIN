@@ -53,6 +53,7 @@ from delfin.tools._types import ErrorKind, StepResult, StepStatus
 from delfin.tools.bio import (
     MacromolecularStructure,
     StructureFormatError,
+    StructureTooLargeError,
     read_structure,
 )
 
@@ -171,6 +172,12 @@ class BiostructureSummaryAdapter(StepAdapter):
         DataKeySpec("n_chains", "int"),
         DataKeySpec("n_polymer_residues", "int",
                     description="Residues written as ATOM records, waters excluded"),
+        DataKeySpec("n_modified_residues", "int",
+                    description="Polymer residues declared modified "
+                                "(MODRES / _pdbx_struct_mod_residue)"),
+        DataKeySpec("modified_residues", "list",
+                    description="Modified residues: chain, sequence id, "
+                                "insertion code, own name and parent name"),
         DataKeySpec("n_hetero_residues", "int",
                     description="Hetero components, waters excluded"),
         DataKeySpec("hetero_components", "dict",
@@ -235,6 +242,11 @@ class BiostructureSummaryAdapter(StepAdapter):
 
         try:
             structure = read_structure(path)
+        except StructureTooLargeError as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start,
+                error=str(exc), error_kind=ErrorKind.UNSUITABLE_INPUT,
+            )
         except StructureFormatError as exc:
             return self._make_result(
                 self.name, StepStatus.FAILED, work_dir, start,
@@ -261,6 +273,12 @@ class BiostructureSummaryAdapter(StepAdapter):
             "n_chains": len(composition.chain_ids),
             "chain_ids": list(composition.chain_ids),
             "n_polymer_residues": composition.n_polymer_residues,
+            "n_modified_residues": composition.n_modified_residues,
+            "modified_residues": [
+                {"chain_id": c, "seq_id": s, "insertion_code": i,
+                 "name": n, "parent_name": p}
+                for c, s, i, n, p in composition.modified_residues
+            ],
             "n_hetero_residues": composition.n_hetero_residues,
             "hetero_components": dict(composition.hetero_components),
             "n_waters": composition.n_waters,
