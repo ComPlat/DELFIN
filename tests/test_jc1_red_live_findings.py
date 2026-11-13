@@ -74,7 +74,7 @@ def test_l2_failed_resume_leaves_state_untouched(monkeypatch, tmp_path):
     before = (wd / "chain_state.json").read_bytes()
     loaded = cs.ChainState.load(wd / "chain_state.json")
     loaded.steps[0].state = "submitted"
-    loaded.steps[0].job_id = "8716164"
+    loaded.steps[0].job_id = "4200017"
     loaded.steps[0].work_dir = str(wd / "01_orca_opt")
     loaded.save()
     before = (wd / "chain_state.json").read_bytes()

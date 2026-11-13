@@ -37,7 +37,7 @@ def _chain_with_killed_attempt(tmp_path: Path):
     s1.mkdir()
     (s1 / "orca_opt.out").write_text("killed mid-run\n", encoding="utf-8")
     chain.add_step("orca_opt", "orca_opt", params={"charge": 0})
-    chain.steps[1].mark_submitted(job_id="8716164")
+    chain.steps[1].mark_submitted(job_id="4200017")
     chain.steps[1].work_dir = str(s1)
     chain.save()
     return chain, wd
