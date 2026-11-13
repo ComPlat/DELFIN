@@ -183,6 +183,12 @@ def test_a_kept_session_finishes_its_turn_before_it_moves(manager, monkeypatch):
         assert manager.ended == []
     finally:
         T.mark(False, kid=kid)
+    # The turn over, the window is still one that closed: the short grace,
+    # not the quarter hour of a dropped connection (seen in the real page:
+    # the kernel outlived the check by minutes).
+    _age(manager, kid, R.GRACE_SECONDS + 1)
+    _run(manager.cull_kernel_if_idle(kid))
+    assert manager.ended == [kid]
 
 
 def test_the_override_is_read_from_the_environment(manager, monkeypatch):
