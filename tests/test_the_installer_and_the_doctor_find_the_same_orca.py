@@ -28,6 +28,13 @@ def _orca_dir(path: pathlib.Path) -> pathlib.Path:
 def _nothing_resolved(monkeypatch):
     from delfin import qm_runtime
     monkeypatch.setattr(qm_runtime, "resolve_tool", lambda name: None)
+    _no_other_candidates(monkeypatch)
+
+
+def _no_other_candidates(monkeypatch):
+    """The host's own ORCA (an /opt/orca, a module) is not these tests' subject."""
+    from delfin import qm_runtime
+    monkeypatch.setattr(qm_runtime, "discover_tool_installations", lambda name: [])
 
 
 def test_an_unpacked_orca_under_the_given_roots_is_found(tmp_path, monkeypatch):
@@ -45,8 +52,9 @@ def test_what_the_resolver_finds_is_found(tmp_path, monkeypatch):
     from delfin import qm_runtime
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     site = _orca_dir(tmp_path / "opt" / "orca_6_1_1")
-    monkeypatch.setattr(qm_runtime, "resolve_tool", lambda name: qm_runtime.ResolvedTool(
-        requested_name=name, canonical_name=name, path=str(site / "orca"), source="system"))
+    monkeypatch.setattr(qm_runtime, "discover_tool_installations", lambda name: [
+        qm_runtime.ResolvedTool(requested_name=name, canonical_name=name,
+                                path=str(site / "orca"), source="system")])
 
     assert qm_runtime.find_orca_dir() == str(site)
 
@@ -59,8 +67,9 @@ def test_a_program_merely_called_orca_is_not_orca(tmp_path, monkeypatch):
     reader.parent.mkdir()
     reader.write_text("#!/bin/sh\nexit 0\n")
     reader.chmod(0o755)
-    monkeypatch.setattr(qm_runtime, "resolve_tool", lambda name: qm_runtime.ResolvedTool(
-        requested_name=name, canonical_name=name, path=str(reader), source="PATH"))
+    monkeypatch.setattr(qm_runtime, "discover_tool_installations", lambda name: [
+        qm_runtime.ResolvedTool(requested_name=name, canonical_name=name,
+                                path=str(reader), source="PATH")])
 
     assert qm_runtime.find_orca_dir() == ""
 
@@ -82,6 +91,7 @@ def test_the_doctor_reports_the_orca_the_installer_would_wire(tmp_path, monkeypa
         return None
 
     monkeypatch.setattr(qm_runtime, "resolve_tool", resolve)
+    _no_other_candidates(monkeypatch)
     qm_runtime.clear_resolver_cache()
 
     result = doctor.check_orca()

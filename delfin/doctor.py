@@ -150,12 +150,35 @@ def _check_qm_tool(name: str, missing_hint: str) -> CheckResult:
 
 
 def check_orca() -> CheckResult:
-    """ORCA found where DELFIN looks for it."""
-    return _check_qm_tool(
-        "orca",
-        "install ORCA or add its bin directory to PATH "
-        "(e.g. module load chem/orca), or set ORCA_BINARY",
-    )
+    """ORCA found where DELFIN looks for it: qm_runtime.find_orca_dir.
+
+    The same function the installer wires ORCA with (settings, the tool
+    resolver, unpacked orca_* directories), so the two cannot disagree.
+    The directory found is handed to the health check as ORCA_BINARY for
+    the duration of the check (unless the environment names one already),
+    so the program checked is the one found; the environment is restored.
+    With no ORCA directory found, the resolver's own verdict is reported.
+    """
+    hint = ("unpack ORCA (https://orcaforum.kofo.mpg.de) into ~/software and run "
+            "install.sh again, or pass install.sh --orca DIR|TARBALL; or set ORCA_BINARY")
+    try:
+        from delfin.qm_runtime import find_orca_dir
+        where = find_orca_dir()
+    except Exception as exc:
+        return CheckResult("orca", BROKEN, f"could not look for orca: {exc}",
+                           "report this as a DELFIN bug")
+    if not where:
+        # The resolver's own verdict: it names a dangling link or a program
+        # that will not start, which "not found" would hide.
+        return _check_qm_tool("orca", hint)
+    named = bool(os.environ.get("ORCA_BINARY"))
+    if not named:
+        os.environ["ORCA_BINARY"] = str(Path(where) / "orca")
+    try:
+        return _check_qm_tool("orca", hint)
+    finally:
+        if not named:
+            os.environ.pop("ORCA_BINARY", None)
 
 
 #: The OPI version every DELFIN installation carries (the ``orca`` extra

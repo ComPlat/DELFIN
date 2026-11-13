@@ -507,24 +507,16 @@ extract_orca_tarball() {
   fi
 }
 
-settings_orca() {
-  local py="$VENV_PY"
+# delfin.qm_runtime.find_orca_dir, asked of DELFIN's venv (or any python3 that
+# can import this checkout's delfin). Status 1 when no Python could answer.
+delfin_orca_dir() {
+  local py="$VENV_PY" answer
   if [ -z "$py" ] || [ ! -x "$py" ]; then py="$(command -v python3 2>/dev/null || true)"; fi
-  [ -n "$py" ] || return 0
-  "$py" - <<'PY' 2>/dev/null || true
-import json
-import pathlib
-
-try:
-    runtime = json.loads((pathlib.Path.home() / ".delfin_settings.json").read_text()).get("runtime") or {}
-except Exception:
-    runtime = {}
-for value in (runtime.get("orca_base"), (runtime.get("slurm") or {}).get("orca_base"),
-              (runtime.get("local") or {}).get("orca_base")):
-    if value:
-        print(pathlib.Path(value).expanduser())
-        break
-PY
+  [ -n "$py" ] || return 1
+  answer="$(PYTHONPATH="$PACKAGE_PARENT${PYTHONPATH:+:$PYTHONPATH}" in_script_dir "$py" -c \
+    'import sys; from delfin.qm_runtime import find_orca_dir; print(find_orca_dir(sys.argv[1:]))' \
+    "$PREFIX" 2>/dev/null)" || return 1
+  printf '%s\n' "$answer" | tail -n 1
 }
 
 find_orca() {
@@ -544,26 +536,24 @@ find_orca() {
       warn "$ORCA_SOURCE is neither an ORCA directory nor an ORCA tarball"
     fi
   fi
-  candidate="$(settings_orca)"
-  if [ -n "$candidate" ] && is_orca_dir "$candidate"; then
-    ORCA_FOUND="$candidate"
-    return 0
-  fi
-  candidate="$(command -v orca 2>/dev/null || true)"
-  if [ -n "$candidate" ]; then
-    candidate="$(dirname "$(readlink -f "$candidate")")"
-    if is_orca_dir "$candidate"; then
+  # DELFIN's own answer, the one `delfin doctor` reports: settings, the tool
+  # resolver (ORCA_BINARY/ORCA_PATH, PATH, system directories, modules) and
+  # orca_* directories unpacked in the prefix, ~/software or ~.
+  if candidate="$(delfin_orca_dir)"; then
+    if [ -n "$candidate" ] && is_orca_dir "$candidate"; then
       ORCA_FOUND="$candidate"
       return 0
     fi
+  else
+    # Only where no Python can import DELFIN yet (a dry run on a machine
+    # without one): the unpacked directories, newest version first.
+    while IFS= read -r candidate; do
+      if is_orca_dir "$candidate"; then
+        ORCA_FOUND="$candidate"
+        return 0
+      fi
+    done < <(ls -d "$PREFIX"/orca_*/ "$HOME"/orca_*/ 2>/dev/null | sed 's:/$::' | sort -V -r)
   fi
-  # Unpacked beside the other software or in HOME, newest version first.
-  while IFS= read -r candidate; do
-    if is_orca_dir "$candidate"; then
-      ORCA_FOUND="$candidate"
-      return 0
-    fi
-  done < <(ls -d "$PREFIX"/orca_*/ "$HOME"/orca_*/ 2>/dev/null | sed 's:/$::' | sort -V -r)
   while IFS= read -r candidate; do
     if extract_orca_tarball "$candidate"; then return 0; fi
   done < <(ls -1 "$HOME"/orca_*.tar.xz "$PREFIX"/orca_*.tar.xz 2>/dev/null | sort -V -r)
