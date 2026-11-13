@@ -415,8 +415,24 @@ def _modres_pdb(tmp_path, name: str) -> Path:
         put(77, f"{element:>2}")
         return "".join(buf).rstrip()
 
+    def modres(resname, chain, seq, stdres):
+        buf = [" "] * 80
+
+        def put(col, text):
+            for i, ch in enumerate(text):
+                buf[col - 1 + i] = ch
+
+        # MODRES on the format-v3.3 grid: resName 8-10, chainID 12-14,
+        # seqNum 16-19, iCode 20, stdRes 22-24.
+        put(1, "MODRES")
+        put(8, resname)
+        put(12, chain)
+        put(16, str(seq))
+        put(22, stdres)
+        return "".join(buf).rstrip()
+
     return _pdb(tmp_path, name, "\n".join([
-        "MODRES MSE A  12 MET",
+        modres("MSE", "A", 12, "MET"),
         line("HETATM", 1, "SE", "MSE", "A", 12, "SE"),
         line("HETATM", 2, "N", "MSE", "A", 12, "N"),
         line("ATOM", 3, "N", "ALA", "A", 13, "N"),

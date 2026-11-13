@@ -895,7 +895,7 @@ def test_the_same_modification_reads_from_mmcif(tmp_path):
         "_pdbx_struct_mod_residue.label_seq_id\n"
         "_pdbx_struct_mod_residue.parent_comp_id\n"
         "_pdbx_struct_mod_residue.details\n"
-        "mod1 MSE A MSE 12 MET\n"
+        "mod1 MSE A MSE 12 MET selenomethionine\n"
     )
     rows = [
         _cif_atom("ATOM", 1, "SE", "SE", "", "MSE", "A", 12, "", 0.0, 0.0, 0.0),

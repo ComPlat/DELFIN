@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Tuple
 from delfin.tools.bio._errors import StructureFormatError
 from delfin.tools.bio._model import (
     AtomRef,
+    _apply_modifications,
     BioAtom,
     BondedLigandLink,
     Chain,
@@ -330,6 +331,34 @@ def _bonded_links(categories, source) -> Tuple[BondedLigandLink, ...]:
     return tuple(out)
 
 
+def _modified_residues(categories) -> Dict[Tuple[str, int, str], Tuple[str, str]]:
+    """``_pdbx_struct_mod_residue`` rows → {(asym, seq, icode): (comp, parent)}.
+
+    The category keys a modification by label numbering; auth numbering is
+    used when present because the coordinates are keyed by auth numbering
+    (see :func:`_build_models`).  A row without a sequence number is skipped:
+    nothing to map to.
+    """
+    out: Dict[Tuple[str, int, str], Tuple[str, str]] = {}
+    for row in categories.get("_pdbx_struct_mod_residue", []):
+        comp = _item(row, "_pdbx_struct_mod_residue.label_comp_id",
+                     "_pdbx_struct_mod_residue.SIF_name")
+        parent = _item(row, "_pdbx_struct_mod_residue.parent_comp_id")
+        chain = _item(row, "_pdbx_struct_mod_residue.auth_asym_id",
+                      "_pdbx_struct_mod_residue.label_asym_id")
+        seq_text = _item(row, "_pdbx_struct_mod_residue.auth_seq_id",
+                         "_pdbx_struct_mod_residue.label_seq_id")
+        icode = _item(row, "_pdbx_struct_mod_residue.PDB_ins_code")
+        if not (comp and parent) or seq_text in _NULLS:
+            continue
+        try:
+            seq = int(seq_text)
+        except ValueError:
+            continue
+        out[(chain, seq, icode)] = (comp, parent)
+    return out
+
+
 def parse_mmcif(text: str, *, source_name: str = "<mmcif>") -> MacromolecularStructure:
     """Read mmCIF *text* into a structure.  Raises :class:`StructureFormatError`."""
     categories = _categories(text, source_name)
@@ -339,6 +368,8 @@ def parse_mmcif(text: str, *, source_name: str = "<mmcif>") -> MacromolecularStr
             f"{source_name}: no _atom_site category — the file carries no coordinates"
         )
     models = _build_models(rows, source_name)
+    modifications = _modified_residues(categories)
+    models = [_apply_modifications(m, modifications) for m in models]
     entry = categories.get("_entry", [{}])
     return MacromolecularStructure(
         models=models,

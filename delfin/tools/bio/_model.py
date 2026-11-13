@@ -36,7 +36,7 @@ structure passed between blocks must not be edited in place by one of them).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, Iterator, Optional, Tuple
 
 # Residue names that denote solvent water.  Counted apart from the other
@@ -90,7 +90,19 @@ class BioAtom:
 
 @dataclass(frozen=True)
 class Residue:
-    """A residue, a bound ligand, an ion or a water — one grouped record set."""
+    """A residue, a bound ligand, an ion or a water — one grouped record set.
+
+    ``is_hetero`` stays the record type the file used (``HETATM`` vs
+    ``ATOM``), not a judgement about the chemistry.  A residue the file
+    *declares* modified — PDB ``MODRES`` or mmCIF
+    ``_pdbx_struct_mod_residue`` — keeps that record type here, and the
+    classification (polymer / hetero / water) applies the declaration on
+    top: ``modified_residues``, ``parent_name`` and the polymer counting in
+    :class:`Chain` and :meth:`MacromolecularStructure.composition` read the
+    declaration, because the file itself says this residue is a polymer
+    residue with a chemical modification.  ``name`` is then the parent's
+    (MSE → MET); the name the records carry is kept in ``original_name``.
+    """
 
     chain_id: str
     seq_id: int
@@ -98,7 +110,13 @@ class Residue:
     name: str
     is_hetero: bool
     atoms: Tuple[BioAtom, ...] = ()
+    original_name: str = ""
+    parent_name: str = ""
 
+    @property
+    def is_modified(self) -> bool:
+        """The file declares this residue a modification of a parent."""
+        return bool(self.parent_name)
     @property
     def key(self) -> Tuple[str, int, str, str, bool]:
         """The identity this layer groups records by (see the module docstring)."""
@@ -153,12 +171,23 @@ class Chain:
 
     @property
     def polymer_residues(self) -> Tuple[Residue, ...]:
-        return tuple(r for r in self.residues if not r.is_hetero and not r.is_water)
+        return tuple(r for r in self.residues
+                     if (not r.is_hetero or r.is_modified) and not r.is_water)
+
+    @property
+    def modified_residues(self) -> Tuple[Residue, ...]:
+        """Residues the file declares modified, polymer ones only.
+
+        A MODRES entry whose residue is not in the coordinate records is not
+        held by this chain (nothing modelled, nothing to report)."""
+        return tuple(r for r in self.residues if r.is_modified)
 
     @property
     def hetero_residues(self) -> Tuple[Residue, ...]:
-        """Hetero components that are not solvent water."""
-        return tuple(r for r in self.residues if r.is_hetero and not r.is_water)
+        """Hetero components that are not solvent water and not declared
+        modifications of a polymer residue."""
+        return tuple(r for r in self.residues
+                     if r.is_hetero and not r.is_water and not r.is_modified)
 
     @property
     def waters(self) -> Tuple[Residue, ...]:
@@ -270,6 +299,8 @@ class StructureComposition:
     has_hydrogens: bool
     n_missing_residues: int
     n_bonded_ligand_links: int
+    n_modified_residues: int
+    modified_residues: Tuple[Tuple[str, int, str, str, str], ...]  # (chain, seq, icode, name, parent)
     altloc_residues: Tuple[str, ...]
 
     def to_dict(self) -> Dict[str, object]:
@@ -289,6 +320,12 @@ class StructureComposition:
             "has_hydrogens": self.has_hydrogens,
             "n_missing_residues": self.n_missing_residues,
             "n_bonded_ligand_links": self.n_bonded_ligand_links,
+            "n_modified_residues": self.n_modified_residues,
+            "modified_residues": [
+                {"chain_id": c, "seq_id": s, "insertion_code": i,
+                 "name": n, "parent_name": p}
+                for c, s, i, n, p in self.modified_residues
+            ],
             "altloc_residues": list(self.altloc_residues),
         }
 
@@ -339,6 +376,7 @@ class MacromolecularStructure:
         model = self.first_model if model_id is None else self.model(model_id)
         polymer_counts: Dict[str, int] = {}
         hetero_counts: Dict[str, int] = {}
+        modified: List[Tuple[str, int, str, str, str]] = []
         n_waters = n_atoms = n_primary = n_hydrogens = n_hetero = 0
         altloc_labels = []
         for chain in model.chains:
@@ -350,6 +388,12 @@ class MacromolecularStructure:
                     altloc_labels.append(residue.label)
                 if residue.is_water:
                     n_waters += 1
+                elif residue.is_modified:
+                    modified.append((chain.chain_id, residue.seq_id,
+                                     residue.insertion_code, residue.original_name,
+                                     residue.parent_name))
+                    polymer_counts[chain.chain_id] = (
+                        polymer_counts.get(chain.chain_id, 0) + 1)
                 elif residue.is_hetero:
                     hetero_counts[residue.name] = hetero_counts.get(residue.name, 0) + 1
                     n_hetero += 1
@@ -371,8 +415,44 @@ class MacromolecularStructure:
             has_hydrogens=n_hydrogens > 0,
             n_missing_residues=len(self.missing_residues),
             n_bonded_ligand_links=len(self.bonded_ligands),
+            n_modified_residues=len(modified),
+            modified_residues=tuple(sorted(modified)),
             altloc_residues=tuple(altloc_labels),
         )
+
+
+def _apply_modifications(model: StructureModel,
+                         modifications: Dict[Tuple[str, int, str], Tuple[str, str]],
+                         ) -> StructureModel:
+    """Rename declared modified residues to their parent's name.
+
+    A MODRES entry maps (chain, seq, icode) → (resName, stdRes).  A residue
+    the coordinates hold under that key and whose record name matches the
+    declaration's ``resName`` becomes a polymer residue named ``stdRes``
+    (MSE → MET), keeping its original name.  A declaration whose residue is
+    not in the coordinates, or whose record name differs, changes nothing:
+    the file declares, the coordinates hold, and only their agreement
+    counts as a modification this layer can see.
+    """
+    if not modifications:
+        return model
+    chains = []
+    for chain in model.chains:
+        residues = []
+        for residue in chain.residues:
+            declared = modifications.get(
+                (chain.chain_id, residue.seq_id, residue.insertion_code))
+            if declared and residue.name == declared[0]:
+                residues.append(replace(
+                    residue,
+                    name=declared[1],
+                    original_name=residue.name,
+                    parent_name=declared[1],
+                ))
+            else:
+                residues.append(residue)
+        chains.append(replace(chain, residues=tuple(residues)))
+    return replace(model, chains=tuple(chains))
 
 
 # --- small molecules -------------------------------------------------------
