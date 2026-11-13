@@ -165,7 +165,11 @@ class ChainStep:
         self._require("failed", "reset_for_retry")
         self.attempts.append({
             "attempt": self.attempt,
-            "work_dir": self.work_dir,
+            # L7: only JSON types go into the step — the work_dir on the
+            # live path is a pathlib.Path (set from the attempt-dir
+            # chain), which json.dump refused and the successful retry's
+            # recording crashed on save.
+            "work_dir": str(self.work_dir) if self.work_dir is not None else None,
             "end": end or self.error or "failed",
         })
         # L5: the retry is a NEW attempt — the counter must move, else the
@@ -343,7 +347,11 @@ class ChainState:
         tmp_path = Path(tmp_name)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
+                # L7: convert centrally — any non-JSON value anywhere in
+                # the payload (a stray Path in evidence/params/attempts)
+                # is str()'d here, so a call site can never crash the
+                # save.  JSON-safe values pass through untouched.
+                json.dump(data, fh, indent=2, default=str)
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp_path, self.state_path)
