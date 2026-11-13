@@ -23116,6 +23116,9 @@ class _DocToolExecutor:
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        _undo_refusal = _undo_store_refusal(resolved, name)
+        if _undo_refusal:
+            return _undo_refusal
         _rule_refusal = _rule_denies_path(perms, "write", resolved)
         if _rule_refusal:
             return _rule_refusal
@@ -31621,9 +31624,16 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                                                    "HTTP_PROXY", "HTTPS_PROXY")]
         except Exception:
             mode = "none"
+    # The undo store and the overlay layers of each root, made or not yet.
+    try:
+        from . import overlay_workspace as _ow
+        undo_dirs = [p for r in perms.all_workspace_roots()
+                     for p in _ow.protected(Path(r).resolve())]
+    except Exception:
+        undo_dirs = []
     prof = _sb.profile(write_roots=roots + [tmp], hide=_home_secret_paths(),
                        allow_sockets=roots + [tmp], net_mode=mode, proxy_port=port,
-                       write_deny=hook_dirs)
+                       write_deny=hook_dirs + undo_dirs)
     return env_prefix + _sb.argv(plain, prof)
 
 
@@ -32089,15 +32099,55 @@ def _process_cage_options() -> list[str]:
     return opts
 
 
-def _in_process_cage(argv: list[str], run_cwd) -> list[str]:
+def _undo_store_binds(perms) -> list[str]:
+    """bwrap options binding each root's undo store and overlay layers
+    (``overlay_workspace.protected``) read-only, where they exist: what
+    ``undo_changes`` restores from is out of reach of every command, run
+    over the overlay or not. The trash's day folders stay writable (the
+    trash refusal tells the agent to move a file there). Never raises."""
+    out: list[str] = []
+    try:
+        from . import overlay_workspace as _ow
+        for r in perms.all_workspace_roots():
+            for p in _ow.protected(Path(r).resolve()):
+                if os.path.isdir(p) and not os.path.islink(p) and \
+                        not os.path.islink(os.path.dirname(p)):
+                    out += ["--ro-bind-try", p, p]
+    except Exception:
+        pass
+    return out
+
+
+def _undo_store_refusal(resolved, tool: str) -> Optional[str]:
+    """The refusal for a write tool, or a shell write target, inside a
+    root's undo store or overlay layers; None elsewhere. In every mode:
+    the originals there are what undo_changes renames back, and DELFIN
+    changes them itself, outside every cage."""
+    try:
+        from . import overlay_workspace as _ow
+        if not _ow.is_protected(resolved):
+            return None
+    except Exception:
+        return None
+    _record_security_event("undo_store_write", tool, str(resolved)[:160],
+                           blocked=True)
+    return ("error: '.delfin-trash/.undo' and '.delfin-trash/.layers' hold "
+            "what undo_changes restores from; no tool writes there. To take "
+            "a change back, call undo_changes. To put a file aside, move it "
+            "into the trash's day folder (.delfin-trash/<UTC date>/).")
+
+
+def _in_process_cage(argv: list[str], run_cwd, perms=None) -> list[str]:
     """``argv`` inside the process cage, with the filesystem as it is. Where
     bwrap cannot build the cage (not where the terminal turned it off), the
-    socket guard keeps the session doors shut instead."""
+    socket guard keeps the session doors shut instead. With ``perms`` the
+    undo store is bound read-only here too (``_undo_store_binds``)."""
     if not _process_cage_enabled():
         if os.environ.get(_PROCESS_CAGE_ENV, "").strip().lower() == "off":
             return argv
         return _guard_without_cage(argv)
     return ["bwrap", "--dev-bind", "/", "/", "--proc", "/proc",
+            *(_undo_store_binds(perms) if perms is not None else ()),
             *_process_cage_options(),
             "--chdir", str(Path(run_cwd).resolve()), *argv]
 
@@ -32907,7 +32957,7 @@ def _bash_isolation_argv(
             mode = "bwrap"
         elif kind == "landlock":
             _announce_isolation_via_landlock("locked session")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd, perms)
         elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         else:
@@ -32925,7 +32975,7 @@ def _bash_isolation_argv(
             # approved this one command unconfined ([NO ISOLATION] in the
             # bash gate), which is a decision about this command only.
             if _take_unconfined_approval(perms, cmd):
-                return _in_process_cage(plain, run_cwd)
+                return _in_process_cage(plain, run_cwd, perms)
             return _refusal_argv(_REFUSAL_LOCKED)
     elif mode == "auto":
         # Wherever this host can actually hold a command, not only in the
@@ -32946,12 +32996,12 @@ def _bash_isolation_argv(
             _announce_isolation_via_landlock(
                 "unattended (bypass) run"
                 if perm_mode == "bypassPermissions" else "attended session")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd, perms)
         elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
             _announce_bypass_without_isolation()
-            return _in_process_cage(_network_only(plain, perms), run_cwd)
+            return _in_process_cage(_network_only(plain, perms), run_cwd, perms)
         else:
             # Nothing here can hold it. The command still runs: refusing
             # every command in an attended session would be secure and
@@ -32959,22 +33009,22 @@ def _bash_isolation_argv(
             # scope makes, where refusing IS the answer. The banner is
             # what tells the user which of the two they have. Its network
             # is still held where the socket guard works.
-            return _in_process_cage(_network_only(plain, perms), run_cwd)
+            return _in_process_cage(_network_only(plain, perms), run_cwd, perms)
     if mode == "bwrap" and kind != "bwrap":
         # Isolation was asked for by name. Landlock gives the same promise;
         # without it the command is refused rather than run without.
         if kind == "landlock":
             _announce_isolation_via_landlock("forced isolation")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd, perms)
         if kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         # Unless the user approved this one command unconfined ([NO
         # ISOLATION] in the bash gate), a decision about this command only.
         if _take_unconfined_approval(perms, cmd):
-            return _in_process_cage(plain, run_cwd)
+            return _in_process_cage(plain, run_cwd, perms)
         return _refusal_argv(_REFUSAL_FORCED)
     if kind != "bwrap":
-        return _in_process_cage(plain, run_cwd)
+        return _in_process_cage(plain, run_cwd, perms)
 
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -33071,6 +33121,8 @@ def _bash_isolation_argv(
     for g in git_roots:
         for name in _GIT_READ_ONLY_IN_THE_SANDBOX:
             args += ["--ro-bind-try", str(Path(g) / name), str(Path(g) / name)]
+    # What undo_changes restores from: read-only for every command.
+    args += _undo_store_binds(perms)
     if caged_unasked:
         # Nobody saw this command. The files whose write is asked about in
         # every mode (git metadata, CI and workspace configuration, the

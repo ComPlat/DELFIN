@@ -276,7 +276,7 @@ def test_the_trash_over_its_budget_loses_its_oldest_commands(tmp_path,
         (undo / day / cmd).mkdir(parents=True)
         (undo / day / cmd / "f").write_bytes(b"x" * size)
     events = []
-    monkeypatch.setattr(OW, "_budget_bytes", lambda root, used: 7000)
+    monkeypatch.setattr(OW, "_budget_bytes", lambda root, used: used - 1)
     monkeypatch.setattr(OW, "_record_event",
                         lambda kind, detail: events.append((kind, detail)))
     OW._USAGE.pop(str(ws), None)

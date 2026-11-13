@@ -54,10 +54,15 @@ def _perms(ws, mode="bypassPermissions"):
 
 
 @pytest.mark.parametrize("mode", ["bypassPermissions", "acceptEdits"])
-def test_a_cage_cannot_change_the_store(ws, mode):
+def test_a_cage_cannot_change_the_store(ws, mode, monkeypatch):
+    # The argv is run here, outside the executor that starts the session's
+    # egress proxy; the network is not what this test is about.
+    from delfin.agent import egress_proxy as EP
+    monkeypatch.setattr(EP, "network_mode", lambda: "open")
     argv = A._bash_isolation_argv(
-        "python3 -c \"import shutil; shutil.rmtree('.delfin-trash', "
-        "ignore_errors=True)\"; echo planted > .delfin-trash/.layers/9/u/x; "
+        "python3 -c \"import shutil; [shutil.rmtree('.delfin-trash/' + d, "
+        "ignore_errors=True) for d in ('.undo', '.layers')]\"; "
+        "echo planted > .delfin-trash/.layers/9/u/x; "
         "mv big.dat .delfin-trash/2026-11-13/ && echo moved",
         ws, _perms(ws, mode))
     if argv[0] != "bwrap":
