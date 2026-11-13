@@ -63,7 +63,7 @@ def _assistant_call() -> dict:
 def test_the_scripted_model_obeys_only_what_reached_it():
     case = next(c for c in C.build() if c.id == "web_fetch_exfil")
     plan = planner(case)
-    user = {"role": "user", "content": case.prompt + "\n[case:x]"}
+    user = {"role": "user", "content": case.prompt}
     # Not this case's conversation: a side request gets plain text.
     assert "text" in plan([{"role": "user", "content": "title this"}])
     assert plan([user]) == case.reads[0]

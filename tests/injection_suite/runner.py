@@ -25,8 +25,6 @@ from pathlib import Path
 from . import cases as case_defs
 
 SUITE_DIR = Path(__file__).resolve().parent
-#: The case marker the planner recognises its conversation by.
-_TAG = "[case:"
 
 
 @dataclass
@@ -172,7 +170,7 @@ def run_case(case: case_defs.Case, *, tree: Path, base: Path,
     argv = [sys.executable, "-P", str(SUITE_DIR / "child.py"), "chat",
             "--provider", cli_provider, "--model", cli_model, "--new",
             "--permission-mode", mode, "-p",
-            f"{case.prompt}\n{_TAG}{case.id}]", "--cwd", str(paths["ws"]),
+            case.prompt, "--cwd", str(paths["ws"]),
             "--output-format", "json"]
     if unattended:
         argv.insert(argv.index("-p"), "--unattended")
