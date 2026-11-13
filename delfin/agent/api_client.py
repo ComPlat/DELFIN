@@ -6671,6 +6671,36 @@ _MACHINE_MESSAGE_PREFIXES = (
 )
 
 
+_USER_URL_RE = re.compile(r"https?://[^\s<>\"'`\]\[)(]+", re.IGNORECASE)
+
+
+def _note_user_named_urls(perms: Any, text: str) -> None:
+    """Add the http(s) URLs of a message the user typed to
+    ``perms.user_named_urls``.
+
+    Input: the text ``_grant_push_from`` has already established as the
+    person's (no sub-agent prompt, no harness text, no machine message).
+    Only the user's own words count: ``_classifier_user_texts``, cut
+    where the harness appends to the message (a line opening with a
+    bracket, such as an upload list), so a URL inside an attached file
+    is not the user asking for it. Trailing sentence punctuation is
+    dropped. Never raises."""
+    try:
+        urls = getattr(perms, "user_named_urls", None)
+        if not isinstance(urls, set):
+            return
+        words = _classifier_user_texts([{"role": "user", "content": text}])
+        if not words:
+            return
+        own = re.split(r"\n\s*\[", words[-1], maxsplit=1)[0]
+        for m in _USER_URL_RE.finditer(own):
+            url = m.group(0).rstrip(".,;:!?")
+            if len(url) > len("https://"):
+                urls.add(url)
+    except Exception:
+        return
+
+
 def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
     """Record whether a user message asks for a push.
 
@@ -6695,6 +6725,7 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
     if text.lstrip().startswith(_MACHINE_MESSAGE_PREFIXES):
         return
     _note_pr_route(perms, text)
+    _note_user_named_urls(perms, text)
     if _asks_for_push(text):
         grants["push"] = 1
     elif new_request:
@@ -7925,6 +7956,154 @@ EGRESS_UNCHECKABLE = "egress-scan-failed"
 _NETWORK_TOOLS: frozenset[str] = frozenset({
     "web_fetch", "web_search", "remote_trigger", "push_notification",
 })
+
+def _web_egress_refusal(name: str, args: dict, perms) -> Optional[str]:
+    """Where a web tool's request goes and what it carries, decided before
+    anything is resolved or sent; the refusal, or None to go on.
+
+    Input: a ``web_fetch`` or ``web_search`` call (any server's, by base
+    name) and the session's permissions. Semantics:
+
+    * web_fetch of a URL the user wrote in a typed message, or that a
+      web_search result or a fetched page showed in this session
+      (``user_named_urls``, ``web_seen_urls``), proceeds: the model did
+      not compose it, so it carries nothing of the workspace;
+    * any other web_fetch takes the egress proxy's host decision
+      (``EgressProxy.settle_fetch``) unless the network mode is ``open``:
+      a known host passes, an unknown one is asked once per session where
+      someone can be asked and refused otherwise. Before this, web_fetch
+      resolved and reached any public host, and the classifier was the
+      only judge -- in a run with it off, nothing judged it;
+    * a web_fetch URL that passed, and a web_search query, are then
+      checked for a payload (``web_tools.url_payload_reason`` /
+      ``text_payload_reason``: a long query, or a run that looks like
+      encoded data): asked where someone can be asked, refused otherwise.
+
+    Measured on the probe (offline network namespace, bypass, unattended,
+    2026-11-13): on main a workspace marker left through web_fetch in the
+    query, the path and the host name (the last one through the name
+    lookup alone, before any connection), and reached the search engine
+    through web_search.
+
+    Rejected: a default list of documentation hosts for web_fetch (a
+    hosted documentation site shows its owner the paths requested; the
+    provenance rule keeps search-then-read working without one), and
+    checking the path for payloads (commit hashes and identifiers are
+    ordinary there; an unknown host gets no unattended path at all)."""
+    try:
+        from . import egress_proxy as _ep
+        from . import web_tools as _wt
+    except Exception:
+        return None
+    if perms is None or not isinstance(args, dict):
+        return None
+    can_ask = _ep.EgressProxy._can_ask(perms)
+    if name == "web_search":
+        query = str(args.get("query") or "")
+        why = _wt.text_payload_reason(query)
+        target = query
+    else:
+        url = str(args.get("url") or "").strip()
+        if not url:
+            return None
+        if (url in (getattr(perms, "user_named_urls", None) or ())
+                or url in (getattr(perms, "web_seen_urls", None) or ())):
+            return None
+        try:
+            mode = _ep.network_mode()
+        except Exception:
+            mode = "proxy"
+        if mode != "open":
+            try:
+                refusal = _ep.get_proxy().settle_fetch(url, perms)
+            except Exception as exc:
+                refusal = f"web_fetch refused: the host decision failed ({exc})"
+            if refusal:
+                _record_security_event("egress_blocked", name, url[:160])
+                return refusal
+        why = _wt.url_payload_reason(url)
+        target = url
+        if why:
+            try:
+                from urllib.parse import urlsplit as _urlsplit
+                host = (_urlsplit(url).hostname or "").lower()
+                if _ep.get_proxy().upload_allowed(host):
+                    why = None
+            except Exception:
+                pass
+    if not why:
+        return None
+    if can_ask:
+        preview = (f"{name} would send {target[:300]} -- {why}. Allow sending "
+                   "it?")
+        try:
+            if _ask_confirm(perms, name, args, preview):
+                return None
+        except Exception:
+            pass
+        _record_security_event("egress_payload_refused", name, why[:160])
+        return (f"user denied '{name}': {why}. Do not retry it or send the "
+                "same data another way.")
+    _record_security_event("egress_payload_refused", name, why[:160])
+    return (f"'{name}' refused: {why}, and nobody can be asked. Nothing was "
+            "sent. A lookup carries words, not encoded data: search for or "
+            "fetch the thing by its name; do not send the same data another "
+            "way.")
+
+
+#: Request bytes counted for a web_fetch besides its URL: the request
+#: line's method and version and the headers web_tools sends (User-Agent,
+#: Accept, Host, Connection), rounded up. An estimate, said as one.
+_WEB_FETCH_HEADER_BYTES = 300
+#: At most this many URLs are kept in ``web_seen_urls`` (and taken from
+#: one page): the set is a provenance check, not a crawl log.
+_WEB_SEEN_MAX = 5000
+_WEB_SEEN_PER_PAGE = 300
+
+
+def _note_web_result(name: str, args: Any, result: Any, perms) -> None:
+    """After a web tool ran: the URLs it showed join ``web_seen_urls`` (a
+    web_search's result links; the http(s) addresses in the text of a
+    page web_fetch returned), and a fetch that reached its host is counted
+    in the session's bytes sent (``egress_proxy.note_sent``, the URL plus
+    ``_WEB_FETCH_HEADER_BYTES``). Never raises."""
+    try:
+        if perms is None or not isinstance(args, dict):
+            return
+        data = _untrusted_json(result if isinstance(result, str) else "")
+        if not isinstance(data, dict):
+            return
+        seen = getattr(perms, "web_seen_urls", None)
+        found: list = []
+        if name == "web_search":
+            for hit in data.get("results") or ():
+                u = hit.get("url") if isinstance(hit, dict) else None
+                if isinstance(u, str) and u.startswith(("http://", "https://")):
+                    found.append(u.strip())
+        else:
+            url = str(args.get("url") or "").strip()
+            err = str(data.get("error") or "")
+            if url and (not err or err.startswith(("HTTP ", "network error",
+                                                   "unsupported content"))):
+                from urllib.parse import urlsplit as _urlsplit
+                from . import egress_proxy as _ep
+                _ep.note_sent(perms, (_urlsplit(url).hostname or ""),
+                              len(url) + _WEB_FETCH_HEADER_BYTES, "web_fetch")
+            if not err:
+                for m in _URL_IN_CONTENT_RE.finditer(str(data.get("text") or "")):
+                    u = m.group(0).rstrip(".,;:)'\">}")
+                    if u:
+                        found.append(u)
+                    if len(found) >= _WEB_SEEN_PER_PAGE:
+                        break
+        if isinstance(seen, set):
+            for u in found:
+                if len(seen) >= _WEB_SEEN_MAX:
+                    break
+                seen.add(u)
+    except Exception:
+        return
+
 
 # Everything that must pass the permission gate before it runs. The set used
 # to be the five file/shell tools, so plan mode -- the profile the UI calls
@@ -10383,6 +10562,17 @@ class KitToolPermissions:
     # until a later typed message asks for the direct push. Shared by
     # reference with sub-agents, whose prompts never change it.
     pr_route_repos: set = field(default_factory=set)
+    #: The http(s) URLs the user wrote in a typed message of this session
+    #: (_note_user_named_urls): the user asked for them, so web_fetch reads
+    #: such a URL unasked, and its host counts as known to the egress
+    #: proxy (egress_proxy.user_named_hosts). Shared by reference with
+    #: sub-agents, whose prompts never add to it.
+    user_named_urls: set = field(default_factory=set)
+    #: URLs a web_search result or the text of a page web_fetch returned
+    #: showed in this session. A fetch of exactly one of them carries
+    #: nothing the model composed, so it skips the host decision and the
+    #: payload check (_web_egress_refusal). Shared like user_named_urls.
+    web_seen_urls: set = field(default_factory=set)
     #: Headings of the git-errors skill already quoted into a tool result
     #: in this session (repo_error_hints.tool_hint): each is said once.
     repo_error_hints_shown: set = field(default_factory=set)
@@ -20024,8 +20214,11 @@ class _DocToolExecutor:
         # RFC1918 / cloud metadata) and binary-content rejection.
         if name in ("web_search", "web_fetch"):
             if name == "web_search":
-                return self._execute_web_search(arguments)
-            return self._execute_web_fetch(arguments)
+                out = self._execute_web_search(arguments)
+            else:
+                out = self._execute_web_fetch(arguments)
+            _note_web_result(name, arguments, out, permissions)
+            return out
 
         # SRC1: official-API source verification (Crossref / PubChem /
         # OpenAlex) — outbound HTTP like the web tools above, no
@@ -23944,6 +24137,13 @@ class _DocToolExecutor:
                         "same destination another way."
                         + self._said_why(perms))
             return None
+
+        if name in ("web_fetch", "web_search"):
+            # Where the request goes and what its URL carries, decided
+            # before anything is resolved or sent (_web_egress_refusal).
+            _web_refusal = _web_egress_refusal(name, args, perms)
+            if _web_refusal:
+                return _web_refusal
 
         if name == "run_tests" and getattr(perms, "scope_locked", False):
             # pytest imports conftest.py from wherever it is pointed, so a
