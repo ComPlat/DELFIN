@@ -27,4 +27,13 @@ class StructureFormatError(ValueError):
     """
 
 
-__all__ = ["StructureFormatError"]
+class StructureTooLargeError(StructureFormatError):
+    """A file is well-formed but too large for this step to read.
+
+    A subclass of :class:`StructureFormatError`, so existing callers keep
+    catching it with one clause; a caller that wants to report "readable
+    but unsuitable" separately can catch this one.
+    """
+
+
+__all__ = ["StructureFormatError", "StructureTooLargeError"]

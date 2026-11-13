@@ -452,3 +452,21 @@ def test_a_modified_residue_is_reported_as_a_polymer_residue(tmp_path):
     assert data["modified_residues"] == [{"chain_id": "A", "seq_id": 12,
                                           "insertion_code": "", "name": "MSE",
                                           "parent_name": "MET"}]
+
+
+def test_a_readable_but_unsuitable_file_is_its_own_error_kind(tmp_path):
+    import gzip
+
+    from delfin.tools.bio._read import MAX_DECOMPRESSED_BYTES
+
+    # Well-formed gzip, well-formed PDB inside — the step refuses it by
+    # policy (it would decompress past the cap), not because it cannot
+    # read it.  That is not PARSE and not MISSING_INPUT.
+    gz_path = tmp_path / "big.pdb.gz"
+    gz_path.write_bytes(gzip.compress(
+        ("ATOM  \n" + "x" * MAX_DECOMPRESSED_BYTES).encode("utf-8")))
+    result = run_step(STEP, structure_file=str(gz_path),
+                      work_dir=str(tmp_path / "run"))
+    assert result.status is StepStatus.FAILED
+    assert result.error_kind is ErrorKind.UNSUITABLE_INPUT
+    assert "big.pdb.gz" in result.error

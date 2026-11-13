@@ -21,7 +21,8 @@ import gzip
 from pathlib import Path
 from typing import Tuple, Union
 
-from delfin.tools.bio._errors import StructureFormatError
+from delfin.tools.bio._errors import (StructureFormatError,
+                                      StructureTooLargeError)
 from delfin.tools.bio._ligand import parse_mol2, parse_sdf
 from delfin.tools.bio._mmcif import parse_mmcif
 from delfin.tools.bio._model import MacromolecularStructure, SmallMolecule
@@ -74,7 +75,7 @@ def _text_gz(p: Path, name: str) -> Tuple[str, str]:
             f"{name}: cannot be read as gzip ({exc})"
         ) from None
     if len(data) > MAX_DECOMPRESSED_BYTES:
-        raise StructureFormatError(
+        raise StructureTooLargeError(
             f"{name}: decompresses to more than "
             f"{MAX_DECOMPRESSED_BYTES} bytes, the cap for a gzipped "
             "structure file; the file is refused before it is read whole"

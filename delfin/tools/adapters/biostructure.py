@@ -53,6 +53,7 @@ from delfin.tools._types import ErrorKind, StepResult, StepStatus
 from delfin.tools.bio import (
     MacromolecularStructure,
     StructureFormatError,
+    StructureTooLargeError,
     read_structure,
 )
 
@@ -241,6 +242,11 @@ class BiostructureSummaryAdapter(StepAdapter):
 
         try:
             structure = read_structure(path)
+        except StructureTooLargeError as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start,
+                error=str(exc), error_kind=ErrorKind.UNSUITABLE_INPUT,
+            )
         except StructureFormatError as exc:
             return self._make_result(
                 self.name, StepStatus.FAILED, work_dir, start,
