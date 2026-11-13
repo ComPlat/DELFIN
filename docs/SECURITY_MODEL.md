@@ -180,6 +180,35 @@ call, before it runs. It applies, among others:
   cannot be known (`cd $VAR` with the variable unset, `cd -` with no earlier
   `cd`) the command is asked in every mode and refused with nobody to ask
   (`script_dir_unknown`);
+- git history stays recoverable (`reversibility.git_history_refusal`,
+  `git_history_unrecoverable`): what removes the way back is refused under
+  `bypassPermissions` and wherever nobody can be asked, and asked in an
+  attended session of another mode. That is a push that replaces or deletes
+  remote refs in a spelling the deny list lets through
+  (`git push --force-with-lease`, `git push --force-if-includes`, a `+`
+  or `:` refspec, `git push --mirror`, `git push --prune`, `git push -d`,
+  a short bundle with `f` or `d`, an abbreviation git accepts);
+  `reflog expire|delete|drop`; `git gc --prune=<date>` or `git prune` with
+  less than a day of grace; the reflog switched off or shortened (the keys
+  `core.logAllRefUpdates`, `gc.reflogExpire*`, `gc.pruneExpire*` set through
+  `git -c`, `git --config-env`, `GIT_CONFIG_*` or `git config`); a forced
+  or mirror push configured (`remote.<r>.push` with `+`,
+  `remote.<r>.mirror`); moving a tag (`tag -f`, `update-ref refs/tags/…`;
+  tags have no reflog); `update-ref --stdin`. The refusal names the route:
+  a push to a new branch name, leaving gc to git, a new tag name. Ref moves
+  the reflog undoes (`branch -f`, a soft or mixed `reset`, `rebase`,
+  `commit --amend`, `checkout -B`, `switch -C`, `update-ref` of a branch)
+  are free. No backup ref is written before a move: with the reflog
+  guarded it would hold nothing the reflog does not;
+- job cancels (`reversibility.foreign_job_cancels`,
+  `job_cancel_foreign`): `scancel`, `qdel` or `bkill` whose every target is
+  a literal id of a job this session submitted (`KitToolPermissions.
+  submitted_job_ids`, read from the output of a command that ran `sbatch`,
+  `qsub` or `bsub`, in memory only) passes this rule; any other target — a
+  foreign id, a variable, a substitution, `xargs scancel`, a filter with no
+  id, `bkill 0`, an option the rule does not know — is asked in every mode,
+  `bypassPermissions` included, and refused with nobody to ask (naming
+  `squeue` and the report). `scancel -u` stays on the deny list;
 - the session tool lists (`--allowed-tools`, `--disallowed-tools`), which can
   only narrow.
 
@@ -232,6 +261,18 @@ once a minute, and `api_client.watcher_status_line` shows DOWN in the banner
 and `/status`. `DELFIN_CLASSIFIER` overrides the switch for one process,
 except in a process an agent session started (`DELFIN_AGENT_SESSION` is set
 in every agent child), so the agent cannot switch off its own watcher.
+
+With no classifier at all — switched off, or no runner attached — a
+`bypassPermissions` session keeps a floor (`_DocToolExecutor._no_watcher_floor`,
+`classifier_absent_hold`): a shell command in the high-risk class
+(`api_client._BYPASS_HIGH_RISK_BASH`: deletes, publishing, uploads, git
+commands that drop uncommitted work) is asked when someone can be asked and
+refused with nobody to ask, the refusal naming the route that works (move it
+aside, save the work as a commit or patch, keep the result local). Not held:
+a push or pull request the user asked for in the turn (the push grant) and an
+`rm -rf` of the session's own scratch. Other modes and non-shell actions keep
+the rule result. `rebase` and `commit --amend` are not in the class: the
+reflog undoes them.
 
 ### 3. Isolation of the shell command
 
@@ -879,6 +920,26 @@ users fall back to the unkeyed form, which they report as unverified.
   Under bypass a narrow high-risk class (`api_client._bypass_failure_asks`:
   deletes, history rewrites, publishing, uploads, remote triggers, writes to
   agent-instruction or git configuration files) asks or is refused as well.
+  With no classifier at all only the shell part of that class is held; a
+  message to another session or a write to an agent-instruction file then
+  runs on the rules alone.
+- **Recoverable history is read from the text.** The git rule reads the
+  command line: a program that runs git itself, a script file, or a write
+  into `.git/logs` by other means (`rm .git/logs/HEAD`, a redirect) is not
+  seen by it — the deny list, the path globs for `.git/**` and the cage are
+  what stand there. A bare repository logs no ref moves by default, so ref
+  moves there are not recoverable through the reflog. `fetch --prune` and
+  `remote prune` (they drop remote-tracking refs) and `send-pack --force`
+  are not refused. The reflog keeps unreachable entries 30 days under
+  git's defaults; an amended commit older than that is gone after the next
+  automatic gc.
+- **The job ledger.** Only jobs whose submit output this process read are
+  this session's: after a restart or resume, a job submitted before it
+  counts as foreign (asked, or refused unattended). A command that both
+  runs a submit program and prints a submit line for another id (`sbatch
+  x; echo "Submitted batch job N"`) can enter that id. Other ways of
+  ending a job (`scontrol requeue|hold`, `qsig`, `bstop`, `kill` of a
+  process on a compute node) are not covered by this rule.
 - **Commands run unasked inside the cage.** Under `default` and
   `acceptEdits` a command off the auto-allow list can run without a
   question where bubblewrap and Landlock hold it; what it can do is bounded
