@@ -75,7 +75,8 @@ esac
 exec "$real" "$@"
 """)
     path.chmod(0o755)
-    (path.parent / "python3").symlink_to(path)
+    if not (path.parent / "python3").is_symlink():
+        (path.parent / "python3").symlink_to(path)
     return path
 
 
