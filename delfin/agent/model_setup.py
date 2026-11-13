@@ -200,11 +200,17 @@ def no_model_card_html(problem: str) -> str:
     esc = html.escape
     detail = (f'<div style="margin-top:6px;opacity:.8">Found: {esc(problem)}.</div>'
               if problem else "")
+    # Shown as the empty chat's content (tab_agent._empty_chat_html), capped
+    # in height and scrolling inside, so the input row stays in view on a
+    # 1366x768 laptop and a phone; long commands wrap instead of widening
+    # the page.
     return (
         '<div class="delfin-agent-no-model" style="border:1px solid '
-        'var(--jp-border-color1,#c8cdd3);border-radius:8px;padding:12px 16px;'
-        'margin:8px 0;line-height:1.5">'
-        '<div style="font-weight:600;margin-bottom:4px">No language model is connected yet</div>'
+        'var(--jp-border-color1,#c8cdd3);border-radius:8px;padding:8px 12px;'
+        'margin:4px 0;line-height:1.45;font-size:13px;box-sizing:border-box;'
+        'max-width:100%;max-height:min(280px,40vh);overflow-y:auto;'
+        'overflow-wrap:anywhere">'
+        '<div style="font-weight:600;margin-bottom:2px">No language model is connected yet</div>'
         '<div>The agent needs one. Choose one way, then reload this page:</div>'
         '<ul style="margin:6px 0 6px 18px;padding:0">'
         '<li><b>KIT Toolbox</b>: in a terminal on this machine, '

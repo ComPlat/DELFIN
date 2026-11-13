@@ -8176,13 +8176,18 @@ def create_tab(ctx):
                     _available_providers.append(("Ollama (local)", "ollama"))
         except Exception:
             pass
-    # Nothing connected: the tab shows how to connect a model (the card is
-    # placed above the chat below) and keeps one entry in the selector.
-    _no_model_card = None
+    # Nothing connected: the empty chat shows how to connect a model
+    # (_empty_chat_html) and the selector keeps one entry. In the chat, not
+    # a row of its own: above the chat it pushed the input row below the
+    # fold at 1366x768.
+    _no_model_html = ""
     if not _available_providers:
         from delfin.agent.model_setup import no_model_card_html
-        _no_model_card = widgets.HTML(no_model_card_html(_cli_problem))
+        _no_model_html = no_model_card_html(_cli_problem)
         _available_providers.append(("Anthropic", "claude"))
+
+    def _empty_chat_html():
+        return _no_model_html or "<i>Start a conversation...</i>"
 
     # -- state -------------------------------------------------------------
     state = {
@@ -9637,7 +9642,7 @@ def create_tab(ctx):
 
     # Chat display
     chat_html = widgets.HTML(
-        value=_chat_value(_CHAT_OPEN + '<i>Start a conversation...</i></div>'),
+        value=_chat_value(_CHAT_OPEN + _empty_chat_html() + '</div>'),
         layout=widgets.Layout(min_height="200px"),
     )
     chat_html.add_class("delfin-agent-chat-host")
@@ -11706,7 +11711,6 @@ def create_tab(ctx):
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
          inspector_detail_box,
-         *([_no_model_card] if _no_model_card is not None else []),
          _chat_area,
          _input_area,
          # Then who is working (click to enter a chat), finished delegates
@@ -13872,7 +13876,7 @@ def create_tab(ctx):
         if not msgs:
             chat_html.value = _chat_value(
                 _CHAT_OPEN
-                + "<i>Start a conversation...</i>"
+                + _empty_chat_html()
                 + _SCROLL_RESET_TAG + "</div>"
             )
             _html_cache["prefix"] = ""
