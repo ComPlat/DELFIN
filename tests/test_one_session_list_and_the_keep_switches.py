@@ -245,6 +245,54 @@ def test_a_reopened_dashboard_brings_back_only_what_still_runs(home, monkeypatch
     refs["stop_refresh"]()
 
 
+def _kernel_mode(home, dash, monkeypatch, build):
+    """The person's own dashboard: sessions in the kernel, the service joined."""
+    from delfin.dashboard import tab_agent
+
+    monkeypatch.setattr(tab_agent, "create_tab", build)
+    monkeypatch.setattr(LS, "connect", lambda **kw: dash)
+    monkeypatch.delenv(AS.SESSIONS_ENV, raising=False)
+
+
+def test_a_kept_session_comes_back_in_the_full_chat(home, service, tui, dash, monkeypatch):
+    """Reopened, the dashboard loads its kept session again as it was: in
+    the agent tab's full chat, still kept -- no click, not a view first."""
+    sid = service.session(tui, cwd=str(service.workspace("kept")), attach=True)
+    turn(tui, sid, "keep-me")
+    build = _Build()
+    _kernel_mode(home, dash, monkeypatch, build)
+    monkeypatch.setattr(AS, "load_open_sessions", lambda: [
+        {"session_id": sid, "workspace": str(service.workspace("kept")), "live": True}])
+    monkeypatch.setattr(AS, "_saved_session", lambda s: {"session_id": s} if s == sid else None)
+    _w, refs = AS.create_tab(_ctx(home))
+    (rec,) = [r for r in refs["sessions"]() if r["ctx"].initial_session_id == sid]
+    assert not rec.get("live") and rec["kept"] and rec["keep_switch"].value is True
+    assert refs["active"]() is rec
+    assert sid not in {s["sessionId"] for s in tui.request("sessions.list")["sessions"]}
+    refs["stop_refresh"]()
+
+
+def test_mid_turn_it_shows_live_and_becomes_the_full_chat_when_done(
+        home, service, tui, dash, monkeypatch):
+    """A kept session that is working is not cut off: its view first, then
+    the full chat by itself once the turn is over."""
+    sid = service.session(tui, cwd=str(service.workspace("busy")), attach=True, fakeDelay=0.4)
+    tui.request("session.prompt", {"sessionId": sid, "text": "a long one " * 40})
+    build = _Build()
+    _kernel_mode(home, dash, monkeypatch, build)
+    monkeypatch.setattr(AS, "_saved_session", lambda s: {"session_id": s} if s == sid else None)
+    _w, refs = AS.create_tab(_ctx(home))
+    assert _until(lambda: LS.state_word(refs["running"].summary(sid) or {}) == "working")
+    rec = refs["open_from_list"](sid)
+    assert rec["live"] and rec["into_chat"]
+    assert _until(lambda: LS.state_word(refs["running"].summary(sid) or {}) == "done", 120)
+    refs["refresh"]()
+    mine = [r for r in refs["sessions"]() if r["ctx"].initial_session_id == sid]
+    assert mine and not mine[0].get("live") and refs["active"]() is mine[0]
+    assert not [r for r in refs["sessions"]() if r.get("live")]
+    refs["stop_refresh"]()
+
+
 # -- Keep session in the service --------------------------------------------------
 
 def test_a_service_session_started_here_ends_with_this_dashboard(home, service, tui, dash):
