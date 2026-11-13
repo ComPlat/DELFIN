@@ -46,3 +46,16 @@ def test_the_file_browsers_stack_their_panes_at_700px():
     assert ".calc-tab .calc-main-row > .calc-left { flex:0 0 45% !important;" in block
     assert ".calc-tab .calc-main-row > .calc-right { flex:1 1 0 !important;" in block
     assert ".calc-tab .calc-main-row > .calc-splitter-host { display:none !important; }" in block
+
+
+def test_the_time_limit_buttons_fit_a_phone():
+    """The Time Limit toggle is 550 px wide (its layout) with 148 px
+    buttons; stacked on a 390 px phone its third column ran past the pane
+    and was cut ('36h', 'Custom'). Below 600 px each button takes a third
+    of the row and the toggle never exceeds its pane."""
+    src = _flat("helpers.py")
+    assert ".delfin-time-limit-toggle.widget-toggle-buttons { max-width: 100% !important; }" in src
+    start = src.index("@media (max-width: 600px) {")
+    block = src[start:src.index("} }", start) + 3]
+    assert (".delfin-time-limit-toggle.widget-toggle-buttons .widget-toggle-button "
+            "{ width: calc(33.333% - 4px) !important; min-width: 0 !important; }") in block
