@@ -157,6 +157,23 @@ def test_an_ask_trigger_fires_once_per_turn(client):
     assert notices.count("ask request") == 1
 
 
+def test_the_asked_question_is_not_sent_back_as_a_prose_choice(client):
+    # Without a question card the ask note asks for the options as a
+    # numbered list; the choice trigger ("pick the default and act") must
+    # not then undo it -- the person asked to be asked.
+    numbered = ("Soll ich die Optimierung starten?\n1. Ja (empfohlen)\n"
+                "2. Nein\nIch warte auf deine Antwort.")
+    sent, notices = _run(client,
+                         "Stell mir mal eine Anfrage ja oder nein also "
+                         "approval",
+                         ["Ja.", numbered, "Ja."])
+    assert len(sent) == 2
+    assert "choice written as text" not in notices
+    sent, notices = _run(client, "Frag mich bitte, welche Variante",
+                         [numbered, "Ja."])
+    assert "choice written as text" not in notices
+
+
 # -- through the tool loop --------------------------------------------------
 
 class _Delta:

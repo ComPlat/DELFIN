@@ -37208,9 +37208,13 @@ class OpenAIClient(_BaseClient):
                 _go_ahead_once = True
                 _ga_note, _ga_shown = (_ga.GO_AHEAD_NOTE,
                                        "↻ go-ahead given → acting on it")
+            # A person who asked to be asked wants the question, not a
+            # default picked for them: the choice trigger ("pick it and
+            # act") stays out of that turn; the ask trigger below handles it.
             elif (_ga_ok and not _choice_once
                     and "ask_user_question" not in _turn_tool_names
-                    and _ga.is_choice_question(_ga_text)):
+                    and _ga.is_choice_question(_ga_text)
+                    and not _ga.is_ask_request(_turn_user_text)):
                 _choice_once = True
                 _can_ask = getattr(self._permissions, "ask_user_callback",
                                    None) is not None
