@@ -1264,9 +1264,13 @@ class Supervisor:
         return {"sessions": rows}
 
     async def _m_session_create(self, client: Client, params: dict) -> dict:
+        # keep false is for the session this window starts. One that runs
+        # here, or sleeps here, already -- woken or continued by the window
+        # -- is attached as it is: a kept session stays kept.
+        known = set(self.sessions) | set(self.dormant) | set(self._waking)
         out = await self._create_session(client, params)
         sid = str(out.get("sessionId") or "")
-        if sid and params.get("keep") is False:
+        if sid and params.get("keep") is False and sid not in known:
             self.set_keep(client, sid, False)
         elif sid and params.get("attach", True):
             self._hold_if_not_kept(client, sid)

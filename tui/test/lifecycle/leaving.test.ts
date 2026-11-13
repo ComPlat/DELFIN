@@ -52,7 +52,7 @@ describe("what leaving the window prints", () => {
     expect(keptOf({})).toBe(true)
     expect(keptOf(undefined)).toBe(true)
     expect(leaveWords(true)).toBe("the session keeps running in the agent service")
-    expect(leaveWords(false)).toBe("the session ends (Keep session is off; /keep on keeps it)")
+    expect(leaveWords(false)).toBe("the session ends -- /keep on keeps it")
   })
 
   test("a session this window starts is not kept: ctrl+c twice ends it", () => {

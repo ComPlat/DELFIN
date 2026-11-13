@@ -30,11 +30,20 @@ export function keptOf(summary?: { keep?: boolean | null } | null): boolean {
   return summary?.keep !== false
 }
 
+/** The session.create params of a session this window starts: Keep
+ *  session off, held by this window -- leaving it (ctrl+c twice, ctrl+d, a
+ *  closed terminal) ends the session, saved; `/keep on` keeps it running in
+ *  the agent service. A service before the switch ignores the field and
+ *  keeps every session, and keptOf reads that from its summaries. */
+export function startedHere<T extends Record<string, unknown>>(params: T): T & { keep: false } {
+  return { ...params, keep: false }
+}
+
 /** What leaving the window does to the session in view, as ctrl+c and the
  *  menu say it. */
 export function leaveWords(kept: boolean): string {
   return kept ? "the session keeps running in the agent service"
-    : "the session ends (Keep session is off; /keep on keeps it)"
+    : "the session ends -- /keep on keeps it"
 }
 
 /** Characters a session id is made of; anything else is not printed as a
