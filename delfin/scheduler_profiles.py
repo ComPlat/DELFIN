@@ -25,11 +25,6 @@ _AROMATIC_SMILES_MAP = {
     "p": "P",
     "s": "S",
 }
-_TWO_CHAR_ELEMENTS = {
-    "Ag", "Al", "As", "Au", "Br", "Ca", "Cl", "Co", "Cr", "Cu", "Fe", "Hg",
-    "Ir", "Li", "Mg", "Mn", "Mo", "Na", "Ni", "Os", "Pd", "Pt", "Rh", "Ru",
-    "Sc", "Se", "Si", "Sn", "Ti", "Zn", "Zr",
-}
 _TRANSITION_METALS = {
     "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
     "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
@@ -193,7 +188,10 @@ def _parse_smiles_text(text: str) -> Optional[Dict[str, Any]]:
             i += 1
             continue
         if ch.isupper():
-            if i + 1 < len(line) and line[i:i + 2] in _TWO_CHAR_ELEMENTS:
+            # Outside brackets only the organic subset is legal SMILES, so
+            # the only two-letter atoms are Cl and Br: "CSc1ccccc1" is S
+            # followed by an aromatic c, not scandium.
+            if i + 1 < len(line) and line[i:i + 2] in ("Cl", "Br"):
                 elements.append(line[i:i + 2])
                 i += 2
                 continue
