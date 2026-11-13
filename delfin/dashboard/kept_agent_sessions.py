@@ -107,13 +107,24 @@ def _write(path: Path, payload: dict) -> None:
 
 
 def arm(session_id: str, workspace: str, settings: Optional[dict] = None, *,
-        pid: Optional[int] = None) -> Path:
+        pid: Optional[int] = None, title: str = "") -> Path:
     """Switch Keep session on for ``session_id``, held by this process
     (``pid``: the kernel; default this one). Returns the record's path."""
     pid = int(pid or os.getpid())
+    try:
+        from delfin.dashboard.session import kernel_id as _kernel_id
+        kid = _kernel_id() if pid == os.getpid() else ""
+    except Exception:
+        kid = ""
     payload = {
         "session_id": str(session_id),
+        # The kernel as the dashboard server knows it: the server holds a
+        # closed window's kernel for a running turn only when it keeps a
+        # session (resume_server).
+        "kernel_id": kid,
         "workspace": str(workspace or ""),
+        # The name the dashboard showed: the service lists it under that.
+        "title": " ".join(str(title or "").split())[:80],
         "settings": {k: v for k, v in (settings or {}).items()
                      if k in _SETTINGS and v not in (None, "")},
         "pid": pid,
@@ -249,6 +260,8 @@ def hand_over(*, wait_pid: int = 0, wait_s: float = WAIT_PID_S,
                        for r in (client.sessions() or {}).get("sessions") or []}
             if sid not in running:
                 settings = dict(record.get("settings") or {})
+                if record.get("title"):
+                    settings["title"] = str(record["title"])
                 client.create(str(record.get("workspace") or ""), resume=sid,
                               keep=True, **settings)
         except Exception as exc:          # noqa: BLE001 -- kept for the next caller
@@ -272,6 +285,12 @@ def hand_over(*, wait_pid: int = 0, wait_s: float = WAIT_PID_S,
         except Exception:
             pass
     return rows
+
+
+def kept_kernel_ids() -> set[str]:
+    """The dashboard kernels that hold a kept session and still run."""
+    return {str(r.get("kernel_id") or "") for r in records()
+            if r.get("kernel_id") and not holder_gone(r)}
 
 
 def pending_here() -> bool:

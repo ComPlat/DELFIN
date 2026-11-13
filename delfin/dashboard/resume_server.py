@@ -131,6 +131,15 @@ def cull_config_args(grace: Optional[float] = None) -> list[str]:
     return args
 
 
+def _kept_session_kernels() -> set[str]:
+    """Kernels that hold an agent session with Keep session on."""
+    try:
+        from delfin.dashboard import kept_agent_sessions as _kept_sessions
+        return _kept_sessions.kept_kernel_ids()
+    except Exception:
+        return set()
+
+
 def kept_kernel_ids(*, root: str = "") -> set[str]:
     """Every kernel a LIVING record says is kept.
 
@@ -431,6 +440,17 @@ def resume_kernel_manager_class(base: type) -> type:
                 return grace_seconds()
             return dropped_seconds()
 
+        def _delfin_said_closed(self, kernel_id) -> bool:
+            """Whether the window that went announced its closing (its
+            beacon belongs to that window, as ``_delfin_allowance`` reads
+            it), rather than dropping its connection."""
+            closed_at = self._delfin_closed().get(kernel_id)
+            entry = self._delfin_unwatched().get(kernel_id)
+            if closed_at is None or entry is None:
+                return False
+            since, had_window = entry
+            return bool(had_window) and closed_at >= since - CLOSE_WINDOW_SECONDS
+
         async def cull_kernel_if_idle(self, kernel_id):
             """End a kernel that has had no window for the grace, unless
             it is kept or a turn is running in it. Replaces the server's
@@ -446,13 +466,18 @@ def resume_kernel_manager_class(base: type) -> type:
             allowed = self._delfin_allowance(kernel_id, had_window)
             if seconds <= allowed:
                 return
-            if kernel_id in _turns.running_kernel_ids():
-                # Work in flight. A closed tab and a dropped WebSocket
-                # look the same from here, and ending the kernel now
-                # would throw away a run nobody asked to stop. The clock
-                # starts again so the grace is served after the turn,
-                # not during it -- an unwatched session still stops,
-                # just not mid-run.
+            if (kernel_id in _turns.running_kernel_ids()
+                    and (not self._delfin_said_closed(kernel_id)
+                         or kernel_id in _kept_session_kernels())):
+                # Work in flight, held in two cases only. A connection that
+                # DROPPED: the page may still be open on a sleeping laptop,
+                # and ending the kernel would throw away a run nobody asked
+                # to stop. A kernel that holds a session with Keep session
+                # on: the turn finishes, then the session goes on in the
+                # agent service. A page that said it was closing is not
+                # held otherwise (2026-11-13: no hidden holding) -- its
+                # sessions end with it. The clock starts again so the grace
+                # is served after the turn.
                 self._delfin_unwatched()[kernel_id] = (time.monotonic(), had_window)
                 if kernel_id not in self._delfin_waiting_for_turn:
                     self._delfin_waiting_for_turn.add(kernel_id)
@@ -559,6 +584,18 @@ def resume_kernel_manager_class(base: type) -> type:
             self._delfin_unwatched().pop(kernel_id, None)
             _windows.mark(kernel_id, False)
             result = await super().shutdown_kernel(kernel_id, *args, **kwargs)
+            # Sessions switched to Keep session in that kernel go on in the
+            # agent service. The kernel spawns this itself on its way out;
+            # from here as well, for a kernel that was killed after the
+            # shutdown wait and ran no exit hook. A claim is atomic: two
+            # hand-overs never resume one session twice.
+            if not restart:
+                try:
+                    from delfin.dashboard import kept_agent_sessions as _kept_sessions
+                    if _kept_sessions.pending_here():
+                        _kept_sessions.spawn_hand_over()
+                except Exception:
+                    pass
             # The page's goodbye ends an un-kept kernel through here, not
             # through the cull rule -- and for one run the server then sat
             # serving nothing, because the stop lived in the cull path

@@ -3571,6 +3571,14 @@ def _kernel_lost_its_lifeline() -> None:
         _kept.drop_record(reason="kernel ended with its lifeline")
     except Exception:
         pass
+    # Sessions switched to Keep session go on in the agent service, which
+    # lives under no lifeline -- unless this is an emergency stop.
+    try:
+        from delfin.agent import lifeline as _lifeline
+        from delfin.dashboard import kept_agent_sessions as _kept_sessions
+        _kept_sessions.on_kernel_end(emergency=_lifeline._stopped())
+    except Exception:
+        pass
     os._exit(0)
 
 
@@ -25637,6 +25645,10 @@ def create_tab(ctx):
 
     return tab_widget, {
         "state": state,
+        # The session list puts its Keep session switch into this row,
+        # right after the Stop button.
+        "control_row": _controls_hbox,
+        "stop_button": stop_btn,
         "shutdown": _shutdown_tab,
         "workspace": _agent_workspace_path,
         "load_session": _load_saved_session,
