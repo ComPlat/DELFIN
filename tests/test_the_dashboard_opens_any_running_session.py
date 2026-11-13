@@ -425,7 +425,9 @@ def test_a_new_session_runs_in_the_service_and_any_window_opens_it(home, service
     assert sid in {s["sessionId"] for s in listed["sessions"]}
     # The running list names it and marks it open here.
     assert _until(lambda: any(r["sessionId"] == sid for r in refs["running"].rows()))
-    # Closing the view leaves it running.
+    # Started here it ends with this dashboard; with Keep session on,
+    # closing the view leaves it running.
+    refs["set_keep"](rec["key"], True)
     refs["close"](rec["key"])
     time.sleep(0.3)
     assert sid in {s["sessionId"] for s in tui.request("sessions.list")["sessions"]}

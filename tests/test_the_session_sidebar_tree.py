@@ -171,15 +171,13 @@ def _descendants(w):
 
 def test_the_sidebar_shows_one_session_list(home_like):
     """The open views and the service sessions are one list; the running
-    panel's own card (a second "Running sessions" list) is not shown."""
+    panel's own card (a second "Running sessions" list) is not on the page
+    at all (2026-11-13: it was there, hidden)."""
     build = _Build()
     widget, refs = AS.create_tab(home_like, build=build)
     panels = [w for w in _descendants(widget)
               if "delfin-running-list" in getattr(w, "_dom_classes", ())]
-    hidden = [w for w in _descendants(widget)
-              if getattr(getattr(w, "layout", None), "display", "") == "none"]
-    assert panels and all(any(p in _descendants(h) for h in hidden)
-                          for p in panels)
+    assert panels == []
     headings = [w.value for w in _descendants(widget)
                 if isinstance(w, widgets.HTML)]
     assert any(v.strip() == "Sessions" for v in headings)
@@ -192,9 +190,10 @@ def _search(widget):
 
 
 def _offers(widget):
+    """The rows the resume list offers (its group labels left out)."""
     box = next(w for w in _descendants(widget)
                if "delfin-resume-rows" in getattr(w, "_dom_classes", ()))
-    return [b.description for b in box.children]
+    return [b.description for b in box.children if isinstance(b, widgets.Button)]
 
 
 def test_typing_in_the_resume_search_opens_nothing(home_like, monkeypatch):
@@ -216,7 +215,7 @@ def test_typing_narrows_the_offers_and_a_click_resumes(home_like,
     build = _Build()
     widget, refs = AS.create_tab(home_like, build=build)
     assert len(_offers(widget)) == 4
-    assert not _offers(widget)[0].startswith("⌗"), "own sessions come first"
+    assert _offers(widget)[0].startswith("Fix"), "own sessions come first"
     _search(widget).value = "fix"
     assert _offers(widget) == ["Fix the failing test — /proj"]
     box = next(w for w in _descendants(widget)

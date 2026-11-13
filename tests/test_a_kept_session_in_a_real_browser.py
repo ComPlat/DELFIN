@@ -273,7 +273,7 @@ def test_the_control_is_on_the_page(server):
         page = browser.new_page()
         try:
             _open_dashboard(page, root)
-            assert page.locator("button", has_text="Keep session").count() >= 1
+            assert page.locator("button", has_text="Keep dashboard").count() >= 1
             # The baseline for the resume case: a fresh page has the
             # scripts an Output widget carries, not only the bundle.
             _expect(page, "the agent tab's Output-carried script",
@@ -346,7 +346,7 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             box.fill(_WATER)
             page.wait_for_selector(".submit-mol-output canvas", timeout=90_000)
 
-            page.locator("button", has_text="Keep session").first.click()
+            page.locator("button", has_text="Keep dashboard").first.click()
             page.wait_for_selector(".delfin-session-dot.on", timeout=60_000)
             note = page.locator(".delfin-session-dot.on").last.get_attribute("title") or ""
             resume = page.locator(".delfin-session-link").last.get_attribute("href") or ""

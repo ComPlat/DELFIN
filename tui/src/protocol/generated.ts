@@ -435,6 +435,7 @@ export interface SessionCreateParams {
   "worktree"?: boolean | null
   "initProject"?: boolean | null
   "untitled"?: boolean | null
+  "keep"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
@@ -451,6 +452,10 @@ export interface SessionPendingParams {
 }
 export interface SessionDetachParams {
   "sessionId": string
+}
+export interface SessionSetKeepParams {
+  "sessionId": string
+  "keep": boolean
 }
 export interface SessionMessageParams {
   "key": string
@@ -587,6 +592,7 @@ export interface ServiceRequests {
   "session.merge": SessionMergeParams
   "session.pending": SessionPendingParams
   "session.detach": SessionDetachParams
+  "session.setKeep": SessionSetKeepParams
   "session.message": SessionMessageParams
   "sessions.past": SessionsPastParams
   "service.status": ServiceStatusParams
@@ -664,6 +670,9 @@ export interface SessionPendingResult {
 }
 export interface SessionDetachResult {
   "detached": boolean
+}
+export interface SessionSetKeepResult {
+  "keep": boolean
 }
 export interface SessionMessageResult {
   "sent": boolean
@@ -817,6 +826,7 @@ export interface ServiceResults {
   "session.attach": SessionAttachResult
   "session.pending": SessionPendingResult
   "session.detach": SessionDetachResult
+  "session.setKeep": SessionSetKeepResult
   "session.message": SessionMessageResult
   "sessions.past": SessionsPastResult
   "service.status": ServiceStatusResult
@@ -901,6 +911,7 @@ export interface SessionSummary {
   "answer"?: string | null
   "name"?: string | null
   "lastInput"?: number | null
+  "keep"?: boolean | null
 }
 
 export interface AttentionItem {

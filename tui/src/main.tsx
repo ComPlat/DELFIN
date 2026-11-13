@@ -29,7 +29,7 @@ import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
 import { EmptySessions } from "./empty"
-import { leavingNote } from "./leaving"
+import { keptOf, leavingNote } from "./leaving"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
@@ -604,7 +604,8 @@ async function openItem(item: AttentionItem): Promise<string | null> {
 let current = ""
 let quitting = false
 
-/** Leave the window; the sessions keep running in the agent service. A
+/** Leave the window; a session keeps running in the agent service unless
+ *  Keep session is off for it (then the service ends it, saved). A
  *  second ctrl+d while leaving (a service that does not answer) leaves at
  *  once. */
 function quit(): void {
@@ -643,7 +644,7 @@ function printWhenGone(): void {
   const note = leavingNote({
     problem: connection.problem || undefined,
     session: s ? { id: s.id, title: s.title || s.summary?.title || "", state: s.state, ended: s.ended,
-                   discarded: empties.wasEnded(s.id) } : undefined,
+                   discarded: empties.wasEnded(s.id), kept: keptOf(s.summary) } : undefined,
   })
   if (!note) return
   process.once("exit", () => {

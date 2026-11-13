@@ -18,6 +18,23 @@ export interface LeavingSession {
   /** Ended on leaving because nothing was asked of it (empty.ts): not
    *  kept, so no way back to it is printed. */
   discarded?: boolean
+  /** Keep session (the service's summary `keep`): false, the service ends
+   *  the session once this window, which holds it, has gone. */
+  kept?: boolean
+}
+
+/** Whether a session runs on after its windows leave: the service's Keep
+ *  session flag (`session.setKeep`, `/keep`). A service before the switch
+ *  kept every session and says nothing. */
+export function keptOf(summary?: { keep?: boolean | null } | null): boolean {
+  return summary?.keep !== false
+}
+
+/** What leaving the window does to the session in view, as ctrl+c and the
+ *  menu say it. */
+export function leaveWords(kept: boolean): string {
+  return kept ? "the session keeps running in the agent service"
+    : "the session ends (Keep session is off; /keep on keeps it)"
 }
 
 /** Characters a session id is made of; anything else is not printed as a
@@ -44,7 +61,9 @@ export function leavingNote(input: { session?: LeavingSession; problem?: string 
     if (!input.problem) {
       lines.push(s.state === "ended"
         ? `DELFIN: ${name} has ended${s.ended?.reason ? ` (${plain(s.ended.reason)})` : ""}.`
-        : `DELFIN: ${name} keeps running in the agent service (or ← in any window).`)
+        : s.kept === false
+          ? `DELFIN: ${name} ends with this window (Keep session is off). It is saved.`
+          : `DELFIN: ${name} keeps running in the agent service (or ← in any window).`)
     }
     // The same words chat's session list uses ("resume with: ...").
     if (ID.test(s.id)) lines.push(`resume with: ${resumeCommand(s.id)}`)

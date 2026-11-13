@@ -350,7 +350,7 @@ HEADER_CSS = """
 .delfin-hdr .jupyter-button.delfin-hint.is-warn { color: var(--dh-err); border-color: var(--dh-err); }
 .delfin-hdr .delfin-home { font-size: 12px; color: var(--dh-muted); white-space: nowrap; }
 .delfin-hdr .delfin-home.is-warn { color: var(--dh-err); font-weight: 600; }
-/* switch (Keep session) */
+/* switch (Keep dashboard) */
 .delfin-hdr .jupyter-button.delfin-switch {
   height: var(--dh-h); width: auto; padding: 0 10px 0 40px; position: relative;
   border-radius: 999px; border: 1px solid var(--dh-border); background: var(--dh-bg);

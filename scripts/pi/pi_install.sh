@@ -368,7 +368,7 @@ EOF
             > "$HOME/.config/delfin/launcher-people.conf"
         echo "==> launcher people mode on (~/people/<name>; overview: delfin-people)"
     fi
-    # Keep session is this box's default for the Windows launcher: a
+    # Keep dashboard is this box's default for the Windows launcher: a
     # dashboard (and the agent working in it) survives a disconnect, whatever
     # the app's checkbox says; Ctrl+C in the SSH window still stops it.
     # DELFIN_PI_KEEP=0 leaves the choice to the app.

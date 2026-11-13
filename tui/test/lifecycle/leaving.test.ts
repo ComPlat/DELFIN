@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { leavingNote, resumeCommand } from "../../src/leaving"
+import { keptOf, leaveWords, leavingNote, resumeCommand } from "../../src/leaving"
 
 const running = { id: "abc123def456", title: "relax Fe", state: "idle" as const, ended: null }
 
@@ -33,6 +33,24 @@ describe("what leaving the window prints", () => {
     expect(note).toBe("DELFIN: nothing was asked in this session, so it was not kept.\n")
     expect(note).not.toContain("resume with")
     expect(leavingNote({ session: { ...running, discarded: true }, problem: "gone" })).toBe("DELFIN: gone\n")
+  })
+
+  test("Keep session off: the session ends with the window, and says so", () => {
+    const note = leavingNote({ session: { ...running, kept: false } })
+    expect(note).toContain("relax Fe ends with this window (Keep session is off)")
+    expect(note).not.toContain("keeps running")
+    expect(note).toContain("resume with: delfin-agent tui --resume abc123def456")
+    expect(leavingNote({ session: { ...running, kept: true } })).toContain("keeps running")
+  })
+
+  test("what ctrl+c and the menu say follows the service's keep flag", () => {
+    expect(keptOf({ keep: false })).toBe(false)
+    expect(keptOf({ keep: true })).toBe(true)
+    // A service before the switch kept every session.
+    expect(keptOf({})).toBe(true)
+    expect(keptOf(undefined)).toBe(true)
+    expect(leaveWords(true)).toBe("the session keeps running in the agent service")
+    expect(leaveWords(false)).toBe("the session ends (Keep session is off; /keep on keeps it)")
   })
 
   test("no session: nothing but the problem, if any", () => {

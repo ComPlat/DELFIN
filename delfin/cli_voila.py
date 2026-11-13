@@ -1060,8 +1060,8 @@ def main(argv=None):
         action="store_true",
         help=(
             "Survive a closed terminal: start inside a tmux session named "
-            "'delfin' (reusing one if it is there) and arm 'Keep session' "
-            "for every session this dashboard opens, so a dropped "
+            "'delfin' (reusing one if it is there) and arm 'Keep dashboard' "
+            "for every window this dashboard opens, so a dropped "
             "connection costs nothing. Prints how to come back."
         ),
     )

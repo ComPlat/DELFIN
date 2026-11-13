@@ -387,7 +387,7 @@ def _strip_html(armed: bool, name: str, url: str) -> str:
         return (
             '<div class="delfin-session-strip">'
             '<span class="delfin-session-dot" '
-            'title="Session ends when the window closes"></span></div>'
+            'title="This dashboard ends when the browser closes"></span></div>'
         )
     if url:
         # The title sits on the dot, which is what a pointer hovers; the
@@ -413,7 +413,7 @@ def _failed_strip_html(reason: str) -> str:
     return (
         '<div class="delfin-session-strip">'
         f'<span class="delfin-session-dot failed" title="Could not keep the '
-        f'session: {safe}"></span></div>'
+        f'dashboard: {safe}"></span></div>'
     )
 
 
@@ -442,6 +442,30 @@ def _keep_by_default() -> bool:
         "1", "true", "yes", "on")
 
 
+def keep_dashboard_tooltip() -> str:
+    """What the Keep dashboard switch does, and what holds a dashboard
+    that is not kept -- the numbers the server uses (resume_server)."""
+    try:
+        from delfin.dashboard import resume_server as _rs
+        grace, dropped = _rs.grace_seconds(), _rs.dropped_seconds()
+    except Exception:
+        grace, dropped = 90.0, 900.0
+
+    def _span(seconds: float) -> str:
+        return (f"{seconds / 60:.0f} min" if seconds >= 120 else f"{seconds:.0f} s")
+
+    return (
+        "On: this dashboard keeps running when the browser closes -- its "
+        "tabs, forms, calculations and agent sessions stay; the dot beside "
+        "the switch links back. Scroll positions do not come back. "
+        f"Off: closing the browser ends it after {_span(grace)} (time for a "
+        "reload), and every agent session in it with Keep session off ends "
+        "too, a running turn included. A lost connection (the page may "
+        f"still be open) gets {_span(dropped)}, and a running turn finishes "
+        "first. Sessions with Keep session on (agent tab) go on in the "
+        "agent service either way.")
+
+
 def build_status_strip():
     """The control that arms the opt-in, and shows it while it is armed.
 
@@ -465,14 +489,14 @@ def build_status_strip():
     _armed = _keep_by_default()
     toggle = widgets.ToggleButton(
         value=_armed,
-        description="Keep session",
-        tooltip=(
-            "Keep the session running after the browser closes. The agent "
-            "keeps working, forms and open calculations stay. Scroll "
-            "positions do not come back."
-        ),
+        # "Keep dashboard", not "Keep session": it keeps this dashboard's
+        # kernel -- every tab, form and session in it. One agent session is
+        # kept with the switch in the agent tab's control row
+        # (kept_agent_sessions); one word for both read as one switch.
+        description="Keep dashboard",
+        tooltip=keep_dashboard_tooltip(),
         # Drawn as a switch by the header's style (header_ui): its state
-        # is the knob's position, and the label stays "Keep session".
+        # is the knob's position, and the label stays "Keep dashboard".
         # flex 0 0 auto: the header is a flex row, and a control that may
         # shrink is one that renders twenty pixels wide the moment the
         # row is full -- seen in a browser, clickable and unreadable.

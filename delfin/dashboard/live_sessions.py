@@ -156,6 +156,12 @@ class LiveClient(ServiceClient):
         """End the session (it is saved): the explicit stop, never a close."""
         return self.request("session.shutdown", {"sessionId": sid}, timeout=60)
 
+    def set_keep(self, sid: str, keep: bool) -> bool:
+        """Keep session (``session.setKeep``): off, this connection holds
+        the session and it ends once every holder has gone."""
+        return bool(self.request("session.setKeep",
+                                 {"sessionId": sid, "keep": bool(keep)})["keep"])
+
 
 #: The first service a dashboard view works with: summary names, the empty
 #: rename, permission.resolved.client (supervisor.SERVICE_VERSION 4).
