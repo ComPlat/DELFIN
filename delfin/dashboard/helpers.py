@@ -348,8 +348,40 @@ def create_page_css():
         ".lm-TabBar-tab:not(.lm-mod-current) { "
         "color: var(--jp-ui-font-color1); }"
         + DASHBOARD_TABS_CSS
+        + DASHBOARD_FORM_CSS
         + "</style>"
     )
+
+
+#: One look for the widgets' own controls on every tab: 6 px corners like
+#: the header's (8 px there, at 30 px height), the accent border and a soft
+#: ring on focus, a visible keyboard focus on buttons. The widgets draw
+#: square fields and selects, 2 px buttons, and mark focus by a border
+#: colour only.
+#:
+#: Precedence, by construction: the selectors are the widgets' own, so the
+#: specificity is theirs (focus is added through ``:where``, which counts
+#: nothing), and nothing is ``!important``. The widgets' styles sit in the
+#: document head, before this; every tab's own CSS sits after it (this is
+#: in the header cell), so a rule written for one control -- the agent's
+#: composer and chips, the session list, the structure editor -- wins at
+#: equal specificity and keeps its look.
+#:
+#: Rejected: per-widget layouts (dozens of inline widths and radii to keep
+#: in step); one shared class added to every control (each tab would have
+#: to remember it, and the ones that forget look different again).
+_FIELDS = (".widget-text input[type='text'], .widget-text input[type='number'], "
+           ".widget-text input[type='password'], .widget-textarea textarea, "
+           ".widget-dropdown > select")
+_FOCUSED = ", ".join(s.strip() + ":where(:focus)" for s in _FIELDS.split(","))
+DASHBOARD_FORM_CSS = (
+    f"{_FIELDS} {{ border-radius: 6px; }}"
+    f"{_FOCUSED} {{ border-color: var(--delfin-accent, #3d74b6); "
+    "box-shadow: 0 0 0 2px rgba(61, 116, 182, 0.18); }"
+    ".jupyter-button { border-radius: 6px; }"
+    ".jupyter-button:where(:focus-visible) { outline: 2px solid var(--delfin-accent, #3d74b6); "
+    "outline-offset: 1px; }"
+)
 
 
 _BAR = f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} > .lm-TabBar"

@@ -51,5 +51,5 @@ def test_the_layer_never_overrides_a_rule_written_for_one_control():
     css = _css()
     assert "!important" not in css
     # No id, no tab or DELFIN class: only the widgets' own selectors.
-    assert "#" not in css.replace("#000", "")
+    assert "#" not in re.sub(r"#[0-9a-fA-F]{3,6}\b", "", css)
     assert "delfin-" not in css.replace("--delfin-accent", "")
