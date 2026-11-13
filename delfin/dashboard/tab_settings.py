@@ -5041,6 +5041,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         '<style>'
         '.delfin-settings .widget-accordion .widget-hbox > .widget-html:first-child { min-width: 190px; }'
         '.delfin-settings .widget-accordion .widget-hbox > .widget-text[style*="width: 100%"] { flex: 1 1 280px; }'
+        # A phone: the fields' 280 px minimum ran past the pane's edge.
+        '@media (max-width: 600px) { .delfin-settings .widget-accordion .widget-text { min-width: 0 !important; } }'
         '</style>'
     )
     tab = widgets.VBox(
