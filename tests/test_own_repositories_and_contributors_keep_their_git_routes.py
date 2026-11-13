@@ -10,8 +10,9 @@ PATH that records its arguments:
     exactly as before: no refusal, no question;
 (b) ``git push origin main`` there (git role maintainer for that remote,
     the user's message asked for the push) is asked once by default and
-    runs; with a per-repository allow rule (``permissions.repos``) it runs
-    without asking -- and that allowance reaches neither another
+    runs; a per-repository allow rule (``permissions.repos``) does not
+    answer it (a push cannot be undone, and no remembered rule answers
+    that while a person can be asked), and it reaches neither another
     repository nor the DELFIN checkout. Without the user's request a push
     is asked (or refused unattended) whatever the rules say: that is the
     push gate's one-request grant, unchanged here;
@@ -199,16 +200,20 @@ def test_b_a_push_to_main_in_an_own_repository_is_asked_once(world):
     assert _git(world["own_origin"], "rev-parse", "main") == sha
 
 
-def test_b_an_allow_rule_for_the_repository_runs_it_unasked_there_only(world):
+def test_b_an_allow_rule_for_the_repository_does_not_answer_a_push(world):
     # A permissions.repos key starting with "/" names the checkout's
     # location (permission_rules.repo_entry_matches), so the rule is
-    # written for the own checkout's path.
+    # written for the own checkout's path. A push publishes, which cannot
+    # be undone: since 2026-11-13 no remembered rule answers it while a
+    # person can be asked (api_client._irreversible_needs_person) -- it is
+    # asked once, as without the rule, and the dialog says what it
+    # publishes. Before, this rule ran it unasked.
     _maintainer_of(world, world["own_origin"], world["other_origin"],
                    allow_in=world["own"])
     sha = _new_commit(world["own"], "g.txt")
     out, asked = _run(_asked_for_a_push(_perms(world, world["own"])),
                       "git push origin main")
-    assert asked == [] and _ran(out), (out, asked)
+    assert asked == ["git push origin main"] and _ran(out), (out, asked)
     assert _git(world["own_origin"], "rev-parse", "main") == sha
     # another repository: asked, as without the rule
     other_sha = _new_commit(world["other"], "h.txt")

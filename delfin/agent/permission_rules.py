@@ -43,6 +43,9 @@ Semantics, in the order they are applied by the gate (api_client):
   path rule covers a path only when the path itself matches the glob.
 * Allow never reaches a hard refusal: the gate consults it only at the
   places where it would otherwise ask (see ``api_client._rule_answers``).
+  Nor does it answer a shell command or MCP call that cannot be undone
+  (a push, a delete nothing keeps, an upload: ``irreversible``) while a
+  person can be asked: that one is asked each time, with what it does.
 * A project file may add deny and ask rules; its allow list (and any
   ``repos``/``global_allow``) is ignored and reported. A repository must
   not grant itself permissions.
