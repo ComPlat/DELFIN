@@ -55,6 +55,11 @@ def _cmd_status(args) -> int:
         ]
         if step.job_id is not None:
             lines.append(f"    job: {step.job_id}")
+        # QS/reviewer note: the persisted params are part of the chain's
+        # facts — status shows them so a user sees exactly what a resume
+        # would rebuild (and what the inputs hash covers).
+        if step.params:
+            lines.append(f"    params: {sorted(step.params.items())}")
         if step.work_dir:
             lines.append(f"    work dir: {step.work_dir} "
                          f"(attempt {step.attempt})")
