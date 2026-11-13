@@ -118,6 +118,19 @@ def test_every_registered_adapter_declaring_a_product_satisfies_it(tmp_path):
 
     failures = []
     not_run = []
+    # A tiny valid PDB so structure adapters with a required file parameter
+    # actually run; same for the report adapters' project_dir.
+    structure = tmp_path / "tiny.pdb"
+    structure.write_text(
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00"
+        "           N\nEND\n",
+        encoding="utf-8",
+    )
+    extra_kwargs: dict = {
+        "biostructure_summary": {"structure_file": str(structure)},
+        "report_json": {"project_dir": str(tmp_path)},
+        "report_docx": {"project_dir": str(tmp_path)},
+    }
     for name, adapter in sorted(list_steps().items()):
         contract = adapter.contract()
         declared = sorted(contract.produces)
@@ -128,7 +141,8 @@ def test_every_registered_adapter_declaring_a_product_satisfies_it(tmp_path):
                            f"{sorted(contract.requires_python)})")
             continue
         try:
-            result = run_step(name, work_dir=tmp_path / name)
+            result = run_step(name, work_dir=tmp_path / name,
+                              **extra_kwargs.get(name, {}))
         except Exception as exc:  # a required param is missing — not the defect
             not_run.append(f"{name} (needs params: {exc})")
             continue
@@ -140,7 +154,8 @@ def test_every_registered_adapter_declaring_a_product_satisfies_it(tmp_path):
             failures.append(f"{name}: declares {declared}, "
                             f"artifacts carry {sorted(result.artifacts)} — "
                             f"missing {missing}")
-        (tmp_path / name).rmdir()
+        import shutil
+        shutil.rmtree(tmp_path / name, ignore_errors=True)
     assert not failures, failures
     print(f"adapters declaring products, not run here: {len(not_run)}")
     for line in not_run:
