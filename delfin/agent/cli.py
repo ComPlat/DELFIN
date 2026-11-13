@@ -957,8 +957,7 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         return 2
     # The start check cmd_chat runs too (isolation_posture), once per run
     # for both doors (`run` and chat -p; neither prepare path runs it):
-    # without a layer, bypass is confirmed when a terminal can answer,
-    # else the run continues in default and says so here. After the
+    # without a layer, the run continues in default and says so here. After the
     # session is opened, as in cmd_chat, so it judges the mode the run
     # will actually have.
     from .isolation_posture import apply_at_start
@@ -2268,8 +2267,8 @@ def _start_interactive_session(args: argparse.Namespace, report,
             engine.set_kit_permission_mode(posture)
     except Exception:
         pass          # a backend with no gate has no posture to set
-    # The same start check as cmd_run: bypass without isolation is
-    # confirmed once here, else the session starts in default.
+    # The same start check as cmd_run: bypass without isolation starts
+    # in default.
     from .isolation_posture import apply_at_start
     start_notes = tuple(_provider_notes(args))
     start_notes += tuple(apply_at_start(engine, can_ask=can_ask))

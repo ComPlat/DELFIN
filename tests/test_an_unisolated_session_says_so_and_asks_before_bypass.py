@@ -1,4 +1,4 @@
-"""Without filesystem isolation the posture is stated, and bypass is asked.
+"""Without filesystem isolation the posture is stated, and bypass does not run.
 
 Where no layer (bubblewrap, Landlock, Seatbelt) holds a shell command, or
 the user switched isolation off (``--no-isolate``, ``agent.bash_isolation
@@ -8,9 +8,11 @@ on a host simulated without any layer:
 
 * the status (isolated or not, by which layer, and why not) is one
   function, shown at session start and by /status and the status line;
-* bypassPermissions: an attended start asks once per session; with nobody
-  to ask, or a "no", the session starts in ``default`` with a notice and
-  keeps running; acceptEdits, default and plan start as asked;
+* bypassPermissions asks nothing per command, so it runs only where a
+  layer holds each command: without one -- attended or not, no question
+  asked -- the session starts in ``default`` with a notice and keeps
+  running (2026-11-13; until then an attended start asked once and kept
+  bypass on a yes); acceptEdits, default and plan start as asked;
 * a command that cannot be confined in a session that promises
   confinement (locked scope, forced isolation) is asked in every mode,
   and refused with nobody to ask, naming what works instead;
@@ -51,7 +53,6 @@ def _host(monkeypatch, *, bwrap=False, landlock=False, seatbelt=False,
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     A.set_bash_isolation_override("")
-    monkeypatch.setattr(P, "_BYPASS_CONFIRMED", False)
     yield
     A.set_bash_isolation_override("")
 
@@ -132,16 +133,14 @@ def test_a_locked_scope_without_a_layer_refuses_rather_than_runs(
 
 # -- the start check, every mode ---------------------------------------------
 
-def _start(monkeypatch, tmp_path, mode, *, can_ask, answer=None):
-    asked: list[str] = []
-
-    def _ask(question):
-        asked.append(question)
-        return bool(answer)
-
+def _start(monkeypatch, tmp_path, mode, *, can_ask):
+    """The mode the session starts in, the notes, and every question put
+    to a terminal (a yes, were one asked)."""
+    asked: list = []
+    monkeypatch.setattr("builtins.input",
+                        lambda *a: asked.append(a) or "y")
     eng = _Engine(_ws(tmp_path), mode)
-    notes = P.apply_at_start(eng, can_ask=can_ask,
-                             ask=_ask if can_ask else None)
+    notes = P.apply_at_start(eng, can_ask=can_ask)
     return eng.kit_permissions.mode, notes, asked
 
 
@@ -175,34 +174,27 @@ def test_unattended_bypass_falls_back_to_default_and_says_so(
     assert "NOT isolated" in text
 
 
-def test_attended_bypass_asks_once_naming_the_consequence(
+def test_attended_bypass_without_a_layer_starts_in_default_unasked(
         monkeypatch, tmp_path):
+    """A person at the terminal is no layer: one yes at the start confines
+    nothing, so it is not asked for."""
     _host(monkeypatch)
     got, notes, asked = _start(monkeypatch, tmp_path, "bypassPermissions",
-                               can_ask=True, answer=True)
-    assert got == "bypassPermissions" and len(asked) == 1
-    assert "outside the workspace" in asked[0]
-    # One dialog per session: a second start check in the same process
-    # does not ask again.
-    got2, _n, asked2 = _start(monkeypatch, tmp_path, "bypassPermissions",
-                              can_ask=True, answer=False)
-    assert got2 == "bypassPermissions" and asked2 == []
+                               can_ask=True)
+    assert got == "default" and asked == []
+    text = " ".join(notes)
+    assert "runs only where a layer holds each command" in text
+    assert "any other command is asked" in text
 
 
-def test_attended_bypass_refused_starts_in_default(monkeypatch, tmp_path):
-    _host(monkeypatch)
-    got, notes, asked = _start(monkeypatch, tmp_path, "bypassPermissions",
-                               can_ask=True, answer=False)
-    assert got == "default" and len(asked) == 1
-    assert any("default" in n for n in notes)
-
-
-def test_no_isolate_keeps_bypass_after_the_confirmation(monkeypatch, tmp_path):
+def test_no_isolate_lowers_bypass_to_default(monkeypatch, tmp_path):
+    """Isolation switched off on a host that has a layer: the same."""
     _host(monkeypatch, bwrap=True)
     A.set_bash_isolation_override("off")
-    got, _notes, asked = _start(monkeypatch, tmp_path, "bypassPermissions",
-                                can_ask=True, answer=True)
-    assert got == "bypassPermissions" and len(asked) == 1
+    got, notes, asked = _start(monkeypatch, tmp_path, "bypassPermissions",
+                               can_ask=True)
+    assert got == "default" and asked == []
+    assert any("--no-isolate" in n for n in notes), notes
 
 
 @pytest.mark.parametrize("mode", ["plan", "default", "acceptEdits",
@@ -509,25 +501,16 @@ def _interactive(monkeypatch, tmp_path, argv, answer):
     return rc, holder
 
 
-def test_interactive_bypass_without_isolation_asks_and_keeps_it_on_yes(
-        monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize("typed", ["y\n", "n\n", ""])
+def test_interactive_bypass_without_isolation_starts_in_default(
+        monkeypatch, tmp_path, capsys, typed):
+    """Whatever the person would type: no question, default mode."""
     _host(monkeypatch)
     rc, h = _interactive(monkeypatch, tmp_path,
                          ["--permission-mode", "bypassPermissions",
-                          "--unattended"], "y\n")
-    err = capsys.readouterr().err
-    assert rc == 0 and h["mode_at_run"] == "bypassPermissions"
-    assert "outside the workspace" in err
-    assert "NOT isolated" in h["banner"]
-
-
-def test_interactive_bypass_without_isolation_on_no_starts_in_default(
-        monkeypatch, tmp_path):
-    _host(monkeypatch)
-    rc, h = _interactive(monkeypatch, tmp_path,
-                         ["--permission-mode", "bypassPermissions",
-                          "--unattended"], "n\n")
+                          "--unattended"], typed)
     assert rc == 0 and h["mode_at_run"] == "default"
+    assert "[y/N]" not in capsys.readouterr().out
     assert "NOT isolated" in h["banner"]
 
 
@@ -542,13 +525,12 @@ def test_interactive_other_modes_start_without_a_question(
     assert "NOT isolated" in h["banner"]
 
 
-def test_interactive_no_isolate_is_confirmed_then_kept(
-        monkeypatch, tmp_path):
+def test_interactive_no_isolate_lowers_bypass(monkeypatch, tmp_path):
     _host(monkeypatch, bwrap=True)
     rc, h = _interactive(monkeypatch, tmp_path,
                          ["--permission-mode", "bypassPermissions",
                           "--unattended", "--no-isolate"], "y\n")
-    assert rc == 0 and h["mode_at_run"] == "bypassPermissions"
+    assert rc == 0 and h["mode_at_run"] == "default"
     assert "--no-isolate" in h["banner"]
 
 
@@ -646,35 +628,15 @@ def _wait(predicate, seconds=5.0):
     return False
 
 
-@pytest.mark.parametrize("answer", [True, False])
-def test_the_dashboard_start_asks_in_the_approval_panel(
-        monkeypatch, tmp_path, answer):
+def test_the_dashboard_start_lowers_bypass_without_a_panel_question(
+        monkeypatch, tmp_path):
     from delfin.agent.kit_confirm import KitConfirmBroker
     _host(monkeypatch)
     broker = KitConfirmBroker(default_timeout_s=10)
     eng = _Engine(_ws(tmp_path), "bypassPermissions")
-    confirmed = []
-
-    def _ask(question):
-        return broker.callback("bypassPermissions", {"isolation": "none"},
-                               "[NO ISOLATION]\n" + question)
-
-    notes = P.apply_at_start(eng, can_ask=True, ask=_ask, background=True,
-                             on_confirmed=lambda: confirmed.append(1))
-    # Not held: the session runs in default while the panel waits.
+    notes = P.apply_at_start(eng, can_ask=True)
     assert eng.kit_permissions.mode == "default"
-    assert any("approval panel" in n for n in notes), notes
-    assert _wait(lambda: broker.pending_requests())
-    req = broker.pending_requests()[0]
-    assert "[NO ISOLATION]" in req.preview
-    assert "outside the workspace" in req.preview
-    broker.resolve(req, answer)
-    if answer:
-        assert _wait(lambda: confirmed)
-        assert eng.kit_permissions.mode == "bypassPermissions"
-    else:
-        assert not _wait(lambda: confirmed, 0.3)
-        assert eng.kit_permissions.mode == "default"
+    assert notes and not broker.pending_requests()
 
 
 def test_the_dashboard_calls_the_start_check_where_it_builds_and_switches():
