@@ -220,6 +220,7 @@ _KINDS = {
     "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
     # Off the auto-allow list, no isolation layer, nobody to ask.
     "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
+    "unrestorable_change": ("🗑", "Command refused: it would destroy what nothing can restore"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
     # The phone messenger (delfin/messenger/audit.py KINDS, pinned equal by
