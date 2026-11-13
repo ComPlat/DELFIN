@@ -81,6 +81,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         name_page_controls,
     )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
+    from .tab_defaults import apply_first_tabs, resolve_tab_preferences
 
     from . import tab_schedule
 
@@ -521,11 +522,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'title': 'Home',
             'widget': None,
             'default_order': 81,
-            'default_visible': False,
+            # One of the five a new installation shows (tab_defaults.FIRST_TABS,
+            # 2026-11-13); until then off by default.
+            'default_visible': True,
             'available': True,
             'fixed': False,
             'build': home_build,
-            'reason': 'Off by default: it browses the whole home directory.',
+            'reason': '',
         },
         {
             'id': 'office',
@@ -640,6 +643,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         pass
 
+    # What a person sees who never arranged the tabs (a new installation
+    # first of all): five tabs and Settings; every other tab is switched on
+    # in Settings > Dashboard Tabs. A saved arrangement is kept whole
+    # (tab_defaults).
+    apply_first_tabs(tab_specs)
+
     ctx.tab_specs = tab_specs
     tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6, office_refs=refs_off)
     for spec in ctx.tab_specs:
@@ -702,39 +711,11 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                                   overflow='hidden'))
 
     def _resolve_tab_preferences():
-        specs = ctx.tab_specs or []
-        spec_map = {spec.get('id'): spec for spec in specs}
         try:
             prefs = (load_settings().get('ui', {}) or {}).get('tabs', {}) or {}
         except Exception:
             prefs = {}
-        raw_order = [str(item) for item in (prefs.get('order', []) or []) if str(item).strip()]
-        raw_hidden = {str(item) for item in (prefs.get('hidden', []) or []) if str(item).strip()}
-        order = []
-        seen = set()
-        for tab_id in raw_order:
-            spec = spec_map.get(tab_id)
-            if not spec or spec.get('fixed') or tab_id in seen:
-                continue
-            seen.add(tab_id)
-            order.append(tab_id)
-        for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000)):
-            tab_id = spec.get('id')
-            if not tab_id or spec.get('fixed') or tab_id in seen:
-                continue
-            seen.add(tab_id)
-            order.append(tab_id)
-        hidden = set()
-        saved_ids = set(raw_order)
-        for tab_id in order:
-            spec = spec_map.get(tab_id) or {}
-            if tab_id in saved_ids:
-                if tab_id in raw_hidden:
-                    hidden.add(tab_id)
-            else:
-                if not bool(spec.get('default_visible', True)):
-                    hidden.add(tab_id)
-        return order, hidden
+        return resolve_tab_preferences(ctx.tab_specs or [], prefs)
 
     # A tab that drives other tabs' widgets (through ctx.submit_refs,
     # ctx.orca_builder_refs, ...) needs them built first: the agent fills

@@ -106,7 +106,7 @@ def test_the_same_scan_still_runs_for_the_calculations_browser(tmp_path):
     assert not getattr(ctx, "browser_scan_is_bounded", False)
 
 
-def test_the_tab_is_registered_and_off_until_it_is_switched_on():
+def test_the_tab_is_registered_and_one_of_the_first_five():
     import inspect
 
     from delfin.dashboard import create_dashboard
@@ -116,5 +116,9 @@ def test_the_tab_is_registered_and_off_until_it_is_switched_on():
     home_spec = source[source.index("'id': 'home'"):]
     home_spec = home_spec[:home_spec.index("},")]
     assert "'title': 'Home'" in home_spec
-    assert "'default_visible': False" in home_spec      # a deliberate choice
+    # Off by default until 2026-11-13; now one of the five tabs a new
+    # installation shows (tab_defaults.FIRST_TABS), a deliberate choice.
+    from delfin.dashboard import tab_defaults
+    assert "home" in tab_defaults.FIRST_TABS
+    assert "'default_visible': True" in home_spec
     assert "'fixed': False" in home_spec                # so Settings can show it
