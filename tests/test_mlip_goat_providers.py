@@ -83,7 +83,7 @@ def test_auto_prefers_oet_with_the_backend():
     assert plan.nprocs == plan.workers == plan.server_processes == 40  # follows PAL
     # ... bounded by what the GPU holds
     assert plan_goat("aimnet2", 40, gpu_gib=24, oet_info=OET, mlips_info=MLIPS).workers == 12
-    assert plan.nworkers is None
+    assert plan.nworkers == 40  # GOAT left alone ran 4 workers on nprocs 24
 
 
 def test_auto_falls_back_to_orca_mlips_for_a_backend_oet_lacks():
@@ -252,7 +252,7 @@ def test_an_oet_goat_runs_inside_one_server(run_dir, monkeypatch, ai_root):
     text, server_up = calls[0]
     assert server_up, "ORCA ran while the server was up"
     assert f'"{prefix / "bin" / "delfin-oet-client"}"' in text
-    assert '"-d cuda"' in text and "nworkers" not in text.lower()
+    assert '"-d cuda"' in text and "nworkers 40" in text.lower()
     assert "nprocs 40" in text.lower()  # PAL 40: 40 workers = 40 model processes
     meta = json.loads((run_dir / "XTB2_GOAT" / "XTB_GOAT.method.json").read_text())
     assert meta["provider"] == "oet" and meta["server_processes"] == 40

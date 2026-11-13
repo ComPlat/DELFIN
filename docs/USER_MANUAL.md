@@ -363,6 +363,9 @@ Within OCCUPIER this is split once more: keys that only the stage frequency jobs
 | `global_opt_method` | (empty) | Method GOAT optimises with: empty = the `xTB_method`; `mlip:uma`, `mlip:mace`, `mlip:orb` or `mlip:aimnet2` = an orca-mlips machine-learned potential through ORCA's ExtOpt. Not with CREST |
 | `global_opt_mlip_model` | (empty) | Model name for the orca-mlips plugin (`--model`); empty = its default |
 | `global_opt_mlip_device` | `cuda` | `cuda` or `cpu`; `cuda` without a visible GPU stops the GOAT step |
+| `global_opt_mlip_provider` | `auto` | ExtOpt provider: `auto` takes orca-external-tools (one model server per job) when it is installed with the backend, else orca-mlips; `oet` or `orca-mlips` forces one |
+| `goat_max_workers` | (empty) | GOAT workers of an MLIP GOAT, a multiple of 4; empty = DELFIN's measured choice (docs/MLIP_GOAT_GPU.md) |
+| `mlip_fast_client` | `auto` | orca-external-tools client: `auto` (measured default, the documented `oet_client`), `yes` (the same request sent with curl), `no` |
 | `refuse_noncommercial_weights` | `no` | `yes` refuses MLIP weights under a non-commercial licence (`mlip:mace`) |
 
 With `global_opt_method=mlip:<plugin>` the GOAT step runs inside the

@@ -1,5 +1,36 @@
-| same GOAT, submitted as a user does (`submit_calculation`, no sbatch flags added) | routed by DELFIN: `--gres=gpu:1`, the four configured 30-min GPU partitions; ran on an H100 | terminated normally; 5 conformers within 2.5 kcal/mol; `check_goat_e2e` ok | 518.1 s (job 10 min) |
-# MLIP GOAT on a SLURM GPU cluster (orca-mlips)
+# MLIP GOAT on a SLURM GPU cluster (orca-external-tools, orca-mlips)
+
+## In short: what DELFIN does when CONTROL says `global_opt_method=mlip:<backend>`
+
+Everything else is decided by DELFIN, in one place
+(`delfin/mlp_tools/mlip_goat.py`, `plan_goat`), from measurements, and
+written to the job log (`GOAT provider: ...`, `GOAT GPU before/after the
+run: ...`) and to `XTB_GOAT.method.json`.  Every choice has a CONTROL key.
+
+| Decision | Default | From | Override |
+|---|---|---|---|
+| Provider | orca-external-tools (OET) when installed with the backend, else orca-mlips | OET keeps one model server per job; orca-mlips started one model per GOAT worker | `global_opt_mlip_provider` |
+| OET server | one `oet_server <backend> -b 127.0.0.1:<free port> -n W`, started before ORCA, stopped after it | OET README "Server"; ORCA 6.1 tutorial "ORCA with External Methods" | -- |
+| ProgExt | `<oet env>/bin/delfin-oet-client`: runs the documented `oet_client -b <address>`; the address is read from the run directory, so the input does not change between runs (smart recalc) | -- | `mlip_fast_client` |
+| Workers W (OET) | `%pal nprocs W` = GOAT workers = server model processes; W = PAL, at most what the GPU (2 GiB per model planned, 0.8 GiB measured) and the job memory (3 GiB per model) hold, a multiple of 4 | oet_server refuses a request for more cores (NCores) than its `-n`; the initial optimisation asks for all of `%pal` ("Requested 32 cores but only 8 total available", measured) | `goat_max_workers` |
+| Workers (orca-mlips) | `%goat nworkers 8`, `%pal nprocs 8` (fewer on a small GPU) | 40 workers ran the GPU out of memory (orca-mlips restarted its server 259 times), 8 ran | `goat_max_workers` |
+| GPU partition, `--gres` | the configured GPU partitions that hold the time limit (one scontrol query), asked with `sbatch --test-only` | D1 | `runtime.slurm.gpu_partitions`, `DELFIN_MLP_CLUSTER_GPU_PARTITIONS` |
+| Speed switches | off: slim client (curl) and ORCA staged to local disk measured no faster | ethanol, see "Speed" | `mlip_fast_client`; `DELFIN_STAGE_ORCA` |
+
+The ORCA input is the one the ORCA 6.1 tutorial describes for an MLIP GOAT
+(`! GOAT ExtOpt`, `%method ProgExt "<client>"`), with the model and device
+per request in `Ext_Params` (`-d cuda`; `-m <model>` when
+`global_opt_mlip_model` is set).  The GOAT settings are ORCA's own; DELFIN
+changes no method, convergence or GOAT keyword to gain speed.
+
+orca-external-tools (FACCTs, github.com/faccts/orca-external-tools) is
+GPL-3.0 (with a separate commercial licence from FACCTs).  DELFIN installs it
+as a separate program in an environment of its own
+(`python -m delfin.installer --install orca-external-tools`, pinned release
+v2.1.0 held to its SHA-256, the aimnet2 extra) and only starts its commands;
+none of its code is shipped with DELFIN.  Its `mace` (non-commercial
+weights) and `uma` (gated weights; its dependencies conflict with aimnet2)
+extras are not installed.
 
 How to run a GOAT conformer search (and an MLIP optimisation) driven by an
 MLIP through ORCA's ExtOpt interface on a GPU SLURM cluster, using DELFIN's

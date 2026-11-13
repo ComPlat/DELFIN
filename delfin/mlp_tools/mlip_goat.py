@@ -198,7 +198,9 @@ def plan_goat(backend: str, pal: int, *, forced: str = "auto",
         workers = oet_default_workers(pal, gib, host)
         source = (f"PAL {pal}, {gib:.0f} GiB GPU"
                   + (f", {host:.0f} GiB job memory" if host else "") + " (oet_default_workers)")
-    return GoatPlan("oet", None, workers, workers,
+    # %goat nworkers W as well: left to itself GOAT ran only 4 workers with
+    # 6 processes each on %pal nprocs 24 (measured), not 24 workers.
+    return GoatPlan("oet", workers, workers, workers,
                     f"{why}; {workers} GOAT workers (%pal nprocs {workers}) on one server "
                     f"with {workers} model processes, {source}", nprocs=workers,
                     fast_client=FAST_CLIENT_DEFAULT if fast_client is None else bool(fast_client))
