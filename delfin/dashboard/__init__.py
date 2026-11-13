@@ -76,6 +76,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         debounce_input,
         disable_spellcheck_global,
         hand_over_tabs,
+        keep_dashboard_tab_in_view,
         keep_scroll_position,
         name_page_controls,
     )
@@ -649,6 +650,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # Unnamed selects and slider handles take their widget's words as an
     # accessible name; every tab takes its full name as a tooltip.
     name_page_controls(ctx)
+    # The tab strip, where it scrolls: faded edges, wheel, current tab in view.
+    keep_dashboard_tab_in_view(ctx)
 
     # Every tab's startup script goes out in ONE ctx.run_js() call: run_js
     # clears its output first, so a second call would wipe the first tab's
