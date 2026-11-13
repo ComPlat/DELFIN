@@ -7,27 +7,41 @@ what it wrote into the real roots and returns one :class:`Applied` per
 changed path, which the executor journals (``change_journal``,
 ``overlay: True`` records) so ``undo_changes`` restores it.
 
+Layout of a root R's trash: ``R/.delfin-trash/<UTC date>/`` are the day
+folders the trash refusal (``unrestorable``) tells the agent to move a
+file into, writable; ``R/.delfin-trash/.undo/<UTC date>/cmd-<id>/`` holds
+the originals a command replaced (the undo store) and
+``R/.delfin-trash/.layers/<id>/`` a running command's layers. Store and
+layers are read-only to every command (every bubblewrap cage binds them
+so, ``api_client._undo_store_binds``; Seatbelt denies writes there) and
+refused to every file tool (``api_client._undo_store_refusal``); DELFIN
+changes them itself, outside every cage.
+
 Mechanism, per command:
 
-1. :func:`prepare` creates, for each eligible root R,
-   ``R/.delfin-trash/.layers/<id>/{u,w}`` (upper and work directory, on
-   R's own filesystem) and records the start time.
+1. :func:`prepare` creates ``R/.delfin-trash/.layers/<id>/{u,w}`` (upper
+   and work directory, on R's own filesystem) and records the start time.
 2. :func:`wrap` puts ``overlay_exec`` in front of the bubblewrap argv: in
    a user and mount namespace of its own it mounts
-   ``overlay(lowerdir=R, upperdir=u, workdir=w)`` over R itself, binds the
-   real trash read-only over the merged view (the layers hidden beneath an
-   empty mount), and execs bubblewrap, whose binds of R now resolve
-   through the overlay. R is not written while the command runs: every
-   create, change, rename and delete lands in u.
+   ``overlay(userxattr, lowerdir=R, upperdir=u, workdir=w)`` over R
+   itself, binds the real undo store read-only over the merged view, covers
+   the layers with an empty read-only tmpfs, and execs bubblewrap, whose
+   binds of R now resolve through the overlay. R is not written while the
+   command runs: every create, change, rename and delete lands in u.
 3. :func:`apply`, once the command has ended (and with it the namespace
    and the mount), walks u. A new path is renamed into R. A changed or
-   deleted one (whiteout, opaque directory) has its original renamed into
-   ``R/.delfin-trash/<UTC date>/cmd-<id>/<relative path>`` first, then the
-   new version renamed in. Every move is a rename on one filesystem: no
-   byte of a file is copied, a 50 MiB file costs what a 5-byte one does.
-   A whole new or deleted directory is one rename and one journal record.
+   deleted one -- a whiteout, or an entry missing from a directory the
+   kernel marked opaque (``user.overlay.opaque``: removed and made again)
+   -- has its original renamed into ``.undo/<date>/cmd-<id>/<relative
+   path>`` first, then the new version renamed in. Every move is a rename
+   on one filesystem: no byte of a file is copied, a 50 MiB file costs
+   what a 5-byte one does. A whole new or deleted directory is one rename
+   and one journal record. A directory renamed by the command (no
+   redirect_dir in a user namespace: the kernel copies it, then whites
+   the old name out) is applied as one creation and one deletion.
 4. the layer directory is removed (its work dir holds mode-000 entries
-   the kernel created; they are made writable first).
+   the kernel created; they are made writable first), and the undo store
+   is kept within its budget (:func:`keep_within_budget`).
 
 Decisions, each with the reason:
 
@@ -41,52 +55,79 @@ Decisions, each with the reason:
   so; a deletion of such a path is not applied. Both versions are kept.
 * Background commands (``bash_background``) do not run over the overlay:
   their output must appear while they run (a calculation's log, a
-  watcher's file), and an overlay shows nothing until it is applied. They
-  keep the shell change journal and the trash refusal (``unrestorable``).
+  watcher's file), and an overlay shows nothing until it is applied.
 * ``.git`` inside a root is in the overlay like everything else. Created
   files under ``.git/objects`` are applied without a journal record
   (content-addressed and append-only: a creation there replaces nothing);
   refs, the index, packed-refs, HEAD and every deletion (gc) go through
   the trash and the journal like any file, so a reset or a branch delete
-  is undone with the files. A git directory outside the roots (a
-  worktree's common dir) is not overlaid.
-* Disk: originals move into the trash instead of being freed, kept
-  ``TRASH_DAYS`` days. A root whose filesystem has less than
-  ``MIN_FREE_BYTES`` free (or ``MIN_FREE_FRACTION``) is not overlaid for
-  that command and the note says so. A command that rewrites part of a
-  large existing file causes the kernel to copy it up whole first.
-* The journal: overlay records keep no pre-image in the undo store (the
-  trash holds it), so they do not count toward its 500-entry cap; they
-  have a cap of their own (``change_journal.MAX_OVERLAY_ENTRIES``).
-  ``undo_changes`` renames the original back and the replaced version
-  into the trash, so an undo is itself undoable.
+  is undone with the files.
+* Disk. Originals move into the undo store instead of being freed. The
+  store may hold ``TRASH_SHARE`` (a quarter) of the space it could have --
+  free space plus what it holds -- and never so much that the filesystem
+  keeps less than ``MIN_FREE_BYTES``; beyond, the oldest command folders
+  are removed first, recorded (``trash_evicted``) and said. A quarter: on
+  this server (2.7 TB free) that bound is never met in practice, on a
+  Raspberry Pi with 10 GB free it is 2.5 GB; the rest of the disk stays
+  the person's. Days older than ``TRASH_DAYS`` go anyway. A root below
+  the free-space floor even after eviction is not overlaid for that
+  command (fallback below), so no command fails for want of trash space.
+* Large files stay in the overlay. Measured on this server's ZFS: one
+  appended line to a 1 GiB file costs 1.17 s and 1 GiB in the upper layer
+  (the kernel copies a file up whole before changing it), against 0.00 s
+  without the overlay; the original then lies in the undo store. Leaving
+  large files out would need a bind mount per file, and a bind-mounted
+  file cannot be deleted or renamed (EBUSY): a command's ``rm`` would
+  fail. The cost is bounded by the budget above, and calc roots, where
+  large outputs are written, are never overlaid.
+* The journal: overlay records keep no pre-image in the per-session undo
+  directory (the undo store holds it), so they do not count toward its
+  500-entry cap; they have a cap of their own
+  (``change_journal.MAX_OVERLAY_ENTRIES``). ``undo_changes`` renames the
+  original back and the replaced version into the store, so an undo is
+  itself undoable.
 
-Fallback: a root on which the overlay cannot be mounted (the probe
-failed: no unprivileged user namespaces, a filesystem without user
-xattrs such as NFS), a root with another filesystem mounted beneath it
-(an overlay does not cross mounts, the command would see an empty
-directory), a path the mount option string cannot carry, too little free
-disk -- that root is left out and keeps today's behaviour, the shell
-change journal plus the trash refusal for what nothing could restore. If
-the mount fails at run time the command has not run; the executor checks
-the refusal and runs it the old way. A command is never run unconfined
-for want of an overlay.
+What the overlay does NOT see, and what holds there instead:
 
-Not seen: hard links between files the command copied up are split;
-extended attributes and a directory's own mtime are not carried back;
-a change made under the real root by another process while the command
-runs is visible to the command or not (the kernel leaves that open), and
-is never overwritten.
+* ``bash_background`` commands, and every command in a mode other than
+  bypassPermissions: the shell change journal (pre-images up to 1 MiB per
+  file, 64 MiB in all) and, in bypass, the trash refusal for named
+  targets; their cage still binds the undo store read-only.
+* read-only and calc roots, and the session scratch: never overlaid; the
+  cage refuses writes to read-only roots, calc writes are asked about.
+* a git directory outside the roots (a worktree's common dir): written
+  directly; git's own history.
+* a root with another filesystem mounted beneath it (an overlay does not
+  cross mounts), a root whose path the mount option string cannot carry,
+  a root below the free-space floor, and a filesystem where the probe
+  fails (no unprivileged user namespaces, no user xattrs, e.g. NFS): that
+  root keeps the change journal and the trash refusal. A mount that fails
+  at run time is read from the helper's status file; the command has not
+  run, the refusal is checked again and the command runs the old way.
+* hosts with Landlock or Seatbelt instead of bubblewrap, and the CLI
+  backend's own shell (which DELFIN gates by its text, not by a cage):
+  no overlay. Seatbelt denies writes to the undo store; under Landlock
+  alone it is guarded only by the file-tool gate and the text checks,
+  since Landlock cannot carve a read-only subtree out of a writable root
+  without the root refusing new files.
+* inside an overlaid root: hard links between files the command copied
+  up are split; extended attributes and a directory's own mtime are not
+  carried back; a change another process makes under the real root while
+  the command runs is visible to the command or not (the kernel leaves
+  that open), and is never overwritten.
+
+A command is never run unconfined for want of an overlay.
 
 Rejected alternatives: snapshotting every file before every command (the
-shell change journal: bounded at 1 MiB per file and 64 MiB in all,
-because it copies bytes); reflink or hard-link copies of the tree (ZFS
-has no reflink here; a hard link does not protect an in-place write);
-bubblewrap's own ``--overlay`` (0.11+; this server has 0.9, and the
-upper layer must be on the root's filesystem for the apply to be a
-rename); keeping the upper layer for the whole turn (see above);
-putting the layers outside the root (only the root's filesystem gives a
-rename, and the session has no other writable place on it).
+shell change journal: bounded, because it copies bytes); reflink or
+hard-link copies of the tree (ZFS has no reflink here; a hard link does
+not protect an in-place write); bubblewrap's own ``--overlay`` (0.11+;
+this server has 0.9, and the upper layer must be on the root's
+filesystem for the apply to be a rename); keeping the upper layer for
+the whole turn (see above); putting the layers outside the root (only the
+root's filesystem gives a rename, and the session has no other writable
+place on it); a read-only bind of the whole trash (it would break the
+trash refusal's remedy, a move into a day folder).
 """
 
 from __future__ import annotations
@@ -107,9 +148,17 @@ from pathlib import Path
 from typing import Optional
 
 from . import overlay_exec as _ox
-from .unrestorable import TRASH, TRASH_DAYS, prepare_trash
+from .unrestorable import TRASH, TRASH_DAYS, prepare_trash, sweep
 
 LAYERS = ".layers"
+#: Where the originals a command replaced are kept, per UTC day and command:
+#: ``R/.delfin-trash/.undo/<date>/cmd-<id>/``. Apart from the trash's day
+#: folders (where the trash refusal tells the agent to move a file), so
+#: every cage can bind it read-only and leave the day folders writable.
+UNDO = ".undo"
+#: The trash's share of the space it could have: the undo store may hold at
+#: most this fraction of (free space + what it holds now).
+TRASH_SHARE = 0.25
 MIN_FREE_BYTES = 1 << 30
 MIN_FREE_FRACTION = 0.02
 #: A directory's fingerprint (the undo guard of a whole tree) is taken up
@@ -231,18 +280,45 @@ _DAYS: dict[tuple[str, str], str] = {}
 
 
 def _trash_day(root: str) -> str:
-    """``unrestorable.prepare_trash`` once per root and UTC day (it starts
-    a version-control process to keep the trash out of the index, and
-    sweeps old days); the day folder after that."""
+    """``R/.delfin-trash/.undo/<UTC date>``, made. ``unrestorable.
+    prepare_trash`` runs once per root and day (it starts a version-control
+    process to keep the trash out of the index, and sweeps old days), and
+    the undo store's old days are swept the same way. A trash that is a
+    symbolic link is refused: originals would be moved wherever it
+    points."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with _LOCK:
         day = _DAYS.get((root, today))
     if day and os.path.isdir(day):
         return day
-    day = str(prepare_trash(Path(root)))
+    trash = os.path.join(root, TRASH)
+    if os.path.islink(trash) or os.path.islink(os.path.join(trash, UNDO)):
+        raise OSError(errno.ELOOP, f"{trash} is a symbolic link")
+    prepare_trash(Path(root))
+    day = os.path.join(trash, UNDO, today)
+    os.makedirs(day, exist_ok=True)
+    os.makedirs(os.path.join(trash, LAYERS), exist_ok=True)
+    for d in (os.path.join(trash, UNDO), os.path.join(trash, LAYERS)):
+        os.chmod(d, 0o700)
+    sweep(Path(trash) / UNDO)
     with _LOCK:
         _DAYS[(root, today)] = day
     return day
+
+
+def protected(root) -> list[str]:
+    """The undo store and the layers of ``root``: every cage binds these
+    read-only, the file tools refuse them."""
+    trash = os.path.join(str(root), TRASH)
+    return [os.path.join(trash, UNDO), os.path.join(trash, LAYERS)]
+
+
+def is_protected(path) -> bool:
+    """``path`` lies in some root's undo store or layers (by name: a
+    ``.delfin-trash`` directory followed by ``.undo`` or ``.layers``)."""
+    parts = Path(str(path)).parts
+    return any(parts[i] == TRASH and parts[i + 1] in (UNDO, LAYERS)
+               for i in range(len(parts) - 1))
 
 
 def _root_reason(root: str, mounts: list[str]) -> str:
@@ -254,15 +330,26 @@ def _root_reason(root: str, mounts: list[str]) -> str:
                 m, os.path.join(root, TRASH)):
             return (f"another filesystem is mounted beneath it ({m}); an "
                     "overlay does not reach into it")
-    try:
-        st = os.statvfs(root)
-        free, total = st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
-        if free < MIN_FREE_BYTES or (total and free < total * MIN_FREE_FRACTION):
+    free, total = _free(root)
+    if total and _low(free, total):
+        keep_within_budget(root)
+        free, total = _free(root)
+        if _low(free, total):
             return (f"too little free disk for the trash ({free >> 20} MiB "
                     "free)")
-    except OSError:
-        pass
     return _probe(root)
+
+
+def _free(root: str) -> tuple[int, int]:
+    try:
+        st = os.statvfs(root)
+        return st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
+    except OSError:
+        return 0, 0
+
+
+def _low(free: int, total: int) -> bool:
+    return free < MIN_FREE_BYTES or (total and free < total * MIN_FREE_FRACTION)
 
 
 def enabled() -> bool:
@@ -524,6 +611,16 @@ class _Applier:
         os.rename(real, dest)
         return dest
 
+    @staticmethod
+    def kept(rel: str, name: str) -> bool:
+        """Never the command's to change, whatever its layer says: the undo
+        store and the layers (bound read-only in its cage anyway), and the
+        trash directory itself as a whole -- only what lies in its day
+        folders is applied like any other path."""
+        if rel == TRASH:
+            return name in (UNDO, LAYERS)
+        return False
+
     def newer(self, st) -> bool:
         return st is not None and st.st_ctime_ns > self.plan.start_ns
 
@@ -589,7 +686,7 @@ class _Applier:
             for name in lower:
                 if name in names:
                     continue
-                if not rel and name == TRASH:
+                if self.kept(rel, name):
                     continue
                 try:
                     self.remove(os.path.join(rdir, name),
@@ -600,8 +697,8 @@ class _Applier:
                                        f"{exc.strerror or exc}")
         for name in names:
             r = os.path.join(rel, name) if rel else name
-            if not rel and name == TRASH:
-                continue            # the trash is never the command's to change
+            if self.kept(rel, name):
+                continue
             try:
                 self.entry(udir, rdir, name, r)
             except OSError as exc:
@@ -613,6 +710,8 @@ class _Applier:
         ust, lst = _lstat(src), _lstat(real)
         if ust is None:
             return
+        if r == TRASH and not stat.S_ISDIR(ust.st_mode):
+            return          # the trash is never replaced or removed whole
         if _is_whiteout(ust):
             self.remove(real, r, lst)
             return
@@ -687,7 +786,8 @@ def apply(plan: Optional[Plan]) -> Outcome:
         try:
             os.rmdir(layer.trash)          # nothing was trashed
         except OSError:
-            pass
+            _add_usage(layer.root, _tree_bytes(layer.trash))
+            out.notes += keep_within_budget(layer.root, keep=layer.trash)
     return out
 
 
@@ -730,6 +830,106 @@ def _sweep_layers(layers_dir: str, days: int = TRASH_DAYS) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Disk budget
+# ---------------------------------------------------------------------------
+
+#: root -> bytes the undo store holds (st_blocks), walked once per process
+#: and kept up to date by the applies and evictions.
+_USAGE: dict[str, int] = {}
+_USAGE_WALK_SECONDS = 2.0
+
+
+def _tree_bytes(path: str, deadline: float = 0.0) -> int:
+    total = 0
+    deadline = deadline or (time.monotonic() + _USAGE_WALK_SECONDS)
+    for dirpath, dirs, files in os.walk(path):
+        for name in dirs + files:
+            st = _lstat(os.path.join(dirpath, name))
+            if st is not None:
+                total += st.st_blocks * 512
+        if time.monotonic() > deadline:
+            break
+    return total
+
+
+def _usage(root: str) -> int:
+    with _LOCK:
+        if root in _USAGE:
+            return _USAGE[root]
+    used = _tree_bytes(os.path.join(root, TRASH, UNDO))
+    with _LOCK:
+        _USAGE[root] = used
+    return used
+
+
+def _add_usage(root: str, n: int) -> None:
+    used = _usage(root)
+    with _LOCK:
+        _USAGE[root] = max(0, used + n)
+
+
+def _budget_bytes(root: str, used: int) -> int:
+    """What the undo store of ``root`` may hold: ``TRASH_SHARE`` of the
+    space it could have (free now plus what it holds), and never so much
+    that the filesystem keeps less than ``MIN_FREE_BYTES`` free."""
+    free, _total = _free(root)
+    return max(0, min(int(TRASH_SHARE * (free + used)),
+                      free + used - MIN_FREE_BYTES))
+
+
+def _record_event(kind: str, detail: str) -> None:
+    try:
+        from .api_client import _record_security_event
+        _record_security_event(kind, "bash", detail[:200], blocked=False)
+    except Exception:
+        pass
+
+
+def keep_within_budget(root: str, keep: str = "") -> list[str]:
+    """Remove the undo store's oldest command folders until it is within
+    its budget; ``keep`` (the command just applied) is never removed. A
+    removal is recorded (``trash_evicted``) and said; the records it
+    leaves without an original say so when undone. Never raises."""
+    try:
+        used = _usage(root)
+        budget = _budget_bytes(root, used)
+        if used <= budget:
+            return []
+        store = os.path.join(root, TRASH, UNDO)
+        folders = []
+        for day in sorted(os.listdir(store)):
+            dpath = os.path.join(store, day)
+            if os.path.islink(dpath) or not os.path.isdir(dpath):
+                continue
+            for name in os.listdir(dpath):
+                stamp = name.split("-")[1] if name.count("-") >= 1 else ""
+                folders.append((day, stamp, name, os.path.join(dpath, name)))
+        folders.sort()
+        removed, freed = 0, 0
+        for _day, _stamp, _name, path in folders:
+            if used - freed <= budget:
+                break
+            if keep and (_under(path, keep) or _under(keep, path)):
+                continue
+            size = _tree_bytes(path)
+            _remove_tree(path)
+            freed += size
+            removed += 1
+        with _LOCK:
+            _USAGE[root] = max(0, used - freed)
+        if not removed:
+            return []
+        msg = (f"the trash of {root} was over its budget ({used >> 20} MiB "
+               f"held, {budget >> 20} MiB allowed): the {removed} oldest "
+               f"command folders were removed ({freed >> 20} MiB); their "
+               "changes can no longer be undone")
+        _record_event("trash_evicted", msg)
+        return [msg]
+    except Exception:
+        return []
+
+
 def undo_trash_dir(root: str, seq: int) -> str:
     """Where an undo puts what it replaces: the trash, like a command."""
     day = _trash_day(root)
@@ -739,4 +939,5 @@ def undo_trash_dir(root: str, seq: int) -> str:
 __all__ = ["Plan", "Layer", "Applied", "Outcome", "enabled",
            "eligible_roots", "prepare", "can_wrap", "wrap", "apply",
            "discard", "setup_failed", "note_runtime_failure", "post_state",
-           "undo_trash_dir", "LAYERS", "ENV"]
+           "undo_trash_dir", "keep_within_budget", "protected",
+           "is_protected", "LAYERS", "UNDO", "ENV"]

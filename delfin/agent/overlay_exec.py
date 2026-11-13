@@ -18,14 +18,15 @@ code or stderr, which the command itself could imitate.
 2. for each ``--layer``: an overlay over ROOT itself
    (``lowerdir=ROOT,upperdir=UPPER,workdir=WORK``), so every write the
    command makes under ROOT lands in UPPER and ROOT stays as it was;
-3. the root's real trash (``ROOT/.delfin-trash``, opened before the
-   overlay covered it) bound read-only over the merged view: the command
-   reads the trash, cannot change it, and never looks up UPPER or WORK
-   through the overlay (both lie inside the trash; the kernel answers a
-   lookup of a layer through its own overlay with ELOOP); the trash's
-   ``.layers`` directory is covered by an empty read-only tmpfs, so a
+3. the root's real undo store (``ROOT/.delfin-trash/.undo``, opened
+   before the overlay covered it) bound read-only over the merged view:
+   the command reads the originals, cannot change them; and the trash's
+   ``.layers`` directory covered by an empty read-only tmpfs, so the
+   command never looks up UPPER or WORK through the overlay (the kernel
+   answers a lookup of a layer through its own overlay with ELOOP) and a
    ``find`` over the root meets neither the layers nor the kernel's
-   mode-000 work entries;
+   mode-000 work entries. The trash's day folders are part of the overlay
+   like any directory;
 4. ``exec`` of the bubblewrap argv given after ``--``, with
    ``--unshare-user --uid UID --gid GID`` added, so the command runs under
    the caller's own ids again.
@@ -43,6 +44,7 @@ SETUP_FAILED = 97
 MARK = "delfin-overlay:"
 TRASH = ".delfin-trash"
 LAYERS = ".layers"
+UNDO = ".undo"
 
 _CLONE_NEWNS = 0x00020000
 _CLONE_NEWUSER = 0x10000000
@@ -105,18 +107,24 @@ def _overlay(root: str, upper: str, work: str) -> None:
     for p in (root, upper, work):
         if any(c in p for c in UNSAFE):
             raise OSError(0, f"path not expressible as an overlay option: {p!r}")
-    trash = os.path.join(root, TRASH)
-    fd = os.open(trash, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    undo = os.path.join(root, TRASH, UNDO)
+    layers = os.path.join(root, TRASH, LAYERS)
+    # The real undo store, opened before the overlay covers it; O_NOFOLLOW
+    # on every component DELFIN made: a link planted there is refused.
+    for p in (os.path.join(root, TRASH), undo, layers):
+        if os.path.islink(p) or not os.path.isdir(p):
+            raise OSError(0, f"{p} is not a directory")
+    fd = os.open(undo, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        # userxattr by name: the opaque and whiteout markers the apply reads
+        # are user.overlay.*, as a mount in a user namespace requires.
         _mount("overlay", root, "overlay", 0,
-               f"lowerdir={root},upperdir={upper},workdir={work}")
-        _mount(f"/proc/self/fd/{fd}", trash, None, _MS_BIND | _MS_REC)
-        layers = os.path.join(trash, LAYERS)
-        if os.path.isdir(layers):
-            _mount("tmpfs", layers, "tmpfs",
-                   _MS_RDONLY | _MS_NOSUID | _MS_NODEV, "size=4k,mode=0555")
-        _mount(None, trash, None,
+               f"userxattr,lowerdir={root},upperdir={upper},workdir={work}")
+        _mount(f"/proc/self/fd/{fd}", undo, None, _MS_BIND | _MS_REC)
+        _mount(None, undo, None,
                _MS_BIND | _MS_REMOUNT | _MS_RDONLY | _MS_NOSUID | _MS_NODEV)
+        _mount("tmpfs", layers, "tmpfs",
+               _MS_RDONLY | _MS_NOSUID | _MS_NODEV, "size=4k,mode=0555")
     finally:
         os.close(fd)
 
@@ -125,7 +133,8 @@ def _probe(base: str) -> int:
     dirs = {k: os.path.join(base, k) for k in ("lower", "upper", "work")}
     for d in dirs.values():
         os.makedirs(d, exist_ok=True)
-    os.makedirs(os.path.join(dirs["lower"], TRASH), exist_ok=True)
+    for sub in (UNDO, LAYERS):
+        os.makedirs(os.path.join(dirs["lower"], TRASH, sub), exist_ok=True)
     try:
         _enter_namespace()
         _overlay(dirs["lower"], dirs["upper"], dirs["work"])
