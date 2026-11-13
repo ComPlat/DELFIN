@@ -33,14 +33,19 @@ from typing import Optional
 
 PROVIDERS = ("auto", "oet", "orca-mlips")
 #: GPU memory DELFIN plans per resident model (CUDA context, weights, work
-#: space for a molecule of ~100 atoms), GiB.  Conservative: 40 orca-mlips
-#: servers did not fit 80 GiB, 8 did.
-GIB_PER_MODEL = 5.0
+#: space), GiB. Measured: 8 orca-external-tools AIMNet2 processes held
+#: 6.4 GiB on an H100 after an ethanol GOAT (0.8 GiB each); planned with
+#: margin for larger molecules. (40 orca-mlips servers did not fit 80 GiB:
+#: they were started again and again, 259 times, not 40.)
+GIB_PER_MODEL = 2.0
 #: orca-mlips: measured upper bound of workers (one model each) that ran.
 ORCA_MLIPS_MAX_WORKERS = 8
 #: OET: GOAT workers (= server model processes) when nothing else is said;
 #: see the measurements in docs/MLIP_GOAT_GPU.md.
 OET_DEFAULT_WORKERS = 8
+#: OET: send each request with curl instead of oet_client's Python start-up.
+#: Off until measured faster on ethanol and on JRD1 (docs/MLIP_GOAT_GPU.md).
+FAST_CLIENT_DEFAULT = False
 #: Assumed when the GPU's memory cannot be read.
 DEFAULT_GPU_GIB = 40.0
 
@@ -97,6 +102,7 @@ class GoatPlan:
     server_processes: int    # OET model processes (1 for orca-mlips: per worker)
     reason: str
     nprocs: Optional[int] = None  # %pal nprocs written, None = PAL
+    fast_client: bool = False  # OET: the curl client (FAST_CLIENT_DEFAULT)
 
 
 def choose_provider(backend: str, forced: str = "auto", *, oet_info: Optional[dict] = None,
@@ -132,6 +138,7 @@ def choose_provider(backend: str, forced: str = "auto", *, oet_info: Optional[di
 
 def plan_goat(backend: str, pal: int, *, forced: str = "auto",
               max_workers: Optional[int] = None, gpu_gib: Optional[float] = None,
+              fast_client: Optional[bool] = None,
               oet_info: Optional[dict] = None, mlips_info: Optional[dict] = None) -> GoatPlan:
     """Provider, workers and server processes of one MLIP GOAT."""
     provider, why = choose_provider(backend, forced, oet_info=oet_info, mlips_info=mlips_info)
@@ -152,7 +159,10 @@ def plan_goat(backend: str, pal: int, *, forced: str = "auto",
                       f"{natural} -> {cap} for a {gib:.0f} GiB GPU")
         else:
             nworkers, reason = None, why
-        return GoatPlan(provider, nworkers, nworkers or natural, 1, reason)
+        # Each capped worker gets one process, as in an uncapped PAL-8 run: with
+        # nprocs 40 over 8 workers an ethanol GOAT did not finish in 25 min
+        # (A100), with nprocs 8 it finished in 9.5 min (H100).
+        return GoatPlan(provider, nworkers, nworkers or natural, 1, reason, nprocs=nworkers)
     # orca-external-tools: every request names its cores (NCores, ORCA's %pal
     # share) and the server refuses one larger than its -n -- the initial
     # optimisation asks for all of %pal nprocs ("Requested 32 cores but only 8
@@ -168,4 +178,5 @@ def plan_goat(backend: str, pal: int, *, forced: str = "auto",
         source = f"measured default for a {gib:.0f} GiB GPU (OET_DEFAULT_WORKERS)"
     return GoatPlan("oet", None, workers, workers,
                     f"{why}; {workers} GOAT workers (%pal nprocs {workers}) on one server "
-                    f"with {workers} model processes, {source}", nprocs=workers)
+                    f"with {workers} model processes, {source}", nprocs=workers,
+                    fast_client=FAST_CLIENT_DEFAULT if fast_client is None else bool(fast_client))

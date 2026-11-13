@@ -50,7 +50,7 @@ def test_orca_mlips_goat_with_pal_40_is_capped_to_8_workers():
     assert "one model per GOAT worker" in plan.reason
 
 
-@pytest.mark.parametrize("gib,cap", [(80, 8), (40, 8), (24, 4), (16, 4), (8, 4)])
+@pytest.mark.parametrize("gib,cap", [(80, 8), (40, 8), (16, 8), (12, 4), (8, 4)])
 def test_the_cap_follows_the_gpu_memory_and_stays_a_multiple_of_4(gib, cap):
     assert mlip_goat.orca_mlips_worker_cap(gib) == cap
 
@@ -262,3 +262,58 @@ def test_the_input_does_not_change_between_runs(run_dir, monkeypatch, ai_root):
     (run_dir / "input.txt").write_text(BODY)
     xtb_crest.XTB_GOAT(1, 0, cfg)
     assert calls[0][0] == calls[1][0]
+
+
+# -- the optional curl client --------------------------------------------------------
+
+def _stub_server(answer: bytes):
+    import http.server
+    import threading
+
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            seen.append((self.path, json.loads(body)))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, seen
+
+
+@pytest.mark.skipif(not __import__("shutil").which("curl"), reason="curl not installed")
+@pytest.mark.parametrize("answer,rc", [(b'{"status":"Success","stdout":""}', 0),
+                                       (b'{"status": "Error", "error_message": "x"}', 1)])
+def test_the_curl_client_sends_what_oet_client_sends(ai_root, tmp_path, answer, rc):
+    import subprocess
+
+    _fake_oet_env(ai_root)
+    wrapper = oet.client_wrapper(fast=True)
+    assert wrapper.endswith("delfin-oet-client-curl")
+    srv, seen = _stub_server(answer)
+    work = tmp_path / 'odd "dir" with\\slash'
+    work.mkdir()
+    (work / oet.ADDRESS_FILE).write_text(f"127.0.0.1:{srv.server_address[1]}\n")
+    done = subprocess.run([wrapper, "w_EXT.extinp.tmp", "-d", "cuda"], cwd=work,
+                          capture_output=True, text=True, timeout=60)
+    srv.shutdown()
+    assert done.returncode == rc, done.stdout + done.stderr
+    path, payload = seen[0]
+    assert path == "/calculate"
+    assert payload == {"arguments": ["w_EXT.extinp.tmp", "-d", "cuda"], "directory": str(work)}
+
+
+def test_the_fast_client_is_a_switch_off_by_default():
+    assert mlip_goat.FAST_CLIENT_DEFAULT is False
+    plan = plan_goat("aimnet2", 40, gpu_gib=80, oet_info=OET, mlips_info=MLIPS)
+    assert plan.fast_client is False
+    assert plan_goat("aimnet2", 40, gpu_gib=80, fast_client=True, oet_info=OET,
+                     mlips_info=MLIPS).fast_client is True

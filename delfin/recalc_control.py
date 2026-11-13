@@ -51,7 +51,7 @@ STRUCTURE_KEYS: FrozenSet[str] = frozenset({
     "n_explicit_solvent", "global_optimizer", "multiplicity_global_opt", "CREST",
     "charge", "solvent", "implicit_solvation_model",
     "global_opt_method", "global_opt_mlip_model", "global_opt_mlip_device",
-    "global_opt_mlip_provider", "goat_max_workers",
+    "global_opt_mlip_provider", "goat_max_workers", "mlip_fast_client",
 })
 _STRUCTURE_PREFIXES = ("MANTA_", "GUPPY_")
 

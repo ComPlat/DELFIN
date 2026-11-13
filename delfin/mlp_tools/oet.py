@@ -99,27 +99,61 @@ def detect_oet(environ: Optional[Mapping[str, str]] = None) -> dict:
     return out
 
 
-def client_wrapper(info: Optional[dict] = None) -> str:
-    """The absolute ProgExt for OET: ``<env>/bin/delfin-oet-client``, written if needed.
+#: The slim client (``mlip_fast_client=yes``): the same request oet_client
+#: sends -- POST {"arguments": [...], "directory": <cwd>} to /calculate
+#: (orca-external-tools src/oet/server_client/client.py) -- made with curl,
+#: so no Python interpreter starts for each energy/gradient. Its answer is
+#: checked the way oet_client checks it: "status" must not be "Error".
+FAST_WRAPPER_NAME = "delfin-oet-client-curl"
+_FAST_WRAPPER = r"""#!/bin/sh
+# Written by DELFIN (delfin/mlp_tools/oet.py): the orca-external-tools request
+# of oet_client, sent with curl instead of a Python start-up per call.
+addr=127.0.0.1:8888
+[ -r {address_file} ] && addr=$(cat {address_file})
+esc() {{ printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }}
+args=""
+for a in "$@"; do args="$args${{args:+,}}\"$(esc "$a")\""; done
+resp=$(curl -sS --max-time 3600 -H 'Content-Type: application/json' \
+  -d "{{\"arguments\":[$args],\"directory\":\"$(esc "$(pwd)")\"}}" \
+  "http://$addr/calculate") || {{ echo "oet request failed: $resp"; exit 1; }}
+case "$resp" in
+  *'"status":"Error"'*|*'"status": "Error"'*) echo "$resp"; exit 1;;
+  *'"status"'*) exit 0;;
+  *) echo "unexpected answer from the oet server: $resp"; exit 1;;
+esac
+"""
 
-    Rewritten only when its content differs (atomic rename), so concurrent
-    jobs never see half a file.
-    """
-    info = info or detect_oet()
-    if not info.get("available"):
-        raise RuntimeError(f"orca-external-tools is not installed; {OET_INSTALL}")
-    target = Path(info["client"]).with_name(WRAPPER_NAME)
-    text = _WRAPPER.format(address_file=ADDRESS_FILE, client=info["client"])
+
+def _write_if_different(target: Path, text: str) -> str:
     try:
         if target.read_text(encoding="utf-8") == text and os.access(target, os.X_OK):
             return str(target)
     except OSError:
         pass
-    tmp = target.with_name(f".{WRAPPER_NAME}.{os.getpid()}")
+    tmp = target.with_name(f".{target.name}.{os.getpid()}")
     tmp.write_text(text, encoding="utf-8")
     tmp.chmod(0o755)
     os.replace(tmp, target)
     return str(target)
+
+
+def client_wrapper(info: Optional[dict] = None, *, fast: bool = False) -> str:
+    """The absolute ProgExt for OET in its environment's ``bin``, written if needed.
+
+    ``delfin-oet-client`` runs the documented ``oet_client``;
+    ``fast=True`` gives ``delfin-oet-client-curl``, the same request made with
+    curl.  Rewritten only when the content differs (atomic rename), so
+    concurrent jobs never see half a file.
+    """
+    info = info or detect_oet()
+    if not info.get("available"):
+        raise RuntimeError(f"orca-external-tools is not installed; {OET_INSTALL}")
+    bin_dir = Path(info["client"]).parent
+    if fast:
+        return _write_if_different(bin_dir / FAST_WRAPPER_NAME,
+                                   _FAST_WRAPPER.format(address_file=ADDRESS_FILE))
+    return _write_if_different(bin_dir / WRAPPER_NAME,
+                               _WRAPPER.format(address_file=ADDRESS_FILE, client=info["client"]))
 
 
 def ext_params(backend: str, *, model: Optional[str] = None, device: str = "cuda") -> str:

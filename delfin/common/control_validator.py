@@ -1188,6 +1188,18 @@ def _as_goat_max_workers(value: Any) -> "int | None":
     return number
 
 
+def _as_mlip_fast_client(value: Any) -> "bool | None":
+    """orca-external-tools client: auto (DELFIN's measured default), yes (curl), no (oet_client)."""
+    text = str(value or "").strip().lower()
+    if text in {"", "auto"}:
+        return None
+    if text in {"yes", "true", "1", "on"}:
+        return True
+    if text in {"no", "false", "0", "off"}:
+        return False
+    raise ValueError("must be auto, yes or no")
+
+
 def _valid_global_opt_mlip(validated: Mapping[str, Any]) -> str:
     """``mlip:<plugin>`` when the value passed its field check, else ""."""
     try:
@@ -2376,6 +2388,10 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
                    "DELFIN's measured default -- orca-mlips capped at 8 (one "
                    "model per worker), orca-external-tools W workers on one "
                    "server with W model processes (%pal nprocs W)."),
+    FieldSpec("mlip_fast_client", _as_mlip_fast_client, default=None, allow_none=True,
+              help="orca-external-tools client of an MLIP GOAT: auto (DELFIN's "
+                   "measured default), yes (the same request sent with curl, no "
+                   "Python start-up per call) or no (the documented oet_client)."),
     FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
               help="yes refuses an MLIP whose weights are non-commercially "
                    "licensed (global_opt_method=mlip:mace)."),

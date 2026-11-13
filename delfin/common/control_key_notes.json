@@ -356,6 +356,12 @@
       "default": "",
       "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat."
     },
+    "mlip_fast_client": {
+      "meaning": "Client of an orca-external-tools MLIP GOAT. auto: DELFIN's measured default (delfin/mlp_tools/mlip_goat.py FAST_CLIENT_DEFAULT). yes: the request oet_client sends, made with curl, so no Python interpreter starts per energy/gradient. no: the documented oet_client.",
+      "valid_values": "auto | yes | no (_as_mlip_fast_client)",
+      "default": "auto",
+      "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat; delfin/mlp_tools/oet.py client_wrapper."
+    },
     "refuse_noncommercial_weights": {
       "meaning": "Refuse an MLIP whose model weights are non-commercially licensed (LICENSE_GUARD.md family 4); applies to global_opt_method (mlip:mace).",
       "valid_values": "yes | no (_as_yes_no)",

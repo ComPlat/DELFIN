@@ -183,6 +183,7 @@ def _global_opt_mlip_choice(config) -> dict | None:
         _as_global_opt_mlip_model,
         _as_global_opt_mlip_provider,
         _as_goat_max_workers,
+        _as_mlip_fast_client,
         _as_yes_no,
     )
 
@@ -198,6 +199,7 @@ def _global_opt_mlip_choice(config) -> dict | None:
         "device": _as_global_opt_mlip_device(config.get("global_opt_mlip_device")),
         "provider": _as_global_opt_mlip_provider(config.get("global_opt_mlip_provider")),
         "max_workers": _as_goat_max_workers(config.get("goat_max_workers")),
+        "fast_client": _as_mlip_fast_client(config.get("mlip_fast_client")),
         "refuse_noncommercial_weights":
             _as_yes_no(config.get("refuse_noncommercial_weights", "no")) == "yes",
     }
@@ -302,6 +304,7 @@ def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
     # orca-mlips with its workers capped -- it loads one model per worker.
     plan = plan_goat(backend, int(cores_limit), forced=choice["provider"],
                      max_workers=choice["max_workers"],
+                     fast_client=choice["fast_client"],
                      gpu_gib=None if choice["device"] == "cuda" else 0.0)
     print(f"GOAT provider: {plan.provider} ({plan.reason}).")
     if choice["device"] == "cuda":
@@ -310,7 +313,7 @@ def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
     oet_info = None
     if plan.provider == "oet":
         oet_info = detect_oet()
-        progext = oet_client_wrapper(oet_info)
+        progext = oet_client_wrapper(oet_info, fast=plan.fast_client)
         provider_args = dict(wrapper_path=progext, ext_params_text=oet_ext_params(
             backend, model=choice["model"] or None, device=choice["device"]))
     else:
