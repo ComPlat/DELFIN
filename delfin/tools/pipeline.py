@@ -995,6 +995,8 @@ class Pipeline:
         stop_on_failure: bool = True,
         work_dir: Optional[Path] = None,
         resume_from: Optional[dict] = None,
+        resume_chain: bool = False,
+        chain_state_obj: Optional[Any] = None,
         provenance: bool = False,
     ) -> PipelineResult:
         """Execute the pipeline sequentially, then branches in parallel.
@@ -1008,6 +1010,12 @@ class Pipeline:
         work_dir : root directory for all step working directories
         resume_from : checkpoint state dict from ``Pipeline.resume()``
                       — skips steps already completed in the checkpoint
+        resume_chain : if True, resume from the persisted chain state
+                       (delfin.tools.chain_state) in *work_dir*, deciding
+                       from facts (target 2) rather than from the state
+                       file alone
+        chain_state_obj : an existing ChainState to keep updating (one
+                       mechanism, target 4); created when None
         provenance : if True, write a ``provenance.json`` log to *work_dir*
                      after execution (all steps, timing, parameters)
 
@@ -1031,8 +1039,57 @@ class Pipeline:
         current_artifacts: Dict[str, Path] = dict(self._inherited_artifacts)  # start with inherited
         skip_until = -1  # for resume: skip steps already done
 
+        # --- Chain state (JC1): one mechanism with the pipeline steps ---
+        from delfin.tools._runner import run_step
+        chain: Optional[Any] = None
+        if resume_chain:
+            from delfin.tools import chain_state as _cs
+
+            if chain_state_obj is not None:
+                chain = chain_state_obj
+            else:
+                state_path = base / "chain_state.json"
+                chain = (
+                    _cs.ChainState.load(state_path)
+                    if state_path.is_file()
+                    else _cs.ChainState.create(name=self.name, work_dir=base)
+                )
+            # Sync trunk additions into the chain (steps added since the
+            # last run are appended; existing steps keep their state).
+            for i, spec in enumerate(self._trunk):
+                if i >= len(chain.steps):
+                    chain.add_step(spec.label or spec.step_name, spec.step_name)
+            plan = _cs.build_resume_plan(chain, work_dir=base)
+            if plan.get("wait"):
+                logger.info(
+                    "[%s] chain resume: waiting — %s", self.name, plan.get("reason")
+                )
+                return PipelineResult(name=self.name, results=[], branch_results={})
+            if plan.get("blocked"):
+                raise RuntimeError(
+                    f"[{self.name}] chain blocked: {plan.get('reason')}"
+                )
+            for step in plan.get("steps_to_skip", []):
+                logger.info("[%s] chain resume: skipping verified %s",
+                            self.name, step.name)
+        else:
+            from delfin.tools import chain_state as _cs
+
+            if chain_state_obj is not None:
+                chain = chain_state_obj
+            else:
+                chain = _cs.ChainState.create(name=self.name, work_dir=base)
+            for i, spec in enumerate(self._trunk):
+                if i >= len(chain.steps):
+                    chain.add_step(spec.label or spec.step_name, spec.step_name)
+        chain.save()
+        chain_skip: set = set()
+        if resume_chain:
+            chain_skip = {s.name for s in plan.get("steps_to_skip", [])}
+
         # --- Resume from checkpoint ---
         if resume_from is not None:
+            from delfin.tools._runner import run_step
             skip_until = resume_from.get("step_idx", -1)
             results = list(resume_from.get("results", []))
             if resume_from.get("current_geometry"):
@@ -1364,6 +1421,36 @@ class Pipeline:
             step_dir = base / f"{i:02d}_{spec.label}"
             logger.info("[%s] step %d/%d: %s", self.name, i + 1, len(self._trunk), spec.label)
 
+            # Chain-state skip: this step was verified finished on resume.
+            cstep_name = (
+                chain.steps[i].name
+                if chain is not None and i < len(chain.steps)
+                else (spec.label or spec.step_name)
+            )
+            if resume_chain and cstep_name in chain_skip:
+                logger.info("[%s] chain: skipping verified step '%s'",
+                            self.name, spec.label)
+                continue
+
+            cstep = chain.steps[i] if chain is not None and i < len(chain.steps) else None
+            if cstep is not None and cstep.state == "failed":
+                from delfin.tools import chain_state as _cs
+
+                decision = _cs.resubmission_decision(cstep)
+                if decision.action == "stop":
+                    raise RuntimeError(
+                        f"[{self.name}] step '{spec.label}' cannot be "
+                        f"resubmitted: {decision.reason}"
+                    )
+                new_dir = _cs.next_attempt_dir(cstep, base)
+                logger.info(
+                    "[%s] chain: resubmitting '%s' into %s (%s)",
+                    self.name, spec.label, new_dir, decision.reason,
+                )
+                cstep.reset_for_retry(attempt_dir=str(new_dir))
+                chain.save()
+                step_dir = new_dir.parent / f"{i:02d}_{spec.label}"
+
             result = None
             for attempt in range(spec.retry_max):
                 attempt_dir = step_dir if spec.retry_max == 1 else step_dir / f"attempt_{attempt}"
@@ -1385,6 +1472,39 @@ class Pipeline:
                     break
 
             results.append(result)
+
+            # Chain-state bookkeeping (JC1 targets 1/3): the step's end is
+            # recorded with evidence from its own output, never a guess.
+            if cstep is not None and chain is not None:
+                from delfin.tools import chain_state as _cs
+
+                if cstep.state == "pending":
+                    cstep.mark_submitted(job_id="local")
+                cstep.work_dir = str(attempt_dir)
+                if cstep.state == "submitted":
+                    cstep.mark_running()
+
+                if result.ok:
+                    evidence = _cs._read_step_evidence(
+                        cstep, chain_work_dir=base
+                    )
+                    try:
+                        cstep.mark_finished(evidence)
+                    except _cs.ChainStateError as exc:
+                        logger.warning(
+                            "[%s] chain: step '%s' succeeded but the "
+                            "evidence is missing (%s) — recorded as failed",
+                            self.name, spec.label, exc,
+                        )
+                        cstep.mark_failed(
+                            f"success without evidence: {exc}"
+                        )
+                else:
+                    try:
+                        cstep.mark_failed(result.error or "failed")
+                    except _cs.ChainStateError:
+                        pass
+                chain.save()
 
             if self._on_step:
                 self._on_step(result)

@@ -1618,6 +1618,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_tadf_xtb_subcommand(arg_list[1:])
     if arg_list and arg_list[0] in {"hyperpol", "hyperpol_xtb"}:
         return _run_hyperpol_subcommand(arg_list[1:])
+    if arg_list and arg_list[0] == "chain":
+        from delfin.cli_chain import main as _chain_main
+
+        return _chain_main(arg_list[1:])
 
     _load_full_cli_dependencies()
 

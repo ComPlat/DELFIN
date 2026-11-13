@@ -336,9 +336,10 @@ def _read_step_evidence(step: ChainStep, chain_work_dir=None) -> Dict[str, Any]:
 def _step_output_path(step: ChainStep, chain_work_dir=None) -> Optional[Path]:
     """The step's ``<base>.out`` inside its recorded work dir.
 
-    Falls back to a ``<step-name>`` directory under the chain's work dir
-    (the layout Pipeline writes per-step outputs into) when the step carries
-    no work_dir of its own.
+    Falls back to the pipeline's own per-step directory layout
+    ``<NN>_<step-name>`` under the chain's work dir (pipeline.py writes step
+    ``i`` into ``base / f"{i:02d}_{label}"``) when the step carries no
+    work_dir of its own.
     """
     candidates: list = []
     if step.work_dir:
@@ -346,9 +347,17 @@ def _step_output_path(step: ChainStep, chain_work_dir=None) -> Optional[Path]:
         if wd.is_dir():
             candidates = sorted(wd.glob("*.out"))
     if not candidates and chain_work_dir is not None:
-        wd = Path(chain_work_dir) / step.name
-        if wd.is_dir():
-            candidates = sorted(wd.glob("*.out"))
+        base = Path(chain_work_dir)
+        subs = [base / step.name]
+        subs += sorted(
+            p for p in base.glob(f"*_{step.name}")
+            if p.is_dir()
+        )
+        for sub in subs:
+            if sub.is_dir():
+                candidates = sorted(sub.glob("*.out"))
+                if candidates:
+                    break
     return candidates[-1] if candidates else None
 
 
@@ -513,14 +522,21 @@ def build_resume_plan(
                 chain, chain.steps.index(step), steps_to_skip, wait=False
             )
         if step.state == "failed":
-            reason = step.error or "failed in a previous run"
-            return {
-                "steps_to_skip": steps_to_skip,
-                "next_step": None,
-                "wait": False,
-                "blocked": True,
-                "reason": reason,
-            }
+            # A failed step CAN be the resume target (target 3): it is
+            # resubmitted in a new attempt dir — but only if the recovery
+            # policy allows it; a non-recoverable cause blocks the chain.
+            from delfin.tools import chain_state as _cs
+
+            decision = _cs.resubmission_decision(step)
+            if decision.action == "stop":
+                return {
+                    "steps_to_skip": steps_to_skip,
+                    "next_step": None,
+                    "wait": False,
+                    "blocked": True,
+                    "reason": decision.reason,
+                }
+            return _plan_after(chain, chain.steps.index(step), steps_to_skip, wait=False)
         if step.state == "pending":
             return _plan_after(chain, chain.steps.index(step), steps_to_skip, wait=False)
     return {
@@ -539,3 +555,91 @@ def _plan_after(chain, idx, steps_to_skip, wait):
         "next_step": remaining[0] if remaining else None,
         "wait": wait,
     }
+
+
+# ---------------------------------------------------------------------------
+# Bounded resubmission (JC1 target 3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ResubmissionDecision:
+    """What to do with a failed step: retry in a NEW attempt dir, or stop."""
+
+    #: "retry" | "stop"
+    action: str
+    reason: str = ""
+    #: Empty by design: PAL, maxcore and time are NEVER changed to make a
+    #: job start sooner (JC1 target 3); only _recovery's convergence kwargs
+    #: (scf_maxiter / scf_extra) may come through here.
+    kwargs_overrides: Dict[str, Any] = field(default_factory=dict)
+
+
+def next_attempt_dir(step: ChainStep, chain_work_dir: str | Path) -> Path:
+    """A NEW attempt directory for a failed step, keeping the old one.
+
+    The recalc path never overwrites a calculation (delfin/cli_recalc.py,
+    recalc_control.record_completed_run): the resubmission goes into
+    ``attempt_<N+1>`` next to the old attempt dir.
+    """
+    base = Path(chain_work_dir) / step.name
+    used = sorted(
+        int(p.name.rsplit("_", 1)[-1])
+        for p in base.glob("attempt_*")
+        if p.name.rsplit("_", 1)[-1].isdigit()
+    )
+    if step.work_dir:
+        old = Path(step.work_dir)
+        m = old.name.rsplit("_", 1)
+        if m[-1].isdigit() and old.parent.name == step.name:
+            used.append(int(m[-1]))
+    n = (used[-1] + 1) if used else 1
+    return base / f"attempt_{n}"
+
+
+def resubmission_decision(
+    step: ChainStep, max_attempts: int = 3
+) -> ResubmissionDecision:
+    """Decide whether a failed step may be resubmitted, and how often.
+
+    The decision comes from the recovery policy, not from hope: a cause
+    ``delfin.tools._recovery.suggest_recovery`` calls non-recoverable stops
+    the chain with its reason; a recoverable cause is retried at most
+    ``max_attempts`` times, then the chain stops with the reason.
+    """
+    from delfin.tools._recovery import suggest_recovery
+
+    suggestion = suggest_recovery(
+        _error_kind_from_value(step.error_kind), kwargs={}
+    )
+    if suggestion.action == "give_up":
+        return ResubmissionDecision(
+            action="stop",
+            reason=f"non-recoverable cause ({step.error_kind}): "
+            f"{step.error or suggestion.reason}",
+        )
+    if step.attempt >= max_attempts:
+        return ResubmissionDecision(
+            action="stop",
+            reason=f"attempt budget exhausted ({step.attempt}/{max_attempts} "
+            f"attempts): {step.error or 'unknown error'}",
+        )
+    return ResubmissionDecision(
+        action="retry",
+        reason=f"recoverable cause ({step.error_kind}): {step.error}",
+        kwargs_overrides=dict(suggestion.kwargs_overrides),
+    )
+
+
+def _error_kind_from_value(value: Optional[str]):
+    """Back to the ErrorKind enum member for a stored value string."""
+    if value is None:
+        from delfin.tools._recovery import ErrorKind
+
+        return ErrorKind.NONE
+    from delfin.tools._recovery import ErrorKind
+
+    for member in ErrorKind:
+        if member.value == value:
+            return member
+    return ErrorKind.TOOL_FAILED
