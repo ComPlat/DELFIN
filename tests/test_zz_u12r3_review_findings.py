@@ -59,6 +59,9 @@ def _perms(tmp_path, mode, runner, messages=TASK):
     return perms
 
 
+# web_fetch here names github.com, a host the egress proxy knows: an
+# unknown host is refused (or asked) by the host decision before the
+# watcher is consulted, and the watcher is what these tests look at.
 def _gate(perms, name, args):
     return A._DocToolExecutor()._run_permission_gate(name, args, perms)
 
@@ -195,7 +198,7 @@ def test_after_three_refusals_an_auto_allowed_action_does_not_run(
     perms = _perms(tmp_path, "acceptEdits", runner)
     for n in range(3):
         assert _gate(perms, "web_fetch",
-                     {"url": f"https://example.org/{n}"}) is not None
+                     {"url": f"https://github.com/{n}"}) is not None
     assert perms.matches_bash_auto_allow("python3 build.py")
     calls = len(runner.prompts)
     out = _gate(perms, "bash", {"command": "python3 build.py"})
@@ -217,16 +220,16 @@ def test_a_stall_is_waited_for_once_per_turn(tmp_path, monkeypatch):
     # Unattended, a network call the watcher could not judge is refused
     # (test_the_watcher_fails_closed_where_nobody_looks); the stall is
     # still waited for once only.
-    assert _gate(perms, "web_fetch", {"url": "https://example.org/a"})
+    assert _gate(perms, "web_fetch", {"url": "https://github.com/a"})
     t0 = time.monotonic()
-    assert _gate(perms, "web_fetch", {"url": "https://example.org/b"})
+    assert _gate(perms, "web_fetch", {"url": "https://github.com/b"})
     assert time.monotonic() - t0 < 0.15
     assert len(runner.prompts) == 1
     # A new user message is a new turn: the model is asked again.
     perms.classifier_messages = TASK + [
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "fetch the next page"}]
-    _gate(perms, "web_fetch", {"url": "https://example.org/c"})
+    _gate(perms, "web_fetch", {"url": "https://github.com/c"})
     assert len(runner.prompts) == 2
 
 
@@ -312,10 +315,10 @@ def test_a_no_in_the_dialog_holds_past_the_users_next_message(tmp_path,
     runner = Runner("DECISION: ask\nREASON: unclear.")
     perms = _perms(tmp_path, "bypassPermissions", runner)
     perms.confirm_callback = lambda name, args, preview: False
-    assert _gate(perms, "web_fetch", {"url": "https://example.org/x"}) is not None
+    assert _gate(perms, "web_fetch", {"url": "https://github.com/x"}) is not None
     perms.classifier_messages = TASK + [
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "go on"}]
-    out = _gate(perms, "web_fetch", {"url": "https://example.org/x"})
+    out = _gate(perms, "web_fetch", {"url": "https://github.com/x"})
     assert out is not None and "already refused" in out
     assert len(runner.prompts) == 1
