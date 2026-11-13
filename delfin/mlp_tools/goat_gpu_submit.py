@@ -13,6 +13,7 @@ limit; it never changes PAL, maxcore or the time limit to fit one.
 
 from __future__ import annotations
 
+import re
 from typing import Callable, Optional, Sequence, Tuple
 
 
@@ -57,19 +58,44 @@ def mlip_goat_method(control_text: str) -> str:
     return method if goat else ""
 
 
+#: A partition named for AMD GPUs (MI250, MI300A, ...).  orca-mlips' stacks
+#: are CUDA builds of PyTorch: on such a node the job sees no /dev/nvidia*
+#: and GOAT stops before ORCA starts (measured: an ethanol MLIP GOAT routed
+#: to an MI300 partition failed in 30 s).  The partition's TRES carries no
+#: GPU vendor and a user may not read the nodes' Gres type, so the name is
+#: what there is to go by.
+_NON_CUDA_PARTITION = re.compile(r"(?i)(?:^|[_\-])(?:mi\d{2,3}[a-z]?|amd|rocm|instinct)(?:[_\-]|$)")
+
+
+def cuda_partitions(candidates: Sequence[str]) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """``(kept, dropped)``: the candidates split into CUDA and AMD-named partitions."""
+    kept, dropped = [], []
+    for name in candidates:
+        name = str(name).strip()
+        if name:
+            (dropped if _NON_CUDA_PARTITION.search(name) else kept).append(name)
+    return tuple(kept), tuple(dropped)
+
+
 def gpu_partitions_for(candidates: Sequence[str], time_limit: str, *,
                        ask: Optional[Callable] = None) -> Tuple[str, str]:
-    """``(partitions, reason)``: the candidates whose MaxTime holds *time_limit*.
+    """``(partitions, reason)``: the CUDA candidates whose MaxTime holds *time_limit*.
 
     ``partitions`` is a comma-separated ``--partition`` value, "" with the
     reason when there is no candidate at all or none can hold the time
-    limit.  One scontrol query for all of them
+    limit.  Partitions named for AMD GPUs are left out
+    (:func:`cuda_partitions`).  One scontrol query for all of them
     (:func:`delfin.mlp_tools.extopt_submit.partitions_for_time`).
     """
     from delfin.mlp_tools.cluster_dispatch import MLPClusterConfig
     from delfin.mlp_tools.extopt_submit import partitions_for_time
 
-    names = [str(name).strip() for name in candidates if str(name).strip()]
+    names, dropped = cuda_partitions(candidates)
+    if not names and dropped:
+        return "", (
+            f"the only GPU partitions ({', '.join(dropped)}) have AMD GPUs; the "
+            "orca-mlips stacks are CUDA builds and need an NVIDIA GPU"
+        )
     if not names:
         return "", (
             "no GPU partition is configured (runtime.slurm.gpu_partitions, "

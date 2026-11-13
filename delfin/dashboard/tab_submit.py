@@ -40,6 +40,7 @@ def _input_processing():
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
 from . import gfn_optimize as _gfn
+from . import goat_method as _goat_method
 from . import mopac_optimize as _mopac
 from . import solvents as _solvents
 from . import structure_editor as _structure_editor
@@ -169,6 +170,36 @@ def create_tab(ctx):
     )
     control_widget.add_class('delfin-nospell')
     disable_spellcheck(ctx)
+
+    # GOAT method: xTB (the xTB_method) or an orca-mlips MLIP, written into the
+    # CONTROL text as global_opt_method= and read back from it. The text is
+    # what is submitted; the selector only edits the lines it owns.
+    # Availability is read from environment metadata (no torch import) and
+    # kept for a minute, so building the tab costs a few directory listings.
+    _goat_status = _goat_method.availability()
+    _goat_initial, _goat_raw = _goat_method.read_method(ctx.default_control)
+    # The labels stand beside the controls rather than in their description:
+    # a Dropdown or Text with a description puts its tooltip nowhere
+    # (@jupyter-widgets/controls 5 sets the title only when the description
+    # is empty), and the tooltip is where each choice is explained.
+    _goat_tip = _goat_method.tooltip()
+    _model_tip = ('global_opt_mlip_model: the model the MLIP loads (--model); '
+                  'empty = its default.')
+    goat_method_label = widgets.Label('GOAT method:', tooltip=_goat_tip)
+    goat_method_widget = widgets.Dropdown(
+        options=_goat_method.options(
+            _goat_status, _goat_raw if _goat_initial == _goat_method.UNKNOWN else None),
+        value=_goat_initial, tooltip=_goat_tip,
+        style=COMMON_STYLE, layout=widgets.Layout(width='300px'),
+    )
+    goat_model_label = widgets.Label('Model:', tooltip=_model_tip)
+    goat_model_widget = widgets.Text(
+        value=_goat_method.read_model(ctx.default_control), placeholder='default model',
+        continuous_update=False, tooltip=_model_tip,
+        style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
+    )
+    goat_method_status = widgets.HTML(value='', layout=widgets.Layout(width='100%'))
+    goat_sync = {'busy': False}
 
     submit_button = widgets.Button(
         description='SUBMIT JOB', button_style='primary',
@@ -1551,6 +1582,55 @@ def create_tab(ctx):
             if any_success:
                 reset_form()
 
+    def _goat_refresh_from_text(change=None, *, refresh=False):
+        """Selector, model field and status line from the CONTROL text."""
+        text = control_widget.value or ''
+        value, raw = _goat_method.read_method(text)
+        model = _goat_method.read_model(text)
+        status = _goat_method.availability(refresh=refresh)
+        goat_sync['busy'] = True
+        try:
+            wanted = _goat_method.options(
+                status, raw if value == _goat_method.UNKNOWN else None)
+            if list(goat_method_widget.options) != wanted:
+                goat_method_widget.options = wanted
+            if goat_method_widget.value != value:
+                goat_method_widget.value = value
+            if goat_model_widget.value != model:
+                goat_model_widget.value = model
+            plugin = value.split(':', 1)[1] if value.startswith('mlip:') else ''
+            goat_model_widget.disabled = not plugin
+            default_model = (status.get(plugin) or {}).get('default_model', '') if plugin else ''
+            goat_model_widget.placeholder = (
+                f'default: {default_model}' if default_model else 'default model')
+            goat_method_status.value = _goat_method.status_html(
+                value, status, raw,
+                _goat_method.model_error(model) if plugin else '')
+        finally:
+            goat_sync['busy'] = False
+
+    def _goat_on_method(change):
+        if goat_sync['busy'] or change.get('name') != 'value':
+            return
+        value = change['new']
+        if value == _goat_method.UNKNOWN:
+            return  # the text keeps what it holds
+        _goat_method.availability(refresh=True)  # a choice reads it afresh
+        new_text = _goat_method.write_method(control_widget.value or '', value)
+        if new_text != control_widget.value:
+            control_widget.value = new_text  # observed: refreshes the rest
+        else:
+            _goat_refresh_from_text()
+
+    def _goat_on_model(change):
+        if goat_sync['busy'] or change.get('name') != 'value':
+            return
+        new_text = _goat_method.write_model(control_widget.value or '', change['new'])
+        if new_text != control_widget.value:
+            control_widget.value = new_text
+        else:
+            _goat_refresh_from_text()
+
     def reset_form():
         _cancel_batch_preview_timer()
         job_name_widget.value = ''
@@ -2039,6 +2119,10 @@ def create_tab(ctx):
         preview_smiles_at_index(0, delay=0.35)
 
     smiles_batch_widget.observe(on_batch_change, names='value')
+    control_widget.observe(_goat_refresh_from_text, names='value')
+    goat_method_widget.observe(_goat_on_method, names='value')
+    goat_model_widget.observe(_goat_on_model, names='value')
+    _goat_refresh_from_text()
     only_goat_submit_button.on_click(handle_only_goat_submit)
     co2_submit_button.on_click(handle_co2_chain_submit)
     validate_button.on_click(handle_validate_control)
@@ -2082,7 +2166,12 @@ def create_tab(ctx):
         smiles_batch_output,
         construction_batch_panel,
         spacer_large,
-        widgets.HTML('<b>CONTROL.txt:</b>'), control_widget, spacer,
+        widgets.HTML('<b>CONTROL.txt:</b>'),
+        widgets.HBox([goat_method_label, goat_method_widget,
+                      goat_model_label, goat_model_widget],
+                     layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center')),
+        goat_method_status,
+        control_widget, spacer,
         widgets.HBox([validate_button, submit_button]),
         output_area, validate_output,
     ], layout=widgets.Layout(
@@ -2301,6 +2390,10 @@ def create_tab(ctx):
         'reset_form': reset_form,
         'mol_output': mol_output,
         'control_widget': control_widget,
+        'goat_method_label': goat_method_label,
+        'goat_method_widget': goat_method_widget,
+        'goat_model_widget': goat_model_widget,
+        'goat_method_status': goat_method_status,
         'coords_widget': coords_widget,
         'submit_button': submit_button,
         'job_name_widget': job_name_widget,
