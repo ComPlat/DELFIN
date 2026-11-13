@@ -47,6 +47,12 @@ CARD_MARKER = "DELFIN_CARD:"
 #: (tab_agent._mol3d_payload; .pdb is drawn there but not parsed here).
 DRAWN_SUFFIXES = (".xyz", ".trj", ".traj", ".cube")
 
+#: The suffixes drawn as a protein/macromolecule (3Dmol cartoon view),
+#: with the legend facts computed in Python via :mod:`delfin.tools.bio`.
+#: Rejected: reading them with the small-molecule path (a protein drawn
+#: atom by atom is how people look at small molecules, not proteins).
+BIO_SUFFIXES = (".pdb", ".ent", ".pdb1", ".cif", ".mmcif", ".pdbx")
+
 #: The suffixes drawn as a 2D structural formula (RDKit), the card's
 #: ``view`` then ``"2d"``. A SMILES file is read by its first token.
 FORMULA_SUFFIXES = (".smi", ".mol", ".sdf")
@@ -98,12 +104,61 @@ def _isovalue(value) -> "float | None":
     return abs(float(value))
 
 
+def _bio_facts(path, workspace_root) -> dict:
+    """What Python decides a protein card shows: chains, hetero, waters.
+
+    Read with :mod:`delfin.tools.bio` (no browser parsing, no
+    dependency-free guessing in JS). Raises ValueError when the file
+    cannot be read as a structure -- the caller's usual failure path --
+    and the same workspace/size checks as every other drawn file
+    (``chat_media._load_path``).
+    """
+    chat_media._load_path(str(path), workspace_root)
+    from delfin.tools.bio import read_structure
+    from delfin.tools.bio._errors import StructureFormatError
+    try:
+        structure = read_structure(path)
+    except StructureFormatError as exc:
+        raise ValueError(str(exc)) from None
+    comp = structure.composition()
+    water_names = sorted({
+        residue.name
+        for chain in structure.first_model.chains
+        for residue in chain.waters})
+    return {
+        "chains": list(comp.chain_ids),
+        "n_polymer_residues": comp.n_polymer_residues,
+        "hetero_components": {name: n for name, n in comp.hetero_components},
+        "n_waters": comp.n_waters,
+        "n_atoms": comp.n_atoms,
+        # The residue names the file itself calls water, so the browser
+        # blanks exactly those and nothing else.
+        "water_residue_names": water_names,
+    }
+
+
+def _binding_site(site) -> dict:
+    """A validated binding-site descriptor as JSON, or raise ValueError.
+
+    Input: a dict as written by :meth:`BindingBox.to_dict` or
+    :meth:`ResidueSelection.to_dict` (delfin.tools.bio._site), or a site
+    object. Rebuilt through ``binding_site_from_dict`` so an impossible
+    box (a negative edge) or a wrong ``kind`` is refused here, before it
+    can travel to the browser.
+    """
+    from delfin.tools.bio._site import binding_site_from_dict
+    data = site.to_dict() if hasattr(site, "to_dict") else dict(site)
+    site_obj = binding_site_from_dict(data)
+    return site_obj.to_dict()
+
+
 def render_molecule_tool_result(
     path,
     *,
     isovalue=None,
     workspace_root: "str | None" = None,
     title: "str | None" = None,
+    binding_site=None,
 ) -> str:
     """The ``DELFIN_CARD:`` result string for one molecule file.
 
@@ -125,6 +180,27 @@ def render_molecule_tool_result(
             "view": "2d",
             "text": (f"Structural formula of {Path(resolved).name}: "
                      f"{formula}, SMILES {smiles}"),
+        }
+        return CARD_MARKER + json.dumps(payload)
+    bio = None
+    if suffix in BIO_SUFFIXES:
+        bio = _bio_facts(path, workspace_root)
+        if binding_site is not None:
+            bio["binding_site"] = _binding_site(binding_site)
+        resolved = str(Path(str(path)).expanduser().resolve())
+        parts = [f"{len(bio['chains'])} chains ({', '.join(bio['chains'])})",
+                 f"{bio['n_polymer_residues']} residues",
+                 (", ".join(bio['hetero_components'])
+                  or "no hetero groups"),
+                 f"{bio['n_waters']} waters hidden"]
+        payload = {
+            "card": "molecule",
+            "path": resolved,
+            "title": str(title or Path(resolved).name),
+            "isovalue": None,
+            "bio": bio,
+            "text": "Macromolecule " + Path(resolved).name + ": "
+                    + "; ".join(parts),
         }
         return CARD_MARKER + json.dumps(payload)
     if suffix not in DRAWN_SUFFIXES:
@@ -170,6 +246,28 @@ def card_payload(result, card: str = "molecule") -> "dict | None":
         view = payload.get("view")
         if view is not None and view not in _VIEWS:
             return None
+        bio = payload.get("bio")
+        if bio is not None:
+            # The bio payload is decided facts, not free text: chains are
+            # strings, counts are integers, the hetero map is strings to
+            # integers, and a binding site is a descriptor _site.py wrote.
+            if not isinstance(bio, dict):
+                return None
+            if not (isinstance(bio.get("chains"), list)
+                    and all(isinstance(c, str) for c in bio["chains"])):
+                return None
+            for key in ("n_polymer_residues", "n_waters", "n_atoms"):
+                if not isinstance(bio.get(key), int) \
+                        or isinstance(bio.get(key), bool):
+                    return None
+            het = bio.get("hetero_components")
+            if not (isinstance(het, dict)
+                    and all(isinstance(k, str) and isinstance(v, int)
+                            for k, v in het.items())):
+                return None
+            site = bio.get("binding_site")
+            if site is not None and not isinstance(site, dict):
+                return None
     return payload
 
 
