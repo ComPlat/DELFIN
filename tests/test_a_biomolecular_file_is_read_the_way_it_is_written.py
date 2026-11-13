@@ -30,10 +30,10 @@ from delfin.tools.bio import (
     ResidueRef,
     ResidueSelection,
     StructureFormatError,
-    read_pdb,
     read_mmcif,
-    read_sdf,
     read_mol2,
+    read_pdb,
+    read_sdf,
     read_small_molecule,
     read_structure,
     residues_around,
@@ -206,6 +206,8 @@ def test_a_plain_pdb_yields_its_chains_residues_and_atoms(tmp_path):
     assert gly.atoms[0].element == "N"
     assert gly.atoms[0].x == pytest.approx(1.0)
     assert gly.atoms[0].serial == 1
+    # The element columns are upper case in this format; the symbol is not.
+    assert chain.hetero_residues[0].atoms[0].element == "Zn"
 
 
 def test_the_composition_counts_what_the_file_holds(tmp_path):
@@ -366,6 +368,10 @@ def test_an_element_column_that_is_absent_is_inferred_from_the_atom_name(tmp_pat
     indented into column 14, a two-letter one starts in column 13, and a
     hydrogen name may start in column 13 too ("HG11") or be led by a digit
     ("1HB") — neither of which is hafnium or helium.
+
+    The symbol is reported in its canonical spelling ("Zn"), not in the upper
+    case this format writes it in, so a comparison against an element does not
+    depend on which format the system was read from.
     """
     lines = [
         "ATOM      1  CA  ALA A   1       1.000   0.000   0.000  1.00  0.00",
@@ -380,7 +386,7 @@ def test_an_element_column_that_is_absent_is_inferred_from_the_atom_name(tmp_pat
         a.serial: a.element
         for c in s.first_model.chains for r in c.residues for a in r.atoms
     }
-    assert by_serial == {1: "C", 2: "N", 3: "ZN", 4: "H", 5: "H", 6: "H"}
+    assert by_serial == {1: "C", 2: "N", 3: "Zn", 4: "H", 5: "H", 6: "H"}
 
 
 # ---------------------------------------------------------------------------
