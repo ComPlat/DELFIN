@@ -185,6 +185,108 @@ def test_a_git_ref_change_is_undone_and_objects_are_not_journalled(box):
     assert (ws / ".git" / "refs" / "heads" / "main").read_text() == head
 
 
+def _over(ws: Path, script: str):
+    """Run ``script`` in ws over a real overlay; (plan, upper) before the
+    apply, or None where no overlay mounts on this host."""
+    roots, left = OW.eligible_roots([str(ws)])
+    if not roots:
+        assert left[str(ws)]
+        return None
+    plan = OW.prepare(roots)
+    argv = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc",
+            "/proc", "--bind", str(ws), str(ws), "--chdir", str(ws),
+            "/bin/sh", "-c", script]
+    proc = subprocess.run(OW.wrap(argv, plan), capture_output=True,
+                          text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert not OW.setup_failed(plan)
+    return plan, Path(plan.layers[0].upper)
+
+
+def test_a_directory_removed_and_made_again_holds_only_the_new(tmp_path,
+                                                               monkeypatch):
+    """The opaque marker is set by this kernel in a user-namespace mount and
+    read by the apply: nothing of the old directory survives in it."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "d" / "sub").mkdir(parents=True)
+    (ws / "d" / "old.txt").write_text("old\n")
+    (ws / "d" / "sub" / "s.txt").write_text("s\n")
+    ws = Path(os.path.realpath(ws))
+    run = _over(ws, "rm -r d && mkdir d && echo x > d/new")
+    if run is None:
+        return
+    plan, upper = run
+    assert os.getxattr(upper / "d", "user.overlay.opaque") == b"y"
+    out = OW.apply(plan)
+    assert sorted(p.name for p in (ws / "d").iterdir()) == ["new"]
+    trashed = {Path(c.trash).relative_to(plan.layers[0].trash).as_posix()
+               for c in out.changes if c.trash}
+    assert trashed == {"d/old.txt", "d/sub"}, out.changes
+    CJ.record_overlay_changes("opq", [
+        {"tool": "bash", "path": c.path, "kind": c.kind, "entry": c.entry,
+         "root": c.root, "trash": c.trash, "post_hash": c.post_hash,
+         "post_sig": c.post_sig, "post_tree": c.post_tree}
+        for c in out.changes if c.journal])
+    res = CJ.revert("opq", scope="session", workspace=ws)
+    assert not res["conflicts"], res
+    assert sorted(p.name for p in (ws / "d").iterdir()) == ["old.txt", "sub"]
+    assert (ws / "d" / "sub" / "s.txt").read_text() == "s\n"
+
+
+def test_a_directory_renamed_is_undone_as_one(tmp_path, monkeypatch):
+    """No redirect_dir in a user namespace: mv of a directory copies it into
+    the upper layer and whites the old name out; both are applied, and the
+    undo puts the old name back."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    ws = tmp_path / "ws"
+    (ws / "a" / "x").mkdir(parents=True)
+    (ws / "a" / "x" / "f").write_bytes(b"f" * 5000)
+    (ws / "a" / "g").write_text("g\n")
+    ws = Path(os.path.realpath(ws))
+    run = _over(ws, "mv a b")
+    if run is None:
+        return
+    plan, _upper = run
+    out = OW.apply(plan)
+    assert not (ws / "a").exists()
+    assert (ws / "b" / "x" / "f").read_bytes() == b"f" * 5000
+    assert {(Path(c.path).name, c.kind) for c in out.changes} == {
+        ("a", "deleted"), ("b", "created")}
+    CJ.record_overlay_changes("mv", [
+        {"tool": "bash", "path": c.path, "kind": c.kind, "entry": c.entry,
+         "root": c.root, "trash": c.trash, "post_hash": c.post_hash,
+         "post_sig": c.post_sig, "post_tree": c.post_tree}
+        for c in out.changes])
+    res = CJ.revert("mv", scope="session", workspace=ws)
+    assert not res["conflicts"], res
+    assert (ws / "a" / "x" / "f").read_bytes() == b"f" * 5000
+    assert not (ws / "b").exists()
+
+
+def test_the_trash_over_its_budget_loses_its_oldest_commands(tmp_path,
+                                                             monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    ws = Path(os.path.realpath(ws))
+    undo = ws / ".delfin-trash" / ".undo"
+    for day, cmd, size in (("2026-11-01", "cmd-090000-1-1", 3000),
+                           ("2026-11-02", "cmd-090000-1-2", 3000),
+                           ("2026-11-03", "cmd-090000-1-3", 3000)):
+        (undo / day / cmd).mkdir(parents=True)
+        (undo / day / cmd / "f").write_bytes(b"x" * size)
+    events = []
+    monkeypatch.setattr(OW, "_budget_bytes", lambda root, used: 7000)
+    monkeypatch.setattr(OW, "_record_event",
+                        lambda kind, detail: events.append((kind, detail)))
+    OW._USAGE.pop(str(ws), None)
+    notes = OW.keep_within_budget(str(ws), keep=str(undo / "2026-11-03"))
+    left = sorted(p.parent.name for p in undo.glob("*/cmd-*"))
+    assert left == ["2026-11-02", "2026-11-03"]
+    assert events and events[0][0] == "trash_evicted"
+    assert notes and "removed" in notes[0]
+
+
 def test_a_change_made_while_the_command_ran_is_kept_beside(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
