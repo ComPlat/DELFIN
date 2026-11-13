@@ -353,3 +353,91 @@ def test_a_model_that_is_not_a_number_fails_the_step(tmp_path, model):
     assert direct.status is StepStatus.FAILED
     assert direct.error_kind is ErrorKind.MISSING_PARAM
     assert "model" in direct.error
+
+
+# ---------------------------------------------------------------------------
+# gzip: a compressed structure file is read through the same step
+# ---------------------------------------------------------------------------
+
+
+def _gzip_write(tmp_path, name: str, text: str) -> Path:
+    import gzip
+    path = tmp_path / name
+    path.write_bytes(gzip.compress(text, encoding="utf-8"))
+    return path
+
+
+def test_a_gzipped_pdb_reports_the_same_composition(tmp_path):
+    import gzip
+    from delfin.tools.bio._read import MAX_DECOMPRESSED_BYTES
+
+    # Build the gz from the same body as _STRUCTURE so both arms agree.
+    body = "\n".join(_STRUCTURE) + "\n"
+    plain = _pdb(tmp_path, "a.pdb", _STRUCTURE)
+    gz = _gzip_write(tmp_path, "a.pdb.gz", body)
+    first = run_step(STEP, structure_file=str(plain), work_dir=str(tmp_path / "a"))
+    second = run_step(STEP, structure_file=str(gz), work_dir=str(tmp_path / "b"))
+    assert first.ok and second.ok, (first.error, second.error)
+    assert second.data["n_polymer_residues"] == first.data["n_polymer_residues"]
+    assert second.data["hetero_components"] == first.data["hetero_components"]
+    assert second.data["n_waters"] == first.data["n_waters"]
+    _ = gzip, MAX_DECOMPRESSED_BYTES
+
+
+def test_a_gzip_file_that_inflates_beyond_the_cap_fails_the_step(tmp_path):
+    from delfin.tools.bio._read import MAX_DECOMPRESSED_BYTES
+
+    huge = "x" * MAX_DECOMPRESSED_BYTES
+    gz = _gzip_write(tmp_path, "big.pdb.gz", huge)
+    result = run_step(STEP, structure_file=str(gz), work_dir=str(tmp_path / "run"))
+    assert result.status is StepStatus.FAILED
+    assert "big.pdb.gz" in result.error
+    assert result.data == {}
+
+
+# ---------------------------------------------------------------------------
+# modified residues: declared, polymer, counted apart
+# ---------------------------------------------------------------------------
+
+
+def _modres_pdb(tmp_path, name: str) -> Path:
+    def line(record, serial, atom, resname, chain, seq, element):
+        buf = [" "] * 80
+
+        def put(col, text):
+            for i, ch in enumerate(text):
+                buf[col - 1 + i] = ch
+
+        put(1, f"{record:<6}")
+        put(7, f"{serial:>5}")
+        put(13, atom if len(atom) >= 4 else f" {atom:<3}")
+        put(18, f"{resname:>3}")
+        put(22, chain)
+        put(23, f"{seq:>4}")
+        put(31, f"{0.0 + serial:>8.3f}")
+        put(39, f"{0.0:>8.3f}")
+        put(47, f"{0.0:>8.3f}")
+        put(77, f"{element:>2}")
+        return "".join(buf).rstrip()
+
+    return _pdb(tmp_path, name, "\n".join([
+        "MODRES MSE A  12 MET",
+        line("HETATM", 1, "SE", "MSE", "A", 12, "SE"),
+        line("HETATM", 2, "N", "MSE", "A", 12, "N"),
+        line("ATOM", 3, "N", "ALA", "A", 13, "N"),
+        line("HETATM", 4, "ZN", "ZN", "A", 101, "ZN"),
+        "END",
+    ]) + "\n")
+
+
+def test_a_modified_residue_is_reported_as_a_polymer_residue(tmp_path):
+    path = _modres_pdb(tmp_path, "mse.pdb")
+    result = run_step(STEP, structure_file=str(path), work_dir=str(tmp_path / "run"))
+    assert result.ok, result.error
+    data = result.data
+    assert data["n_polymer_residues"] == 2      # MET (was MSE) + ALA
+    assert data["hetero_components"] == {"ZN": 1}
+    assert data["n_modified_residues"] == 1
+    assert data["modified_residues"] == [{"chain_id": "A", "seq_id": 12,
+                                          "insertion_code": "", "name": "MSE",
+                                          "parent_name": "MET"}]

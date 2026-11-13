@@ -714,3 +714,200 @@ def test_residues_around_a_point_are_selected_by_distance(tmp_path):
     wide = residues_around(s, (8.0, 0.0, 0.0), radius=50.0)
     assert [r.residue_name for r in wide.residues] == ["GLY", "ALA", "ZN", "HOH"]
     assert wide.residues[0] == ResidueRef("A", 1, "", "GLY")
+
+
+# ---------------------------------------------------------------------------
+# gzip: the suffix before .gz chooses the reader, transparently
+# ---------------------------------------------------------------------------
+
+
+def test_a_gzipped_pdb_reads_like_the_plain_one(tmp_path):
+    import gzip
+
+    body = _GLY_ALA + _ZN_AND_WATER + ["END"]
+    plain_path = _write(tmp_path, "plain.pdb", body)
+    gz_path = tmp_path / "plain.pdb.gz"
+    gz_path.write_bytes(gzip.compress("\n".join(body) + "\n", encoding="utf-8"))
+
+    gz = read_pdb(str(gz_path))
+    assert gz.composition() == read_pdb(str(plain_path)).composition()
+    assert gz.source_name == "plain.pdb.gz"
+
+
+def test_the_suffix_before_gz_chooses_the_reader(tmp_path):
+    import gzip
+
+    rows = [_cif_atom("ATOM", 1, "C", "CA", "", "GLY", "A", 1, "", 0.0, 0.0, 0.0)]
+    cif_path = tmp_path / "both.cif"
+    cif_path.write_text(_mmcif(rows), encoding="utf-8")
+    gz_path = tmp_path / "both.cif.gz"
+    gz_path.write_bytes(gzip.compress(cif_path.read_text(encoding="utf-8")))
+
+    structure = read_structure(str(gz_path))
+    assert structure.source_format == "mmcif"
+    assert structure.first_model.chains[0].residues[0].name == "GLY"
+
+
+def _gz_write(tmp_path, name: str, text: str):
+    import gzip
+    path = tmp_path / name
+    path.write_bytes(gzip.compress(text, encoding="utf-8"))
+    return path
+
+
+def test_a_gzipped_sdf_and_mol2_read_like_the_plain_ones(tmp_path):
+    from delfin.tools.bio._read import read_small_molecule as _rsm
+
+    sdf_body = (
+        "water\n  doc\n\n  3  2  0  0  0  0  0  0  0  0999 V2000\n"
+        "    0.0000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n"
+        "    0.9000    0.0000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
+        "   -0.4000    0.8000    0.0000 H   0  0  0  0  0  0  0  0  0  0  0  0\n"
+        "  1  2  1  0  0  0  0\n"
+        "  1  3  1  0  0  0  0\n"
+        "M  END\n$$$$\n"
+    )
+    gz_sdf = _gz_write(tmp_path, "water.sdf.gz", sdf_body)
+    plain_sdf = tmp_path / "water.sdf"
+    plain_sdf.write_text(sdf_body, encoding="utf-8")
+    assert (m.formula for m in _rsm(str(gz_sdf))), None
+    assert _rsm(str(gz_sdf))[0].formula == _rsm(str(plain_sdf))[0].formula
+
+
+def test_a_file_that_inflates_beyond_the_cap_is_refused(tmp_path):
+    import gzip
+    from delfin.tools.bio._read import MAX_DECOMPRESSED_BYTES
+
+    # A gzip file that would decompress to more than the cap: a small header
+    # before a very large run of one character compresses to a few hundred
+    # bytes.
+    huge = "ATOM  \n" + "x" * (MAX_DECOMPRESSED_BYTES)
+    gz_path = _gz_write(tmp_path, "big.pdb.gz", huge)
+    with pytest.raises(StructureFormatError) as exc:
+        read_pdb(str(gz_path))
+    assert "big.pdb.gz" in str(exc.value)
+    assert "cap" in str(exc.value) or "exceeds" in str(exc.value)
+
+
+def test_a_corrupt_gzip_stream_is_refused_with_the_file_name(tmp_path):
+    path = tmp_path / "broken.pdb.gz"
+    path.write_bytes(b"\x1f\x8b not really gzip at all")
+    with pytest.raises(StructureFormatError) as exc:
+        read_pdb(str(path))
+    assert "broken.pdb.gz" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# MODRES: a declared modification is a polymer residue with its parent name
+# ---------------------------------------------------------------------------
+
+
+def _modres_line(resname, chain, seq, stdres):
+    """One MODRES record on the format-v3.3 column grid.
+
+    Columns: record 1-6, resName 8-10, chainID 12-14, seqNum 16-19,
+    iCode 20, stdRes 22-24, comment 31+.
+    """
+    buf = [" "] * 80
+
+    def put(col, text):
+        for i, ch in enumerate(text):
+            buf[col - 1 + i] = ch
+
+    put(1, "MODRES")
+    put(8, resname)
+    put(12, chain)
+    put(16, str(seq))
+    put(22, stdres)
+    return "".join(buf).rstrip()
+
+def _mse_structure_lines(with_modres: bool = False) -> list:
+    """MSE-12 (HETATM, two atoms) before ALA-13, plus a zinc ion.
+
+    *with_modres* decides whether the MODRES declaration is present, so the
+    declared and the undeclared case are the same file except for that line.
+    """
+    lines = []
+    if with_modres:
+        lines.append(_modres_line("MSE", "A", 12, "MET"))
+    lines += [
+        _pdb_line(record="HETATM", serial=1, name="SE", resname="MSE", chain="A",
+                  resseq=12, element="SE"),
+        _pdb_line(record="HETATM", serial=2, name="N", resname="MSE", chain="A",
+                  resseq=12, element="N"),
+        _pdb_line(record="ATOM", serial=3, name="N", resname="ALA", chain="A",
+                  resseq=13, element="N"),
+        _pdb_line(record="HETATM", serial=4, name="ZN", resname=" ZN", chain="A",
+                  resseq=101, element="ZN"),
+        "END",
+    ]
+    return lines
+
+
+def test_a_modres_residue_is_a_polymer_residue_named_after_its_parent(tmp_path):
+    s = read_pdb(_write(tmp_path, "mse.pdb", _mse_structure_lines(with_modres=True)))
+    chain = s.first_model.chains[0]
+    # MSE keeps its position between its neighbours; the name is the parent's.
+    names = [(r.seq_id, r.name) for r in chain.residues]
+    assert names == [(12, "MET"), (13, "ALA"), (101, "ZN")]
+    assert [r.name for r in chain.polymer_residues] == ["MET", "ALA"]
+    assert [r.name for r in chain.hetero_residues] == ["ZN"]
+
+
+def test_a_modres_residue_is_counted_as_its_own_group(tmp_path):
+    s = read_pdb(_write(tmp_path, "mse.pdb", _mse_structure_lines(with_modres=True)))
+    c = s.composition()
+    assert c.n_polymer_residues == 2            # MET (was MSE) + ALA
+    assert c.hetero_components == (("ZN", 1),)  # MSE is not a hetero component
+    assert c.n_modified_residues == 1
+    assert c.modified_residues == (("A", 12, "", "MSE", "MET"),)
+
+
+def test_an_undeclared_hetero_group_stays_hetero(tmp_path):
+    # Same HETATM records, no MODRES: MSE stays a hetero component.
+    lines = _mse_structure_lines()
+    s = read_pdb(_write(tmp_path, "no_modres.pdb", lines))
+    c = s.composition()
+    assert c.hetero_components == (("MSE", 1), ("ZN", 1))
+    assert c.n_modified_residues == 0
+
+
+def test_a_modres_residue_outside_a_polymer_chain_is_not_a_polymer_residue(tmp_path):
+    # A MODRES entry whose residue is absent from the coordinate records
+    # (declared but not modelled) must not invent anything.
+    lines = _mse_structure_lines(with_modres=True) + [
+        _modres_line("SEP", "A", 20, "THR"),
+    ]
+    s = read_pdb(_write(tmp_path, "ghost.pdb", lines))
+    c = s.composition()
+    assert c.n_modified_residues == 1      # only the modelled one
+    assert ("SEP", 0) not in c.hetero_components
+
+
+def test_the_same_modification_reads_from_mmcif(tmp_path):
+    extra = (
+        "#\n"
+        "loop_\n"
+        "_pdbx_struct_mod_residue.id\n"
+        "_pdbx_struct_mod_residue.SIF_name\n"
+        "_pdbx_struct_mod_residue.label_asym_id\n"
+        "_pdbx_struct_mod_residue.label_comp_id\n"
+        "_pdbx_struct_mod_residue.label_seq_id\n"
+        "_pdbx_struct_mod_residue.parent_comp_id\n"
+        "_pdbx_struct_mod_residue.details\n"
+        "mod1 MSE A MSE 12 MET\n"
+    )
+    rows = [
+        _cif_atom("ATOM", 1, "SE", "SE", "", "MSE", "A", 12, "", 0.0, 0.0, 0.0),
+        _cif_atom("ATOM", 2, "C", "CA", "", "MSE", "A", 12, "", 1.0, 0.0, 0.0),
+        _cif_atom("HETATM", 3, "ZN", "ZN", "", "ZN", "A", 101, "", 8.0, 0.0, 0.0),
+    ]
+    path = tmp_path / "mse.cif"
+    path.write_text(_mmcif(rows, extra=extra), encoding="utf-8")
+    s = read_mmcif(str(path))
+    chain = s.first_model.chains[0]
+    assert [(r.seq_id, r.name) for r in chain.residues] == [(12, "MET"), (101, "ZN")]
+    assert [r.name for r in chain.polymer_residues] == ["MET"]
+    c = s.composition()
+    assert c.n_modified_residues == 1
+    assert c.hetero_components == (("ZN", 1),)
