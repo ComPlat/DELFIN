@@ -94,7 +94,8 @@ def job_memory_gib() -> Optional[float]:
 
 
 #: Host memory DELFIN plans per OET model process (a Python with torch and
-#: CUDA), GiB.
+#: CUDA), GiB. Measured: 1.7-1.9 GiB per process (sacct MaxRSS of 8, 24 and
+#: 40 process runs, ORCA included).
 HOST_GIB_PER_MODEL = 3.0
 
 

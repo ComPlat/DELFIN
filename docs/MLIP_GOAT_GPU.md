@@ -210,6 +210,66 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
   be read back afterwards (worker outputs are deleted unless
   `KEEPWORKERDATA`).
 
+## Speed: what was measured, and when MLIP GOAT beats xTB GOAT
+
+All runs through the CONTROL path, ORCA 6.1.1, AIMNet2 (default model), one
+GPU, 30-minute GPU partitions unless noted; "step" is ORCA's `Time for
+complete geometry iter`, "E+G" its `Time for energy+gradient` (the external
+call).  A GOAT's total work depends on the worker count (GOAT gives each
+worker at least ~15 optimisations for ethanol, ~34 for the 81-atom
+chromophore), so total run times of runs with different W are not
+comparable; steps and optimisations per minute are.
+
+Ethanol (9 atoms):
+
+| Setup | GPU | Workers | Step (E+G) | GOAT run time |
+|---|---|---|---|---|
+| orca-mlips, PAL 8 | H100 | 8 | -- | 9 min 28 s |
+| orca-mlips, PAL 40, capped (`%pal nprocs 8`, `nworkers 8`) | H100 | 8 | 0.91 s | 8 min 33 s, one server start |
+| orca-mlips, PAL 40, capped, `nprocs 40` (first version) | A100 | 8 | 1.46 s | not finished in 25 min |
+| orca-external-tools, documented client | H100 | 8 | 0.85 s (0.22 s) | 7 min 36 s; 8 model processes held 6.4 GiB GPU |
+| same, ORCA staged to node-local disk | H100 | 8 | 0.85 s | 7 min 7 s (within run-to-run spread) |
+| same, slim client (curl), run directory on the network home | H100 | 8 | 0.93 s | 13 min 10 s |
+| orca-external-tools, PAL 40, job memory 78 GiB | A100 | 24 | 1.24 s (0.36 s) | not finished in 25 min (3x the optimisations of 8 workers) |
+
+An 81-atom push-pull chromophore, gas phase (an archived xTB GOAT of the same input: GFN2-xTB,
+40 workers on 40 cores, 2 h 27 min, 162 conformers, 6.0 kcal/mol window,
+~7000 optimisations, ~48 per minute):
+
+| Setup | GPU | Workers | Step (E+G) | Optimisations per minute | Projected GOAT |
+|---|---|---|---|---|---|
+| orca-mlips, PAL 40, uncapped | H100 | 40 | -- | -- | GPU out of memory after 25 min |
+| orca-mlips, 8 workers | A100 | 8 | 1.0-1.5 s | 3.8 | ~28 h |
+| orca-external-tools, PAL 40 (DELFIN's default), only `global_opt_method` set | H100 | 40 | 1.49 s (0.22 s) | ~24 | ~5 h; 40 model processes held 32 GiB GPU, 73 GB job memory |
+
+Where the time goes: the external energy+gradient is 0.22 s per step with
+orca-external-tools; the rest of every step -- 0.6 s
+for ethanol, 1.3 s with 40 workers on 40 cores for the chromophore -- is
+ORCA's own per-step work outside the optimiser (the optimiser itself takes
+1 ms).  A faster client (curl instead of a Python start-up) and ORCA on
+node-local disk did not shorten the step, so both stay off.
+
+Recommendation, from these numbers:
+
+- **Small and mid-size molecules, many conformers, GPU at hand:** MLIP GOAT
+  with orca-external-tools is practical (ethanol: 7-9 min) and gives
+  ωB97M-D3-trained energies instead of GFN2-xTB.  It is not faster than xTB.
+- **Large chromophores (~80 atoms) on a time-limited GPU partition:** xTB
+  GOAT on 40 CPU cores is about twice as fast (2.5 h against ~5 h projected)
+  and fits CPU partitions; MLIP GOAT needs a GPU partition with a multi-hour
+  limit.  The MLIP route is worth it when the AIMNet2 ranking or geometry is
+  what is wanted, not for speed.
+- **Geometry (bond-length alternation of the push-pull bridge):** a
+  CAM-B3LYP-D3(BJ)/def2-SVP optimisation of the lowest conformer gives
+  0.051 A; GFN2-xTB 0.023 A, AIMNet2 0.087 A.  Neither pre-screen gets it;
+  re-optimise the selected conformers at the DFT level before computing
+  NLO properties.  Heavy-atom RMSD to the DFT minimum: xTB 0.16 A, AIMNet2
+  0.43 A; the bridge torsions of all three agree within ~12 degrees.
+- **Ranking:** on this chromophore the AIMNet2 ranking of the ten lowest
+  xTB conformers kept the same top three as xTB and as CAM-B3LYP-D3(BJ);
+  without dispersion CAM-B3LYP prefers a different conformer family by
+  5.5 kcal/mol.
+
 ## Known limits
 
 - **D1 -- walltime vs partition: fixed in DELFIN** (ExtOpt submit path).
@@ -230,7 +290,16 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
   rendered for orb only.
 - **`! Opt Freq ExtOpt` runs no frequencies** in ORCA 6.1.1 (optimisation
   only, normal termination, no warning).  The block writes `NumFreq`.
-- **Worker sharing** of one model server is not shown (see Measured).
+- **The ORCA 6.1 tutorial's GOAT example** (`! EXTOPT GOAT PAL8` with
+  `oet_server aimnet2 --nthreads 4`; faccts.de/docs/orca/6.1/tutorials/
+  workflows/extopt.html) is refused by orca-external-tools 2.1.0: its server
+  counts each request's NCores against `--nthreads`, and the initial
+  optimisation asks for all 8 ("Requested 32 cores but only 8 total
+  available" in our PAL-32 run).  DELFIN writes `%pal nprocs` equal to the
+  server's `-n`.
+- **Worker sharing -- answered.** orca-mlips does not share: with many
+  workers each started its own model server (the GPU ran out of memory at
+  40); DELFIN caps it at 8. orca-external-tools shares one server per job.
 - **Open-shell / charged systems** are not exercised: ethanol is
   closed-shell neutral.  Whether ORB and AIMNet2 handle a charged,
   open-shell input (e.g. `[Cu(NH3)4]2+`) is not established.
