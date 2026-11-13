@@ -137,7 +137,10 @@ def test_bypass_unattended_refuses_with_the_alternative(tmp_path, cmd):
     out = _gate(_perms(tmp_path), cmd)
     assert out is not None, cmd
     low = out.lower()
-    assert "new branch" in low or "reflog" in low or "new tag" in low, out
+    # The deny list answers first for `--force-if-includes` (it reads as
+    # --force), naming its own route: a branch of your own.
+    assert ("new branch" in low or "branch of your own" in low
+            or "reflog" in low or "new tag" in low), out
 
 
 def test_a_force_push_refusal_names_a_new_branch(tmp_path):
