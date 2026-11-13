@@ -1476,6 +1476,8 @@ class Pipeline:
 
             cstep = chain.steps[i] if chain is not None and i < len(chain.steps) else None
             if cstep is not None and cstep.state == "pending":
+                from delfin.tools import chain_state as _cs
+
                 # Record the submission BEFORE the run starts (reviewer
                 # suggestion, 13.11.): a crash while the job runs then
                 # leaves a persisted `submitted` step with its work dir,
@@ -1484,6 +1486,14 @@ class Pipeline:
                 # `pending`/None on disk and a redundant rerun on resume.
                 cstep.mark_submitted(job_id="local")
                 cstep.work_dir = str(step_dir)
+                # L1/L3: persist what run_step will actually receive, so a
+                # resume can rebuild a REAL run (validate_params passes) and
+                # the inputs hash hashes real inputs.
+                cstep.params = dict(merged_kwargs)
+                cstep.inputs_hash = _cs.compute_inputs_hash(
+                    geometry=str(geom) if geom else None,
+                    **{"cores": cores, **cstep.params},
+                )
                 chain.save()
             if cstep is not None and cstep.state == "failed":
                 from delfin.tools import chain_state as _cs

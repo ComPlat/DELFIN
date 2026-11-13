@@ -75,6 +75,10 @@ class ChainStep:
     inputs_hash: str = ""
     #: Recoverable-error classification from delfin.tools._recovery.
     error_kind: Optional[str] = None
+    #: The step's parameters exactly as Pipeline passes them to run_step,
+    #: so a resume can rebuild a REAL run (L1: charge/method/basis/mult,
+    #: ...) and the inputs_hash has inputs to hash (L3).
+    params: Dict[str, Any] = field(default_factory=dict)
     attempts: List[Dict[str, Any]] = field(default_factory=list)
 
     # -- transitions -------------------------------------------------------
@@ -169,6 +173,7 @@ class ChainStep:
             "error_kind": self.error_kind,
             "evidence": self.evidence,
             "inputs_hash": self.inputs_hash,
+            "params": self.params,
             "attempts": list(self.attempts),
         }
 
@@ -185,6 +190,7 @@ class ChainStep:
             error_kind=data.get("error_kind"),
             evidence=data.get("evidence"),
             inputs_hash=data.get("inputs_hash", ""),
+            params=dict(data.get("params", {})),
             attempts=list(data.get("attempts", [])),
         )
 
@@ -264,8 +270,22 @@ class ChainState:
 
     # -- steps -------------------------------------------------------------
 
-    def add_step(self, name: str, tool: str, inputs_hash: str = "") -> ChainStep:
-        step = ChainStep(name=name, tool=tool, inputs_hash=inputs_hash)
+    def add_step(
+        self,
+        name: str,
+        tool: str,
+        inputs_hash: str = "",
+        params: Optional[Dict[str, Any]] = None,
+    ) -> ChainStep:
+        if params is None:
+            params = {}
+        # L3: the inputs hash comes from the step's actual inputs, never ""
+        if not inputs_hash and params:
+            inputs_hash = compute_inputs_hash(**params)
+        step = ChainStep(
+            name=name, tool=tool, inputs_hash=inputs_hash,
+            params=dict(params),
+        )
         self.steps.append(step)
         # Persist immediately: a chain step must never be lost to a crash
         # between add_step and the next explicit save (the state file is

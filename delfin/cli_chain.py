@@ -79,22 +79,37 @@ def _cmd_resume(args) -> int:
         )
         return 1
 
+    # L2: the state file as it was found.  A resume that fails (a bad
+    # rebuild, a crash inside the pipeline) must leave it EXACTLY as it
+    # was — the crashed run's submitted/attempt facts are the only
+    # record that the first attempt ever happened.
+    state_path = Path(args.work_dir) / STATE_FILENAME
+    state_before = state_path.read_bytes()
+
     from delfin.tools import pipeline as pipeline_mod
     from delfin.tools.pipeline import Pipeline
 
-    # Rebuild the pipeline from the chain's own step list so the resume
-    # runs exactly the steps the state knows (the same step names and
-    # tools the chain recorded).  The pipeline reads the persisted state
-    # itself (one mechanism, target 4) via resume_chain=True.
+    # Rebuild the pipeline from the chain's OWN step specs (L1: the
+    # persisted params — charge, method, basis, mult, ... — so the
+    # rebuilt run satisfies the real adapter's validate_params, not
+    # only a fake that ignores kwargs).
     pipe = Pipeline(name=chain.name)
     for step in chain.steps:
-        pipe.add(step.tool, label=step.name)
-    result = pipe.run(
-        cores=args.cores,
-        work_dir=Path(args.work_dir),
-        resume_chain=True,
-        chain_state_obj=chain,
-    )
+        pipe.add(step.tool, label=step.name, **step.params)
+    try:
+        result = pipe.run(
+            cores=args.cores,
+            work_dir=Path(args.work_dir),
+            resume_chain=True,
+            chain_state_obj=chain,
+        )
+    except Exception as exc:
+        # L2: leave the state as it was found; NOTE: one clear line,
+        # never a traceback at the user.
+        state_path.write_bytes(state_before)
+        logger.error("chain '%s' resume failed: %s", chain.name, exc)
+        print(f"chain '{chain.name}' resume failed: {exc}")
+        return 1
     if not result.ok:
         failed = [
             r for r in result.results if not r.ok
