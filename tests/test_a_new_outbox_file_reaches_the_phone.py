@@ -22,11 +22,12 @@ import os
 
 import pytest
 
-from delfin.messenger import store
+from delfin.messenger import lang, store
+from delfin.messenger.media import session_hash
 from delfin.messenger.gateway import Rooms
 
 SID = 's1'
-OWN = hashlib.sha256(SID.encode()).hexdigest()[:24]
+OWN = session_hash(SID)
 
 
 class Daemon:
@@ -142,3 +143,31 @@ def test_only_the_session_s_own_outbox_is_the_source(rig):
     (outbox / 'img.jpg').write_bytes(b'x' * 5)
     asyncio.run(rooms.refresh())
     assert [(c, n) for c, n, _ in daemon.files] == [('#10', 'img.jpg')]
+
+
+def test_a_name_the_download_would_refuse_is_never_offered(rig):
+    """download.begin serves only names media.filename leaves unchanged; a
+    link for any other name could not fetch the file, and its quote or
+    markup characters would break the tappable command."""
+    rooms, daemon, _, outbox = rig
+    asyncio.run(rooms.refresh())
+    (outbox / "it's.png").write_bytes(b'x' * 5)
+    (outbox / 'a*b.pdf').write_bytes(b'x' * 5)
+    asyncio.run(rooms.refresh())
+    assert not daemon.files and not daemon.sent
+
+
+def test_a_foreign_outbox_is_not_a_source(rig):
+    rooms, daemon, bridge, outbox = rig
+    other = outbox.parent.parent / session_hash('other') / 'outbox'
+    other.mkdir(parents=True)
+    bridge.outbox = str(other)
+    asyncio.run(rooms.refresh())
+    (other / 'img.jpg').write_bytes(b'x' * 5)
+    asyncio.run(rooms.refresh())
+    assert not daemon.files and not daemon.sent
+
+
+def test_the_offer_reads_as_one_sentence_in_german():
+    key = "📎 The session has put `{name}` on the phone.\n/'datei {name}' fetches it."
+    assert lang.DE[key].endswith("/'datei {name}' holt sie.")

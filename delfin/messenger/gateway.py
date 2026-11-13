@@ -1986,58 +1986,36 @@ class Rooms:
         without typing: an image under IMAGE_PUSH_MAX is pushed directly
         (the phone shows it), everything else sends one message with its
         name and the tappable SimpleX command /'datei NAME'. Seen at
-        start = baseline (no replay of an old outbox); each file once."""
-        import hashlib
-        from .media import ROOT
+        start = baseline (no replay of an old outbox); each name once, so
+        a file replaced under the same name is not offered again.
+
+        A name the download refuses (media.filename changes it: quotes,
+        markup characters) is never offered: its link could not fetch it."""
+        from .media import ROOT, filename, session_hash
         reply = await self.session(sid, 'files')
         if reply.get('error') or not reply.get('ok'):
             return
         source = reply.get('outbox') or ''
-        own = hashlib.sha256(str(sid).encode()).hexdigest()[:24]
-        if not source.rstrip('/').endswith(os.path.join(ROOT, own, 'outbox')):
+        if not source.rstrip('/').endswith(os.path.join(ROOT, session_hash(sid), 'outbox')):
             return                      # only the session's own outbox is the source
+        names = {f['name'] for f in reply.get('files', [])}
         known = self._offered_files.get((chat, sid))
         if known is None:
             # First look at this chat: the outbox as it stands is the
             # baseline -- an old outbox is not replayed.
-            self._offered_files[(chat, sid)] = {f['name'] for f in reply.get('files', [])}
+            self._offered_files[(chat, sid)] = names
             return
         fresh = [f for f in reply.get('files', []) if f['name'] not in known]
-        for f in fresh:
-            known.add(f['name'])
+        known.update(f['name'] for f in fresh)
         for f in fresh:
             name = f['name']
+            if name != filename(name):
+                continue
             if name.lower().endswith(self.IMAGE_SUFFIXES) and f['size'] <= self.IMAGE_PUSH_MAX:
-                await self._push_outbox_file(chat, sid, name)
+                await self.download(chat, sid, name)
             else:
-                await self.send(chat, t('📎 The session has put *{name}* on the phone.\n'
+                await self.send(chat, t("📎 The session has put `{name}` on the phone.\n"
                                         "/'datei {name}' fetches it.").format(name=name))
-
-    async def _push_outbox_file(self, chat, sid, name):
-        from .media import MAX_FILE
-        import base64
-        import hashlib
-        reply = await self.session(sid, 'download.begin', text=name)
-        if not reply.get('ok'):
-            return
-        data = bytearray()
-        while True:
-            part = await self.session(sid, 'download.chunk', id=reply.get('id', ''))
-            if not part.get('ok') or 'data' not in part:
-                return
-            data.extend(base64.b64decode(part['data'], validate=True))
-            if len(data) > MAX_FILE or part.get('done'):
-                break
-        if hashlib.sha256(data).hexdigest() != reply.get('sha256'):
-            return                      # incomplete: offer nothing, stay safe
-        from .media import cache_file, discard
-        path = cache_file(reply['name'])
-        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb') as stream:
-            stream.write(data)
-        if not self.paired() or (await self.session(sid, 'status')).get('messengerEnabled') is not True:
-            discard(path)
-            return
-        await self.daemon.send_file(chat, path, reply['name'])
 
     async def relay_notes(self, chat, room, notes, forums):
         """The session's deliberate notes (push_notification) to its chat:
