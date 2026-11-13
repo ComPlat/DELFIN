@@ -24,7 +24,7 @@ nice -n 10 ionice -c3 $MAMBA_ROOT_PREFIX/envs/delfin-voila/bin/python \
 |---|---|
 | `--out DIR` | output directory (required) |
 | `--tree PATH` | DELFIN checkout the dashboard runs from; default: the checkout holding the script |
-| `--scenario` | `composer` (default) or `service-session` |
+| `--scenario` | `composer` (default), `service-session`, `sidebar` or `keep` |
 | `--timeout S` | hard deadline for the whole check; default 1800 |
 | `--server-python P` | dashboard interpreter; default `$DELFIN_PAGE_CHECK_SERVER_PYTHON`, else the script's own |
 
@@ -42,6 +42,27 @@ where). 2: usage error.
   there and runs one turn, then opens the dashboard's agent tab and
   records the sidebar's running-sessions list (`.delfin-running-item`).
   Passes when at least one running item is listed.
+- **sidebar**: a private service with a front session, a background run (a
+  folder under `.delfin/worktrees`) and an ended, saved session. The agent
+  tab is photographed at 1366x768, 1920x1080, 1280x720, 2560x1440, 900x1400
+  and 390x844 (`page_*.png`, `sidebar_*.png`, `controls_*.png`); at each size
+  the record says whether the page itself scrolls, how far the inner area
+  scrolls, and which controls of the sidebar or the session's control row
+  overlap. Then the resume search: opened, typed into, Up, Esc, and Enter on
+  a typed filter (`resume_*.png`): whether its list shows, which row is
+  highlighted, what Enter opened and whether the field emptied.
+- **keep**: the keep switches measured by process. Page A runs two
+  sessions in their own folders and switches "Keep session" on for one;
+  the page is left (pagehide, the close beacon) and closed. Recorded: when
+  page A's kernel process ended (its pid, read from `/proc` by the kernel's
+  connection file -- never the id), which sessions the agent service runs
+  then (the kept one, keep true; the other not), the kept-session records
+  and hand-over log, whether the server stopped with its last window (it is
+  started again, as a person would), and what a new page B lists as running.
+  B then switches the kept session off and is closed: the session must end
+  with it. Run on a tree without the switches, the same steps are the
+  control and the record says which switch was missing. The window grace is
+  8 s here (`DELFIN_SESSION_GRACE_SECONDS`).
 
 ## Output
 
