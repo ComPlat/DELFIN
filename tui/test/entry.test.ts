@@ -6,7 +6,7 @@
  * title, folder, age and state.
  */
 import { describe, expect, test } from "bun:test"
-import { RESUME_PICK, START_HINT, ageOf, entryOf, neverAsked, resumeRowsOf, settingsFor, shortFolder } from "../src/entry"
+import { RESUME_PICK, START_HINT, ageOf, entryOf, neverAsked, offersRunningFirst, resumeRowsOf, settingsFor, shortFolder } from "../src/entry"
 
 describe("the entry", () => {
   test("no flag is a new session, as before", () => {
@@ -111,5 +111,31 @@ describe("the resume picker's rows", () => {
     expect(cut.startsWith("~/")).toBe(true)
     expect(cut.endsWith("benzene-scan")).toBe(true)
     expect(shortFolder("/home/u", 24, home)).toBe("~")
+  })
+})
+
+describe("offersRunningFirst", () => {
+  const live = { state: "idle" }
+  const waiting = { state: "needs_input" }
+  const sleeping = { state: "sleeping" }
+
+  test("a no-arg start offers the picker when any session runs or waits", () => {
+    const entry = entryOf({})
+    expect(entry.kind).toBe("new")
+    expect(offersRunningFirst(entry, [live])).toBe(true)
+    expect(offersRunningFirst(entry, [waiting])).toBe(true)
+    expect(offersRunningFirst(entry, [sleeping, live])).toBe(true)
+  })
+
+  test("a no-arg start offers no picker when nothing runs", () => {
+    const entry = entryOf({})
+    expect(offersRunningFirst(entry, [])).toBe(false)
+    expect(offersRunningFirst(entry, [sleeping])).toBe(false)
+    expect(offersRunningFirst(entry, undefined as never)).toBe(false)
+  })
+
+  test("an explicit resume or continue never adds the picker", () => {
+    expect(offersRunningFirst(entryOf({ resume: "abc" }), [live])).toBe(false)
+    expect(offersRunningFirst(entryOf({ continue: true }), [live])).toBe(false)
   })
 })
