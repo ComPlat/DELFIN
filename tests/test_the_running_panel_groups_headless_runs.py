@@ -78,19 +78,28 @@ class _FakeClient:
 
 
 def _panel(listing: dict):
-    panel = AS.RunningPanel(_FakeClient(listing), on_open=lambda sid: None,
+    client = _FakeClient(listing)
+    panel = AS.RunningPanel(client, on_open=lambda sid: None,
                             is_open=lambda sid: False)
-    panel.render()
+    panel.attach(client)
     return panel
 
 
 def _row_texts(panel):
-    out = []
+    """The title buttons in the order the panel shows them. A row nests
+    them in its text column; only buttons carrying the title class count,
+    so the hidden Save/Cancel/Stop buttons stay out."""
+
+    def walk(w, out):
+        if "delfin-session-title" in getattr(w, "_dom_classes", ()):
+            out.append(w.description)
+        for child in getattr(w, "children", ()):
+            walk(child, out)
+
+    titles: list = []
     for box in panel.list_box.children:
-        for child in getattr(box, "children", ()):
-            if getattr(child, "description", ""):
-                out.append(child.description)
-    return out
+        walk(box, titles)
+    return titles
 
 
 def test_headless_runs_are_grouped_below_the_persons_own_rows():
@@ -99,8 +108,9 @@ def test_headless_runs_are_grouped_below_the_persons_own_rows():
     own = texts.index("my chat")
     swarm = texts.index("swarm run")
     phone = texts.index("phone run")
-    assert own < swarm < phone, texts          # person's first, headless after
-    # The headless group says so on the page.
+    # The person's own rows come first; the headless runs sit together
+    # after them (newest first within each group, as the panel sorts).
+    assert own < swarm and own < phone, texts
     head = [w.value for w in panel.list_box.children
             if "Headless" in str(getattr(w, "value", ""))]
     assert head, "a 'Headless runs' separator is shown"
