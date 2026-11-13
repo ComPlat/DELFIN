@@ -2143,25 +2143,25 @@ def create_tab(ctx):
         # arrives after the drawing rather than before it.
         widgets.HBox([submit_draw_open_btn, submit_draw_get_btn,
                       submit_draw_update_btn],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         submit_draw_frame, submit_draw_sync, submit_draw_tools,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         widgets.HBox([build_complex_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         manta_settings_row,
         # MANTA button sits directly UNDER its settings; the external
         # metal-complex constructors stand beside it as equals.
         widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button,
                       rxembed_button, molassembler_button, metallogen_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,
         widgets.HBox(
             [smiles_prev_button, smiles_preview_label, smiles_next_button],
-            layout=widgets.Layout(gap='2px', align_items='center', flex_wrap='wrap'),
+            layout=widgets.Layout(gap='2px', align_items='center', flex_flow='row wrap'),
         ),
         smiles_batch_output,
         construction_batch_panel,
@@ -2169,7 +2169,7 @@ def create_tab(ctx):
         widgets.HTML('<b>CONTROL.txt:</b>'),
         widgets.HBox([goat_method_label, goat_method_widget,
                       goat_model_label, goat_model_widget],
-                     layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center')),
+                     layout=widgets.Layout(gap='8px', flex_flow='row wrap', align_items='center')),
         goat_method_status,
         control_widget, spacer,
         widgets.HBox([validate_button, submit_button]),
@@ -2181,7 +2181,7 @@ def create_tab(ctx):
 
     xyz_copy_row = widgets.HBox(
         [xyz_copy_btn, xyz_copy_status],
-        layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
+        layout=widgets.Layout(gap='6px', align_items='center', flex_flow='row wrap'),
     )
     # What travels into the overlay, and what it is once it is there. These are
     # the same names the ORCA Builder, the Calculations browser and the Archive

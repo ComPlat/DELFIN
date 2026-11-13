@@ -631,7 +631,7 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
 
     def _row(members):
         return widgets.HBox(members, layout=widgets.Layout(
-            gap='8px', align_items='center', flex_wrap='wrap',
+            gap='8px', align_items='center', flex_flow='row wrap',
             width='100%', max_width='100%', overflow='hidden'))
 
     box = widgets.VBox(

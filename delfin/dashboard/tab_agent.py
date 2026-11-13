@@ -9131,7 +9131,7 @@ def create_tab(ctx):
     question_hint_html = widgets.HTML(value="")
     question_buttons_box = widgets.HBox(
         [],
-        layout=widgets.Layout(gap="4px", flex_wrap="wrap"),
+        layout=widgets.Layout(gap="4px", flex_flow="row wrap"),
     )
     question_row = widgets.HBox(
         [question_hint_html, question_buttons_box],

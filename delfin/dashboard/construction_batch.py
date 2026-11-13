@@ -271,7 +271,7 @@ def create_construction_batch_panel(ctx, batch_text_widget) -> widgets.Accordion
 
     def _row(w, h):
         return widgets.HBox([w, h], layout=widgets.Layout(gap="10px", align_items="center",
-                                                          flex_wrap="wrap"))
+                                                          flex_flow="row wrap"))
 
     tool = widgets.Dropdown(options=list(CB_TOOL_CHOICES), value="manta", description="Builder:",
                             style=style, layout=half,
@@ -634,7 +634,7 @@ def create_construction_batch_panel(ctx, batch_text_widget) -> widgets.Accordion
     body = widgets.VBox([
         basic, advanced,
         widgets.HBox(list(buttons.values()) + [refresh],
-                     layout=widgets.Layout(gap="8px", flex_wrap="wrap")),
+                     layout=widgets.Layout(gap="8px", flex_flow="row wrap")),
         status_html, command, out,
     ])
     acc = widgets.Accordion(children=[body])
