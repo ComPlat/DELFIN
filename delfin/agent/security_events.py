@@ -47,6 +47,9 @@ _KINDS = {
     "script_dir_unknown": ("📜", "Script in an unknown directory"),
     "self_mod":       ("🛡", "Self-modification guarded"),
     "memory_refused": ("🧠", "Instruction-shaped memory refused"),
+    # An outward call after untrusted text, the user's words not covering
+    # it (tainted_turn): asked, or refused with nobody to ask.
+    "tainted_outward": ("📤", "Outward call after untrusted text held"),
     "knowledge_write": ("🧠", "Write into shared lessons or memory asked"),
     "mcp_description_withheld": ("🔌", "MCP tool description withheld"),
     # Descriptions pinned on first use (mcp_client.pin_check): a first
