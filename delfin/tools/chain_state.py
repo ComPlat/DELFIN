@@ -281,3 +281,261 @@ class ChainState:
         except BaseException:
             tmp_path.unlink(missing_ok=True)
             raise
+
+
+# ---------------------------------------------------------------------------
+# Resume decides from facts (JC1 target 2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FinishVerdict:
+    """What re-verification of a step marked ``finished`` concluded."""
+
+    #: The output still carries the proof the step ended well.
+    verified: bool
+    #: Where the step went when not verified (``pending``).
+    downgraded_to: Optional[str] = None
+    reason: str = ""
+
+
+@dataclass
+class RunningVerdict:
+    """What a scheduler-backed classification of a ``running`` step said."""
+
+    #: "wait" | "classify" | "mark_failed"
+    action: str
+    error_kind: Optional[str] = None
+    reason: str = ""
+
+
+def _read_step_evidence(step: ChainStep, chain_work_dir=None) -> Dict[str, Any]:
+    """Re-read a step's own output and return the evidence it carries.
+
+    Uses the same readers the run-time path uses: normal termination via
+    ``delfin.orca_read._terminated_normally_text`` (the ``ORCA TERMINATED
+    NORMALLY`` marker near the file end) and SCF convergence via
+    ``_scf_converged_text``.  Never a guess — the absence of a file or a
+    marker is reported, not assumed away.
+    """
+    from delfin.orca_read import _scf_converged_text, _terminated_normally_text
+
+    out_path = _step_output_path(step, chain_work_dir)
+    if out_path is None or not out_path.is_file():
+        return {}
+    evidence: Dict[str, Any] = {}
+    evidence["normal_termination"] = _terminated_normally_text(out_path)
+    try:
+        text = out_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    evidence["scf_converged"] = _scf_converged_text(text)
+    return evidence
+
+
+def _step_output_path(step: ChainStep, chain_work_dir=None) -> Optional[Path]:
+    """The step's ``<base>.out`` inside its recorded work dir.
+
+    Falls back to a ``<step-name>`` directory under the chain's work dir
+    (the layout Pipeline writes per-step outputs into) when the step carries
+    no work_dir of its own.
+    """
+    candidates: list = []
+    if step.work_dir:
+        wd = Path(step.work_dir)
+        if wd.is_dir():
+            candidates = sorted(wd.glob("*.out"))
+    if not candidates and chain_work_dir is not None:
+        wd = Path(chain_work_dir) / step.name
+        if wd.is_dir():
+            candidates = sorted(wd.glob("*.out"))
+    return candidates[-1] if candidates else None
+
+
+def verify_finished_step(
+    step: ChainStep, chain_work_dir: Optional[str | Path] = None
+) -> FinishVerdict:
+    """Re-verify a step marked ``finished`` from its output before resume
+    skips it (JC1 target 2).  On any missing proof the step is DOWNGRADED
+    to ``pending`` in place — a half-written or vanished step is never
+    reported finished.
+    """
+    if step.state != "finished":
+        return FinishVerdict(verified=False, downgraded_to=None,
+                             reason=f"step {step.name!r} is not finished")
+    evidence = _read_step_evidence(step, chain_work_dir)
+    if not evidence.get("normal_termination"):
+        step.state = "pending"
+        step.evidence = None
+        return FinishVerdict(
+            verified=False,
+            downgraded_to="pending",
+            reason="no ORCA TERMINATED NORMALLY marker in the step's output",
+        )
+    if not evidence.get("scf_converged"):
+        step.state = "pending"
+        step.evidence = None
+        return FinishVerdict(
+            verified=False,
+            downgraded_to="pending",
+            reason="output does not show SCF convergence",
+        )
+    return FinishVerdict(verified=True)
+
+
+def _job_state(job_id: str, job_state) -> object:
+    if job_state is not None:
+        return job_state(job_id)
+    from delfin.scheduler_client import query
+
+    # squeue -j <id>: non-empty stdout means the job is queued or running.
+    out = query("squeue", ["-j", str(job_id), "-h"])
+    if out is delfin_scheduler_THROTTLED():
+        return out
+    if out is None:
+        return None
+    return str(out).strip() or None
+
+
+def delfin_scheduler_THROTTLED():
+    from delfin.scheduler_client import THROTTLED
+
+    return THROTTLED
+
+
+def classify_running_step(
+    step: ChainStep, job_state=None, chain_work_dir=None
+) -> RunningVerdict:
+    """Check a step marked ``running`` against the scheduler (JC1 target 2).
+
+    Still queued/running -> wait.  Gone from the scheduler -> the end is
+    classified from the step's own output through
+    ``delfin.tools._recovery.classify_error`` (never a guess): a job whose
+    output shows no normal termination failed.  A throttled scheduler
+    answer is NOT a fact — wait and re-ask later.
+    """
+    if step.state != "running":
+        return RunningVerdict(action="wait", reason=f"step {step.name!r} is not running")
+    state = _job_state(step.job_id, job_state)
+    if state is delfin_scheduler_THROTTLED():
+        return RunningVerdict(
+            action="wait",
+            reason="scheduler answer throttled — not a fact, re-ask later",
+        )
+    if state is not None:
+        return RunningVerdict(
+            action="wait", reason=f"job {step.job_id} is {state} in the scheduler"
+        )
+    # Job gone: classify the end from the step's own output.
+    out_path = _step_output_path(step, chain_work_dir)
+    evidence = _read_step_evidence(step, chain_work_dir)
+    from delfin.tools._recovery import classify_error
+
+    if evidence.get("normal_termination") and evidence.get("scf_converged"):
+        step.mark_finished(
+            evidence={
+                "normal_termination": True,
+                "scf_converged": True,
+            }
+        )
+        return RunningVerdict(
+            action="mark_finished",
+            reason="job gone but the output proves normal termination + "
+            "converged SCF",
+        )
+    if out_path is None:
+        # Nothing to read: the classification rests on the job's absence
+        # alone (recovery vocabulary, not a guess about the output).
+        reason = (
+            f"job {step.job_id} no longer in the scheduler and no step "
+            "output exists"
+        )
+        kind = classify_error(reason)
+        step.mark_failed(reason, error_kind=kind.value)
+        return RunningVerdict(
+            action="classify", error_kind=kind.value, reason=reason
+        )
+    reason = step.error or (
+        f"job {step.job_id} no longer in the scheduler and the output shows "
+        "no normal termination"
+    )
+    kind = classify_error(reason)
+    step.mark_failed(reason, error_kind=kind.value)
+    return RunningVerdict(action="mark_failed", error_kind=kind.value, reason=reason)
+
+
+def build_resume_plan(
+    chain: "ChainState",
+    job_state=None,
+    work_dir: Optional[str | Path] = None,
+) -> Dict[str, Any]:
+    """Produce the resume decision from FACTS (JC1 target 2).
+
+    - finished steps are re-verified from their output; only verified ones
+      are skipped;
+    - the first running step is checked against the scheduler: live -> the
+      plan says wait; gone -> classified to finished (with proof) or failed;
+    - the next step is the first one that still needs to run.
+    """
+    steps_to_skip = []
+    for step in chain.steps:
+        if step.state == "finished":
+            verdict = verify_finished_step(step, chain_work_dir=work_dir)
+            if verdict.verified:
+                steps_to_skip.append(step)
+                continue
+            # Downgraded to pending: it will run again.
+            return _plan_after(chain, chain.steps.index(step), steps_to_skip, wait=False)
+        if step.state == "running":
+            verdict = classify_running_step(
+                step, job_state=job_state, chain_work_dir=work_dir
+            )
+            if verdict.action == "wait":
+                return {
+                    "steps_to_skip": steps_to_skip,
+                    "next_step": None,
+                    "wait": True,
+                    "reason": verdict.reason,
+                }
+            if verdict.action == "classify":
+                # Job vanished without output: this step must be
+                # resubmitted, it does not unblock the chain.
+                return _plan_after(
+                    chain, chain.steps.index(step), steps_to_skip, wait=False
+                )
+            # mark_finished or mark_failed: finished-with-proof is skipped
+            # by the caller (record it here), failed becomes the next step.
+            if verdict.action == "mark_finished":
+                steps_to_skip.append(step)
+                continue
+            # mark_failed -> the chain must resubmit this step (phase 3).
+            return _plan_after(
+                chain, chain.steps.index(step), steps_to_skip, wait=False
+            )
+        if step.state == "failed":
+            reason = step.error or "failed in a previous run"
+            return {
+                "steps_to_skip": steps_to_skip,
+                "next_step": None,
+                "wait": False,
+                "blocked": True,
+                "reason": reason,
+            }
+        if step.state == "pending":
+            return _plan_after(chain, chain.steps.index(step), steps_to_skip, wait=False)
+    return {
+        "steps_to_skip": steps_to_skip,
+        "next_step": None,
+        "wait": False,
+        "complete": True,
+        "reason": "every step finished with verified evidence",
+    }
+
+
+def _plan_after(chain, idx, steps_to_skip, wait):
+    remaining = chain.steps[idx:]
+    return {
+        "steps_to_skip": steps_to_skip,
+        "next_step": remaining[0] if remaining else None,
+        "wait": wait,
+    }

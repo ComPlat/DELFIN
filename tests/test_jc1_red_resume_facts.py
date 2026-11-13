@@ -176,7 +176,9 @@ class TestResumeDecidesFromFacts:
         (step_dir / "step_0.out").write_text(
             "CARTESIAN COORDINATES\n...some partial output...\n"
         )
-        verdict = chain_state.classify_running_step(chain.steps[0])
+        verdict = chain_state.classify_running_step(
+            chain.steps[0], chain_work_dir=wd
+        )
         assert verdict.action == "mark_failed"
         assert chain.steps[0].state == "failed"
 
