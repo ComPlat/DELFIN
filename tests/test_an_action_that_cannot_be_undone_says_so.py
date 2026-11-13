@@ -387,3 +387,19 @@ def test_the_rule_is_in_the_prompt_of_every_role_that_can_ask(role_id, mode_id):
         role_id=role_id, mode_id=mode_id, task_text="tidy the workspace").split())
     assert "cannot be undone" in prompt
     assert "say what will be lost or sent" in prompt
+
+
+# ---------------------------------------------------------------------------
+# The lab: a hazardous write waits for `delfin-agent lab approve`
+# ---------------------------------------------------------------------------
+
+def test_a_pending_lab_approval_says_it_cannot_be_undone(monkeypatch, capsys):
+    from delfin.lab import approvals, cli
+    monkeypatch.setattr(approvals, "pending", lambda: [{
+        "id": "lab-1", "device": "hotplate", "channel": "setpoint",
+        "value": 140, "unit": "degC", "status": "pending"}])
+    assert cli.main(["pending"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    said = rows[0]["cannot_be_undone"]
+    assert said.startswith(IR.HEAD_IRREVERSIBLE)
+    assert "Sets hotplate.setpoint to 140 degC in the lab" in said
