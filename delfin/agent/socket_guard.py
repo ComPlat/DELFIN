@@ -63,11 +63,46 @@ _libc.connect.restype = ctypes.c_int
 
 #: Beneath these a Unix socket may be reached from any sandbox: the cluster
 #: authentication (munge, for sbatch/squeue) and the name services (sssd,
-#: nscd, systemd-resolved), without which user names do not resolve.
+#: nscd), without which user names do not resolve.
 DEFAULT_ALLOWED = (
     "/run/munge", "/var/run/munge", "/var/lib/sss/pipes", "/run/nscd",
-    "/var/run/nscd", "/run/systemd/resolve",
+    "/var/run/nscd",
 )
+
+#: systemd-resolved's sockets answer host-name lookups only, and a lookup
+#: carries its name to the DNS: ``<data>.attacker.example`` reaches the
+#: attacker's name server. A command behind the proxy needs no lookup (the
+#: proxy resolves), and its inet datagrams are refused, so this is offered
+#: only to a command with a direct route (SLURM controller, license
+#: server, SSH remote) on a host whose nsswitch resolves names through
+#: systemd-resolved, where the program could not reach that route
+#: otherwise (``name_lookup_sockets``). Measured 2026-11-13: allowed for
+#: every command before, a caged command connected to
+#: /run/systemd/resolve/io.systemd.Resolve.
+NAME_LOOKUP_SOCKETS = ("/run/systemd/resolve",)
+
+
+def name_lookup_sockets(direct_routes: bool, net_mode: str,
+                        nsswitch: str = "/etc/nsswitch.conf") -> tuple:
+    """``NAME_LOOKUP_SOCKETS`` when a command needs them, else ().
+
+    Needed: an open network (the command can send DNS anyway), or direct
+    routes on a host whose ``hosts:`` line in ``nsswitch`` names
+    ``resolve``. Otherwise a lookup through them is only a way to carry
+    a name out."""
+    if net_mode == "open":
+        return NAME_LOOKUP_SOCKETS
+    if not direct_routes:
+        return ()
+    try:
+        with open(nsswitch, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                words = line.split("#", 1)[0].split()
+                if words[:1] == ["hosts:"] and "resolve" in words[1:]:
+                    return NAME_LOOKUP_SOCKETS
+    except OSError:
+        pass
+    return ()
 
 
 #: Metadata services that hand out cloud credentials; link-local ranges are
