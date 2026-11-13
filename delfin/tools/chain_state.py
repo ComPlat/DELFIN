@@ -104,12 +104,28 @@ class ChainStep:
             raise ChainStateError(
                 f"step {self.name!r}: finished requires evidence, not a guess"
             )
-        missing = [k for k in REQUIRED_EVIDENCE if k not in evidence]
-        if missing:
+        falsy = [k for k, v in evidence.items()
+                 if (k in REQUIRED_EVIDENCE or k == "tool_reported_success")
+                 and not v]
+        if falsy:
             raise ChainStateError(
-                f"step {self.name!r}: finished evidence missing {missing} — "
+                f"step {self.name!r}: finished evidence {falsy} is falsy — "
+                "each piece of evidence must be a truthy proof, not the "
+                "recorded absence of one"
+            )
+        has_orca_proof = all(k in evidence for k in REQUIRED_EVIDENCE)
+        # A non-ORCA step (xtb, crest, ...) may be finished on the word of
+        # the run that observed its success; its output is re-verified on
+        # resume (verify_finished_step).  Partial ORCA keys alone are a
+        # guess for any tool (JC1 target 1 / finding F-C).
+        has_run_report = bool(evidence.get("tool_reported_success"))
+        if not (has_orca_proof or has_run_report):
+            raise ChainStateError(
+                f"step {self.name!r}: finished evidence missing "
+                f"{[k for k in REQUIRED_EVIDENCE if k not in evidence]} — "
                 "evidence comes from delfin.orca_read (normal termination, "
-                "converged SCF), never a guess"
+                "converged SCF) or from the run that observed the step, "
+                "never a guess"
             )
         self.state = "finished"
         self.evidence = dict(evidence)
@@ -361,6 +377,13 @@ def _step_output_path(step: ChainStep, chain_work_dir=None) -> Optional[Path]:
     return candidates[-1] if candidates else None
 
 
+def _is_orca_tool(tool: Optional[str]) -> bool:
+    """ORCA-family steps are verified by the ORCA markers; every other
+    tool (xtb, crest, ...) by its own non-empty output (F-B: demanding
+    ORCA markers of an xtb step would rerun finished work forever)."""
+    return bool(tool) and str(tool).lower().startswith("orca")
+
+
 def verify_finished_step(
     step: ChainStep, chain_work_dir: Optional[str | Path] = None
 ) -> FinishVerdict:
@@ -368,10 +391,38 @@ def verify_finished_step(
     skips it (JC1 target 2).  On any missing proof the step is DOWNGRADED
     to ``pending`` in place — a half-written or vanished step is never
     reported finished.
+
+    The proof is the step's OWN tool's success evidence: ORCA-family
+    steps show ``ORCA TERMINATED NORMALLY`` and a converged SCF (read
+    through :mod:`delfin.orca_read`); other tools (xtb, crest, ...) end
+    with their own output file, which must still exist and be non-empty.
     """
     if step.state != "finished":
         return FinishVerdict(verified=False, downgraded_to=None,
                              reason=f"step {step.name!r} is not finished")
+    if not _is_orca_tool(step.tool):
+        out_path = _step_output_path(step, chain_work_dir)
+        if out_path is None or not out_path.is_file():
+            step.state = "pending"
+            step.evidence = None
+            return FinishVerdict(
+                verified=False,
+                downgraded_to="pending",
+                reason=f"the step's output ({step.tool}) is gone",
+            )
+        try:
+            empty = out_path.stat().st_size == 0
+        except OSError:
+            empty = True
+        if empty:
+            step.state = "pending"
+            step.evidence = None
+            return FinishVerdict(
+                verified=False,
+                downgraded_to="pending",
+                reason=f"the step's output ({step.tool}) is empty",
+            )
+        return FinishVerdict(verified=True)
     evidence = _read_step_evidence(step, chain_work_dir)
     if not evidence.get("normal_termination"):
         step.state = "pending"
@@ -537,6 +588,48 @@ def build_resume_plan(
                     "reason": decision.reason,
                 }
             return _plan_after(chain, chain.steps.index(step), steps_to_skip, wait=False)
+        if step.state == "submitted":
+            # JC1 F-A: a submitted step whose job has vanished from the
+            # scheduler must be RESUBMITTED, not walked past — it never
+            # unblocks the chain.  The step's own output decides whether
+            # the job actually finished before disappearing (proof ->
+            # finished) or not (mark_failed -> resubmit via the plan).
+            from delfin.tools import chain_state as _cs
+
+            state = _cs._job_state(step.job_id, job_state)
+            if state is _cs.delfin_scheduler_THROTTLED():
+                return {
+                    "steps_to_skip": steps_to_skip,
+                    "next_step": None,
+                    "wait": True,
+                    "reason": "scheduler answer throttled — not a fact, "
+                              "re-ask later",
+                }
+            if state is not None:
+                return {
+                    "steps_to_skip": steps_to_skip,
+                    "next_step": None,
+                    "wait": True,
+                    "reason": f"job {step.job_id} is {state} in the scheduler",
+                }
+            # Job gone: the step's own output decides the end (target 2:
+            # never a guess from the state file alone).
+            out_path = _cs._step_output_path(step, work_dir)
+            evidence = _cs._read_step_evidence(step, work_dir) if out_path else {}
+            if evidence.get("normal_termination") and evidence.get("scf_converged"):
+                step.mark_running()
+                step.mark_finished(evidence={
+                    "normal_termination": True,
+                    "scf_converged": True,
+                })
+                steps_to_skip.append(step)
+                continue
+            step.mark_failed(
+                "job vanished from the scheduler without completing "
+                f"(job {step.job_id})"
+            )
+            return _plan_after(chain, chain.steps.index(step), steps_to_skip,
+                               wait=False)
         if step.state == "pending":
             return _plan_after(chain, chain.steps.index(step), steps_to_skip, wait=False)
     return {

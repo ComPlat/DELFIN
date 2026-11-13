@@ -1485,9 +1485,15 @@ class Pipeline:
                     cstep.mark_running()
 
                 if result.ok:
-                    evidence = _cs._read_step_evidence(
-                        cstep, chain_work_dir=base
-                    )
+                    if _cs._is_orca_tool(cstep.tool):
+                        evidence = _cs._read_step_evidence(
+                            cstep, chain_work_dir=base
+                        )
+                    else:
+                        # Non-ORCA tools (xtb, crest, ...): the run that
+                        # observed the success is the fact (F-B); its
+                        # output is re-verified on resume.
+                        evidence = {"tool_reported_success": True}
                     try:
                         cstep.mark_finished(evidence)
                     except _cs.ChainStateError as exc:
