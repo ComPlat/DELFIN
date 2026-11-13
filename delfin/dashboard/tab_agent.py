@@ -9585,24 +9585,14 @@ def create_tab(ctx):
 
     def _settle_isolation_posture(engine):
         """The CLI's start check (isolation_posture.apply_at_start) for
-        this tab: bypass without isolation is asked in the approval panel,
-        on a thread of its own, and the session runs in default until the
-        answer. Called after an engine is built and after a live switch of
-        its mode; a mode other than bypass, or an isolated host, is left
+        this tab: bypass without isolation runs in default, with a note.
+        Called after an engine is built and after a live switch of its
+        mode; a mode other than bypass, or an isolated host, is left
         alone. Never raises."""
         try:
             from delfin.agent.isolation_posture import apply_at_start
-            broker = _ensure_kit_broker()
-
-            def _ask_in_panel(question):
-                return broker.callback(
-                    "bypassPermissions", {"isolation": "none"},
-                    "[NO ISOLATION]\n" + question)
-
-            ask = _ask_in_panel if broker is not None else None
             notes = apply_at_start(
-                engine, can_ask=ask is not None, ask=ask, background=True,
-                on_confirmed=_refresh_kit_mode_chip)
+                engine, can_ask=_ensure_kit_broker() is not None)
             for note in notes:
                 _append_system_message(note)
             if notes:
