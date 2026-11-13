@@ -3073,9 +3073,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 return rec
         summary = running_panel.running.summary(sid) or {}
         client = live["client"]
-        if (view["start_in_service"] or client is None
-                or LS.state_word(summary) in ("working", "needs you")):
+        if view["start_in_service"] or client is None:
             return open_live(sid)
+        if LS.state_word(summary) in ("working", "needs you"):
+            # Not cut off mid-turn: its view now, live, and the full chat
+            # once the turn is over (_into_chat_when_idle, on the tick).
+            rec = open_live(sid)
+            if rec is not None:
+                rec["into_chat"] = True
+            return rec
         name = str(summary.get("name") or sid[:8])
         where = str(summary.get("workspace") or "")
         try:
@@ -3109,6 +3115,33 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 _say(f"{name} now runs in this dashboard's chat; the terminal and "
                      "the phone no longer have it.")
         return rec
+
+    def _into_chat_when_idle() -> None:
+        """A view waiting for its turn to end (``into_chat``) becomes the
+        full chat as soon as the service has the session idle: the view
+        goes (the session runs on meanwhile), the take-over follows, and
+        the chat is on screen if the view was."""
+        from delfin.dashboard import live_sessions as LS
+        if live["client"] is None:
+            return
+        for rec in [r for r in sessions if r.get("live") and r.get("into_chat")]:
+            summary = running_panel.running.summary(rec["session_id"]) or {}
+            if not summary or LS.state_word(summary) in ("working", "needs you"):
+                continue
+            shown = view["active"] == rec["key"]
+            rec["into_chat"] = False
+            try:
+                rec["refs"]["close"]()
+            except Exception:
+                pass
+            sessions.remove(rec)
+            stage.children = tuple(r["tab"] for r in sessions)
+            new = open_from_list(rec["session_id"])
+            if new is None:
+                continue
+            if shown:
+                activate(new["key"])
+            _persist()
 
     # -- open, close ----------------------------------------------------------
 
@@ -3368,6 +3401,10 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         _reconnect()
         if live["client"] is not None:
             running_panel.render()        # the ages; the rows follow events
+            try:
+                _into_chat_when_idle()
+            except Exception:
+                pass
         for rec in sessions:
             if rec.get("live"):
                 # The service's session: named, announced and messaged by
@@ -3749,11 +3786,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         pass
     for row in rows[:_MAX_OPEN]:
         if live["client"] is not None and running_panel.running.summary(row["session_id"]):
-            # The service runs it (or keeps it asleep): a view on it,
-            # attached only once it is the one on screen (below) -- a
-            # reload must not wake every remembered session.
+            # The service runs it -- kept when this dashboard last closed.
+            # Sessions started in the service stay there, a view on it,
+            # attached only once it is on screen (a reload must not wake
+            # every remembered session). Otherwise it comes back as it was:
+            # in the full chat (taken over, still kept), or -- mid-turn --
+            # its view first and the full chat when the turn is over.
             try:
-                open_live(row["session_id"], row["workspace"], show=False)
+                if view["start_in_service"]:
+                    open_live(row["session_id"], row["workspace"], show=False)
+                else:
+                    open_from_list(row["session_id"])
             except Exception:
                 pass
             continue
