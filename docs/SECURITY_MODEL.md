@@ -248,6 +248,39 @@ Files in the trash count as unrestorable, so it cannot be emptied from the
 shell. Not seen: a deletion inside an interpreter or a script, a variable
 as target, a program that opens its own output.
 
+A foreground `bash` command in `bypassPermissions` whose cage is bubblewrap
+runs over an overlay of the workspace roots instead
+(`overlay_workspace`, helper `overlay_exec`): the command writes into an
+upper layer under `<root>/.delfin-trash/.layers/<id>/`, and after it ends
+DELFIN applies that layer -- new paths renamed in, and every original the
+command replaced or deleted renamed first into
+`<root>/.delfin-trash/<UTC date>/cmd-<id>/`. Every change is journalled
+(`change_journal.record_overlay_changes`), and `undo_changes` renames the
+original back, whatever its size and however the command made the change
+(an interpreter, a script, `rm -r`, git refs and index). For a target such
+a root holds the trash refusal steps aside; `bash_background` and every
+other caller keep it. A path someone else changed while the command ran is
+never overwritten: the command's version is placed beside it as
+`<name>.delfin-conflict-<id>`, and a deletion of it is not applied. An undo
+never overwrites a path that no longer holds what the command left there,
+and moves what it replaces into the trash too. The trash is read-only
+inside the overlay, and its layers are hidden. Not overlaid, each keeping
+the change journal and the trash refusal: background commands, read-only
+and calc roots, the session scratch, a git directory outside the roots, a
+root with another filesystem mounted beneath it, a root with less than
+1 GiB or 2 % free, a filesystem where the overlay probe fails (no
+unprivileged user namespaces, no user xattrs), and every host without
+bubblewrap. A mount that fails at run time is noticed from a status file
+the helper writes (not from the exit code, which the command could
+imitate); the command then runs the old way after the trash refusal is
+checked again, and the overlay stays off for the process (`isolation`
+event). Not covered: extended attributes and a directory's own mtime are
+not carried back; hard links between files the command copied up are
+split; a rename or an in-place change of a large existing file costs one
+copy (the kernel copies it up whole first); a process writing under a root
+while a command runs is seen by the command or not, as the kernel leaves
+it.
+
 ### 3. Isolation of the shell command
 
 `api_client._bash_isolation_argv` decides how a shell command is run.
