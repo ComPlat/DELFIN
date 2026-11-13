@@ -364,19 +364,29 @@ def test_auto_isolation_falls_back_when_bwrap_unavailable(monkeypatch, tmp_path)
     import delfin.agent.api_client as A
     A._BWRAP_FUNCTIONAL = None
     monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
-    # Neither isolation works here: the command runs, and says so.
+    # Neither isolation works here: a session that asks runs the command
+    # (a person reads it); bypass refuses it -- it asks nothing, so it
+    # runs only confined.
     monkeypatch.setattr(A, "_landlock_functional", lambda: False)
-    perms = A.KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
+    monkeypatch.setattr(A, "_seatbelt_functional", lambda: False)
+    perms = A.KitToolPermissions(workspace=str(tmp_path), mode="default")
     _assert_no_filesystem_isolation(
         A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto"))
+    perms = A.KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
+    argv = A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto")
+    assert argv[3:4] == ["refused"] and "bypassPermissions" in argv[4]
 
 
-def test_isolation_off_is_escape_hatch_even_in_bypass(tmp_path):
-    # Explicit "off" must defeat auto-isolation everywhere (the HPC opt-out).
+def test_isolation_off_is_an_escape_hatch_only_where_a_person_reads(tmp_path):
+    # Explicit "off" defeats auto-isolation in the modes that ask (the HPC
+    # opt-out); in bypass, which asks nothing, it refuses instead.
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
-    perms = KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
+    perms = KitToolPermissions(workspace=str(tmp_path), mode="acceptEdits")
     _assert_no_filesystem_isolation(
         _bash_isolation_argv("echo hi", tmp_path, perms, mode="off"))
+    perms = KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
+    argv = _bash_isolation_argv("echo hi", tmp_path, perms, mode="off")
+    assert argv[3:4] == ["refused"]
 
 
 @requires_a_working_sandbox
