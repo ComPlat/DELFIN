@@ -8690,7 +8690,7 @@ def create_tab(ctx):
     stop_btn = widgets.Button(
         description="Stop",
         button_style="",
-        layout=widgets.Layout(width="80px"),
+        layout=widgets.Layout(width="auto", flex="0 0 auto"),
     )
     stop_btn.disabled = True
 
@@ -11664,11 +11664,14 @@ def create_tab(ctx):
         _chat_area.add_class("delfin-agent-chat-row")
         ctx.add_init_js(_agent_term.init_js())
     # Connect a phone: the same as typing /pair; the code goes the same way.
+    # An icon like the report beetle beside it: with a word the row did not
+    # fit 1366 px and the beetle wrapped onto a line of its own. The tooltip
+    # is the button's title, its accessible name.
     messenger_phone_btn = widgets.Button(
-        description="Phone", icon="mobile",
+        description="", icon="mobile",
         tooltip=("Connect your phone (SimpleX): scan the code shown above the input, "
                  "then type the 6-digit code your phone gets."),
-        layout=widgets.Layout(width="auto", flex="0 0 auto"))
+        layout=widgets.Layout(width="44px", flex="0 0 auto"))
 
     def _messenger_send_code(_b=None):
         code = "".join(ch for ch in str(messenger_code_input.value or "") if ch.isdigit())
