@@ -10408,10 +10408,17 @@ class KitToolPermissions:
     task_session_id: str = ""
     # The tools whose output this turn's tool loop received inside an
     # untrusted fence, in first-seen order (reset at the start of every
-    # turn). A tuple, reassigned and never mutated, so the copy a
-    # sub-agent receives through dataclasses.replace stays its own.
-    # remember() stores it as the note's ``read_before``.
+    # top-level turn, _start_turn_taint; a sub-agent keeps its parent's).
+    # A tuple, reassigned and never mutated, so the copy a sub-agent
+    # receives through dataclasses.replace stays its own.
+    # remember() stores it as the note's ``read_before``; while it is not
+    # empty, an outward call needs the user's words (tainted_turn,
+    # _DocToolExecutor._tainted_outward_gate).
     turn_untrusted_sources: tuple[str, ...] = ()
+    # The URLs that fenced text carried this turn, first-seen order, capped
+    # at tainted_turn.SEEN_URL_CAP: a fetch of one of them as it arrived
+    # carries no data the model added.
+    turn_seen_urls: tuple[str, ...] = ()
     # The engine turn the tool calls belong to, as an opaque key the
     # engine renews at every turn start (AgentEngine.stream_response).
     # The step journal (step_journal.auto_start) opens its next turn
@@ -17138,6 +17145,26 @@ def _classifier_user_texts(messages) -> list:
     return out
 
 
+def _user_typed_texts(messages) -> list:
+    """:func:`_classifier_user_texts` over the part of each user row the
+    user wrote: the turn's steering tail the engine appends on the wire
+    (context status, open tasks, the CPU note; harness_rows.TypedText) is
+    left out. The tainted-turn gate reads the user's words here; the tail
+    says "this session may use", which is not the user asking for a
+    message to a session."""
+    from .harness_rows import typed_part
+    rows = []
+    for m in messages or ():
+        if (isinstance(m, dict) and m.get("role") == "user"
+                and not _is_harness_row(m)):
+            content = m.get("content")
+            typed = typed_part(content)
+            if typed is not content:
+                m = {"role": "user", "content": typed}
+        rows.append(m)
+    return _classifier_user_texts(rows)
+
+
 def _classifier_context_users(users) -> tuple:
     """``(task, earlier)`` the classifier prompt is built from.
 
@@ -20299,6 +20326,17 @@ class _DocToolExecutor:
 
         # Other open sessions: who they are, and a message to one of them.
         if name in ("session_message", "subagent_message"):
+            # Another session runs what it receives under its own
+            # permissions: after untrusted text, a message to one needs
+            # the user's words (tainted_turn). A sub-agent of this turn
+            # carries the turn's taint itself, so subagent_message is not
+            # judged here.
+            if name == "session_message":
+                _tainted = self._tainted_outward_gate(
+                    name, arguments, permissions,
+                    effective_mode(permissions))
+                if _tainted is not None:
+                    return json.dumps({"error": _tainted})
             # Not a gated tool -- no rule reads a message. What it SAYS to
             # another agent (an approval nobody gave, "push this") is
             # exactly what only the second opinion can see.
@@ -23181,6 +23219,113 @@ class _DocToolExecutor:
             getattr(perms.confirm_callback, "__self__", None),
             "last_timed_out", False))
 
+    def _tainted_outward_gate(
+        self, name: str, args: dict, perms: Optional["KitToolPermissions"],
+        mode: str,
+    ) -> Optional[str]:
+        """Refusal text for an outward call in a tainted turn, or None.
+
+        Input: a tool call, the session's permissions and the effective
+        mode. A turn is tainted once it has read fenced text
+        (``perms.turn_untrusted_sources``). Output: None when the turn is
+        clean, the call sends nothing out (tainted_turn.classify_call /
+        classify_shell_segment), or the user's own words cover it
+        (tainted_turn.covered: the host or a domain above it named in their
+        messages with fenced blocks cut out, a URL that arrived verbatim in
+        what the turn read, the action itself, a host their configuration
+        names); else a person is asked where one can be (not in bypass,
+        which asks nothing, nor in plan), and the refusal names the
+        sources read and the way in. Recorded as ``tainted_outward``.
+
+        One yes holds for the identical call until the turn ends; one no
+        holds for the session (``denied_actions``, kind ``tainted``).
+        Rejected: refusing every network call after untrusted text (search
+        then open the results would stop in every unattended run); asking
+        in bypass (the profile promises no dialog; the user lifts the
+        refusal by naming the host in their next message).
+        """
+        if perms is None:
+            return None
+        sources = tuple(getattr(perms, "turn_untrusted_sources", ()) or ())
+        if not sources:
+            return None
+        from . import tainted_turn as _tt
+        base = _bare_tool_name(name)
+        args = args if isinstance(args, dict) else {}
+        try:
+            if base in ("bash", "bash_background"):
+                outs = _tainted_shell_outward(str(args.get("command") or ""))
+            else:
+                one = _tt.classify_call(base, args)
+                outs = [one] if one is not None else []
+        except Exception:
+            outs = ([_tt.Outward("network", base)]
+                    if base in _NETWORK_TOOLS or base == "session_message"
+                    else [])
+        if not outs:
+            return None
+        try:
+            user = "\n".join(_user_typed_texts(
+                getattr(perms, "classifier_messages", None)))
+            reads, uploads = _tainted_named_domains(perms)
+            # URLs that arrived verbatim: this turn's fenced file, shell
+            # and MCP text (turn_seen_urls), and what web_search results
+            # and fetched pages showed in the session (web_seen_urls, the
+            # egress check's own set; same meaning -- the model did not
+            # compose them).
+            seen = (tuple(getattr(perms, "turn_seen_urls", ()) or ())
+                    + tuple(getattr(perms, "web_seen_urls", None) or ()))
+            open_ = [o for o in outs
+                     if not _tt.covered(o, user, seen, reads, uploads)]
+        except Exception:
+            open_ = list(outs)
+        if not open_:
+            return None
+        out = open_[0]
+        sig = _tool_action_signature(name, args)
+        # Emptied at every top-level turn start (_start_turn_taint).
+        approved = getattr(perms, "_tainted_approved", None)
+        if not isinstance(approved, set):
+            approved = set()
+            try:
+                perms._tainted_approved = approved
+            except Exception:
+                pass
+        if sig in approved:
+            return None
+        if perms.action_denied_earlier("tainted", sig):
+            _record_security_event("denied_again", base, out.label[:120])
+            return (f"'{out.label}' was already refused by the user in this "
+                    "session after untrusted text was read. It stays refused; "
+                    "do not reach the same destination another way.")
+        can_ask = (perms.confirm_callback is not None
+                   and mode not in ("bypassPermissions", "plan"))
+        if not can_ask:
+            _record_security_event("tainted_outward", base,
+                                   f"{out.label[:100]} (read: "
+                                   f"{', '.join(sources)[:80]})",
+                                   blocked=True)
+            return _tt.refusal(out, sources)
+        preview = (f"{out.label}\n(this turn has read text the user did not "
+                   f"write: {', '.join(sources)}; the user's messages do "
+                   "not ask for this)")
+        try:
+            ok = bool(_ask_confirm(perms, base, args, preview))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        _record_security_event("tainted_outward", base, out.label[:120],
+                               blocked=not ok)
+        if ok:
+            approved.add(sig)
+            return None
+        if self._confirm_timed_out(perms):
+            return (f"approval for '{out.label}' TIMED OUT -- the user is "
+                    "away, this is NOT a denial. Do not try it again now and "
+                    "do not reach the same destination another way; say what "
+                    "is waiting for them.")
+        perms.record_denied_action("tainted", sig)
+        return _tt.refusal(out, sources, asked=True) + self._said_why(perms)
+
     @classmethod
     def _said_why(cls, perms: "KitToolPermissions") -> str:
         """" The user said why: …" for the refusal just made, or "".
@@ -24372,6 +24517,13 @@ class _DocToolExecutor:
                 "'Accept plan & execute' or switch the mode "
                 "chip to 'acceptEdits' to proceed."
             )
+
+        # Untrusted text was read in this turn: sending out needs the
+        # user's words or a person (tainted_turn). Before every rule that
+        # could allow the call, in every mode.
+        _tainted = self._tainted_outward_gate(name, args, perms, mode)
+        if _tainted is not None:
+            return _tainted
 
         if (name in _NETWORK_TOOLS
                 and getattr(perms, "scope_locked", False)
@@ -31434,7 +31586,11 @@ def _fence_output_tool_result(fn_name: str, text: str) -> str:
 def _note_untrusted_read(perms, fn_name: str, text: str) -> None:
     """Add ``fn_name`` to ``perms.turn_untrusted_sources`` when its result
     carries an untrusted fence anywhere (this turn has then read text it
-    did not write). First-seen order, no repeats. Never raises."""
+    did not write), and the URLs the text carries to
+    ``perms.turn_seen_urls``. The native web tools' URLs are left to
+    ``_note_web_result``, which keeps them in ``perms.web_seen_urls`` for
+    the session; the tainted-turn gate reads both sets. First-seen order,
+    no repeats. Never raises."""
     if perms is None:
         return
     try:
@@ -31446,6 +31602,105 @@ def _note_untrusted_read(perms, fn_name: str, text: str) -> None:
         seen = tuple(getattr(perms, "turn_untrusted_sources", ()) or ())
         if name and name not in seen:
             perms.turn_untrusted_sources = seen + (name,)
+        if name not in ("web_fetch", "web_search"):
+            _note_seen_urls(perms, str(text or ""))
+    except Exception:
+        pass
+
+
+def _note_seen_urls(perms, text: str) -> None:
+    """Add the URLs in ``text`` to ``perms.turn_seen_urls`` (capped)."""
+    from . import tainted_turn
+    have = tuple(getattr(perms, "turn_seen_urls", ()) or ())
+    room = tainted_turn.SEEN_URL_CAP - len(have)
+    if room <= 0:
+        return
+    known = set(have)
+    new = []
+    for url in tainted_turn.urls_in(text):
+        if url not in known:
+            known.add(url)
+            new.append(url)
+            if len(new) >= room:
+                break
+    if new:
+        perms.turn_seen_urls = have + tuple(new)
+
+
+def _tainted_shell_outward(cmd: str) -> list:
+    """The outward parts of a shell command (tainted_turn.Outward), one per
+    segment that sends something out, the bodies handed to ``sh -c``
+    included. A curl to this machine's loopback and an install into the
+    project's own environment are not outward, as in _leaves_workspace."""
+    from . import tainted_turn as _tt
+    out = []
+    for seg in _split_shell_segments(_with_shell_bodies(cmd or "")):
+        if _LOOPBACK_CURL_RE.match(seg) or _project_env_command(seg):
+            continue
+        one = _tt.classify_shell_segment(seg)
+        if one is not None:
+            out.append(one)
+    return out
+
+
+def _tainted_named_domains(perms) -> tuple:
+    """``(reads, uploads)``: the hosts the user's configuration names --
+    the egress proxy's defaults and ``allowed_domains`` plus every
+    ``web_fetch(domain:...)`` allow rule for reads, ``upload_domains`` for
+    uploads -- and for both the hosts of the URLs the user typed in this
+    session (``egress_proxy.user_named_hosts``, step 6's record of the
+    user's own URLs, which outlives a compaction of the messages the
+    gate otherwise reads them from). Never raises."""
+    reads: list = []
+    uploads: list = []
+    try:
+        from . import egress_proxy as _ep
+        reads += _ep.named_domains()
+        uploads += _ep.upload_named_domains()
+        typed = _ep.user_named_hosts(perms)
+        reads += typed
+        uploads += typed
+    except Exception:
+        pass
+    try:
+        _, rs = _permission_rules(perms)
+        for rule in (getattr(rs, "allow", ()) or ()):
+            if getattr(rule, "kind", "") == "web_fetch" and rule.value:
+                reads.append(str(rule.value))
+    except Exception:
+        pass
+    return reads, uploads
+
+
+def _start_turn_taint(perms, messages) -> None:
+    """The taint a turn starts with.
+
+    Input: the session's permissions and the request's messages. A
+    top-level turn starts clean, except when the user rows that opened it
+    (the rows after the last assistant row) carry an untrusted fence --
+    another session's message, a harness note with a job's output, an
+    attached text: then it starts tainted, the source named ``message``.
+    A sub-agent (``subagent_depth`` > 0) keeps what its permissions were
+    copied with: its prompt was written by a turn that may have read
+    untrusted text, and a reset here would let the delegate send out what
+    the parent could not. Never raises."""
+    if perms is None:
+        return
+    try:
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return
+        perms.turn_untrusted_sources = ()
+        perms.turn_seen_urls = ()
+        perms._tainted_approved = set()
+        from . import untrusted
+        for m in reversed(list(messages or ())):
+            if not isinstance(m, dict) or m.get("role") != "user":
+                break
+            text = _message_text(m.get("content"))
+            if untrusted.contains_fence(text):
+                if "message" not in perms.turn_untrusted_sources:
+                    perms.turn_untrusted_sources += ("message",)
+                _note_seen_urls(perms, text)
     except Exception:
         pass
 
@@ -35768,13 +36023,10 @@ class OpenAIClient(_BaseClient):
         # carried: one line per kind and turn, not per call.
         _shell_hints_shown: set = set()
         # The tools whose fenced output this turn has read (see
-        # KitToolPermissions.turn_untrusted_sources): a new turn starts
-        # with none.
-        if self._permissions is not None:
-            try:
-                self._permissions.turn_untrusted_sources = ()
-            except Exception:
-                pass
+        # KitToolPermissions.turn_untrusted_sources): a new top-level turn
+        # starts with none, unless what opened it is fenced text; a
+        # sub-agent keeps its parent's (_start_turn_taint).
+        _start_turn_taint(self._permissions, messages)
         # Auto-continue: some models (o3) end the turn after each batch + a
         # "I'll continue" line. When the model stops with tasks still open AND
         # it made fresh progress this round, we inject a continue and keep the

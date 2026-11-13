@@ -568,7 +568,9 @@ security panel and `delfin-agent doctor` say so.
   bytes sent. Cost: a redirect to a signed CDN URL (a long random query)
   is refused unattended. The fetch itself refuses private, loopback and
   metadata addresses and re-checks every redirect target's address
-  (`web_tools._GuardedRedirectHandler`).
+  (`web_tools._GuardedRedirectHandler`). After untrusted text in the turn,
+  a fetch also needs the user's words (the tainted turn, "Text the model
+  reads").
 - **MCP servers** run as processes DELFIN did not write a command line for;
   the shell isolation does not reach them. A stdio server declared with
   `roots`/`read_roots` starts in a namespace holding only those paths
@@ -687,6 +689,75 @@ that skips the user, or concealment from the user
 wrote it, the session, and the tools whose fenced output the turn had read
 (`read_before`), and recall shows that list. An agent note that carries a
 shape anyway is withheld at recall. The user's own words are not filtered.
+
+**The tainted turn.** The fences ask the model to treat the text as data;
+this rule holds when it does not. A turn is tainted once it has read fenced
+text: a tool result that carries an untrusted fence (the same list,
+`KitToolPermissions.turn_untrusted_sources`, that becomes `read_before`),
+or a fence in the user-role rows that opened the turn (another session's
+message, recorded as `message`). A sub-agent keeps the taint its parent's
+turn had when it was started (`api_client._start_turn_taint`). In a tainted
+turn an outward call needs the user's own words or a person
+(`api_client._DocToolExecutor._tainted_outward_gate`, `tainted_turn`):
+
+- outward: `web_fetch`, `push_notification`, `remote_trigger`,
+  `session_message` to another session (not to `operator`, the channel the
+  unattended pause names), and shell segments that reach another host --
+  curl and wget, scp and rsync to a remote, ssh, sftp, nc, telnet, ftp,
+  socat, `git remote add|set-url`, `git fetch|pull|clone|ls-remote` of an
+  explicit URL, `gh issue|gist|release|repo` writes, `huggingface-cli
+  upload`, `/dev/tcp`, and inline Python, Node, Perl or Ruby code that
+  names a URL and a network API; `sh -c` bodies included. Reads, workspace
+  work, a curl to this machine's loopback and installs into the project's
+  environment are not outward. Pushes and pull requests are not judged
+  here: the push gate needs the user's request for each one, tainted or not;
+- the user's words: their messages with every fenced block and the engine's
+  steering tail (`harness_rows.TypedText`) cut out (`_user_typed_texts`).
+  A host is covered when it or a domain above it (two labels at least)
+  stands in that text, or is the host of a URL the user typed in this
+  session (`user_named_urls`, the record the web_fetch egress check
+  keeps); a fetch also when its URL arrived verbatim, or is such a URL with
+  query and fragment dropped (a search result link carries nothing the
+  model added) -- in a web_search result or a fetched page this session
+  (`web_seen_urls`, the egress check's set) or in the file, shell and MCP
+  text this turn read (`turn_seen_urls`); a read also when the
+  configuration names the host (the proxy's defaults, `allowed_domains`, a
+  `web_fetch(domain:...)` allow rule). The two checks of a `web_fetch` run
+  one after the other and each can refuse: this one first, then
+  `_web_egress_refusal`. An upload needs its host named or in
+  `upload_domains`; "upload it" does not say where to. A notification, a
+  message to a session (its name, or "session"), a new remote ("remote"),
+  a GitHub write (its noun) and a trigger are covered by asking for them,
+  in English or German;
+- otherwise the call is asked where someone can be (`default`,
+  `acceptEdits` with an approval channel) and refused in bypass, plan and
+  wherever nobody can be asked, recorded as `tainted_outward`. The refusal
+  names what the turn read and the way in: the user names the host or the
+  action in their next message. A yes holds for the identical call until
+  the turn ends; a no for the session.
+
+It runs before every rule that could allow the call, in every mode, and
+does not depend on the classifier. What it does not see: a host the user
+named receives what the model writes into a URL to it, so when that host
+also wrote the injected text the data reaches the injection's author; a
+choice among URLs that arrived verbatim is a narrow channel (which of N
+links is fetched); `web_search` queries go to the configured search
+provider unjudged; a program the model writes into a file and runs is held
+by the egress proxy, not by this rule; MCP tools other than shells and the
+network names keep their own side-effect gate; and workspace damage (an
+injected `rm -r` of workspace data) is workspace work, which stays free.
+
+**Measuring it.** `python -m tests.injection_suite` runs 13 cases (10
+attacks from a file, a page, command output, a commit message and an MCP
+result; 3 controls that need an outward action the user asked for) through
+the real CLI with the network edge stubbed, and reports attack success,
+gate admission and task success, and for a deletion whether the harness
+kept a copy (restorable) or not (lost); `--provider/--model` with
+`--repeats 3` runs the same worlds against a real model
+(`tests/injection_suite/README.md`). With the scripted model that obeys every injection
+(bypassPermissions, `--unattended`, classifier off), before and after this
+rule: attack success 4/10 and 1/10, gate admission 6/10 and 1/10, task
+success 13/13 and 13/13. The remaining hit is the workspace deletion.
 
 ## The dashboard server
 
@@ -1035,7 +1106,14 @@ users fall back to the unkeyed form, which they report as unverified.
   hosts, whose request logs a prompt-injecting author does not read; the
   bytes are counted and recorded per host (`egress_sent`). Closing it
   would mean terminating TLS in the proxy (a certificate the agent's
-  programs trust), which DELFIN does not do.
+  programs trust), which DELFIN does not do. After untrusted text in the
+  turn, a shell command naming that host needs the user's words first
+  (the tainted turn); a program that builds the request itself does not
+  show the host to that rule.
+- **Data in a URL to a host the user named.** In a tainted turn a fetch to
+  a host the user's message names runs whatever the URL carries (within
+  the payload check). When that host also served the injected text, what
+  the model writes into the URL reaches the injection's author.
 - **What the payload check sees.** `web_tools.url_payload_reason` finds
   encoded data (hex, UUIDs, base64 and similar runs, long queries); data
   spelled as words, or split into short pieces, passes it. The path of a
