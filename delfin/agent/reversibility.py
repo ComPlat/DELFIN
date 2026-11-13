@@ -429,14 +429,20 @@ _LSF_SUBMITTED = re.compile(r"Job <(\d+)> is submitted")
 def submitted_job_ids(command: str, stdout: str) -> list[str]:
     """The base ids of the jobs *command* submitted, read from its output.
 
-    Only a command that runs a submit program counts: an ``echo`` of the
-    sbatch line or a ``cat`` of an old log records nothing."""
+    Only a command whose every program is a submit program (or ``cd``;
+    wrappers such as ``env`` and ``timeout`` are stepped over by
+    ``_command_words``) counts: any other program in the line -- an
+    ``echo``, a ``printf``, a ``cat`` of an old log, a script, a shell
+    body -- could print a submit line for an id this session never
+    submitted, so such a line records nothing. A missed own id only
+    makes a later cancel of it asked or refused (fail closed)."""
     try:
         from .api_client import _command_words
         programs = {w[0] for w in _command_words(command or "") if w}
     except Exception:
         return []
-    if not programs & set(_SUBMIT_PROGRAMS):
+    if (not programs & set(_SUBMIT_PROGRAMS)
+            or programs - set(_SUBMIT_PROGRAMS) - {"cd"}):
         return []
     found: list[str] = []
     text = stdout or ""

@@ -203,8 +203,9 @@ call, before it runs. It applies, among others:
 - job cancels (`reversibility.foreign_job_cancels`,
   `job_cancel_foreign`): `scancel`, `qdel` or `bkill` whose every target is
   a literal id of a job this session submitted (`KitToolPermissions.
-  submitted_job_ids`, read from the output of a command that ran `sbatch`,
-  `qsub` or `bsub`, in memory only) passes this rule; any other target — a
+  submitted_job_ids`, read from the output of a command whose only programs
+  are `sbatch`, `qsub`, `bsub` and `cd`, in memory only) passes this rule;
+  any other target — a
   foreign id, a variable, a substitution, `xargs scancel`, a filter with no
   id, `bkill 0`, an option the rule does not know — is asked in every mode,
   `bypassPermissions` included, and refused with nobody to ask (naming
@@ -938,9 +939,12 @@ users fall back to the unkeyed form, which they report as unverified.
   automatic gc.
 - **The job ledger.** Only jobs whose submit output this process read are
   this session's: after a restart or resume, a job submitted before it
-  counts as foreign (asked, or refused unattended). A command that both
-  runs a submit program and prints a submit line for another id (`sbatch
-  x; echo "Submitted batch job N"`) can enter that id. Other ways of
+  counts as foreign (asked, or refused unattended). Only a command whose
+  every program is a submit program or `cd` records ids, so a submit in a
+  line with any other program (`python make.py && sbatch x`) records none
+  and its job is treated as foreign too. A submit script that `sbatch`
+  itself runs still prints what it likes only to the job's own output,
+  never to the submit command's. Other ways of
   ending a job (`scontrol requeue|hold`, `qsig`, `bstop`, `kill` of a
   process on a compute node) are not covered by this rule.
 - **Commands run unasked inside the cage.** Under `default` and
