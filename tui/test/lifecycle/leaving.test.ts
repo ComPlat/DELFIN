@@ -57,6 +57,8 @@ describe("what leaving the window prints", () => {
 
   test("a session this window starts is not kept: ctrl+c twice ends it", () => {
     expect(startedHere({ cwd: "/w", title: "t" })).toEqual({ cwd: "/w", title: "t", keep: false })
+    // `delfin-agent tui --keep`: the window's sessions start kept.
+    expect(startedHere({ cwd: "/w", keep: true })).toEqual({ cwd: "/w", keep: true })
     // Every session the window creates goes through it -- new, resumed from
     // the store, about an attention item.
     const src = readFileSync(join(import.meta.dir, "../../src/main.tsx"), "utf8")
