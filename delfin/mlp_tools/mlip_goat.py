@@ -47,7 +47,7 @@ ORCA_MLIPS_MAX_WORKERS = 8
 #: archived xTB GOAT ran 40), bounded by what the GPU holds (0.8 GiB each).
 OET_DEFAULT_WORKERS = 64
 #: OET: send each request with curl instead of oet_client's Python start-up.
-#: Off until measured faster on ethanol and on JRD1 (docs/MLIP_GOAT_GPU.md).
+#: Off until measured faster on ethanol and on an 81-atom chromophore (docs/MLIP_GOAT_GPU.md).
 FAST_CLIENT_DEFAULT = False
 #: Assumed when the GPU's memory cannot be read.
 DEFAULT_GPU_GIB = 40.0
