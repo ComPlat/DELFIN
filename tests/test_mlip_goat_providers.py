@@ -41,6 +41,12 @@ BODY = "O 0.0 0.0 0.0\nH 0.757 0.586 0.0\nH -0.757 0.586 0.0\n"
 MINIMUM = "3\nE -76.4\nO 0.0 0.0 0.0\nH 0.75 0.58 0.0\nH -0.75 0.58 0.0\n"
 
 
+@pytest.fixture(autouse=True)
+def _no_slurm_memory(monkeypatch):
+    # The tests run inside SLURM jobs too; the job memory bound is tested on its own.
+    monkeypatch.delenv("SLURM_MEM_PER_NODE", raising=False)
+
+
 # -- the worker cap ---------------------------------------------------------------
 
 def test_orca_mlips_goat_with_pal_40_is_capped_to_8_workers():
@@ -74,7 +80,9 @@ def test_auto_prefers_oet_with_the_backend():
     plan = plan_goat("aimnet2", 40, gpu_gib=80, oet_info=OET, mlips_info=MLIPS)
     assert plan.provider == "oet"
     # one number W: %pal nprocs, GOAT workers and the server's model processes
-    assert plan.nprocs == plan.workers == plan.server_processes == mlip_goat.OET_DEFAULT_WORKERS
+    assert plan.nprocs == plan.workers == plan.server_processes == 40  # follows PAL
+    # ... bounded by what the GPU holds
+    assert plan_goat("aimnet2", 40, gpu_gib=24, oet_info=OET, mlips_info=MLIPS).workers == 12
     assert plan.nworkers is None
 
 
@@ -245,9 +253,9 @@ def test_an_oet_goat_runs_inside_one_server(run_dir, monkeypatch, ai_root):
     assert server_up, "ORCA ran while the server was up"
     assert f'"{prefix / "bin" / "delfin-oet-client"}"' in text
     assert '"-d cuda"' in text and "nworkers" not in text.lower()
-    assert "nprocs 8" in text.lower()  # PAL 40 job, 8 workers = 8 model processes
+    assert "nprocs 40" in text.lower()  # PAL 40: 40 workers = 40 model processes
     meta = json.loads((run_dir / "XTB2_GOAT" / "XTB_GOAT.method.json").read_text())
-    assert meta["provider"] == "oet" and meta["server_processes"] == 8
+    assert meta["provider"] == "oet" and meta["server_processes"] == 40
     assert not (run_dir / "XTB2_GOAT" / oet.ADDRESS_FILE).exists()
 
 
@@ -317,3 +325,10 @@ def test_the_fast_client_is_a_switch_off_by_default():
     assert plan.fast_client is False
     assert plan_goat("aimnet2", 40, gpu_gib=80, fast_client=True, oet_info=OET,
                      mlips_info=MLIPS).fast_client is True
+
+
+def test_oet_workers_are_bounded_by_the_job_memory(monkeypatch):
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", str(16 * 1024))  # 16 GiB job
+    plan = plan_goat("aimnet2", 40, gpu_gib=80, oet_info=OET, mlips_info=MLIPS)
+    assert plan.workers == 4  # 16 GiB / 3 GiB per model process -> 5 -> multiple of 4
+    assert "16 GiB job memory" in plan.reason

@@ -40,9 +40,12 @@ PROVIDERS = ("auto", "oet", "orca-mlips")
 GIB_PER_MODEL = 2.0
 #: orca-mlips: measured upper bound of workers (one model each) that ran.
 ORCA_MLIPS_MAX_WORKERS = 8
-#: OET: GOAT workers (= server model processes) when nothing else is said;
-#: see the measurements in docs/MLIP_GOAT_GPU.md.
-OET_DEFAULT_WORKERS = 8
+#: OET: upper bound of GOAT workers (= server model processes) when nothing
+#: else is said. Measured: a GOAT step costs ~0.85 s of which the external
+#: energy+gradient is ~0.22 s -- the rest is ORCA's own per-step work -- so
+#: throughput comes from parallel workers, as with xTB: W follows PAL (the
+#: archived xTB GOAT ran 40), bounded by what the GPU holds (0.8 GiB each).
+OET_DEFAULT_WORKERS = 64
 #: OET: send each request with curl instead of oet_client's Python start-up.
 #: Off until measured faster on ethanol and on JRD1 (docs/MLIP_GOAT_GPU.md).
 FAST_CLIENT_DEFAULT = False
@@ -80,12 +83,29 @@ def orca_mlips_worker_cap(gpu_gib: float) -> int:
     return max(4, cap - cap % 4)
 
 
-def oet_default_workers(pal: int, gpu_gib: float) -> int:
-    """GOAT workers = model processes of an OET GOAT: the measured best, within PAL and the GPU.
+def job_memory_gib() -> Optional[float]:
+    """The job's memory (SLURM_MEM_PER_NODE, MB) in GiB, or None outside SLURM."""
+    import os
+
+    try:
+        return float(os.environ["SLURM_MEM_PER_NODE"]) / 1024.0
+    except (KeyError, ValueError):
+        return None
+
+
+#: Host memory DELFIN plans per OET model process (a Python with torch and
+#: CUDA), GiB.
+HOST_GIB_PER_MODEL = 3.0
+
+
+def oet_default_workers(pal: int, gpu_gib: float, host_gib: Optional[float] = None) -> int:
+    """GOAT workers = model processes of an OET GOAT: PAL, within the GPU and the job memory.
 
     A multiple of 4 (GOAT spreads its workers over 4 temperatures), at least 4.
     """
     w = min(OET_DEFAULT_WORKERS, int(pal), _models_that_fit(gpu_gib))
+    if host_gib is not None:
+        w = min(w, max(1, int(host_gib // HOST_GIB_PER_MODEL)))
     return max(4, w - w % 4)
 
 
@@ -174,8 +194,10 @@ def plan_goat(backend: str, pal: int, *, forced: str = "auto",
         workers = int(max_workers)
         source = "goat_max_workers from CONTROL"
     else:
-        workers = oet_default_workers(pal, gib)
-        source = f"measured default for a {gib:.0f} GiB GPU (OET_DEFAULT_WORKERS)"
+        host = job_memory_gib()
+        workers = oet_default_workers(pal, gib, host)
+        source = (f"PAL {pal}, {gib:.0f} GiB GPU"
+                  + (f", {host:.0f} GiB job memory" if host else "") + " (oet_default_workers)")
     return GoatPlan("oet", None, workers, workers,
                     f"{why}; {workers} GOAT workers (%pal nprocs {workers}) on one server "
                     f"with {workers} model processes, {source}", nprocs=workers,
