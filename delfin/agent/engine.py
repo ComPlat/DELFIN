@@ -819,6 +819,8 @@ class AgentEngine:
         self._last_observed_files: set[str] = set()
         self._last_turn_tools: list[str] = []
         self._observed_ledger_available: bool = False
+        self._last_observed_urls: set[str] = set()
+        self._observed_urls_available: bool = False
         # Executed-command ledger (session-cumulative, capped): what this
         # session actually RAN. Evidence input for the functional-claim
         # guard — "it works now" is grounded only when the artifact was
@@ -4381,6 +4383,21 @@ class AgentEngine:
                 self._last_observed_files = set(
                     getattr(self, "_last_observed_files", None) or ())
                 self._observed_ledger_available = _restored_flag
+            # URL ledger: addresses the session's tools demonstrably
+            # returned (web_search hits / web_fetch target / read content).
+            # Mirrors the files ledger: same availability flag split.
+            _obs_urls = getattr(self.client, "_observed_urls_session", None)
+            _urls_restored = bool(
+                getattr(self, "_observed_urls_available", False))
+            self._observed_urls_available = (
+                _obs_urls is not None or _urls_restored)
+            try:
+                _u_carried = set(getattr(self, "_last_observed_urls", None) or ())
+                self._last_observed_urls = _u_carried | set(_obs_urls or ())
+            except TypeError:
+                self._last_observed_urls = set(
+                    getattr(self, "_last_observed_urls", None) or ())
+                self._observed_urls_available = _urls_restored
             self._last_turn_tools = list(_turn_tool_names)
             _turn_rows_kept = self._take_turn_rows()
             # Session-wide tool names: an open delegation request is
@@ -5710,11 +5727,11 @@ class AgentEngine:
 
     def _scan_claim_grounding(
         self, text: str, turn_tools: list[str] | None,
-    ) -> tuple[list, list, list]:
+    ) -> tuple[list, list, list, list]:
         """Scan a finished answer for ungrounded code-location,
-        physical-quantity and stated-equation claims against this
+        physical-quantity, stated-equation and URL claims against this
         session's observed evidence. Returns (location_flags,
-        quantity_flags, arithmetic_flags); never raises."""
+        quantity_flags, arithmetic_flags, url_flags); never raises."""
         try:
             from . import verify_guard as _vg
             observed = getattr(self, "_last_observed_files", None) or set()
@@ -5726,9 +5743,14 @@ class AgentEngine:
                 evidence_tools_used=set(turn_tools or ()),
                 numbers=_vg.observed_numbers())
             arith = _vg.scan_for_wrong_arithmetic(text)
-            return loc, qty, arith
+            observed_urls = getattr(self, "_last_observed_urls", None) or set()
+            url_ledger = bool(getattr(self, "_observed_urls_available", False))
+            urls = _vg.scan_for_ungrounded_url_claims(
+                text, observed_urls=observed_urls,
+                ledger_available=url_ledger)
+            return loc, qty, arith, urls
         except Exception:
-            return [], [], []
+            return [], [], [], []
 
     def _enforce_claim_grounding(
         self,
@@ -5766,7 +5788,7 @@ class AgentEngine:
 
         Returns the (possibly extended) answer text."""
         from . import verify_guard as _vg
-        loc, qty, arith = self._scan_claim_grounding(
+        loc, qty, arith, url = self._scan_claim_grounding(
             response_text, getattr(self, "_last_turn_tools", None))
         func = self._scan_functional_claims(response_text)
         # A figure over a column the reader could not read joins the caveat
@@ -5785,7 +5807,7 @@ class AgentEngine:
         # language question survives, because a plan is still an answer to
         # somebody who wrote in a particular language.
         if self._turn_describes_intent():
-            loc, qty, conflicts, func, ambiguous = [], [], [], [], []
+            loc, qty, conflicts, func, ambiguous, url = [], [], [], [], [], []
         # The language the user wrote in. Measured to be necessary: with
         # the prompt rule delivered and nothing German in the prompt, the
         # backend answered an English question in German four times in
@@ -5822,7 +5844,7 @@ class AgentEngine:
             wrong_language = _vg.scan_for_language_mismatch(
                 response_text,
                 "" if _asked.lstrip().startswith("[Verify]") else _asked)
-        if (not loc and not qty and not arith
+        if (not loc and not qty and not arith and not url
                 and not conflicts and not wrong_language):
             return self._append_answer_caveats(
                 response_text, functional=func, ambiguous=ambiguous,
@@ -5831,7 +5853,8 @@ class AgentEngine:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty, arith)
+                response_text + _vg.grounding_caveat(
+                    loc, qty, arith, url_flags=url)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
@@ -5844,6 +5867,9 @@ class AgentEngine:
         if arith:
             parts.append(_vg.arithmetic_feedback(arith)
                          .replace("[Verify] ", "", 1))
+        if url:
+            parts.append(_vg.url_claim_feedback(
+                url, observed_urls=getattr(self, "_last_observed_urls", None)))
         if conflicts:
             parts.append(_vg.conflicting_figure_feedback(conflicts)
                          .replace("[Verify] ", "", 1))
@@ -5888,7 +5914,8 @@ class AgentEngine:
             self._claim_guard_active = False
         if not correction:
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty, arith)
+                response_text + _vg.grounding_caveat(
+                    loc, qty, arith, url_flags=url)
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
@@ -5899,13 +5926,13 @@ class AgentEngine:
         # them the thing they did not ask for plus the thing they did.
         # Only when language was the SOLE reason, so a grounding fix is
         # never swallowed along with it.
-        if wrong_language and not (loc or qty or conflicts):
+        if wrong_language and not (loc or qty or conflicts or url):
             combined = correction
         else:
             combined = response_text + "\n\n" + correction
         # Re-scan the correction: the recursive turn refreshed the
         # observed-files snapshot and _last_turn_tools.
-        loc2, qty2, arith2 = self._scan_claim_grounding(
+        loc2, qty2, arith2, url2 = self._scan_claim_grounding(
             correction, getattr(self, "_last_turn_tools", None))
         # The correction may restate the functional claim — scan it too and
         # merge (order-stable, de-duplicated: the flags are frozen).
@@ -5914,15 +5941,19 @@ class AgentEngine:
         ambiguous = self._scan_ambiguous_column_totals(combined)
         new_files = set(
             getattr(self, "_last_observed_files", None) or ()) - observed_before
-        if loc2 or qty2 or arith2:
+        if loc2 or qty2 or arith2 or url2:
             # The retry produced its own ungrounded claims.
-            caveat = _vg.grounding_caveat(loc2, qty2, arith2)
+            caveat = _vg.grounding_caveat(
+                loc2, qty2, arith2, url_flags=url2)
         elif not new_files:
             # It read nothing. The scanners are silent because the wording
             # changed, not because anything was checked — so the ORIGINAL
             # claims are named, exactly as unverified as before. The
             # feedback offers "restate as unverified" as a way out, and
-            # taking it must not be indistinguishable from verifying.
+            # taking it must not be indistinguishable from verifying. A URL
+            # is excluded here: removing an unsupported link resolves it
+            # (no URL stays in the correction), so the re-scan already
+            # cleared it — re-naming it would call an achievement a lapse.
             caveat = _vg.grounding_caveat(loc, qty, arith)
         else:
             caveat = ""
@@ -8780,6 +8811,17 @@ class AgentEngine:
                 current |= files
             else:
                 client._observed_files_session = files
+        except Exception:
+            pass
+        # Same handoff for the observed-URL ledger, so a resumed session
+        # still knows which URLs its tools actually returned.
+        try:
+            urls = set(getattr(self, "_last_observed_urls", None) or ())
+            curu = getattr(client, "_observed_urls_session", None)
+            if isinstance(curu, set):
+                curu |= urls
+            else:
+                client._observed_urls_session = urls
         except Exception:
             pass
 
