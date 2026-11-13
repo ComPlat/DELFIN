@@ -177,3 +177,16 @@ def test_the_marker_is_not_an_env_var_and_is_not_inherited(runtime):
     # so its gate is headless even though the parent's is interactive.
     assert out.stdout.strip() == "False", out.stderr
     assert "DELFIN_INTERACTIVE_SESSION" not in __import__('os').environ
+
+
+def test_the_dashboard_kernel_marks_its_process_interactive():
+    # The dashboard's default ("kernel") mode builds its engine in
+    # tab_agent and never passes through cli._start_interactive_session:
+    # without its own call the person at the page queued behind headless
+    # runs exactly as before. The call follows the engine it serves.
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1]
+           / "delfin" / "dashboard" / "tab_agent.py").read_text()
+    build = src.index("engine = AgentEngine(\n                repo_dir=repo_dir,")
+    after = src[build:build + 2500]
+    assert "set_process_interactive(True)" in after

@@ -97,8 +97,8 @@ _STATE_LOCK_TIMEOUT_S = 5.0
 #: Generous on purpose: the point of the gate is that waiting here replaces
 #: waiting inside the overloaded endpoint (which answered nothing for
 #: 600 s in the measurement above). Still bounded, so a wedged endpoint
-#: The endpoint gate cannot hang a turn forever -- the request raises and
-#: the client's own transient-retry ladder takes over.
+#: cannot hang a turn forever -- the request raises and the client's own
+#: transient-retry ladder takes over.
 _SLOT_WAIT_TIMEOUT_S = 900.0
 
 
