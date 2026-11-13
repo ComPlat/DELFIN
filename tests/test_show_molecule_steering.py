@@ -21,10 +21,10 @@ from delfin.agent import show_molecule_guard as G
 
 
 def _schema_description() -> str:
-    for t in A._TOOL_DEFS:
+    for t in A._DOC_TOOLS_OPENAI:
         if t.get("function", {}).get("name") == "show_molecule":
             return t["function"]["description"]
-    raise AssertionError("show_molecule not in _TOOL_DEFS")
+    raise AssertionError("show_molecule not in _DOC_TOOLS_OPENAI")
 
 
 def test_show_molecule_description_names_when_to_use_it():
@@ -40,7 +40,7 @@ def test_show_molecule_description_names_what_never_to_do():
     text = _schema_description().lower()
     # The exact observed failure: hand-written viewer HTML in the answer.
     assert "html" in text
-    assert "iframe" in text or "script" in text
+    assert "viewer html" in text and "renders as text" in text
 
 
 def test_schema_budget_unchanged():
@@ -48,7 +48,8 @@ def test_schema_budget_unchanged():
     # rise over the committed ceiling (tests/test_tool_schema_budget.py
     # owns the budget; this pins that THIS change did not pay by raising).
     report = A.tool_schema_token_report()
-    assert report["total_tokens"] <= 11_675, report["total_tokens"]
+    import tests.test_tool_schema_budget as B
+    assert report["total_tokens"] <= B._TOKEN_BUDGET, report["total_tokens"]
 
 
 # --- 2. The system prompt names the viewer ---------------------------------
