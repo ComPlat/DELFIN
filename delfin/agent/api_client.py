@@ -24853,6 +24853,17 @@ class _DocToolExecutor:
                 # own dialog runs on that yes.
                 if _env_root_approved:
                     return None
+                # Nobody reads a bypass command, so what it destroys must
+                # be restorable: a file the undo journal cannot hold, git
+                # does not hold and this session did not write is moved to
+                # the workspace's trash instead (unrestorable).
+                from . import unrestorable as _unrestorable
+                _wd = Path(perms.workspace)
+                if args.get("cwd"):
+                    _wd = _wd / str(args.get("cwd"))
+                _lost = _unrestorable.refusal(cmd, _wd, perms)
+                if _lost is not None:
+                    return _lost
                 return self._classifier_second_opinion(perms, name, args, mode)
             if perms.matches_bash_auto_allow(cmd):
                 # The list matches the command's spelling, not its purpose.
