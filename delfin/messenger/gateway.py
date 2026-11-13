@@ -277,6 +277,8 @@ class Rooms:
         self._active_by_person: dict[str, set] = {}
         self._reply_targets = {}
         self._incoming_files = {}
+        #: (chat, session) -> the outbox names already offered to the phone.
+        self._offered_files: dict = {}
         self._announced = deque()
         #: Schedule number -> the check the phone was last shown for it.
         self._checks = {}
@@ -1961,6 +1963,7 @@ class Rooms:
                         await self.send(forum, in_forum(forum_label(room), t('A question or approval waits in its '
                                                                              'chat.')))
                 next_shown[(chat, 'pending')] = items
+                await self.offer_outbox_files(chat, room, sid)
             for notice in (notices if room.get('notifications', 'kurz') == 'kurz' else []):
                 await self.send(chat, notice)
                 for forum in (forums if room.get('forum', True) else []):
@@ -1971,6 +1974,48 @@ class Rooms:
 
     #: The phone gets at most this many agent notes per chat per hour.
     NOTES_PER_HOUR = 6
+
+    #: An image at most this big rides as an attachment; bigger files are
+    #: offered with a tappable fetch instead (SimpleX attachments of that
+    #: size deliver without friction; anything else stays name-only).
+    IMAGE_PUSH_MAX = 1 << 20
+    IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
+
+    async def offer_outbox_files(self, chat, room, sid):
+        """A file that appears in the session's outbox reaches the phone
+        without typing: an image under IMAGE_PUSH_MAX is pushed directly
+        (the phone shows it), everything else sends one message with its
+        name and the tappable SimpleX command /'datei NAME'. Seen at
+        start = baseline (no replay of an old outbox); each name once, so
+        a file replaced under the same name is not offered again.
+
+        A name the download refuses (media.filename changes it: quotes,
+        markup characters) is never offered: its link could not fetch it."""
+        from .media import ROOT, filename, session_hash
+        reply = await self.session(sid, 'files')
+        if reply.get('error') or not reply.get('ok'):
+            return
+        source = reply.get('outbox') or ''
+        if not source.rstrip('/').endswith(os.path.join(ROOT, session_hash(sid), 'outbox')):
+            return                      # only the session's own outbox is the source
+        names = {f['name'] for f in reply.get('files', [])}
+        known = self._offered_files.get((chat, sid))
+        if known is None:
+            # First look at this chat: the outbox as it stands is the
+            # baseline -- an old outbox is not replayed.
+            self._offered_files[(chat, sid)] = names
+            return
+        fresh = [f for f in reply.get('files', []) if f['name'] not in known]
+        known.update(f['name'] for f in fresh)
+        for f in fresh:
+            name = f['name']
+            if name != filename(name):
+                continue
+            if name.lower().endswith(self.IMAGE_SUFFIXES) and f['size'] <= self.IMAGE_PUSH_MAX:
+                await self.download(chat, sid, name)
+            else:
+                await self.send(chat, t("📎 The session has put `{name}` on the phone.\n"
+                                        "/'datei {name}' fetches it.").format(name=name))
 
     async def relay_notes(self, chat, room, notes, forums):
         """The session's deliberate notes (push_notification) to its chat:

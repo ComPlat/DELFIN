@@ -39,7 +39,8 @@ class Bridge:
         self.reads = []
         self.answer = 'short result'
     def ask(self, command):
-        if command.get("action") not in {None, "status", "pending"}:
+        # Reads (status, pending, the outbox listing) are not acts on a session.
+        if command.get("action") not in {None, "status", "pending", "files"}:
             self.calls.append(command)
         else:
             self.reads.append(command)
