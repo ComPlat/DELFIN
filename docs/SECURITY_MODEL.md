@@ -270,11 +270,13 @@ irreversible request none of them offers a grant that outlives it (no
 always / like this / stop asking / Allow + Permanent; the service refuses
 a key that is not offered), Enter in the terminal answers no, and the
 dashboard's expiry answers no. When a person can be asked (a callback;
-default, diff_approval or acceptEdits), no standing grant answers such a
-shell command in their place: not the allow list or a remembered pattern,
-a read-only shape, an information or calculation admission, the cage, or
-an allow rule (`api_client._irreversible_needs_person`, security event
-`irreversible_asked`); it goes to the dialog. With nobody to ask the
+default, diff_approval or acceptEdits), no casual grant answers such a
+shell command in their place: not the allow list or a pattern a dialog's
+"always" saved, a read-only shape, an information or calculation
+admission, the cage (`api_client._irreversible_needs_person`, security
+event `irreversible_asked`); it goes to the dialog. An allow rule the
+person wrote (permission_rules, a repository's included) is their
+decision in their own words and still answers it. With nobody to ask the
 grants stand as before (bypass has the trash rule above). `lab pending`
 carries the same statement for a hazardous lab write. Not seen: what an
 interpreter or a script does inside, a target in a variable, an MCP tool

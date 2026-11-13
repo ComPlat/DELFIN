@@ -17,8 +17,9 @@ Output and semantics:
   a broker, so each surface reads the same sentences;
 - an irreversible request offers no grant that outlives it (no ``always``,
   no ``commands like this``, no ``stop asking about writes``, no ``Allow +
-  Permanent``), Enter in the terminal answers no, and an allow pattern, an
-  allow rule or a grant does not answer it in the person's place;
+  Permanent``), Enter in the terminal answers no, and an allow pattern (a
+  saved "always" included) or the cage does not answer it in the person's
+  place -- an allow rule the person wrote still does;
 - the phone says it in the person's language: every sentence has a German
   text with the same placeholders;
 - the rule that the agent itself names the consequence before it asks is in
@@ -201,7 +202,7 @@ def test_an_allow_pattern_does_not_answer_an_irreversible_command(ws, monkeypatc
     assert preview.startswith(IR.HEAD_IRREVERSIBLE)
 
 
-def test_an_allow_rule_does_not_answer_an_irreversible_command(ws, tmp_path, monkeypatch):
+def test_an_allow_rule_the_person_wrote_still_answers(ws, tmp_path, monkeypatch):
     from delfin import user_settings as US
     from delfin.agent import permission_rules as PR
     settings = tmp_path / "home" / US.SETTINGS_FILE_NAME
@@ -225,11 +226,12 @@ def test_an_allow_rule_does_not_answer_an_irreversible_command(ws, tmp_path, mon
         return [p for _, _, p in perms.confirm_callback.asked
                 if "$ rm " in p]
 
+    # A rule the person wrote is their decision in their own words: it
+    # answers the command dialog for what cannot be undone too.
     run("bash", {"command": "rm small.txt"}, perms)
-    assert command_dialogs() == []              # the rule answered it
+    assert command_dialogs() == []
     run("bash", {"command": "rm big.dat"}, perms)
-    asked, = command_dialogs()
-    assert asked.startswith(IR.HEAD_IRREVERSIBLE)
+    assert command_dialogs() == []
     PR._CACHE.clear()
 
 

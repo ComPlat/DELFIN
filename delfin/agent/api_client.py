@@ -8825,12 +8825,11 @@ def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
         return None
     if call.get("asked"):
         return "the ask rule the user approved for this call"
-    # What cannot be undone is decided by the person each time it can be
-    # asked: an allow rule written for a command's words is not a decision
-    # about the file it would destroy or the remote it would publish to.
-    if site in ("bash", "tool") and _irreversible_needs_person(
-            perms, cname, call.get("args") or {}):
-        return None
+    # An allow rule is a decision the person wrote in their own words, so
+    # it answers here even for what cannot be undone (a push in their own
+    # repository). What does not answer such a call is the casual grant:
+    # an allow pattern a dialog's "always" saved, the built-in list, the
+    # cage (_irreversible_needs_person, in the bash gate).
     _, rs = _permission_rules(perms)
     if rs is None:
         return None
@@ -10151,10 +10150,12 @@ def _irreversible_needs_person(perms, name: str, args: dict,
                                mode: str = "") -> bool:
     """True when the call cannot be undone and a person can be asked.
 
-    Then no standing grant answers in the person's place: an allow pattern
-    (default, settings or remembered "always"), a read-only shape, an
-    information or calculation admission, the cage, an allow rule. The
-    call goes to the dialog, whose preview states the consequence. With
+    Then no casual grant answers in the person's place: an allow pattern
+    (built-in, or one a dialog's "always" saved), a read-only shape, an
+    information or calculation admission, the cage. The call goes to the
+    dialog, whose preview states the consequence. An allow rule the person
+    wrote (permission_rules, a repository's included) is their decision
+    in their own words and still answers (_rule_answers). With
     nobody to ask (no callback, bypass, plan) the grants stand as before:
     bypass has its own floor (unrestorable), and a refusal with nobody to
     read it would stop an unattended run on a command its owner allowed.
