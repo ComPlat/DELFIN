@@ -57,6 +57,13 @@ so a block never has to agree with another on a parser:
                     their ``kind``, so a consumer reads
                     ``delfin.tools.bio.binding_site_from_dict`` and knows
                     which of the two it was handed.
+    complex       — a complex descriptor as JSON: one macromolecule file and
+                    one or more small-molecule files, named relative to the
+                    descriptor's own directory.  Read with
+                    ``delfin.tools.bio.read_complex``.
+    pose_set      — a multi-record SDF where each record is one placement of a
+                    molecule and SD tags carry scores.  Read with
+                    ``delfin.tools.bio.read_pose_set``.
 """
 
 from __future__ import annotations

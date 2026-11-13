@@ -68,6 +68,8 @@ from delfin.tools.bio._read import (
     read_small_molecule,
     read_structure,
 )
+from delfin.tools.bio._poses import Pose, PoseSet, read_pose_set
+from delfin.tools.bio._complex import Complex, read_complex
 from delfin.tools.bio._site import (
     BindingBox,
     BindingSite,
@@ -111,6 +113,13 @@ __all__ = [
     "parse_mmcif",
     "parse_sdf",
     "parse_mol2",
+    # complexes (descriptor files)
+    "Complex",
+    "read_complex",
+    # pose sets
+    "Pose",
+    "PoseSet",
+    "read_pose_set",
     # binding sites
     "BindingBox",
     "BindingSite",
