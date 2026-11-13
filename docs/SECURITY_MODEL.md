@@ -615,11 +615,17 @@ turn an outward call needs the user's own words or a person
 - the user's words: their messages with every fenced block and the engine's
   steering tail (`harness_rows.TypedText`) cut out (`_user_typed_texts`).
   A host is covered when it or a domain above it (two labels at least)
-  stands in that text; a fetch also when its URL arrived verbatim in what
-  the turn read, or is such a URL with query and fragment dropped (a search
-  result link carries nothing the model added); a read also when the
+  stands in that text, or is the host of a URL the user typed in this
+  session (`user_named_urls`, the record the web_fetch egress check
+  keeps); a fetch also when its URL arrived verbatim, or is such a URL with
+  query and fragment dropped (a search result link carries nothing the
+  model added) -- in a web_search result or a fetched page this session
+  (`web_seen_urls`, the egress check's set) or in the file, shell and MCP
+  text this turn read (`turn_seen_urls`); a read also when the
   configuration names the host (the proxy's defaults, `allowed_domains`, a
-  `web_fetch(domain:...)` allow rule). An upload needs its host named or in
+  `web_fetch(domain:...)` allow rule). The two checks of a `web_fetch` run
+  one after the other and each can refuse: this one first, then
+  `_web_egress_refusal`. An upload needs its host named or in
   `upload_domains`; "upload it" does not say where to. A notification, a
   message to a session (its name, or "session"), a new remote ("remote"),
   a GitHub write (its noun) and a trigger are covered by asking for them,

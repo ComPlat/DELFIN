@@ -49,6 +49,9 @@ def _perms(tmp_path: Path, user: str, *, read: str = "", mode: str =
     perms = KitToolPermissions(workspace=tmp_path, mode=mode)
     perms.confirm_callback = confirm
     perms.classifier_messages = [{"role": "user", "content": user}]
+    # What the turn start records from the user's own message (step 6's
+    # user_named_urls), as _grant_push_from does.
+    A._note_user_named_urls(perms, user)
     if read:
         A._note_untrusted_read(perms, "read_file",
                                untrusted.wrap_as("output", "read_file", read))
@@ -57,6 +60,12 @@ def _perms(tmp_path: Path, user: str, *, read: str = "", mode: str =
 
 def _gate(perms, name, **args):
     return _DocToolExecutor()._run_permission_gate(name, args, perms)
+
+
+def _ours(out) -> bool:
+    """The refusal is this rule's (the egress check of web_fetch, which
+    runs after it, has its own wording)."""
+    return bool(out) and "did not write" in out
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +85,7 @@ def test_a_fetch_the_user_never_named_is_refused_after_untrusted_text(
 
 def test_the_same_fetch_in_a_clean_turn_is_not_touched(tmp_path):
     perms = _perms(tmp_path, "Summarise notes.md into SUMMARY.md.")
-    assert _gate(perms, "web_fetch", url=ATTACKER) is None
+    assert not _ours(_gate(perms, "web_fetch", url=ATTACKER))
 
 
 @pytest.mark.parametrize("user, url", [
@@ -87,19 +96,36 @@ def test_the_same_fetch_in_a_clean_turn_is_not_touched(tmp_path):
 ])
 def test_a_host_the_user_named_stays_free(tmp_path, user, url):
     perms = _perms(tmp_path, user, read="page text")
-    assert _gate(perms, "web_fetch", url=url) is None
+    assert not _ours(_gate(perms, "web_fetch", url=url))
 
 
 def test_a_link_that_arrived_verbatim_stays_free_and_an_added_query_not(
         tmp_path):
     guide = "https://foo.readthedocs.io/en/latest/install.html"
     perms = _perms(tmp_path, "Find the install guide of foo on the web.")
-    A._note_untrusted_read(perms, "web_search", A._wrap_untrusted(json.dumps(
-        {"results": [{"url": guide, "title": "Installing foo"}]})))
+    # As the dispatcher records a search: the fenced result taints the
+    # turn, and the egress check keeps its links in web_seen_urls, which
+    # this rule reads too.
+    result = A._wrap_untrusted(json.dumps(
+        {"results": [{"url": guide, "title": "Installing foo"}]}))
+    A._note_untrusted_read(perms, "web_search", result)
+    A._note_web_result("web_search", {"query": "foo"}, result, perms)
+    assert guide in perms.web_seen_urls
+    assert perms.turn_seen_urls == ()      # not kept twice
     assert _gate(perms, "web_fetch", url=guide) is None
-    assert _gate(perms, "web_fetch", url=guide + "#step-2") is None
+    assert not _ours(_gate(perms, "web_fetch", url=guide + "#step-2"))
     out = _gate(perms, "web_fetch", url=guide + "?d=tok-4711")
-    assert out is not None and "readthedocs" in out
+    assert _ours(out) and "readthedocs" in out
+
+
+def test_a_link_from_a_file_is_this_rules_own_record(tmp_path):
+    """A URL in a file or command output is not in web_seen_urls; the turn
+    keeps it, so a link read from a README still opens without a dialog."""
+    link = "https://docs.example.net/guide"
+    perms = _perms(tmp_path, "Follow the README.", read=f"see {link}")
+    assert link in perms.turn_seen_urls
+    assert not _ours(_gate(perms, "web_fetch", url=link))
+    assert _ours(_gate(perms, "web_fetch", url=link + "?k=tok-4711"))
 
 
 def test_a_fenced_block_in_the_users_message_is_not_their_word(tmp_path):

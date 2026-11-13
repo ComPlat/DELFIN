@@ -23133,7 +23133,13 @@ class _DocToolExecutor:
             user = "\n".join(_user_typed_texts(
                 getattr(perms, "classifier_messages", None)))
             reads, uploads = _tainted_named_domains(perms)
-            seen = tuple(getattr(perms, "turn_seen_urls", ()) or ())
+            # URLs that arrived verbatim: this turn's fenced file, shell
+            # and MCP text (turn_seen_urls), and what web_search results
+            # and fetched pages showed in the session (web_seen_urls, the
+            # egress check's own set; same meaning -- the model did not
+            # compose them).
+            seen = (tuple(getattr(perms, "turn_seen_urls", ()) or ())
+                    + tuple(getattr(perms, "web_seen_urls", None) or ()))
             open_ = [o for o in outs
                      if not _tt.covered(o, user, seen, reads, uploads)]
         except Exception:
@@ -31195,7 +31201,10 @@ def _note_untrusted_read(perms, fn_name: str, text: str) -> None:
     """Add ``fn_name`` to ``perms.turn_untrusted_sources`` when its result
     carries an untrusted fence anywhere (this turn has then read text it
     did not write), and the URLs the text carries to
-    ``perms.turn_seen_urls``. First-seen order, no repeats. Never raises."""
+    ``perms.turn_seen_urls``. The native web tools' URLs are left to
+    ``_note_web_result``, which keeps them in ``perms.web_seen_urls`` for
+    the session; the tainted-turn gate reads both sets. First-seen order,
+    no repeats. Never raises."""
     if perms is None:
         return
     try:
@@ -31207,7 +31216,8 @@ def _note_untrusted_read(perms, fn_name: str, text: str) -> None:
         seen = tuple(getattr(perms, "turn_untrusted_sources", ()) or ())
         if name and name not in seen:
             perms.turn_untrusted_sources = seen + (name,)
-        _note_seen_urls(perms, str(text or ""))
+        if name not in ("web_fetch", "web_search"):
+            _note_seen_urls(perms, str(text or ""))
     except Exception:
         pass
 
@@ -31251,13 +31261,19 @@ def _tainted_named_domains(perms) -> tuple:
     """``(reads, uploads)``: the hosts the user's configuration names --
     the egress proxy's defaults and ``allowed_domains`` plus every
     ``web_fetch(domain:...)`` allow rule for reads, ``upload_domains`` for
-    uploads. Never raises."""
+    uploads -- and for both the hosts of the URLs the user typed in this
+    session (``egress_proxy.user_named_hosts``, step 6's record of the
+    user's own URLs, which outlives a compaction of the messages the
+    gate otherwise reads them from). Never raises."""
     reads: list = []
     uploads: list = []
     try:
         from . import egress_proxy as _ep
         reads += _ep.named_domains()
         uploads += _ep.upload_named_domains()
+        typed = _ep.user_named_hosts(perms)
+        reads += typed
+        uploads += typed
     except Exception:
         pass
     try:
