@@ -31,3 +31,15 @@ def test_pair_from_the_person_is_not_affected():
     from delfin.dashboard.tab_agent import _USER_ONLY_SLASH_COMMANDS
     assert "/pair" in _USER_ONLY_SLASH_COMMANDS
     assert "/sync" in _USER_ONLY_SLASH_COMMANDS  # the existing precedent
+
+
+def test_the_real_executor_chain_drops_an_action_pair_line():
+    # The exact pair of functions the auto-executor uses: extraction from
+    # the model text (tab_agent.py:_extract_action_commands) then the
+    # person-only guard per command. An ACTION: /pair line must extract
+    # and then be dropped -- the model writing it starts nothing.
+    from delfin.dashboard.tab_agent import _extract_action_commands
+    cmds = _extract_action_commands(
+        "I will connect your phone.\n\nACTION: /pair\n")
+    assert cmds == ["/pair"]
+    assert all(_slash_is_user_only(c) for c in cmds)
