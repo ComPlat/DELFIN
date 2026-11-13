@@ -645,14 +645,27 @@ def build_resume_plan(
                     "reason": f"job {step.job_id} is {state} in the scheduler",
                 }
             # Job gone: the step's own output decides the end (target 2:
-            # never a guess from the state file alone).
+            # never a guess from the state file alone).  The proof is the
+            # step's OWN tool's success evidence (same rule as
+            # verify_finished_step): ORCA-family steps need the ORCA
+            # markers, other tools their own non-empty output.
             out_path = _cs._step_output_path(step, work_dir)
             evidence = _cs._read_step_evidence(step, work_dir) if out_path else {}
-            if evidence.get("normal_termination") and evidence.get("scf_converged"):
+            if _cs._is_orca_tool(step.tool):
+                finished = (
+                    evidence.get("normal_termination")
+                    and evidence.get("scf_converged")
+                )
+            else:
+                finished = bool(out_path) and out_path.is_file() \
+                    and out_path.stat().st_size > 0
+            if finished:
                 step.mark_running()
                 step.mark_finished(evidence={
-                    "normal_termination": True,
-                    "scf_converged": True,
+                    "tool_reported_success": True,
+                    **({"normal_termination": True,
+                        "scf_converged": True} if _cs._is_orca_tool(step.tool)
+                       else {}),
                 })
                 steps_to_skip.append(step)
                 continue

@@ -1463,6 +1463,7 @@ class Pipeline:
             logger.info("[%s] step %d/%d: %s", self.name, i + 1, len(self._trunk), spec.label)
 
             # Chain-state skip: this step was verified finished on resume.
+            step_dir = base / f"{i:02d}_{spec.label}"
             cstep_name = (
                 chain.steps[i].name
                 if chain is not None and i < len(chain.steps)
@@ -1474,6 +1475,16 @@ class Pipeline:
                 continue
 
             cstep = chain.steps[i] if chain is not None and i < len(chain.steps) else None
+            if cstep is not None and cstep.state == "pending":
+                # Record the submission BEFORE the run starts (reviewer
+                # suggestion, 13.11.): a crash while the job runs then
+                # leaves a persisted `submitted` step with its work dir,
+                # so a resume can still find the output — previously the
+                # dir was only written after run_step returned, leaving
+                # `pending`/None on disk and a redundant rerun on resume.
+                cstep.mark_submitted(job_id="local")
+                cstep.work_dir = str(step_dir)
+                chain.save()
             if cstep is not None and cstep.state == "failed":
                 from delfin.tools import chain_state as _cs
 
@@ -1519,9 +1530,6 @@ class Pipeline:
             if cstep is not None and chain is not None:
                 from delfin.tools import chain_state as _cs
 
-                if cstep.state == "pending":
-                    cstep.mark_submitted(job_id="local")
-                cstep.work_dir = str(attempt_dir)
                 if cstep.state == "submitted":
                     cstep.mark_running()
 
