@@ -153,9 +153,27 @@ def test_a_page_still_loading_is_not_a_closed_window(manager):
     assert manager._delfin_allowance(kid, False) == R.NEVER_CONNECTED_SECONDS
 
 
-def test_a_running_turn_outranks_a_closed_window(manager):
-    """Closing the tab on a working agent does not throw the run away."""
+def test_a_closed_window_ends_its_kernel_mid_turn(manager):
+    """Changed 2026-11-13 (no hidden holding): closing the tab ends the
+    dashboard and the sessions in it that are not kept, a running turn
+    included. It held the kernel until the turn ended before."""
     kid = _run(manager.start_kernel())
+    T.mark(True, kid=kid)
+    try:
+        _leave(manager, kid)
+        manager.delfin_window_closed(kid)
+        _age(manager, kid, R.GRACE_SECONDS + 1)
+        _run(manager.cull_kernel_if_idle(kid))
+        assert manager.ended == [kid]
+    finally:
+        T.mark(False, kid=kid)
+
+
+def test_a_kept_session_finishes_its_turn_before_it_moves(manager, monkeypatch):
+    """A kernel that holds a session with Keep session on lets its turn
+    finish; then the session goes on in the agent service."""
+    kid = _run(manager.start_kernel())
+    monkeypatch.setattr(R, "_kept_session_kernels", lambda: {kid})
     T.mark(True, kid=kid)
     try:
         _leave(manager, kid)

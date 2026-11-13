@@ -136,8 +136,8 @@ def test_the_header_switch_is_keep_dashboard_and_says_what_holds_it(monkeypatch)
     (toggle,) = [w for w in strip.children if isinstance(w, widgets.ToggleButton)]
     assert toggle.description == "Keep dashboard"
     tip = toggle.tooltip
-    for words in ("90 s", "15 min", "turn that is running finishes first",
-                  "Keep session"):
+    for words in ("90 s", "15 min", "a running turn included",
+                  "a running turn finishes first", "Keep session"):
         assert words in tip, (words, tip)
 
 
@@ -219,6 +219,29 @@ def test_a_kept_service_session_taken_over_stays_kept(home, service, tui, dash, 
     rec = refs["open_from_list"](sid)
     assert rec is not None and not rec.get("live")
     assert rec["keep_switch"].value is True and rec["kept"]
+    refs["stop_refresh"]()
+
+
+def test_a_reopened_dashboard_brings_back_only_what_still_runs(home, monkeypatch):
+    """A remembered session not kept ended with its dashboard: the next
+    dashboard does not reopen it (it is in the resume search). One still
+    held by a live kernel -- a reload within the grace -- comes back."""
+    import json
+
+    import delfin.agent.session_store as store
+    (home / "open.json").write_text(json.dumps({"sessions": [
+        {"session_id": "ended0000000000a", "workspace": str(home / "launch")},
+        {"session_id": "reload000000000b", "workspace": str(home / "launch")}]}))
+    monkeypatch.setattr(AS, "load_open_sessions", lambda: [
+        {"session_id": "ended0000000000a", "workspace": str(home / "launch")},
+        {"session_id": "reload000000000b", "workspace": str(home / "launch")}])
+    monkeypatch.setattr(AS, "_saved_session", lambda sid: {"session_id": sid})
+    monkeypatch.setattr(store, "session_lock_holder",
+                        lambda sid: {"pid": 1} if sid.startswith("reload") else None)
+    build = _Build()
+    _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
+    opened = [c.initial_session_id for c in build.contexts]
+    assert opened == ["reload000000000b"], opened
     refs["stop_refresh"]()
 
 
@@ -331,11 +354,14 @@ def test_resume_offers_match_every_word_own_first():
 def test_the_resume_list_pops_over_the_page_and_its_keys_are_bound():
     css = AS._SIDEBAR_CSS
     assert ".delfin-resume-pop { display: none !important; position: fixed;" in css
-    assert ".delfin-resume-open .delfin-resume-pop { display: flex !important; }" in css
+    assert ".delfin-resume-pop.delfin-resume-shown { display: flex !important; }" in css
     js = AS._RESUME_KEYS_JS
     for key in ("'ArrowDown'", "'ArrowUp'", "'Enter'", "'Escape'"):
         assert key in js
-    assert "delfin-resume-open" in js and "getBoundingClientRect" in js
+    assert "delfin-resume-shown" in js and "getBoundingClientRect" in js
+    # Shown, the list sits in the page's body: the tab panel clips a fixed
+    # element inside it (measured in the real page, 2026-11-13).
+    assert "document.body.appendChild(pop)" in js
     import inspect
     assert "_RESUME_KEYS_JS" in inspect.getsource(AS.create_tab)
 
