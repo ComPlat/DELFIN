@@ -48,6 +48,7 @@ def acct(tmp_path, monkeypatch):
     security_events.clear()
     log = tmp_path / "audit.log"
     monkeypatch.setattr(audit_log, "_default_log_path", lambda: log)
+    monkeypatch.setattr(pairing, "_unavailable", lambda: "")   # a messenger runs on this host
     account = Account(tmp_path, monkeypatch)
     account.log = log
     yield account

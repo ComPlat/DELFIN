@@ -599,7 +599,7 @@ def create_tab(ctx):
         description='✏ Rename',
         layout=widgets.Layout(width='92px', height='26px'),
     )
-    calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>')
+    calc_rename_prompt_label = widgets.HTML('<b>Rename:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_rename_prompt_input = widgets.Text(
         placeholder='New name',
         layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
@@ -620,9 +620,10 @@ def create_tab(ctx):
             calc_rename_prompt_ok_btn,
             calc_rename_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
-    calc_duplicate_prompt_label = widgets.HTML('<b>Duplicate:</b>')
+    calc_duplicate_prompt_label = widgets.HTML('<b>Duplicate:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_duplicate_prompt_input = widgets.Text(
         placeholder='Duplicate folder name',
         layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
@@ -643,9 +644,10 @@ def create_tab(ctx):
             calc_duplicate_prompt_yes_btn,
             calc_duplicate_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
-    calc_new_folder_prompt_label = widgets.HTML('<b>New folder name:</b>')
+    calc_new_folder_prompt_label = widgets.HTML('<b>New folder name:</b>', layout=widgets.Layout(flex='0 0 100%'))
     calc_new_folder_prompt_input = widgets.Text(
         placeholder='Folder name',
         layout=widgets.Layout(flex='1 1 auto', min_width='120px', height='26px'),
@@ -666,7 +668,8 @@ def create_tab(ctx):
             calc_new_folder_prompt_ok_btn,
             calc_new_folder_prompt_cancel_btn,
         ],
-        layout=widgets.Layout(display='none', gap='6px', align_items='center'),
+        layout=widgets.Layout(display='none', gap='6px', align_items='center',
+                              flex_flow='row wrap'),
     )
     calc_transfer_jobs_btn = widgets.Button(
         description='Running Transfers',
@@ -16081,6 +16084,18 @@ def create_tab(ctx):
         '.calc-right { overflow:hidden !important;'
         ' display:flex !important; flex-direction:column !important; }'
         '.calc-left { display:flex !important; flex-direction:column !important; }'
+        # A narrow window (a phone): the list above, the content below, each
+        # the full width. Side by side the list kept its width and left the
+        # content pane none (measured at 390 px). The splitter drags
+        # sideways only, so it goes.
+        '@media (max-width: 700px) {'
+        ' .calc-tab .calc-main-row { flex-direction:column !important; }'
+        ' .calc-tab .calc-main-row > .calc-left { flex:0 0 45% !important; width:100% !important;'
+        ' min-width:0 !important; max-width:100% !important; }'
+        ' .calc-tab .calc-main-row > .calc-right { flex:1 1 0 !important; width:100% !important;'
+        ' min-width:0 !important; min-height:0 !important; }'
+        ' .calc-tab .calc-main-row > .calc-splitter-host { display:none !important; }'
+        '}'
         '.calc-left .widget-select { flex:1 1 0 !important; min-height:0 !important; }'
         '.calc-left .widget-select select { height:100% !important; }'
         '.calc-left .widget-select-multiple { flex:1 1 0 !important; min-height:0 !important; }'
@@ -16143,6 +16158,11 @@ def create_tab(ctx):
         ' text-overflow:ellipsis !important; white-space:nowrap !important; }'
         '.calc-left .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
         '.calc-left .widget-text input { width:100% !important; }'
+        # A name prompt's field (calc-prompt-row): basis 140 px, so the
+        # field and its two buttons share the line under the label (140 +
+        # 70 + 78 px); at width:auto the input's intrinsic ~210 px sent
+        # Cancel to a line of its own.
+        '.calc-left .calc-prompt-row > .widget-text { flex:1 1 140px !important; min-width:140px !important; width:auto !important; }'
         '.calc-filter-row { width:100% !important; display:flex !important; }'
         '.calc-filter-row > .widget-text { flex:1 1 auto !important; min-width:0 !important; width:auto !important; }'
         '.calc-filter-row > .widget-text input { width:100% !important; min-width:0 !important; }'
@@ -16297,17 +16317,20 @@ def create_tab(ctx):
         layout=widgets.Layout(height='100%', width='10px', margin='0', overflow='visible'),
     )
 
+    calc_splitter.add_class('calc-splitter-host')
+    calc_main_row = widgets.HBox(
+        [calc_left, calc_splitter, calc_right],
+        layout=widgets.Layout(
+            width='100%', overflow_x='hidden',
+            align_items='stretch', gap='12px',
+            flex='1 1 0', min_height='0',
+        ),
+    )
+    calc_main_row.add_class('calc-main-row')
     tab_widget = widgets.VBox([
         calc_css,
         widgets.HTML(_browser_heading(ctx, _is_office_tab)),
-        widgets.HBox(
-            [calc_left, calc_splitter, calc_right],
-            layout=widgets.Layout(
-                width='100%', overflow_x='hidden',
-                align_items='stretch', gap='12px',
-                flex='1 1 0', min_height='0',
-            ),
-        ),
+        calc_main_row,
     ], layout=widgets.Layout(
         padding='10px', overflow_x='hidden',
         width='100%', max_width='100%',
@@ -16322,6 +16345,9 @@ def create_tab(ctx):
     calc_nav_selection_row.add_class('calc-nav-selection-row')
     calc_rename_prompt_row.add_class('calc-rename-prompt-row')
     calc_duplicate_prompt_row.add_class('calc-duplicate-prompt-row')
+    for _prompt_row in (calc_new_folder_prompt_row, calc_rename_prompt_row,
+                        calc_duplicate_prompt_row):
+        _prompt_row.add_class('calc-prompt-row')
     calc_content_area.add_class('calc-content-area')
     calc_table_panel.add_class('calc-table-panel')
     calc_table_output.add_class('calc-table-output')
