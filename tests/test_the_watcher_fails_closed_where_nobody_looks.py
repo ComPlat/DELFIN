@@ -130,6 +130,9 @@ def _perms(tmp_path, mode, runner, dialog=None):
     return perms
 
 
+# web_fetch here names github.com, a host the egress proxy knows: an
+# unknown host is refused (or asked) by the host decision before the
+# watcher is consulted, and the watcher is what these tests look at.
 def _gate(perms, name, args):
     return A._DocToolExecutor()._run_permission_gate(name, args, perms)
 
@@ -155,7 +158,7 @@ def test_a_failure_on_a_network_call_asks_or_refuses(
               "garbled": Runner("no idea")}[failure]
     dialog = Dialog(False) if attended else None
     perms = _perms(tmp_path, mode, runner, dialog)
-    out = _gate(perms, "web_fetch", {"url": "https://example.org/a"})
+    out = _gate(perms, "web_fetch", {"url": "https://github.com/a"})
     assert out is not None
     if attended:
         assert len(dialog.shown) == 1
@@ -236,7 +239,7 @@ def test_a_plain_read_never_calls_the_model(tmp_path, mode, attended):
 def test_one_error_is_retried_once_before_it_counts(tmp_path):
     runner = Runner(ALLOW, fail=1)
     perms = _perms(tmp_path, "acceptEdits", runner)
-    assert _gate(perms, "web_fetch", {"url": "https://example.org/a"}) is None
+    assert _gate(perms, "web_fetch", {"url": "https://github.com/a"}) is None
     assert len(runner.prompts) == 2
     assert perms.classifier_health.get("failures", 0) == 0
 
@@ -245,14 +248,14 @@ def test_a_timeout_is_not_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "_CLASSIFIER_TIMEOUT_S", 0.1)
     runner = Runner(ALLOW, delay=0.5)
     perms = _perms(tmp_path, "acceptEdits", runner)
-    assert _gate(perms, "web_fetch", {"url": "https://example.org/a"})
+    assert _gate(perms, "web_fetch", {"url": "https://github.com/a"})
     assert len(runner.prompts) == 1
 
 
 def test_a_watcher_refusal_does_not_lock_the_turn(tmp_path):
     perms = _perms(tmp_path, "bypassPermissions", Runner())
     for i in range(5):
-        assert _gate(perms, "web_fetch", {"url": f"https://example.org/{i}"})
+        assert _gate(perms, "web_fetch", {"url": f"https://github.com/{i}"})
     assert _gate(perms, "bash", {"command": "python3 build.py"}) is None
     assert _gate(perms, "write_file",
                  {"path": "report.md", "content": "x\n"}) is None
@@ -267,7 +270,7 @@ def test_the_breaker_opens_holds_and_closes(tmp_path, monkeypatch, _env):
     runner = Runner()
     perms = _perms(tmp_path, "bypassPermissions", runner)
     for i in range(A._CLASSIFIER_BREAKER_FAILURES):
-        assert _gate(perms, "web_fetch", {"url": f"https://example.org/{i}"})
+        assert _gate(perms, "web_fetch", {"url": f"https://github.com/{i}"})
         clock.t += 1
     health = perms.classifier_health
     assert health["down"] is True
@@ -299,10 +302,10 @@ def test_a_probe_runs_at_most_once_a_minute(tmp_path, _env):
     runner = Runner()
     perms = _perms(tmp_path, "bypassPermissions", runner)
     for i in range(A._CLASSIFIER_BREAKER_FAILURES):
-        _gate(perms, "web_fetch", {"url": f"https://example.org/{i}"})
+        _gate(perms, "web_fetch", {"url": f"https://github.com/{i}"})
     calls = len(runner.prompts)
     for i in range(240):                 # four minutes, one action a second
-        _gate(perms, "web_fetch", {"url": f"https://example.org/x{i}"})
+        _gate(perms, "web_fetch", {"url": f"https://github.com/x{i}"})
         clock.t += 1
     probes = len(runner.prompts) - calls
     # One probe per minute, each retried once on its error.
@@ -328,7 +331,7 @@ def test_a_long_unattended_run_survives_an_outage(tmp_path, _env):
                 workspace_fail += 1
         if step % 10 == 5:
             out = _gate(perms, "web_fetch",
-                        {"url": f"https://example.org/{step}"})
+                        {"url": f"https://github.com/{step}"})
             if out is not None:
                 held += 1
             elif step >= 80 and len(runner.prompts) > before:
@@ -363,7 +366,7 @@ SUCCESS_PATH = [
     ("bash", {"command": "python3 build.py"}),
     ("bash", {"command": "pytest -q"}),
     ("write_file", {"path": "report.md", "content": "x\n"}),
-    ("web_fetch", {"url": "https://example.org/a"}),
+    ("web_fetch", {"url": "https://github.com/a"}),
 ]
 
 
@@ -461,7 +464,7 @@ def test_the_status_line_names_switch_model_scope_and_failure(tmp_path):
     line = A.watcher_status_line(perms)
     assert "on" in line and "m" in line and "unattended" in line
     assert "no failure" in line
-    _gate(perms, "web_fetch", {"url": "https://example.org/a"})
+    _gate(perms, "web_fetch", {"url": "https://github.com/a"})
     line = A.watcher_status_line(perms)
     assert "ConnectionError" in line
 
