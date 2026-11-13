@@ -81,7 +81,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         name_page_controls,
     )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
-    from .tab_defaults import apply_first_tabs, resolve_tab_preferences
+    from .tab_defaults import apply_first_tabs, first_start, resolve_tab_preferences
 
     from . import tab_schedule
 
@@ -510,9 +510,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'title': 'Home',
             'widget': None,
             'default_order': 81,
-            # One of the five a new installation shows (tab_defaults.FIRST_TABS,
-            # 2026-11-13); until then off by default.
-            'default_visible': True,
+            # Off in the view of before 2026-11-13, which an existing user
+            # keeps; one of the five a new installation starts with
+            # (tab_defaults.FIRST_TABS, first_start).
+            'default_visible': False,
             'available': True,
             'fixed': False,
             'build': home_build,
@@ -631,11 +632,23 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     except Exception:
         pass
 
-    # What a person sees who never arranged the tabs (a new installation
-    # first of all): five tabs and Settings; every other tab is switched on
-    # in Settings > Dashboard Tabs. A saved arrangement is kept whole
-    # (tab_defaults).
+    # A new installation starts with five tabs and Settings; anyone who used
+    # DELFIN before keeps the tabs they had. Decided once, at the first
+    # start, and saved as the person's arrangement before the Settings tab
+    # reads it (tab_defaults.first_start); every other tab is switched on
+    # in Settings > Dashboard Tabs.
     apply_first_tabs(tab_specs)
+    try:
+        from delfin.agent import session_store as _session_store
+        _sessions_dir = getattr(_session_store, '_SESSIONS_DIR', None)
+    except Exception:
+        _sessions_dir = None
+    try:
+        first_start(tab_specs, calc_dir=ctx.calc_dir, archive_dir=ctx.archive_dir,
+                    sessions_dir=_sessions_dir,
+                    jobs_file=Path.home() / '.delfin_jobs.json')
+    except Exception:
+        pass
 
     ctx.tab_specs = tab_specs
     tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6, office_refs=refs_off)

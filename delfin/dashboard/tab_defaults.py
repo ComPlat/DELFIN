@@ -9,19 +9,31 @@ Output: :func:`resolve_tab_preferences` -> ``(order, hidden)`` over the
 movable tabs; the tab bar shows ``order`` minus ``hidden``, then the fixed
 ones (Settings).
 
-The defaults (:data:`FIRST_TABS`, applied by :func:`apply_first_tabs`)
-decide every tab the saved arrangement does not name: all of them for a
-person who never arranged the tabs -- a new installation first of all --
-and a tab added after the arrangement was saved. A saved arrangement is
-kept whole.
+The first start decides once (:func:`first_start`, marker
+``ui.first_start``): a new installation -- no saved arrangement and no
+trace of earlier use -- saves the five :data:`FIRST_TABS` as its
+arrangement; anyone who used DELFIN before saves the view they had (the
+defaults of before 2026-11-13, kept on each spec as ``legacy_visible`` and
+``legacy_order``), so nothing changes for them. From then on the saved
+arrangement decides, and the defaults (:func:`apply_first_tabs`) only
+decide a tab added after it was saved.
 
-Rejected: telling a new installation from an old one by the settings file
-(the installer writes it before the dashboard ever starts), and a
-per-installation marker written at the first start (a person who never
-arranged the tabs would see a different bar depending on when they first
-opened the dashboard).
+Traces of earlier use, chosen because only use writes them: a saved agent
+session (the session store), a job in the local job list
+(``~/.delfin_jobs.json``; SLURM jobs live in the calculations folder), an
+entry in the calculations or archive folder. Rejected as a trace: the
+settings file (the installer writes it before the dashboard ever starts),
+the dashboard's own note ``dashboard_here.json`` (the launcher writes it
+and removes it at exit), an empty job list (written at the first start).
+Rejected: deciding by the defaults alone without a marker (an existing
+person who never arranged the tabs would have lost eleven of them).
+
 """
 from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
 
 #: The tabs a person sees before arranging any, in this order (2026-11-13).
 #: Every other tab stays available: Settings > Dashboard Tabs switches it on.
@@ -36,6 +48,8 @@ def apply_first_tabs(specs: list) -> list:
         if spec.get("fixed"):
             continue
         tab_id = spec.get("id")
+        spec.setdefault("legacy_visible", bool(spec.get("default_visible", True)))
+        spec.setdefault("legacy_order", spec.get("default_order", 10_000))
         spec["default_visible"] = tab_id in FIRST_TABS
         if tab_id in FIRST_TABS:
             spec["default_order"] = FIRST_TABS.index(tab_id) + 1
@@ -76,3 +90,91 @@ def resolve_tab_preferences(specs: list, prefs: dict | None) -> tuple[list, set]
         elif not bool(spec.get("default_visible", True)):
             hidden.add(tab_id)
     return order, hidden
+
+
+#: The settings key of the first-start marker (under ``ui``).
+FIRST_START_KEY = "first_start"
+
+
+def _has_entry(folder) -> bool:
+    """A visible entry (not a dot file) in ``folder``."""
+    try:
+        return any(not p.name.startswith(".") for p in Path(folder).iterdir())
+    except (OSError, TypeError):
+        return False
+
+
+def _has_a_job(jobs_file) -> bool:
+    try:
+        data = json.loads(Path(jobs_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    return bool(isinstance(data, dict) and data.get("jobs"))
+
+
+def traces_of_use(*, calc_dir=None, archive_dir=None, sessions_dir=None,
+                  jobs_file=None) -> list:
+    """The traces of earlier use found, as names (no paths)."""
+    found = []
+    if sessions_dir is not None and _has_entry(sessions_dir):
+        found.append("agent session")
+    if jobs_file is not None and _has_a_job(jobs_file):
+        found.append("job in the local job list")
+    if calc_dir is not None and _has_entry(calc_dir):
+        found.append("calc folder entry")
+    if archive_dir is not None and _has_entry(archive_dir):
+        found.append("archive folder entry")
+    return found
+
+
+def _arrangement(specs, *, visible, order_key):
+    movable = sorted((s for s in specs if not s.get("fixed") and s.get("id")),
+                     key=lambda s: s.get(order_key, 10_000))
+    return {"order": [s["id"] for s in movable],
+            "hidden": [s["id"] for s in movable if not visible(s)]}
+
+
+def first_start(specs, *, settings_path=None, calc_dir=None, archive_dir=None,
+                sessions_dir=None, jobs_file=None):
+    """Decide the tab arrangement once, at the dashboard's first start.
+
+    Returns what was decided -- ``"new"``, ``"existing"``, ``"arranged"`` --
+    or None when the marker was already there (or the settings cannot be
+    read). Writes ``ui.tabs`` (new, existing) and ``ui.first_start``
+    through user_settings.save_settings; a failed write leaves the
+    defaults in force for this start and tries again at the next.
+    """
+    from delfin import user_settings
+    try:
+        settings = user_settings.load_settings(settings_path)
+    except Exception:
+        return None
+    ui = dict(settings.get("ui") or {})
+    if ui.get(FIRST_START_KEY):
+        return None
+    tabs = ui.get("tabs") or {}
+    marker = {"at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    if tabs.get("order"):
+        kind = "arranged"
+    else:
+        traces = traces_of_use(calc_dir=calc_dir, archive_dir=archive_dir,
+                               sessions_dir=sessions_dir, jobs_file=jobs_file)
+        if traces:
+            kind = "existing"
+            marker["traces"] = traces
+            ui["tabs"] = _arrangement(
+                specs, visible=lambda s: s.get("legacy_visible", True),
+                order_key="legacy_order")
+        else:
+            kind = "new"
+            ui["tabs"] = _arrangement(
+                specs, visible=lambda s: s.get("id") in FIRST_TABS,
+                order_key="default_order")
+    marker["tabs"] = kind
+    ui[FIRST_START_KEY] = marker
+    settings["ui"] = ui
+    try:
+        user_settings.save_settings(settings, settings_path)
+    except Exception:
+        return None
+    return kind

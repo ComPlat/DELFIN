@@ -116,9 +116,9 @@ def test_the_tab_is_registered_and_one_of_the_first_five():
     home_spec = source[source.index("'id': 'home'"):]
     home_spec = home_spec[:home_spec.index("},")]
     assert "'title': 'Home'" in home_spec
-    # Off by default until 2026-11-13; now one of the five tabs a new
-    # installation shows (tab_defaults.FIRST_TABS), a deliberate choice.
+    # Off in the view an existing user keeps (legacy default); one of the
+    # five a new installation starts with (tab_defaults.FIRST_TABS).
     from delfin.dashboard import tab_defaults
     assert "home" in tab_defaults.FIRST_TABS
-    assert "'default_visible': True" in home_spec
+    assert "'default_visible': False" in home_spec
     assert "'fixed': False" in home_spec                # so Settings can show it
