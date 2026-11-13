@@ -366,3 +366,27 @@ def test_overlay_records_do_not_count_toward_the_pre_image_cap(tmp_path,
     recs = CJ.list_changes(sid)
     assert not [r for r in recs if r.get("dropped")], recs
     assert len(recs) == 13
+
+
+def test_the_overlay_modules_import_where_libc_has_no_unshare(monkeypatch):
+    """macOS CI: overlay_workspace imports overlay_exec for its constants,
+    and a module-level libc binding of unshare raised there -- every shell
+    command then failed to start ("dlsym ... unshare: symbol not found")."""
+    import ctypes
+    import importlib
+
+    class _NoUnshare:
+        def __init__(self, *a, **k):
+            pass
+
+        def __getattr__(self, name):
+            raise AttributeError(f"dlsym(RTLD_DEFAULT, {name}): symbol not found")
+
+    from delfin.agent import overlay_exec
+    monkeypatch.setattr(ctypes, "CDLL", _NoUnshare)
+    try:
+        reloaded = importlib.reload(overlay_exec)
+        assert reloaded.SETUP_FAILED == 97
+    finally:
+        monkeypatch.undo()
+        importlib.reload(overlay_exec)

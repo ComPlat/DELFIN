@@ -57,9 +57,15 @@ _MS_REC = 16384
 _MS_PRIVATE = 1 << 18
 
 _libc = ctypes.CDLL(None, use_errno=True)
-_libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
-                        ctypes.c_ulong, ctypes.c_char_p]
-_libc.unshare.argtypes = [ctypes.c_int]
+try:
+    _libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+                            ctypes.c_ulong, ctypes.c_char_p]
+    _libc.unshare.argtypes = [ctypes.c_int]
+except AttributeError:
+    # Not Linux (macOS has no unshare): the module is imported for its
+    # constants by overlay_workspace, which never offers the overlay
+    # there; a call that reaches mount/unshare anyway fails as a refusal.
+    pass
 
 
 def _fail(why: str) -> None:
