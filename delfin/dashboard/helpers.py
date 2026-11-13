@@ -312,6 +312,12 @@ def create_busy_css():
         ".delfin-time-limit-toggle.widget-toggle-buttons "
         ".widget-toggle-button:nth-of-type(n+4) { "
         "margin-top: 6px !important; }"
+        # The toggle's layout is 550 px with 148 px buttons; on a phone the
+        # third column ran past the pane and was cut ('36h', 'Custom').
+        ".delfin-time-limit-toggle.widget-toggle-buttons { max-width: 100% !important; }"
+        "@media (max-width: 600px) { "
+        ".delfin-time-limit-toggle.widget-toggle-buttons .widget-toggle-button "
+        "{ width: calc(33.333% - 4px) !important; min-width: 0 !important; } }"
         "</style>"
     )
 

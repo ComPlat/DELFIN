@@ -53,7 +53,8 @@ def test_the_time_limit_buttons_fit_a_phone():
     buttons; stacked on a 390 px phone its third column ran past the pane
     and was cut ('36h', 'Custom'). Below 600 px each button takes a third
     of the row and the toggle never exceeds its pane."""
-    src = _flat("helpers.py")
+    from delfin.dashboard import helpers
+    src = " ".join(helpers.create_busy_css().value.split())
     assert ".delfin-time-limit-toggle.widget-toggle-buttons { max-width: 100% !important; }" in src
     start = src.index("@media (max-width: 600px) {")
     block = src[start:src.index("} }", start) + 3]
