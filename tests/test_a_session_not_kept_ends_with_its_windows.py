@@ -87,6 +87,26 @@ def test_created_off_it_ends_with_its_window(service):
     assert _gone(watcher, sid)
 
 
+def test_a_window_reopening_a_kept_session_does_not_unkeep_it(service):
+    """keep false on session.create is for the session the window starts.
+    One that already runs here -- the window resumes or continues it -- is
+    attached as it is: a kept session stays kept."""
+    a = service.client()
+    sid = service.session(a, fakeSave=True)
+    turn(a, sid, "hello")
+    assert _summary(a, sid)["keep"] is True
+    b = service.client()
+    # --continue: the folder's latest session, which runs here already.
+    got = b.request("session.create", {"cwd": str(service.workspace()), "continue": True,
+                                       "fake": True, "keep": False}, timeout=60)
+    assert got["sessionId"] == sid
+    a.close()
+    b.close()
+    watcher = service.client()
+    time.sleep(supervisor.UNUSED_GRACE_S + 2.0)
+    assert _summary(watcher, sid).get("keep") is True, "a kept session was ended"
+
+
 def test_a_detach_does_not_end_it(service):
     """A dashboard detaches the sessions it hides; that is no closing."""
     window = service.client()
