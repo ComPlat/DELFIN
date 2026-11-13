@@ -8701,7 +8701,7 @@ def create_tab(ctx):
     stop_btn = widgets.Button(
         description="Stop",
         button_style="",
-        layout=widgets.Layout(width="80px"),
+        layout=widgets.Layout(width="auto", flex="0 0 auto"),
     )
     stop_btn.disabled = True
 
@@ -9142,7 +9142,7 @@ def create_tab(ctx):
     question_hint_html = widgets.HTML(value="")
     question_buttons_box = widgets.HBox(
         [],
-        layout=widgets.Layout(gap="4px", flex_wrap="wrap"),
+        layout=widgets.Layout(gap="4px", flex_flow="row wrap"),
     )
     question_row = widgets.HBox(
         [question_hint_html, question_buttons_box],
@@ -11675,11 +11675,14 @@ def create_tab(ctx):
         _chat_area.add_class("delfin-agent-chat-row")
         ctx.add_init_js(_agent_term.init_js())
     # Connect a phone: the same as typing /pair; the code goes the same way.
+    # An icon like the report beetle beside it: with a word the row did not
+    # fit 1366 px and the beetle wrapped onto a line of its own. The tooltip
+    # is the button's title, its accessible name.
     messenger_phone_btn = widgets.Button(
-        description="Phone", icon="mobile",
+        description="", icon="mobile",
         tooltip=("Connect your phone (SimpleX): scan the code shown above the input, "
                  "then type the 6-digit code your phone gets."),
-        layout=widgets.Layout(width="auto", flex="0 0 auto"))
+        layout=widgets.Layout(width="44px", flex="0 0 auto"))
 
     def _messenger_send_code(_b=None):
         code = "".join(ch for ch in str(messenger_code_input.value or "") if ch.isdigit())
@@ -11692,7 +11695,13 @@ def create_tab(ctx):
     messenger_phone_btn.on_click(lambda _b: _handle_slash_command("/pair"))
     messenger_code_btn.on_click(_messenger_send_code)
     messenger_cancel_btn.on_click(lambda _b: _handle_slash_command("/pair cancel"))
-    git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
+    # Only where a phone can be paired from: a messenger bridge runs here or
+    # one is set up (stopped for now). On a host without one (an HPC login
+    # node) the button led to 30 s of waiting and "No answer"; /pair typed
+    # there says why at once (delfin.messenger.activation.UNAVAILABLE).
+    from delfin.messenger import activation as _messenger_activation
+    if _messenger_activation.messenger_here():
+        git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
