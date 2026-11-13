@@ -248,6 +248,41 @@ Files in the trash count as unrestorable, so it cannot be emptied from the
 shell. Not seen: a deletion inside an interpreter or a script, a variable
 as target, a program that opens its own output.
 
+What an approval is about is classified once (`irreversible.classify`):
+reversible (nothing destroyed or sent, or a copy is kept by the undo
+journal, git or the trash), recoverable with effort (git's reflog keeps
+the commits a rebase, `commit --amend` or `reset` replaces) or
+irreversible -- a delete or overwrite of what nothing keeps (judged by
+`unrestorable`), a push, pull request, merge, release or repository
+delete, a mutating forge API call, an upload (`scp`, `rsync`, `sftp`,
+`curl`/`wget` with a body), mail, a session message, a notification, a
+webhook, a job cancel (`scancel`, `qdel`, `bkill`, `cluster_cancel`), a
+process kill, discarding uncommitted changes, `git clean`, an MCP tool
+whose name sends, a hazardous lab write. `api_client._ask_confirm` puts
+the statement at the head of every preview it hands a broker: what
+happens, concretely (the file and its size; the branch, the remote and
+the number of commits published or removed; the host and the bytes; the
+job), that it cannot be undone, and the reversible way where there is one
+(the trash, a new branch, a patch file). The terminal dialog, the
+dashboard row, the service and the phone card show it first; the phone in
+the person's language (`messenger.lang.DE` holds every sentence). For an
+irreversible request none of them offers a grant that outlives it (no
+always / like this / stop asking / Allow + Permanent; the service refuses
+a key that is not offered), Enter in the terminal answers no, and the
+dashboard's expiry answers no. When a person can be asked (a callback;
+default, diff_approval or acceptEdits), no standing grant answers such a
+shell command in their place: not the allow list or a remembered pattern,
+a read-only shape, an information or calculation admission, the cage, or
+an allow rule (`api_client._irreversible_needs_person`, security event
+`irreversible_asked`); it goes to the dialog. With nobody to ask the
+grants stand as before (bypass has the trash rule above). `lab pending`
+carries the same statement for a hazardous lab write. Not seen: what an
+interpreter or a script does inside, a target in a variable, an MCP tool
+whose name does not say it sends, a write tool's overwrite (the change
+journal keeps it), and the order of a model's own words -- the shared
+refusal addendum tells every role to name the consequence before it runs
+or asks, and nothing checks that it did.
+
 ### 3. Isolation of the shell command
 
 `api_client._bash_isolation_argv` decides how a shell command is run.
@@ -809,7 +844,7 @@ inbox. The kinds most relevant to this model:
 - egress: `egress`, `egress_blocked`, `egress_asked`, `egress_upload`,
   `egress_upload_refused`, `network`, `network_missing`
 - approvals: `approval_self_answer`, `approval_from_outside`,
-  `approval_code_refused`, `approval_timeout`
+  `approval_code_refused`, `approval_timeout`, `irreversible_asked`
 - the classifier: `classifier_ask`, `classifier_refuse`, `classifier_error`,
   `classifier_held`, `classifier_down`, `classifier_up`
 - credentials: `key_exported`, `trust_store_refused`
