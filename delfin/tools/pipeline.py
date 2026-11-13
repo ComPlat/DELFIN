@@ -136,6 +136,7 @@ Scheduler integration::
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -178,6 +179,47 @@ def _result_artifacts(result, step_name: str) -> Dict[str, Any]:
         if ad is not None and "qc_output" in ad.contract().produces:
             arts["qc_output"] = out
     return arts
+
+
+def _record_step_finish(pipeline_name, label, cstep, base, result) -> None:
+    """Record a succeeded step's end in the chain state (JC1 targets 1/2).
+
+    The evidence is the step's OWN tool's success proof: ORCA-family
+    steps carry the orca_read markers (normal termination + converged
+    SCF); other tools report the success the run observed, plus the
+    output's SHA-256 so a resume can detect a half-written output.
+    A step whose output lacks the proof is recorded as failed (target 2:
+    never a guess) — the resume path re-verifies from the file either way.
+    """
+    from delfin.tools import chain_state as _cs
+
+    evidence: Dict[str, Any] = {"tool_reported_success": True}
+    if _cs._is_orca_tool(cstep.tool):
+        file_evidence = _cs._read_step_evidence(cstep, chain_work_dir=base)
+        if file_evidence.get("normal_termination") \
+                and file_evidence.get("scf_converged"):
+            evidence = {
+                "normal_termination": True,
+                "scf_converged": True,
+            }
+    else:
+        # Record the output's hash so a resume can detect a
+        # half-written/changed output (target 2).
+        out_path = _cs._step_output_path(cstep, base)
+        if out_path is not None and out_path.is_file() \
+                and out_path.stat().st_size > 0:
+            evidence["output_sha256"] = hashlib.sha256(
+                out_path.read_bytes()
+            ).hexdigest()
+    try:
+        cstep.mark_finished(evidence)
+    except _cs.ChainStateError as exc:
+        logger.warning(
+            "[%s] chain: step '%s' succeeded but the evidence is "
+            "missing (%s) — recorded as failed",
+            pipeline_name, label, exc,
+        )
+        cstep.mark_failed(f"success without evidence: {exc}")
 
 
 @dataclass
@@ -1040,7 +1082,6 @@ class Pipeline:
         skip_until = -1  # for resume: skip steps already done
 
         # --- Chain state (JC1): one mechanism with the pipeline steps ---
-        from delfin.tools._runner import run_step
         chain: Optional[Any] = None
         if resume_chain:
             from delfin.tools import chain_state as _cs
@@ -1485,25 +1526,13 @@ class Pipeline:
                     cstep.mark_running()
 
                 if result.ok:
-                    if _cs._is_orca_tool(cstep.tool):
-                        evidence = _cs._read_step_evidence(
-                            cstep, chain_work_dir=base
-                        )
+                    if cstep.state == "finished":
+                        # Already recorded as finished on a previous run
+                        # (resume): do not touch the state again.
+                        chain.save()
                     else:
-                        # Non-ORCA tools (xtb, crest, ...): the run that
-                        # observed the success is the fact (F-B); its
-                        # output is re-verified on resume.
-                        evidence = {"tool_reported_success": True}
-                    try:
-                        cstep.mark_finished(evidence)
-                    except _cs.ChainStateError as exc:
-                        logger.warning(
-                            "[%s] chain: step '%s' succeeded but the "
-                            "evidence is missing (%s) — recorded as failed",
-                            self.name, spec.label, exc,
-                        )
-                        cstep.mark_failed(
-                            f"success without evidence: {exc}"
+                        _record_step_finish(
+                            self.name, spec.label, cstep, base, result
                         )
                 else:
                     try:

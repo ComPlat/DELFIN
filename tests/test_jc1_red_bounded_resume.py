@@ -225,7 +225,15 @@ class TestPipelineChainWiring:
         pipe.run(cores=1, work_dir=tmp_path)
 
         # Corrupt step 1's output (proof gone — e.g. node crash mid-write).
-        out = tmp_path / "01_xtb_opt" / "xtb_opt.out"
+        # The pipeline writes step i into 0{i}_{label}; step 1 is xtb_opt.
+        listing = sorted(
+            p.name for p in tmp_path.iterdir() if p.is_dir()
+        )
+        out = tmp_path / "00_xtb_opt" / "xtb_opt.out"
+        assert out.is_file(), (
+            f"the step's work dir must hold its output after the run: "
+            f"dirs={listing} chain={json.loads((tmp_path / 'chain_state.json').read_text())['steps'][0]}"
+        )
         out.write_text("CARTESIAN COORDINATES\n")
 
         calls = []
@@ -314,7 +322,14 @@ class TestChainCli:
         finally:
             runner_mod.run_step = original
         assert rc == 0
-        assert calls == ["step_0"], (
+        # The real run_step contract (delfin/tools/_runner.py:15) takes the
+        # ADAPTER name: run_step('step_0') raises ValueError ('Unknown
+        # step').  The chain step's name is the label; its tool is what
+        # run_step actually receives.  Old decision (b5f55e3dc): the call
+        # was pinned by the step's label; rewritten along the intent —
+        # resume must actually run the pending step through run_step, and
+        # only after the explicit resume command.
+        assert calls == ["xtb_opt"], (
             "resume must actually run the pending step — and only after the "
             "explicit resume command (never on its own)"
         )

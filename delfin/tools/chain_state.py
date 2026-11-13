@@ -241,17 +241,24 @@ class ChainState:
             work_dir=Path(data["work_dir"]),
         )
         for sd in data.get("steps", []):
-            if sd.get("state") == "finished" and (
-                not isinstance(sd.get("evidence"), dict)
-                or any(k not in sd["evidence"] for k in REQUIRED_EVIDENCE)
-            ):
-                logger.warning(
-                    "chain %s step %s: torn/unfinished state downgraded to "
-                    "pending",
-                    data["name"],
-                    sd.get("name"),
+            if sd.get("state") == "finished":
+                # Torn/unfinished check: a stored `finished` step must
+                # carry a full evidence dict — either the ORCA markers or
+                # the run's own success report (F-B/F-C); anything else is
+                # a half-written state and is downgraded to pending.
+                ev = sd.get("evidence")
+                ok_evidence = isinstance(ev, dict) and (
+                    all(k in ev for k in REQUIRED_EVIDENCE)
+                    or bool(ev.get("tool_reported_success"))
                 )
-                sd = dict(sd, state="pending", evidence=None)
+                if not ok_evidence:
+                    logger.warning(
+                        "chain %s step %s: torn/unfinished state downgraded "
+                        "to pending",
+                        data["name"],
+                        sd.get("name"),
+                    )
+                    sd = dict(sd, state="pending", evidence=None)
             chain.steps.append(ChainStep.from_dict(sd))
         return chain
 
@@ -260,6 +267,12 @@ class ChainState:
     def add_step(self, name: str, tool: str, inputs_hash: str = "") -> ChainStep:
         step = ChainStep(name=name, tool=tool, inputs_hash=inputs_hash)
         self.steps.append(step)
+        # Persist immediately: a chain step must never be lost to a crash
+        # between add_step and the next explicit save (the state file is
+        # written by create() BEFORE the first add_step, so without this
+        # the on-disk state would stay empty and a resume would see a
+        # zero-step chain).
+        self.save()
         return step
 
     def step(self, name: str) -> ChainStep:
@@ -411,16 +424,35 @@ def verify_finished_step(
                 reason=f"the step's output ({step.tool}) is gone",
             )
         try:
-            empty = out_path.stat().st_size == 0
-        except OSError:
-            empty = True
-        if empty:
+            if out_path.stat().st_size == 0:
+                step.state = "pending"
+                step.evidence = None
+                return FinishVerdict(
+                    verified=False,
+                    downgraded_to="pending",
+                    reason=f"the step's output ({step.tool}) is empty",
+                )
+            stored_hash = (step.evidence or {}).get("output_sha256")
+            if stored_hash:
+                actual = hashlib.sha256(
+                    out_path.read_bytes()
+                ).hexdigest()
+                if actual != stored_hash:
+                    step.state = "pending"
+                    step.evidence = None
+                    return FinishVerdict(
+                        verified=False,
+                        downgraded_to="pending",
+                        reason="the step's output changed since the step "
+                        "finished (crash mid-write)",
+                    )
+        except OSError as exc:
             step.state = "pending"
             step.evidence = None
             return FinishVerdict(
                 verified=False,
                 downgraded_to="pending",
-                reason=f"the step's output ({step.tool}) is empty",
+                reason=f"the step's output is unreadable: {exc}",
             )
         return FinishVerdict(verified=True)
     evidence = _read_step_evidence(step, chain_work_dir)
