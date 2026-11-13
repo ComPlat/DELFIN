@@ -91,6 +91,7 @@ def protein_cif(tmp_path) -> Path:
                             f"{serial * 0.1:.3f} 0.000 0.000 N")
     p = tmp_path / "protein.cif"
     p.write_text(
+        "loop_\n"
         "_atom_site.group_PDB\n"
         "_atom_site.id\n"
         "_atom_site.label_atom_id\n"
@@ -103,6 +104,12 @@ def protein_cif(tmp_path) -> Path:
         "_atom_site.type_symbol\n"
         + "\n".join(rows) + "\n", encoding="utf-8")
     return p
+
+
+def _card_json(result: str) -> dict:
+    """The card result's JSON object, marker stripped."""
+    assert result.startswith(chat_viewer.CARD_MARKER)
+    return json.loads(result[len(chat_viewer.CARD_MARKER):])
 
 
 def _result(path) -> str:
@@ -146,9 +153,9 @@ def test_the_model_text_names_the_protein_facts(protein_pdb):
 
 def test_a_binding_box_travels_with_the_card(protein_pdb):
     box = BindingBox(center=(5.0, 1.0, 1.0), size=(10.0, 10.0, 10.0))
-    payload = json.loads(chat_viewer.render_molecule_tool_result(
+    payload = _card_json(chat_viewer.render_molecule_tool_result(
         str(protein_pdb), binding_site=box.to_dict()))
-    bio = chat_viewer.card_payload(payload)["bio"]
+    bio = payload["bio"]
     assert bio["binding_site"]["kind"] == "binding_box"
     assert bio["binding_site"]["center"] == [5.0, 1.0, 1.0]
 
@@ -156,11 +163,12 @@ def test_a_binding_box_travels_with_the_card(protein_pdb):
 def test_a_residue_selection_travels_with_the_card(protein_pdb):
     sel = ResidueSelection(residues=(
         ResidueRef(chain_id="A", seq_id=1, residue_name="ALA"),))
-    payload = json.loads(chat_viewer.render_molecule_tool_result(
+    payload = _card_json(chat_viewer.render_molecule_tool_result(
         str(protein_pdb), binding_site=sel.to_dict()))
-    bio = chat_viewer.card_payload(payload)["bio"]
+    bio = payload["bio"]
     assert bio["binding_site"]["kind"] == "residue_selection"
-    assert bio["binding_site"]["residues"][0]["label"] == "A/1/ALA"
+    r = bio["binding_site"]["residues"][0]
+    assert (r["chain_id"], r["seq_id"], r["residue_name"]) == ("A", 1, "ALA")
 
 
 def test_an_invalid_binding_site_is_refused(protein_pdb):
