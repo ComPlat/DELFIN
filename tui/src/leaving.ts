@@ -35,8 +35,9 @@ export function keptOf(summary?: { keep?: boolean | null } | null): boolean {
  *  closed terminal) ends the session, saved; `/keep on` keeps it running in
  *  the agent service. A service before the switch ignores the field and
  *  keeps every session, and keptOf reads that from its summaries. */
-export function startedHere<T extends Record<string, unknown>>(params: T): T & { keep: false } {
-  return { ...params, keep: false }
+export function startedHere<T extends Record<string, unknown>>(params: T): T & { keep: boolean } {
+  // `delfin-agent tui --keep` puts keep true into the start settings.
+  return { ...params, keep: params.keep === true }
 }
 
 /** What leaving the window does to the session in view, as ctrl+c and the

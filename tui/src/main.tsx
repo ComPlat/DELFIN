@@ -257,6 +257,8 @@ function resumeSettings(): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (start.fake) out.fake = true
   if (start.fakeDelay !== undefined) out.fakeDelay = start.fakeDelay
+  // A window started with --keep starts what it resumes kept as well.
+  if (start.keep === true) out.keep = true
   return out
 }
 

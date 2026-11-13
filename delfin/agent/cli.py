@@ -6317,8 +6317,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     tui = sub.add_parser(
         "tui",
-        help="The terminal UI: one window over all your sessions, which keep "
-             "running when it closes (sessions live in `delfin-agent service`)",
+        help="The terminal UI: one window over your sessions (they live in "
+             "`delfin-agent service`). A session this window starts ends when it "
+             "closes (ctrl+c twice) unless Keep session is on: /keep on, or --keep",
     )
     tui.add_argument("--cwd", default="", help="Workspace of the first session")
     tui.add_argument("-n", "--name", dest="session_name", default="",
@@ -6338,6 +6339,9 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--no-isolate", action="store_true")
     tui.add_argument("-v", "--verbose", action="store_true",
                      help="Show the model's thinking, as chat --verbose does")
+    tui.add_argument("--keep", action="store_true",
+                     help="Start this window's sessions with Keep session on: they keep "
+                          "running in the agent service after the window closes")
     tui.add_argument("--inline", action="store_true",
                      help="Draw under the shell's last line, the conversation in the "
                           "terminal's own scrollback, instead of taking the whole terminal")
