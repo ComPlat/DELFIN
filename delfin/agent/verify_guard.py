@@ -1025,6 +1025,9 @@ _CAVEAT_TEXTS: dict[str, str] = {
                   "unsupported — no file access and no lookup in this "
                   "session covers them: "),
     "unsourced_end": ". Please treat them as unconfirmed.",
+    "unlinked": ("\n\n[verify] Caveat: no tool in this session returned "
+                 "these links: "),
+    "unlinked_end": ". Check them before you open one.",
     "truncated_a": "\n\n> ⚠️ This answer states ",
     "truncated_b": ", but the output of ",
     "truncated_c": (" was truncated in this turn. A number whose only "
@@ -2580,12 +2583,14 @@ def grounding_caveat(
     items.extend(f"'{f.claim}'" for f in location_flags)
     items.extend(f"'{f.quantity}'" for f in quantity_flags)
     items.extend(f"'{f.equation}'" for f in arithmetic_flags or ())
-    items.extend(f"'{f.url}'" for f in url_flags or ())
-    if not items:
-        return ""
-    return (
-        _t("unsourced") + ", ".join(items) + _t("unsourced_end")
-    )
+    # A link is not a figure: it gets its own sentence.
+    links = [f"'{f.url}'" for f in url_flags or ()]
+    out = ""
+    if items:
+        out += _t("unsourced") + ", ".join(items) + _t("unsourced_end")
+    if links:
+        out += _t("unlinked") + ", ".join(links) + _t("unlinked_end")
+    return out
 
 
 # ---------------------------------------------------------------------------

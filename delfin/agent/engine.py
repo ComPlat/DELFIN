@@ -5756,21 +5756,15 @@ class AgentEngine:
             return [], [], [], []
 
     def _urls_the_person_wrote(self) -> set[str]:
-        """Every http(s) address in this session's user messages (and the
-        current one); never raises."""
+        """Every http(s) address the person typed in this session.
+
+        Only the person's own words (api_client._classifier_user_texts):
+        the guard's own correction prompt is a user-role row that names the
+        unsupported links, and counting it would ground exactly those."""
         from . import verify_guard as _vg
-        texts = [str(getattr(self, "_last_user_message", "") or "")]
-        for m in getattr(self, "messages", None) or ():
-            if not isinstance(m, dict) or m.get("role") != "user":
-                continue
-            c = m.get("content")
-            if isinstance(c, str):
-                texts.append(c)
-            elif isinstance(c, list):
-                texts.extend(str(p.get("text") or "") for p in c
-                             if isinstance(p, dict))
+        from .api_client import _classifier_user_texts
         out: set[str] = set()
-        for t in texts:
+        for t in _classifier_user_texts(getattr(self, "messages", None) or ()):
             for m in _vg._URL_CLAIM_RE.finditer(t):
                 out.add(m.group(0).rstrip(".,;:)'\">}"))
         return out
@@ -5964,23 +5958,27 @@ class AgentEngine:
         ambiguous = self._scan_ambiguous_column_totals(combined)
         new_files = set(
             getattr(self, "_last_observed_files", None) or ()) - observed_before
+        # A link in the ORIGINAL answer stays on the page (the claim and its
+        # correction are both shown), clickable. Unless a tool has returned
+        # it since, it is named, whatever the correction says about it:
+        # the reader still sees the link, not the model's retraction of it.
+        url_left = [f for f in self._scan_claim_grounding(
+            response_text, getattr(self, "_last_turn_tools", None))[3]
+            if f not in url2]
         if loc2 or qty2 or arith2 or url2:
             # The retry produced its own ungrounded claims.
             caveat = _vg.grounding_caveat(
-                loc2, qty2, arith2, url_flags=url2)
+                loc2, qty2, arith2, url_flags=url2 + url_left)
         elif not new_files:
             # It read nothing. The scanners are silent because the wording
             # changed, not because anything was checked — so the ORIGINAL
             # claims are named, exactly as unverified as before. The
             # feedback offers "restate as unverified" as a way out, and
-            # taking it must not be indistinguishable from verifying. A URL
-            # is excluded here: removing an unsupported link resolves it
-            # (no URL stays in the correction), so the re-scan already
-            # cleared it — re-naming it would call an achievement a lapse.
-            caveat = _vg.grounding_caveat(loc, qty, arith)
+            # taking it must not be indistinguishable from verifying.
+            caveat = _vg.grounding_caveat(loc, qty, arith, url_flags=url_left)
         else:
-            caveat = ""
-            self._claim_guard_corrected = True
+            caveat = _vg.grounding_caveat([], [], [], url_flags=url_left)
+            self._claim_guard_corrected = not url_left
         # A conflict is resolved by NAMING a number, not by acknowledging
         # the question. The field case answered its own comparison with
         # "deutet auf eine unterschiedliche Formel-Konvention hin" and

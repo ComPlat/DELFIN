@@ -204,17 +204,23 @@ def test_url_claim_flag_is_frozen():
 
 def test_a_link_the_person_wrote_is_no_invented_link():
     # Repeating the person's own link back must not cost a correction turn;
-    # a link nobody wrote and no tool returned is still flagged.
+    # a link nobody wrote and no tool returned is still flagged -- also when
+    # the guard's own correction prompt (a user-role row) has named it.
     from delfin.agent.engine import AgentEngine
     eng = AgentEngine.__new__(AgentEngine)
-    eng.messages = [{"role": "user",
-                     "content": "Look at https://person.example/page please"}]
-    eng._last_user_message = "and https://now.example/x."
+    invented = "https://invented.example/doc"
+    feedback = vg.url_claim_feedback(
+        vg.scan_for_ungrounded_url_claims(invented, observed_urls=set()))
+    eng.messages = [
+        {"role": "user", "content": "Look at https://person.example/page please"},
+        {"role": "assistant", "content": f"See {invented}"},
+        {"role": "user", "content": feedback},
+    ]
+    eng._last_user_message = feedback
     eng._last_observed_urls = set()
     eng._observed_urls_available = True
     eng._last_observed_files = set()
     eng._observed_ledger_available = False
     *_, urls = eng._scan_claim_grounding(
-        "See https://person.example/page, https://now.example/x and "
-        "https://invented.example/doc", [])
-    assert [f.url for f in urls] == ["https://invented.example/doc"]
+        f"See https://person.example/page and {invented}", [])
+    assert [f.url for f in urls] == [invented]
