@@ -727,7 +727,7 @@ def test_a_gzipped_pdb_reads_like_the_plain_one(tmp_path):
     body = _GLY_ALA + _ZN_AND_WATER + ["END"]
     plain_path = _write(tmp_path, "plain.pdb", body)
     gz_path = tmp_path / "plain.pdb.gz"
-    gz_path.write_bytes(gzip.compress("\n".join(body) + "\n", encoding="utf-8"))
+    gz_path.write_bytes(gzip.compress(("\n".join(body) + "\n").encode()))
 
     gz = read_pdb(str(gz_path))
     assert gz.composition() == read_pdb(str(plain_path)).composition()
@@ -741,7 +741,7 @@ def test_the_suffix_before_gz_chooses_the_reader(tmp_path):
     cif_path = tmp_path / "both.cif"
     cif_path.write_text(_mmcif(rows), encoding="utf-8")
     gz_path = tmp_path / "both.cif.gz"
-    gz_path.write_bytes(gzip.compress(cif_path.read_text(encoding="utf-8")))
+    gz_path.write_bytes(gzip.compress(cif_path.read_bytes()))
 
     structure = read_structure(str(gz_path))
     assert structure.source_format == "mmcif"
@@ -751,7 +751,7 @@ def test_the_suffix_before_gz_chooses_the_reader(tmp_path):
 def _gz_write(tmp_path, name: str, text: str):
     import gzip
     path = tmp_path / name
-    path.write_bytes(gzip.compress(text, encoding="utf-8"))
+    path.write_bytes(gzip.compress(text.encode()))
     return path
 
 

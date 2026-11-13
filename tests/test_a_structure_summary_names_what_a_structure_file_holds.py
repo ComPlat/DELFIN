@@ -363,25 +363,20 @@ def test_a_model_that_is_not_a_number_fails_the_step(tmp_path, model):
 def _gzip_write(tmp_path, name: str, text: str) -> Path:
     import gzip
     path = tmp_path / name
-    path.write_bytes(gzip.compress(text, encoding="utf-8"))
+    path.write_bytes(gzip.compress(text.encode()))
     return path
 
 
 def test_a_gzipped_pdb_reports_the_same_composition(tmp_path):
-    import gzip
-    from delfin.tools.bio._read import MAX_DECOMPRESSED_BYTES
-
     # Build the gz from the same body as _STRUCTURE so both arms agree.
-    body = "\n".join(_STRUCTURE) + "\n"
     plain = _pdb(tmp_path, "a.pdb", _STRUCTURE)
-    gz = _gzip_write(tmp_path, "a.pdb.gz", body)
+    gz = _gzip_write(tmp_path, "a.pdb.gz", _STRUCTURE)
     first = run_step(STEP, structure_file=str(plain), work_dir=str(tmp_path / "a"))
     second = run_step(STEP, structure_file=str(gz), work_dir=str(tmp_path / "b"))
     assert first.ok and second.ok, (first.error, second.error)
     assert second.data["n_polymer_residues"] == first.data["n_polymer_residues"]
     assert second.data["hetero_components"] == first.data["hetero_components"]
     assert second.data["n_waters"] == first.data["n_waters"]
-    _ = gzip, MAX_DECOMPRESSED_BYTES
 
 
 def test_a_gzip_file_that_inflates_beyond_the_cap_fails_the_step(tmp_path):
