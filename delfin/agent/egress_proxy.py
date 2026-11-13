@@ -50,6 +50,25 @@ token the request carries (``token_for``):
    otherwise refused with a message naming the host and the rule that
    would allow it. An answer is kept for the session.
 
+5. a plain-HTTP request to a host steps 1-4 let through whose URL carries
+   encoded data (``web_tools.url_payload_reason``: a long query, or a run
+   that looks like hex, a UUID or base64 in the query or the host name)
+   is asked once per host where someone can be asked and refused
+   otherwise (``egress_payload_refused``), unless the host is named for
+   uploads.
+
+Known hosts include the hosts of URLs the user wrote in a typed message
+of the session (``user_named_hosts``). ``web_fetch``, which reads in the
+agent process and not through the proxy, takes the same host decision
+before it resolves anything (``settle_fetch``); a question answered for
+one of them holds for the other.
+
+What a session sends is counted per host (``note_sent``: every byte a
+command writes through the proxy, and each web_fetch's request) and
+recorded when the total crosses 1 byte, 64 KiB, 1 MiB, 16 MiB or 256
+MiB: a non-blocking ``egress_sent`` event and an ``egress`` line in the
+audit log. ``sent_by_host`` reads the totals.
+
 The process-wide token (``self.token``) carries no session: allow-list
 only, unknown refused -- the behaviour before sessions existed.
 
@@ -262,6 +281,101 @@ def configured_domains(workspace=None) -> list[str]:
     return out
 
 
+def named_domains() -> list[str]:
+    """The hosts the user's configuration names for reads: the default
+    allow-list and ``agent.sandbox_network.allowed_domains``. Not the
+    workspace's remotes or the model endpoints (``configured_domains``
+    adds those): a repository names its remotes itself."""
+    return list(DEFAULT_ALLOWED_DOMAINS) + _string_list(
+        _settings().get("allowed_domains"))
+
+
+def upload_named_domains() -> list[str]:
+    """The hosts ``agent.sandbox_network.upload_domains`` names: where the
+    user said uploads may go."""
+    return _string_list(_settings().get("upload_domains"))
+
+
+def user_named_hosts(perms) -> list[str]:
+    """Hosts of the http(s) URLs the user wrote in a typed message of this
+    session (``KitToolPermissions.user_named_urls``, filled only from the
+    person's own words: never a sub-agent's prompt or harness text). The
+    user asked for them, so they count as known: reads pass unasked, and
+    an upload to them is judged as for every known host."""
+    out: list[str] = []
+    for url in list(getattr(perms, "user_named_urls", None) or ()):
+        host = _host_of(url)
+        if host and host not in out:
+            out.append(host)
+    return out
+
+
+# -- bytes sent, per session and host ---------------------------------------
+
+#: Totals at which a session's bytes to one host are recorded (security
+#: event ``egress_sent`` and an ``egress`` line in the audit log): the
+#: first byte, then 64 KiB, 1 MiB, 16 MiB and 256 MiB.
+_SENT_REPORT_AT = (1, 64 * 1024, 1024 * 1024, 16 * 1024 * 1024,
+                   256 * 1024 * 1024)
+_SENT: dict = {}
+_SENT_LOCK = threading.Lock()
+
+
+def _session_key(perms) -> str:
+    """The count's key: the session id, else a token kept on the
+    permissions object itself. Not id(perms): CPython reuses an id once
+    the object is gone, and a new session then inherited the old one's
+    total (and missed its own first-byte record)."""
+    sid = str(getattr(perms, "task_session_id", "") or "")
+    if sid:
+        return sid
+    if perms is None:
+        return "process"
+    token = getattr(perms, "_egress_count_key", "")
+    if not token:
+        token = "perms-" + secrets.token_hex(8)
+        try:
+            setattr(perms, "_egress_count_key", token)
+        except Exception:
+            return f"perms-{id(perms)}"
+    return token
+
+
+def note_sent(perms, host: str, nbytes: int, via: str) -> None:
+    """Count ``nbytes`` the session of ``perms`` sent to ``host`` (through
+    the proxy, or a web tool's request). Records the total when it crosses
+    one of ``_SENT_REPORT_AT``. Never raises."""
+    try:
+        n = int(nbytes)
+        host = str(host or "").lower()
+        if n <= 0 or not host:
+            return
+        key = (_session_key(perms), host)
+        with _SENT_LOCK:
+            before = _SENT.get(key, 0)
+            after = before + n
+            _SENT[key] = after
+        if not any(before < t <= after for t in _SENT_REPORT_AT):
+            return
+        detail = f"{host}: {after} bytes sent this session ({via})"
+        _note_event("egress_sent", detail, False)
+        from . import audit_log
+        audit_log.append({"tool": "egress", "decision": "ok",
+                          "command": detail, "host": host,
+                          "bytes_sent": after, "via": via},
+                         session_id=str(getattr(perms, "task_session_id", "")
+                                        or ""))
+    except Exception:
+        pass
+
+
+def sent_by_host(perms) -> dict:
+    """``{host: bytes}`` the session of ``perms`` has sent so far."""
+    key = _session_key(perms)
+    with _SENT_LOCK:
+        return {h: n for (k, h), n in _SENT.items() if k == key}
+
+
 def _resolve(host: str, port: int) -> list[str]:
     try:
         return sorted({f"{info[4][0]}:{port}" for info in socket.getaddrinfo(
@@ -295,9 +409,7 @@ def _ssh_route_allowed(host: str, url: str) -> bool:
     which the workspace does not write. A direct route bypasses the proxy
     (no upload limit, no question), so a host the repository alone names
     gets none; that is recorded once."""
-    named = list(DEFAULT_ALLOWED_DOMAINS) + _string_list(
-        _settings().get("allowed_domains"))
-    if domain_allowed(host, named):
+    if domain_allowed(host, named_domains()):
         return True
     if host not in _SSH_REMOTE_NOTED:
         _SSH_REMOTE_NOTED.add(host)
@@ -563,7 +675,7 @@ class EgressProxy:
 
     def known(self, host: str, perms=None) -> bool:
         return domain_allowed(host, list(self.allowed_domains) + configured_domains(
-            getattr(perms, "workspace", None)))
+            getattr(perms, "workspace", None)) + user_named_hosts(perms))
 
     def upload_allowed(self, host: str) -> bool:
         """Whether ``host`` may receive an upload when nobody can be asked:
@@ -708,6 +820,65 @@ class EgressProxy:
                 f"{'the upload to ' if upload else ''}{host}. Do not retry it "
                 "or reach the same host another way.")
 
+    def settle_fetch(self, url: str, perms) -> Optional[str]:
+        """The host decision of ``decide`` for a URL a web tool would read
+        in the agent process (``web_fetch``): None to proceed, else the
+        refusal. Taken before anything is resolved or sent.
+
+        A known host passes, as for a command. An unknown host is asked
+        once per session where someone can be asked; the answer is the
+        one ``settle`` keeps for the same host, so one question covers a
+        command and a fetch. With nobody to ask it is refused. A
+        ``web_fetch(domain:...)`` ask rule was already put to the person
+        when the call was dispatched, so it is not asked twice here."""
+        try:
+            parts = urlsplit(str(url or "").strip())
+            host = (parts.hostname or "").lower()
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+        except ValueError:
+            return None          # the fetch itself reports the bad URL
+        if not host or parts.scheme not in ("http", "https"):
+            return None
+        verdict, why, _upload = self.decide(host, port, method="GET",
+                                            perms=perms)
+        if verdict == "deny":
+            return why
+        if verdict == "allow" or why.startswith("the permission rule"):
+            return None
+        key = (id(perms), host, "domain")
+        with self._ask_lock:
+            answered = self._answers.get(key)
+        if answered is None and not self._can_ask(perms):
+            return (f"web_fetch refused: {host} is not a host this session "
+                    "knows, and nobody can be asked. Nothing was sent, not "
+                    f"even a name lookup. A URL can be read when the user "
+                    "wrote it in a message, when a web_search result or a "
+                    "page fetched in this session showed it, or when its "
+                    "host is known (the permission rule "
+                    f"web_fetch(domain:{host}) or "
+                    "agent.sandbox_network.allowed_domains). For a paper, "
+                    "use verify_source or the literature tools; to find a "
+                    "page, use web_search and fetch one of its results.")
+        if answered is None:
+            callback = getattr(perms, "confirm_callback", None)
+            preview = (f"web_fetch wants to read {url[:300]} -- {host} is not "
+                       "a host this session knows (not an allowed domain, "
+                       "not named by you). Allowing it lets this session "
+                       f"read from {host} for the rest of the session.")
+            try:
+                answered = bool(callback("web_fetch", {"url": url}, preview))
+            except Exception:
+                answered = False
+            with self._ask_lock:
+                self._answers[key] = answered
+            _note_event("egress_asked", f"{host} domain (web_fetch): "
+                        + ("approved" if answered else "refused"),
+                        not answered)
+        if answered:
+            return None
+        return (f"web_fetch refused: the user refused {host}. Do not retry "
+                "it or reach the same host another way.")
+
     def _refuse(self, conn: socket.socket, code: int, reason: str) -> None:
         body = (reason + "\n").encode("utf-8", "replace")
         head = (f"HTTP/1.1 {code} {'Forbidden' if code == 403 else 'Proxy Authentication Required' if code == 407 else 'Bad Gateway'}\r\n"
@@ -811,6 +982,7 @@ class EgressProxy:
                 conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 if rest:
                     upstream.sendall(rest)
+                    note_sent(perms, host, len(rest), "proxy")
             else:
                 url = urlsplit(target)
                 if url.scheme != "http" or not url.hostname:
@@ -826,6 +998,8 @@ class EgressProxy:
                         size = self.upload_ask_bytes + 1
                 why = self.settle(url.hostname, port, method=method,
                                   body_bytes=size, perms=perms)
+                if not why:
+                    why = self._payload_refusal(target, url.hostname, perms)
                 if why:
                     self._refuse(conn, 403, why)
                     # Read and drop the body the client is still sending, so
@@ -849,8 +1023,13 @@ class EgressProxy:
                         not in ("proxy-authorization", "proxy-connection", "connection")]
                 request = "\r\n".join([f"{method} {path} {version}", *kept,
                                        "Connection: close"]) + "\r\n\r\n"
-                upstream.sendall(request.encode("latin-1") + rest)
-            self._relay(conn, upstream, meter, self.upload_ask_bytes)
+                first = request.encode("latin-1") + rest
+                upstream.sendall(first)
+                note_sent(perms, url.hostname, len(first), "proxy")
+                host = url.hostname
+            self._relay(conn, upstream, meter, self.upload_ask_bytes,
+                        on_sent=lambda n, _h=host, _p=perms: note_sent(
+                            _p, _h, n, "proxy"))
         except OSError:
             pass
         finally:
@@ -878,10 +1057,47 @@ class EgressProxy:
                 self._refuse(conn, 502, f"could not reach {host}:{port}: {exc}")
             return None
 
+    def _payload_refusal(self, url: str, host: str, perms) -> Optional[str]:
+        """For a plain-HTTP request to a host the decision let through: the
+        refusal when its URL carries data (``web_tools.url_payload_reason``)
+        and nobody can be asked, None otherwise. Where someone can be
+        asked, asked once per host and session; a host named for uploads
+        (``upload_allowed``) is not looked at."""
+        try:
+            from .web_tools import url_payload_reason
+            why = url_payload_reason(url)
+        except Exception:
+            why = None
+        if not why or self.upload_allowed(host):
+            return None
+        key = (id(perms), str(host).lower(), "payload")
+        with self._ask_lock:
+            answered = self._answers.get(key)
+        if answered is None and self._can_ask(perms):
+            preview = (f"A program started by the bash tool wants to send "
+                       f"{url[:300]} through DELFIN's egress proxy: {why}.")
+            try:
+                answered = bool(perms.confirm_callback(
+                    "web_fetch", {"url": url, "source": "bash child process"},
+                    preview))
+            except Exception:
+                answered = False
+            with self._ask_lock:
+                self._answers[key] = answered
+        if answered:
+            return None
+        _note_event("egress_payload_refused", f"{host}: {why}", True)
+        return (f"blocked by DELFIN's egress proxy: the request to {host} was "
+                f"not sent because {why}, and nobody can be asked. A lookup "
+                "carries words, not encoded data; do not retry it or send "
+                "the same data another way.")
+
     @staticmethod
-    def _relay(a: socket.socket, b: socket.socket, meter=None, limit: int = 0) -> None:
+    def _relay(a: socket.socket, b: socket.socket, meter=None, limit: int = 0,
+               on_sent=None) -> None:
         """Copy both ways. ``meter(sent)`` is consulted once when the bytes
-        from ``a`` (the command) pass ``limit``; False ends the tunnel."""
+        from ``a`` (the command) pass ``limit``; False ends the tunnel.
+        ``on_sent(n)`` is told every chunk ``a`` sends that is passed on."""
         a.settimeout(None)
         b.settimeout(None)
         socks = [a, b]
@@ -908,6 +1124,8 @@ class EgressProxy:
                     other.sendall(chunk)
                 except OSError:
                     return
+                if s is a and on_sent is not None:
+                    on_sent(len(chunk))
 
 
 def _note_event(kind: str, detail: str, blocked: bool) -> None:

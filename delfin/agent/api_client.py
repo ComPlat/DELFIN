@@ -6671,6 +6671,36 @@ _MACHINE_MESSAGE_PREFIXES = (
 )
 
 
+_USER_URL_RE = re.compile(r"https?://[^\s<>\"'`\]\[)(]+", re.IGNORECASE)
+
+
+def _note_user_named_urls(perms: Any, text: str) -> None:
+    """Add the http(s) URLs of a message the user typed to
+    ``perms.user_named_urls``.
+
+    Input: the text ``_grant_push_from`` has already established as the
+    person's (no sub-agent prompt, no harness text, no machine message).
+    Only the user's own words count: ``_classifier_user_texts``, cut
+    where the harness appends to the message (a line opening with a
+    bracket, such as an upload list), so a URL inside an attached file
+    is not the user asking for it. Trailing sentence punctuation is
+    dropped. Never raises."""
+    try:
+        urls = getattr(perms, "user_named_urls", None)
+        if not isinstance(urls, set):
+            return
+        words = _classifier_user_texts([{"role": "user", "content": text}])
+        if not words:
+            return
+        own = re.split(r"\n\s*\[", words[-1], maxsplit=1)[0]
+        for m in _USER_URL_RE.finditer(own):
+            url = m.group(0).rstrip(".,;:!?")
+            if len(url) > len("https://"):
+                urls.add(url)
+    except Exception:
+        return
+
+
 def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
     """Record whether a user message asks for a push.
 
@@ -6695,6 +6725,7 @@ def _grant_push_from(perms: Any, content: Any, *, new_request: bool) -> None:
     if text.lstrip().startswith(_MACHINE_MESSAGE_PREFIXES):
         return
     _note_pr_route(perms, text)
+    _note_user_named_urls(perms, text)
     if _asks_for_push(text):
         grants["push"] = 1
     elif new_request:
@@ -7925,6 +7956,186 @@ EGRESS_UNCHECKABLE = "egress-scan-failed"
 _NETWORK_TOOLS: frozenset[str] = frozenset({
     "web_fetch", "web_search", "remote_trigger", "push_notification",
 })
+
+def _web_egress_refusal(name: str, args: dict, perms) -> Optional[str]:
+    """Where a web tool's request goes and what it carries, decided before
+    anything is resolved or sent; the refusal, or None to go on.
+
+    Input: a ``web_fetch`` or ``web_search`` call (any server's, by base
+    name) and the session's permissions. Semantics:
+
+    * web_fetch of a URL the user wrote in a typed message, or that a
+      web_search result or a fetched page showed in this session
+      (``user_named_urls``, ``web_seen_urls``), proceeds: the model did
+      not compose it, so it carries nothing of the workspace;
+    * any other web_fetch takes the egress proxy's host decision
+      (``EgressProxy.settle_fetch``) unless the network mode is ``open``:
+      a known host passes, an unknown one is asked once per session where
+      someone can be asked and refused otherwise. Before this, web_fetch
+      resolved and reached any public host, and the classifier was the
+      only judge -- in a run with it off, nothing judged it;
+    * a web_fetch URL that passed, and a web_search query, are then
+      checked for a payload (``web_tools.url_payload_reason`` /
+      ``text_payload_reason``: a long query, or a run that looks like
+      encoded data): asked where someone can be asked, refused otherwise.
+
+    Measured on the probe (offline network namespace, bypass, unattended,
+    2026-11-13): on main a workspace marker left through web_fetch in the
+    query, the path and the host name (the last one through the name
+    lookup alone, before any connection), and reached the search engine
+    through web_search.
+
+    Rejected: a default list of documentation hosts for web_fetch (a
+    hosted documentation site shows its owner the paths requested; the
+    provenance rule keeps search-then-read working without one), and
+    checking the path for payloads (commit hashes and identifiers are
+    ordinary there; an unknown host gets no unattended path at all)."""
+    try:
+        from . import egress_proxy as _ep
+        from . import web_tools as _wt
+    except Exception:
+        return None
+    if perms is None or not isinstance(args, dict):
+        return None
+    can_ask = _ep.EgressProxy._can_ask(perms)
+    if name == "web_search":
+        query = str(args.get("query") or "")
+        why = _wt.text_payload_reason(query)
+        target = query
+    else:
+        url = str(args.get("url") or "").strip()
+        if not url:
+            return None
+        if (url in (getattr(perms, "user_named_urls", None) or ())
+                or url in (getattr(perms, "web_seen_urls", None) or ())):
+            return None
+        try:
+            mode = _ep.network_mode()
+        except Exception:
+            mode = "proxy"
+        if mode != "open":
+            try:
+                refusal = _ep.get_proxy().settle_fetch(url, perms)
+            except Exception as exc:
+                refusal = f"web_fetch refused: the host decision failed ({exc})"
+            if refusal:
+                _record_security_event("egress_blocked", name, url[:160])
+                return refusal
+        why = _wt.url_payload_reason(url)
+        target = url
+        if why:
+            try:
+                from urllib.parse import urlsplit as _urlsplit
+                host = (_urlsplit(url).hostname or "").lower()
+                if _ep.get_proxy().upload_allowed(host):
+                    why = None
+            except Exception:
+                pass
+    if not why:
+        return None
+    if can_ask:
+        preview = (f"{name} would send {target[:300]} -- {why}. Allow sending "
+                   "it?")
+        try:
+            if _ask_confirm(perms, name, args, preview):
+                return None
+        except Exception:
+            pass
+        _record_security_event("egress_payload_refused", name, why[:160])
+        return (f"user denied '{name}': {why}. Do not retry it or send the "
+                "same data another way.")
+    _record_security_event("egress_payload_refused", name, why[:160])
+    return (f"'{name}' refused: {why}, and nobody can be asked. Nothing was "
+            "sent. A lookup carries words, not encoded data: search for or "
+            "fetch the thing by its name; do not send the same data another "
+            "way.")
+
+
+def _redirect_gate(perms):
+    """The ``web_tools.REDIRECT_GATE`` for one web_fetch of the session of
+    ``perms``: each redirect target gets ``_web_egress_refusal`` -- the
+    host decision and the payload check the first URL got, before the
+    target is resolved -- and a followed hop is counted in the bytes sent.
+    None without permissions (a caller with no sandbox keeps the address
+    checks only, as before).
+
+    Measured before (egress probe, bypass, unattended): a web_fetch of
+    http://github.com/r/<marker> was answered 302 to an unknown host and
+    the marker arrived there. Cost: a known host that redirects to a
+    signed CDN URL (a long random query) is refused unattended unless the
+    CDN host is named for uploads; such targets are binary downloads
+    web_fetch does not return anyway."""
+    if perms is None:
+        return None
+
+    def gate(url: str) -> Optional[str]:
+        why = _web_egress_refusal("web_fetch", {"url": url}, perms)
+        if why is None:
+            try:
+                from urllib.parse import urlsplit as _urlsplit
+                from . import egress_proxy as _ep
+                _ep.note_sent(perms, _urlsplit(url).hostname or "",
+                              len(url) + _WEB_FETCH_HEADER_BYTES, "web_fetch")
+            except Exception:
+                pass
+        return why
+
+    return gate
+
+
+#: Request bytes counted for a web_fetch besides its URL: the request
+#: line's method and version and the headers web_tools sends (User-Agent,
+#: Accept, Host, Connection), rounded up. An estimate, said as one.
+_WEB_FETCH_HEADER_BYTES = 300
+#: At most this many URLs are kept in ``web_seen_urls`` (and taken from
+#: one page): the set is a provenance check, not a crawl log.
+_WEB_SEEN_MAX = 5000
+_WEB_SEEN_PER_PAGE = 300
+
+
+def _note_web_result(name: str, args: Any, result: Any, perms) -> None:
+    """After a web tool ran: the URLs it showed join ``web_seen_urls`` (a
+    web_search's result links; the http(s) addresses in the text of a
+    page web_fetch returned), and a fetch that reached its host is counted
+    in the session's bytes sent (``egress_proxy.note_sent``, the URL plus
+    ``_WEB_FETCH_HEADER_BYTES``). Never raises."""
+    try:
+        if perms is None or not isinstance(args, dict):
+            return
+        data = _untrusted_json(result if isinstance(result, str) else "")
+        if not isinstance(data, dict):
+            return
+        seen = getattr(perms, "web_seen_urls", None)
+        found: list = []
+        if name == "web_search":
+            for hit in data.get("results") or ():
+                u = hit.get("url") if isinstance(hit, dict) else None
+                if isinstance(u, str) and u.startswith(("http://", "https://")):
+                    found.append(u.strip())
+        else:
+            url = str(args.get("url") or "").strip()
+            err = str(data.get("error") or "")
+            if url and (not err or err.startswith(("HTTP ", "network error",
+                                                   "unsupported content"))):
+                from urllib.parse import urlsplit as _urlsplit
+                from . import egress_proxy as _ep
+                _ep.note_sent(perms, (_urlsplit(url).hostname or ""),
+                              len(url) + _WEB_FETCH_HEADER_BYTES, "web_fetch")
+            if not err:
+                for m in _URL_IN_CONTENT_RE.finditer(str(data.get("text") or "")):
+                    u = m.group(0).rstrip(".,;:)'\">}")
+                    if u:
+                        found.append(u)
+                    if len(found) >= _WEB_SEEN_PER_PAGE:
+                        break
+        if isinstance(seen, set):
+            for u in found:
+                if len(seen) >= _WEB_SEEN_MAX:
+                    break
+                seen.add(u)
+    except Exception:
+        return
+
 
 # Everything that must pass the permission gate before it runs. The set used
 # to be the five file/shell tools, so plan mode -- the profile the UI calls
@@ -10197,10 +10408,17 @@ class KitToolPermissions:
     task_session_id: str = ""
     # The tools whose output this turn's tool loop received inside an
     # untrusted fence, in first-seen order (reset at the start of every
-    # turn). A tuple, reassigned and never mutated, so the copy a
-    # sub-agent receives through dataclasses.replace stays its own.
-    # remember() stores it as the note's ``read_before``.
+    # top-level turn, _start_turn_taint; a sub-agent keeps its parent's).
+    # A tuple, reassigned and never mutated, so the copy a sub-agent
+    # receives through dataclasses.replace stays its own.
+    # remember() stores it as the note's ``read_before``; while it is not
+    # empty, an outward call needs the user's words (tainted_turn,
+    # _DocToolExecutor._tainted_outward_gate).
     turn_untrusted_sources: tuple[str, ...] = ()
+    # The URLs that fenced text carried this turn, first-seen order, capped
+    # at tainted_turn.SEEN_URL_CAP: a fetch of one of them as it arrived
+    # carries no data the model added.
+    turn_seen_urls: tuple[str, ...] = ()
     # The engine turn the tool calls belong to, as an opaque key the
     # engine renews at every turn start (AgentEngine.stream_response).
     # The step journal (step_journal.auto_start) opens its next turn
@@ -10383,6 +10601,17 @@ class KitToolPermissions:
     # until a later typed message asks for the direct push. Shared by
     # reference with sub-agents, whose prompts never change it.
     pr_route_repos: set = field(default_factory=set)
+    #: The http(s) URLs the user wrote in a typed message of this session
+    #: (_note_user_named_urls): the user asked for them, so web_fetch reads
+    #: such a URL unasked, and its host counts as known to the egress
+    #: proxy (egress_proxy.user_named_hosts). Shared by reference with
+    #: sub-agents, whose prompts never add to it.
+    user_named_urls: set = field(default_factory=set)
+    #: URLs a web_search result or the text of a page web_fetch returned
+    #: showed in this session. A fetch of exactly one of them carries
+    #: nothing the model composed, so it skips the host decision and the
+    #: payload check (_web_egress_refusal). Shared like user_named_urls.
+    web_seen_urls: set = field(default_factory=set)
     #: Headings of the git-errors skill already quoted into a tool result
     #: in this session (repo_error_hints.tool_hint): each is said once.
     repo_error_hints_shown: set = field(default_factory=set)
@@ -16881,6 +17110,26 @@ def _classifier_user_texts(messages) -> list:
     return out
 
 
+def _user_typed_texts(messages) -> list:
+    """:func:`_classifier_user_texts` over the part of each user row the
+    user wrote: the turn's steering tail the engine appends on the wire
+    (context status, open tasks, the CPU note; harness_rows.TypedText) is
+    left out. The tainted-turn gate reads the user's words here; the tail
+    says "this session may use", which is not the user asking for a
+    message to a session."""
+    from .harness_rows import typed_part
+    rows = []
+    for m in messages or ():
+        if (isinstance(m, dict) and m.get("role") == "user"
+                and not _is_harness_row(m)):
+            content = m.get("content")
+            typed = typed_part(content)
+            if typed is not content:
+                m = {"role": "user", "content": typed}
+        rows.append(m)
+    return _classifier_user_texts(rows)
+
+
 def _classifier_context_users(users) -> tuple:
     """``(task, earlier)`` the classifier prompt is built from.
 
@@ -18667,25 +18916,33 @@ class _DocToolExecutor:
         except Exception:
             pass
 
-    def _shell_snapshot(self, perms: "KitToolPermissions"):
+    def _shell_snapshot(self, perms: "KitToolPermissions", overlay=None):
         """The writable roots before a shell command (shell_changes), with
-        the git config watch (git_config_watch) attached as ``git_watch``.
-        None when neither can be taken. Never raises."""
+        the git config watch (git_config_watch) attached as ``git_watch``
+        and the command's overlay plan (overlay_workspace) as ``overlay``;
+        the roots the overlay holds are not walked. None when none of the
+        three can be taken. Never raises."""
         try:
             from . import git_config_watch as _gcw
             gsnap = _gcw.take(getattr(perms, "workspace", "."))
         except Exception:
             gsnap = None
-        snap = self._shell_snapshot_files(perms)
+        held = [l.root for l in overlay.layers] if overlay is not None else []
+        snap = (self._shell_snapshot_files(perms, held) if held
+                else self._shell_snapshot_files(perms))
         if snap is None:
-            return _GitWatchOnly(gsnap) if gsnap is not None else None
+            if gsnap is None and overlay is None:
+                return None
+            snap = _GitWatchOnly(gsnap)
         try:
             snap.git_watch = gsnap
+            snap.overlay = overlay
         except Exception:
             pass
         return snap
 
-    def _shell_snapshot_files(self, perms: "KitToolPermissions"):
+    def _shell_snapshot_files(self, perms: "KitToolPermissions",
+                              held=()):
         try:
             from . import change_journal as _cj
             from . import shell_changes as _sc
@@ -18694,26 +18951,118 @@ class _DocToolExecutor:
             start = max((int(r.get("seq", 0) or 0) for r in recs),
                         default=0)
             # Read-only and calc roots: the cage refuses writes there,
-            # and calc folders are the largest trees a session has.
+            # and calc folders are the largest trees a session has. The
+            # roots an overlay holds are journalled from the overlay.
             skip = (tuple(getattr(perms, "read_only_workspace_dirs", ())
                           or ())
-                    + tuple(getattr(perms, "confirm_write_dirs", ()) or ()))
+                    + tuple(getattr(perms, "confirm_write_dirs", ()) or ())
+                    + tuple(held))
             return _sc.before(perms.all_workspace_roots(),
                               session_id=sid, start_seq=start, skip=skip)
         except Exception:
             return None
 
+    def _overlay_plan(self, perms: "KitToolPermissions"):
+        """The overlay layers for one foreground bypass command
+        (overlay_workspace.prepare), or None where it does not run. The
+        roots left out are named once per session. Never raises."""
+        try:
+            roots, left = _overlay_roots(perms)
+            if not roots:
+                return None
+            from . import overlay_workspace as _ow
+            plan = _ow.prepare(roots)
+            if plan is None:
+                return None
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            for root, why in left.items():
+                if (sid, root) not in _OVERLAY_SAID:
+                    _OVERLAY_SAID.add((sid, root))
+                    plan.notes.append(
+                        f"{root}: shell changes there are not run over the "
+                        f"overlay ({why}); the change journal and the trash "
+                        "rule hold there instead")
+            return plan
+        except Exception:
+            return None
+
+    def _overlay_given_up(self, snap, perms: "KitToolPermissions"):
+        """The overlay will not run after all: its layers removed, and a
+        snapshot of every root taken instead. Never raises."""
+        try:
+            from . import overlay_workspace as _ow
+            _ow.discard(getattr(snap, "overlay", None))
+        except Exception:
+            pass
+        return self._shell_snapshot(perms)
+
+    def _refusal_without_overlay(self, cmd: str, run_cwd,
+                                 perms: "KitToolPermissions",
+                                 planned: bool = False):
+        """The trash refusal (unrestorable), for a bypass command the gate
+        let pass because an overlay was to hold its targets and that now
+        runs without one (``planned``: an overlay was prepared for it).
+        None otherwise."""
+        try:
+            if str(getattr(perms, "mode", "") or "") != "bypassPermissions":
+                return None
+            if not planned and _overlay_covers(perms) is None:
+                return None
+            from . import unrestorable as _unrestorable
+            return _unrestorable.refusal(cmd, Path(run_cwd), perms)
+        except Exception:
+            return None
+
+    def _journal_overlay(self, tool: str, plan,
+                         perms: "KitToolPermissions") -> list[str]:
+        """Apply the command's overlay to the real roots and journal each
+        change (change_journal.record_overlay_changes); the notes to show.
+        Never raises."""
+        try:
+            from . import change_journal as _cj
+            from . import overlay_workspace as _ow
+            outcome = _ow.apply(plan)
+            items = []
+            tracker = getattr(perms, "read_tracker", None)
+            for ch in outcome.changes:
+                if not ch.journal:
+                    continue
+                _report_file_changed(ch.path)
+                items.append({
+                    "tool": tool, "path": ch.path, "kind": ch.kind,
+                    "entry": ch.entry, "root": ch.root, "trash": ch.trash,
+                    "post_hash": ch.post_hash, "post_sig": ch.post_sig,
+                    "post_tree": ch.post_tree})
+                if (ch.kind != "deleted" and isinstance(tracker, dict)
+                        and ch.path in tracker):
+                    try:
+                        tracker[ch.path] = Path(ch.path).stat().st_mtime
+                    except OSError:
+                        pass
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            for rec in _cj.record_overlay_changes(sid, items):
+                self._note_change_seq(rec, perms)
+            return list(plan.notes) + list(outcome.notes)
+        except Exception as exc:
+            return [f"the command's overlay could not be applied ({exc})"]
+
     def _journal_shell_changes(
         self, tool: str, snap, perms: "KitToolPermissions",
     ) -> list[str]:
-        """The git config watch first (a program entry the command added to
-        the repository's config is undone), then the file journal."""
+        """The command's overlay applied first (what it changed reaches
+        the real roots), then the git config watch (a program entry the
+        command added to the repository's config is undone), then the
+        file journal of the roots no overlay held."""
         notes: list[str] = []
+        plan = getattr(snap, "overlay", None)
+        if plan is not None:
+            snap.overlay = None             # applied once
+            notes += self._journal_overlay(tool, plan, perms)
         try:
             from . import git_config_watch as _gcw
-            notes = _gcw.check(getattr(snap, "git_watch", None))
+            notes += _gcw.check(getattr(snap, "git_watch", None))
         except Exception:
-            notes = []
+            pass
         if snap is None or isinstance(snap, _GitWatchOnly):
             return notes
         return notes + self._journal_shell_file_changes(tool, snap, perms)
@@ -19942,6 +20291,17 @@ class _DocToolExecutor:
 
         # Other open sessions: who they are, and a message to one of them.
         if name in ("session_message", "subagent_message"):
+            # Another session runs what it receives under its own
+            # permissions: after untrusted text, a message to one needs
+            # the user's words (tainted_turn). A sub-agent of this turn
+            # carries the turn's taint itself, so subagent_message is not
+            # judged here.
+            if name == "session_message":
+                _tainted = self._tainted_outward_gate(
+                    name, arguments, permissions,
+                    effective_mode(permissions))
+                if _tainted is not None:
+                    return json.dumps({"error": _tainted})
             # Not a gated tool -- no rule reads a message. What it SAYS to
             # another agent (an approval nobody gave, "push this") is
             # exactly what only the second opinion can see.
@@ -20024,8 +20384,17 @@ class _DocToolExecutor:
         # RFC1918 / cloud metadata) and binary-content rejection.
         if name in ("web_search", "web_fetch"):
             if name == "web_search":
-                return self._execute_web_search(arguments)
-            return self._execute_web_fetch(arguments)
+                out = self._execute_web_search(arguments)
+            else:
+                from . import web_tools as _wt_gate
+                _hop_token = _wt_gate.REDIRECT_GATE.set(
+                    _redirect_gate(permissions))
+                try:
+                    out = self._execute_web_fetch(arguments)
+                finally:
+                    _wt_gate.REDIRECT_GATE.reset(_hop_token)
+            _note_web_result(name, arguments, out, permissions)
+            return out
 
         # SRC1: official-API source verification (Crossref / PubChem /
         # OpenAlex) — outbound HTTP like the web tools above, no
@@ -22815,6 +23184,113 @@ class _DocToolExecutor:
             getattr(perms.confirm_callback, "__self__", None),
             "last_timed_out", False))
 
+    def _tainted_outward_gate(
+        self, name: str, args: dict, perms: Optional["KitToolPermissions"],
+        mode: str,
+    ) -> Optional[str]:
+        """Refusal text for an outward call in a tainted turn, or None.
+
+        Input: a tool call, the session's permissions and the effective
+        mode. A turn is tainted once it has read fenced text
+        (``perms.turn_untrusted_sources``). Output: None when the turn is
+        clean, the call sends nothing out (tainted_turn.classify_call /
+        classify_shell_segment), or the user's own words cover it
+        (tainted_turn.covered: the host or a domain above it named in their
+        messages with fenced blocks cut out, a URL that arrived verbatim in
+        what the turn read, the action itself, a host their configuration
+        names); else a person is asked where one can be (not in bypass,
+        which asks nothing, nor in plan), and the refusal names the
+        sources read and the way in. Recorded as ``tainted_outward``.
+
+        One yes holds for the identical call until the turn ends; one no
+        holds for the session (``denied_actions``, kind ``tainted``).
+        Rejected: refusing every network call after untrusted text (search
+        then open the results would stop in every unattended run); asking
+        in bypass (the profile promises no dialog; the user lifts the
+        refusal by naming the host in their next message).
+        """
+        if perms is None:
+            return None
+        sources = tuple(getattr(perms, "turn_untrusted_sources", ()) or ())
+        if not sources:
+            return None
+        from . import tainted_turn as _tt
+        base = _bare_tool_name(name)
+        args = args if isinstance(args, dict) else {}
+        try:
+            if base in ("bash", "bash_background"):
+                outs = _tainted_shell_outward(str(args.get("command") or ""))
+            else:
+                one = _tt.classify_call(base, args)
+                outs = [one] if one is not None else []
+        except Exception:
+            outs = ([_tt.Outward("network", base)]
+                    if base in _NETWORK_TOOLS or base == "session_message"
+                    else [])
+        if not outs:
+            return None
+        try:
+            user = "\n".join(_user_typed_texts(
+                getattr(perms, "classifier_messages", None)))
+            reads, uploads = _tainted_named_domains(perms)
+            # URLs that arrived verbatim: this turn's fenced file, shell
+            # and MCP text (turn_seen_urls), and what web_search results
+            # and fetched pages showed in the session (web_seen_urls, the
+            # egress check's own set; same meaning -- the model did not
+            # compose them).
+            seen = (tuple(getattr(perms, "turn_seen_urls", ()) or ())
+                    + tuple(getattr(perms, "web_seen_urls", None) or ()))
+            open_ = [o for o in outs
+                     if not _tt.covered(o, user, seen, reads, uploads)]
+        except Exception:
+            open_ = list(outs)
+        if not open_:
+            return None
+        out = open_[0]
+        sig = _tool_action_signature(name, args)
+        # Emptied at every top-level turn start (_start_turn_taint).
+        approved = getattr(perms, "_tainted_approved", None)
+        if not isinstance(approved, set):
+            approved = set()
+            try:
+                perms._tainted_approved = approved
+            except Exception:
+                pass
+        if sig in approved:
+            return None
+        if perms.action_denied_earlier("tainted", sig):
+            _record_security_event("denied_again", base, out.label[:120])
+            return (f"'{out.label}' was already refused by the user in this "
+                    "session after untrusted text was read. It stays refused; "
+                    "do not reach the same destination another way.")
+        can_ask = (perms.confirm_callback is not None
+                   and mode not in ("bypassPermissions", "plan"))
+        if not can_ask:
+            _record_security_event("tainted_outward", base,
+                                   f"{out.label[:100]} (read: "
+                                   f"{', '.join(sources)[:80]})",
+                                   blocked=True)
+            return _tt.refusal(out, sources)
+        preview = (f"{out.label}\n(this turn has read text the user did not "
+                   f"write: {', '.join(sources)}; the user's messages do "
+                   "not ask for this)")
+        try:
+            ok = bool(_ask_confirm(perms, base, args, preview))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        _record_security_event("tainted_outward", base, out.label[:120],
+                               blocked=not ok)
+        if ok:
+            approved.add(sig)
+            return None
+        if self._confirm_timed_out(perms):
+            return (f"approval for '{out.label}' TIMED OUT -- the user is "
+                    "away, this is NOT a denial. Do not try it again now and "
+                    "do not reach the same destination another way; say what "
+                    "is waiting for them.")
+        perms.record_denied_action("tainted", sig)
+        return _tt.refusal(out, sources, asked=True) + self._said_why(perms)
+
     @classmethod
     def _said_why(cls, perms: "KitToolPermissions") -> str:
         """" The user said why: …" for the refusal just made, or "".
@@ -23016,6 +23492,9 @@ class _DocToolExecutor:
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        _undo_refusal = _undo_store_refusal(resolved, name)
+        if _undo_refusal:
+            return _undo_refusal
         _rule_refusal = _rule_denies_path(perms, "write", resolved)
         if _rule_refusal:
             return _rule_refusal
@@ -23834,7 +24313,8 @@ class _DocToolExecutor:
         return self._run_permission_gate(
             "bash", args, perms, caged_admission=caged_admission,
             wall_limit_s=wall, calc_notes=calc_notes,
-            approval_seen=approval_seen)
+            approval_seen=approval_seen,
+            foreground_shell=name == "bash")
 
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions",
@@ -23842,8 +24322,15 @@ class _DocToolExecutor:
         wall_limit_s: Optional[float] = None,
         calc_notes: Optional[list] = None,
         approval_seen: Optional[list] = None,
+        foreground_shell: bool = False,
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None.
+
+        ``foreground_shell``: the native ``bash`` tool, whose executor runs
+        the command over the workspace overlay in bypass
+        (``overlay_workspace``); only then does the trash rule let a target
+        the overlay holds pass. ``bash_background`` and every other caller
+        reach this gate as "bash" too, and keep the rule whole.
 
         ``caged_admission``: passed (an empty list) only by the native
         shell dispatch, whose executor runs the command in the cage. When
@@ -23892,6 +24379,13 @@ class _DocToolExecutor:
                 "'Accept plan & execute' or switch the mode "
                 "chip to 'acceptEdits' to proceed."
             )
+
+        # Untrusted text was read in this turn: sending out needs the
+        # user's words or a person (tainted_turn). Before every rule that
+        # could allow the call, in every mode.
+        _tainted = self._tainted_outward_gate(name, args, perms, mode)
+        if _tainted is not None:
+            return _tainted
 
         if (name in _NETWORK_TOOLS
                 and getattr(perms, "scope_locked", False)
@@ -23944,6 +24438,13 @@ class _DocToolExecutor:
                         "same destination another way."
                         + self._said_why(perms))
             return None
+
+        if name in ("web_fetch", "web_search"):
+            # Where the request goes and what its URL carries, decided
+            # before anything is resolved or sent (_web_egress_refusal).
+            _web_refusal = _web_egress_refusal(name, args, perms)
+            if _web_refusal:
+                return _web_refusal
 
         if name == "run_tests" and getattr(perms, "scope_locked", False):
             # pytest imports conftest.py from wherever it is pointed, so a
@@ -24638,12 +25139,17 @@ class _DocToolExecutor:
                 # Nobody reads a bypass command, so what it destroys must
                 # be restorable: a file the undo journal cannot hold, git
                 # does not hold and this session did not write is moved to
-                # the workspace's trash instead (unrestorable).
+                # the workspace's trash instead (unrestorable). A foreground
+                # command whose target lies in a root the overlay holds
+                # (overlay_workspace) is restorable whatever it does there.
                 from . import unrestorable as _unrestorable
                 _wd = Path(perms.workspace)
                 if args.get("cwd"):
                     _wd = _wd / str(args.get("cwd"))
-                _lost = _unrestorable.refusal(cmd, _wd, perms)
+                _lost = _unrestorable.refusal(
+                    cmd, _wd, perms,
+                    covered=(_overlay_covers(perms) if foreground_shell
+                             else None))
                 if _lost is not None:
                     return _lost
                 return self._classifier_second_opinion(perms, name, args, mode)
@@ -27046,6 +27552,14 @@ class _DocToolExecutor:
         # Read as raw bytes: a decoded pre-image stores errors="replace"
         # damage that the revert then writes into the user's file. The
         # journal caps and marks anything over 2 MB itself.
+        #
+        # In bypass over bubblewrap the command runs over an overlay of the
+        # roots instead (overlay_workspace): what it changes there is
+        # applied afterwards through the trash and is undoable at any size,
+        # so neither the pre-images nor the snapshot walk are needed there.
+        _ov = (self._overlay_plan(perms)
+               if not caged_unasked and not _is_git_push(cmd)
+               and not _is_gh_pr_create(cmd) else None)
         _pre_shell: "dict[Path, Optional[bytes]]" = {}
         try:
             for _tok in _bash_write_targets(cmd):
@@ -27055,7 +27569,7 @@ class _DocToolExecutor:
                     _tp = _tp.resolve()
                 except OSError:
                     continue
-                if _tp in _pre_shell:
+                if _tp in _pre_shell or (_ov is not None and _ov.covers(_tp)):
                     continue
                 try:
                     _pre_shell[_tp] = _tp.read_bytes() if _tp.is_file() else None
@@ -27065,7 +27579,7 @@ class _DocToolExecutor:
             _pre_shell = {}
         # Everything else it may change under the roots: an interpreter,
         # a script or a compiler writes past any reading of the text.
-        _snap = self._shell_snapshot(perms)
+        _snap = self._shell_snapshot(perms, overlay=_ov)
 
         t0 = time.monotonic()
         _pr = None
@@ -27092,20 +27606,56 @@ class _DocToolExecutor:
                 # group, no terminal, the whole group ended at exit and
                 # at the timeout. subprocess.run killed only bash itself.
                 from . import contained_run as _contained
+                from . import overlay_workspace as _ow
                 _run_argv = (_bash_isolation_argv(cmd, run_cwd, perms)
                              if not caged_unasked
                              else _bash_isolation_argv(cmd, run_cwd, perms,
                                                        caged_unasked=True))
-                if not approved:
-                    _run_argv = _unasked_share(_run_argv)
+                _plain_argv = _run_argv
+                if _ov is not None and _ow.can_wrap(_run_argv):
+                    _run_argv = _ow.wrap(_run_argv, _ov)
+                elif _ov is not None:
+                    _ov = None
+                    _snap = self._overlay_given_up(_snap, perms)
+                if _ov is None:
+                    # The gate let a target pass because an overlay would
+                    # hold it; without one the trash rule applies again.
+                    _lost = self._refusal_without_overlay(cmd, run_cwd, perms)
+                    if _lost is not None:
+                        return json.dumps({"error": _lost})
                 proc = _contained.run(
-                    _run_argv,
+                    _unasked_share(_run_argv) if not approved else _run_argv,
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
                     should_stop=_probe,
                     budget=True,
                 )
+                if _ov is not None and _ow.setup_failed(_ov):
+                    # The mount failed before the command ran: nothing has
+                    # happened yet. Say so once, and run it the old way --
+                    # the shell change journal and the trash rule.
+                    _why = _ow.note_runtime_failure(proc.stderr)
+                    _record_security_event(
+                        "isolation", "bash",
+                        f"the workspace overlay could not be mounted ({_why}); "
+                        "shell changes fall back to the change journal",
+                        blocked=False)
+                    _ov = None
+                    _snap = self._overlay_given_up(_snap, perms)
+                    _lost = self._refusal_without_overlay(cmd, run_cwd, perms,
+                                                          planned=True)
+                    if _lost is not None:
+                        return json.dumps({"error": _lost})
+                    proc = _contained.run(
+                        (_unasked_share(_plain_argv) if not approved
+                         else _plain_argv),
+                        cwd=str(run_cwd),
+                        env=env,
+                        timeout=timeout,
+                        should_stop=_probe,
+                        budget=True,
+                    )
         except subprocess.TimeoutExpired:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
@@ -27163,6 +27713,10 @@ class _DocToolExecutor:
                 "description": description,
             })
         except Exception as exc:
+            # Whatever ran wrote into the overlay; apply it rather than
+            # dropping it with the layer.
+            if _ov is not None:
+                self._journal_shell_changes("bash", _snap, perms)
             return json.dumps({"error": f"command failed to start: {exc}"})
 
         elapsed = time.monotonic() - t0
@@ -27218,7 +27772,10 @@ class _DocToolExecutor:
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
         if _push is None and _pr is None:
-            _wrap_err = _note_wrap_failure(_run_argv, proc.returncode,
+            # The bubblewrap argv, also where the overlay helper started
+            # it: the helper execs bwrap, so bwrap's own failure reads the
+            # same.
+            _wrap_err = _note_wrap_failure(_plain_argv, proc.returncode,
                                            proc.stderr or "")
             if _wrap_err:
                 payload["error"] = (
@@ -30810,7 +31367,11 @@ def _fence_output_tool_result(fn_name: str, text: str) -> str:
 def _note_untrusted_read(perms, fn_name: str, text: str) -> None:
     """Add ``fn_name`` to ``perms.turn_untrusted_sources`` when its result
     carries an untrusted fence anywhere (this turn has then read text it
-    did not write). First-seen order, no repeats. Never raises."""
+    did not write), and the URLs the text carries to
+    ``perms.turn_seen_urls``. The native web tools' URLs are left to
+    ``_note_web_result``, which keeps them in ``perms.web_seen_urls`` for
+    the session; the tainted-turn gate reads both sets. First-seen order,
+    no repeats. Never raises."""
     if perms is None:
         return
     try:
@@ -30822,6 +31383,105 @@ def _note_untrusted_read(perms, fn_name: str, text: str) -> None:
         seen = tuple(getattr(perms, "turn_untrusted_sources", ()) or ())
         if name and name not in seen:
             perms.turn_untrusted_sources = seen + (name,)
+        if name not in ("web_fetch", "web_search"):
+            _note_seen_urls(perms, str(text or ""))
+    except Exception:
+        pass
+
+
+def _note_seen_urls(perms, text: str) -> None:
+    """Add the URLs in ``text`` to ``perms.turn_seen_urls`` (capped)."""
+    from . import tainted_turn
+    have = tuple(getattr(perms, "turn_seen_urls", ()) or ())
+    room = tainted_turn.SEEN_URL_CAP - len(have)
+    if room <= 0:
+        return
+    known = set(have)
+    new = []
+    for url in tainted_turn.urls_in(text):
+        if url not in known:
+            known.add(url)
+            new.append(url)
+            if len(new) >= room:
+                break
+    if new:
+        perms.turn_seen_urls = have + tuple(new)
+
+
+def _tainted_shell_outward(cmd: str) -> list:
+    """The outward parts of a shell command (tainted_turn.Outward), one per
+    segment that sends something out, the bodies handed to ``sh -c``
+    included. A curl to this machine's loopback and an install into the
+    project's own environment are not outward, as in _leaves_workspace."""
+    from . import tainted_turn as _tt
+    out = []
+    for seg in _split_shell_segments(_with_shell_bodies(cmd or "")):
+        if _LOOPBACK_CURL_RE.match(seg) or _project_env_command(seg):
+            continue
+        one = _tt.classify_shell_segment(seg)
+        if one is not None:
+            out.append(one)
+    return out
+
+
+def _tainted_named_domains(perms) -> tuple:
+    """``(reads, uploads)``: the hosts the user's configuration names --
+    the egress proxy's defaults and ``allowed_domains`` plus every
+    ``web_fetch(domain:...)`` allow rule for reads, ``upload_domains`` for
+    uploads -- and for both the hosts of the URLs the user typed in this
+    session (``egress_proxy.user_named_hosts``, step 6's record of the
+    user's own URLs, which outlives a compaction of the messages the
+    gate otherwise reads them from). Never raises."""
+    reads: list = []
+    uploads: list = []
+    try:
+        from . import egress_proxy as _ep
+        reads += _ep.named_domains()
+        uploads += _ep.upload_named_domains()
+        typed = _ep.user_named_hosts(perms)
+        reads += typed
+        uploads += typed
+    except Exception:
+        pass
+    try:
+        _, rs = _permission_rules(perms)
+        for rule in (getattr(rs, "allow", ()) or ()):
+            if getattr(rule, "kind", "") == "web_fetch" and rule.value:
+                reads.append(str(rule.value))
+    except Exception:
+        pass
+    return reads, uploads
+
+
+def _start_turn_taint(perms, messages) -> None:
+    """The taint a turn starts with.
+
+    Input: the session's permissions and the request's messages. A
+    top-level turn starts clean, except when the user rows that opened it
+    (the rows after the last assistant row) carry an untrusted fence --
+    another session's message, a harness note with a job's output, an
+    attached text: then it starts tainted, the source named ``message``.
+    A sub-agent (``subagent_depth`` > 0) keeps what its permissions were
+    copied with: its prompt was written by a turn that may have read
+    untrusted text, and a reset here would let the delegate send out what
+    the parent could not. Never raises."""
+    if perms is None:
+        return
+    try:
+        if int(getattr(perms, "subagent_depth", 0) or 0) > 0:
+            return
+        perms.turn_untrusted_sources = ()
+        perms.turn_seen_urls = ()
+        perms._tainted_approved = set()
+        from . import untrusted
+        for m in reversed(list(messages or ())):
+            if not isinstance(m, dict) or m.get("role") != "user":
+                break
+            text = _message_text(m.get("content"))
+            if untrusted.contains_fence(text):
+                if "message" not in perms.turn_untrusted_sources:
+                    perms.turn_untrusted_sources += ("message",)
+                _note_seen_urls(perms, text)
     except Exception:
         pass
 
@@ -31089,10 +31749,59 @@ _GIT_READ_ONLY_IN_THE_SANDBOX = ("hooks", "config", "config.worktree", "info")
 
 class _GitWatchOnly:
     """A shell snapshot that holds only the git config watch (the file
-    snapshot could not be taken)."""
+    snapshot could not be taken, or the overlay holds every root)."""
 
     def __init__(self, git_watch):
         self.git_watch = git_watch
+        self.overlay = None
+
+
+#: (session, root) whose "not overlaid" reason was already said.
+_OVERLAY_SAID: set = set()
+
+
+def _overlay_roots(perms) -> "tuple[list[str], dict]":
+    """The roots a foreground bash command of this session runs over an
+    overlay of (overlay_workspace), and {root: reason} for those left out.
+
+    Only in bypassPermissions, and only where the command's cage is
+    bubblewrap's full filesystem cage (the decision _bash_isolation_argv
+    builds from); read-only and calc roots and the session scratch are
+    never overlaid. ([], {}) wherever it does not apply. Never raises."""
+    try:
+        if str(getattr(perms, "mode", "") or "") != "bypassPermissions":
+            return [], {}
+        from . import overlay_workspace as _ow
+        if not _ow.enabled():
+            return [], {}
+        kind, mode = _bash_isolation_decision(perms, None)
+        if kind != "bwrap" or mode == "container":
+            return [], {}
+        skip = (tuple(getattr(perms, "read_only_workspace_dirs", ()) or ())
+                + tuple(getattr(perms, "confirm_write_dirs", ()) or ()))
+        try:
+            scratch = (_session_scratch_dir(),)
+        except Exception:
+            scratch = ()
+        return _ow.eligible_roots(perms.all_workspace_roots(), skip=skip,
+                                  exclude=scratch)
+    except Exception:
+        return [], {}
+
+
+def _overlay_covers(perms):
+    """A predicate naming the paths a foreground bash command's overlay
+    holds, or None where no overlay runs. For the trash refusal."""
+    roots, _left = _overlay_roots(perms)
+    if not roots:
+        return None
+
+    def covers(path) -> bool:
+        p = os.path.join(os.path.realpath(os.path.dirname(str(path))),
+                         os.path.basename(str(path)))
+        return any(p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+                   for r in roots)
+    return covers
 
 
 def _git_metadata_roots(workspace) -> list[str]:
@@ -31408,9 +32117,16 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                                                    "HTTP_PROXY", "HTTPS_PROXY")]
         except Exception:
             mode = "none"
+    # The undo store and the overlay layers of each root, made or not yet.
+    try:
+        from . import overlay_workspace as _ow
+        undo_dirs = [p for r in perms.all_workspace_roots()
+                     for p in _ow.protected(Path(r).resolve())]
+    except Exception:
+        undo_dirs = []
     prof = _sb.profile(write_roots=roots + [tmp], hide=_home_secret_paths(),
                        allow_sockets=roots + [tmp], net_mode=mode, proxy_port=port,
-                       write_deny=hook_dirs)
+                       write_deny=hook_dirs + undo_dirs)
     return env_prefix + _sb.argv(plain, prof)
 
 
@@ -31876,15 +32592,55 @@ def _process_cage_options() -> list[str]:
     return opts
 
 
-def _in_process_cage(argv: list[str], run_cwd) -> list[str]:
+def _undo_store_binds(perms) -> list[str]:
+    """bwrap options binding each root's undo store and overlay layers
+    (``overlay_workspace.protected``) read-only, where they exist: what
+    ``undo_changes`` restores from is out of reach of every command, run
+    over the overlay or not. The trash's day folders stay writable (the
+    trash refusal tells the agent to move a file there). Never raises."""
+    out: list[str] = []
+    try:
+        from . import overlay_workspace as _ow
+        for r in perms.all_workspace_roots():
+            for p in _ow.protected(Path(r).resolve()):
+                if os.path.isdir(p) and not os.path.islink(p) and \
+                        not os.path.islink(os.path.dirname(p)):
+                    out += ["--ro-bind-try", p, p]
+    except Exception:
+        pass
+    return out
+
+
+def _undo_store_refusal(resolved, tool: str) -> Optional[str]:
+    """The refusal for a write tool, or a shell write target, inside a
+    root's undo store or overlay layers; None elsewhere. In every mode:
+    the originals there are what undo_changes renames back, and DELFIN
+    changes them itself, outside every cage."""
+    try:
+        from . import overlay_workspace as _ow
+        if not _ow.is_protected(resolved):
+            return None
+    except Exception:
+        return None
+    _record_security_event("undo_store_write", tool, str(resolved)[:160],
+                           blocked=True)
+    return ("error: '.delfin-trash/.undo' and '.delfin-trash/.layers' hold "
+            "what undo_changes restores from; no tool writes there. To take "
+            "a change back, call undo_changes. To put a file aside, move it "
+            "into the trash's day folder (.delfin-trash/<UTC date>/).")
+
+
+def _in_process_cage(argv: list[str], run_cwd, perms=None) -> list[str]:
     """``argv`` inside the process cage, with the filesystem as it is. Where
     bwrap cannot build the cage (not where the terminal turned it off), the
-    socket guard keeps the session doors shut instead."""
+    socket guard keeps the session doors shut instead. With ``perms`` the
+    undo store is bound read-only here too (``_undo_store_binds``)."""
     if not _process_cage_enabled():
         if os.environ.get(_PROCESS_CAGE_ENV, "").strip().lower() == "off":
             return argv
         return _guard_without_cage(argv)
     return ["bwrap", "--dev-bind", "/", "/", "--proc", "/proc",
+            *(_undo_store_binds(perms) if perms is not None else ()),
             *_process_cage_options(),
             "--chdir", str(Path(run_cwd).resolve()), *argv]
 
@@ -32703,7 +33459,7 @@ def _bash_isolation_argv(
             mode = "bwrap"
         elif kind == "landlock":
             _announce_isolation_via_landlock("locked session")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd, perms)
         elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         else:
@@ -32721,7 +33477,7 @@ def _bash_isolation_argv(
             # approved this one command unconfined ([NO ISOLATION] in the
             # bash gate), which is a decision about this command only.
             if _take_unconfined_approval(perms, cmd):
-                return _in_process_cage(plain, run_cwd)
+                return _in_process_cage(plain, run_cwd, perms)
             return _refusal_argv(_REFUSAL_LOCKED)
     elif mode == "auto":
         # Wherever this host can actually hold a command, not only in the
@@ -32742,7 +33498,7 @@ def _bash_isolation_argv(
             _announce_isolation_via_landlock(
                 "unattended (bypass) run"
                 if perm_mode == "bypassPermissions" else "attended session")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd, perms)
         elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
@@ -32755,26 +33511,26 @@ def _bash_isolation_argv(
             # scope makes, where refusing IS the answer. The banner is
             # what tells the user which of the two they have. Its network
             # is still held where the socket guard works.
-            return _in_process_cage(_network_only(plain, perms), run_cwd)
+            return _in_process_cage(_network_only(plain, perms), run_cwd, perms)
     if mode == "bwrap" and kind != "bwrap":
         # Isolation was asked for by name. Landlock gives the same promise;
         # without it the command is refused rather than run without.
         if kind == "landlock":
             _announce_isolation_via_landlock("forced isolation")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd, perms)
         if kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         # Unless the user approved this one command unconfined ([NO
         # ISOLATION] in the bash gate), a decision about this command only.
         if _take_unconfined_approval(perms, cmd):
-            return _in_process_cage(plain, run_cwd)
+            return _in_process_cage(plain, run_cwd, perms)
         return _refusal_argv(_REFUSAL_FORCED)
     if kind != "bwrap":
         # "off" (or a mode naming no layer): a plain shell -- never in
         # bypass, where nobody reads the command before it runs.
         if str(getattr(perms, "mode", "") or "").strip() == "bypassPermissions":
             return _refusal_argv(_REFUSAL_BYPASS)
-        return _in_process_cage(plain, run_cwd)
+        return _in_process_cage(plain, run_cwd, perms)
 
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -32871,6 +33627,8 @@ def _bash_isolation_argv(
     for g in git_roots:
         for name in _GIT_READ_ONLY_IN_THE_SANDBOX:
             args += ["--ro-bind-try", str(Path(g) / name), str(Path(g) / name)]
+    # What undo_changes restores from: read-only for every command.
+    args += _undo_store_binds(perms)
     if caged_unasked:
         # Nobody saw this command. The files whose write is asked about in
         # every mode (git metadata, CI and workspace configuration, the
@@ -35041,13 +35799,10 @@ class OpenAIClient(_BaseClient):
         # carried: one line per kind and turn, not per call.
         _shell_hints_shown: set = set()
         # The tools whose fenced output this turn has read (see
-        # KitToolPermissions.turn_untrusted_sources): a new turn starts
-        # with none.
-        if self._permissions is not None:
-            try:
-                self._permissions.turn_untrusted_sources = ()
-            except Exception:
-                pass
+        # KitToolPermissions.turn_untrusted_sources): a new top-level turn
+        # starts with none, unless what opened it is fenced text; a
+        # sub-agent keeps its parent's (_start_turn_taint).
+        _start_turn_taint(self._permissions, messages)
         # Auto-continue: some models (o3) end the turn after each batch + a
         # "I'll continue" line. When the model stops with tasks still open AND
         # it made fresh progress this round, we inject a continue and keep the

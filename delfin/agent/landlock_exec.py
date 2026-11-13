@@ -606,7 +606,9 @@ def main(argv: list[str]) -> int:
     roots = [w for w in write if w]
     write.append("/dev")
     try:
-        sg_defaults = list(_load_socket_guard().DEFAULT_ALLOWED)
+        _sg = _load_socket_guard()
+        sg_defaults = (list(_sg.DEFAULT_ALLOWED)
+                       + list(_sg.name_lookup_sockets(bool(allow_tcp), net_mode)))
     except Exception:
         sg_defaults = []
     return _run_guarded(write, hide, sg_defaults + roots + allow_socket,

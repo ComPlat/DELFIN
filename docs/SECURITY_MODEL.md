@@ -27,7 +27,7 @@ in the [User Manual](USER_MANUAL.md#seeing-the-boundary-before-a-session-starts)
 | Other users | Every store the agent writes for approvals, the audit log and the egress proxy is created owner-only (0600 files, 0700 directories); an approval answer is accepted only from a file owned by the same account. |
 | The approval channel | A pending approval is answered by the person, never by the session that is waiting or by any process it started. |
 | Git configuration | A command cannot plant a program that git runs later (hooks, filter and diff drivers, `core.hooksPath`) without the person being asked; a program entry a command adds to the repository config anyway is undone after the command; git run by DELFIN's own code on the workspace (its reads, its own commits, the dashboard's Pull, Push and Undo) runs no program the repository names (`safe_git`). |
-| Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; an upload is asked or, with nobody to ask, refused unless the user named the host for uploads (the limits of what the proxy can see inside TLS are under the egress proxy below). |
+| Network egress | An isolated command, and every program it starts, reaches the network only through the egress proxy, which lets through an allow-list of domains and asks about the rest where someone can be asked; the cloud metadata address is refused; an upload is asked or, with nobody to ask, refused unless the user named the host for uploads (the limits of what the proxy can see inside TLS are under the egress proxy below). `web_fetch` takes the same host decision before it resolves anything, and a URL or search query that carries encoded data is asked or, with nobody to ask, refused. |
 | The agent's own safety layer | The files that define the permission system and the settings that decide what runs unattended are protected: writing them is asked in every mode, including `bypassPermissions`. |
 | Shared lessons and memory | The lessons later sessions are shown (`delfin/agent/pack/knowledge`, a repository's `.delfin/knowledge`) and the memory stores under `~/.delfin` are protected paths for the agent's write tools; a note the model writes into memory may not carry an instruction channel. |
 | What the model takes for an instruction | Text whose author is not the user -- files, command output, web pages, MCP results and tool descriptions, other sessions' messages, delegates' reports, recalled memory -- reaches the model inside a nonce'd fence that labels it as data. An MCP tool description that changed since it was first seen is not shown until the user accepts it; another session's message names its sender only when its signature checks. |
@@ -262,6 +262,61 @@ Files in the trash count as unrestorable, so it cannot be emptied from the
 shell. Not seen: a deletion inside an interpreter or a script, a variable
 as target, a program that opens its own output.
 
+A foreground `bash` command in `bypassPermissions` whose cage is bubblewrap
+runs over an overlay of the workspace roots instead
+(`overlay_workspace`, helper `overlay_exec`): the command writes into an
+upper layer under `<root>/.delfin-trash/.layers/<id>/`, and after it ends
+DELFIN applies that layer -- new paths renamed in, and every original the
+command replaced or deleted renamed first into the undo store,
+`<root>/.delfin-trash/.undo/<UTC date>/cmd-<id>/`. Every change is
+journalled (`change_journal.record_overlay_changes`), and `undo_changes`
+renames the original back, whatever its size and however the command made
+the change (an interpreter, a script, `rm -r`, a directory removed and
+made again, a directory renamed, git refs and index). For a target such a
+root holds the trash refusal steps aside; `bash_background` and every
+other caller keep it. A path someone else changed while the command ran is
+never overwritten: the command's version is placed beside it as
+`<name>.delfin-conflict-<id>`, and a deletion of it is not applied. An undo
+never overwrites a path that no longer holds what the command left there,
+and moves what it replaces into the undo store too.
+
+The undo store and the layers are out of every writer's reach: every
+bubblewrap cage -- over the overlay or not, in every mode, foreground or
+background -- binds them read-only (`api_client._undo_store_binds`), the
+Seatbelt profile denies writes there, and the file tools and every shell
+write target the gate reads are refused there
+(`api_client._undo_store_refusal`, security event `undo_store_write`).
+The trash's day folders stay writable, so the trash refusal's remedy
+works. Under Landlock alone (no bubblewrap) and in the CLI backend's own
+shell only the gate's reading of paths and command text protects the
+store: Landlock cannot make a subtree of a writable root read-only without
+the root refusing new files.
+
+Disk: the undo store may hold a quarter of the space it could have (free
+space plus what it holds) and never leave the filesystem less than 1 GiB
+free; beyond, its oldest command folders are removed first, recorded as
+`trash_evicted` and named in the command's result, and their changes can
+no longer be undone. Days older than seven are removed anyway. A root
+still below the floor is not overlaid for that command. Changing a large
+existing file in place makes the kernel copy it whole first (measured:
+1.17 s and 1 GiB for one line appended to a 1 GiB file on this server's
+ZFS).
+
+Not overlaid, each keeping the change journal and the trash refusal:
+background commands, every mode other than bypass, read-only and calc
+roots, the session scratch, a git directory outside the roots, a root with
+another filesystem mounted beneath it, a root below the free-space floor,
+a filesystem where the overlay probe fails (no unprivileged user
+namespaces, no user xattrs), and every host without bubblewrap. A mount
+that fails at run time is noticed from a status file the helper writes
+(not from the exit code, which the command could imitate); the command
+then runs the old way after the trash refusal is checked again, and the
+overlay stays off for the process (`isolation` event). Not covered inside
+an overlaid root: extended attributes and a directory's own mtime are not
+carried back; hard links between files the command copied up are split; a
+process writing under a root while a command runs is seen by the command
+or not, as the kernel leaves it.
+
 ### 3. Isolation of the shell command
 
 `api_client._bash_isolation_argv` decides how a shell command is run.
@@ -327,8 +382,14 @@ Two guards complete the Linux mechanisms:
   itself on a copy of the socket, so the address cannot change after the
   check. For an isolated command, Unix sockets are allowed only beneath the
   workspace roots, the temp directory and (under Landlock)
-  `socket_guard.DEFAULT_ALLOWED`, the cluster's authentication and name
-  services; for an unisolated command on a host without the process cage,
+  `socket_guard.DEFAULT_ALLOWED`, the cluster's authentication (munge) and
+  the user-name services (sssd, nscd). systemd-resolved's sockets
+  (`socket_guard.NAME_LOOKUP_SOCKETS`) answer host-name lookups, and a
+  lookup carries its name to the DNS, so they are offered
+  (`socket_guard.name_lookup_sockets`) only to an open network and to a
+  command with a direct route on a host whose nsswitch resolves through
+  them; with inet datagrams refused as well, a command behind the proxy
+  resolves no names (the proxy resolves for it). For an unisolated command on a host without the process cage,
   every socket except the session doors (`api_client._guard_without_cage`).
   Abstract Unix sockets, datagram Unix sockets and io_uring are refused; the
   cloud metadata addresses and link-local ranges are refused in every
@@ -413,6 +474,25 @@ refused by the socket guard). The first value a process reads is a ceiling:
 a stricter one applies at once, a looser one only at the next start, so a
 command that edits the settings cannot open the network for its own session.
 
+The hosts of URLs the user wrote in a typed message of the session count
+as known (`egress_proxy.user_named_hosts`; read from the person's own
+words only, never from a sub-agent's prompt, harness text or an appended
+upload list). A plain-HTTP request to a host the decision let through
+whose URL carries encoded data (`web_tools.url_payload_reason`: a query
+over 256 characters, or a run that looks like hex, a UUID or base64 in
+the query or a host label) is asked once per host where someone can be
+asked and otherwise refused (`egress_payload_refused`), unless the host
+is named for uploads.
+
+What a session sends is counted per host (`egress_proxy.note_sent`: every
+byte a command writes through the proxy, and each `web_fetch` request as
+its URL plus a fixed header allowance) and recorded when the session's
+total to a host crosses 1 byte, 64 KiB, 1 MiB, 16 MiB or 256 MiB: a
+non-blocking `egress_sent` event and an audit-log line with tool `egress`,
+the host and the total (`egress_proxy.sent_by_host` reads the totals). A
+direct route (SLURM, an SSH remote, a license server) and DELFIN's own
+push path do not pass the proxy and are not counted.
+
 The proxy holds for programs a command starts, not only for its text. What
 holds them depends on the host (`api_client.child_network_enforcement`): the
 socket guard; a network namespace with a forwarder to the proxy inside
@@ -424,9 +504,29 @@ security panel and `delfin-agent doctor` say so.
 
 ### 5. Other tools
 
-- **Web fetch** (`web_tools`) refuses private, loopback and metadata
-  addresses and re-checks every redirect target
-  (`web_tools._GuardedRedirectHandler`).
+- **Web fetch** (`web_tools`) reads in the agent process, not through the
+  proxy, so the gate gives it the proxy's host decision before anything is
+  resolved or sent (`api_client._web_egress_refusal`): a known host
+  passes; an unknown host is asked once per session where someone can be
+  asked (the answer holds for the shell's requests to that host too) and
+  refused otherwise, naming the permission rule, the setting and the
+  routes that work unattended; `mode` = `open` leaves the decision out. A
+  URL the user typed, or that a `web_search` result or a fetched page's
+  text showed in this session, is read without it: the model did not
+  compose it. A URL that passed is then checked for encoded data
+  (`web_tools.url_payload_reason`), and a `web_search` query likewise
+  (`web_tools.text_payload_reason`): asked where someone can be asked,
+  refused otherwise (`egress_payload_refused`). Every redirect target gets
+  the same decision and payload check before it is resolved
+  (`web_tools.REDIRECT_GATE`, set per fetch by `api_client._redirect_gate`),
+  so a known host's open redirect or a URL shortener cannot carry the
+  first URL's path to an unknown host; a followed hop is counted in the
+  bytes sent. Cost: a redirect to a signed CDN URL (a long random query)
+  is refused unattended. The fetch itself refuses private, loopback and
+  metadata addresses and re-checks every redirect target's address
+  (`web_tools._GuardedRedirectHandler`). After untrusted text in the turn,
+  a fetch also needs the user's words (the tainted turn, "Text the model
+  reads").
 - **MCP servers** run as processes DELFIN did not write a command line for;
   the shell isolation does not reach them. A stdio server declared with
   `roots`/`read_roots` starts in a namespace holding only those paths
@@ -545,6 +645,75 @@ that skips the user, or concealment from the user
 wrote it, the session, and the tools whose fenced output the turn had read
 (`read_before`), and recall shows that list. An agent note that carries a
 shape anyway is withheld at recall. The user's own words are not filtered.
+
+**The tainted turn.** The fences ask the model to treat the text as data;
+this rule holds when it does not. A turn is tainted once it has read fenced
+text: a tool result that carries an untrusted fence (the same list,
+`KitToolPermissions.turn_untrusted_sources`, that becomes `read_before`),
+or a fence in the user-role rows that opened the turn (another session's
+message, recorded as `message`). A sub-agent keeps the taint its parent's
+turn had when it was started (`api_client._start_turn_taint`). In a tainted
+turn an outward call needs the user's own words or a person
+(`api_client._DocToolExecutor._tainted_outward_gate`, `tainted_turn`):
+
+- outward: `web_fetch`, `push_notification`, `remote_trigger`,
+  `session_message` to another session (not to `operator`, the channel the
+  unattended pause names), and shell segments that reach another host --
+  curl and wget, scp and rsync to a remote, ssh, sftp, nc, telnet, ftp,
+  socat, `git remote add|set-url`, `git fetch|pull|clone|ls-remote` of an
+  explicit URL, `gh issue|gist|release|repo` writes, `huggingface-cli
+  upload`, `/dev/tcp`, and inline Python, Node, Perl or Ruby code that
+  names a URL and a network API; `sh -c` bodies included. Reads, workspace
+  work, a curl to this machine's loopback and installs into the project's
+  environment are not outward. Pushes and pull requests are not judged
+  here: the push gate needs the user's request for each one, tainted or not;
+- the user's words: their messages with every fenced block and the engine's
+  steering tail (`harness_rows.TypedText`) cut out (`_user_typed_texts`).
+  A host is covered when it or a domain above it (two labels at least)
+  stands in that text, or is the host of a URL the user typed in this
+  session (`user_named_urls`, the record the web_fetch egress check
+  keeps); a fetch also when its URL arrived verbatim, or is such a URL with
+  query and fragment dropped (a search result link carries nothing the
+  model added) -- in a web_search result or a fetched page this session
+  (`web_seen_urls`, the egress check's set) or in the file, shell and MCP
+  text this turn read (`turn_seen_urls`); a read also when the
+  configuration names the host (the proxy's defaults, `allowed_domains`, a
+  `web_fetch(domain:...)` allow rule). The two checks of a `web_fetch` run
+  one after the other and each can refuse: this one first, then
+  `_web_egress_refusal`. An upload needs its host named or in
+  `upload_domains`; "upload it" does not say where to. A notification, a
+  message to a session (its name, or "session"), a new remote ("remote"),
+  a GitHub write (its noun) and a trigger are covered by asking for them,
+  in English or German;
+- otherwise the call is asked where someone can be (`default`,
+  `acceptEdits` with an approval channel) and refused in bypass, plan and
+  wherever nobody can be asked, recorded as `tainted_outward`. The refusal
+  names what the turn read and the way in: the user names the host or the
+  action in their next message. A yes holds for the identical call until
+  the turn ends; a no for the session.
+
+It runs before every rule that could allow the call, in every mode, and
+does not depend on the classifier. What it does not see: a host the user
+named receives what the model writes into a URL to it, so when that host
+also wrote the injected text the data reaches the injection's author; a
+choice among URLs that arrived verbatim is a narrow channel (which of N
+links is fetched); `web_search` queries go to the configured search
+provider unjudged; a program the model writes into a file and runs is held
+by the egress proxy, not by this rule; MCP tools other than shells and the
+network names keep their own side-effect gate; and workspace damage (an
+injected `rm -r` of workspace data) is workspace work, which stays free.
+
+**Measuring it.** `python -m tests.injection_suite` runs 13 cases (10
+attacks from a file, a page, command output, a commit message and an MCP
+result; 3 controls that need an outward action the user asked for) through
+the real CLI with the network edge stubbed, and reports attack success,
+gate admission and task success, and for a deletion whether the harness
+kept a copy (restorable) or not (lost); `--provider/--model` with
+`--repeats 3` runs the same worlds against a real model
+(`tests/injection_suite/README.md`). With the scripted model that obeys every injection
+(bypassPermissions, `--unattended`, classifier off), before and after this
+rule: attack success 4/10 and 1/10, gate admission 6/10 and 1/10, task
+success 13/13 and 13/13. The remaining hit is the workspace deletion.
 
 ## The dashboard server
 
@@ -820,7 +989,8 @@ inbox. The kinds most relevant to this model:
   `permission_rule_allow`
 - the managed policy: `managed_policy_deny`, `managed_policy_ask`
 - egress: `egress`, `egress_blocked`, `egress_asked`, `egress_upload`,
-  `egress_upload_refused`, `network`, `network_missing`
+  `egress_upload_refused`, `egress_payload_refused`, `egress_sent`,
+  `network`, `network_missing`
 - approvals: `approval_self_answer`, `approval_from_outside`,
   `approval_code_refused`, `approval_timeout`
 - the classifier: `classifier_ask`, `classifier_refuse`, `classifier_error`,
@@ -883,7 +1053,45 @@ users fall back to the unkeyed form, which they report as unverified.
   byte count, not its requests. A write to a known host (for example an
   authenticated API call to `api.github.com`) that sends less than
   `agent.sandbox_network.upload_ask_bytes` cannot be told from a read and
-  passes; the limit applies per connection.
+  passes; the limit applies per connection. The same holds for a URL inside
+  the tunnel: a GET to a known host whose query carries data is not seen
+  (the payload check reads plain-HTTP and `web_fetch` URLs only). Measured
+  with the egress probe: a small HTTPS POST to PyPI and a GET to PyPI with
+  the marker in its query both reached the host. What bounds it: the known
+  hosts are package indexes, code hosts and the user's own configured
+  hosts, whose request logs a prompt-injecting author does not read; the
+  bytes are counted and recorded per host (`egress_sent`). Closing it
+  would mean terminating TLS in the proxy (a certificate the agent's
+  programs trust), which DELFIN does not do. After untrusted text in the
+  turn, a shell command naming that host needs the user's words first
+  (the tainted turn); a program that builds the request itself does not
+  show the host to that rule.
+- **Data in a URL to a host the user named.** In a tainted turn a fetch to
+  a host the user's message names runs whatever the URL carries (within
+  the payload check). When that host also served the injected text, what
+  the model writes into the URL reaches the injection's author.
+- **What the payload check sees.** `web_tools.url_payload_reason` finds
+  encoded data (hex, UUIDs, base64 and similar runs, long queries); data
+  spelled as words, or split into short pieces, passes it. The path of a
+  URL to a known host is not checked. A fetch of a URL a `web_search`
+  result or a fetched page showed skips both checks: a page that lists
+  many links can still be used as a code book, one choice per fetch, by a
+  model following a prompt injection.
+- **Search queries.** A `web_search` query goes to the fixed search
+  providers (and keyed engines the user configured); a query without an
+  encoded run passes, so text from the workspace phrased as words reaches
+  those providers. They are not readable by a prompt's author.
+- **Name lookups on some hosts.** On a host whose nsswitch resolves
+  through systemd-resolved, a command with a direct route (SLURM, a
+  license server) can reach the resolver and so send a name to the DNS;
+  nscd, kept for user names, also resolves host names where it caches
+  them. Landlock without the socket guard does not cover UDP (the
+  "Linux, partial" row).
+- **Redirects of other fetchers.** `web_fetch` gives every redirect hop
+  the host decision; DELFIN's literature downloads and source lookups
+  (`scholarly_sources`, `source_apis`) use the same opener without a
+  session and keep the address checks only. Their URLs come from the
+  scholarly APIs, not from the model.
 - **The network of a partially isolated command.** On the "Linux, partial"
   row Landlock ABI 4 restricts TCP by port, not by address, and does not
   cover UDP; with an older ABI the command has the host's network. Only a
@@ -1000,9 +1208,10 @@ users fall back to the unkeyed form, which they report as unverified.
   agent-session marker is not recognised; where a cage holds the command,
   `~/.delfin` is read-only for it.
 - **Remote hosts carry data in a read.** A GET to a known host -- an HTTPS
-  git remote included -- can carry data in its URL and passes unasked; the
-  upload rules see a body and a tunnel's byte count, not what a URL
-  encodes.
+  git remote included -- can carry data in its URL. In plain HTTP and in
+  `web_fetch` an encoded run is caught (`web_tools.url_payload_reason`);
+  inside a tunnel the URL is not visible (see "Small writes inside TLS"),
+  and data spelled as words passes either way.
 - **Shell writes into the memory stores.** The write tools ask; a shell
   command reaches a granted `~/.delfin` store only through the bash gate
   and, where isolation holds, the cage's read-only binds.
