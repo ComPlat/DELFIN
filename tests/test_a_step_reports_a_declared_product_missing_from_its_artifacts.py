@@ -132,6 +132,10 @@ def test_every_registered_adapter_declaring_a_product_satisfies_it(tmp_path):
         "report_docx": {"project_dir": str(tmp_path)},
     }
     for name, adapter in sorted(list_steps().items()):
+        # Only the built-in adapters; a test that registered a fixture
+        # adapter earlier in the same process is not a contract of DELFIN's.
+        if not adapter.__module__.startswith("delfin.tools.adapters"):
+            continue
         contract = adapter.contract()
         declared = sorted(contract.produces)
         if not declared:
