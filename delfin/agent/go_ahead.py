@@ -148,12 +148,26 @@ def is_choice_question(answer: str) -> bool:
 # to be asked -- a question, a choice, a question card, an approval prompt --
 # not an answer to one. The live failure: "ask me for an approval, yes or
 # no" was answered "Yes." by the model instead of presenting a card.
+# Only a REQUEST to be asked counts: the imperative at the start of a
+# clause ("frag mich", "ask me"), "stell/mach/gib mir ... eine (Rück)Frage/
+# Anfrage/Auswahl", a question "per Tab/als Karte", a question card. A bare
+# "Anfrage" ("die SQL-Anfrage schlägt fehl") or a report ("mein Chef fragt
+# mich") is no request; each false match costs a corrective round.
 _ASK_ME_RE = re.compile(
-    r"(?i)(\bfrag\w*\s+mich\b|\bask\s+me\b|question\s+card"
-    r"|\b(?:rueckfrage|rückfrage)\b|\banfrage\b)")
+    r"(?i)("
+    r"(?:^|[.!?,;:\-–]\s*|\b(?:bitte|einfach|dann|doch|mal|lieber|please|"
+    r"just|then)\s+)(?:frage?|ask)\s+(?:mich|me)\b"
+    r"|\b(?:stell|mach|gib|schick)\w*\s+mir\s+(?:\w+\s+){0,3}"
+    r"(?:frage|anfrage|rückfrage|rueckfrage|auswahl)\b"
+    r"|\b(?:frage|anfrage|rückfrage|rueckfrage|auswahl)\b(?:\s+\w+){0,2}\s+"
+    r"(?:per|als|mit)\s+(?:tab|karte|card|auswahl|buttons?|optionen)\b"
+    r"|question\s+card)")
+# Asking NOT to be asked always wins ("mach das ohne Rückfrage").
 _ASK_ME_NEG_RE = re.compile(
-    r"(?i)\b(?:frag\s+mich\s+nicht|keine\s+rueckfrage|keine\s+rückfrage|"
-    r"nicht\s+fragen|don'?t\s+ask\s+me)\b")
+    r"(?i)(?:\bfrage?\s+mich\s+nicht\b|\bkeine\s+(?:rück|rueck)?frage"
+    r"|\bohne\s+(?:(?:rück|rueck)?frage|nachzufragen|zu\s+fragen)"
+    r"|\bnicht\s+(?:nach|rück|rueck)?fragen\b|\b(?:don'?t|do\s+not)\s+ask\b"
+    r"|\bwithout\s+asking\b|\bno\s+need\s+to\s+ask\b)")
 
 
 def is_ask_request(text: str) -> bool:

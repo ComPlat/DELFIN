@@ -115,6 +115,14 @@ def test_a_request_to_be_asked_is_recognised(text):
     "Frag mich nicht, entscheide selbst",
     "Erledigt.",
     "",
+    # Words that only look like a request: each false match costs a round.
+    "mach das ohne Rückfrage",
+    "Die SQL-Anfrage an den Server schlägt fehl",
+    "Mein Chef fragt mich, ob das bis Freitag geht",
+    "people ask me why this fails",
+    "please don't ask me again, just do it",
+    "do it without asking",
+    "keine Rückfrage, einfach starten",
 ])
 def test_an_order_a_no_thanks_a_report_is_not_an_ask_request(text):
     assert not G.is_ask_request(text)
