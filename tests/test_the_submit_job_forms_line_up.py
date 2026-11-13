@@ -33,7 +33,7 @@ def test_every_job_form_row_is_a_grid_row():
 
 def test_the_grid_has_equal_columns_and_filling_fields():
     css = _css()
-    assert ".submit-split-pane .submit-form-grid { display: grid;" in css
+    assert ".widget-hbox.submit-form-grid { display: grid;" in css
     assert "grid-template-columns: repeat(auto-fill, 190px);" in css
-    assert ".submit-split-pane .submit-form-grid > .jupyter-widgets { width: auto !important;" in css
-    assert ".submit-split-pane .submit-form-grid .widget-label { min-width: 84px;" in css
+    assert ".widget-hbox.submit-form-grid > .jupyter-widgets { width: auto !important;" in css
+    assert ".widget-hbox.submit-form-grid .widget-label { min-width: 84px;" in css

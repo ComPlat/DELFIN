@@ -2220,6 +2220,17 @@ def create_tab(ctx):
     xyz_copy_row.add_class('delfin-structure-fs-toolbar')
     mol_output.add_class('delfin-structure-fs-viewer')
 
+    def _form_row(children):
+        """One row of a small job form (GOAT, CO2, GUPPY, Fukui): a grid row
+        of equal columns (submit-form-grid in the tab's CSS), so its labels,
+        fields and buttons start where those of every other form row do.
+        Sized to their own labels, the fields of neighbouring rows started
+        at different places."""
+        row = widgets.HBox(list(children),
+                           layout=widgets.Layout(gap='8px', align_items='center'))
+        row.add_class('submit-form-grid')
+        return row
+
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'),
         submit_manip_toolbar, mol_viewer_stack, isomer_nav_row, xyz_copy_row,
@@ -2227,50 +2238,24 @@ def create_tab(ctx):
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
         widgets.VBox([
-            widgets.HBox(
-                [
-                    only_goat_charge,
-                    only_goat_solvent,
-                    only_goat_smiles_converter,
-                ],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
-            widgets.HBox(
-                [
-                    only_goat_pal,
-                    only_goat_maxcore,
-                    only_goat_time,
-                    only_goat_submit_button,
-                ],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
+            _form_row([only_goat_charge, only_goat_solvent, only_goat_smiles_converter]),
+            _form_row([only_goat_pal, only_goat_maxcore, only_goat_time,
+                       only_goat_submit_button]),
         ], layout=widgets.Layout(gap='8px')),
         only_goat_output,
         spacer_large,
         widgets.HTML('<b>CO2 Coordinator:</b>'),
-        widgets.HBox(
-            [co2_species_delta, co2_submit_button],
-            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-        ),
+        _form_row([co2_species_delta, co2_submit_button]),
         co2_output,
         spacer_large,
         widgets.HTML('<b>GUPPY:</b>'),
-        widgets.HBox(
-            [guppy_pal, guppy_goat_topk, guppy_timeout, guppy_submit_button],
-            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-        ),
+        _form_row([guppy_pal, guppy_goat_topk, guppy_timeout, guppy_submit_button]),
         guppy_output,
         spacer_large,
         widgets.HTML('<b>Fukui Indices (atomic):</b>'),
         widgets.VBox([
-            widgets.HBox(
-                [fukui_skip_cubes],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
-            widgets.HBox(
-                [fukui_pal, fukui_maxcore, fukui_time_limit, fukui_submit_button],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
+            _form_row([fukui_skip_cubes]),
+            _form_row([fukui_pal, fukui_maxcore, fukui_time_limit, fukui_submit_button]),
         ], layout=widgets.Layout(gap='8px')),
         fukui_output,
     ], layout=widgets.Layout(
@@ -2294,6 +2279,16 @@ def create_tab(ctx):
     submit_css = widgets.HTML(
         """
         <style>
+        /* The small job forms (_form_row): equal columns, three of which fit
+           the right-hand pane at 1366 px; each field fills its cell (its
+           inline width was sized for a flex row), each label at least
+           84 px, so inputs line up from row to row. */
+        .widget-hbox.submit-form-grid { display: grid;
+            grid-template-columns: repeat(auto-fill, 190px);
+            gap: 8px 12px; align-items: center; }
+        .widget-hbox.submit-form-grid > .jupyter-widgets { width: auto !important;
+            min-width: 0; margin: 0; }
+        .widget-hbox.submit-form-grid .widget-label { min-width: 84px; }
         .submit-split-root, .submit-split-root * {
             box-sizing: border-box;
         }
