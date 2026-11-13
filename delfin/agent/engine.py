@@ -5743,7 +5743,10 @@ class AgentEngine:
                 evidence_tools_used=set(turn_tools or ()),
                 numbers=_vg.observed_numbers())
             arith = _vg.scan_for_wrong_arithmetic(text)
-            observed_urls = getattr(self, "_last_observed_urls", None) or set()
+            # A link the person wrote is no invented link: repeating it
+            # back must not cost a correction turn.
+            observed_urls = (set(getattr(self, "_last_observed_urls", None) or ())
+                             | self._urls_the_person_wrote())
             url_ledger = bool(getattr(self, "_observed_urls_available", False))
             urls = _vg.scan_for_ungrounded_url_claims(
                 text, observed_urls=observed_urls,
@@ -5751,6 +5754,26 @@ class AgentEngine:
             return loc, qty, arith, urls
         except Exception:
             return [], [], [], []
+
+    def _urls_the_person_wrote(self) -> set[str]:
+        """Every http(s) address in this session's user messages (and the
+        current one); never raises."""
+        from . import verify_guard as _vg
+        texts = [str(getattr(self, "_last_user_message", "") or "")]
+        for m in getattr(self, "messages", None) or ():
+            if not isinstance(m, dict) or m.get("role") != "user":
+                continue
+            c = m.get("content")
+            if isinstance(c, str):
+                texts.append(c)
+            elif isinstance(c, list):
+                texts.extend(str(p.get("text") or "") for p in c
+                             if isinstance(p, dict))
+        out: set[str] = set()
+        for t in texts:
+            for m in _vg._URL_CLAIM_RE.finditer(t):
+                out.add(m.group(0).rstrip(".,;:)'\">}"))
+        return out
 
     def _enforce_claim_grounding(
         self,
