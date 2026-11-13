@@ -297,7 +297,6 @@ def _stub_server(answer: bytes):
     return srv, seen
 
 
-@pytest.mark.skipif(not __import__("shutil").which("curl"), reason="curl not installed")
 @pytest.mark.parametrize("answer,rc", [(b'{"status":"Success","stdout":""}', 0),
                                        (b'{"status": "Error", "error_message": "x"}', 1)])
 def test_the_curl_client_sends_what_oet_client_sends(ai_root, tmp_path, answer, rc):

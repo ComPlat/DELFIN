@@ -353,13 +353,13 @@
     "goat_max_workers": {
       "meaning": "Number of GOAT workers of an MLIP GOAT. Empty: DELFIN's measured default (delfin/mlp_tools/mlip_goat.py). orca-mlips: %goat nworkers, capped at 8 on a large GPU because it loads one model per worker (40 workers ran a GPU out of memory); PAL is not changed. orca-external-tools: %pal nprocs, the workers and the server's model processes are this one number, because the server refuses a request for more cores than it has processes (the initial optimisation asks for all of %pal).",
       "valid_values": "empty | a positive multiple of 4 (_as_goat_max_workers)",
-      "default": "",
+      "default": "(empty: DELFIN's measured default, delfin/mlp_tools/mlip_goat.py)",
       "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat."
     },
     "mlip_fast_client": {
       "meaning": "Client of an orca-external-tools MLIP GOAT. auto: DELFIN's measured default (delfin/mlp_tools/mlip_goat.py FAST_CLIENT_DEFAULT). yes: the request oet_client sends, made with curl, so no Python interpreter starts per energy/gradient. no: the documented oet_client.",
       "valid_values": "auto | yes | no (_as_mlip_fast_client)",
-      "default": "auto",
+      "default": "(empty or auto: DELFIN's measured default, FAST_CLIENT_DEFAULT)",
       "read_by": "delfin/mlp_tools/mlip_goat.py plan_goat; delfin/mlp_tools/oet.py client_wrapper."
     },
     "refuse_noncommercial_weights": {
