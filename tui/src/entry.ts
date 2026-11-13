@@ -54,6 +54,17 @@ export function settingsFor(start: Record<string, unknown>, entry: Entry): Recor
   return rest
 }
 
+/** Whether a plain start that named no session should still offer the
+ *  running sessions first: the window would otherwise fall into a
+ *  brand-new session while sessions already run or wait (the person's
+ *  rule 2026-11-12 -- the running things are listed where you look). A
+ *  session only sleeping (kept, no worker) does not count; on esc the
+ *  picker still starts a new one, so nothing is lost. */
+export function offersRunningFirst(entry: Entry, sessions: { state?: string }[]): boolean {
+  if (entry.kind !== "new") return false
+  return Boolean((sessions ?? []).some((s) => String(s.state ?? "") !== "sleeping"))
+}
+
 // -- the resume picker's rows ---------------------------------------------------
 
 /** running: a worker works or waits in the service; waiting: it waits for
