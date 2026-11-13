@@ -8493,6 +8493,15 @@ class AgentEngine:
         _SessionField(
             "_observed_ledger_available", "observed_ledger_available",
             "evidence", bool, bool, lambda: False),
+        # The URL ledger, same shape and same split: the links this
+        # session's tools returned. A resumed session that forgot them would
+        # flag every link it had fetched before the resume.
+        _SessionField(
+            "_last_observed_urls", "observed_urls", "evidence",
+            lambda v: sorted(v or ()), lambda v: set(v or ()), set),
+        _SessionField(
+            "_observed_urls_available", "observed_urls_available",
+            "evidence", bool, bool, lambda: False),
         _SessionField(
             "_exec_commands_session", "exec_commands", "evidence",
             lambda v: list(v or ()), lambda v: list(v or ()), list),
