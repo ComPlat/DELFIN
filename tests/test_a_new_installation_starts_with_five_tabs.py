@@ -12,10 +12,10 @@ Job Status, DELFIN Agent, Home, Calculations (and Settings, which is
 always there). Every other tab stays available and is switched on in
 Settings. A person who arranged the tabs keeps exactly that arrangement:
 a saved order lists every tab of its day, and its hidden list decides
-those. A tab added in a later version follows the default. An existing
-installation that never arranged its tabs gets the new default too:
-nothing distinguishes it from a new one (``order`` is empty in both; the
-installer itself writes the settings file).
+those. A tab added in a later version follows the default. The defaults
+reach only a new installation: at the first start an existing user's
+view is saved as their arrangement
+(test_the_first_start_keeps_what_an_existing_user_sees).
 """
 from __future__ import annotations
 
