@@ -25,8 +25,14 @@ model the file does not contain is ``MISSING_INPUT`` naming the model numbers
 that exist — a composition for the wrong model would be a plausible answer to
 a question nobody asked.
 
-Rejected alternatives: reporting a partial composition when the file is
-truncated (the numbers would be indistinguishable from a complete file's);
+Truncation is refused where the file shows it: a record cut inside its
+coordinates, a ``MODEL`` never closed, an mmCIF loop ending mid-row. A file
+cut exactly at a line boundary carries no such sign and reads as a smaller
+structure; neither format marks its own end reliably enough to demand it.
+
+Rejected alternatives: reporting a partial composition when the file shows
+it is truncated (the numbers would be indistinguishable from a complete
+file's);
 defaulting the model to 1 (a file whose models start elsewhere would fail for
 no reason, so the default is the file's first model whatever its number);
 writing the summary into ``data`` only (a report is the thing a later block
@@ -102,6 +108,41 @@ def _report(structure: MacromolecularStructure,
     }
 
 
+def _report_file_name(value: Any) -> str:
+    """The report's file name, or raise ``ValueError``.
+
+    Input: the ``report_name`` parameter. Output: a plain file name, the
+    default one when the value is empty. Semantics: the report is written
+    into ``work_dir`` and nowhere else. ``work_dir / "/abs/x"`` is
+    ``/abs/x`` and ``work_dir / "../x"`` leaves it, so a separator, ``.``
+    or ``..`` would let a parameter choose any file to overwrite; they are
+    refused rather than stripped, because a silently renamed report is
+    one the caller then cannot find.
+    """
+    name = str(value or "").strip() or "structure_summary.json"
+    if (name in (".", "..") or "/" in name or "\\" in name
+            or Path(name).name != name):
+        raise ValueError(
+            f"'report_name' must be a file name inside work_dir, not a path: "
+            f"{name!r}")
+    return name
+
+
+def _model_number(value: Any) -> Optional[int]:
+    """The requested model number, ``None`` for the file's first model, or
+    raise ``ValueError``. Only an integer or its decimal text is a model
+    number: ``int(1.5)`` would quietly report model 1."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"'model' must be an integer model number: {value!r}")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    raise ValueError(f"'model' must be an integer model number: {value!r}")
+
+
 class BiostructureSummaryAdapter(StepAdapter):
     """Read a macromolecular structure file and report what it holds."""
 
@@ -155,6 +196,8 @@ class BiostructureSummaryAdapter(StepAdapter):
             raise ValueError(
                 "'structure_file' parameter is required (a PDB or mmCIF file)"
             )
+        _report_file_name(kwargs.get("report_name"))
+        _model_number(kwargs.get("model"))
 
     def execute(
         self,
@@ -174,6 +217,14 @@ class BiostructureSummaryAdapter(StepAdapter):
                 error="'structure_file' is required (a PDB or mmCIF file)",
                 error_kind=ErrorKind.MISSING_PARAM,
             )
+        try:
+            report_name = _report_file_name(kwargs.get("report_name"))
+            model_id = _model_number(kwargs.get("model"))
+        except ValueError as exc:
+            return self._make_result(
+                self.name, StepStatus.FAILED, work_dir, start,
+                error=str(exc), error_kind=ErrorKind.MISSING_PARAM,
+            )
         path = Path(raw)
         if not path.is_file():
             return self._make_result(
@@ -190,8 +241,6 @@ class BiostructureSummaryAdapter(StepAdapter):
                 error=str(exc), error_kind=ErrorKind.PARSE,
             )
 
-        model_id = kwargs.get("model")
-        model_id = int(model_id) if model_id is not None else None
         try:
             composition = structure.composition(model_id)
         except KeyError as exc:
@@ -201,8 +250,7 @@ class BiostructureSummaryAdapter(StepAdapter):
             )
 
         report = _report(structure, model_id)
-        report_path = work_dir / str(kwargs.get("report_name")
-                                     or "structure_summary.json")
+        report_path = Path(work_dir) / report_name
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, indent=2, sort_keys=False),
                                encoding="utf-8")
