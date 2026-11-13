@@ -558,7 +558,11 @@ class Session:
                 "activity": self.activity or None,
                 "waiting": _asked_gist(next(iter(self.pending.values()))) if self.pending else None,
                 "answer": self.answer or None,
-                "lastInput": round(self.last_input, 3) or None}
+                "lastInput": round(self.last_input, 3) or None,
+                # A swarm/headless run: started --unattended (supervisor.py
+                # passes it to the worker). The dashboard groups such
+                # sessions apart from the person's own.
+                "unattended": bool(self.settings.get("unattended"))}
 
     def never_used(self) -> bool:
         """Started new (not resumed, continued, forked; no brief, no
