@@ -281,6 +281,21 @@ def configured_domains(workspace=None) -> list[str]:
     return out
 
 
+def named_domains() -> list[str]:
+    """The hosts the user's configuration names for reads: the default
+    allow-list and ``agent.sandbox_network.allowed_domains``. Not the
+    workspace's remotes or the model endpoints (``configured_domains``
+    adds those): a repository names its remotes itself."""
+    return list(DEFAULT_ALLOWED_DOMAINS) + _string_list(
+        _settings().get("allowed_domains"))
+
+
+def upload_named_domains() -> list[str]:
+    """The hosts ``agent.sandbox_network.upload_domains`` names: where the
+    user said uploads may go."""
+    return _string_list(_settings().get("upload_domains"))
+
+
 def user_named_hosts(perms) -> list[str]:
     """Hosts of the http(s) URLs the user wrote in a typed message of this
     session (``KitToolPermissions.user_named_urls``, filled only from the
@@ -379,9 +394,7 @@ def _ssh_route_allowed(host: str, url: str) -> bool:
     which the workspace does not write. A direct route bypasses the proxy
     (no upload limit, no question), so a host the repository alone names
     gets none; that is recorded once."""
-    named = list(DEFAULT_ALLOWED_DOMAINS) + _string_list(
-        _settings().get("allowed_domains"))
-    if domain_allowed(host, named):
+    if domain_allowed(host, named_domains()):
         return True
     if host not in _SSH_REMOTE_NOTED:
         _SSH_REMOTE_NOTED.add(host)
