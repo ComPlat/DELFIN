@@ -140,17 +140,13 @@ def test_without_a_dialog_the_ask_note_does_not_name_it(client):
     assert "with ask_user_question" not in _rows(sent)
 
 
-def test_an_ask_request_that_was_answered_with_the_card_ends(client):
-    sent, notices = _run(
-        client, "frag mich mit einer Rückfrage",
-        [{"tool_calls": [{"id": "c1", "type": "function",
-                          "function": {"name": "ask_user_question",
-                                       "arguments": "{\"question\": \"q\"}"}}],
-          "finish": "stop"}]
-        if False else ["Ja."])
-    # the ask trigger shares _auto_cont_count with the others: a turn that
-    # already burned the cap is left alone
-    assert len(sent) >= 1 and "ask request" in notices
+def test_an_ask_trigger_fires_once_per_turn(client):
+    sent, notices = _run(client,
+                         "Stell mir mal eine Anfrage ja oder nein",
+                         ["Ja.", "Ja, wirklich.", "Ja, jetzt aber."])
+    # one corrective round only: the trigger fires once per turn
+    assert len(sent) == 2
+    assert notices.count("ask request") == 1
 
 
 # -- through the tool loop --------------------------------------------------
