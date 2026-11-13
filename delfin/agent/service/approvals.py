@@ -173,7 +173,11 @@ class ProtocolBroker(tc.TerminalConfirmBroker):
                         for o in options],
             "flags": {"shell": req.is_shell, "write": req.is_write,
                       "protected": req.is_protected,
-                      "outsideRead": req.is_outside_read},
+                      "outsideRead": req.is_outside_read,
+                      # The preview opens with what cannot be undone; the
+                      # options above offer nothing that outlives it.
+                      "irreversible": (req.kind == tc.CONFIRM
+                                       and req.is_irreversible)},
         }
         if suggestion:
             fields["suggestion"] = suggestion
