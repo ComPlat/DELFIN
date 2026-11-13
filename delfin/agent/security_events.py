@@ -224,6 +224,8 @@ _KINDS = {
     # Off the auto-allow list, no isolation layer, nobody to ask.
     "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
     "unrestorable_change": ("🗑", "Command refused: it would destroy what nothing can restore"),
+    "undo_store_write": ("🗄", "Write refused: the undo store is DELFIN's"),
+    "trash_evicted": ("🧹", "Trash over its budget: oldest undo copies removed"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
     # The phone messenger (delfin/messenger/audit.py KINDS, pinned equal by
