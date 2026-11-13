@@ -7,7 +7,7 @@ _DELFIN_ONLY_TOOL_NAMES broke the schema budget, the catalogue
 measurement, the DELFIN-workspace filter and the office denylist. They
 now live in _SWARM_LEAD_TOOL_NAMES (delfin/agent/api_client.py), which
 feeds only the typo check (unknown_tool_names) and the T4 grounding
-_known set. _known_preset_tool_names() unions those known tools, so the
+_known set; the SA0 preset is a plan-mode role and lists none of them
 SA0 lead preset can list them.
 
 This file is the red control: it must FAIL before the operator build
@@ -38,9 +38,9 @@ def _preset_lead_tool_names() -> set[str]:
     return {"swarm_status", "swarm_plan", "swarm_triage_list"}
 
 
-def _known_preset_tool_names():
-    from delfin.agent.subagents import _known_preset_tool_names as _k
-    return _k()
+def _unknown(names):
+    from delfin.agent.api_client import unknown_tool_names
+    return unknown_tool_names(names)
 
 
 def _delfin_only_tool_names():
@@ -48,29 +48,26 @@ def _delfin_only_tool_names():
     return set(_DELFIN_ONLY_TOOL_NAMES)
 
 
-@pytest.mark.parametrize(
-    "tool",
-    ["swarm_status", "swarm_plan", "swarm_triage_list"],
-)
+@pytest.mark.parametrize("tool", sorted({
+    "swarm_status", "swarm_plan", "swarm_message", "swarm_triage_list",
+    "swarm_start", "swarm_pause", "swarm_resume", "swarm_triage_answer",
+    "swarm_prcheck"}))
 def test_lead_tool_is_known_after_registration(tool):
-    """Each READ-ONLY lead tool must be part of the known preset-tool
-    surface once the operator applies the v4 api_client copy. The SA0
-    preset is a planning role: it lists the read-only lead tools only
-    (phase-2 safety design); the state-changing ones are the lead
-    session's own confirmed surface."""
-    assert tool in _known_preset_tool_names(), (
-        f"{tool} is not known to _known_preset_tool_names(); the SW3 "
-        f"v4 lead registration (_SWARM_LEAD_TOOL_NAMES feeding the "
-        f"unknown/grounding known sets) has not been applied yet."
-    )
+    """Each lead tool is a known name (never read as a typo) through
+    _SWARM_LEAD_TOOL_NAMES. The SA0 preset itself is a plan-mode
+    planning role and lists none of them: plan mode refuses them, and a
+    plan preset must not offer a tool its mode refuses
+    (tests/test_an_explore_child_can_search.py)."""
+    assert _unknown([tool]) == [], (
+        f"{tool} is unknown; the SW3 lead registration "
+        f"(_SWARM_LEAD_TOOL_NAMES) is missing.")
 
 
 def test_known_surface_covers_the_whole_lead_toolset():
     """The union of the registered names must account for every lead
     tool that lead.py declares, so the preset can expose the lead's
     full documented surface."""
-    known = _known_preset_tool_names()
-    missing = sorted(_preset_lead_tool_names() - set(known))
+    missing = _unknown(sorted(_lead_tool_names()))
     assert not missing, f"lead tools not yet registered: {missing}"
 
 
