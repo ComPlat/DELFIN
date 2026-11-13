@@ -49,6 +49,18 @@ installs the QM and analysis tools. It needs no root and no module system.
 ```bash
 git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
 bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools
+```
+
+These two commands are a complete first install. The installer checks first what it
+needs (curl or wget, tar, git, writable directories, about 6 GB free, a C compiler
+where OpenMPI has to be built) and stops before changing anything when something is
+missing. It keeps its output in `~/software/logs/`; a failed step is named, and the
+same command run again continues. It ends with how to start: `source ~/.delfin_env.sh`
+(new shells do it by themselves), `delfin-voila` for the dashboard,
+`cd ~/calc && delfin-agent` for the agent, and, on a cluster login node, the
+`ssh -L 8866:127.0.0.1:8866 ...` tunnel to reach the dashboard from your own computer.
+
+```bash
 bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks too (several GB)
 bash ~/software/delfin/install.sh --only crest,gxtb
 bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
