@@ -76,6 +76,34 @@ def test_output_without_a_submit_program_records_nothing(cmd, out):
     assert R.submitted_job_ids(cmd, out) == []
 
 
+@pytest.mark.parametrize("cmd,out", [
+    ("sbatch x.sh; echo 'Submitted batch job 999'",
+     "Submitted batch job 4711\nSubmitted batch job 999\n"),
+    ("sbatch x.sh && printf 'Submitted batch job 999\\n'",
+     "Submitted batch job 4711\nSubmitted batch job 999\n"),
+    ("sbatch x.sh; cat old.log", "Submitted batch job 4711\n"),
+    ("python make.py && sbatch x.sh", "Submitted batch job 4711\n"),
+    ("bash -c 'sbatch x.sh; echo Submitted batch job 999'",
+     "Submitted batch job 4711\nSubmitted batch job 999\n"),
+])
+def test_a_submit_beside_another_program_records_nothing(cmd, out):
+    # Another program in the line could print a submit line for any id; a
+    # missed own id only means a later cancel is asked (fail closed).
+    assert R.submitted_job_ids(cmd, out) == [], cmd
+
+
+@pytest.mark.parametrize("cmd,out,ids", [
+    ("cd calc && sbatch run.sh", "Submitted batch job 4711\n", ["4711"]),
+    ("sbatch a.sh && sbatch b.sh",
+     "Submitted batch job 4711\nSubmitted batch job 4712\n", ["4711", "4712"]),
+    ("timeout 30 sbatch run.sh", "Submitted batch job 4711\n", ["4711"]),
+    ("env OMP_NUM_THREADS=4 sbatch run.sh", "Submitted batch job 4711\n",
+     ["4711"]),
+])
+def test_only_submits_and_cd_record(cmd, out, ids):
+    assert R.submitted_job_ids(cmd, out) == ids, cmd
+
+
 # -- the targets --------------------------------------------------------------
 
 @pytest.mark.parametrize("cmd", [
