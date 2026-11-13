@@ -315,3 +315,41 @@ def test_without_a_structure_file_it_says_so(tmp_path):
     direct = get(STEP).execute(tmp_path)
     assert direct.status is StepStatus.FAILED
     assert direct.error_kind is ErrorKind.MISSING_PARAM
+
+
+@pytest.mark.parametrize("report_name", [
+    "../escaped.json", "sub/dir.json", "/tmp/elsewhere.json", "..", ""])
+def test_the_report_is_written_inside_work_dir_and_nowhere_else(tmp_path,
+                                                                 report_name):
+    """``report_name`` is a file NAME. A separator or ``..`` would let a
+    parameter choose any path to overwrite (``work_dir / "/abs"`` is
+    ``/abs``), so the step refuses it before writing anything."""
+    path = _pdb(tmp_path, "receptor.pdb", _STRUCTURE)
+    work = tmp_path / "run"
+    work.mkdir()
+    if report_name:
+        with pytest.raises(ValueError) as exc:
+            run_step(STEP, structure_file=str(path), report_name=report_name,
+                     work_dir=str(work))
+        assert "report_name" in str(exc.value)
+    direct = get(STEP).execute(work, structure_file=str(path),
+                               report_name=report_name)
+    if report_name:
+        assert direct.status is StepStatus.FAILED
+        assert direct.error_kind is ErrorKind.MISSING_PARAM
+    else:
+        # empty means "the default name", not "refuse"
+        assert direct.ok, direct.error
+    assert not (tmp_path / "escaped.json").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["receptor.pdb", "run"]
+
+
+@pytest.mark.parametrize("model", ["abc", "1.5", [1]])
+def test_a_model_that_is_not_a_number_fails_the_step(tmp_path, model):
+    """A model number that is no integer is a parameter error with the
+    step's result shape, not an exception out of execute()."""
+    path = _pdb(tmp_path, "receptor.pdb", _STRUCTURE)
+    direct = get(STEP).execute(tmp_path, structure_file=str(path), model=model)
+    assert direct.status is StepStatus.FAILED
+    assert direct.error_kind is ErrorKind.MISSING_PARAM
+    assert "model" in direct.error
