@@ -50,6 +50,21 @@ _JOB_FAILURES = (
 )
 
 
+#: Lines that carry a failure word and are no failure, seen in finished,
+#: normally terminated MLIP GOAT runs (ethanol, orca-mlips 1.3.0, ORB and
+#: MACE on an A100, 2026-11):
+#: * ORCA's RFO step: "The lambda equations have not converged!" -- an inner
+#:   iteration of one geometry step; the optimisation goes on and converges;
+#: * orca-mlips' model server: several GOAT workers start it at once, the
+#:   ones that lose the socket print "[ERROR] [Errno 98] Address already in
+#:   use" and use the server that won (it answers every later call).
+#: They are reported as notes, not as an aborted run.
+_BENIGN_FAILURE_LINES = (
+    "The lambda equations have not converged",
+    "[Errno 98] Address already in use",
+)
+
+
 def check_goat_e2e(
     run_dir: Path | str,
     *,
@@ -117,8 +132,18 @@ def check_goat_e2e(
     terminated: Optional[bool] = None
     if out_path.is_file():
         text = out_path.read_text(errors="replace")
-        n_fail = len(_failure_lines(out_path))
+        failure_lines = _failure_lines(out_path)
+        benign = [line for line in failure_lines
+                  if any(mark in line for mark in _BENIGN_FAILURE_LINES)]
+        n_fail = len(failure_lines) - len(benign)
         terminated = _TERMINATED_MARK in text and n_fail == 0
+        if benign:
+            findings.append(_finding(
+                "info",
+                f"{out_path.name}: {len(benign)} line(s) with a failure word "
+                "that are no failure (RFO lambda notice / orca-mlips server "
+                "start race): " + "; ".join(sorted(set(benign)))[:300],
+            ))
         if _TERMINATED_MARK not in text:
             findings.append(_finding(
                 "error",

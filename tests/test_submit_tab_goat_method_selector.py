@@ -510,3 +510,40 @@ def test_an_mlip_goat_is_never_sent_to_an_amd_gpu_partition():
     assert kept == ("gpu_h100", "gpu_a100_il") and dropped == ("gpu_mi300", "gpu_mi250x")
     partitions, reason = gpu_partitions_for(["gpu_mi300"], "00:30:00")
     assert partitions == "" and "AMD" in reason and "NVIDIA" in reason
+
+
+# ---- the check of a finished MLIP GOAT ------------------------------------------------
+
+def _finished_goat(tmp_path: Path, extra: str) -> Path:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "extopt.out").write_text(
+        extra + "TOTAL RUN TIME: 0 days 0 hours 26 minutes 24 seconds 146 msec\n"
+        "****ORCA TERMINATED NORMALLY****\n")
+    (run / "extopt.finalensemble.xyz").write_text(
+        "3\n-155.0 converged=true\nC 0 0 0\nO 0 0 1.4\nH 0 1 0\n"
+        "3\n-154.99 converged=true\nC 0 0 0\nO 0 0 1.4\nH 1 0 0\n")
+    (run / "extopt.globalminimum.xyz").write_text("3\nmin\nC 0 0 0\nO 0 0 1.4\nH 0 1 0\n")
+    return run
+
+
+def test_a_finished_mlip_goat_is_not_failed_by_its_harmless_lines(tmp_path):
+    """Measured in normally terminated ORB and MACE GOATs: ORCA's RFO notice and
+    orca-mlips' server start race carry failure words and are no failure."""
+    from delfin.mlp_tools.goat_e2e_check import check_goat_e2e
+
+    run = _finished_goat(tmp_path, (
+        "The lambda equations have not converged!\n"
+        "[ERROR] [Errno 98] Address already in use[ERROR] [Errno 98] Address already in use\n"))
+    report = check_goat_e2e(run)
+    assert report["ok"] is True and report["terminated_normally"] is True
+    assert any(f["level"] == "info" and "Errno 98" in f["message"] for f in report["findings"])
+
+
+def test_a_real_failure_line_still_fails_the_check(tmp_path):
+    from delfin.mlp_tools.goat_e2e_check import check_goat_e2e
+
+    run = _finished_goat(tmp_path, (
+        "The lambda equations have not converged!\nSCF NOT CONVERGED AFTER 50 CYCLES\n"))
+    report = check_goat_e2e(run)
+    assert report["ok"] is False and report["terminated_normally"] is False

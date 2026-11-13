@@ -181,6 +181,8 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
 | `--install orca-mlips` | CPU node | environment built, `--status`: installed | 162 s (whole installer) |
 | GOAT, CONTROL.txt, `mlip:aimnet2`, `cuda`, PAL 8 | 1 x H100, 30 min dev partition | terminated normally; 6 conformers within 2.5 kcal/mol, global minimum written | 568.8 s (job 10 min incl. staging) |
 | same GOAT, submitted as a user does (`submit_calculation`, no sbatch flags added) | routed by DELFIN: `--gres=gpu:1` to the four configured 30-min GPU partitions; ran on an H100 | terminated normally; 5 conformers within 2.5 kcal/mol; `check_goat_e2e` ok | 518.1 s (job 10 min) |
+| GOAT, `mlip:orb`, chosen in the Submit tab's selector and sent with its SUBMIT JOB handler, PAL 8, 2 h | routed by DELFIN to the long CUDA partitions only; ran on an A100 | terminated normally; 4 conformers within 1.13 kcal/mol; `check_goat_e2e` ok | 1584 s |
+| same, `mlip:mace` (opt-in MACE extra, academic use) | same routing; ran on an A100 | terminated normally; 4 conformers within 1.13 kcal/mol; `check_goat_e2e` ok | 1672 s |
 | `orca_mlip_opt_opi`, `opt_freq`, aimnet2, `cpu`, 4 cores | CPU node | converged; NumFreq: 21 vibrational modes, none imaginary (lowest 220 cm^-1) | 27.7 s |
 | ExtOpt Opt, `orb`, `cuda`, 4 cores, via `submit_extopt_job` | 1 x H100, 30 min dev partition | converged, terminated normally (server `OrbMolEvaluator`); no "unrecognized arguments" | 34.9 s (job 63 s) |
 
@@ -204,6 +206,16 @@ torch 2.15.0 (CUDA 13.2 build), aimnet 0.2.6, orb-models 0.5.5.
   Whether the workers shared one model server or started one each cannot
   be read back afterwards (worker outputs are deleted unless
   `KEEPWORKERDATA`).
+
+- The same ORB and MACE GOATs with a 30-minute limit did not finish (the
+  job's walltime sync stopped them in global iteration 1): on an A100 an
+  ethanol MLIP GOAT took 26-28 min.  A first ORB submit had been routed to an
+  AMD MI300 partition and stopped at once (no NVIDIA GPU); AMD-named
+  partitions are now left out of an MLIP GOAT's candidates.
+- Two lines with failure words appear in finished runs and are no failure:
+  ORCA's "The lambda equations have not converged!" (one RFO step) and
+  orca-mlips' "[Errno 98] Address already in use" (GOAT workers starting the
+  model server at once); `check_goat_e2e` reports them as notes.
 
 ## Known limits
 
