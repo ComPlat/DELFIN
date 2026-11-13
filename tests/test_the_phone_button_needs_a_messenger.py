@@ -124,3 +124,21 @@ def test_the_agent_tab_adds_the_phone_button_only_where_a_messenger_is():
     assert source.count(add) == 1
     head = source[:source.index(add)].rstrip().splitlines()[-1].strip()
     assert head == "if _messenger_activation.messenger_here():"
+
+
+def test_the_control_row_keeps_one_line_at_1366_with_the_phone_button():
+    """With a messenger (the Pi) the row measured 1314 px of controls in a
+    1333 px row at 1366 px, and the Phone button pushed the report beetle
+    onto a second line of its own (also in the 1400 px screenshot of
+    2026-11-13). Phone is an icon like the beetle beside it (its tooltip
+    and accessible name say what it does) and Stop is as wide as its word:
+    52 px less, one line."""
+    source = (Path(__file__).resolve().parents[1] / "delfin" / "dashboard"
+              / "tab_agent.py").read_text(encoding="utf-8")
+    phone = source[source.index("    messenger_phone_btn = widgets.Button("):]
+    phone = phone[:phone.index("\n\n")]
+    assert 'description=""' in phone and 'icon="mobile"' in phone
+    assert 'width="44px"' in phone and "Connect your phone (SimpleX)" in phone
+    stop = source[source.index("    stop_btn = widgets.Button("):]
+    stop = stop[:stop.index("\n    )\n")]
+    assert 'width="auto"' in stop and 'flex="0 0 auto"' in stop
