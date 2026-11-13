@@ -153,7 +153,7 @@ class TestPipelineChainWiring:
             )
 
         monkeypatch.setattr(
-            "delfin.tools.pipeline.run_step", fake_run_step
+            "delfin.tools._runner.run_step", fake_run_step
         )
         pipe = self._pipeline()
         pipe.run(cores=1, work_dir=tmp_path)
@@ -188,7 +188,7 @@ class TestPipelineChainWiring:
             )
 
         monkeypatch.setattr(
-            "delfin.tools.pipeline.run_step", fake_run_step
+            "delfin.tools._runner.run_step", fake_run_step
         )
         pipe = self._pipeline()
         pipe.run(cores=1, work_dir=tmp_path)
@@ -219,7 +219,7 @@ class TestPipelineChainWiring:
             )
 
         monkeypatch.setattr(
-            "delfin.tools.pipeline.run_step", fake_run_step
+            "delfin.tools._runner.run_step", fake_run_step
         )
         pipe = self._pipeline()
         pipe.run(cores=1, work_dir=tmp_path)
@@ -243,7 +243,7 @@ class TestPipelineChainWiring:
             )
 
         monkeypatch.setattr(
-            "delfin.tools.pipeline.run_step", fake_run_step2
+            "delfin.tools._runner.run_step", fake_run_step2
         )
         pipe.run(cores=1, work_dir=tmp_path, resume_chain=True)
         assert "xtb_opt" in calls, (
@@ -305,12 +305,14 @@ class TestChainCli:
 
         import delfin.cli_chain as cli_chain
 
-        original = pipeline_mod.run_step
-        pipeline_mod.run_step = fake_run_step
+        import delfin.tools._runner as runner_mod
+
+        original = runner_mod.run_step
+        runner_mod.run_step = fake_run_step
         try:
             rc = cli_chain.main(["resume", str(wd)])
         finally:
-            pipeline_mod.run_step = original
+            runner_mod.run_step = original
         assert rc == 0
         assert calls == ["step_0"], (
             "resume must actually run the pending step — and only after the "
