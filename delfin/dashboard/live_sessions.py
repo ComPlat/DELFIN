@@ -355,6 +355,7 @@ class RunningList:
                 "activity": str(s.get("activity") or ""),
                 "age": age_text(now - float(s.get("lastActivity") or now)),
                 "idle": idle,
+                "unattended": bool(s.get("unattended")),
                 "createdAt": float(s.get("createdAt") or 0.0),
             })
         rows.sort(key=lambda r: (_STATE_ORDER[r["state"]], -r["createdAt"]))
