@@ -144,6 +144,46 @@ def is_choice_question(answer: str) -> bool:
             or bool(_INLINE_CHOICE_RE.search(last)))
 
 
+# An "ask me" request (wave54/a1, phone session 2026-11-12): the user asks
+# to be asked -- a question, a choice, a question card, an approval prompt --
+# not an answer to one. The live failure: "ask me for an approval, yes or
+# no" was answered "Yes." by the model instead of presenting a card.
+_ASK_ME_RE = re.compile(
+    r"(?i)(\bfrag\w*\s+mich\b|\bask\s+me\b|question\s+card"
+    r"|\b(?:rueckfrage|rückfrage)\b|\banfrage\b)")
+_ASK_ME_NEG_RE = re.compile(
+    r"(?i)\b(?:frag\s+mich\s+nicht|keine\s+rueckfrage|keine\s+rückfrage|"
+    r"nicht\s+fragen|don'?t\s+ask\s+me)\b")
+
+
+def is_ask_request(text: str) -> bool:
+    """Whether the user's message asks to be asked (a question card with
+    options), rather than answering a question.
+
+    Negative forms ("frag mich nicht", "don't ask me") never count.
+    """
+    t = str(text or "")
+    if _ASK_ME_NEG_RE.search(t):
+        return False
+    return bool(_ASK_ME_RE.search(t))
+
+
+ASK_NOTE = (
+    "The user asked you to ASK them -- present the question with "
+    "ask_user_question: one question, 2-4 options (for a yes/no question "
+    "exactly two: yes and no), your recommendation first and marked "
+    "(Recommended). Do not answer the question yourself and do not write "
+    "the options as prose in the answer."
+)
+
+ASK_NOTE_NO_UI = (
+    "The user asked you to ASK them. You cannot show a question card here, "
+    "so end your answer with the question itself and the options as a short "
+    "numbered list -- and make clear you are waiting for their answer. Do "
+    "not answer the question yourself."
+)
+
+
 GO_AHEAD_NOTE = (
     "The user already told you to go ahead. Do not restate the plan and do "
     "not ask for confirmation again: make the change now with the tools, "
@@ -173,5 +213,5 @@ CHOICE_NOTE_NO_UI = (
 
 
 __all__ = ["ACTING_TOOLS", "is_go_ahead", "ignored_go_ahead",
-           "is_choice_question", "GO_AHEAD_NOTE", "CHOICE_NOTE",
-           "CHOICE_NOTE_NO_UI"]
+           "is_choice_question", "is_ask_request", "GO_AHEAD_NOTE",
+           "CHOICE_NOTE", "CHOICE_NOTE_NO_UI", "ASK_NOTE", "ASK_NOTE_NO_UI"]

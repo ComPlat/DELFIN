@@ -34883,6 +34883,9 @@ class OpenAIClient(_BaseClient):
         # every tool the turn called.
         _go_ahead_once = False
         _choice_once = False
+        # An "ask me" request, once per turn, like the go-ahead and
+        # prose-choice triggers above.
+        _ask_once = False
         _turn_tool_names: set = set()
         _turn_user_text, _turn_offered = _turn_opening(messages)
         # Completion events that arrive as the turn is ENDING. Both drains
@@ -37214,6 +37217,15 @@ class OpenAIClient(_BaseClient):
                 _ga_note, _ga_shown = (
                     _ga.CHOICE_NOTE if _can_ask else _ga.CHOICE_NOTE_NO_UI,
                     "↻ choice written as text → deciding or asking properly")
+            elif (_ga_ok and not _ask_once
+                    and "ask_user_question" not in _turn_tool_names
+                    and _ga.is_ask_request(_turn_user_text)):
+                _ask_once = True
+                _can_ask = getattr(self._permissions, "ask_user_callback",
+                                   None) is not None
+                _ga_note, _ga_shown = (
+                    _ga.ASK_NOTE if _can_ask else _ga.ASK_NOTE_NO_UI,
+                    "↻ ask request → asking with the question card")
             if _ga_note:
                 _auto_cont_count += 1
                 _did_tools_since_cont = False
