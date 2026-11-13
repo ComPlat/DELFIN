@@ -1635,7 +1635,8 @@ def test_plan_turns_are_exempt_from_claim_grounding():
     # language check no longer does, and language was never what the
     # exemption was measured for.
     assert "if self._turn_describes_intent():" in eng
-    assert "loc, qty, conflicts, func, ambiguous = [], [], [], [], []" in eng
+    assert ("loc, qty, conflicts, func, ambiguous, url = "
+            "[], [], [], [], [], []") in eng
     # The dashboard's own block is all claim scanners and no language
     # check, so its gate is correct as it stands and is left alone.
     src = _watchdog_source()
