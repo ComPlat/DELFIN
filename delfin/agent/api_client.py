@@ -18889,25 +18889,33 @@ class _DocToolExecutor:
         except Exception:
             pass
 
-    def _shell_snapshot(self, perms: "KitToolPermissions"):
+    def _shell_snapshot(self, perms: "KitToolPermissions", overlay=None):
         """The writable roots before a shell command (shell_changes), with
-        the git config watch (git_config_watch) attached as ``git_watch``.
-        None when neither can be taken. Never raises."""
+        the git config watch (git_config_watch) attached as ``git_watch``
+        and the command's overlay plan (overlay_workspace) as ``overlay``;
+        the roots the overlay holds are not walked. None when none of the
+        three can be taken. Never raises."""
         try:
             from . import git_config_watch as _gcw
             gsnap = _gcw.take(getattr(perms, "workspace", "."))
         except Exception:
             gsnap = None
-        snap = self._shell_snapshot_files(perms)
+        held = [l.root for l in overlay.layers] if overlay is not None else []
+        snap = (self._shell_snapshot_files(perms, held) if held
+                else self._shell_snapshot_files(perms))
         if snap is None:
-            return _GitWatchOnly(gsnap) if gsnap is not None else None
+            if gsnap is None and overlay is None:
+                return None
+            snap = _GitWatchOnly(gsnap)
         try:
             snap.git_watch = gsnap
+            snap.overlay = overlay
         except Exception:
             pass
         return snap
 
-    def _shell_snapshot_files(self, perms: "KitToolPermissions"):
+    def _shell_snapshot_files(self, perms: "KitToolPermissions",
+                              held=()):
         try:
             from . import change_journal as _cj
             from . import shell_changes as _sc
@@ -18916,26 +18924,118 @@ class _DocToolExecutor:
             start = max((int(r.get("seq", 0) or 0) for r in recs),
                         default=0)
             # Read-only and calc roots: the cage refuses writes there,
-            # and calc folders are the largest trees a session has.
+            # and calc folders are the largest trees a session has. The
+            # roots an overlay holds are journalled from the overlay.
             skip = (tuple(getattr(perms, "read_only_workspace_dirs", ())
                           or ())
-                    + tuple(getattr(perms, "confirm_write_dirs", ()) or ()))
+                    + tuple(getattr(perms, "confirm_write_dirs", ()) or ())
+                    + tuple(held))
             return _sc.before(perms.all_workspace_roots(),
                               session_id=sid, start_seq=start, skip=skip)
         except Exception:
             return None
 
+    def _overlay_plan(self, perms: "KitToolPermissions"):
+        """The overlay layers for one foreground bypass command
+        (overlay_workspace.prepare), or None where it does not run. The
+        roots left out are named once per session. Never raises."""
+        try:
+            roots, left = _overlay_roots(perms)
+            if not roots:
+                return None
+            from . import overlay_workspace as _ow
+            plan = _ow.prepare(roots)
+            if plan is None:
+                return None
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            for root, why in left.items():
+                if (sid, root) not in _OVERLAY_SAID:
+                    _OVERLAY_SAID.add((sid, root))
+                    plan.notes.append(
+                        f"{root}: shell changes there are not run over the "
+                        f"overlay ({why}); the change journal and the trash "
+                        "rule hold there instead")
+            return plan
+        except Exception:
+            return None
+
+    def _overlay_given_up(self, snap, perms: "KitToolPermissions"):
+        """The overlay will not run after all: its layers removed, and a
+        snapshot of every root taken instead. Never raises."""
+        try:
+            from . import overlay_workspace as _ow
+            _ow.discard(getattr(snap, "overlay", None))
+        except Exception:
+            pass
+        return self._shell_snapshot(perms)
+
+    def _refusal_without_overlay(self, cmd: str, run_cwd,
+                                 perms: "KitToolPermissions",
+                                 planned: bool = False):
+        """The trash refusal (unrestorable), for a bypass command the gate
+        let pass because an overlay was to hold its targets and that now
+        runs without one (``planned``: an overlay was prepared for it).
+        None otherwise."""
+        try:
+            if str(getattr(perms, "mode", "") or "") != "bypassPermissions":
+                return None
+            if not planned and _overlay_covers(perms) is None:
+                return None
+            from . import unrestorable as _unrestorable
+            return _unrestorable.refusal(cmd, Path(run_cwd), perms)
+        except Exception:
+            return None
+
+    def _journal_overlay(self, tool: str, plan,
+                         perms: "KitToolPermissions") -> list[str]:
+        """Apply the command's overlay to the real roots and journal each
+        change (change_journal.record_overlay_changes); the notes to show.
+        Never raises."""
+        try:
+            from . import change_journal as _cj
+            from . import overlay_workspace as _ow
+            outcome = _ow.apply(plan)
+            items = []
+            tracker = getattr(perms, "read_tracker", None)
+            for ch in outcome.changes:
+                if not ch.journal:
+                    continue
+                _report_file_changed(ch.path)
+                items.append({
+                    "tool": tool, "path": ch.path, "kind": ch.kind,
+                    "entry": ch.entry, "root": ch.root, "trash": ch.trash,
+                    "post_hash": ch.post_hash, "post_sig": ch.post_sig,
+                    "post_tree": ch.post_tree})
+                if (ch.kind != "deleted" and isinstance(tracker, dict)
+                        and ch.path in tracker):
+                    try:
+                        tracker[ch.path] = Path(ch.path).stat().st_mtime
+                    except OSError:
+                        pass
+            sid = str(getattr(perms, "task_session_id", "") or "")
+            for rec in _cj.record_overlay_changes(sid, items):
+                self._note_change_seq(rec, perms)
+            return list(plan.notes) + list(outcome.notes)
+        except Exception as exc:
+            return [f"the command's overlay could not be applied ({exc})"]
+
     def _journal_shell_changes(
         self, tool: str, snap, perms: "KitToolPermissions",
     ) -> list[str]:
-        """The git config watch first (a program entry the command added to
-        the repository's config is undone), then the file journal."""
+        """The command's overlay applied first (what it changed reaches
+        the real roots), then the git config watch (a program entry the
+        command added to the repository's config is undone), then the
+        file journal of the roots no overlay held."""
         notes: list[str] = []
+        plan = getattr(snap, "overlay", None)
+        if plan is not None:
+            snap.overlay = None             # applied once
+            notes += self._journal_overlay(tool, plan, perms)
         try:
             from . import git_config_watch as _gcw
-            notes = _gcw.check(getattr(snap, "git_watch", None))
+            notes += _gcw.check(getattr(snap, "git_watch", None))
         except Exception:
-            notes = []
+            pass
         if snap is None or isinstance(snap, _GitWatchOnly):
             return notes
         return notes + self._journal_shell_file_changes(tool, snap, perms)
@@ -23247,6 +23347,9 @@ class _DocToolExecutor:
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             return err
+        _undo_refusal = _undo_store_refusal(resolved, name)
+        if _undo_refusal:
+            return _undo_refusal
         _rule_refusal = _rule_denies_path(perms, "write", resolved)
         if _rule_refusal:
             return _rule_refusal
@@ -24065,7 +24168,8 @@ class _DocToolExecutor:
         return self._run_permission_gate(
             "bash", args, perms, caged_admission=caged_admission,
             wall_limit_s=wall, calc_notes=calc_notes,
-            approval_seen=approval_seen)
+            approval_seen=approval_seen,
+            foreground_shell=name == "bash")
 
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions",
@@ -24073,8 +24177,15 @@ class _DocToolExecutor:
         wall_limit_s: Optional[float] = None,
         calc_notes: Optional[list] = None,
         approval_seen: Optional[list] = None,
+        foreground_shell: bool = False,
     ) -> Optional[str]:
         """Run the policy + callback gate. Returns error string or None.
+
+        ``foreground_shell``: the native ``bash`` tool, whose executor runs
+        the command over the workspace overlay in bypass
+        (``overlay_workspace``); only then does the trash rule let a target
+        the overlay holds pass. ``bash_background`` and every other caller
+        reach this gate as "bash" too, and keep the rule whole.
 
         ``caged_admission``: passed (an empty list) only by the native
         shell dispatch, whose executor runs the command in the cage. When
@@ -24876,12 +24987,17 @@ class _DocToolExecutor:
                 # Nobody reads a bypass command, so what it destroys must
                 # be restorable: a file the undo journal cannot hold, git
                 # does not hold and this session did not write is moved to
-                # the workspace's trash instead (unrestorable).
+                # the workspace's trash instead (unrestorable). A foreground
+                # command whose target lies in a root the overlay holds
+                # (overlay_workspace) is restorable whatever it does there.
                 from . import unrestorable as _unrestorable
                 _wd = Path(perms.workspace)
                 if args.get("cwd"):
                     _wd = _wd / str(args.get("cwd"))
-                _lost = _unrestorable.refusal(cmd, _wd, perms)
+                _lost = _unrestorable.refusal(
+                    cmd, _wd, perms,
+                    covered=(_overlay_covers(perms) if foreground_shell
+                             else None))
                 if _lost is not None:
                     return _lost
                 return self._classifier_second_opinion(perms, name, args, mode)
@@ -27284,6 +27400,14 @@ class _DocToolExecutor:
         # Read as raw bytes: a decoded pre-image stores errors="replace"
         # damage that the revert then writes into the user's file. The
         # journal caps and marks anything over 2 MB itself.
+        #
+        # In bypass over bubblewrap the command runs over an overlay of the
+        # roots instead (overlay_workspace): what it changes there is
+        # applied afterwards through the trash and is undoable at any size,
+        # so neither the pre-images nor the snapshot walk are needed there.
+        _ov = (self._overlay_plan(perms)
+               if not caged_unasked and not _is_git_push(cmd)
+               and not _is_gh_pr_create(cmd) else None)
         _pre_shell: "dict[Path, Optional[bytes]]" = {}
         try:
             for _tok in _bash_write_targets(cmd):
@@ -27293,7 +27417,7 @@ class _DocToolExecutor:
                     _tp = _tp.resolve()
                 except OSError:
                     continue
-                if _tp in _pre_shell:
+                if _tp in _pre_shell or (_ov is not None and _ov.covers(_tp)):
                     continue
                 try:
                     _pre_shell[_tp] = _tp.read_bytes() if _tp.is_file() else None
@@ -27303,7 +27427,7 @@ class _DocToolExecutor:
             _pre_shell = {}
         # Everything else it may change under the roots: an interpreter,
         # a script or a compiler writes past any reading of the text.
-        _snap = self._shell_snapshot(perms)
+        _snap = self._shell_snapshot(perms, overlay=_ov)
 
         t0 = time.monotonic()
         _pr = None
@@ -27330,20 +27454,56 @@ class _DocToolExecutor:
                 # group, no terminal, the whole group ended at exit and
                 # at the timeout. subprocess.run killed only bash itself.
                 from . import contained_run as _contained
+                from . import overlay_workspace as _ow
                 _run_argv = (_bash_isolation_argv(cmd, run_cwd, perms)
                              if not caged_unasked
                              else _bash_isolation_argv(cmd, run_cwd, perms,
                                                        caged_unasked=True))
-                if not approved:
-                    _run_argv = _unasked_share(_run_argv)
+                _plain_argv = _run_argv
+                if _ov is not None and _ow.can_wrap(_run_argv):
+                    _run_argv = _ow.wrap(_run_argv, _ov)
+                elif _ov is not None:
+                    _ov = None
+                    _snap = self._overlay_given_up(_snap, perms)
+                if _ov is None:
+                    # The gate let a target pass because an overlay would
+                    # hold it; without one the trash rule applies again.
+                    _lost = self._refusal_without_overlay(cmd, run_cwd, perms)
+                    if _lost is not None:
+                        return json.dumps({"error": _lost})
                 proc = _contained.run(
-                    _run_argv,
+                    _unasked_share(_run_argv) if not approved else _run_argv,
                     cwd=str(run_cwd),
                     env=env,
                     timeout=timeout,
                     should_stop=_probe,
                     budget=True,
                 )
+                if _ov is not None and _ow.setup_failed(_ov):
+                    # The mount failed before the command ran: nothing has
+                    # happened yet. Say so once, and run it the old way --
+                    # the shell change journal and the trash rule.
+                    _why = _ow.note_runtime_failure(proc.stderr)
+                    _record_security_event(
+                        "isolation", "bash",
+                        f"the workspace overlay could not be mounted ({_why}); "
+                        "shell changes fall back to the change journal",
+                        blocked=False)
+                    _ov = None
+                    _snap = self._overlay_given_up(_snap, perms)
+                    _lost = self._refusal_without_overlay(cmd, run_cwd, perms,
+                                                          planned=True)
+                    if _lost is not None:
+                        return json.dumps({"error": _lost})
+                    proc = _contained.run(
+                        (_unasked_share(_plain_argv) if not approved
+                         else _plain_argv),
+                        cwd=str(run_cwd),
+                        env=env,
+                        timeout=timeout,
+                        should_stop=_probe,
+                        budget=True,
+                    )
         except subprocess.TimeoutExpired:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
@@ -27401,6 +27561,10 @@ class _DocToolExecutor:
                 "description": description,
             })
         except Exception as exc:
+            # Whatever ran wrote into the overlay; apply it rather than
+            # dropping it with the layer.
+            if _ov is not None:
+                self._journal_shell_changes("bash", _snap, perms)
             return json.dumps({"error": f"command failed to start: {exc}"})
 
         elapsed = time.monotonic() - t0
@@ -27456,7 +27620,10 @@ class _DocToolExecutor:
             "cwd": self._display_path(run_cwd, perms) or ".",
         }
         if _push is None and _pr is None:
-            _wrap_err = _note_wrap_failure(_run_argv, proc.returncode,
+            # The bubblewrap argv, also where the overlay helper started
+            # it: the helper execs bwrap, so bwrap's own failure reads the
+            # same.
+            _wrap_err = _note_wrap_failure(_plain_argv, proc.returncode,
                                            proc.stderr or "")
             if _wrap_err:
                 payload["error"] = (
@@ -31327,10 +31494,59 @@ _GIT_READ_ONLY_IN_THE_SANDBOX = ("hooks", "config", "config.worktree", "info")
 
 class _GitWatchOnly:
     """A shell snapshot that holds only the git config watch (the file
-    snapshot could not be taken)."""
+    snapshot could not be taken, or the overlay holds every root)."""
 
     def __init__(self, git_watch):
         self.git_watch = git_watch
+        self.overlay = None
+
+
+#: (session, root) whose "not overlaid" reason was already said.
+_OVERLAY_SAID: set = set()
+
+
+def _overlay_roots(perms) -> "tuple[list[str], dict]":
+    """The roots a foreground bash command of this session runs over an
+    overlay of (overlay_workspace), and {root: reason} for those left out.
+
+    Only in bypassPermissions, and only where the command's cage is
+    bubblewrap's full filesystem cage (the decision _bash_isolation_argv
+    builds from); read-only and calc roots and the session scratch are
+    never overlaid. ([], {}) wherever it does not apply. Never raises."""
+    try:
+        if str(getattr(perms, "mode", "") or "") != "bypassPermissions":
+            return [], {}
+        from . import overlay_workspace as _ow
+        if not _ow.enabled():
+            return [], {}
+        kind, mode = _bash_isolation_decision(perms, None)
+        if kind != "bwrap" or mode == "container":
+            return [], {}
+        skip = (tuple(getattr(perms, "read_only_workspace_dirs", ()) or ())
+                + tuple(getattr(perms, "confirm_write_dirs", ()) or ()))
+        try:
+            scratch = (_session_scratch_dir(),)
+        except Exception:
+            scratch = ()
+        return _ow.eligible_roots(perms.all_workspace_roots(), skip=skip,
+                                  exclude=scratch)
+    except Exception:
+        return [], {}
+
+
+def _overlay_covers(perms):
+    """A predicate naming the paths a foreground bash command's overlay
+    holds, or None where no overlay runs. For the trash refusal."""
+    roots, _left = _overlay_roots(perms)
+    if not roots:
+        return None
+
+    def covers(path) -> bool:
+        p = os.path.join(os.path.realpath(os.path.dirname(str(path))),
+                         os.path.basename(str(path)))
+        return any(p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+                   for r in roots)
+    return covers
 
 
 def _git_metadata_roots(workspace) -> list[str]:
@@ -31646,9 +31862,16 @@ def _seatbelt_argv(plain: list[str], perms, extra_write=()) -> list[str]:
                                                    "HTTP_PROXY", "HTTPS_PROXY")]
         except Exception:
             mode = "none"
+    # The undo store and the overlay layers of each root, made or not yet.
+    try:
+        from . import overlay_workspace as _ow
+        undo_dirs = [p for r in perms.all_workspace_roots()
+                     for p in _ow.protected(Path(r).resolve())]
+    except Exception:
+        undo_dirs = []
     prof = _sb.profile(write_roots=roots + [tmp], hide=_home_secret_paths(),
                        allow_sockets=roots + [tmp], net_mode=mode, proxy_port=port,
-                       write_deny=hook_dirs)
+                       write_deny=hook_dirs + undo_dirs)
     return env_prefix + _sb.argv(plain, prof)
 
 
@@ -32114,15 +32337,55 @@ def _process_cage_options() -> list[str]:
     return opts
 
 
-def _in_process_cage(argv: list[str], run_cwd) -> list[str]:
+def _undo_store_binds(perms) -> list[str]:
+    """bwrap options binding each root's undo store and overlay layers
+    (``overlay_workspace.protected``) read-only, where they exist: what
+    ``undo_changes`` restores from is out of reach of every command, run
+    over the overlay or not. The trash's day folders stay writable (the
+    trash refusal tells the agent to move a file there). Never raises."""
+    out: list[str] = []
+    try:
+        from . import overlay_workspace as _ow
+        for r in perms.all_workspace_roots():
+            for p in _ow.protected(Path(r).resolve()):
+                if os.path.isdir(p) and not os.path.islink(p) and \
+                        not os.path.islink(os.path.dirname(p)):
+                    out += ["--ro-bind-try", p, p]
+    except Exception:
+        pass
+    return out
+
+
+def _undo_store_refusal(resolved, tool: str) -> Optional[str]:
+    """The refusal for a write tool, or a shell write target, inside a
+    root's undo store or overlay layers; None elsewhere. In every mode:
+    the originals there are what undo_changes renames back, and DELFIN
+    changes them itself, outside every cage."""
+    try:
+        from . import overlay_workspace as _ow
+        if not _ow.is_protected(resolved):
+            return None
+    except Exception:
+        return None
+    _record_security_event("undo_store_write", tool, str(resolved)[:160],
+                           blocked=True)
+    return ("error: '.delfin-trash/.undo' and '.delfin-trash/.layers' hold "
+            "what undo_changes restores from; no tool writes there. To take "
+            "a change back, call undo_changes. To put a file aside, move it "
+            "into the trash's day folder (.delfin-trash/<UTC date>/).")
+
+
+def _in_process_cage(argv: list[str], run_cwd, perms=None) -> list[str]:
     """``argv`` inside the process cage, with the filesystem as it is. Where
     bwrap cannot build the cage (not where the terminal turned it off), the
-    socket guard keeps the session doors shut instead."""
+    socket guard keeps the session doors shut instead. With ``perms`` the
+    undo store is bound read-only here too (``_undo_store_binds``)."""
     if not _process_cage_enabled():
         if os.environ.get(_PROCESS_CAGE_ENV, "").strip().lower() == "off":
             return argv
         return _guard_without_cage(argv)
     return ["bwrap", "--dev-bind", "/", "/", "--proc", "/proc",
+            *(_undo_store_binds(perms) if perms is not None else ()),
             *_process_cage_options(),
             "--chdir", str(Path(run_cwd).resolve()), *argv]
 
@@ -32941,7 +33204,7 @@ def _bash_isolation_argv(
             mode = "bwrap"
         elif kind == "landlock":
             _announce_isolation_via_landlock("locked session")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd, perms)
         elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         else:
@@ -32959,7 +33222,7 @@ def _bash_isolation_argv(
             # approved this one command unconfined ([NO ISOLATION] in the
             # bash gate), which is a decision about this command only.
             if _take_unconfined_approval(perms, cmd):
-                return _in_process_cage(plain, run_cwd)
+                return _in_process_cage(plain, run_cwd, perms)
             return _refusal_argv(_REFUSAL_LOCKED)
     elif mode == "auto":
         # Wherever this host can actually hold a command, not only in the
@@ -32980,7 +33243,7 @@ def _bash_isolation_argv(
             _announce_isolation_via_landlock(
                 "unattended (bypass) run"
                 if perm_mode == "bypassPermissions" else "attended session")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write), run_cwd, perms)
         elif kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         elif perm_mode == "bypassPermissions":
@@ -32993,26 +33256,26 @@ def _bash_isolation_argv(
             # scope makes, where refusing IS the answer. The banner is
             # what tells the user which of the two they have. Its network
             # is still held where the socket guard works.
-            return _in_process_cage(_network_only(plain, perms), run_cwd)
+            return _in_process_cage(_network_only(plain, perms), run_cwd, perms)
     if mode == "bwrap" and kind != "bwrap":
         # Isolation was asked for by name. Landlock gives the same promise;
         # without it the command is refused rather than run without.
         if kind == "landlock":
             _announce_isolation_via_landlock("forced isolation")
-            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd)
+            return _in_process_cage(_landlock_argv(plain, perms, extra_write, strict=True), run_cwd, perms)
         if kind == "seatbelt":
             return _seatbelt_argv(plain, perms, extra_write)
         # Unless the user approved this one command unconfined ([NO
         # ISOLATION] in the bash gate), a decision about this command only.
         if _take_unconfined_approval(perms, cmd):
-            return _in_process_cage(plain, run_cwd)
+            return _in_process_cage(plain, run_cwd, perms)
         return _refusal_argv(_REFUSAL_FORCED)
     if kind != "bwrap":
         # "off" (or a mode naming no layer): a plain shell -- never in
         # bypass, where nobody reads the command before it runs.
         if str(getattr(perms, "mode", "") or "").strip() == "bypassPermissions":
             return _refusal_argv(_REFUSAL_BYPASS)
-        return _in_process_cage(plain, run_cwd)
+        return _in_process_cage(plain, run_cwd, perms)
 
     try:
         from delfin.agent.sandbox import _HOME_SECRET_DIRS
@@ -33109,6 +33372,8 @@ def _bash_isolation_argv(
     for g in git_roots:
         for name in _GIT_READ_ONLY_IN_THE_SANDBOX:
             args += ["--ro-bind-try", str(Path(g) / name), str(Path(g) / name)]
+    # What undo_changes restores from: read-only for every command.
+    args += _undo_store_binds(perms)
     if caged_unasked:
         # Nobody saw this command. The files whose write is asked about in
         # every mode (git metadata, CI and workspace configuration, the
