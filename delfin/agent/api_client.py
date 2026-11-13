@@ -17258,11 +17258,11 @@ def _observe_read_urls(
 ) -> None:
     """Record URLs a tool result demonstrably showed this turn.
 
-    Three sources: web_search hit ``url`` fields; the exact ``url`` a
-    web_fetch requested (a refused/failed fetch still names the address it
-    was pointed at, so the model can honestly cite "the page I could not
-    read"); and every http(s):// address inside the content of a file the
-    model read, grepped or shell-read. The web payload arrives wrapped in
+    Three sources: web_search hit ``url`` fields; the ``url`` of a
+    web_fetch that returned the page (a refused or failed fetch showed
+    nothing of it, so it grounds nothing: an answer citing it as a source
+    would otherwise pass); and every http(s):// address inside the content
+    of a file the model read, grepped or shell-read. The web payload arrives wrapped in
     the untrusted fence (web_tools payloads route through _wrap_untrusted),
     so a bare JSON parse is tried first and the fenced form next.
 
@@ -17283,7 +17283,9 @@ def _observe_read_urls(
                     u = (hit.get("url") if isinstance(hit, dict) else None)
                     if isinstance(u, str) and u.strip():
                         observed_urls.add(u.strip())
-            else:  # web_fetch: the fetched URL itself, success or error
+            else:  # web_fetch: the fetched URL, only when the page came back
+                if data.get("error"):
+                    return
                 u = data.get("url")
                 if isinstance(u, str) and u.strip():
                     observed_urls.add(u.strip())

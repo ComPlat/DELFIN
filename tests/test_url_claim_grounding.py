@@ -138,13 +138,14 @@ def test_web_fetch_url_is_observed():
     assert obs == {"https://docs.python.org/3/"}
 
 
-def test_web_fetch_error_still_observes_the_fetched_url():
-    # A refused/failed fetch names the URL that was actually requested; the
-    # model can still truthfully cite "the page at X (which I could not read)".
+def test_a_failed_fetch_grounds_no_url():
+    # A refused/failed fetch showed the model nothing of the page: an answer
+    # that cites it as a source would pass the guard. An honest "I could not
+    # open X" gets the caveat, which is true.
     obs: set = set()
     result = json.dumps({"error": "HTTP 403", "url": "https://denied.example/"})
     A._observe_read_urls(obs, "web_fetch", {"url": "https://denied.example/"}, result)
-    assert obs == {"https://denied.example/"}
+    assert obs == set()
 
 
 def test_urls_in_a_read_file_are_observed():

@@ -2372,8 +2372,8 @@ def scan_for_ungrounded_location_claims(
 # demonstrably came out of this session's tool results):
 #
 #   a URL is ungrounded unless its NORMALIZED form is in the ledger. The
-#   ledger holds -- web_search hit ``url`` fields, the exact ``url`` a
-#   web_fetch requested (success or error both name it), and every
+#   ledger holds -- web_search hit ``url`` fields, the ``url`` of a
+#   web_fetch that returned the page (a failed fetch grounds nothing), and every
 #   http(s):// address seen in a file the model read or grepped this
 #   session. Comparison is normalized (scheme+host+path, fragment and
 #   trailing slash/punctuation dropped) so ``x/``, ``x/.`` and ``x#frag``
