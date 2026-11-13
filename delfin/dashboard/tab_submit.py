@@ -2143,25 +2143,25 @@ def create_tab(ctx):
         # arrives after the drawing rather than before it.
         widgets.HBox([submit_draw_open_btn, submit_draw_get_btn,
                       submit_draw_update_btn],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         submit_draw_frame, submit_draw_sync, submit_draw_tools,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         widgets.HBox([build_complex_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         manta_settings_row,
         # MANTA button sits directly UNDER its settings; the external
         # metal-complex constructors stand beside it as equals.
         widgets.HBox([manta_button, architector_button, molsimplify_button, mace_button,
                       rxembed_button, molassembler_button, metallogen_button],
-                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+                     layout=widgets.Layout(gap='10px', flex_flow='row wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,
         widgets.HBox(
             [smiles_prev_button, smiles_preview_label, smiles_next_button],
-            layout=widgets.Layout(gap='2px', align_items='center', flex_wrap='wrap'),
+            layout=widgets.Layout(gap='2px', align_items='center', flex_flow='row wrap'),
         ),
         smiles_batch_output,
         construction_batch_panel,
@@ -2169,7 +2169,7 @@ def create_tab(ctx):
         widgets.HTML('<b>CONTROL.txt:</b>'),
         widgets.HBox([goat_method_label, goat_method_widget,
                       goat_model_label, goat_model_widget],
-                     layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center')),
+                     layout=widgets.Layout(gap='8px', flex_flow='row wrap', align_items='center')),
         goat_method_status,
         control_widget, spacer,
         widgets.HBox([validate_button, submit_button]),
@@ -2181,7 +2181,7 @@ def create_tab(ctx):
 
     xyz_copy_row = widgets.HBox(
         [xyz_copy_btn, xyz_copy_status],
-        layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
+        layout=widgets.Layout(gap='6px', align_items='center', flex_flow='row wrap'),
     )
     # What travels into the overlay, and what it is once it is there. These are
     # the same names the ORCA Builder, the Calculations browser and the Archive
@@ -2220,6 +2220,17 @@ def create_tab(ctx):
     xyz_copy_row.add_class('delfin-structure-fs-toolbar')
     mol_output.add_class('delfin-structure-fs-viewer')
 
+    def _form_row(children):
+        """One row of a small job form (GOAT, CO2, GUPPY, Fukui): a grid row
+        of equal columns (submit-form-grid in the tab's CSS), so its labels,
+        fields and buttons start where those of every other form row do.
+        Sized to their own labels, the fields of neighbouring rows started
+        at different places."""
+        row = widgets.HBox(list(children),
+                           layout=widgets.Layout(gap='8px', align_items='center'))
+        row.add_class('submit-form-grid')
+        return row
+
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'),
         submit_manip_toolbar, mol_viewer_stack, isomer_nav_row, xyz_copy_row,
@@ -2227,50 +2238,24 @@ def create_tab(ctx):
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
         widgets.VBox([
-            widgets.HBox(
-                [
-                    only_goat_charge,
-                    only_goat_solvent,
-                    only_goat_smiles_converter,
-                ],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
-            widgets.HBox(
-                [
-                    only_goat_pal,
-                    only_goat_maxcore,
-                    only_goat_time,
-                    only_goat_submit_button,
-                ],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
+            _form_row([only_goat_charge, only_goat_solvent, only_goat_smiles_converter]),
+            _form_row([only_goat_pal, only_goat_maxcore, only_goat_time,
+                       only_goat_submit_button]),
         ], layout=widgets.Layout(gap='8px')),
         only_goat_output,
         spacer_large,
         widgets.HTML('<b>CO2 Coordinator:</b>'),
-        widgets.HBox(
-            [co2_species_delta, co2_submit_button],
-            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-        ),
+        _form_row([co2_species_delta, co2_submit_button]),
         co2_output,
         spacer_large,
         widgets.HTML('<b>GUPPY:</b>'),
-        widgets.HBox(
-            [guppy_pal, guppy_goat_topk, guppy_timeout, guppy_submit_button],
-            layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-        ),
+        _form_row([guppy_pal, guppy_goat_topk, guppy_timeout, guppy_submit_button]),
         guppy_output,
         spacer_large,
         widgets.HTML('<b>Fukui Indices (atomic):</b>'),
         widgets.VBox([
-            widgets.HBox(
-                [fukui_skip_cubes],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
-            widgets.HBox(
-                [fukui_pal, fukui_maxcore, fukui_time_limit, fukui_submit_button],
-                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
-            ),
+            _form_row([fukui_skip_cubes]),
+            _form_row([fukui_pal, fukui_maxcore, fukui_time_limit, fukui_submit_button]),
         ], layout=widgets.Layout(gap='8px')),
         fukui_output,
     ], layout=widgets.Layout(
@@ -2294,6 +2279,23 @@ def create_tab(ctx):
     submit_css = widgets.HTML(
         """
         <style>
+        /* The small job forms (_form_row): equal columns, three of which fit
+           the right-hand pane at 1366 px; each field fills its cell (its
+           inline width was sized for a flex row), each label at least
+           84 px, so inputs line up from row to row. */
+        .widget-hbox.submit-form-grid { display: grid;
+            grid-template-columns: repeat(auto-fill, 190px);
+            gap: 8px 12px; align-items: center; }
+        .widget-hbox.submit-form-grid > .jupyter-widgets { width: auto !important;
+            min-width: 0; margin: 0; }
+        .widget-hbox.submit-form-grid .widget-label { min-width: 84px; }
+        /* A narrow window (a phone, a tall narrow window): form above the
+           preview, each the full width. Side by side at 390 px each pane got
+           ~170 px and the preview's panel painted over the form; at 900 px
+           the form's left pane cut its own buttons. */
+        @media (max-width: 960px) {
+            .submit-split-root.widget-hbox { flex-direction: column !important; }
+            .submit-split-root > .submit-split-pane { flex: 0 0 auto !important; width: 100% !important; max-width: 100% !important; } }
         .submit-split-root, .submit-split-root * {
             box-sizing: border-box;
         }

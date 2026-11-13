@@ -88,7 +88,14 @@ def main(argv=None) -> int:
         return 0
     if args.cmd == "pending":
         from . import approvals
-        _print(approvals.pending())
+        from delfin.agent import irreversible
+        # What the person reads before `lab approve ID`: the value is set
+        # on real hardware, and setting it back does not undo it.
+        _print([{**rec, "cannot_be_undone": irreversible.statement(
+                    irreversible.lab_consequence(
+                        rec.get("device", "?"), rec.get("channel", "?"),
+                        rec.get("value", "?"), rec.get("unit")))}
+                for rec in approvals.pending()])
         return 0
     if args.cmd == "status":
         from . import estop
