@@ -151,14 +151,115 @@ def _list_parts(command: str):
     return None if any(not p for p in parts) else parts
 
 
+# Read heads a list may hold beyond the plain-read floor, each with the
+# only options it takes: short flags without a value, short flags that
+# take one (attached or the next word), long options (``--x`` or
+# ``--x=v``), and how many operands. Any other option leaves the command
+# with the model. A deny list would have to know every option that runs
+# or writes; these did not need a shell operator: ``git grep -O`` opens
+# each match in a "pager" (runs it), ``uniq IN OUT`` writes OUT, ``sort
+# -o`` writes (also as ``-uo``), ``sort --compress-program`` and ``rg
+# --pre`` run a program, ``rg -z`` runs decompressors, ``rg -L`` follows
+# links out of the tree.
+_HeadOptions = namedtuple("_HeadOptions",
+                          "short short_value long max_operands")
+_LISTED_READ_HEADS = {
+    "git grep": _HeadOptions(
+        short=frozenset("nilLcvwhHEFGPIoqz"),
+        short_value=frozenset("eABCm"),
+        long=frozenset({
+            "--line-number", "--ignore-case", "--files-with-matches",
+            "--files-without-match", "--count", "--invert-match",
+            "--word-regexp", "--extended-regexp", "--fixed-strings",
+            "--basic-regexp", "--perl-regexp", "--only-matching", "--quiet",
+            "--heading", "--break", "--column", "--cached", "--untracked",
+            "--name-only", "--full-name", "--null", "--and", "--or", "--not",
+            "--all-match", "--after-context", "--before-context",
+            "--context", "--max-count", "--max-depth"}),
+        max_operands=None),
+    "sort": _HeadOptions(
+        short=frozenset("bdfghiMnRrsuVcz"),
+        short_value=frozenset("kt"),
+        long=frozenset({
+            "--ignore-leading-blanks", "--dictionary-order", "--ignore-case",
+            "--general-numeric-sort", "--human-numeric-sort",
+            "--ignore-nonprinting", "--month-sort", "--numeric-sort",
+            "--reverse", "--version-sort", "--stable", "--unique", "--check",
+            "--zero-terminated", "--key", "--field-separator"}),
+        max_operands=None),
+    "uniq": _HeadOptions(
+        short=frozenset("cdDiuz"),
+        short_value=frozenset("fsw"),
+        long=frozenset({
+            "--count", "--repeated", "--unique", "--ignore-case",
+            "--zero-terminated", "--skip-fields", "--skip-chars",
+            "--check-chars"}),
+        # The second operand is the file uniq writes.
+        max_operands=1),
+    "rg": _HeadOptions(
+        short=frozenset("nNiSswvlcFoqHIUux"),
+        short_value=frozenset("egtTABCmM"),
+        long=frozenset({
+            "--line-number", "--no-line-number", "--ignore-case",
+            "--smart-case", "--case-sensitive", "--word-regexp",
+            "--invert-match", "--files-with-matches", "--count",
+            "--fixed-strings", "--only-matching", "--quiet", "--glob",
+            "--iglob", "--type", "--type-not", "--hidden", "--no-ignore",
+            "--heading", "--no-heading", "--with-filename", "--no-filename",
+            "--column", "--vimgrep", "--json", "--multiline",
+            "--after-context", "--before-context", "--context",
+            "--max-count", "--max-columns", "--max-depth", "--sort",
+            "--stats", "--regexp"}),
+        max_operands=None),
+}
+
+
+def _listed_read_head(words: list) -> bool:
+    """Whether *words* (one list part, shell-split) is a listed read head
+    with only its listed options and at most its operand count.
+
+    A value an option takes (``-k 2``, ``-A3``, ``--glob=*.py``) is no
+    operand; after ``--`` every word is one. A long option the head does
+    not list -- also a valid one -- returns False: the model judges it."""
+    if words[:2] == ["git", "grep"]:
+        spec, args = _LISTED_READ_HEADS["git grep"], words[2:]
+    elif words and words[0] in ("sort", "uniq", "rg"):
+        spec, args = _LISTED_READ_HEADS[words[0]], words[1:]
+    else:
+        return False
+    operands = 0
+    i = 0
+    while i < len(args):
+        w = args[i]
+        if w == "--":
+            operands += len(args) - i - 1
+            break
+        if w.startswith("--"):
+            if w.split("=", 1)[0] not in spec.long:
+                return False
+        elif w.startswith("-") and len(w) > 1:
+            for j, ch in enumerate(w[1:], start=1):
+                if ch in spec.short_value:
+                    if j == len(w) - 1:
+                        i += 1      # the value is the next word
+                    break
+                if ch not in spec.short:
+                    return False
+        else:
+            operands += 1
+        i += 1
+    return spec.max_operands is None or operands <= spec.max_operands
+
+
 def _compound_read_routine(command: str) -> Verdict | None:
     """A ``| && || ;`` list whose every part is a plain read.
 
     Each part alone passes ``action_classifier._bash_is_plain_read`` and
     never reaches the model; joining reads adds no write and no program
     beyond the parts. Checked per part: the floor, no find runner, and
-    two additions -- ``set -o pipefail`` and ``sed -n N,Mp`` reading the
-    pipe. ``$`` and backticks end the shape anywhere, quoted or not
+    three additions -- ``set -o pipefail``, ``sed -n N,Mp`` reading the
+    pipe, and sort/uniq/rg/git grep with only their listed options
+    (_listed_read_head). ``$`` and backticks end the shape anywhere, quoted or not
     (expansion inside double quotes; a single-quoted ``$`` is rare
     enough to stay judged). Measured: 37 % of the bash commands judged
     by a model on 2026-11-11 had this shape.
@@ -180,6 +281,8 @@ def _compound_read_routine(command: str) -> Verdict | None:
             continue
         if (n > 0 and len(words) == 3 and words[:2] == ["sed", "-n"]
                 and _SED_STDIN_RANGE.fullmatch(words[2])):
+            continue
+        if _listed_read_head(words):
             continue
         if not _ac._bash_is_plain_read(part):
             return None
