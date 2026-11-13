@@ -477,8 +477,14 @@ def resume_kernel_manager_class(base: type) -> type:
                 # agent service. A page that said it was closing is not
                 # held otherwise (2026-11-13: no hidden holding) -- its
                 # sessions end with it. The clock starts again so the grace
-                # is served after the turn.
-                self._delfin_unwatched()[kernel_id] = (time.monotonic(), had_window)
+                # is served after the turn -- and a window that said it was
+                # closing stays one: its close moves with the clock, or it
+                # would read as a dropped connection (15 min) afterwards.
+                closed = self._delfin_said_closed(kernel_id)
+                now = time.monotonic()
+                self._delfin_unwatched()[kernel_id] = (now, had_window)
+                if closed:
+                    self._delfin_closed()[kernel_id] = now
                 if kernel_id not in self._delfin_waiting_for_turn:
                     self._delfin_waiting_for_turn.add(kernel_id)
                     self.log.warning(

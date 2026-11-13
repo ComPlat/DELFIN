@@ -221,11 +221,14 @@ def _connect() -> Any:
 
 def hand_over(*, wait_pid: int = 0, wait_s: float = WAIT_PID_S,
               connect: Optional[Callable[[], Any]] = None,
-              say: Callable[[str], None] = lambda _line: None) -> list[dict]:
+              say: Callable[[str], None] = lambda _line: None,
+              only: str = "") -> list[dict]:
     """Resume in the agent service every kept session whose kernel ended.
 
     ``wait_pid``: first wait (up to ``wait_s``) for that process to end --
-    the kernel this was started from. Returns one row per record looked
+    the kernel this was started from. ``only``: just that session, now,
+    whether or not its kernel still runs -- closed with x and "Keep
+    running" its tab has let go of it. Returns one row per record looked
     at: ``session_id`` and ``result`` (``resumed``, ``dropped: <why>``,
     ``failed: <why>``, ``held``: its kernel still runs).
     """
@@ -237,7 +240,9 @@ def hand_over(*, wait_pid: int = 0, wait_s: float = WAIT_PID_S,
     client = None
     for record in records():
         sid = str(record["session_id"])
-        if not holder_gone(record):
+        if only and sid != only:
+            continue
+        if not only and not holder_gone(record):
             rows.append({"session_id": sid, "result": "held"})
             continue
         path = Path(record["_path"])
@@ -306,7 +311,7 @@ def _child_env() -> dict:
     return env
 
 
-def spawn_hand_over(*, wait_pid: int = 0) -> Optional[subprocess.Popen]:
+def spawn_hand_over(*, wait_pid: int = 0, only: str = "") -> Optional[subprocess.Popen]:
     """Run :func:`hand_over` in a process of its own, detached: the caller
     (a kernel on its way out, a server about to stop) does not wait, and
     the hand-over is not ended with it. None when nothing is armed."""
@@ -316,6 +321,8 @@ def spawn_hand_over(*, wait_pid: int = 0) -> Optional[subprocess.Popen]:
             "hand-over"]
     if wait_pid:
         argv += ["--wait-pid", str(int(wait_pid))]
+    if only:
+        argv += ["--only", str(only)]
     log = record_dir() / "hand_over.log"
     try:
         out = open(log, "ab")
@@ -357,9 +364,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     h = sub.add_parser("hand-over", help="resume kept sessions whose kernel ended")
     h.add_argument("--wait-pid", type=int, default=0)
+    h.add_argument("--only", default="", help="just this session, now")
     args = p.parse_args(argv)
     if args.cmd == "hand-over":
-        rows = hand_over(wait_pid=args.wait_pid, say=lambda line: print(line, flush=True))
+        rows = hand_over(wait_pid=args.wait_pid, only=args.only,
+                         say=lambda line: print(line, flush=True))
         print(json.dumps({"at": time.time(), "rows": rows}), flush=True)
     return 0
 

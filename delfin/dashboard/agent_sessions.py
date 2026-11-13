@@ -251,6 +251,14 @@ _SIDEBAR_CSS = """<style>
 .delfin-kept-pill { display: inline-block; margin-right: 5px; padding: 0 6px;
     border-radius: 8px; font-size: 10px; line-height: 15px; font-weight: 600;
     background: #dcfce7; color: #166534; vertical-align: 1px; }
+.delfin-bg-tag { display: inline-block; margin-right: 5px; padding: 0 6px;
+    border-radius: 8px; font-size: 10px; line-height: 15px; font-weight: 600;
+    background: #e2e8f0; color: #475569; vertical-align: 1px; }
+.delfin-close-ask { flex-wrap: wrap; gap: 4px; align-items: center; padding: 4px 0 2px; }
+.delfin-close-ask .widget-html-content { font-size: 11px; color: #334155; }
+.delfin-close-ask .jupyter-button { width: auto !important; height: 22px !important;
+    padding: 0 8px !important; font-size: 11px; border-radius: 6px; }
+.delfin-close-ask-end { color: #b91c1c !important; }
 .delfin-list-divider { font-size: 10px; font-weight: 600; letter-spacing: .06em;
     text-transform: uppercase; color: #94a3b8; padding: 10px 8px 3px; }
 .delfin-session-list .delfin-session-path .delfin-state-word { color: #475569; }
@@ -874,6 +882,12 @@ KEPT_PILL = ('<span class="delfin-kept-pill" title="Keep session is on: it keeps
              'running after this dashboard closes">kept</span>')
 
 
+#: The mark of a run nobody started by hand: a swarm, a schedule, a
+#: headless start (a worktree checkout of one).
+BACKGROUND_TAG = ('<span class="delfin-bg-tag" title="A background run: started by a '
+                  'swarm, a schedule or headless, not in a window">background</span>')
+
+
 #: Markup a title may open with that says nothing about the session.
 _LABEL_STRIP = re.compile(r"^[\s>#*`\-=|)\]]+")
 #: Only backticks and asterisks. NOT `_` or `~`: markdown uses them for
@@ -1081,6 +1095,9 @@ def load_open_sessions() -> list[dict]:
         if row.get("live"):
             # Ran in the agent service: reopened as a view on it.
             item["live"] = True
+        if row.get("front"):
+            # The one on screen when the dashboard closed: in front again.
+            item["front"] = True
         out.append(item)
     return out[:_MAX_OPEN]
 
@@ -2238,6 +2255,8 @@ class RunningPanel:
                 if r["idle"]:
                     bits.append(f'<span class="delfin-running-idle">{html.escape(r["idle"])}</span>')
                 value = " · ".join(b for b in bits if b)
+                if group is headless:
+                    value = BACKGROUND_TAG + value
                 if self.keep_of(sid):
                     value = KEPT_PILL + value
                 if row["info"].value != value:
@@ -2389,10 +2408,6 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     resume_rows_box = _classed(widgets.VBox(), "delfin-resume-rows", "delfin-resume-pop")
     resume_box = _classed(widgets.VBox([resume_search, resume_rows_box]),
                           "delfin-resume-combo")
-    # The one list's two separators: what does not run, and the runs
-    # nobody started by hand (a swarm, an unattended schedule).
-    stopped_divider = _classed(widgets.HTML("Not running"), "delfin-list-divider")
-    background_divider = _classed(widgets.HTML("Background runs"), "delfin-list-divider")
     list_lock = threading.RLock()
     # The message box's suggestions (_COMPLETE_JS): what is typed up to the
     # caret comes in here, the answer goes out in complete_result.
@@ -2658,6 +2673,34 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         children.insert(at, switch)
         row.children = tuple(children)
 
+    def _add_close_ask(rec: dict) -> None:
+        """Under the row, hidden until x is pressed on a running session
+        with Keep session on: keep it running in the background, or end
+        it. Either way it leaves the list."""
+        keep_btn = _classed(widgets.Button(description="Keep running", tooltip=(
+            "It leaves this list and goes on in the agent service; the list "
+            "shows it there, the terminal and the phone can open it")),
+            "delfin-close-ask-keep")
+        end_btn = _classed(widgets.Button(description="End it", tooltip=(
+            "It ends now; it stays saved and can be resumed")), "delfin-close-ask-end")
+        no_btn = _classed(widgets.Button(description="Cancel"), "delfin-close-ask-cancel")
+        ask = _classed(widgets.HBox([
+            _classed(widgets.HTML("Keep it running in the background?"), "delfin-close-ask-q"),
+            keep_btn, end_btn, no_btn], layout=widgets.Layout(display="none")),
+            "delfin-close-ask")
+        keep_btn.on_click(lambda _b, _key=rec["key"]: close_session(_key, how="keep"))
+        end_btn.on_click(lambda _b, _key=rec["key"]: close_session(_key, how="end"))
+
+        def _cancel(_b=None):
+            ask.layout.display = "none"
+
+        no_btn.on_click(_cancel)
+        rec["close_ask"] = ask
+        text = next((c for c in rec["row"].children
+                     if "delfin-session-text" in getattr(c, "_dom_classes", ())), None)
+        if text is not None:
+            text.children = tuple(text.children) + (ask,)
+
     def _refresh_row_info(rec: dict) -> None:
         """The row's second line: its folder, and "kept" when it runs on
         after this dashboard closes."""
@@ -2679,6 +2722,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     def _rec_running(rec: dict) -> bool:
         """A session open here runs -- in this kernel, or in the service
         unless the service has it asleep or ended it."""
+        if rec.get("dormant"):
+            return False                # open, but it did not keep working
         if not rec.get("live"):
             return True
         from delfin.dashboard import live_sessions as LS
@@ -2709,17 +2754,12 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 _set_class(rec["row"], "delfin-state-running", on)
                 _set_class(rec["row"], "delfin-state-stopped", not on)
                 (running if on else stopped).append(rec["row"])
-            bg_running, bg_stopped = [], []
+            # One flat list, no headers: running first (whoever started
+            # them), then what does not run; a background run is tagged in
+            # its own row (RunningPanel), not set apart.
             for row in running_panel.ordered():
-                if row["headless"]:
-                    (bg_running if row["running"] else bg_stopped).append(row["box"])
-                else:
-                    (running if row["running"] else stopped).append(row["box"])
-            children = list(running)
-            if stopped:
-                children += [stopped_divider, *stopped]
-            if bg_running or bg_stopped:
-                children += [background_divider, *bg_running, *bg_stopped]
+                (running if row["running"] else stopped).append(row["box"])
+            children = running + stopped
             if tuple(list_box.children) != tuple(children):
                 list_box.children = tuple(children)
 
@@ -2736,7 +2776,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         rec = _find(key)
         if rec is None:
             return
+        if rec.get("dormant"):
+            _wake(rec)                 # loaded from its record, in its place
+            return
         view["active"] = key
+        _persist()
         rec["unseen"] = False
         _mark(rec)
         for other in sessions:
@@ -2763,7 +2807,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             return
         save_open_sessions([
             {"session_id": sid, "workspace": rec["workspace"],
-             **({"live": True} if rec.get("live") else {})}
+             **({"live": True} if rec.get("live") else {}),
+             **({"front": True} if rec["key"] == view["active"] else {})}
             for rec in sessions for sid in [_remembered_id(rec)] if sid])
 
     def _remembered_id(rec: dict) -> str:
@@ -2998,6 +3043,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                "title_btn": title_btn, "info": info, "row": row}
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
+        _add_close_ask(rec)
         _add_keep_switch(rec, row=refs.get("controls"),
                          on=running_panel.keep_of(sid) if summary else True)
         sessions.append(rec)
@@ -3115,6 +3161,66 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 _say(f"{name} now runs in this dashboard's chat; the terminal and "
                      "the phone no longer have it.")
         return rec
+
+    def open_dormant(sid: str, workspace: str, title: str = "") -> dict:
+        """A row for an open session that does not run: its name and folder,
+        "not running", nothing loaded. A click loads it (_wake)."""
+        key = _address_for(sid)
+        name = title or session_label("", sid)
+        tab = widgets.VBox([_classed(widgets.HTML(
+            f"{html.escape(name)} is not running; loading it from its record."),
+            "delfin-session-notice")], layout=widgets.Layout(display="none"))
+        title_btn = _classed(widgets.Button(description=name, tooltip=(
+            "Not running: open it (loaded from its saved record)")), "delfin-session-title")
+        close_btn = _classed(widgets.Button(description="×", tooltip=(
+            "Remove it from this list; it stays saved and can be resumed")),
+            "delfin-session-close")
+        info = _classed(widgets.HTML(html.escape(_display_path(workspace))),
+                        "delfin-session-path")
+        row = _classed(widgets.HBox([
+            _classed(widgets.VBox([title_btn, info]), "delfin-session-text"), close_btn]),
+            "delfin-session-item")
+        rec = {"key": key, "workspace": workspace, "tab": tab, "dormant": True,
+               "session_id": sid, "title_btn": title_btn, "info": info, "row": row,
+               "refs": {"state": {"active_session_id": sid, "chat_messages": [],
+                                  "streaming": False, "engine": None}},
+               "ctx": _SessionContext(ctx, agent_workspace=workspace,
+                                      initial_session_id=sid,
+                                      agent_status_html=widgets.HTML(""))}
+        _add_close_ask(rec)
+        title_btn.on_click(lambda _b, _key=key: activate(_key))
+        close_btn.on_click(lambda _b, _key=key: close_session(_key))
+        sessions.append(rec)
+        stage.children = tuple(r["tab"] for r in sessions)
+        _render_list()
+        return rec
+
+    def _wake(rec: dict) -> Optional[dict]:
+        """A not-running row becomes the session: from the agent service
+        when it runs there (kept, picked up there), else loaded from its
+        saved record into this dashboard's full chat -- in the row's place."""
+        at = sessions.index(rec) if rec in sessions else len(sessions)
+        sessions.remove(rec)
+        sid = rec["session_id"]
+        if live["client"] is not None and running_panel.running.summary(sid):
+            new = open_from_list(sid)
+        else:
+            new = open_session(rec["workspace"], sid, in_kernel=True)
+        if new is None:
+            sessions.insert(min(at, len(sessions)), rec)
+            stage.children = tuple(r["tab"] for r in sessions)
+            _render_list()
+            return None
+        if new in sessions:
+            sessions.remove(new)
+            sessions.insert(min(at, len(sessions)), new)
+            stage.children = tuple(r["tab"] for r in sessions)
+        # The name it was listed under, until its own chat names it.
+        new["known_title"] = rec["title_btn"].description
+        if new["title_btn"].description == "New session":
+            new["title_btn"].description = new["known_title"]
+        activate(new["key"])
+        return new
 
     def _into_chat_when_idle() -> None:
         """A view waiting for its turn to end (``into_chat``) becomes the
@@ -3243,6 +3349,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         rec = {"key": key, "workspace": where, "tab": tab, "refs": refs or {},
                "ctx": session_ctx, "title_btn": title_btn, "info": info,
                "row": row, "merge_btn": merge_btn}
+        _add_close_ask(rec)
         try:
             from delfin.dashboard import kept_agent_sessions as _K
             rec["kept"] = bool(sid and _K.is_armed(sid))
@@ -3322,35 +3429,52 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         else:
             _say(f"Merge back did not apply: {out.get('message') or 'error'}")
 
-    def _end_on_close(rec: dict) -> None:
-        """Closing ends a session: a kept in-kernel one is not handed over;
-        a service session ends unless Keep session is on (then only the
-        view goes)."""
+    def _end_on_close(rec: dict, how: str = "") -> str:
+        """What x does: "asked" (a running session with Keep session on --
+        the row asks: keep it running in the background, or end it),
+        "kept" (it goes on in the agent service, out of this list's open
+        set) or "ended" (saved, ended). Not running, not kept: ended."""
+        from delfin.dashboard import kept_agent_sessions as _K
+        if not how and _rec_kept(rec) and _rec_running(rec):
+            rec["close_ask"].layout.display = ""
+            return "asked"
+        sid = rec.get("session_id") if rec.get("live") else _session_id(rec)
+        if how == "keep" and sid:
+            if not rec.get("live"):
+                _arm_kept(rec)
+                rec["_hand_over"] = sid
+            return "kept"
         if rec.get("live"):
-            if live["client"] is not None and not _rec_kept(rec):
+            if live["client"] is not None and rec.get("session_id"):
                 try:
                     live["client"].stop(rec["session_id"])
                 except Exception:
                     pass
-            return
-        from delfin.dashboard import kept_agent_sessions as _K
+            return "ended"
         for sid in {rec.get("kept_id"), _session_id(rec)} - {None, ""}:
             _K.disarm(sid)
+        return "ended"
 
-    def close_session(key: str) -> None:
-        """Close a session: it is saved, stops, and leaves the list
-        (a kept view on a service session: only the view, _end_on_close)."""
+    def close_session(key: str, how: str = "") -> None:
+        """x: the session leaves the list (and the open set). Ended, saved
+        -- or, with Keep session on and the choice made, kept running in
+        the agent service (_end_on_close)."""
         rec = _find(key)
         if rec is None:
             return
-        _end_on_close(rec)
+        done = _end_on_close(rec, how)
+        if done == "asked":
+            return
         try:
             shutdown = rec["refs"].get("shutdown")
             if callable(shutdown):
                 shutdown()
         except Exception:
             pass
-        if rec.get("live"):
+        if rec.get("_hand_over"):
+            from delfin.dashboard import kept_agent_sessions as _K
+            _K.spawn_hand_over(only=rec["_hand_over"])     # its lock is free now
+        if rec.get("live") or done == "kept":
             # Only this view goes: the session runs on in the service, its
             # worktree and its presence record are the worker's.
             sessions.remove(rec)
@@ -3405,7 +3529,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 _into_chat_when_idle()
             except Exception:
                 pass
-        for rec in sessions:
+        for rec in list(sessions):
+            if rec.get("dormant"):
+                # Not running here. One that runs in the service now (a kept
+                # session handed over a moment ago) is picked up as it is.
+                if live["client"] is not None and \
+                        running_panel.running.summary(rec["session_id"]):
+                    _wake(rec)
+                continue
             if rec.get("live"):
                 # The service's session: named, announced and messaged by
                 # its worker; its view follows the service's events.
@@ -3419,6 +3550,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 state.setdefault("_messenger_titles", {})[sid_now] = \
                     rec.pop("chosen_title")
             label = rec.get("chosen_title") or _session_title(state, sid_now)
+            if label == "New session" and rec.get("known_title"):
+                label = rec["known_title"]
             if rec["title_btn"].description != label:
                 rec["title_btn"].description = label
             _mark(rec)
@@ -3762,19 +3895,6 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             wanted = ""
     if wanted and all(row["session_id"] != wanted for row in rows):
         rows.insert(0, {"session_id": wanted, "workspace": ""})
-    def _still_open(sid: str) -> bool:
-        """Whether a remembered session still runs in a dashboard kernel --
-        a reload's old kernel within its grace, a kept dashboard -- and is
-        not on its way to the agent service."""
-        try:
-            from delfin.agent.session_store import session_lock_holder
-            from delfin.dashboard import kept_agent_sessions as _K
-            if any(r.get("session_id") == sid and _K.holder_gone(r) for r in _K.records()):
-                return False                # handed over now; listed from the service
-            return session_lock_holder(sid) is not None
-        except Exception:
-            return True
-
     _connect()
     # Kept sessions whose kernel ended without handing them over (a killed
     # server): handed over now, by a process of their own.
@@ -3784,6 +3904,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             _K.spawn_hand_over()
     except Exception:
         pass
+    front_sid = next((r["session_id"] for r in rows if r.get("front")), "")
     for row in rows[:_MAX_OPEN]:
         if live["client"] is not None and running_panel.running.summary(row["session_id"]):
             # The service runs it -- kept when this dashboard last closed.
@@ -3803,21 +3924,24 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         data = _saved_session(row["session_id"])
         if not data:
             continue                    # deleted since: nothing to reopen
-        if row["session_id"] != wanted and not _still_open(row["session_id"]):
-            # It ended with its dashboard (Keep session was off): saved,
-            # offered by the resume search, not reopened as if it had run
-            # on. A kept one runs in the agent service and is listed there.
-            continue
+        # Open when the dashboard closed, so open now: a row in its place.
+        # It did not keep working (Keep session was off): "not running",
+        # loaded from its saved record when it is clicked.
         try:
-            # Saved: resumed in the service when there is one, else here.
-            open_session(row["workspace"] or str(data.get("workspace") or ""),
-                         row["session_id"])
+            open_dormant(row["session_id"],
+                         row["workspace"] or str(data.get("workspace") or ""),
+                         session_display_name(data.get("title"), row["session_id"]))
         except Exception:
             continue
     if not sessions:
         open_session()
-    if sessions and _find(view["active"]) is None:
-        activate(sessions[-1]["key"])
+    # The one in front when it closed is in front again, loaded; else the
+    # last one.
+    in_front = next((r for r in sessions if front_sid and (
+        r.get("session_id") == front_sid or _session_id(r) == front_sid)), None)
+    in_front = in_front or (sessions[-1] if sessions else None)
+    if in_front is not None:
+        activate(in_front["key"])
     if view["start_in_service"] and live["client"] is None:
         _say(_kernel_notice())
     if wanted:

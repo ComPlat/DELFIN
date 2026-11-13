@@ -176,16 +176,39 @@ def test_a_session_without_an_id_is_armed_once_it_has_one(home):
     refs["stop_refresh"]()
 
 
-def test_closing_a_kept_session_ends_it_here(home):
+def test_closing_a_kept_session_asks_keep_running_or_end(home, monkeypatch):
+    """x on a session with Keep session on: it leaves the list either way;
+    asked first whether it goes on in the background (handed to the agent
+    service now) or ends."""
+    spawned = []
+    monkeypatch.setattr(K, "spawn_hand_over", lambda **kw: spawned.append(kw) or "proc")
     build = _Build()
     _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
-    refs["open"]()                                 # a second one, so a close leaves one
+    refs["open"]()
+    refs["open"]()
+    one, two = refs["sessions"]()[:2]
+    one["refs"]["state"]["active_session_id"] = "feedfacefeedface"
+    two["refs"]["state"]["active_session_id"] = "facefeedfacefeed"
+    for rec in (one, two):
+        refs["set_keep"](rec["key"], True)
+    refs["close"](one["key"])
+    assert one in refs["sessions"](), "asked first, not closed"
+    assert one["close_ask"].layout.display == ""
+    refs["close"](one["key"], how="keep")
+    assert one not in refs["sessions"]()
+    assert K.is_armed("feedfacefeedface") and spawned == [{"only": "feedfacefeedface"}]
+    refs["close"](two["key"], how="end")
+    assert two not in refs["sessions"]() and not K.is_armed("facefeedfacefeed")
+    refs["stop_refresh"]()
+
+
+def test_closing_a_session_not_kept_ends_it_at_once(home):
+    build = _Build()
+    _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
+    refs["open"]()
     rec = refs["sessions"]()[0]
-    rec["refs"]["state"]["active_session_id"] = "feedfacefeedface"
-    refs["set_keep"](rec["key"], True)
-    assert K.is_armed("feedfacefeedface")
     refs["close"](rec["key"])
-    assert not K.is_armed("feedfacefeedface")
+    assert rec not in refs["sessions"]()
     refs["stop_refresh"]()
 
 
@@ -222,27 +245,48 @@ def test_a_kept_service_session_taken_over_stays_kept(home, service, tui, dash, 
     refs["stop_refresh"]()
 
 
-def test_a_reopened_dashboard_brings_back_only_what_still_runs(home, monkeypatch):
-    """A remembered session not kept ended with its dashboard: the next
-    dashboard does not reopen it (it is in the resume search). One still
-    held by a live kernel -- a reload within the grace -- comes back."""
-    import json
+def _remember(home, rows):
+    AS.save_open_sessions([{"workspace": str(home / "launch"), **r} for r in rows])
 
-    import delfin.agent.session_store as store
-    (home / "open.json").write_text(json.dumps({"sessions": [
-        {"session_id": "ended0000000000a", "workspace": str(home / "launch")},
-        {"session_id": "reload000000000b", "workspace": str(home / "launch")}]}))
-    monkeypatch.setattr(AS, "load_open_sessions", lambda: [
-        {"session_id": "ended0000000000a", "workspace": str(home / "launch")},
-        {"session_id": "reload000000000b", "workspace": str(home / "launch")}])
-    monkeypatch.setattr(AS, "_saved_session", lambda sid: {"session_id": sid})
-    monkeypatch.setattr(store, "session_lock_holder",
-                        lambda sid: {"pid": 1} if sid.startswith("reload") else None)
+
+def test_every_open_session_comes_back_the_front_one_in_front(home, monkeypatch):
+    """Five open, five back: a session leaves the list only by x. Keep
+    session decides only whether it kept working; one that did not is
+    listed as not running and loaded from its saved record when clicked.
+    The one in front is loaded at once and is in front again."""
+    titles = {"aaaa000000000001": "first job", "bbbb000000000002": "second job",
+              "cccc000000000003": "third job"}
+    monkeypatch.setattr(AS, "_saved_session",
+                        lambda sid: {"session_id": sid, "title": titles.get(sid, "")})
+    _remember(home, [{"session_id": "aaaa000000000001"},
+                     {"session_id": "bbbb000000000002", "front": True},
+                     {"session_id": "cccc000000000003"}])
     build = _Build()
     _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
-    opened = [c.initial_session_id for c in build.contexts]
-    assert opened == ["reload000000000b"], opened
+    names = [r["title_btn"].description for r in refs["sessions"]()]
+    assert names == ["first job", "second job", "third job"]
+    assert [c.initial_session_id for c in build.contexts] == ["bbbb000000000002"]
+    front = refs["active"]()
+    assert front["title_btn"].description == "second job" and not front.get("dormant")
+    first = refs["sessions"]()[0]
+    assert first.get("dormant") and "delfin-state-stopped" in _classes(first["row"])
+    assert "delfin-state-running" in _classes(front["row"])
+    # A click loads it from its record, in its place.
+    first["title_btn"].click()
+    assert build.contexts[-1].initial_session_id == "aaaa000000000001"
+    assert [r["title_btn"].description for r in refs["sessions"]()] == names
+    assert refs["active"]()["title_btn"].description == "first job"
+    # x removes it from the open set; the next start has two.
+    third = refs["sessions"]()[2]
+    refs["close"](third["key"])
+    assert [r["session_id"] for r in AS.load_open_sessions()] == [
+        "aaaa000000000001", "bbbb000000000002"]
     refs["stop_refresh"]()
+    again = _Build()
+    _w, refs2 = AS.create_tab(_ctx(home), build=again, service=False)
+    assert [r["title_btn"].description for r in refs2["sessions"]()] == ["first job", "second job"]
+    assert refs2["active"]()["title_btn"].description == "first job", "the front one stays in front"
+    refs2["stop_refresh"]()
 
 
 def _kernel_mode(home, dash, monkeypatch, build):
@@ -366,9 +410,13 @@ def test_every_session_once_running_first_background_apart(home, service, tui, d
     def at(sid):
         return kids.index(panel._rows[sid]["box"])
 
-    labels = {w.value: kids.index(w) for w in kids if isinstance(w, widgets.HTML)}
-    assert kids.index(open_row) < at(awake) < labels["Not running"] < at(dozing) \
-        < labels["Background runs"] < at(background)
+    # One flat list: no section headers. Running first (whoever started
+    # them), then the ones that do not run; a background run is tagged in
+    # its own row.
+    assert not [w for w in kids if isinstance(w, widgets.HTML)], "no headers"
+    assert kids.index(open_row) < at(awake) < at(background) < at(dozing)
+    assert "delfin-bg-tag" in panel._rows[background]["info"].value
+    assert "delfin-bg-tag" not in panel._rows[awake]["info"].value
     assert "delfin-state-running" in _classes(open_row)
     assert "delfin-state-running" in _classes(panel._rows[awake]["box"])
     assert "delfin-state-stopped" in _classes(panel._rows[dozing]["box"])
