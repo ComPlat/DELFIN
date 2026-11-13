@@ -8131,7 +8131,13 @@ def create_tab(ctx):
 
     # Detect which providers are actually usable
     _available_providers: list[tuple[str, str]] = []
-    if _cli_available or _provider_key("ANTHROPIC_API_KEY"):
+    # A CLI program counts only when it runs DELFIN's command line; an
+    # older one answers "unknown option" (model_setup.cli_program_problem).
+    _cli_problem = ""
+    if not _provider_key("ANTHROPIC_API_KEY") and _cli_available:
+        from delfin.agent.model_setup import cli_program_problem as _cli_prog_problem
+        _cli_problem = _cli_prog_problem()
+    if (_cli_available and not _cli_problem) or _provider_key("ANTHROPIC_API_KEY"):
         _available_providers.append(("Anthropic", "claude"))
     if _codex_cli_available or _provider_key("OPENAI_API_KEY"):
         _available_providers.append(("OpenAI", "openai"))
@@ -8169,8 +8175,12 @@ def create_tab(ctx):
                     _available_providers.append(("Ollama (local)", "ollama"))
         except Exception:
             pass
-    # Fallback: always show at least the Anthropic provider (will error with helpful message)
+    # Nothing connected: the tab shows how to connect a model (the card is
+    # placed above the chat below) and keeps one entry in the selector.
+    _no_model_card = None
     if not _available_providers:
+        from delfin.agent.model_setup import no_model_card_html
+        _no_model_card = widgets.HTML(no_model_card_html(_cli_problem))
         _available_providers.append(("Anthropic", "claude"))
 
     # -- state -------------------------------------------------------------
@@ -11686,6 +11696,7 @@ def create_tab(ctx):
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
          inspector_detail_box,
+         *([_no_model_card] if _no_model_card is not None else []),
          _chat_area,
          _input_area,
          # Then who is working (click to enter a chat), finished delegates

@@ -20,7 +20,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 
 def _program(tmp_path, *, knows_flag):
     bindir = tmp_path / "bin"
-    bindir.mkdir(exist_ok=True)
+    bindir.mkdir(parents=True, exist_ok=True)
     text = "  --include-hook-events  stream hook events\n" if knows_flag else ""
     prog = bindir / "claude"
     prog.write_text(f"#!/bin/sh\nprintf 'Usage: claude [options]\\n  -p, --print\\n{text}'\nexit 0\n")

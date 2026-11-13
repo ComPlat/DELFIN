@@ -119,6 +119,33 @@ def _provider_notes(args: argparse.Namespace) -> list[str]:
     return [note] if note else []
 
 
+def _exit_when_no_model(args: argparse.Namespace, backend: str,
+                        provider: str, model: str) -> None:
+    """Stop with how to connect a model when the settings' choice cannot run.
+
+    Input: a command that takes the settings-file defaults (``chat``) and
+    names no --backend, --provider or --model of its own, with the backend,
+    provider and model resolved from those defaults. Output: nothing when
+    model_setup.selection_problem finds the selection usable; else the
+    no-model message on stderr and exit status 2, before an engine exists.
+    A fresh install lands here: the shipped default is the CLI backend,
+    and with its program missing or too old the turn used to fail with a
+    backend error ("unknown option '--include-hook-events'").
+
+    Rejected: checking every command -- ``run``, the scheduler and the
+    benchmark pass their selection explicitly and keep their own errors.
+    """
+    if not getattr(args, "settings_defaults", False):
+        return
+    if any(getattr(args, name, "") for name in ("backend", "provider", "model")):
+        return
+    from . import model_setup
+    problem = model_setup.selection_problem(backend, provider, model)
+    if problem:
+        print(model_setup.no_model_message(problem), file=sys.stderr)
+        raise SystemExit(2)
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -137,6 +164,7 @@ def _build_engine(args: argparse.Namespace):
     backend = args.backend or fallback.get("backend", "") or "api"
     model = args.model or fallback.get("model", "")
     provider = _resolve_provider(args, fallback)
+    _exit_when_no_model(args, backend, provider, model)
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
     engine = AgentEngine(
