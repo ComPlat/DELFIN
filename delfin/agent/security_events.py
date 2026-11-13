@@ -102,6 +102,12 @@ _KINDS = {
     # A write to a known host with nobody to ask, refused because the
     # host is not named in agent.sandbox_network.upload_domains.
     "egress_upload_refused": ("📤", "Command upload refused (nobody to ask)"),
+    # A URL or search query carrying a run that looks like encoded data,
+    # with nobody to ask (web_tools.url_payload_reason).
+    "egress_payload_refused": ("📤", "URL carrying encoded data refused"),
+    # A session's bytes to one host crossed a reporting step
+    # (egress_proxy.note_sent): the first byte, 64 KiB, 1 MiB, ...
+    "egress_sent":    ("📤", "Bytes sent to a host this session"),
     # The audit log (audit_log.py): a write that failed, and a log that
     # was changed outside DELFIN between two writes.
     "audit_write_failed": ("📒", "Audit log could not be written"),
