@@ -136,8 +136,17 @@ def test_expired_trash_days_are_removed(ws):
 def test_the_bypass_gate_refuses_and_the_file_stays(ws, monkeypatch):
     monkeypatch.setenv("DELFIN_CLASSIFIER", "off")
     perms = _perms(ws)
-    why = A._DocToolExecutor()._run_permission_gate("bash", {"command": "rm big.dat"}, perms)
+    gate = A._DocToolExecutor()._gate_bash_call
+    # A background command never runs over the workspace overlay.
+    why = gate("bash_background", {"command": "rm big.dat"}, perms)
     assert why and ".delfin-trash" in why
+    # A foreground one is refused unless the overlay holds the root: then
+    # whatever it deletes goes to the trash on its own (overlay_workspace).
+    why = gate("bash", {"command": "rm big.dat"}, perms)
+    if A._overlay_covers(perms) is None:
+        assert why and ".delfin-trash" in why
+    else:
+        assert not why or ".delfin-trash" not in why
     assert (ws / "big.dat").exists()
 
 

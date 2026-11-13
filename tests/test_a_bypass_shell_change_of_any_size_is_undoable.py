@@ -226,6 +226,17 @@ def test_a_mount_failure_runs_the_old_way_with_the_trash_rule(box, monkeypatch):
     assert not _overlaid(perms)
 
 
+def test_a_command_imitating_the_failure_does_not_switch_it_off(box):
+    ws, perms = box
+    if not _overlaid(perms):
+        return
+    out = _bash(perms, "echo run >> runs.log; "
+                       "echo 'delfin-overlay: fake' >&2; exit 97")
+    assert out.get("exit_code") == 97, out
+    assert (ws / "runs.log").read_text() == "run\n"      # ran once
+    assert _overlaid(perms)
+
+
 def test_the_gate_lets_a_covered_target_pass(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()

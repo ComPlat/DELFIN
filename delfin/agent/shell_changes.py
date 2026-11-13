@@ -49,8 +49,10 @@ journalled twice.
 
 Rejected alternatives: reading every file before every command (2 000
 files: the full read each time, where the cache reads only what moved);
-inotify (Linux only, no pre-image); an overlay mount in the cage (needs
-bubblewrap, and the journal has to hold where bubblewrap does not run).
+inotify (Linux only, no pre-image). An overlay mount in the cage is the
+mechanism where bubblewrap and unprivileged overlays work, for foreground
+bypass commands (``overlay_workspace``: no size bound, the roots it holds
+are not walked here); this journal holds everywhere else.
 """
 
 from __future__ import annotations

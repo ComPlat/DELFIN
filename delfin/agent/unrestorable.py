@@ -31,8 +31,10 @@ Not seen, said here rather than implied: a deletion inside an interpreter
 or a script (``python -c``, ``./clean.sh``), a variable or a command
 substitution as the target, and an overwrite by a program that opens its
 output itself. The overlay workspace is the answer for those (every write
-of the command lands in a layer DELFIN applies afterwards); this module is
-the deterministic floor until then.
+of the command lands in a layer DELFIN applies afterwards); where it holds
+a target, this refusal steps aside for it (``covered``). This module is
+the floor wherever the overlay does not run: background commands, roots
+it cannot mount on, hosts without it.
 
 Rejected: asking the person -- bypass is the mode nobody answers, and the
 user's rule is that safety must not stop unattended work. Rejected:
@@ -358,12 +360,23 @@ def _files_under(root: Path) -> Optional[list[Path]]:
     return out
 
 
-def unrestorable(found: list[tuple[str, Path, bool]], perms) -> list[tuple[str, Path, str]]:
-    """``(verb, path, size text)`` for each target nothing could restore."""
+def unrestorable(found: list[tuple[str, Path, bool]], perms,
+                 covered=None) -> list[tuple[str, Path, str]]:
+    """``(verb, path, size text)`` for each target nothing could restore.
+
+    ``covered``: a predicate naming the paths the command's overlay
+    (``overlay_workspace``) holds; whatever it changes there goes to the
+    trash on its own and is restorable."""
     per_file, budget = _journal_limits()
     held = 0
     bad: list[tuple[str, Path, str]] = []
     for verb, path, recursive in found:
+        if covered is not None and TRASH not in path.parts:
+            try:
+                if covered(path):
+                    continue
+            except Exception:
+                pass
         if path.is_symlink() and verb != "overwrite":
             continue
         if path.is_dir():
@@ -427,6 +440,15 @@ def prepare_trash(root: Path) -> Path:
     trash = root / TRASH
     day = trash / datetime.now(timezone.utc).strftime("%Y-%m-%d")
     day.mkdir(parents=True, exist_ok=True)
+    # Ignored wherever the root sits in a repository: the exclude entry
+    # below is anchored at the repository's top, and a root that is a
+    # subdirectory of it would otherwise show its trash to `git add -A`.
+    try:
+        ignore = trash / ".gitignore"
+        if not ignore.exists():
+            ignore.write_text("*\n", encoding="utf-8")
+    except OSError:
+        pass
     try:
         info = subprocess.run([*_GIT, "-C", str(root), "rev-parse", "--git-path", "info/exclude"],
                               capture_output=True, text=True, timeout=10)
@@ -461,13 +483,14 @@ def sweep(trash: Path, days: int = TRASH_DAYS) -> None:
         pass
 
 
-def refusal(cmd: str, cwd, perms) -> Optional[str]:
-    """None, or why this bypass command is refused and what keeps the file."""
+def refusal(cmd: str, cwd, perms, covered=None) -> Optional[str]:
+    """None, or why this bypass command is refused and what keeps the file.
+    ``covered``: see :func:`unrestorable`."""
     try:
         found = destroyed(cmd, Path(cwd))
         if not found:
             return None
-        bad = unrestorable(found, perms)
+        bad = unrestorable(found, perms, covered)
     except Exception:
         return None
     if not bad:
