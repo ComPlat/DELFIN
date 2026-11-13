@@ -9036,6 +9036,11 @@ def _rule_answers(perms, site: str, name: str, target=None) -> Optional[str]:
         return None
     if call.get("asked"):
         return "the ask rule the user approved for this call"
+    # An allow rule is a decision the person wrote in their own words, so
+    # it answers here even for what cannot be undone (a push in their own
+    # repository). What does not answer such a call is the casual grant:
+    # an allow pattern a dialog's "always" saved, the built-in list, the
+    # cage (_irreversible_needs_person, in the bash gate).
     _, rs = _permission_rules(perms)
     if rs is None:
         return None
@@ -10294,11 +10299,15 @@ def _approval_kind(name: str) -> str:
     return base
 
 
-def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
+def _ask_confirm(perms, name: str, args: dict, preview: str, *,
+                 cwd: Any = None) -> bool:
     """Ask the user through ``perms.confirm_callback``, unless a dialog of
     the same kind already expired unanswered in this turn.
 
-    Input: the call to approve. Output: the answer. Semantics: a latched
+    Input: the call to approve (``cwd``: the directory a command runs in,
+    default the workspace). Output: the answer. A call that cannot be
+    undone, or only with effort, is asked with the plain statement of what
+    happens at the head of its preview (``_with_consequence``). A latched
     kind is answered False at once, and ``_confirm_timed_out`` then says
     "absence", so the caller words it as the user being away and records
     no denial. An expiry latches the kind for ``perms.turn_token``; the
@@ -10324,6 +10333,7 @@ def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
         except Exception:
             pass
         return False
+    preview = _with_consequence(perms, name, args, preview, cwd)
     ok = bool(perms.confirm_callback(name, args, preview))
     if (not ok and isinstance(away, dict) and token
             and _DocToolExecutor._confirm_timed_out(perms)):
@@ -10331,6 +10341,53 @@ def _ask_confirm(perms, name: str, args: dict, preview: str) -> bool:
     elif not ok and token:
         _note_refusal_in_turn(perms)
     return ok
+
+
+def _with_consequence(perms, name: str, args: dict, preview: str,
+                      cwd: Any = None) -> str:
+    """``preview`` with the plain statement of what cannot be undone at
+    its head (irreversible.statement), or unchanged. Every broker receives
+    the preview, so this one call puts the same sentences on the terminal,
+    the dashboard, the approvals room and the phone. Never raises."""
+    try:
+        from . import irreversible as _irr
+        cons = _irr.classify(name, args or {}, cwd=cwd, perms=perms)
+        return _irr.with_statement(preview, cons)
+    except Exception:
+        return preview
+
+
+def _irreversible_needs_person(perms, name: str, args: dict,
+                               mode: str = "") -> bool:
+    """True when the call cannot be undone and a person can be asked.
+
+    Then no casual grant answers in the person's place: an allow pattern
+    (built-in, or one a dialog's "always" saved), a read-only shape, an
+    information or calculation admission, the cage. The call goes to the
+    dialog, whose preview states the consequence. An allow rule the person
+    wrote (permission_rules, a repository's included) is their decision
+    in their own words and still answers (_rule_answers). With
+    nobody to ask (no callback, bypass, plan) the grants stand as before:
+    bypass has its own floor (unrestorable), and a refusal with nobody to
+    read it would stop an unattended run on a command its owner allowed.
+    Never raises; a failure answers False (the grants stand)."""
+    try:
+        if getattr(perms, "confirm_callback", None) is None:
+            return False
+        mode = mode or str(getattr(perms, "mode", "") or "")
+        if mode not in ("default", "diff_approval", "acceptEdits"):
+            return False
+        from . import irreversible as _irr
+        cons = _irr.classify(name, args or {}, perms=perms)
+        if not cons.irreversible:
+            return False
+        _record_security_event(
+            "irreversible_asked", _bare_tool_name(name),
+            (cons.facts[0].text() if cons.facts else name)[:160],
+            blocked=False)
+        return True
+    except Exception:
+        return False
 
 
 def _note_refusal_in_turn(perms) -> None:
@@ -25286,7 +25343,8 @@ class _DocToolExecutor:
                     ok = bool(_ask_confirm(perms, 
                         "bash", {"command": cmd},
                         f"$ {cmd}\n(opens a pull request; the user has not "
-                        "asked for one since their last message)"))
+                        "asked for one since their last message)",
+                        cwd=args.get("cwd")))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if not ok:
@@ -25315,8 +25373,9 @@ class _DocToolExecutor:
                 preview = (f"$ {cmd}\n(the user has not asked for a push "
                            "since their last message)")
                 try:
-                    ok = bool(_ask_confirm(perms, 
-                        "bash", {"command": cmd}, preview))
+                    ok = bool(_ask_confirm(perms,
+                        "bash", {"command": cmd}, preview,
+                        cwd=args.get("cwd")))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if not ok:
@@ -25371,7 +25430,13 @@ class _DocToolExecutor:
                 if _lost is not None:
                     return _lost
                 return self._classifier_second_opinion(perms, name, args, mode)
-            if perms.matches_bash_auto_allow(cmd):
+            # What cannot be undone goes to the person whenever one can be
+            # asked: no standing grant below -- the allow list (a remembered
+            # "always" included), a read-only shape, an information or
+            # calculation admission, the cage -- answers in their place.
+            _person_decides = _irreversible_needs_person(
+                perms, "bash", {"command": cmd, "cwd": args.get("cwd")}, mode)
+            if perms.matches_bash_auto_allow(cmd) and not _person_decides:
                 # The list matches the command's spelling, not its purpose.
                 return self._classifier_second_opinion(perms, name, args, mode)
             # A command that is EXACTLY one of a few harmless forms is
@@ -25399,7 +25464,7 @@ class _DocToolExecutor:
                     else "")
             except Exception:
                 _ros_shape = ""
-            if _ros_shape:
+            if _ros_shape and not _person_decides:
                 _record_security_event(
                     "read_only_shape", "bash",
                     f"{_ros_shape}: {cmd[:80]}", blocked=False)
@@ -25419,7 +25484,7 @@ class _DocToolExecutor:
             # no rule of the user's on it; never named as a calculation.
             if (_calc is not None and getattr(_calc, "information", False)
                     and _calc.admit and egress is None
-                    and not _approved_here
+                    and not _approved_here and not _person_decides
                     and _managed_only_allow_admits(perms, cmd)):
                 _info_rule = _permission_rule_hit(perms, "bash",
                                                   {"command": cmd})
@@ -25437,7 +25502,7 @@ class _DocToolExecutor:
                 if _calc_rule is not None and _calc_rule[0] == "deny":
                     return _refuse_by_rule("bash", _calc_rule[1])
                 if (_calc.admit and _calc_rule is None and egress is None
-                        and not _approved_here):
+                        and not _approved_here and not _person_decides):
                     _record_security_event(
                         "calculation_admitted", "bash",
                         _calc.summary[:200], blocked=False)
@@ -25464,7 +25529,7 @@ class _DocToolExecutor:
                 return _refuse_by_rule("bash", _caged_rule[1])
             _cage_cwd = str(args.get("cwd") or "").strip()
             if (caged_admission is not None and not _approved_here
-                    and not _calc_reason
+                    and not _calc_reason and not _person_decides
                     and not _allow_rule_names_bash(perms, name, args)
                     and _caged_command_may_run_unasked(cmd, perms, mode,
                                                        cwd=_cage_cwd)):
@@ -25535,7 +25600,8 @@ class _DocToolExecutor:
                 if _calc_reason:
                     preview += f"\nNot started unasked: {_calc_reason}"
                 try:
-                    ok = bool(_ask_confirm(perms, "bash", {"command": cmd}, preview))
+                    ok = bool(_ask_confirm(perms, "bash", {"command": cmd},
+                                           preview, cwd=args.get("cwd")))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 if ok:

@@ -91,6 +91,9 @@ _KINDS = {
     # A second approval of the same kind in a turn whose first one went
     # unanswered: not asked again, refused, and the panel says so.
     "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
+    # A call that cannot be undone, put to the person although an allow
+    # pattern (a saved "always" included) or the cage would have answered.
+    "irreversible_asked": ("⛔", "Cannot be undone: asked, no saved always or cage answers it"),
     # AM1: an unattended session hit the three-refusal lock; it pauses and
     # leaves one message for the operator instead of waiting for nobody.
     "unattended_pause": ("⏸", "Unattended session paused after three refusals"),
