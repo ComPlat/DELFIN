@@ -2284,8 +2284,12 @@ def _start_interactive_session(args: argparse.Namespace, report,
     # its requests reserve the gate's lowest slot and never queue behind
     # headless runs (a swarm member, a scheduled run). Keyed on the same
     # argument as apply_unattended, not on can_ask, for the same reason.
+    # The marker is a process flag the engine sets (endpoint_gate.
+    # set_process_interactive); it is NOT an env var, so it is not
+    # inherited by the session's children (delegates, background jobs).
     if not bool(getattr(args, "unattended", False)):
-        os.environ.setdefault("DELFIN_INTERACTIVE_SESSION", "1")
+        from delfin.agent.endpoint_gate import set_process_interactive
+        set_process_interactive(True)
     return InteractiveStart(engine, why, isolation_note, start_notes)
 
 

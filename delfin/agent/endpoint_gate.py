@@ -97,12 +97,8 @@ _STATE_LOCK_TIMEOUT_S = 5.0
 #: Generous on purpose: the point of the gate is that waiting here replaces
 #: waiting inside the overloaded endpoint (which answered nothing for
 #: 600 s in the measurement above). Still bounded, so a wedged endpoint
-#: cannot hang a turn forever -- the request raises and the client's own
-#: transient-retry ladder takes over.
-#: The env marker an attended session sets at start (cli.py); the gate
-#: reads it per round to reserve the lowest slot for a person's request.
-INTERACTIVE_ENV = "DELFIN_INTERACTIVE_SESSION"
-
+#: The endpoint gate cannot hang a turn forever -- the request raises and
+#: the client's own transient-retry ladder takes over.
 _SLOT_WAIT_TIMEOUT_S = 900.0
 
 
@@ -690,23 +686,42 @@ def report_result(gate: Optional["EndpointGate"], *,
         pass
 
 
-def interactive_session(env=None) -> bool:
-    """True when this process serves a person: an attended session set
-    ``DELFIN_INTERACTIVE_SESSION`` at start (cli._start_interactive_
-    session); headless runs -- ``--unattended``, a swarm member, a
-    scheduled entry -- never do. An explicit ``env`` wins (tests)."""
-    env = os.environ if env is None else env
-    return bool(str(env.get(INTERACTIVE_ENV, "") or "").strip())
+_MISSING = object()
 
 
-def for_client(base_url: str, model: str) -> Optional[EndpointGate]:
+#: Whether this process's current session serves a person (attended). A
+#: Python module global, NOT an os.environ value: it is set by the surface
+#: that built the engine (endpoint_gate.set_process_interactive) and it is
+#: NOT inherited by a child process -- a delegate, a `--unattended` run or a
+#: background job that forks+execs starts with the default ``False`` and
+#: sets its own flag if it is itself attended. This is why headless children
+#: of an attended session are never mistaken for a person.
+_process_interactive = False
+
+
+def set_process_interactive(flag: bool) -> None:
+    """Record whether this process serves a person (attended). Set by the
+    engine at session start from the surface that built it; headless runs
+    (``--unattended``, delegates, swarm members) leave it ``False``."""
+    global _process_interactive
+    _process_interactive = bool(flag)
+
+
+def for_client(base_url: str, model: str,
+               interactive: object = _MISSING) -> Optional[EndpointGate]:
     """The gate a client's request round uses, or None when disabled.
     Constructed per round so a changed setting applies without
-    rebuilding the client. An attended session's requests reserve the
-    gate's lowest slot (never queue behind headless runs)."""
+    rebuilding the client.
+
+    ``interactive`` is the session kind, set by the surface that built the
+    engine (``set_process_interactive``); a caller may also pass it per
+    request. An attended TUI, dashboard or phone/messenger session reserves
+    the gate's lowest slot, so a person never queues behind headless runs
+    on the same endpoint key."""
+    if interactive is _MISSING:
+        interactive = _process_interactive
     try:
-        gate = EndpointGate(base_url, model,
-                            interactive=interactive_session())
+        gate = EndpointGate(base_url, model, interactive=bool(interactive))
         return gate if gate.enabled else None
     except Exception:
         return None

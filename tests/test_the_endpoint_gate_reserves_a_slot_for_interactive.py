@@ -139,14 +139,41 @@ def test_per_request_interactive_override_serves_the_person(runtime):
     assert person.acquire(timeout_s=1.0, interactive=True) == 0
 
 
-def test_for_client_reads_the_session_marker(runtime, monkeypatch):
-    """for_client wires the session kind: an attended session's env marker
-    builds an interactive gate, a headless process (no marker) does not."""
-    from delfin.agent.approval_guard import ENV_MARKER
-    monkeypatch.delenv(G.INTERACTIVE_ENV, raising=False)
+def test_for_client_reads_the_process_marker(runtime, monkeypatch):
+    """for_client wires the session kind from the process marker an attended
+    surface sets (endpoint_gate.set_process_interactive): a headless process
+    (never set) builds a headless gate, an attended one builds an
+    interactive gate. The marker is a Python module global, NOT an
+    os.environ value, so it is not inherited by child processes."""
     assert G.for_client(URL, "m").interactive is False
-    monkeypatch.setenv(G.INTERACTIVE_ENV, "1")
-    assert G.for_client(URL, "m").interactive is True
-    # the marker must be its own variable: it may not collide with the
-    # agent-session marker used for approvals
-    assert G.INTERACTIVE_ENV != ENV_MARKER
+    G.set_process_interactive(True)
+    try:
+        assert G.for_client(URL, "m").interactive is True
+        # A caller may still pass the kind per request.
+        assert G.for_client(URL, "m", interactive=False).interactive is False
+    finally:
+        G.set_process_interactive(False)
+
+
+def test_the_marker_is_not_an_env_var_and_is_not_inherited(runtime):
+    """The interactive marker must not ride os.environ: it is a per-process
+    flag, so a child process that forks+execs (a delegate, a --unattended
+    run, a background job) starts headless even when the attended session
+    that spawned it is interactive. An env var would leak into every child."""
+    import subprocess
+    import sys
+    G.set_process_interactive(True)
+    try:
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "from delfin.agent import endpoint_gate as G; "
+             "print(G.for_client(%r, 'm').interactive)" % URL],
+            capture_output=True, text=True, timeout=30,
+            env={k: v for k, v in __import__('os').environ.items()},
+        )
+    finally:
+        G.set_process_interactive(False)
+    # The child starts a fresh interpreter: the module global is not there,
+    # so its gate is headless even though the parent's is interactive.
+    assert out.stdout.strip() == "False", out.stderr
+    assert "DELFIN_INTERACTIVE_SESSION" not in __import__('os').environ
