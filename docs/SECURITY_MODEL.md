@@ -306,6 +306,61 @@ Files in the trash count as unrestorable, so it cannot be emptied from the
 shell. Not seen: a deletion inside an interpreter or a script, a variable
 as target, a program that opens its own output.
 
+A foreground `bash` command in `bypassPermissions` whose cage is bubblewrap
+runs over an overlay of the workspace roots instead
+(`overlay_workspace`, helper `overlay_exec`): the command writes into an
+upper layer under `<root>/.delfin-trash/.layers/<id>/`, and after it ends
+DELFIN applies that layer -- new paths renamed in, and every original the
+command replaced or deleted renamed first into the undo store,
+`<root>/.delfin-trash/.undo/<UTC date>/cmd-<id>/`. Every change is
+journalled (`change_journal.record_overlay_changes`), and `undo_changes`
+renames the original back, whatever its size and however the command made
+the change (an interpreter, a script, `rm -r`, a directory removed and
+made again, a directory renamed, git refs and index). For a target such a
+root holds the trash refusal steps aside; `bash_background` and every
+other caller keep it. A path someone else changed while the command ran is
+never overwritten: the command's version is placed beside it as
+`<name>.delfin-conflict-<id>`, and a deletion of it is not applied. An undo
+never overwrites a path that no longer holds what the command left there,
+and moves what it replaces into the undo store too.
+
+The undo store and the layers are out of every writer's reach: every
+bubblewrap cage -- over the overlay or not, in every mode, foreground or
+background -- binds them read-only (`api_client._undo_store_binds`), the
+Seatbelt profile denies writes there, and the file tools and every shell
+write target the gate reads are refused there
+(`api_client._undo_store_refusal`, security event `undo_store_write`).
+The trash's day folders stay writable, so the trash refusal's remedy
+works. Under Landlock alone (no bubblewrap) and in the CLI backend's own
+shell only the gate's reading of paths and command text protects the
+store: Landlock cannot make a subtree of a writable root read-only without
+the root refusing new files.
+
+Disk: the undo store may hold a quarter of the space it could have (free
+space plus what it holds) and never leave the filesystem less than 1 GiB
+free; beyond, its oldest command folders are removed first, recorded as
+`trash_evicted` and named in the command's result, and their changes can
+no longer be undone. Days older than seven are removed anyway. A root
+still below the floor is not overlaid for that command. Changing a large
+existing file in place makes the kernel copy it whole first (measured:
+1.17 s and 1 GiB for one line appended to a 1 GiB file on this server's
+ZFS).
+
+Not overlaid, each keeping the change journal and the trash refusal:
+background commands, every mode other than bypass, read-only and calc
+roots, the session scratch, a git directory outside the roots, a root with
+another filesystem mounted beneath it, a root below the free-space floor,
+a filesystem where the overlay probe fails (no unprivileged user
+namespaces, no user xattrs), and every host without bubblewrap. A mount
+that fails at run time is noticed from a status file the helper writes
+(not from the exit code, which the command could imitate); the command
+then runs the old way after the trash refusal is checked again, and the
+overlay stays off for the process (`isolation` event). Not covered inside
+an overlaid root: extended attributes and a directory's own mtime are not
+carried back; hard links between files the command copied up are split; a
+process writing under a root while a command runs is seen by the command
+or not, as the kernel leaves it.
+
 ### 3. Isolation of the shell command
 
 `api_client._bash_isolation_argv` decides how a shell command is run.
