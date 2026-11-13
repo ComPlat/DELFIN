@@ -15,7 +15,11 @@ from delfin.dashboard.tab_agent import _slash_is_user_only
 
 
 def test_pair_from_the_model_is_ignored():
-    for text in ("/pair", "ACTION: /pair", "/pair cancel", "/pair revoke all"):
+    # The ACTION prefix is stripped by the executor's parser before the
+    # check runs (tab_agent.py:_action_cmd), so the guard sees the bare
+    # command; the prefixed form is what the model writes, the bare one
+    # what the guard receives.
+    for text in ("/pair", "/pair cancel", "/pair revoke all", "/pair code"):
         assert _slash_is_user_only(text), text
 
 
