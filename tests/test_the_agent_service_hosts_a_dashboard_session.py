@@ -285,3 +285,45 @@ def test_a_window_that_lets_go_releases_its_hold(service):
     window.request("session.detach", {"sessionId": sid, "release": True})
     assert _until(lambda: not _summary(window, sid)), \
         "its only holder let go: a session switched off ends"
+
+
+_CHILD = r"""
+import ctypes, sys
+# What process_guard.protect does in a dashboard kernel: its /proc
+# environment becomes unreadable to the user's other processes.
+assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0
+from delfin.agent.service.client import ServiceClient, ServiceError
+c = ServiceClient(sys.argv[1])
+try:
+    c.request("session.prompt", {"sessionId": "0" * 32, "text": "x"})
+except ServiceError as e:
+    print("code", e.code)
+"""
+
+_PARENT = r"""
+import subprocess, sys
+# argv names what started the child: a dashboard server is a Voila process.
+out = subprocess.run([sys.executable, "-c", sys.argv[1], sys.argv[2], "ipykernel_launcher"],
+                     capture_output=True, text=True, timeout=120)
+print(out.stdout.strip() or out.stderr[-500:])
+"""
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_DUMPABLE is Linux")
+@pytest.mark.parametrize("server, acts", [("voila", True), ("some-tool", False)])
+def test_a_protected_dashboard_kernel_is_a_window(service, server, acts):
+    """A dashboard kernel makes itself unreadable (process_guard) before it
+    connects for a session that gets its id later: unreadable is no reason
+    to refuse it when it is a kernel a Voila server started. Control: the
+    same protected process under another parent stays watch-only."""
+    from conftest import child_env
+    env = child_env(service.tmp)
+    env["PYTHONPATH"] = service.env["PYTHONPATH"]
+    env.pop("DELFIN_PROCESS_GUARD", None)
+    out = subprocess.run([sys.executable, "-c", _PARENT, _CHILD, str(service.socket), server],
+                         env=env, capture_output=True, text=True, timeout=180)
+    code = int(out.stdout.strip().split()[-1]) if "code" in out.stdout else None
+    if acts:
+        assert code == protocol.UNKNOWN_SESSION, out
+    else:
+        assert code == protocol.NOT_ALLOWED, out
