@@ -737,9 +737,11 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
         note += "\n\n" + steps
     # JC2 target 3: the chain offer.  Best-effort like the step-journal
     # part — an error in the chain lookup appends nothing and never
-    # breaks the resume note.
+    # breaks the resume note.  The workspace is the process cwd: both
+    # callers (engine restore, CLI startup) run there, and the cwd IS
+    # the session workspace on the bash route (live-run A).
     try:
-        chains = _render_chain_offer(session_id)
+        chains = _render_chain_offer(session_id, workspace=os.getcwd())
     except Exception as exc:
         import logging as _logging
         _logging.getLogger(__name__).warning(
@@ -750,7 +752,7 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
     return note
 
 
-def _render_chain_offer(session_id: str) -> str | None:
+def _render_chain_offer(session_id: str, workspace: str | Path | None = None) -> str | None:
     """The unfinished-chains offer for ONE agent session, or None.
 
     Facts only (JC2 target 3): only chains the index records for THIS
@@ -762,10 +764,29 @@ def _render_chain_offer(session_id: str) -> str | None:
     first.  The index is a pointer: every state comes from the chain's
     own chain_state.json.  A session with no unfinished chains gets no
     chain text at all.
+
+    Live-run A finding (operator, 2026-11-16): a chain started through
+    bash inside the agent sandbox cannot write the per-user index (HOME
+    is read-only there), so the offer ALSO scans *workspace* — the
+    workspace root and its DIRECT subdirectories only, never a tree
+    walk — for chain_state.json with unfinished steps.  A chain in this
+    session's workspace belongs to this session's offer; the index
+    stays the source for chains outside the workspace.  The scan dedupes
+    against the index by work dir.
     """
     from delfin.tools import chain_index
 
     entries = chain_index.load(agent_session_id=session_id)
+    scanned = _scan_workspace_chains(workspace)
+    # dedupe: an indexed chain whose work dir the scan also finds appears
+    # once (the index entry wins — it carries the session binding)
+    seen_dirs = {str(Path(e.get("work_dir") or "").resolve())
+                 for e in entries if e.get("work_dir")}
+    for wd, ch in scanned:
+        if str(Path(wd).resolve()) in seen_dirs:
+            continue
+        entries.append({"work_dir": str(wd)})
+
     lines: list[str] = []
     for e in entries:
         wd = e.get("work_dir") or ""
@@ -801,6 +822,53 @@ def _render_chain_offer(session_id: str) -> str | None:
         "that are not finished:"
         "\n" + "\n".join(lines)
     )
+
+
+def _scan_workspace_chains(
+    workspace: str | Path | None,
+) -> list[tuple[Path, Any]]:
+    """Unfinished chains found in the session workspace — bounded scan.
+
+    Only the workspace root and its DIRECT subdirectories are stat'ed
+    (live-run A: the sandbox makes HOME read-only, so a chain started
+    through bash is never indexed; it lives in the workspace).  This is
+    NOT a tree walk: a chain_state.json deeper than one level down is
+    not found here (pinned by test).  Symlinks are not followed.  Any
+    error yields nothing — the offer is best-effort by design.
+    """
+    if not workspace:
+        return []
+    results: list[tuple[Path, "chain_state.ChainState"]] = []
+    try:
+        root = Path(workspace).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "chain offer: workspace %s unusable (%s)", workspace, exc)
+        return []
+    if not root.is_dir():
+        return []
+    for candidate in [root, *sorted(root.iterdir())]:
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        state_file = candidate / "chain_state.json"
+        if not state_file.is_file():
+            continue
+        try:
+            from delfin.tools import chain_state
+            chain = chain_state.ChainState.load(state_file)
+        except Exception as exc:  # noqa: BLE001 - a fact, reported small
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "chain offer: state file %s unreadable (%s)", state_file, exc)
+            continue
+        unfinished = [s for s in chain.steps if s.state != "finished"]
+        if chain.steps and not unfinished:
+            continue  # fully finished — nothing to resume
+        if not chain.steps:
+            continue
+        results.append((candidate, chain))
+    return results
 
 
 def _transcript_archive_dir() -> Path:
