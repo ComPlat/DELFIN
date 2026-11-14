@@ -9,6 +9,7 @@ in the prompt it types:
     do-bash <command>      one ``bash`` tool call, then a text answer
     do-bash-secret         a ``bash`` call carrying FAKE_SECRET in a header
     do-write <path> <text> one ``write_file`` tool call, then a text answer
+    do-webfetch <url>      one ``web_fetch`` tool call, then a text answer
     do-md                  a markdown answer (heading, list, code block)
     do-slow                ~30 s of streamed text, for interrupt tests
     do-delay <s>           headers at once, then <s> seconds before the
@@ -86,6 +87,8 @@ def plan(messages: list[dict]) -> dict:
             # keeps the tail, so this is where a narrow line still shows it.
             return {"tool": "bash", "args": {"command": (
                 'curl -sH "Authorization: Bearer ' + FAKE_SECRET + '" x')}}
+        if s.startswith("do-webfetch "):
+            return {"tool": "web_fetch", "args": {"url": s[12:].strip()}}
         if s.startswith("do-bash "):
             return {"tool": "bash", "args": {"command": s[8:]}}
         if s.startswith("do-write "):
