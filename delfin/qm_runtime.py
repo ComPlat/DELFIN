@@ -547,6 +547,107 @@ def discover_tool_installations(name: str) -> list[ResolvedTool]:
     return results
 
 
+def is_orca_dir(path: str | Path) -> bool:
+    """An ORCA directory: ``orca`` and one of its companion programs.
+
+    A lone ``orca`` is not enough: /usr/bin/orca is a screen reader on
+    many desktops.
+    """
+    base = Path(path)
+    return (os.access(base / "orca", os.X_OK)
+            and any(os.access(base / companion, os.X_OK)
+                    for companion in ("orca_plot", "orca_mdci")))
+
+
+def _orca_version_key(path: Path) -> tuple:
+    digits = []
+    for part in path.name.replace("-", "_").split("_"):
+        if part.isdigit():
+            digits.append(int(part))
+    return tuple(digits)
+
+
+def find_orca_dir(extra_roots: Sequence[str | Path] = ()) -> str:
+    """The ORCA directory DELFIN uses, or "" -- one answer for every asker.
+
+    Input: ``extra_roots``, directories that may hold unpacked
+    ``orca_*`` directories besides ~/software and ~ (the installer passes
+    its --prefix). Output: the first ORCA directory (``is_orca_dir``) of
+
+    1. the settings' ``runtime.orca_base`` (top level, local, slurm): the
+       person's own choice;
+    2. what the environment names, from DELFIN's tool resolver
+       (``discover_tool_installations``: ORCA_BINARY, ORCA_PATH,
+       DELFIN_ORCA_BINARY, PATH);
+    3. unpacked ``orca_*`` directories under the roots, newest version
+       first: an ORCA a person unpacked for DELFIN;
+    4. the resolver's remaining candidates: the locator, the system
+       directories, modules.
+
+    Each candidate is taken as the directory of the resolved file.
+
+    install_delfin.sh wires the answer into the settings and
+    ~/.delfin_env.sh; ``delfin doctor`` (check_orca) reports it. Before,
+    the two looked in different places and disagreed on one account: the
+    installer said "not found", the doctor found /opt/orca_6_1_1.
+    """
+    seen: set[str] = set()
+
+    def take(candidate) -> str:
+        if not candidate:
+            return ""
+        path = Path(str(candidate)).expanduser()
+        if path.is_file():
+            path = path.parent
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            return ""
+        if resolved in seen:
+            return ""
+        seen.add(resolved)
+        return resolved if is_orca_dir(resolved) else ""
+
+    try:
+        import json
+        settings_file = Path.home() / ".delfin_settings.json"
+        runtime = (json.loads(settings_file.read_text(encoding="utf-8")).get("runtime")
+                   or {}) if settings_file.is_file() else {}
+    except Exception:
+        runtime = {}
+    for section in (runtime, runtime.get("local") or {}, runtime.get("slurm") or {}):
+        found = take(section.get("orca_base") if isinstance(section, dict) else "")
+        if found:
+            return found
+
+    resolved = list(discover_tool_installations("orca"))
+    named = [c for c in resolved
+             if c.source.startswith("env:") or c.source in ("PATH", "active_env")]
+    for candidate in named:
+        found = take(candidate.path)
+        if found:
+            return found
+
+    roots = [Path(str(r)).expanduser() for r in extra_roots]
+    roots += [Path.home() / "software", Path.home()]
+    unpacked = []
+    for root in roots:
+        try:
+            unpacked.extend(p for p in root.glob("orca_*") if p.is_dir())
+        except OSError:
+            continue
+    for candidate in sorted(unpacked, key=_orca_version_key, reverse=True):
+        found = take(candidate)
+        if found:
+            return found
+
+    for candidate in resolved:
+        found = take(candidate.path)
+        if found:
+            return found
+    return ""
+
+
 def check_tools(names: Optional[Sequence[str]] = None) -> list[tuple[str, Optional[ResolvedTool]]]:
     selected = list(names) if names else supported_qm_tools()
     results: list[tuple[str, Optional[ResolvedTool]]] = []

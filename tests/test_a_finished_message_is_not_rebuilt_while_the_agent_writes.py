@@ -95,7 +95,11 @@ def test_a_built_tab_shows_its_chat_through_the_template(tmp_path,
     widget, refs = T.create_tab(ctx)
     try:
         host = _host(widget)
-        assert "Start a conversation" in _template_body(host.value)
+        # The empty chat: the prompt to start, or -- where no model is
+        # connected, as on a CI runner -- the card that says how to connect one.
+        body = _template_body(host.value)
+        assert ("Start a conversation" in body
+                or "No language model is connected" in body), body[:300]
         refs["state"]["chat_messages"].extend([
             {"role": "user", "content": "first question"},
             {"role": "assistant", "content": "first answer"},

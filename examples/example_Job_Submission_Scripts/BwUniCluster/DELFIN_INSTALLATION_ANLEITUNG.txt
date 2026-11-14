@@ -10,7 +10,35 @@ Python Version: 3.11
 DELFIN Version: 1.0.9
 
 ================================================================================
-ÜBERSICHT
+ZUERST: DER INSTALLER ERLEDIGT SCHRITT 1-3
+================================================================================
+
+Diese Anleitung ist der Weg von Hand. Heute erledigt ein Befehl ORCA-Einbindung,
+OpenMPI 4.1.8, Python und DELFIN (mit Agent und Dashboard), ohne "module load":
+
+  git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
+  bash ~/software/delfin/install.sh --orca ~/orca_6_1_1_linux_x86-64_shared_openmpi418_avx2.tar.xz
+
+(ORCA-Tarball wie in Schritt 1.1/1.2 herunterladen und hochladen; ohne --orca
+wird ein entpacktes ORCA oder ein Tarball in ~ bzw. ~/software gesucht.)
+
+Der Installer prüft zuerst, was er braucht, und bricht vor jeder Änderung mit
+einer Meldung ab, wenn etwas fehlt. Seine Ausgabe liegt in ~/software/logs/.
+Schlägt ein Schritt fehl, nennt er ihn; derselbe Befehl noch einmal macht dort
+weiter. Am Ende steht, wie Dashboard (delfin-voila) und Agent (delfin-agent)
+gestartet werden. Aktualisieren: bash ~/software/delfin/install.sh --update
+
+Eine ältere Installation nach dieser Anleitung (~/DELFIN/.venv): eine Zeile
+"source ~/DELFIN/.venv/bin/activate" in ~/.bashrc verhindert, dass die neue
+Umgebung aktiviert wird -- der Installer nennt sie, dann entfernen.
+
+Das Submit-Skript (Schritt 5) bleibt gültig; dort statt "module load ..." und
+der festen Pfade:
+  source ~/.delfin_env.sh
+  source ~/software/delfin/.venv/bin/activate
+
+================================================================================
+ÜBERSICHT (DER WEG VON HAND)
 ================================================================================
 
 Diese Anleitung führt dich durch:

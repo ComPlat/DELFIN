@@ -119,6 +119,48 @@ def _provider_notes(args: argparse.Namespace) -> list[str]:
     return [note] if note else []
 
 
+def _exit_when_no_model(args: argparse.Namespace, engine, backend: str,
+                        provider: str, model: str) -> None:
+    """Stop with how to connect a model when the settings' choice cannot run.
+
+    Input: a command that takes the settings-file defaults (``chat``) and
+    names no --backend, --provider or --model of its own, the engine just
+    built, and the backend, provider and model resolved from those
+    defaults. Output: nothing when model_setup finds the selection usable;
+    else the no-model message on stderr and exit status 2, before the
+    first turn. Asked of the client the engine really built (the CLI
+    backend's program, a keyed API client): a fresh install lands here --
+    the shipped default is the CLI backend, and with its program missing
+    or too old the turn used to fail with a backend error ("unknown option
+    '--include-hook-events'"). An engine without such a client (a
+    stand-in) is not asked about.
+
+    Rejected: checking every command -- ``run``, the scheduler and the
+    benchmark pass their selection explicitly and keep their own errors;
+    checking before the engine exists, which also stopped every caller
+    that supplies its own engine.
+    """
+    if not getattr(args, "settings_defaults", False):
+        return
+    if any(getattr(args, name, "") for name in ("backend", "provider", "model")):
+        return
+    from . import api_client, model_setup
+    client = getattr(engine, "client", None)
+    if engine is None:
+        # The engine could not be built: CLIClient found no program.
+        problem = (model_setup.cli_program_problem()
+                   if backend == "cli" and provider in ("", "claude", "anthropic") else "")
+    elif isinstance(client, api_client.CLIClient):
+        problem = model_setup.cli_program_problem(getattr(client, "claude_path", None))
+    elif isinstance(client, (api_client.OpenAIClient, api_client.APIClient)):
+        problem = model_setup.selection_problem(backend, provider, model)
+    else:
+        return
+    if problem:
+        print(model_setup.no_model_message(problem), file=sys.stderr)
+        raise SystemExit(2)
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -139,23 +181,29 @@ def _build_engine(args: argparse.Namespace):
     provider = _resolve_provider(args, fallback)
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
-    engine = AgentEngine(
-        repo_dir=Path(cwd).expanduser().resolve(),
-        backend=backend,
-        provider=provider,
-        model=model,
-        mode=mode,
-        # Declared on the parser since the first version of this file and
-        # never forwarded: --effort parsed fine and changed nothing.
-        effort=getattr(args, "effort", "") or fallback.get("effort", ""),
-        permission_mode=getattr(args, "permission_mode", "") or "",
-        extra_dirs=list(getattr(args, "extra_dirs", None) or []),
-        read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
-        # None, never []: CLIClient tests the parameter for ``is not None``
-        # and an empty list would build ``--allowedTools`` with nothing
-        # after it, which restricts the session to no tools at all.
-        allowed_tools=_allowed_tools(args) or None,
-    )
+    try:
+        engine = AgentEngine(
+            repo_dir=Path(cwd).expanduser().resolve(),
+            backend=backend,
+            provider=provider,
+            model=model,
+            mode=mode,
+            # Declared on the parser since the first version of this file and
+            # never forwarded: --effort parsed fine and changed nothing.
+            effort=getattr(args, "effort", "") or fallback.get("effort", ""),
+            permission_mode=getattr(args, "permission_mode", "") or "",
+            extra_dirs=list(getattr(args, "extra_dirs", None) or []),
+            read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
+            # None, never []: CLIClient tests the parameter for ``is not None``
+            # and an empty list would build ``--allowedTools`` with nothing
+            # after it, which restricts the session to no tools at all.
+            allowed_tools=_allowed_tools(args) or None,
+        )
+    except FileNotFoundError:
+        # CLIClient refuses to exist without its program.
+        _exit_when_no_model(args, None, backend, provider, model)
+        raise
+    _exit_when_no_model(args, engine, backend, provider, model)
     _apply_run_budget(engine, args)
     _apply_tool_surface(engine, args)
     # After the client exists, because two of the three switches live on

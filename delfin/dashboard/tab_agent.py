@@ -8139,7 +8139,14 @@ def create_tab(ctx):
 
     # Detect which providers are actually usable
     _available_providers: list[tuple[str, str]] = []
-    if _cli_available or _provider_key("ANTHROPIC_API_KEY"):
+    # A CLI program counts only when it runs DELFIN's command line; an
+    # older one answers "unknown option" (model_setup.cli_program_problem,
+    # from its files: building the tab starts no program).
+    _cli_problem = ""
+    if not _provider_key("ANTHROPIC_API_KEY") and _cli_available:
+        from delfin.agent.model_setup import cli_program_problem as _cli_prog_problem
+        _cli_problem = _cli_prog_problem(run_help=False)
+    if (_cli_available and not _cli_problem) or _provider_key("ANTHROPIC_API_KEY"):
         _available_providers.append(("Anthropic", "claude"))
     if _codex_cli_available or _provider_key("OPENAI_API_KEY"):
         _available_providers.append(("OpenAI", "openai"))
@@ -8177,9 +8184,18 @@ def create_tab(ctx):
                     _available_providers.append(("Ollama (local)", "ollama"))
         except Exception:
             pass
-    # Fallback: always show at least the Anthropic provider (will error with helpful message)
+    # Nothing connected: the empty chat shows how to connect a model
+    # (_empty_chat_html) and the selector keeps one entry. In the chat, not
+    # a row of its own: above the chat it pushed the input row below the
+    # fold at 1366x768.
+    _no_model_html = ""
     if not _available_providers:
+        from delfin.agent.model_setup import no_model_card_html
+        _no_model_html = no_model_card_html(_cli_problem)
         _available_providers.append(("Anthropic", "claude"))
+
+    def _empty_chat_html():
+        return _no_model_html or "<i>Start a conversation...</i>"
 
     # -- state -------------------------------------------------------------
     state = {
@@ -9634,7 +9650,7 @@ def create_tab(ctx):
 
     # Chat display
     chat_html = widgets.HTML(
-        value=_chat_value(_CHAT_OPEN + '<i>Start a conversation...</i></div>'),
+        value=_chat_value(_CHAT_OPEN + _empty_chat_html() + '</div>'),
         layout=widgets.Layout(min_height="200px"),
     )
     chat_html.add_class("delfin-agent-chat-host")
@@ -13868,7 +13884,7 @@ def create_tab(ctx):
         if not msgs:
             chat_html.value = _chat_value(
                 _CHAT_OPEN
-                + "<i>Start a conversation...</i>"
+                + _empty_chat_html()
                 + _SCROLL_RESET_TAG + "</div>"
             )
             _html_cache["prefix"] = ""

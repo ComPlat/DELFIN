@@ -81,10 +81,13 @@ def test_a_finding_reaches_the_other_agents_of_the_run(env, monkeypatch):
     assert rows[0].author == "sa-1"
 
 
-def test_a_finding_outside_a_run_is_not_stored(env):
+def test_a_finding_outside_a_run_stores_a_project_memory(env):
+    """The finding refusals stay for real findings problems, but "no swarm
+    run" itself is no longer one: a first remember call that guessed
+    type=finding must still succeed (degrades to a project memory)."""
     out = json.loads(_run(env, "remember", {
         "text": "x is flaky", "type": "finding", "evidence": "test:t"}))
-    assert "error" in out and "swarm" in out["error"]
+    assert out["status"] == "ok" and out["type"] == "project"
 
 
 def test_an_instruction_as_a_finding_is_refused(env, monkeypatch):
