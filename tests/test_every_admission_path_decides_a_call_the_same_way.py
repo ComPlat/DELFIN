@@ -39,9 +39,10 @@ Output: one cell per (posture, path, row):
 This is a CHARACTERIZATION test: EXPECTED holds today's measured value of
 every cell and is asserted; DISAGREEMENTS lists every cell where two
 paths that see the same call decide differently, each with the code that
-makes the difference, and is asserted to be complete. Differences that
-the planned consolidation (the hook deciding every tool) is meant to
-remove are stated as separate ``xfail(strict=True)`` tests.
+makes the difference, and is asserted to be complete. The differences the
+hook deciding every tool removed (deny-listed commands asked about,
+WebFetch and MCP tools left to the program, plan-mode writes allowed)
+are pinned by the ``test_intended_*`` tests.
 
 No network: name lookups and fetches are replaced by records, the egress
 proxy is a new local object for every cell. Effects: the native path runs
@@ -50,9 +51,10 @@ other command in the grid is only decided, none is run.
 
 The external CLI program itself is not driven here (it is not installed
 where the suite runs). What it does with the hook's decision was measured
-once with version 2.1.322 against a loopback endpoint and is recorded in
-DISAGREEMENTS: in plan mode it refuses a Write and an ``rm`` the hook
-allowed; in default mode it runs a call the hook allowed without asking.
+with version 2.1.322 against a loopback endpoint: in default mode it runs
+a call the hook allowed without asking and does not run one the hook
+denied; in plan mode it also refused a Write and an ``rm`` the hook
+allowed before the hook refused them itself.
 
 Rejected: ``cli_gate.decide_call`` as the clihook measurement. It returns
 None both for "checked and let through" and for "not looked at", while
@@ -440,37 +442,37 @@ EXPECTED = {
         "native":  "allow     ask>deny  ask>deny  deny      allow     deny      ask>deny  -",
         "mcp":     "allow     allow     ask>deny  deny      allow     deny      ask>deny  ask>deny",
         "docgate": "-         -         ask>deny  deny      -         -         -         -",
-        "clihook": "allow     ask>deny  ask>deny  deny      allow     ask>deny  none      none",
+        "clihook": "allow     ask>deny  ask>deny  deny      allow     deny      ask>deny  ask>deny",
     },
     "default_attended_yes": {
         "native":  "allow     ask>allow ask>allow deny      allow     deny      ask>allow -",
         "mcp":     "allow     allow     ask>allow deny      allow     deny      ask>allow ask>allow",
         "docgate": "-         -         ask>allow deny      -         -         -         -",
-        "clihook": "allow     ask>allow ask>allow deny      allow     ask>allow none      none",
+        "clihook": "allow     ask>allow ask>allow deny      allow     deny      ask>allow ask>allow",
     },
     "default_unattended": {
         "native":  "allow     deny      allow     deny      allow     deny      deny      -",
         "mcp":     "allow     allow     allow     deny      allow     deny      deny      deny",
         "docgate": "-         -         allow     deny      -         -         -         -",
-        "clihook": "allow     deny      allow     deny      allow     deny      none      none",
+        "clihook": "allow     deny      allow     deny      allow     deny      deny      deny",
     },
     "plan_attended_yes": {
         "native":  "allow     ask>allow deny      deny      deny      deny      deny      -",
         "mcp":     "allow     allow     deny      deny      deny      deny      deny      deny",
         "docgate": "-         -         allow     deny      -         -         -         -",
-        "clihook": "allow     ask>allow allow     deny      allow     allow     none      none",
+        "clihook": "allow     ask>allow deny      deny      allow     deny      deny      deny",
     },
     "plan_unattended": {
         "native":  "allow     deny      deny      deny      deny      deny      deny      -",
         "mcp":     "allow     allow     deny      deny      deny      deny      deny      deny",
         "docgate": "-         -         allow     deny      -         -         -         -",
-        "clihook": "allow     deny      allow     deny      allow     allow     none      none",
+        "clihook": "allow     deny      deny      deny      allow     deny      deny      deny",
     },
     "bypass_unattended": {
         "native":  "allow     deny      allow     deny      allow     deny      deny      -",
         "mcp":     "allow     allow     allow     deny      allow     deny      deny      allow",
         "docgate": "-         -         allow     deny      -         -         -         -",
-        "clihook": "allow     deny      allow     deny      allow     deny      none      none",
+        "clihook": "allow     deny      allow     deny      allow     deny      deny      allow",
     },
     "managed_deny": {
         "native":  "deny      deny      deny      deny      deny      deny      deny      -",
@@ -482,7 +484,7 @@ EXPECTED = {
         "native":  "ask>allow ask>allow ask>allow ask>deny  ask>allow ask>deny  ask>allow -",
         "mcp":     "ask>allow ask>allow ask>allow ask>deny  ask>allow ask>deny  ask>allow ask>allow",
         "docgate": "-         -         ask>allow deny      -         -         -         -",
-        "clihook": "ask>allow ask>allow ask>allow ask>deny  ask>allow ask>allow ask>none  ask>none",
+        "clihook": "ask>allow ask>allow ask>allow ask>deny  ask>allow ask>deny  ask>allow ask>allow",
     },
 }
 
@@ -508,76 +510,41 @@ def test_each_path_decides_as_measured(matrix, posture, path):
 # Causes, path:line in delfin/agent/api_client.py unless a file is named.
 _MCP_SERVER_READ = (
     "mcp allows: read_file through a server is on _MCP_READONLY_TOOL_BASES, "
-    "and _gate_mcp_tool checks only the secret deny list for it (:26047-"
-    "26057, 'the outside-workspace question stays with the server's own "
-    "scope'); native and clihook run _check_read_access (:23035; "
-    "cli_gate.py:302)")
-_HOOK_NO_DENY_LIST = (
-    "SECURITY: the hook's Bash branch (cli_gate.py:312-354) runs the "
-    "approval guard, the read-path scan, the write-target gate and, in "
-    "default/acceptEdits, a question (_ask_for_command, cli_gate.py:420); "
-    "the native bash gate _run_permission_gate (:24514) -- deny patterns "
-    "(:24757), the git-role push gate (:25287) -- runs on the hook only in "
-    "bypass (_bypass_cage, cli_gate.py:353, :407). Native and mcp refuse "
-    "'rm -rf build' unasked; the hook asks, and on yes prints allow")
-_HOOK_SKIPS_WEBFETCH = (
-    "clihook gives no decision: WebFetch is not in _DECIDED_TOOLS "
-    "(cli_gate.py:379) and decide_call has no branch for it (cli_gate.py:"
-    "300-354), so main prints nothing (cli_gate.py:473-491) and the "
-    "external CLI decides by its own mode; native and mcp run the egress "
-    "gate (_web_egress_refusal :7960 via _run_permission_gate; mcp :25999)")
-_HOOK_SKIPS_MCP = (
-    "clihook gives no decision: mcp__ names are not in _DECIDED_TOOLS "
-    "(cli_gate.py:379); the mcp path decides the side-effecting tool in "
-    "_gate_side_effecting_mcp_tool -- asks, refuses with nobody to ask, "
-    "allows in bypass (:26102)")
+    "and _gate_mcp_tool checks only the secret deny list for it (:26064-"
+    "26074, 'the outside-workspace question stays with the server's own "
+    "scope'); native and clihook run _check_read_access (:23052; "
+    "cli_gate.py:450)")
 _PLAN_BY_NAME = (
     "plan mode: native and mcp refuse by name before the arguments are read "
-    "(_execute_pinned :19623, _gate_mcp_tool :25920-25936; bash and "
-    "write_file are not on _PLAN_READONLY_TOOLS :8203)")
+    "(_execute_pinned :19640, _gate_mcp_tool :25937-25953; bash and "
+    "write_file are not on _PLAN_READONLY_TOOLS :8220)")
 
 DISAGREEMENTS = {}
 for _p in ("default_attended_no", "default_attended_yes", "default_unattended",
            "plan_attended_yes", "plan_unattended", "bypass_unattended"):
     DISAGREEMENTS[(_p, "read_outside")] = _MCP_SERVER_READ
-    DISAGREEMENTS[(_p, "web_fetch_outside")] = _HOOK_SKIPS_WEBFETCH
-    DISAGREEMENTS[(_p, "mcp_send")] = _HOOK_SKIPS_MCP
-for _p in ("default_attended_no", "default_attended_yes"):
-    DISAGREEMENTS[(_p, "bash_rmrf_inside")] = _HOOK_NO_DENY_LIST
-DISAGREEMENTS[("user_ask", "bash_rmrf_inside")] = (
-    _HOOK_NO_DENY_LIST + "; with an ask rule, native and mcp ask the rule "
-    "question and then refuse by the deny pattern")
 for _p in ("plan_attended_yes", "plan_unattended"):
     DISAGREEMENTS[(_p, "write_inside")] = _PLAN_BY_NAME + (
-        "; _gate_write_path has no plan check (:23550-23880): its document "
-        "callers sit behind the executor's plan gate, the hook calls it "
-        "bare (cli_gate.py:309) and prints an explicit allow (cli_gate.py:"
-        "479). Measured, external CLI 2.1.322 in plan mode: the program "
-        "refuses the write itself, the hook's allow does not override it")
+        "; the hook refuses a write tool in plan mode itself (cli_gate.py:"
+        "455, _plan_refusal); _gate_write_path has no plan check "
+        "(:23567-23897): its document callers sit behind the executor's "
+        "plan gate, so docgate alone allows")
     DISAGREEMENTS[(_p, "bash_ls")] = _PLAN_BY_NAME + (
-        "; the hook lets plan mode pass (_ask_for_command returns None "
-        "outside default/acceptEdits, cli_gate.py:430) and prints allow; "
-        "the external CLI's plan mode runs a read-only command")
-    DISAGREEMENTS[(_p, "bash_rmrf_inside")] = _PLAN_BY_NAME + (
-        "; the hook prints allow: no plan check, and no deny-pattern check "
-        "outside bypass (see the default-mode rows). Measured, external CLI "
-        "2.1.322 in plan mode: the program refuses it itself ('rm in ... "
-        "needs approval'), nothing is deleted")
+        "; the hook runs a command plan mode can run without changing "
+        "anything (cli_gate._plan_read_only, cli_gate.py:582: an allow list "
+        "of read-only programs and forms, then the native bash gate as "
+        "default mode with nobody to ask), as the external CLI's own plan "
+        "mode does; a command off that list is refused like every write")
 DISAGREEMENTS[("managed_deny", "write_inside")] = (
     "docgate asks where the others deny: a managed deny on the TOOL name is "
-    "decided by the callers (_execute_pinned :19605, _mcp_call_refusal "
-    ":7807, cli_gate.py:293); _gate_write_path reads managed rules on the "
-    "PATH only (:23577) and then asks as default mode does (:23846)")
+    "decided by the callers (_execute_pinned :19622, _mcp_call_refusal "
+    ":7824, cli_gate.py:440); _gate_write_path reads managed rules on the "
+    "PATH only (:23594) and then asks as default mode does (:23863)")
 DISAGREEMENTS[("user_ask", "write_outside")] = (
     "docgate refuses unasked, the others ask the rule question first: an "
     "ask rule on the tool is put by the callers (_dispatch_under_rules "
-    ":20094, _mcp_call_refusal :7827, cli_gate.py:295) before the path "
+    ":20111, _mcp_call_refusal :7844, cli_gate.py:442) before the path "
     "gate; the outside path is refused either way (_resolve_in_workspace)")
-for _r in ("web_fetch_outside", "mcp_send"):
-    DISAGREEMENTS[("user_ask", _r)] = (
-        "the hook asks the rule question -- the rules are consulted for "
-        "every tool name (cli_gate.py:291-298) -- and then prints no "
-        "decision, the tool not being in _DECIDED_TOOLS (cli_gate.py:379)")
 
 
 def _disagreeing(matrix):
@@ -610,15 +577,19 @@ def test_the_document_executors_meet_the_plan_gate_first(matrix, tmp_path):
     assert not (tmp_path / "x.docx").exists()
 
 
-def test_the_hook_prints_an_explicit_allow_in_plan_mode(matrix):
+def test_the_hook_refuses_plan_mode_writes_itself(matrix):
     """For a Write and an rm inside the workspace in plan mode the hook
-    prints ``permissionDecision: allow`` -- not "no decision". The plan
-    protection of the CLI backend therefore rests on the external CLI
-    alone (which refuses both, measured with 2.1.322)."""
+    prints ``permissionDecision: deny`` with the plan-mode reason: the
+    plan protection of the CLI backend no longer rests on the external
+    CLI's own plan mode (which refused both in 2.1.322, measured, and
+    may not in another version)."""
     for posture in ("plan_attended_yes", "plan_unattended"):
         for row in ("write_inside", "bash_rmrf_inside"):
             raw = json.loads(matrix[("raw", posture, "clihook", row)])
-            assert raw["hookSpecificOutput"]["permissionDecision"] == "allow"
+            out = raw["hookSpecificOutput"]
+            assert out["permissionDecision"] == "deny"
+            assert out["permissionDecisionReason"].startswith(
+                "plan mode (read-only)")
 
 
 def test_the_bypass_hook_cages_the_command_it_allows(matrix):
@@ -684,69 +655,55 @@ def world(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("mode", ["default", "acceptEdits"])
 @pytest.mark.parametrize("cmd", DENY_LISTED)
-def test_today_the_hook_puts_a_deny_listed_command_to_the_person(
+def test_the_hook_and_the_native_gate_refuse_a_deny_listed_command_alike(
         world, mode, cmd):
-    """Characterization of the gap in DISAGREEMENTS (_HOOK_NO_DENY_LIST):
-    native refuses without asking; the hook asks, and a yes lets it
-    through (main then prints allow, and the external CLI runs a call its
-    hook allowed without a question of its own -- measured with 2.1.322:
-    'rm -rf build' approved through the relay deleted the directory)."""
+    """Native refuses without asking, and so does the hook, with the same
+    reason. Before, the hook asked and a yes let the command through (main
+    printed allow; measured with the external CLI 2.1.322: 'rm -rf build'
+    approved through the relay deleted the directory)."""
     perms = _perms(world, mode, True)
     native = A._doc_executor._run_permission_gate(
         "bash", {"command": cmd, "cwd": str(world["ws"])}, perms)
     assert native and "deny-pattern" in native and not _asked(perms)
     refusal, asked = _hook_with_yes(world, mode, cmd)
-    assert refusal is None and asked
+    assert refusal == native and not asked
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "intended: the hook refuses a deny-listed command as the native bash "
-    "gate does, unasked, in every mode. Today _run_permission_gate runs on "
-    "the hook only in bypass (cli_gate.py:353-354, :407); in default and "
-    "acceptEdits the command is put to the person and allowed on yes"))
 @pytest.mark.parametrize("mode", ["default", "acceptEdits"])
 @pytest.mark.parametrize("cmd", DENY_LISTED)
 def test_intended_the_hook_refuses_a_deny_listed_command(world, mode, cmd):
+    """The hook refuses a deny-listed command as the native bash gate
+    does, unasked, in every mode (cli_gate._decide_bash runs
+    _run_permission_gate before anybody is asked)."""
     refusal, asked = _hook_with_yes(world, mode, cmd)
     assert refusal and "deny-pattern" in refusal and not asked
 
 
 # ------------------------------------------------- intended (step 2)
 
-_HOOK_DECIDES_EVERY_TOOL = (
-    "intended once the CLI hook decides every tool (consolidation step 2): ")
-
-
-@pytest.mark.xfail(strict=True, reason=_HOOK_DECIDES_EVERY_TOOL + (
-    "WebFetch is decided by the hook as the native executor decides it. "
-    "Today WebFetch is not in _DECIDED_TOOLS (cli_gate.py:379), main "
-    "prints no decision, and under bypass (--dangerously-skip-permissions) "
-    "the external CLI asks nobody: an outside URL the native egress gate "
-    "refuses is left to the program"))
 @pytest.mark.parametrize("posture", ["bypass_unattended", "default_unattended",
                                      "plan_unattended"])
 def test_intended_clihook_decides_webfetch_like_native(matrix, posture):
+    """WebFetch is decided by the hook as the native executor decides it
+    (cli_gate._decide_web: _run_permission_gate), so under bypass an
+    outside URL the native egress gate refuses is refused, not left to
+    the program."""
     assert (matrix[(posture, "clihook", "web_fetch_outside")]
             == matrix[(posture, "native", "web_fetch_outside")])
 
 
-@pytest.mark.xfail(strict=True, reason=_HOOK_DECIDES_EVERY_TOOL + (
-    "an mcp__ call is decided by the hook as _mcp_call_refusal decides it. "
-    "Today mcp__ names are not in _DECIDED_TOOLS (cli_gate.py:379); the "
-    "hook prints nothing and the external CLI decides alone"))
 @pytest.mark.parametrize("posture", ["bypass_unattended", "default_unattended",
                                      "plan_unattended"])
 def test_intended_clihook_decides_mcp_like_mcp_path(matrix, posture):
+    """An mcp__ call is decided by the hook as _mcp_call_refusal decides
+    it (cli_gate.decide_call), not left to the program."""
     assert (matrix[(posture, "clihook", "mcp_send")]
             == matrix[(posture, "mcp", "mcp_send")])
 
 
-@pytest.mark.xfail(strict=True, reason=_HOOK_DECIDES_EVERY_TOOL + (
-    "in plan mode the hook refuses what the native plan gate refuses "
-    "instead of printing an explicit allow (_ask_for_command lets plan "
-    "pass, cli_gate.py:430; _gate_write_path has no plan check). Today the "
-    "refusal comes only from the external CLI's own plan mode (measured "
-    "2.1.322)"))
 @pytest.mark.parametrize("row", ["write_inside", "bash_rmrf_inside"])
 def test_intended_clihook_refuses_plan_mode_writes(matrix, row):
+    """In plan mode the hook refuses what the native plan gate refuses
+    instead of printing an explicit allow; the refusal no longer rests on
+    the external CLI's own plan mode."""
     assert matrix[("plan_unattended", "clihook", row)] == DENY
