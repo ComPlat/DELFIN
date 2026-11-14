@@ -72,6 +72,20 @@ export interface AgentRow {
   /** Where an item is (open on another machine, its folder), at the right. */
   where?: string
   item?: AttentionItem
+  /** The marks the dashboard's session list shows beside the name, in
+   *  its words: "kept" (Keep session on: it runs on after its windows
+   *  close) and "background" (started by a swarm, a schedule or headless). */
+  marks?: string[]
+}
+
+/** A session's marks, as the dashboard's list draws them (agent_sessions
+ *  KEPT_PILL, BACKGROUND_TAG): one service, one reading. */
+export function marksOf(summary: Record<string, any>): string[] {
+  const marks: string[] = []
+  if (summary.keep !== false) marks.push("kept")
+  const where = String(summary.workspace ?? "").replace(/\\/g, "/")
+  if (summary.unattended || /\/\.delfin\/worktrees\//.test(where)) marks.push("background")
+  return marks
 }
 
 /** What a session of this service needs or does. */
@@ -136,6 +150,7 @@ export function agentRows(state: AppState, pins: ReadonlySet<string>, now: numbe
       cost: cost > 0 ? `$${cost.toFixed(2)}` : "",
       current: state.current === id,
       workspace: s.workspace || String(summary.workspace || ""),
+      marks: marksOf(summary),
       created: Number(summary.createdAt ?? 0), at,
     })
   })
@@ -154,7 +169,11 @@ export function agentRows(state: AppState, pins: ReadonlySet<string>, now: numbe
       age: "", cost: "", current: false, workspace: e.workspace, created: 0, at,
     })
   })
+  // Within a group what runs comes before what does not (asleep, ended),
+  // as in the dashboard's list.
+  const still = (r: AgentRow) => (r.status === "sleeping" || r.status === "ended" ? 1 : 0)
   rows.sort((a, b) => ORDER.indexOf(a.group) - ORDER.indexOf(b.group) || RANK[a.kind] - RANK[b.kind]
+    || still(a) - still(b)
     || (a.kind === "attention" ? a.at - b.at : b.created - a.created || b.at - a.at))
   return rows.map(({ created: _c, at: _a, ...row }) => row)
 }
@@ -696,7 +715,9 @@ export function AgentViewPanel(props: { view: AgentView; theme: () => Theme; wid
           // A notice is quiet: what it says in the faint colour.
           const quiet = row.kind === "attention" && markOf(row.item!) === "notice"
           const where = () => row.where ? middle(row.where, Math.max(8, Math.floor(inner() * 0.24))) : ""
-          const right = () => [where(), row.age, row.cost].filter(Boolean).join("  ")
+          // The dashboard's marks ("kept", "background"), at the right.
+          const right = () => [(row.marks ?? []).join(" · "), where(), row.age, row.cost]
+            .filter(Boolean).join("  ")
           const name = () => fit(row.name, Math.max(8, Math.floor(inner() * 0.32)))
           const stopLabel = props.keymap?.label("agentsStop") ?? "ctrl+x"
           const activity = () => renaming() ? "renaming: type the new name below"

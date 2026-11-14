@@ -119,6 +119,48 @@ def _provider_notes(args: argparse.Namespace) -> list[str]:
     return [note] if note else []
 
 
+def _exit_when_no_model(args: argparse.Namespace, engine, backend: str,
+                        provider: str, model: str) -> None:
+    """Stop with how to connect a model when the settings' choice cannot run.
+
+    Input: a command that takes the settings-file defaults (``chat``) and
+    names no --backend, --provider or --model of its own, the engine just
+    built, and the backend, provider and model resolved from those
+    defaults. Output: nothing when model_setup finds the selection usable;
+    else the no-model message on stderr and exit status 2, before the
+    first turn. Asked of the client the engine really built (the CLI
+    backend's program, a keyed API client): a fresh install lands here --
+    the shipped default is the CLI backend, and with its program missing
+    or too old the turn used to fail with a backend error ("unknown option
+    '--include-hook-events'"). An engine without such a client (a
+    stand-in) is not asked about.
+
+    Rejected: checking every command -- ``run``, the scheduler and the
+    benchmark pass their selection explicitly and keep their own errors;
+    checking before the engine exists, which also stopped every caller
+    that supplies its own engine.
+    """
+    if not getattr(args, "settings_defaults", False):
+        return
+    if any(getattr(args, name, "") for name in ("backend", "provider", "model")):
+        return
+    from . import api_client, model_setup
+    client = getattr(engine, "client", None)
+    if engine is None:
+        # The engine could not be built: CLIClient found no program.
+        problem = (model_setup.cli_program_problem()
+                   if backend == "cli" and provider in ("", "claude", "anthropic") else "")
+    elif isinstance(client, api_client.CLIClient):
+        problem = model_setup.cli_program_problem(getattr(client, "claude_path", None))
+    elif isinstance(client, (api_client.OpenAIClient, api_client.APIClient)):
+        problem = model_setup.selection_problem(backend, provider, model)
+    else:
+        return
+    if problem:
+        print(model_setup.no_model_message(problem), file=sys.stderr)
+        raise SystemExit(2)
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -139,23 +181,29 @@ def _build_engine(args: argparse.Namespace):
     provider = _resolve_provider(args, fallback)
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
-    engine = AgentEngine(
-        repo_dir=Path(cwd).expanduser().resolve(),
-        backend=backend,
-        provider=provider,
-        model=model,
-        mode=mode,
-        # Declared on the parser since the first version of this file and
-        # never forwarded: --effort parsed fine and changed nothing.
-        effort=getattr(args, "effort", "") or fallback.get("effort", ""),
-        permission_mode=getattr(args, "permission_mode", "") or "",
-        extra_dirs=list(getattr(args, "extra_dirs", None) or []),
-        read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
-        # None, never []: CLIClient tests the parameter for ``is not None``
-        # and an empty list would build ``--allowedTools`` with nothing
-        # after it, which restricts the session to no tools at all.
-        allowed_tools=_allowed_tools(args) or None,
-    )
+    try:
+        engine = AgentEngine(
+            repo_dir=Path(cwd).expanduser().resolve(),
+            backend=backend,
+            provider=provider,
+            model=model,
+            mode=mode,
+            # Declared on the parser since the first version of this file and
+            # never forwarded: --effort parsed fine and changed nothing.
+            effort=getattr(args, "effort", "") or fallback.get("effort", ""),
+            permission_mode=getattr(args, "permission_mode", "") or "",
+            extra_dirs=list(getattr(args, "extra_dirs", None) or []),
+            read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
+            # None, never []: CLIClient tests the parameter for ``is not None``
+            # and an empty list would build ``--allowedTools`` with nothing
+            # after it, which restricts the session to no tools at all.
+            allowed_tools=_allowed_tools(args) or None,
+        )
+    except FileNotFoundError:
+        # CLIClient refuses to exist without its program.
+        _exit_when_no_model(args, None, backend, provider, model)
+        raise
+    _exit_when_no_model(args, engine, backend, provider, model)
     _apply_run_budget(engine, args)
     _apply_tool_surface(engine, args)
     # After the client exists, because two of the three switches live on
@@ -957,8 +1005,7 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         return 2
     # The start check cmd_chat runs too (isolation_posture), once per run
     # for both doors (`run` and chat -p; neither prepare path runs it):
-    # without a layer, bypass is confirmed when a terminal can answer,
-    # else the run continues in default and says so here. After the
+    # without a layer, the run continues in default and says so here. After the
     # session is opened, as in cmd_chat, so it judges the mode the run
     # will actually have.
     from .isolation_posture import apply_at_start
@@ -2268,8 +2315,8 @@ def _start_interactive_session(args: argparse.Namespace, report,
             engine.set_kit_permission_mode(posture)
     except Exception:
         pass          # a backend with no gate has no posture to set
-    # The same start check as cmd_run: bypass without isolation is
-    # confirmed once here, else the session starts in default.
+    # The same start check as cmd_run: bypass without isolation starts
+    # in default.
     from .isolation_posture import apply_at_start
     start_notes = tuple(_provider_notes(args))
     start_notes += tuple(apply_at_start(engine, can_ask=can_ask))
@@ -4768,6 +4815,35 @@ def cmd_compare_arms(args: argparse.Namespace) -> int:
     return _pc.exit_code(verdict)
 
 
+def cmd_friction(args: argparse.Namespace) -> int:
+    """Where real use lost turns and time since ``--since``, ranked, with a
+    proposed task per bucket (friction_report). Read only, except that
+    ``--save`` keeps the day's JSON under ~/.delfin/friction/ and shows the
+    change against the last saved day."""
+    import json as _json
+    import time as _time
+
+    from . import friction_report as _fr
+    from . import round_report as _rpt
+    try:
+        since_s = _rpt.parse_since(getattr(args, "since", "") or "24h")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    data = _fr.collect(since_s=since_s)
+    if getattr(args, "json", False):
+        print(_json.dumps(data, indent=1))
+        return 0
+    save_dir = Path.home() / ".delfin" / "friction"
+    previous = _fr.previous_report(
+        save_dir,
+        _time.strftime("%Y-%m-%d", _time.gmtime(data["generated_s"])))
+    print(_fr.render_text(data, previous))
+    if getattr(args, "save", False):
+        print(f"\nsaved: {_fr.save(data, save_dir)}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -5816,6 +5892,21 @@ def build_parser() -> argparse.ArgumentParser:
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
 
+    # friction — ranked refusals, slow turns and silent exits, with tasks
+    fric = sub.add_parser(
+        "friction",
+        help="Where real use lost turns and time, ranked, with a proposed "
+             "task per bucket (read only)")
+    fric.add_argument("--since", default="24h",
+                      help="Window start: 24h / 3d / 2026-11-12 "
+                           "(default 24h)")
+    fric.add_argument("--json", action="store_true",
+                      help="Print the report as JSON")
+    fric.add_argument("--save", action="store_true",
+                      help="Keep the report under ~/.delfin/friction/ and "
+                           "compare with the last saved day")
+    fric.set_defaults(func=cmd_friction)
+
     # provenance / compare-arms -- a paired comparison of two runs that
     # refuses skewed pairs and null tests (paired_compare.py). Read only.
     prov = sub.add_parser(
@@ -6274,8 +6365,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     tui = sub.add_parser(
         "tui",
-        help="The terminal UI: one window over all your sessions, which keep "
-             "running when it closes (sessions live in `delfin-agent service`)",
+        help="The terminal UI: one window over your sessions (they live in "
+             "`delfin-agent service`). A session this window starts ends when it "
+             "closes (ctrl+c twice) unless Keep session is on: /keep on, or --keep",
     )
     tui.add_argument("--cwd", default="", help="Workspace of the first session")
     tui.add_argument("-n", "--name", dest="session_name", default="",
@@ -6295,6 +6387,9 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--no-isolate", action="store_true")
     tui.add_argument("-v", "--verbose", action="store_true",
                      help="Show the model's thinking, as chat --verbose does")
+    tui.add_argument("--keep", action="store_true",
+                     help="Start this window's sessions with Keep session on: they keep "
+                          "running in the agent service after the window closes")
     tui.add_argument("--inline", action="store_true",
                      help="Draw under the shell's last line, the conversation in the "
                           "terminal's own scrollback, instead of taking the whole terminal")

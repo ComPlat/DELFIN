@@ -32,6 +32,14 @@ set -euo pipefail
 #   INSTALL_METALLOGEN           (default: 0)  MetalloGen, own environment (Python 3.11; needs ORCA)
 #   INSTALL_ORCA_MLIPS           (default: 0)  orca-mlips (ORCA ExtOpt MLIPs: AIMNet2, ORB), own
 #                                              environment (Python 3.12, CUDA PyTorch)
+#   INSTALL_ORCA_MLIPS_MACE      (default: 0)  orca-mlips MACE plugin (mace-torch) into that
+#                                              environment; licensed, never part of INSTALL_ALL:
+#                                              MACE weights are non-commercial (ASL)
+#   INSTALL_ORCA_MLIPS_UMA       (default: 0)  orca-mlips UMA plugin (fairchem-core), own
+#                                              environment; licensed, never part of INSTALL_ALL:
+#                                              gated weights, needs your own HuggingFace login
+#   INSTALL_ORCA_EXTERNAL_TOOLS  (default: 0)  orca-external-tools (ORCA ExtOpt server, AIMNet2),
+#                                              own environment (Python 3.12, CUDA PyTorch)
 #   INSTALL_PLOTLY               (default: 0)  plotly
 #   INSTALL_ALL                  (default: 0)  Install everything
 #   FORCE_REINSTALL              (default: 0)  Force reinstall
@@ -62,6 +70,10 @@ INSTALL_RXEMBED="${INSTALL_RXEMBED:-${INSTALL_ALL}}"
 INSTALL_MOLASSEMBLER="${INSTALL_MOLASSEMBLER:-${INSTALL_ALL}}"
 INSTALL_METALLOGEN="${INSTALL_METALLOGEN:-${INSTALL_ALL}}"
 INSTALL_ORCA_MLIPS="${INSTALL_ORCA_MLIPS:-${INSTALL_ALL}}"
+# Licensed: installed only when named, never by INSTALL_ALL.
+INSTALL_ORCA_MLIPS_MACE="${INSTALL_ORCA_MLIPS_MACE:-0}"
+INSTALL_ORCA_MLIPS_UMA="${INSTALL_ORCA_MLIPS_UMA:-0}"
+INSTALL_ORCA_EXTERNAL_TOOLS="${INSTALL_ORCA_EXTERNAL_TOOLS:-${INSTALL_ALL}}"
 INSTALL_PLOTLY="${INSTALL_PLOTLY:-${INSTALL_ALL}}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
@@ -361,9 +373,97 @@ ORCA_MLIPS_SPEC="${ORCA_MLIPS_SPEC:-orca-mlips==1.3.0}"
 ORCA_MLIPS_CONDA_SPECS="${ORCA_MLIPS_CONDA_SPECS:-python=3.12.16 pip}"
 ORCA_MLIPS_PIP_DEPS="${ORCA_MLIPS_PIP_DEPS:-torch==2.15.0 aimnet==0.2.6 orb-models==0.5.5 ase==3.29.0 numpy==2.4.6}"
 
+# The two plugins whose weights are not licence-clean for any use, opt-in
+# (INSTALL_ORCA_MLIPS_MACE / INSTALL_ORCA_MLIPS_UMA, never INSTALL_ALL), each
+# saying its terms before anything is fetched.
+# MACE goes into the environment above: mace-torch 0.3.17 needs torch>=2.5 and
+# e3nn==0.4.4, and pip's resolution in that environment only adds packages
+# (torch 2.15.0, numpy 2.4.6, aimnet and orb-models stay as they are).
+ORCA_MLIPS_MACE_PIP_DEPS="${ORCA_MLIPS_MACE_PIP_DEPS:-mace-torch==0.3.17 e3nn==0.4.4 torch==2.15.0 numpy==2.4.6}"
+# UMA has an environment of its own: fairchem-core 2.25.0 pins torch~=2.13.0 and
+# e3nn>=0.5, which the torch above and MACE's e3nn==0.4.4 both exclude (pip:
+# ResolutionImpossible). orca-mlips goes in with --no-deps after them, as above.
+ORCA_MLIPS_UMA_CONDA_SPECS="${ORCA_MLIPS_UMA_CONDA_SPECS:-python=3.12.16 pip}"
+ORCA_MLIPS_UMA_PIP_DEPS="${ORCA_MLIPS_UMA_PIP_DEPS:-torch==2.13.0 fairchem-core==2.25.0 ase==3.29.0 numpy==2.4.6}"
+
 install_orca_mlips() {
+  # The MACE plugin goes into this environment, so it is built first.
+  if [ "${INSTALL_ORCA_MLIPS_MACE}" = "1" ]; then
+    INSTALL_ORCA_MLIPS=1
+  fi
   install_own_env INSTALL_ORCA_MLIPS orca-mlips orca_mlips orca_mlips_plugins \
     "${ORCA_MLIPS_CONDA_SPECS}" "${ORCA_MLIPS_PIP_DEPS}" "${ORCA_MLIPS_SPEC}" ""
+  install_orca_mlips_mace
+  install_orca_mlips_uma
+}
+
+install_orca_mlips_mace() {
+  if [ "${INSTALL_ORCA_MLIPS_MACE}" != "1" ]; then
+    log "INSTALL_ORCA_MLIPS_MACE: skipped (INSTALL_ORCA_MLIPS_MACE=0)"
+    return 0
+  fi
+  log "LICENCE: MACE foundation-model weights (MACE-OMOL-0, MACE-OFF, MACE-MP) are under the"
+  log "LICENCE: Academic Software License -- non-commercial (academic) use only."
+  log "LICENCE: See the MACE documentation, section Foundation Models (mace-docs.readthedocs.io)."
+  local env_dir="${ROOT}/.mamba_env/orca_mlips"
+  local py="${env_dir}/bin/python"
+  local log_file="${LOG_DIR}/orca_mlips_mace_install.log"
+  if [ ! -x "${py}" ]; then
+    warn "orca-mlips MACE plugin: the orca-mlips environment (${env_dir}) is not there; see ${LOG_DIR}/orca_mlips_install.log"
+    return 0
+  fi
+  if epic_mace_python "${py}" -c "import mace, orca_mlips_plugins" >/dev/null 2>&1 \
+      && [ "${FORCE_REINSTALL}" != "1" ]; then
+    log "orca-mlips MACE plugin: already installed (${py})"
+    return 0
+  fi
+  log "installing the MACE stack of orca-mlips (${ORCA_MLIPS_MACE_PIP_DEPS}) into ${env_dir}..."
+  # shellcheck disable=SC2086
+  epic_mace_python "${py}" -m pip install --no-cache-dir ${ORCA_MLIPS_MACE_PIP_DEPS} \
+    2>&1 | tee -a "${log_file}" || true
+  if epic_mace_python "${py}" -c "import mace, orca_mlips_plugins" >/dev/null 2>&1; then
+    log "orca-mlips MACE plugin installed: ${env_dir}/bin/orca-mlips-mace"
+  else
+    warn "orca-mlips MACE plugin installation failed; see ${log_file}"
+  fi
+}
+
+install_orca_mlips_uma() {
+  if [ "${INSTALL_ORCA_MLIPS_UMA}" != "1" ]; then
+    log "INSTALL_ORCA_MLIPS_UMA: skipped (INSTALL_ORCA_MLIPS_UMA=0)"
+    return 0
+  fi
+  log "LICENCE: UMA weights are under the FAIR Chemistry licence and gated on HuggingFace."
+  log "LICENCE: They download only with YOUR OWN HuggingFace login, after you accept the model"
+  log "LICENCE: terms at https://huggingface.co/facebook/UMA. Log in once with"
+  log "LICENCE:   ${ROOT}/.mamba_env/orca_mlips_uma/bin/hf auth login"
+  log "LICENCE: (older huggingface_hub: huggingface-cli login). DELFIN never handles the token."
+  install_own_env INSTALL_ORCA_MLIPS_UMA orca-mlips-uma orca_mlips_uma "orca_mlips_plugins, fairchem.core" \
+    "${ORCA_MLIPS_UMA_CONDA_SPECS}" "${ORCA_MLIPS_UMA_PIP_DEPS}" "${ORCA_MLIPS_SPEC}" ""
+}
+
+# orca-external-tools (FACCTs, GPL-3.0; github.com/faccts/orca-external-tools),
+# the ExtOpt provider with a server: `oet_server aimnet2` keeps the model
+# resident for a whole job and `oet_client` (ORCA's ProgExt) only forwards each
+# request (its README, "Server"; ORCA 6.1 tutorial "ORCA with External
+# Methods"). Installed in an environment of its own like orca-mlips, from the
+# pinned release v2.1.0 held to its SHA-256 (it is not on PyPI); DELFIN starts
+# its commands and never ships its code. Only the aimnet2 extra (MIT weights):
+# its mace (non-commercial weights) and uma (gated weights; conflicts with
+# aimnet2) extras belong in installations of their own. Every version is exact,
+# as pip resolved oet[aimnet2] 2.1.0 with torch 2.15.0 (the PyPI CUDA build).
+# The archive has no git metadata, so its version is told to setuptools_scm.
+OET_REF="${OET_REF:-v2.1.0}"
+OET_URL="${OET_URL:-https://github.com/faccts/orca-external-tools/archive/refs/tags/${OET_REF}.tar.gz}"
+OET_SHA256="${OET_SHA256:-c939a392232ce418fafc4007319326328109b65ce8ecb4d2a96cac3f4d1a7492}"
+OET_CONDA_SPECS="${OET_CONDA_SPECS:-python=3.12.16 pip}"
+OET_PIP_DEPS="${OET_PIP_DEPS:-torch==2.15.0 aimnet==0.2.6 numpy==2.5.4 flask==3.1.3 waitress==3.0.2 requests==2.34.2 psutil==7.2.2}"
+
+install_oet() {
+  export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_OET="${OET_REF#v}"
+  install_own_env INSTALL_ORCA_EXTERNAL_TOOLS orca-external-tools oet oet \
+    "${OET_CONDA_SPECS}" "${OET_PIP_DEPS}" "${OET_URL}" "${OET_SHA256}"
+  unset SETUPTOOLS_SCM_PRETEND_VERSION_FOR_OET
 }
 
 # ---------------------------------------------------------------------------
@@ -404,6 +504,7 @@ main() {
   install_epic_mace
   install_smiles_tools
   install_orca_mlips
+  install_oet
 
   # Visualization
   pip_install "${python_bin}" INSTALL_PLOTLY "plotly" plotly
@@ -444,7 +545,9 @@ main() {
     printf "  %-24s %s\n" "epic-MACE" "not installed"
   fi
   for env_label in "rxembed:rxembed:rxembed" "molassembler:scine_molassembler:Molassembler" \
-      "metallogen:MetalloGen:MetalloGen" "orca_mlips:orca_mlips_plugins:orca-mlips"; do
+      "metallogen:MetalloGen:MetalloGen" "orca_mlips:orca_mlips_plugins:orca-mlips" \
+      "orca_mlips:mace:orca-mlips MACE" "orca_mlips_uma:fairchem.core:orca-mlips UMA" \
+      "oet:oet:orca-external-tools"; do
     local env_name="${env_label%%:*}" rest="${env_label#*:}"
     local env_module="${rest%%:*}" env_shown="${rest#*:}"
     if [ -x "${ROOT}/.mamba_env/${env_name}/bin/python" ] \

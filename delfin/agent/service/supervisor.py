@@ -87,7 +87,8 @@ ACTING = frozenset({"session.create", "session.merge", "session.prompt",
                     "session.cancel",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
-                    "session.setTitle", "attention.answer", "attention.dismiss",
+                    "session.setTitle", "session.setKeep",
+                    "attention.answer", "attention.dismiss",
                     "cluster.login", "cluster.logout", "cluster.detail",
                     "job.detail",
                     # What decides where DELFIN's ssh goes is written by a
@@ -147,6 +148,9 @@ SLEEP_AFTER_S = 3600.0
 #: pause lets a prompt sent right behind a detach still reach it.
 UNUSED_GRACE_S = 5.0
 
+#: A window's "/keep", "/keep on" or "/keep off" line (session.setKeep).
+_KEEP_LINE = re.compile(r"^\s*/keep(?:\s+(on|off))?\s*$", re.IGNORECASE)
+
 #: How long a dormant session (asleep, or left by a service that stopped or
 #: died) is kept to be woken; a later service forgets older ones.
 DORMANT_KEEP_S = 7 * 86400.0
@@ -157,7 +161,7 @@ DORMANT_KEEP_S = 7 * 86400.0
 #: the brief went out already.
 RESUME_SETTINGS = ("cwd", "name", "title", "model", "provider", "effort", "mode", "permissionMode",
                    "addDirs", "readDirs", "isolate", "noIsolate", "fake", "fakeDelay", "fakeSave",
-                   "brief", "briefTitle", "untitled")
+                   "brief", "briefTitle", "untitled", "keep")
 
 #: How long a wake waits for the worker of a service that died to finish
 #: saving the session (it ends on its own when its pipe closes).
@@ -558,7 +562,14 @@ class Session:
                 "activity": self.activity or None,
                 "waiting": _asked_gist(next(iter(self.pending.values()))) if self.pending else None,
                 "answer": self.answer or None,
-                "lastInput": round(self.last_input, 3) or None}
+                "lastInput": round(self.last_input, 3) or None,
+                # A swarm/headless run: started --unattended (supervisor.py
+                # passes it to the worker). The dashboard groups such
+                # sessions apart from the person's own.
+                "unattended": bool(self.settings.get("unattended")),
+                # Keep session: false once a window switched it off; it
+                # then ends with the windows that hold it.
+                "keep": self.id not in self.supervisor.not_kept}
 
     def never_used(self) -> bool:
         """Started new (not resumed, continued, forked; no brief, no
@@ -752,6 +763,11 @@ class Supervisor:
         #: a service that stopped or died. id -> {"summary", "settings",
         #: "since", "why", "oldPid"}; kept in the roster for a later service.
         self.dormant: dict[str, dict] = {}
+        #: Keep session switched off: session id -> the windows that hold
+        #: it (switched it off, created it so, or attached while it was
+        #: off). It ends, saved, once the last of them has closed its
+        #: connection; a detach does not let go. Not here: kept.
+        self.not_kept: dict[str, set[Client]] = {}
         self._waking: dict[str, asyncio.Future] = {}
         self._roster_timer: asyncio.TimerHandle | None = None
         self.idle_exit_s = float(idle_exit_s)
@@ -965,8 +981,71 @@ class Supervisor:
         for session in list(self.sessions.values()):
             if session.subscribers.pop(client, None) is not None:
                 self._end_if_unused(session)
+        for sid, holders in list(self.not_kept.items()):
+            if client in holders:
+                holders.discard(client)
+                if not holders:
+                    self._end_not_kept(sid)
         if not self.clients:
             self.quiet_since = time.monotonic()
+
+    # -- keep session -----------------------------------------------------------------
+    def set_keep(self, client: Client, sid: str, keep: bool) -> None:
+        """Switch Keep session for ``sid``. Off: ``client`` holds it (with
+        any window that already does). On: nobody holds it any more."""
+        if keep:
+            self.not_kept.pop(sid, None)
+        else:
+            self.not_kept.setdefault(sid, set()).add(client)
+        # In its settings too: asleep, or carried over to a later service
+        # (a restart, a crash), it wakes not kept, held by whoever wakes it.
+        session = self.sessions.get(sid)
+        if session is not None:
+            session.settings["keep"] = bool(keep)
+            self.broadcast_summary(session, roster_now=True)
+        elif sid in self.dormant:
+            self.dormant[sid].setdefault("settings", {})["keep"] = bool(keep)
+            self._make_dormant(self.dormant[sid])
+
+    def _hold_if_not_kept(self, client: Client, sid: str) -> None:
+        """A window that opens a session switched off holds it too."""
+        holders = self.not_kept.get(sid)
+        if holders is not None and not client.closed:
+            holders.add(client)
+
+    def _end_not_kept(self, sid: str) -> None:
+        """The last window that held a session not kept has closed: it ends,
+        saved -- not asleep, not woken again by this service."""
+        self.not_kept.pop(sid, None)
+        if self.closing:
+            return                       # the service stops: it ends with the rest
+        if sid in self.dormant and sid not in self.sessions:
+            self._forget_dormant(sid, "not kept: its last window closed")
+            return
+        session = self.sessions.get(sid)
+        if session is not None:
+            session.sleeping = False
+            session.ended_reason = "not kept: its last window closed"
+            self.spawn(self._end_session(session))
+
+    async def _end_session(self, session: Session) -> None:
+        try:
+            await session.request("session.shutdown", {}, timeout=30)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(asyncio.shield(session.done), 60)
+        except asyncio.TimeoutError:
+            if session.proc.returncode is None:
+                session.proc.send_signal(signal.SIGTERM)
+
+    async def _m_session_setKeep(self, client: Client, params: dict) -> dict:
+        sid = str(params["sessionId"])
+        if sid not in self.sessions and sid not in self.dormant:
+            raise _Refusal(protocol.UNKNOWN_SESSION, f"no session {sid!r} here")
+        keep = bool(params["keep"])
+        self.set_keep(client, sid, keep)
+        return {"keep": keep}
 
     def _end_if_unused(self, session: Session) -> None:
         """A session no window shows any more that was never asked anything
@@ -1128,6 +1207,16 @@ class Supervisor:
                 return {"approval": str(rest["mode"])}
             if method == "session.cancel":
                 return {"stopping": False, "refused": 0}
+        if method == "session.prompt":
+            # "/keep [on|off]" typed in a window: the same switch as
+            # session.setKeep, held by that window. The worker is still
+            # sent the line (as "/keep on" or "/keep off", the state now)
+            # and says what it means in the session's own words.
+            asked = _KEEP_LINE.match(str(rest.get("text") or ""))
+            if asked and client.may_act:
+                if asked.group(1):
+                    self.set_keep(client, sid, asked.group(1).lower() == "on")
+                rest["text"] = "/keep " + ("off" if sid in self.not_kept else "on")
         session = await self._awake(client, sid)
         if method == "session.prompt":
             session.prompted = True
@@ -1179,6 +1268,19 @@ class Supervisor:
         return {"sessions": rows}
 
     async def _m_session_create(self, client: Client, params: dict) -> dict:
+        # keep false is for the session this window starts. One that runs
+        # here, or sleeps here, already -- woken or continued by the window
+        # -- is attached as it is: a kept session stays kept.
+        known = set(self.sessions) | set(self.dormant) | set(self._waking)
+        out = await self._create_session(client, params)
+        sid = str(out.get("sessionId") or "")
+        if sid and params.get("keep") is False and sid not in known:
+            self.set_keep(client, sid, False)
+        elif sid and params.get("attach", True):
+            self._hold_if_not_kept(client, sid)
+        return out
+
+    async def _create_session(self, client: Client, params: dict) -> dict:
         cwd = Path(str(params["cwd"])).expanduser()
         if not str(params["cwd"]).strip() or not cwd.is_absolute():
             # A relative folder would be taken relative to the service's
@@ -1408,6 +1510,7 @@ class Supervisor:
         # shows.
         events = session.replay(int(params.get("turns", 0) or 0))
         session.subscribers[client] = session.seen_seq
+        self._hold_if_not_kept(client, session.id)
         return {"session": session.info, "state": session.state,
                 "pending": list(session.pending.values()), "events": events,
                 "summary": session.summary()}
@@ -1723,6 +1826,7 @@ class Supervisor:
                 self.quiet_since = time.monotonic()
             return
         if session.id and self.sessions.pop(session.id, None) is not None:
+            self.not_kept.pop(session.id, None)
             # Ended for a restart, it sleeps across it: the next service
             # offers it, and its windows reconnect to it -- for them it
             # goes on, and was never removed.
@@ -1891,8 +1995,13 @@ class Supervisor:
     # -- dormant sessions -----------------------------------------------------------------
     def _summaries(self) -> list[dict]:
         return ([s.summary() for s in self.sessions.values() if s.id]
-                + [_named(r["summary"]) for r in self.dormant.values()
+                + [self._kept_as_now(_named(r["summary"])) for r in self.dormant.values()
                    if r["summary"]["sessionId"] not in self.sessions])
+
+    def _kept_as_now(self, summary: dict) -> dict:
+        """A dormant summary with the Keep session switch as it is now."""
+        summary["keep"] = summary.get("sessionId") not in self.not_kept
+        return summary
 
     def _dormant_record(self, session: Session, why: str) -> dict:
         summary = {**session.summary(), "state": "sleeping", "pending": 0, "pid": 0,
@@ -1905,7 +2014,8 @@ class Supervisor:
         self.dormant[sid] = record
         self._write_roster()
         message = protocol.event({"type": "session.summary", "session": sid,
-                                  "ts": round(time.time(), 3), "summary": dict(record["summary"])})
+                                  "ts": round(time.time(), 3),
+                                  "summary": self._kept_as_now(dict(record["summary"]))})
         data = protocol.encode(message)
         for client in list(self.clients):
             if client.greeted:
@@ -2007,6 +2117,12 @@ class Supervisor:
         session = self.sessions.get(sid)
         if session is None:
             raise _Refusal(UNKNOWN_SESSION, f"no session {sid!r} here")
+        if session.settings.get("keep") is False and sid not in self.not_kept \
+                and client is not None and client.may_act:
+            # Woken not kept -- asleep, or from a service before this one --
+            # it is held by the window that woke it, as it was by its own.
+            self.not_kept[sid] = {client}
+            self.broadcast_summary(session, roster_now=True)
         return session
 
     async def _wake(self, client: Client | None, sid: str) -> None:

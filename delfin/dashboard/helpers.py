@@ -312,6 +312,12 @@ def create_busy_css():
         ".delfin-time-limit-toggle.widget-toggle-buttons "
         ".widget-toggle-button:nth-of-type(n+4) { "
         "margin-top: 6px !important; }"
+        # The toggle's layout is 550 px with 148 px buttons; on a phone the
+        # third column ran past the pane and was cut ('36h', 'Custom').
+        ".delfin-time-limit-toggle.widget-toggle-buttons { max-width: 100% !important; }"
+        "@media (max-width: 600px) { "
+        ".delfin-time-limit-toggle.widget-toggle-buttons .widget-toggle-button "
+        "{ width: calc(33.333% - 4px) !important; min-width: 0 !important; } }"
         "</style>"
     )
 
@@ -347,18 +353,190 @@ def create_page_css():
         ".jupyter-widgets.jupyter-widget-tab > .lm-TabBar "
         ".lm-TabBar-tab:not(.lm-mod-current) { "
         "color: var(--jp-ui-font-color1); }"
-        # The dashboard's own tab bar (DASHBOARD_TABS_CLASS) wraps onto a
-        # further row instead of cutting labels short: every tab is as wide
-        # as its name. With many tabs on a laptop the widgets' default
-        # (tabs shrink to fit, labels clipped) showed "Submit Jo".
-        f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} "
-        "> .lm-TabBar > .lm-TabBar-content { flex-wrap: wrap; }"
-        f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} "
-        "> .lm-TabBar .lm-TabBar-tab { flex: 0 0 auto; }"
-        f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} "
-        "> .lm-TabBar .lm-TabBar-tabLabel { overflow: visible; }"
-        "</style>"
+        + DASHBOARD_TABS_CSS
+        + DASHBOARD_FORM_CSS
+        + "</style>"
     )
+
+
+#: One look for the widgets' own controls on every tab: 6 px corners like
+#: the header's (8 px there, at 30 px height), the accent border and a soft
+#: ring on focus, a visible keyboard focus on buttons. The widgets draw
+#: square fields and selects, 2 px buttons, and mark focus by a border
+#: colour only.
+#:
+#: Precedence, by construction: the selectors are the widgets' own, so the
+#: specificity is theirs (focus is added through ``:where``, which counts
+#: nothing), and nothing is ``!important``. The widgets' styles sit in the
+#: document head, before this; every tab's own CSS sits after it (this is
+#: in the header cell), so a rule written for one control -- the agent's
+#: composer and chips, the session list, the structure editor -- wins at
+#: equal specificity and keeps its look.
+#:
+#: Rejected: per-widget layouts (dozens of inline widths and radii to keep
+#: in step); one shared class added to every control (each tab would have
+#: to remember it, and the ones that forget look different again).
+_FIELDS = (".widget-text input[type='text'], .widget-text input[type='number'], "
+           ".widget-text input[type='password'], .widget-textarea textarea, "
+           ".widget-dropdown > select")
+_FOCUSED = ", ".join(s.strip() + ":where(:focus)" for s in _FIELDS.split(","))
+DASHBOARD_FORM_CSS = (
+    f"{_FIELDS} {{ border-radius: 6px; }}"
+    f"{_FOCUSED} {{ border-color: var(--delfin-accent, #3d74b6); "
+    "box-shadow: 0 0 0 2px rgba(61, 116, 182, 0.18); }"
+    ".jupyter-button { border-radius: 6px; }"
+    ".jupyter-button:where(:focus-visible) { outline: 2px solid var(--delfin-accent, #3d74b6); "
+    "outline-offset: 1px; }"
+)
+
+
+_BAR = f".jupyter-widgets.jupyter-widget-tab.{DASHBOARD_TABS_CLASS} > .lm-TabBar"
+
+#: The dashboard's own tab bar (DASHBOARD_TABS_CLASS): one flat row.
+#:
+#: * One row, every tab as wide as its name. The widgets' default shrank
+#:   the tabs and clipped the labels ("Submit Jo"); wrapping onto a second
+#:   row (2026-11-12) left "Settings" alone below the rest at 1366 px and
+#:   moved every tab body down by a row. Where the names do not fit, the
+#:   strip scrolls sideways (wheel, trackpad, keyboard focus), its
+#:   scrollbar hidden and the side that has more faded
+#:   (keep_dashboard_tab_in_view sets the two classes).
+#: * The padding follows the window: clamp(6px, 0.6vw, 14px) fits the
+#:   eighteen labels (about 1020 px of text at 13 px) in one row at
+#:   1366 px and gives them room at 1920 px.
+#: * Flat tabs as in current IDEs and web apps: no grey boxes; inactive
+#:   labels in the theme's secondary text colour (4.6:1 on the white bar,
+#:   WCAG AA -- the 2026-11-12 contrast finding was the secondary colour on
+#:   the boxes' grey), the current one in the primary colour with an accent
+#:   underline that lies on the body's top border, a light background on
+#:   hover. The current tab is not bold: a bolder label would widen it and
+#:   shift every tab after it.
+#: * 28 px high, as the old single row (26 px plus the overlap): the tab
+#:   bodies are calc(100vh - 145px) tall.
+#:
+#: Rejected: an overflow menu ("More") for the tabs that do not fit. The
+#: tab bar is Lumino's, re-rendered from its own state; hiding tabs in it
+#: and mirroring them in a menu would fight that renderer on every update.
+DASHBOARD_TABS_CSS = (
+    ":root { --delfin-accent: #3d74b6; }"
+    f"{_BAR} {{ min-height: 0; }}"
+    f"{_BAR} > .lm-TabBar-content {{ flex-wrap: nowrap; align-items: flex-end; "
+    "gap: 2px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; "
+    "overscroll-behavior-x: contain; position: relative; z-index: 1; "
+    "margin-bottom: -1px; }"
+    f"{_BAR} > .lm-TabBar-content::-webkit-scrollbar {{ display: none; }}"
+    f"{_BAR} .lm-TabBar-tab {{ flex: 0 0 auto; min-width: 0; max-width: none; "
+    "margin: 0; padding: 0 clamp(6px, 0.6vw, 14px); height: 28px; min-height: 28px; "
+    "box-sizing: border-box; border: none; border-bottom: 2px solid transparent; "
+    "border-radius: 6px 6px 0 0; background: transparent; font-size: 13px; "
+    "cursor: pointer; transition: color .12s, background-color .12s; }"
+    f"{_BAR} .lm-TabBar-tabLabel {{ overflow: visible; line-height: 26px; }}"
+    f"{_BAR} .lm-TabBar-tab:not(.lm-mod-current) {{ "
+    "color: var(--jp-ui-font-color2); }"
+    f"{_BAR} .lm-TabBar-tab:hover:not(.lm-mod-current) {{ "
+    "background: var(--jp-layout-color2); color: var(--jp-ui-font-color1); }"
+    f"{_BAR} .lm-TabBar-tab.lm-mod-current {{ color: var(--jp-ui-font-color0); "
+    "background: transparent; border-bottom-color: var(--delfin-accent, #3d74b6); "
+    "min-height: 28px; transform: none; }"
+    f"{_BAR} .lm-TabBar-tab.lm-mod-current::before {{ display: none; }}"
+    f"{_BAR} .lm-TabBar-tab:focus-visible {{ outline: 2px solid var(--delfin-accent, #3d74b6); "
+    "outline-offset: -2px; }"
+    f"{_BAR}.delfin-tabs-more-right > .lm-TabBar-content {{ "
+    "-webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); "
+    "mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }"
+    f"{_BAR}.delfin-tabs-more-left > .lm-TabBar-content {{ "
+    "-webkit-mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); "
+    "mask-image: linear-gradient(to left, #000 calc(100% - 40px), transparent); }"
+    f"{_BAR}.delfin-tabs-more-left.delfin-tabs-more-right > .lm-TabBar-content {{ "
+    "-webkit-mask-image: linear-gradient(to right, transparent, #000 40px, "
+    "#000 calc(100% - 40px), transparent); "
+    "mask-image: linear-gradient(to right, transparent, #000 40px, "
+    "#000 calc(100% - 40px), transparent); }"
+)
+
+
+def keep_dashboard_tab_in_view(ctx):
+    """The dashboard's tab strip, where it scrolls: edges, wheel, current tab.
+
+    Input: the page. Output, for each tab bar of class DASHBOARD_TABS_CLASS
+    (also one rendered later, e.g. after a session comes back):
+
+    * ``delfin-tabs-more-left`` / ``delfin-tabs-more-right`` on the bar
+      while tabs lie beyond that edge (DASHBOARD_TABS_CSS fades it);
+    * a vertical wheel over the strip scrolls it sideways, only while it
+      overflows -- otherwise the wheel stays the page's;
+    * the current tab is scrolled into view when it changes (a tab opened
+      from code, e.g. the agent switching to Calculations).
+
+    Events and observers only, no timer. Rejected: ``scrollIntoView`` --
+    it also scrolls every scrollable ancestor, the page included.
+    """
+    script = """
+    (function() {
+        if (window.__delfinTabStrip) return;
+        window.__delfinTabStrip = true;
+        var BAR = '.jupyter-widget-tab.%(cls)s > .lm-TabBar';
+        function strip(bar) { return bar.querySelector(':scope > .lm-TabBar-content'); }
+        function edges(bar) {
+            var c = strip(bar);
+            if (!c) return;
+            var max = c.scrollWidth - c.clientWidth;
+            bar.classList.toggle('delfin-tabs-more-left', max > 1 && c.scrollLeft > 1);
+            bar.classList.toggle('delfin-tabs-more-right', max > 1 && c.scrollLeft < max - 1);
+        }
+        function reveal(bar) {
+            var c = strip(bar);
+            if (!c) return;
+            var cur = c.querySelector('.lm-TabBar-tab.lm-mod-current');
+            if (cur && c.scrollWidth > c.clientWidth) {
+                var left = cur.offsetLeft - c.offsetLeft, right = left + cur.offsetWidth;
+                if (left < c.scrollLeft) c.scrollLeft = Math.max(0, left - 40);
+                else if (right > c.scrollLeft + c.clientWidth)
+                    c.scrollLeft = right - c.clientWidth + 40;
+            }
+            edges(bar);
+        }
+        var watched = new WeakSet();
+        var changes = new MutationObserver(function(records) {
+            var done = new Set();
+            records.forEach(function(r) {
+                var bar = r.target.closest && r.target.closest(BAR);
+                if (bar && !done.has(bar)) { done.add(bar); reveal(bar); }
+            });
+        });
+        function watch(bar) {
+            var c = strip(bar);
+            if (!c || watched.has(c)) return;
+            watched.add(c);
+            c.addEventListener('scroll', function() { edges(bar); }, {passive: true});
+            c.addEventListener('wheel', function(ev) {
+                if (c.scrollWidth <= c.clientWidth) return;
+                if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;
+                c.scrollLeft += ev.deltaY;
+                ev.preventDefault();
+            }, {passive: false});
+            changes.observe(c, {attributes: true, attributeFilter: ['class'],
+                                childList: true, subtree: true});
+            reveal(bar);
+        }
+        function scan(root) {
+            if (!root || root.nodeType !== 1) return;
+            if (root.matches(BAR)) watch(root);
+            root.querySelectorAll(BAR).forEach(watch);
+        }
+        scan(document.body);
+        new MutationObserver(function(records) {
+            for (var i = 0; i < records.length; i++) {
+                var added = records[i].addedNodes;
+                for (var j = 0; j < added.length; j++) scan(added[j]);
+            }
+        }).observe(document.body, {childList: true, subtree: true});
+        window.addEventListener('resize', function() {
+            document.querySelectorAll(BAR).forEach(reveal);
+        }, {passive: true});
+    })();
+    """ % {"cls": DASHBOARD_TABS_CLASS}
+    ctx.add_init_js(script)
 
 
 def name_page_controls(ctx):

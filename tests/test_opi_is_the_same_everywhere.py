@@ -104,7 +104,7 @@ def test_the_doctor_names_the_pinned_opi_as_ok(monkeypatch):
 def test_without_opi_the_doctor_says_how_to_install_it(monkeypatch):
     _fake_opi(monkeypatch, None)
     result = doctor.check_opi()
-    assert result.status == doctor.MISSING and "[orca]" in result.fix_hint
+    assert result.status == doctor.MISSING and f"orca-pi=={doctor.OPI_VERSION}" in result.fix_hint
 
 
 def test_another_opi_version_is_broken(monkeypatch):
