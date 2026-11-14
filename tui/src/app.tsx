@@ -39,7 +39,7 @@ import { Footer } from "./footer/footer"
 import { createPicker, type Choice } from "./footer/picker"
 import { resumeRowsOf } from "./entry"
 import { editPrompt } from "./composer/editor"
-import { keptOf, leaveWords } from "./leaving"
+import { hostedOf, keptOf, leaveWords } from "./leaving"
 import { keyTable, type Keymap } from "./keymap/keymap"
 import type { AttentionItem } from "./protocol/generated"
 import type { Asked, SessionState } from "./store/state"
@@ -946,7 +946,7 @@ export function App(props: AppProps): JSX.Element {
       { label: tasksFolded() ? "open the task list" : "fold the task list", detail: props.keymap.label("tasks"),
         value: "do:tasks" },
       { label: "redraw", detail: props.keymap.label("redraw"), value: "do:redraw" },
-      { label: "leave the window", detail: `${props.keymap.label("quit")} — ${leaveWords(keptOf(session()?.summary))}`,
+      { label: "leave the window", detail: `${props.keymap.label("quit")} — ${leaveWords(keptOf(session()?.summary), hostedOf(session()?.summary))}`,
         value: "do:quit" },
     ]
     // The window's own command (rename…, above) wins over one of the
@@ -1090,7 +1090,7 @@ export function App(props: AppProps): JSX.Element {
       return
     }
     quitArmed = now
-    say(`ctrl+c again to leave — ${leaveWords(keptOf(session()?.summary))}`)
+    say(`ctrl+c again to leave — ${leaveWords(keptOf(session()?.summary), hostedOf(session()?.summary))}`)
   }
 
   /** Whether this key reached the open question (approval.handleKey). */

@@ -233,6 +233,24 @@ EVENTS: dict[str, dict[str, str]] = {
     # brief: a failed job, a finished run, an alert from the agent view):
     # shown as one row, and put in front of the session's first prompt.
     "context": {"title": "string", "text": "string"},
+    # The chat of a session a dashboard kernel hosts (session.host), as its
+    # agent tab shows it: live only, never logged, sent to dashboard
+    # windows only. Version ``v``; the HTML is the one of version ``base``
+    # cut to its first ``keep`` characters, then ``tail``. In an attach
+    # answer it comes whole, as ``html``.
+    "dashboard.chat": {"v": "integer", "base": "integer?", "keep": "integer?",
+                       "tail": "string?", "html": "string?"},
+}
+
+#: Events a host link (session.host) sends that no window sees: the
+#: service acts on them. released: the kernel let go of the session on
+#: purpose (closed in its list) -- it saved and released it, so nothing is
+#: waited for; end: and it is to end for every window ("End it"), not run
+#: on. keep: the Keep session switch in the hosting tab, without the
+#: kernel's own window becoming a holder of the session.
+HOST_EVENTS: dict[str, dict[str, str]] = {
+    "host.released": {"end": "boolean"},
+    "host.keep": {"keep": "boolean"},
 }
 
 # ---------------------------------------------------------------------------
@@ -282,7 +300,21 @@ SERVICE_REQUESTS: dict[str, dict[str, str]] = {
     "session.worktrees": {"cwd": "string"},
     "session.merge": {"path": "string"},
     "session.pending": {"sessionId": "string"},
-    "session.detach": {"sessionId": "string"},
+    # release: the window lets go of a session switched off (Keep
+    # session) as if its connection had closed -- a view closed with x;
+    # a plain detach (a view hidden) keeps holding it.
+    "session.detach": {"sessionId": "string", "release": "boolean?"},
+    # A dashboard kernel hosts its agent tab's session here: from the
+    # answer on, this connection is the session's pipe (the service sends
+    # it the session requests above and reads its events), and the
+    # session is listed, joined and answered from every window like one a
+    # worker runs. info: what session.info says (provider, model, effort,
+    # mode, approval, title). keep: Keep session (default on). fake: a
+    # worker that takes the session over runs the scripted engine (tests).
+    # Refused for a session that runs here already, and for a connection
+    # that may not act.
+    "session.host": {"sessionId": "string", "cwd": "string", "title": "string?",
+                     "keep": "boolean?", "info": "object?", "fake": "boolean?"},
     # Keep session. true: the session runs on after its windows close (the
     # default). false: it ends, saved, once every window that holds it has
     # closed its connection; a window holds it by switching it off, by
@@ -409,6 +441,9 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
                        "summary": "object"},
     "session.pending": {"pending": "[object]"},
     "session.detach": {"detached": "boolean"},
+    # history: the session's event log holds its earlier turns already
+    # (false: a session new to the service; its host sends its history).
+    "session.host": {"hosted": "boolean", "keep": "boolean", "history": "boolean"},
     "session.setKeep": {"keep": "boolean"},
     "session.message": {"sent": "boolean"},
     # sessionId, title, workspace, model, provider, updatedAt, running
@@ -537,7 +572,10 @@ SESSION_SUMMARY: dict[str, str] = {
     "lastInput": "number?",
     # Keep session (session.setKeep): false once a window switched it off;
     # it then ends with the windows that hold it.
-    "keep": "boolean?"}
+    "keep": "boolean?",
+    # "dashboard": a dashboard's kernel drives the session (session.host);
+    # pid is that kernel's. Absent: a worker of this service runs it.
+    "host": "string?"}
 
 UNKNOWN_SESSION = -32004
 WORKER_GONE = -32005

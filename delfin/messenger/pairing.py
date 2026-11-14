@@ -51,6 +51,7 @@ import stat
 import threading
 import time
 from pathlib import Path
+from ..agent.state_paths import state_root
 
 #: How long an invitation link is valid.
 INVITATION_TTL_S = 600
@@ -73,7 +74,7 @@ KINDS = frozenset({"pair", "verify", "phones", "revoke", "cancel"})
 FINAL_STATES = frozenset({"verified", "refused", "expired", "failed", "done", "cancelled"})
 MAX_FILE_BYTES = 16384
 
-_DIR = Path.home() / ".delfin" / "messenger_pairing"
+_DIR = state_root() / "messenger_pairing"
 _ID = re.compile(r"[0-9a-f]{32}")
 _HEX = re.compile(r"[0-9a-f]{64}")
 

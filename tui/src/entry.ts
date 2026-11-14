@@ -16,6 +16,7 @@
  * ones of the folder -- each with its title, folder, age and state.
  */
 import { shortPath } from "./agents/attention"
+import { marksOf } from "./agents/view"
 
 /** What a bare `--resume` hands over as its id (cli_service.RESUME_PICK). */
 export const RESUME_PICK = ":pick"
@@ -52,6 +53,20 @@ export function settingsFor(start: Record<string, unknown>, entry: Entry): Recor
   if (entry.kind === "continue") rest.continue = true
   else delete rest.continue
   return rest
+}
+
+/** Whether a plain start that named no session should still offer the
+ *  running sessions first: the window would otherwise fall into a
+ *  brand-new session while sessions already run or wait, and joining a
+ *  running session is meant to be one step. A
+ *  session only sleeping (kept, no worker) does not count; on esc the
+ *  picker still starts a new one, so nothing is lost. */
+export function offersRunningFirst(entry: Entry, sessions: { state?: string }[],
+                                   start: Record<string, unknown> = {}): boolean {
+  if (entry.kind !== "new") return false
+  // A start that names its new session (`-n NAME`) asked for that session.
+  if (String(start.name ?? "").trim()) return false
+  return Boolean((sessions ?? []).some((s) => String(s.state ?? "") !== "sleeping"))
 }
 
 // -- the resume picker's rows ---------------------------------------------------
@@ -141,7 +156,11 @@ export function resumeRowsOf(listed: unknown[], past: unknown[], currentId = "",
     if (id !== currentId && neverAsked(s)) continue
     seen.add(id)
     const at = Number(s.lastActivity ?? s.createdAt ?? 0) || 0
-    rows.push(row(id, String(s.workspace ?? ""), firstLine(s.title || s.firstPrompt), stateOf(s), at))
+    // The marks read as the dashboard's do (agents/view marksOf): "kept"
+    // tells which sessions outlive their window (a window's own sessions
+    // are not kept unless /keep on), "background" an unattended run.
+    rows.push(row(id, String(s.workspace ?? ""), firstLine(s.title || s.firstPrompt), stateOf(s), at,
+                  marksOf(s)))
   }
   for (const raw of past) {
     const s = (raw ?? {}) as Record<string, unknown>
