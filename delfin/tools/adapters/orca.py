@@ -37,7 +37,7 @@ from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
 from delfin.tools._spec import DataKeySpec, ParamSpec
-from delfin.tools.adapters.xtb import _read_xyz_coords
+from delfin.tools.adapters.xtb import _mpi_note, _read_xyz_coords
 
 logger = get_logger(__name__)
 
@@ -421,7 +421,8 @@ class _OrcaBase(StepAdapter):
             output_file=out_path if out_path.is_file() else None,
             data=data,
             artifacts=artifacts,
-            error=None if success else "ORCA calculation failed",
+            error=None if success else (
+                _mpi_note(out_path) or "ORCA calculation failed"),
         )
 
 
