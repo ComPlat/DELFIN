@@ -1260,6 +1260,21 @@ class Supervisor:
         hosted = self.sessions.get(sid)
         if isinstance(hosted, HostedSession) and not hosted.done.done():
             return                       # its host holds it; _host_gone decides
+        waking = self._waking.get(sid)
+        if waking is not None:
+            # Being woken (a worker takes it over): forgotten now, the wake
+            # would bring it up held by nobody. Ended once it is up, if
+            # nobody has taken hold of it meanwhile.
+            async def once_awake() -> None:
+                try:
+                    await asyncio.shield(waking)
+                except Exception:
+                    return
+                holders = self.not_kept.get(sid)
+                if holders is not None and not holders:
+                    self._end_not_kept(sid)
+            self.spawn(once_awake())
+            return
         self.not_kept.pop(sid, None)
         if self.closing:
             return                       # the service stops: it ends with the rest
