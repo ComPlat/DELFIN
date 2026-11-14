@@ -814,8 +814,8 @@ def _service_status(runtime: Path, tree: Path) -> dict:
         with ServiceClient(sock, timeout=10.0, client="page-check") as c:
             got = c.request("service.status", timeout=30)
         return {"pid": got.get("pid"), "startedAt": got.get("startedAt"),
-                "dormant": [{"sessionId": (r.get("summary") or {}).get("sessionId"),
-                             "why": r.get("why")} for r in got.get("dormant") or []]}
+                "dormant": [r.get("sessionId") for r in got.get("dormant") or []],
+                "running": [r.get("sessionId") for r in got.get("sessions") or []]}
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"[:200]}
 
@@ -1216,6 +1216,17 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
     h["reply_a"] = _send_visible(page_a, "hosted-one: hello")
     h["service_up_s"] = _until(sock.exists, 120)
     tui = ServiceClient(sock, client="delfin-tui", timeout=30.0) if sock.exists() else None
+    # A watcher held open through every step: what the service says when
+    # a session leaves it, and why it stops, if it does.
+    watch = ServiceClient(sock, client="page-check-watch", timeout=30.0) \
+        if sock.exists() else None
+
+    def watched() -> list:
+        if watch is None:
+            return []
+        return [{k: e.get(k) for k in ("type", "session", "reason", "restart")}
+                for e in list(watch.events)
+                if e.get("type") in ("session.removed", "service.stopping")]
 
     def summaries() -> list:
         if tui is None:
@@ -1317,11 +1328,10 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
     note = Path(cleanup.work) / "attached-notes.txt"
     note.write_text("line one\nline two\n")
     try:
-        page_a.evaluate("() => { const i = (" + _VISIBLE_JS + ")('.delfin-agent-upload')[0];"
-                        " return !!i; }")
-        h["file_inputs"] = page_a.evaluate(
-            "() => document.querySelectorAll('input[type=file]').length")
-        page_a.locator("input[type=file]").first.set_input_files(str(note))
+        # The browser's own file picker, opened by the tab's Files button.
+        with page_a.expect_file_chooser(timeout=30_000) as chooser:
+            page_a.evaluate("() => (" + _VISIBLE_JS + ")('.delfin-agent-upload')[0].click()")
+        chooser.value.set_files(str(note))
         time.sleep(4)
         _send_visible(page_a, "see the attached notes")
         h["a_file_s"] = _until(lambda: "attached-notes" in _chat_text(page_a), 60)
@@ -1377,7 +1387,10 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
         WAIT_HANDOVER)
     h["service_after_c"] = _service_sessions(runtime, args.tree)
     h["status_after_c"] = _service_status(runtime, args.tree)
+    h["watched_after_c"] = watched()
     page_d, errors_d, url = _reopen(browser, args, url, rec, env, cleanup, h, "_d")
+    h["status_at_d"] = _service_status(runtime, args.tree)
+    h["watched_at_d"] = watched()
     h["d_lists_running_s"] = _until(
         lambda: "delfin-state-running" in _row_of(page_d, "kept-two").get("classes", []), 60)
     h["d_rows"] = _sidebar_rows(page_d)
@@ -1387,6 +1400,9 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
         and _visible(page_d, ".delfin-agent-input textarea") > 0, 120)
     _shot(page_d, args, "hosted_d", rec)
     h["page_errors_c"], h["page_errors_d"] = errors_c[:10], errors_d[:10]
+    h["watched"] = watched()
+    if watch is not None:
+        watch.close()
 
     def done(key):
         return h.get(key) is not None and h.get(key) is not False
