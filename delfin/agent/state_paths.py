@@ -45,6 +45,23 @@ FILE_MODE = 0o600
 # Bits that must never be set on anything in the state tree.
 _SHARED_BITS = 0o077
 
+
+def state_root() -> Path:
+    """The DELFIN state root shared temp directories live under.
+
+    ``~/.delfin`` by default, overridable via the ``DELFIN_STATE``
+    environment variable (used by tests and by callers that keep state
+    elsewhere). Resolution errors fall back to ``~/.delfin`` -- a
+    missing HOME must not turn a temp-path question into a crash.
+    """
+    env = os.environ.get("DELFIN_STATE", "").strip()
+    if env:
+        return Path(env).expanduser()
+    try:
+        return Path.home() / ".delfin"
+    except Exception:  # pragma: no cover - HOME unset
+        return Path("/.delfin")
+
 # A walk over a state tree is bounded so a pathological directory (a user
 # pointing the archive at their home, a runaway trace dir) cannot turn
 # start-up into a multi-minute stat storm.
