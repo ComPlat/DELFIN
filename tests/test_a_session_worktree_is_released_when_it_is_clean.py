@@ -233,7 +233,9 @@ def test_closing_a_session_releases_its_worktree():
 
     src = inspect.getsource(AS)
     start = src.index("def close_session")
-    body = src[start:start + 2000]
+    # The whole function, to the next one: a fixed window of characters
+    # failed when close_session grew by a call, not by a change of order.
+    body = src[start:src.index("\n    def ", start + 1)]
     assert "release_session_worktree" in body
     i_shutdown = body.index('refs"].get("shutdown")')
     assert i_shutdown < body.index("release_session_worktree"), (

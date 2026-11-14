@@ -21,6 +21,8 @@ export interface LeavingSession {
   /** Keep session (the service's summary `keep`): false, the service ends
    *  the session once this window, which holds it, has gone. */
   kept?: boolean
+  /** A dashboard's kernel runs it (summary `host`): it goes on there. */
+  hosted?: boolean
 }
 
 /** Whether a session runs on after its windows leave: the service's Keep
@@ -40,9 +42,17 @@ export function startedHere<T extends Record<string, unknown>>(params: T): T & {
   return { ...params, keep: params.keep === true }
 }
 
+/** Whether a dashboard's kernel runs the session (`session.host`; the
+ *  summary's `host`): leaving this window does not end it, the dashboard
+ *  still has it open. */
+export function hostedOf(summary?: { host?: string | null } | null): boolean {
+  return summary?.host === "dashboard"
+}
+
 /** What leaving the window does to the session in view, as ctrl+c and the
  *  menu say it. */
-export function leaveWords(kept: boolean): string {
+export function leaveWords(kept: boolean, hosted = false): string {
+  if (hosted) return "the session goes on in the dashboard that runs it"
   return kept ? "the session keeps running in the agent service"
     : "the session ends -- /keep on keeps it"
 }
@@ -71,6 +81,8 @@ export function leavingNote(input: { session?: LeavingSession; problem?: string 
     if (!input.problem) {
       lines.push(s.state === "ended"
         ? `DELFIN: ${name} has ended${s.ended?.reason ? ` (${plain(s.ended.reason)})` : ""}.`
+        : s.hosted
+          ? `DELFIN: ${name} goes on in the dashboard that runs it.`
         : s.kept === false
           ? `DELFIN: ${name} ends with this window (Keep session is off). It is saved.`
           : `DELFIN: ${name} keeps running in the agent service (or ← in any window).`)

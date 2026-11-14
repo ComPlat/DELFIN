@@ -9,6 +9,8 @@ in the prompt it types:
     do-bash <command>      one ``bash`` tool call, then a text answer
     do-bash-secret         a ``bash`` call carrying FAKE_SECRET in a header
     do-write <path> <text> one ``write_file`` tool call, then a text answer
+    do-xyz <path>          one ``write_file`` call writing a water molecule
+                           in XYZ format (a structure the chat draws in 3D)
     do-webfetch <url>      one ``web_fetch`` tool call, then a text answer
     do-md                  a markdown answer (heading, list, code block)
     do-slow                ~30 s of streamed text, for interrupt tests
@@ -96,6 +98,11 @@ def plan(messages: list[dict]) -> dict:
             return {"tool": "write_file",
                     "args": {"path": path, "content": (rest[0] if rest else "")
                              + "\n"}}
+        if s.startswith("do-xyz "):
+            return {"tool": "write_file",
+                    "args": {"path": s[7:].strip() or "water.xyz",
+                             "content": "3\nwater\nO 0.000 0.000 0.117\n"
+                                        "H 0.000 0.757 -0.467\nH 0.000 -0.757 -0.467\n"}}
         if s == "do-remember" or s.startswith("do-remember "):
             # The call the live failure showed: a person said "merk dir
             # das", the model chose type=finding outside a swarm run.
