@@ -455,11 +455,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'title': 'DELFIN Agent',
             'widget': None,
             'default_order': 55,
-            'default_visible': _agent_backend_available,
+            # Shown without a model too: the tab itself says how to connect
+            # one (delfin.agent.model_setup.no_model_card_html).
+            'default_visible': True,
             'available': True,
             'fixed': False,
             'build': _deferred_agent_tab(),
-            'reason': '' if _agent_backend_available else 'Install the Anthropic CLI or set ANTHROPIC_API_KEY.',
+            'reason': '',
         },
         {
             'id': 'agent_activity',

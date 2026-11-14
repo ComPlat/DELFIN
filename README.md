@@ -120,10 +120,23 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 
 ### Install methods
 
-**Installer (any Linux workstation or cluster login node):**
+**Installer (any Linux workstation or cluster login node):** two commands are a complete first install.
 ```bash
 git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
-bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools, Ketcher
+bash ~/software/delfin/install.sh
+```
+
+Before it changes anything, the installer checks what it needs — curl or wget, tar, git, a writable `~/software` and `$HOME`, about 6 GB of free disk space for the default (3 GB with `--core`, 20 GB with `--all`), a C compiler where OpenMPI has to be built — and stops with what to install when something is missing. A run takes a few minutes plus the OpenMPI build where one is needed (about 25 minutes). Its whole output is kept in `~/software/logs/`; when a step fails, it names the step, and running the same command again continues from what is already in place. It ends with how to start:
+
+```bash
+source ~/.delfin_env.sh       # a new shell does this by itself
+delfin-voila                  # the dashboard: open the URL it prints
+cd ~/calc && delfin-agent     # the agent in a terminal, working in that folder
+```
+
+On a cluster login node the dashboard listens on 127.0.0.1 only; from your own computer, `ssh -L 8866:127.0.0.1:8866 USER@LOGIN-NODE`, then open the printed URL there. The agent needs a language model: store a key with `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `OPENAI_API_KEY`), or run a local OpenAI-compatible server, then choose the provider and model in the dashboard's DELFIN Agent tab; until one is connected, that tab and `delfin-agent` say how. Where `$HOME` has a small quota, clone into a workspace and pass `--prefix` there; the tools of `~/.delfin` (about 1 GB for the default) and the pip cache in `~/.cache` stay in `$HOME`. An older DELFIN venv activated from `~/.bashrc` keeps the new one from being activated; the installer names such a line.
+
+```bash
 bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks included (several GB)
 bash ~/software/delfin/install.sh --only crest,gxtb
 bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
