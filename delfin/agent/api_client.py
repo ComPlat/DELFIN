@@ -37441,9 +37441,24 @@ class OpenAIClient(_BaseClient):
                             try:
                                 from . import mcp_client as _mcp
                                 _ws = _hook_workspace(self._permissions)
+                                # JC2 target 2 (operator route): the agent
+                                # session id travels WITH EACH tools/call
+                                # request, not with the spawn — the server
+                                # is spawned during tool-list assembly,
+                                # before any dispatch, so a spawn-time id
+                                # is empty in a fresh process and, in the
+                                # agent service, another session's.  The
+                                # id this dispatch holds (same seam the
+                                # step journal reads) rides in the
+                                # request's `_meta`, read only by
+                                # DELFIN's own delfin-tools handler.
+                                _sid_mcp = str(
+                                    getattr(self._permissions,
+                                            "task_session_id", "") or "")
                                 result = _wrap_untrusted(
                                     _mcp.get_registry(_ws).call(
-                                        fn_name, fn_args))
+                                        fn_name, fn_args,
+                                        agent_session_id=_sid_mcp))
                             except Exception as exc:
                                 result = json.dumps({
                                     "error": f"MCP dispatch failed: {exc}"

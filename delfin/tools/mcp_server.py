@@ -138,11 +138,29 @@ def h_validate_application(
     })
 
 
+#: The agent session id travels WITH EACH tools/call request (operator
+#: route, JC2 target 2): the dispatching session puts its id into the
+#: request's `_meta` under the "delfin/agent_session_id" key (MCP's
+#: reserved per-request metadata field; mcp_client.call_tool writes it,
+#: only for DELFIN's own builtin server).  It is read ONLY here — the
+#: one handler that must know whose session a run belongs to — never
+#: from the spawn environment and never from a model-supplied argument
+#: (a model-passed agent_session_id input is removed below; identity is
+#: never model-supplied).  Absent meta means "no agent session": the
+#: run still completes and the chain records with no session id.
+SESSION_ID_META_KEY = "delfin/agent_session_id"
+
+
 def h_run_application(
     name: str, inputs: Optional[Dict[str, Any]] = None, cores: int = 1,
+    agent_session_id: Optional[str] = None,
 ) -> str:
-    inputs = inputs or {}
-    res = platform.run_application(name, cores=cores, **inputs)
+    inputs = dict(inputs or {})
+    # Identity is never model-supplied: a value the model put into the
+    # tool arguments is removed — the _meta value wins.
+    inputs.pop("agent_session_id", None)
+    res = platform.run_application(
+        name, cores=cores, agent_session_id=agent_session_id, **inputs)
     return _dumps({
         "name": res.name,
         "ok": res.ok,
@@ -356,7 +374,36 @@ def run_server(argv: Optional[list[str]] = None) -> None:
 
         Note: this can be long-running (it executes real QM jobs).
         """
-        return h_run_application(name, inputs, cores)
+        # JC2 target 2: the dispatching session's id arrives in the
+        # request's `_meta` (see SESSION_ID_META_KEY).  Read it from the
+        # FastMCP request context, best-effort: a caller that sends no
+        # meta (plain CLI, tests, another client) means "no agent
+        # session" and the handler records the chain with no id.  A
+        # caller whose SDK lacks the API also means that — the run still
+        # completes.  The context is request-scoped: it is NOT part of
+        # the tool's schema, so the model cannot supply identity
+        # through it.
+        meta_id = None
+        try:
+            ctx = mcp.get_context()
+            rc = ctx.request_context if ctx is not None else None
+            meta = getattr(rc, "meta", None)
+            # The installed SDK (mcp 1.27.0) delivers the request's
+            # `_meta` as a pydantic RequestParams.Meta (model_config
+            # extra="allow"), NOT a dict: unknown keys live in
+            # model_extra.  Read both shapes; neither present (an older
+            # SDK, another client) means "no agent session".
+            if isinstance(meta, dict):
+                extra = meta
+            else:
+                extra = getattr(meta, "model_extra", None)
+                if not isinstance(extra, dict):
+                    extra = {}
+            value = extra.get(SESSION_ID_META_KEY)
+            meta_id = str(value) if value else None
+        except Exception:
+            meta_id = None
+        return h_run_application(name, inputs, cores, agent_session_id=meta_id)
 
     @mcp.tool()
     def validate_spec(spec: dict, inputs: dict | None = None, geometry: bool = False) -> str:
