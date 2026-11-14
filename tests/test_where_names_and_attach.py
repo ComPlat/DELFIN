@@ -1,6 +1,6 @@
 """/`delfin-agent where` names every running session and says how to rejoin it.
 
-The person's rule (2026-11-12) and wave55/e2: ``delfin-agent where`` must, for
+``delfin-agent where`` must, for
 every running session, print the session's name (the title the dashboard and
 the TUI both show — the same name everywhere), the exact one-line terminal
 command to attach (``delfin-agent tui --resume <id>``), and the dashboard link
