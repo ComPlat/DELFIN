@@ -300,6 +300,9 @@ class Cleanup:
         self.work: Path | None = None
         self.model_server = None
         self.tree: Path | None = None
+        #: Where the agent service's own logs are copied before the work
+        #: folder goes (they are the evidence when a step fails).
+        self.out: Path | None = None
         self.report: dict = {}
         self._done = False
 
@@ -371,6 +374,15 @@ class Cleanup:
         if self.model_server is not None:
             self.model_server.shutdown()
         if self.work is not None:
+            service = self.work / "home" / ".delfin" / "agent_service"
+            if self.out is not None and service.is_dir():
+                for part in ("logs", "run"):
+                    try:
+                        shutil.copytree(service / part,
+                                        self.out / "logs" / "agent_service" / part,
+                                        dirs_exist_ok=True)
+                    except OSError:
+                        pass
             shutil.rmtree(self.work, ignore_errors=True)
         return rep
 
@@ -789,6 +801,25 @@ def _service_sessions(runtime: Path, tree: Path) -> list[dict]:
         return [{"error": f"{type(exc).__name__}: {exc}"[:200]}]
 
 
+def _service_status(runtime: Path, tree: Path) -> dict:
+    """service.status: its pid and the dormant sessions with why each one
+    sleeps -- what tells a woken session from one a new service found."""
+    sock = service_socket(runtime)
+    if not sock.exists():
+        return {}
+    try:
+        if str(tree) not in sys.path:
+            sys.path.insert(0, str(tree))
+        from delfin.agent.service.client import ServiceClient
+        with ServiceClient(sock, timeout=10.0, client="page-check") as c:
+            got = c.request("service.status", timeout=30)
+        return {"pid": got.get("pid"), "startedAt": got.get("startedAt"),
+                "dormant": [{"sessionId": (r.get("summary") or {}).get("sessionId"),
+                             "why": r.get("why")} for r in got.get("dormant") or []]}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"[:200]}
+
+
 def _kept_records(env: dict) -> dict:
     """What the kept-session records and the hand-over log say (the
     dashboard's HOME and its scratch state): file name -> text."""
@@ -1173,6 +1204,15 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
     page_a, errors_a = _open_agent_tab(browser, args, url, rec, name="_a")
     kernels_a = _kernel_pids(url, watched=True)
     h["picked_a"] = _pick_visible_model(page_a, model_name)
+    # Code mode: under Ask All it asks before it writes a file.
+    h["picked_a"]["Mode"] = page_a.evaluate(
+        "() => { const b = Array.from(document.querySelectorAll('.widget-dropdown'))"
+        " .find(b => b.offsetParent !== null && b.innerText.includes('Mode:'));"
+        " const s = b && b.querySelector('select'); if (!s) return null;"
+        " const o = Array.from(s.options).find(o => o.text.includes('Code'));"
+        " if (!o) return null; s.value = o.value;"
+        " s.dispatchEvent(new Event('change', {bubbles: true})); return o.text; }")
+    time.sleep(3)
     h["reply_a"] = _send_visible(page_a, "hosted-one: hello")
     h["service_up_s"] = _until(sock.exists, 120)
     tui = ServiceClient(sock, client="delfin-tui", timeout=30.0) if sock.exists() else None
@@ -1279,7 +1319,9 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
     try:
         page_a.evaluate("() => { const i = (" + _VISIBLE_JS + ")('.delfin-agent-upload')[0];"
                         " return !!i; }")
-        page_a.locator(".delfin-agent-root input[type=file]").first.set_input_files(str(note))
+        h["file_inputs"] = page_a.evaluate(
+            "() => document.querySelectorAll('input[type=file]').length")
+        page_a.locator("input[type=file]").first.set_input_files(str(note))
         time.sleep(4)
         _send_visible(page_a, "see the attached notes")
         h["a_file_s"] = _until(lambda: "attached-notes" in _chat_text(page_a), 60)
@@ -1310,6 +1352,7 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
     h["kernel_b_ended_after_s"] = _wait_pid_gone(pid_b, WAIT_KERNEL_END)
     h["off_ended_s"] = _until(lambda: not any(
         s.get("sessionId") == sid for s in _service_sessions(runtime, args.tree)), 120)
+    h["status_after_off"] = _service_status(runtime, args.tree)
 
     # -- (c) Keep session on: it runs on, and is there in a new dashboard -----
     page_c, errors_c, url = _reopen(browser, args, url, rec, env, cleanup, h, "_c")
@@ -1333,6 +1376,7 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
         s.get("sessionId") == kept_sid for s in _service_sessions(runtime, args.tree)),
         WAIT_HANDOVER)
     h["service_after_c"] = _service_sessions(runtime, args.tree)
+    h["status_after_c"] = _service_status(runtime, args.tree)
     page_d, errors_d, url = _reopen(browser, args, url, rec, env, cleanup, h, "_d")
     h["d_lists_running_s"] = _until(
         lambda: "delfin-state-running" in _row_of(page_d, "kept-two").get("classes", []), 60)
@@ -1448,6 +1492,7 @@ def run_check(args: argparse.Namespace) -> dict:
                  "timings_s": {}, "screenshots": []}
     cleanup = Cleanup()
     cleanup.tree = args.tree
+    cleanup.out = args.out
     t0 = time.time()
     previous = install_deadline(args.timeout)
     try:
