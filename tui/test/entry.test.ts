@@ -139,3 +139,23 @@ describe("offersRunningFirst", () => {
     expect(offersRunningFirst(entryOf({ continue: true }), [live])).toBe(false)
   })
 })
+
+describe("the picker's rows carry the dashboard's marks", () => {
+  test("an unattended session is marked background, like the dashboard's list", () => {
+    const listed = [{ sessionId: "s1", title: "swarm run", workspace: "/w", state: "working",
+                      unattended: true, keep: true, lastActivity: 100 }]
+    const rows = resumeRowsOf(listed, [], "", 200)
+    expect(rows.length).toBe(1)
+    expect(rows[0]!.state).toBe("running")
+    expect(rows[0]!.detail).toContain("background")
+    expect(rows[0]!.detail).not.toContain("kept")
+  })
+
+  test("a person's session carries no mark at all", () => {
+    const listed = [{ sessionId: "s2", title: "Butan", workspace: "/w", state: "idle",
+                      unattended: false, keep: true, lastActivity: 100 }]
+    const rows = resumeRowsOf(listed, [], "", 200)
+    expect(rows[0]!.detail).not.toContain("background")
+    expect(rows[0]!.detail).not.toContain("kept")
+  })
+})

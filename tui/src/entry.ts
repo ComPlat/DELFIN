@@ -16,6 +16,7 @@
  * ones of the folder -- each with its title, folder, age and state.
  */
 import { shortPath } from "./agents/attention"
+import { marksOf } from "./agents/view"
 
 /** What a bare `--resume` hands over as its id (cli_service.RESUME_PICK). */
 export const RESUME_PICK = ":pick"
@@ -152,7 +153,11 @@ export function resumeRowsOf(listed: unknown[], past: unknown[], currentId = "",
     if (id !== currentId && neverAsked(s)) continue
     seen.add(id)
     const at = Number(s.lastActivity ?? s.createdAt ?? 0) || 0
-    rows.push(row(id, String(s.workspace ?? ""), firstLine(s.title || s.firstPrompt), stateOf(s), at))
+    // The marks read as the dashboard's do (agents/view marksOf), but the
+    // "kept" pill stays out: every window session is kept by default
+    // (#718), so the pill would carry no information in the picker.
+    rows.push(row(id, String(s.workspace ?? ""), firstLine(s.title || s.firstPrompt), stateOf(s), at,
+                  marksOf(s).filter((m) => m !== "kept")))
   }
   for (const raw of past) {
     const s = (raw ?? {}) as Record<string, unknown>
