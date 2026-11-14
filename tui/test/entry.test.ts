@@ -51,11 +51,11 @@ describe("the resume picker's rows", () => {
   const now = 1_000_000
   const home = "/home/u"
   const listed = [
-    { sessionId: "run-old-0000", title: "old run", workspace: "/home/u/a", state: "idle", lastActivity: now - 7200 },
-    { sessionId: "sleep-00000", title: "asleep", workspace: "/home/u/a", state: "sleeping", lastActivity: now - 60 },
+    { sessionId: "run-old-0000", title: "old run", workspace: "/home/u/a", state: "idle", keep: false, lastActivity: now - 7200 },
+    { sessionId: "sleep-00000", title: "asleep", workspace: "/home/u/a", state: "sleeping", keep: false, lastActivity: now - 60 },
     { sessionId: "run-new-0000", title: "", firstPrompt: "fix the parser\nplease", workspace: "/home/u/b",
-      state: "running", lastActivity: now - 30 },
-    { sessionId: "asks-000000", title: "asks", workspace: "/x", state: "idle", pending: 1, lastActivity: now - 600 },
+      state: "running", keep: false, lastActivity: now - 30 },
+    { sessionId: "asks-000000", title: "asks", workspace: "/x", state: "idle", pending: 1, keep: false, lastActivity: now - 600 },
   ]
   const past = [
     { sessionId: "saved-old-00", title: "older save", workspace: "/home/u/a", updatedAt: now - 3 * 86400, messages: 4 },
@@ -148,14 +148,16 @@ describe("the picker's rows carry the dashboard's marks", () => {
     expect(rows.length).toBe(1)
     expect(rows[0]!.state).toBe("running")
     expect(rows[0]!.detail).toContain("background")
-    expect(rows[0]!.detail).not.toContain("kept")
   })
 
-  test("a person's session carries no mark at all", () => {
-    const listed = [{ sessionId: "s2", title: "Butan", workspace: "/w", state: "idle",
-                      unattended: false, keep: true, lastActivity: 100 }]
-    const rows = resumeRowsOf(listed, [], "", 200)
-    expect(rows[0]!.detail).not.toContain("background")
-    expect(rows[0]!.detail).not.toContain("kept")
+  test("a kept session says kept; a window's own session, not kept, carries no mark", () => {
+    const kept = [{ sessionId: "s2", title: "Butan", workspace: "/w", state: "idle",
+                    unattended: false, keep: true, lastActivity: 100 }]
+    expect(resumeRowsOf(kept, [], "", 200)[0]!.detail).toContain("kept")
+    const notKept = [{ sessionId: "s3", title: "Propan", workspace: "/w", state: "idle",
+                       unattended: false, keep: false, lastActivity: 100 }]
+    const row = resumeRowsOf(notKept, [], "", 200)[0]!
+    expect(row.detail).not.toContain("kept")
+    expect(row.detail).not.toContain("background")
   })
 })

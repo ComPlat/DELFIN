@@ -57,8 +57,8 @@ export function settingsFor(start: Record<string, unknown>, entry: Entry): Recor
 
 /** Whether a plain start that named no session should still offer the
  *  running sessions first: the window would otherwise fall into a
- *  brand-new session while sessions already run or wait (the person's
- *  rule 2026-11-12 -- the running things are listed where you look). A
+ *  brand-new session while sessions already run or wait, and joining a
+ *  running session is meant to be one step. A
  *  session only sleeping (kept, no worker) does not count; on esc the
  *  picker still starts a new one, so nothing is lost. */
 export function offersRunningFirst(entry: Entry, sessions: { state?: string }[]): boolean {
@@ -153,11 +153,11 @@ export function resumeRowsOf(listed: unknown[], past: unknown[], currentId = "",
     if (id !== currentId && neverAsked(s)) continue
     seen.add(id)
     const at = Number(s.lastActivity ?? s.createdAt ?? 0) || 0
-    // The marks read as the dashboard's do (agents/view marksOf), but the
-    // "kept" pill stays out: every window session is kept by default
-    // (#718), so the pill would carry no information in the picker.
+    // The marks read as the dashboard's do (agents/view marksOf): "kept"
+    // tells which sessions outlive their window (a window's own sessions
+    // are not kept unless /keep on), "background" an unattended run.
     rows.push(row(id, String(s.workspace ?? ""), firstLine(s.title || s.firstPrompt), stateOf(s), at,
-                  marksOf(s).filter((m) => m !== "kept")))
+                  marksOf(s)))
   }
   for (const raw of past) {
     const s = (raw ?? {}) as Record<string, unknown>
