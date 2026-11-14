@@ -151,15 +151,17 @@ def _entry_state(entry: Dict[str, Any]) -> str:
 def _rewrite(path: Path, new_entries: List[Dict[str, Any]]) -> None:
     """Prune + append atomically: rewrite the bounded entry list.
 
-    Old, finished or vanished chains are pruned (their facts stay in
-    their own work dirs); the file holds at most MAX_ENTRIES newest.
-    Atomic via temp-file + os.replace, so a crash mid-write leaves the
-    previous index readable.
+    Vanished chains (no state file any more) are pruned eagerly — they
+    are pure noise.  Finished chains STAY until the bound evicts them:
+    `delfin chain list` should still show a chain that just finished,
+    and the offer logic filters finished ones by reading each chain's
+    own state anyway (the index is a pointer).  The file holds at most
+    MAX_ENTRIES newest entries.  Atomic via temp-file + os.replace, so
+    a crash mid-write leaves the previous index readable.
     """
     kept: List[Dict[str, Any]] = []
     for e in load():
-        state = _entry_state(e)
-        if state == "unfinished":
+        if _entry_state(e) != "gone":
             kept.append(e)
     kept.extend(new_entries)
     kept = kept[-MAX_ENTRIES:]

@@ -36,7 +36,13 @@ def _fake_run_step(step_name, geometry=None, work_dir=None, **kwargs):
     )
 
 
-def _run_chain(wd, session_id=None):
+def _run_chain(wd, monkeypatch, session_id=None):
+    """A real Pipeline.run with the step runner stood in (the params file
+    does the same): the fake never spawns a subprocess — the earlier
+    version wired no fake and every test dispatched the REAL xtb_opt,
+    which forked until the process budget killed the run."""
+    if monkeypatch is not None:
+        monkeypatch.setattr("delfin.tools._runner.run_step", _fake_run_step)
     from delfin.tools.pipeline import Pipeline
 
     geom = Path(wd) / "start.xyz"
@@ -48,10 +54,10 @@ def _run_chain(wd, session_id=None):
     return wd
 
 
-def test_new_chain_is_recorded_with_session_id(home):
+def test_new_chain_is_recorded_with_session_id(home, monkeypatch):
     from delfin.tools import chain_index
 
-    wd = _run_chain(home / "runs" / "a", session_id="sess-abc")
+    wd = _run_chain(home / "runs" / "a", monkeypatch, session_id="sess-abc")
     entries = chain_index.load()
     assert len(entries) == 1
     e = entries[0]
@@ -61,33 +67,37 @@ def test_new_chain_is_recorded_with_session_id(home):
     assert isinstance(e["created_at"], float)
 
 
-def test_run_without_session_id_indexes_nothing_named(home):
+def test_run_without_session_id_indexes_nothing_named(home, monkeypatch):
     """No agent session → the entry carries no session id (never an
     invented one), and the run completes (wave-15b: nothing new is
     refused)."""
     from delfin.tools import chain_index
 
-    _run_chain(home / "runs" / "plain")
+    _run_chain(home / "runs" / "plain", monkeypatch)
     entries = chain_index.load()
     assert len(entries) == 1
     assert entries[0]["agent_session_id"] is None
 
 
-def test_index_filters_by_session(home):
+def test_index_filters_by_session(home, monkeypatch):
     from delfin.tools import chain_index
 
-    _run_chain(home / "runs" / "a", session_id="sess-1")
-    _run_chain(home / "runs" / "b", session_id="sess-2")
+    _run_chain(home / "runs" / "a", monkeypatch, session_id="sess-1")
+    _run_chain(home / "runs" / "b", monkeypatch, session_id="sess-2")
     mine = chain_index.load(agent_session_id="sess-1")
-    assert len(mine) == 1 and mine[0]["name"] == "demo"
+    assert len(mine) >= 1, "sess-1's chain is indexed"
+    assert all(e["agent_session_id"] == "sess-1" for e in mine)
+    assert any(e["name"] == "demo" for e in mine)
+    others = chain_index.load(agent_session_id="sess-2")
+    assert all(e["agent_session_id"] != "sess-1" for e in others)
 
 
-def test_load_is_per_call_redirected_home(home):
+def test_load_is_per_call_redirected_home(home, monkeypatch):
     """The index path resolves per call under the redirected home — no
     import-time constant (the state-paths watcher rule)."""
     from delfin.tools import chain_index
 
-    _run_chain(home / "runs" / "a", session_id="s")
+    _run_chain(home / "runs" / "a", monkeypatch, session_id="s")
     assert chain_index.index_path() == home / ".delfin" / "chain_index.jsonl"
     assert chain_index.index_path().is_file()
 
@@ -107,9 +117,11 @@ def test_torn_line_is_skipped_with_log(home, caplog):
     assert any("torn" in r.message for r in caplog.records)
 
 
-def test_bounded_prunes_finished_and_gone(home):
-    """Old entries whose chain is finished or vanished are pruned on the
-    next record; the index stays a pointer, never a truth store."""
+def test_bounded_prunes_gone_keeps_finished(home, monkeypatch):
+    """Vanished chains are pruned eagerly; a finished chain stays in the
+    index (list should still show it) until the bound evicts it.  The
+    index stays a pointer: its state always comes from the chain's own
+    file."""
     from delfin.tools import chain_index
     from delfin.tools import chain_state
 
@@ -117,34 +129,37 @@ def test_bounded_prunes_finished_and_gone(home):
     chain_state.ChainState.create(name="fin", work_dir=finished_wd)
     chain = chain_state.ChainState.load(finished_wd / "chain_state.json")
     chain.add_step("s0", "xtb_opt")
+    chain.steps[0].mark_submitted(job_id="local")
     chain.steps[0].mark_running()
     chain.steps[0].mark_finished({"tool_reported_success": True})
     chain.save()
     chain_index.record("fin", finished_wd)
     chain_index.record("gone", home / "runs" / "vanished")
-    _run_chain(home / "runs" / "new", session_id="s")
+    _run_chain(home / "runs" / "new", monkeypatch, session_id="s")
     names = [e["name"] for e in chain_index.load()]
     assert "gone" not in names, "vanished chains are pruned"
-    assert "fin" not in names, "finished chains are pruned"
+    assert "fin" in names, "a finished chain stays until the bound evicts it"
     assert "demo" in names
 
 
-def test_chain_list_cli_shows_state_from_each_chain(home, capsys):
+def test_chain_list_cli_shows_state_from_each_chain(
+        home, capsys, monkeypatch):
     """`delfin chain list` is read-only and re-reads each chain's own
     state file — the index is a pointer."""
     from delfin.cli_chain import main
     from delfin.tools import chain_state
 
-    wd = _run_chain(home / "runs" / "a", session_id="sess-1")
+    wd = _run_chain(home / "runs" / "a", monkeypatch, session_id="sess-1")
     chain = chain_state.ChainState.load(wd / "chain_state.json")
-    assert "pending" in [s.state for s in chain.steps]
+    assert [s.state for s in chain.steps] == ["finished"], (
+        "the fixture's own run must have finished its step cleanly")
 
     rc = main(["list"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "chain 'demo'" in out
     assert str(wd) in out
-    assert "pending" in out
+    assert "finished" in out
 
     # Empty index → one line, not silence.
     p = chain_index_index(home)
