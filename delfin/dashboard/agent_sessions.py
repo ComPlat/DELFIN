@@ -2663,9 +2663,21 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             # closes; off, it ends with its last one. Said over the host
             # link, so this dashboard's own connection does not hold it.
             import time as _time
+            from delfin.dashboard import kept_agent_sessions as K
             rec["kept"] = on
             rec["keep_sent"] = (on, _time.monotonic() + 5.0)
             rec["host"].set_keep(on)
+            # The record stays beside it: the dashboard server holds a
+            # closed window's kernel for a running turn only when it keeps
+            # a session (resume_server), and without a service the record
+            # is what hands it over. A hand-over finds the session in the
+            # service and resumes nothing twice.
+            if on:
+                _arm_kept(rec)
+            else:
+                for old in {rec.get("kept_id"), _session_id(rec)} - {None, ""}:
+                    K.disarm(old)
+                rec.pop("kept_id", None)
         else:
             from delfin.dashboard import kept_agent_sessions as K
             refusal = keep_session_refusal() if on else ""
@@ -2804,13 +2816,6 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         rec["host"] = host
         rec["host_why"] = ""
         rec["keep_sent"] = (bool(rec.get("kept")), _time.monotonic() + 5.0)
-        if rec.get("kept"):
-            # The service hands it over now; a kept record besides would
-            # resume it a second time.
-            from delfin.dashboard import kept_agent_sessions as _K
-            for old in {rec.get("kept_id"), sid} - {None, ""}:
-                _K.disarm(old)
-            rec.pop("kept_id", None)
         _show_keep(rec, bool(rec.get("kept")))
 
     def _follow_service_keep(rec: dict) -> None:
@@ -2829,7 +2834,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 return                   # ours, not answered yet
             rec.pop("keep_sent", None)
         if said != bool(rec.get("kept")):
+            from delfin.dashboard import kept_agent_sessions as K
             rec["kept"] = said
+            if said:
+                _arm_kept(rec)
+            else:
+                for old in {rec.get("kept_id"), _session_id(rec)} - {None, ""}:
+                    K.disarm(old)
+                rec.pop("kept_id", None)
             _show_keep(rec, said)
             _refresh_row_info(rec)
 
@@ -2843,7 +2855,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         rec.pop("host", None)
         if rec.get("kept"):
             try:
-                _arm_kept(rec)
+                _arm_kept(rec)           # kept current; it hands it over
             except Exception:
                 pass
 
@@ -3683,8 +3695,16 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             # takes it from here -- runs it on (kept, or another window has
             # it open), or ends it ("End it": for every window).
             host.release(end=(how == "end"))
+            from delfin.dashboard import kept_agent_sessions as _K
+            for old in {rec.get("kept_id"), _session_id(rec)} - {None, ""}:
+                _K.disarm(old)
             if done == "ended":
                 done = "released"
+            try:
+                from delfin.agent import session_presence as _presence
+                _presence.withdraw(key)  # a worker that takes it over says its own
+            except Exception:
+                pass
         if rec.get("live") or done in ("kept", "released"):
             # Only this view goes: the session runs on in the service, its
             # worktree and its presence record are the worker's.
@@ -3776,8 +3796,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 pass
             if _hosted(rec):
                 _follow_service_keep(rec)
-            elif rec.get("kept") and sid and (sid != rec.get("kept_id")
-                                              or label != rec.get("kept_title")):
+            if rec.get("kept") and sid and (sid != rec.get("kept_id")
+                                            or label != rec.get("kept_title")):
                 try:
                     _arm_kept(rec)
                 except Exception:
