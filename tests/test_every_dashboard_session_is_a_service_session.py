@@ -242,14 +242,25 @@ def test_ended_from_the_terminal_it_is_saved_and_listed_as_not_running(home, ser
     refs["stop_refresh"]()
 
 
-def test_a_dashboard_session_without_an_id_is_no_elsewhere_row(home, service, tui):
+def test_a_dashboard_session_without_an_id_is_no_elsewhere_row(home, service, tui,
+                                                               monkeypatch):
+    from pathlib import Path
+
+    from delfin.agent import session_presence
+    # Where the service reads presence (its scratch state), so what this
+    # dashboard announces is what the service judges.
+    monkeypatch.setattr(session_presence, "_DIR",
+                        Path(service.env["DELFIN_SCRATCH_STATE"]) / ".delfin" / "session_presence")
     build, refs, _client = _dashboard(home, service)
     refs["refresh"]()
-    from delfin.agent import session_presence
-    assert _until(lambda: [r for r in session_presence.open_sessions()
-                           if r.get("surface") == "dashboard"], 10), "it announces itself"
+    mine = _until(lambda: [r for r in session_presence.open_sessions()
+                           if r.get("surface") == "dashboard"], 10)
+    assert mine, "it announces itself, marked as a dashboard's"
+    session_presence.announce("term0001", workspace=str(home / "launch"))   # the control
     listing = tui.request("sessions.list")
-    assert not [e for e in listing["elsewhere"] if not e.get("sessionId")], \
+    keys = {e.get("key") for e in listing["elsewhere"]}
+    assert "term0001" in keys, "a terminal session elsewhere is still listed"
+    assert mine[0]["key"] not in keys, \
         "a dashboard session with nothing to join is not listed elsewhere"
     refs["stop_refresh"]()
 
