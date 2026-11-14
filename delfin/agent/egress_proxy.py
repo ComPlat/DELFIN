@@ -879,6 +879,28 @@ class EgressProxy:
         return (f"web_fetch refused: the user refused {host}. Do not retry "
                 "it or reach the same host another way.")
 
+    def host_answers(self, perms) -> dict:
+        """``{host: answer}``: the person's answers to the unknown-host
+        question (``settle_fetch``) for the session of ``perms``.
+
+        For a caller whose permissions object lives for one decision only
+        -- the external CLI backend's gate hook, one process per tool call
+        (cli_gate) -- and which keeps the answers in its own session
+        state, so the person is asked once per host and session there as
+        here. ``restore_host_answers`` puts them back."""
+        key = id(perms)
+        with self._ask_lock:
+            return {k[1]: bool(v) for k, v in self._answers.items()
+                    if k[0] == key and k[2] == "domain"}
+
+    def restore_host_answers(self, perms, answers) -> None:
+        """Answers ``host_answers`` returned earlier, for ``perms``."""
+        key = id(perms)
+        with self._ask_lock:
+            for host, ok in dict(answers or {}).items():
+                if isinstance(host, str) and host:
+                    self._answers[(key, host.lower(), "domain")] = bool(ok)
+
     def _refuse(self, conn: socket.socket, code: int, reason: str) -> None:
         body = (reason + "\n").encode("utf-8", "replace")
         head = (f"HTTP/1.1 {code} {'Forbidden' if code == 403 else 'Proxy Authentication Required' if code == 407 else 'Bad Gateway'}\r\n"

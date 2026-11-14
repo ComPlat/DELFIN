@@ -368,6 +368,28 @@ HEADER_CSS = """
 .delfin-hdr .jupyter-button.delfin-switch.mod-active::before { background: var(--dh-ok); }
 .delfin-hdr .jupyter-button.delfin-switch.mod-active::after { left: 22px; }
 .delfin-hdr .jupyter-button.delfin-switch i { display: none; }
+/* the Dashboards menu (dashboards_menu): hangs below its button, right-aligned */
+.delfin-dash-wrap { position: relative; flex: 0 0 auto; }
+.delfin-hdr .delfin-dash-pop {
+  position: absolute; top: calc(var(--dh-h) + 6px); right: 0; z-index: 60;
+  width: min(480px, calc(100vw - 32px)); max-height: 60vh; overflow-y: auto;
+  background: var(--dh-bg); color: var(--dh-fg);
+  border: 1px solid var(--dh-border); border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 8px; gap: 6px;
+}
+.delfin-hdr .delfin-dash-rows { gap: 1px; }
+.delfin-hdr .delfin-dash-row { align-items: center; gap: 6px; min-height: 34px; padding: 0 4px; border-radius: var(--dh-r); }
+.delfin-hdr .delfin-dash-row:hover { background: var(--dh-bg2); }
+.delfin-hdr .delfin-dash-label { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.delfin-hdr .delfin-dash-name { font-family: var(--jp-code-font-family, monospace); margin-right: 8px; }
+.delfin-hdr .delfin-dash-meta { color: var(--dh-muted); font-size: 11px; white-space: nowrap; }
+.delfin-hdr .delfin-dash-link {
+  display: inline-block; height: var(--dh-h); line-height: calc(var(--dh-h) - 2px);
+  padding: 0 12px; border-radius: var(--dh-r); border: 1px solid var(--dh-border);
+  background: var(--dh-bg); color: var(--dh-accent); text-decoration: none;
+  font-size: 13px; white-space: nowrap;
+}
+.delfin-hdr .delfin-dash-link:hover { background: var(--dh-bg2); }
 /* the more row and panels under the bar */
 .delfin-hdr .delfin-more-row { gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 0 2px 0; }
 .delfin-hdr .delfin-panel {

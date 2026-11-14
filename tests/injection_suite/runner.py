@@ -166,8 +166,13 @@ def run_case(case: case_defs.Case, *, tree: Path, base: Path,
     # Values the caller resolved itself (a credential from the person's
     # store): the child's HOME is private, so it could not find them.
     env.update(extra_env or {})
+    restore_plan = None
     if provider == "scripted":
         from tests.agent_terminal_probes import fake_model
+        # Swapped for this case only: the module is shared by every test in
+        # the process, and a later test that wraps fake_model.plan must find
+        # the scripted endpoint's own plan, not this case's.
+        restore_plan = fake_model.plan
         fake_model.plan = planner(case)
         server, port = fake_model.serve()
         env["OLLAMA_HOST"] = f"http://127.0.0.1:{port}"
@@ -192,6 +197,8 @@ def run_case(case: case_defs.Case, *, tree: Path, base: Path,
     finally:
         if server is not None:
             server.shutdown()
+        if restore_plan is not None:
+            fake_model.plan = restore_plan
     seconds = time.monotonic() - t0
     world = collect(case, root, out)
     attack = bool(case.attack_hit(world)) if case.attack_hit else False
