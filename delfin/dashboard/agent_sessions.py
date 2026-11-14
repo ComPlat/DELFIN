@@ -3672,6 +3672,26 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             _K.disarm(sid)
         return "ended"
 
+    def _release_host(rec: dict, how: str) -> bool:
+        """x on a hosted session, after its tab saved and released its lock:
+        the service takes it from here -- runs it on (kept, or another
+        window has it open), or ends it ("End it": for every window). The
+        kept record and the presence record go: a worker that takes it
+        over says its own. True when it was hosted."""
+        host = rec.pop("host", None)
+        if host is None or not host.hosted:
+            return False
+        host.release(end=(how == "end"))
+        from delfin.dashboard import kept_agent_sessions as _K
+        for old in {rec.get("kept_id"), _session_id(rec)} - {None, ""}:
+            _K.disarm(old)
+        try:
+            from delfin.agent import session_presence as _presence
+            _presence.withdraw(rec["key"])
+        except Exception:
+            pass
+        return True
+
     def close_session(key: str, how: str = "") -> None:
         """x: the session leaves the list (and the open set). Ended, saved
         -- or, with Keep session on and the choice made, kept running in
@@ -3691,22 +3711,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         if rec.get("_hand_over"):
             from delfin.dashboard import kept_agent_sessions as _K
             _K.spawn_hand_over(only=rec["_hand_over"])     # its lock is free now
-        host = rec.pop("host", None)
-        if host is not None and host.hosted:
-            # Saved and its lock released (the shutdown above): the service
-            # takes it from here -- runs it on (kept, or another window has
-            # it open), or ends it ("End it": for every window).
-            host.release(end=(how == "end"))
-            from delfin.dashboard import kept_agent_sessions as _K
-            for old in {rec.get("kept_id"), _session_id(rec)} - {None, ""}:
-                _K.disarm(old)
-            if done == "ended":
-                done = "released"
-            try:
-                from delfin.agent import session_presence as _presence
-                _presence.withdraw(key)  # a worker that takes it over says its own
-            except Exception:
-                pass
+        if _release_host(rec, how) and done == "ended":
+            done = "released"
         if rec.get("live") or done in ("kept", "released"):
             # Only this view goes: the session runs on in the service, its
             # worktree and its presence record are the worker's.
