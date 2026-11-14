@@ -362,6 +362,27 @@ def _asked_gist(asked: dict) -> str:
     return f"{asked.get('tool') or 'a tool'} {target or _gist(preview.lstrip('$ '), 70)}".strip()
 
 
+def _cmdline_of(pid: int) -> bytes:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return b""
+
+
+def _a_dashboard_kernel(pid: int) -> bool:
+    """Whether ``pid`` is a dashboard's kernel: an IPython kernel that a
+    Voila server started. Recognised by what it runs and by its parent,
+    both readable for a protected process (its command line is; its
+    environment is not). An agent's command runs below a kernel, never as
+    the server's own child, and cannot make the server its parent; one
+    that names itself a kernel under another parent stays watch-only."""
+    if not LINUX or pid <= 1:
+        return False
+    if b"ipykernel" not in _cmdline_of(pid):
+        return False
+    return b"voila" in _cmdline_of(_ppid(pid))
+
+
 def _environ_of(pid: int) -> bytes | None:
     """The environment of ``pid`` (one of the user's own processes), or
     None when it cannot be read. Linux reads /proc; macOS asks ps, which
@@ -1184,7 +1205,11 @@ class Supervisor:
             return False
         environ = _environ_of(pid)
         if environ is None:
-            return True                       # unreadable: fail closed
+            # Unreadable: fail closed -- except for a dashboard kernel, which
+            # makes itself unreadable (process_guard) once its agent tab is
+            # built and still connects later (a session that gets its id,
+            # the service restarted).
+            return not _a_dashboard_kernel(pid)
         return f"{ENV_MARKER}=".encode() in environ
 
     def client_gone(self, client: Client) -> None:
