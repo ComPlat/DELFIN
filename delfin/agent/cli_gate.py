@@ -947,7 +947,7 @@ def main(argv: list[str]) -> int:
     not ask a second time: under ``-p`` it has nobody to ask and refused
     every write the user had just approved. The CLI's own deny rules (the
     secret files, _cli_secret_deny_rules) still hold over an allow
-    (measured with claude 2.1.309). Only the program's own session tools
+    (measured with the external CLI 2.1.309). Only the program's own session tools
     (``_CLI_OWN_TOOLS``) get no decision and are left to the CLI.
     """
     token = argv[1] if len(argv) > 1 else ""

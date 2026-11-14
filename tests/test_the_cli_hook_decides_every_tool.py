@@ -525,7 +525,7 @@ def test_plan_mode_starts_a_read_only_sub_agent(world, kind):
     assert decision == "allow" and asked == []
 
 
-@pytest.mark.parametrize("kind", ["general-purpose", "", "claude"])
+@pytest.mark.parametrize("kind", ["general-purpose", "", "other-type"])
 def test_plan_mode_refuses_any_other_sub_agent(world, kind):
     decision, reason, asked = _hook(world, "Task",
                                     {**SUB, "subagent_type": kind},
