@@ -310,16 +310,24 @@ print(out.stdout.strip() or out.stderr[-500:])
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_DUMPABLE is Linux")
-@pytest.mark.parametrize("server, acts", [("voila", True), ("some-tool", False)])
-def test_a_protected_dashboard_kernel_is_a_window(service, server, acts):
+@pytest.mark.parametrize("server, marked, acts", [("voila", False, True),
+                                                  ("some-tool", False, False),
+                                                  ("voila", True, False)])
+def test_a_protected_dashboard_kernel_is_a_window(service, server, marked, acts):
     """A dashboard kernel makes itself unreadable (process_guard) before it
     connects for a session that gets its id later: unreadable is no reason
-    to refuse it when it is a kernel a Voila server started. Control: the
-    same protected process under another parent stays watch-only."""
+    to refuse it when it is a kernel a Voila server started. Controls: the
+    same protected process under another parent stays watch-only, and so
+    does one under a server that carries the agent marker (a server an
+    agent's command started)."""
     from conftest import child_env
+    from delfin.agent.approval_guard import ENV_MARKER
     env = child_env(service.tmp)
     env["PYTHONPATH"] = service.env["PYTHONPATH"]
     env.pop("DELFIN_PROCESS_GUARD", None)
+    env.pop(ENV_MARKER, None)
+    if marked:
+        env[ENV_MARKER] = "1"
     out = subprocess.run([sys.executable, "-c", _PARENT, _CHILD, str(service.socket), server],
                          env=env, capture_output=True, text=True, timeout=180)
     code = int(out.stdout.strip().split()[-1]) if "code" in out.stdout else None

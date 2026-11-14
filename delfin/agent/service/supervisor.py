@@ -375,12 +375,19 @@ def _a_dashboard_kernel(pid: int) -> bool:
     both readable for a protected process (its command line is; its
     environment is not). An agent's command runs below a kernel, never as
     the server's own child, and cannot make the server its parent; one
-    that names itself a kernel under another parent stays watch-only."""
+    that names itself a kernel under another parent stays watch-only. The
+    server itself must be readable and carry no agent marker: a server an
+    agent started inherits the marker, so its kernels stay watch-only."""
     if not LINUX or pid <= 1:
         return False
     if b"ipykernel" not in _cmdline_of(pid):
         return False
-    return b"voila" in _cmdline_of(_ppid(pid))
+    server = _ppid(pid)
+    if b"voila" not in _cmdline_of(server):
+        return False
+    from ..approval_guard import ENV_MARKER
+    environ = _environ_of(server)
+    return environ is not None and f"{ENV_MARKER}=".encode() not in environ
 
 
 def _environ_of(pid: int) -> bytes | None:
