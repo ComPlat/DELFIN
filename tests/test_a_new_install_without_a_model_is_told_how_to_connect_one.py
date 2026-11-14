@@ -15,6 +15,8 @@ import pathlib
 import subprocess
 import sys
 
+from conftest import child_env
+
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
 
@@ -29,13 +31,17 @@ def _program(tmp_path, *, knows_flag):
 
 
 def _env(tmp_path, bindir=None):
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
+    # A scrubbed environment (no keys, no model server named), with the
+    # private HOME, scratch state and null keyring of conftest.child_env.
+    base = child_env(tmp_path)
     path = [str(pathlib.Path(sys.executable).parent), "/usr/bin", "/bin"]
     if bindir is not None:
         path.insert(0, str(bindir))
-    return {"HOME": str(home), "PATH": os.pathsep.join(path),
-            "PYTHONPATH": str(REPO), "LANG": "C.UTF-8"}
+    keep = ("HOME", "DELFIN_SCRATCH_STATE", "PYTHON_KEYRING_BACKEND")
+    env = {k: base[k] for k in keep if k in base}
+    env.update({"PATH": os.pathsep.join(path), "PYTHONPATH": str(REPO),
+                "LANG": "C.UTF-8"})
+    return env
 
 
 def test_an_old_cli_program_is_not_a_model(tmp_path, monkeypatch):
