@@ -296,15 +296,7 @@ _BASELINE_TOKENS = 11_422
 # 2026-11-12 (SW3): the swarm-lead preset (pack/agents/swarm-lead_subagent.md).
 # Its only schema text is its name in the subagent_type enum, as for the
 # method-reviewer above; measured +3 tokens, 11_675 -> 11_678.
-# show_molecule steering (2026-11-13): the description now says when to use
-# the tool (any "show me X in 3D" request, the interactive viewer card) and
-# that viewer HTML in an answer renders as text -- the 2026-11-12 defect had
-# the model write an iframe-srcdoc NGL viewer as answer text. Reworded within
-# the same sentence count, +18 measured; 11_678 -> 11_696 (merge 2026-11-13,
-# re-measured). Rejected: paying it by trimming other tools' descriptions
-# (drops facts the models use), a forced correction turn (the card is
-# reachable by a follow-up call).
-_TOKEN_BUDGET = 11_696
+_TOKEN_BUDGET = 11_678
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

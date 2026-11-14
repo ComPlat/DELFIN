@@ -31,16 +31,15 @@ def test_show_molecule_description_names_when_to_use_it():
     text = _schema_description().lower()
     # When-to-use: the request a user actually writes.
     assert "3d" in text
-    assert "molecule" in text or "structure" in text
-    # The card: what the tool produces instead of markup.
-    assert "card" in text
+    # The file types a structure arrives in, and that this is THE 3D view.
+    assert ".xyz" in text and ".cube" in text
+    assert "only 3d view" in text
 
 
 def test_show_molecule_description_names_what_never_to_do():
     text = _schema_description().lower()
     # The exact observed failure: hand-written viewer HTML in the answer.
-    assert "html" in text
-    assert "viewer html" in text and "renders as text" in text
+    assert "html" in text and "is text" in text
 
 
 def test_schema_budget_unchanged():
@@ -61,7 +60,7 @@ def test_solo_prompt_names_the_viewer_tool():
             / "solo_agent.md").read_text(encoding="utf-8").lower()
     assert "show_molecule" in text
     # The wrong way, named so the model can recognise it.
-    assert "iframe" in text or "hand-written html" in text
+    assert "never viewer html in the answer" in text
 
 
 # --- 3. The answer-time hint ------------------------------------------------

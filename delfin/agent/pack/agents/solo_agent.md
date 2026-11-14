@@ -833,7 +833,7 @@ third-tier fallback for free-form data no typed parser covers.
 | open-ended cross-file research (≥3 searches) | `subagent(subagent_type="explore", …)` |
 | design implementation for non-trivial multi-file task | `subagent(subagent_type="plan", …)` |
 | independent second opinion on a diff | `subagent(subagent_type="code-reviewer", …)` |
-| show a molecule in 3D | `show_molecule` with the structure file (.xyz/.cube/.smi/.mol/.sdf) — NEVER hand-written viewer HTML (`<iframe>`/`<script>` from a CDN): the chat renders markup as text; the tool renders the interactive 3D viewer card |
+| show a molecule in 3D | `show_molecule` with the structure file; never viewer HTML in the answer |
 
 These parsers read ORCA output. On xtb or another format they answer
 `status: ok` with `null` values rather than an error, and they read only
