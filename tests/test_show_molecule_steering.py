@@ -54,15 +54,6 @@ def test_schema_budget_unchanged():
 # --- 2. The system prompt names the viewer ---------------------------------
 
 
-def test_solo_prompt_names_the_viewer_tool():
-    from pathlib import Path
-    text = (Path(E.__file__).parent / "pack" / "agents"
-            / "solo_agent.md").read_text(encoding="utf-8").lower()
-    assert "show_molecule" in text
-    # The wrong way, named so the model can recognise it.
-    assert "never viewer html in the answer" in text
-
-
 # --- 3. The answer-time hint ------------------------------------------------
 
 

@@ -12343,9 +12343,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "show_molecule",
             "description": (
-                "Show .xyz (multi-frame) or .cube in 3D, .smi/.mol/.sdf as "
-                "a formula: the only 3D view (answer HTML is text); "
-                "isovalue: cube isosurface."
+                "Show .xyz (multi-frame)/.cube in 3D, .smi/.mol/.sdf as "
+                "a structural formula: the only 3D view (answer HTML is "
+                "text); isovalue: cube isosurface."
             ),
             "parameters": {
                 "type": "object",
