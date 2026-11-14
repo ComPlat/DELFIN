@@ -29,7 +29,7 @@ import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
 import { EmptySessions } from "./empty"
-import { keptOf, leavingNote, startedHere } from "./leaving"
+import { hostedOf, keptOf, leavingNote, startedHere } from "./leaving"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
@@ -646,7 +646,8 @@ function printWhenGone(): void {
   const note = leavingNote({
     problem: connection.problem || undefined,
     session: s ? { id: s.id, title: s.title || s.summary?.title || "", state: s.state, ended: s.ended,
-                   discarded: empties.wasEnded(s.id), kept: keptOf(s.summary) } : undefined,
+                   discarded: empties.wasEnded(s.id), kept: keptOf(s.summary),
+                   hosted: hostedOf(s.summary) } : undefined,
   })
   if (!note) return
   process.once("exit", () => {
