@@ -104,8 +104,12 @@ a web result showed proceeds), an `mcp__` tool the MCP path's decision
 input yet on this backend: the hook's state records no untrusted text the
 CLI's own tools read. Plan mode is
 refused by the hook itself: writes, and every command that is not one of
-its read-only forms. An agent tool (Agent, Task, Workflow, ...) and any tool
-the hook has no rule for are refused in bypass, in plan mode and where
+its read-only forms. A sub-agent (Agent, Task) is allowed unasked outside
+plan mode, because each of its own tool calls comes through the same hook
+and is decided there (measured); in plan mode only a read-only sub-agent
+type (Explore, Plan) starts. A tool that starts work outside the turn
+(Workflow, SendMessage, ScheduleWakeup, CronCreate, CronDelete) and any
+tool the hook has no rule for are refused in bypass, in plan mode and where
 nobody can be asked, and put to the person otherwise; only the CLI's own
 session tools (its task list, ToolSearch, ExitPlanMode, ...) are left to it.
 

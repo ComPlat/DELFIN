@@ -25,9 +25,13 @@ Semantics pinned:
   refused otherwise; a URL the person typed, or that a web result showed,
   proceeds;
 - an ``mcp__`` tool is decided as ``_mcp_call_refusal`` decides it;
-- an agent tool and any tool the hook has no rule for are refused in
-  bypass, in plan mode and with nobody to ask, and asked about otherwise;
-  the program's own session tools get no decision;
+- a sub-agent (Agent, Task) is allowed outside plan mode, unasked: its own
+  tool calls come through the same hook; in plan mode only a read-only
+  sub-agent type (Explore, Plan);
+- a tool that starts work outside the turn (Workflow, SendMessage,
+  ScheduleWakeup, CronCreate, CronDelete) and any tool the hook has no
+  rule for are refused in bypass, in plan mode and with nobody to ask, and
+  asked about otherwise; the program's own session tools get no decision;
 - plan mode is refused by the hook itself (writes, commands that are not
   read-only), not left to the program's version.
 
@@ -480,8 +484,9 @@ def test_an_ask_rule_on_an_mcp_tool_is_asked_once(world):
 
 # ------------------------------------------------- tools without a rule
 
-@pytest.mark.parametrize("tool", ["Agent", "Task", "Workflow", "SendMessage",
-                                  "CronCreate", "SomeFutureTool"])
+@pytest.mark.parametrize("tool", ["Workflow", "SendMessage", "ScheduleWakeup",
+                                  "CronCreate", "CronDelete",
+                                  "SomeFutureTool"])
 @pytest.mark.parametrize("mode,answer", [
     ("bypassPermissions", None), ("default", None), ("plan", True),
 ])
@@ -493,7 +498,55 @@ def test_a_tool_without_a_rule_is_refused_where_nobody_decides(
     assert asked == []
 
 
-@pytest.mark.parametrize("tool", ["Agent", "SomeFutureTool"])
+SUB = {"description": "look", "prompt": "do it",
+       "subagent_type": "general-purpose"}
+
+
+@pytest.mark.parametrize("tool", ["Agent", "Task"])
+@pytest.mark.parametrize("mode,answer", [
+    ("bypassPermissions", None), ("default", None), ("default", True),
+    ("acceptEdits", None),
+])
+def test_a_sub_agent_starts_and_its_calls_meet_this_gate(
+        world, tool, mode, answer):
+    """Security must not cost function: a sub-agent's own tool calls come
+    through this hook (measured with 2.1.322), so its start is allowed --
+    unasked, with a reason that says so -- in every mode but plan."""
+    decision, reason, asked = _hook(world, tool, SUB, mode=mode,
+                                    answer=answer)
+    assert decision == "allow" and asked == []
+    assert reason == cli_gate._SUBAGENT_REASON
+
+
+@pytest.mark.parametrize("kind", ["Explore", "Plan", "explore"])
+def test_plan_mode_starts_a_read_only_sub_agent(world, kind):
+    decision, _r, asked = _hook(world, "Agent", {**SUB, "subagent_type": kind},
+                                mode="plan")
+    assert decision == "allow" and asked == []
+
+
+@pytest.mark.parametrize("kind", ["general-purpose", "", "claude"])
+def test_plan_mode_refuses_any_other_sub_agent(world, kind):
+    decision, reason, asked = _hook(world, "Task",
+                                    {**SUB, "subagent_type": kind},
+                                    mode="plan", answer=True)
+    assert decision == "deny" and reason.startswith("plan mode (read-only)")
+    assert asked == []
+
+
+def test_a_sub_agent_s_deny_listed_command_is_refused(world):
+    """What the sub-agent runs is decided like any call: its rm -rf in
+    bypass is refused by the native deny tier."""
+    token = _state(world, "bypassPermissions", None)
+    assert _hook(world, "Agent", SUB, mode="bypassPermissions",
+                 token=token)[0] == "allow"
+    decision, reason, _ = _hook(world, "Bash", {"command": RM_RF + " build"},
+                                mode="bypassPermissions", token=token)
+    assert decision == "deny" and "deny-pattern" in reason
+    assert (world["ws"] / "build" / "keep.txt").exists()
+
+
+@pytest.mark.parametrize("tool", ["Workflow", "SomeFutureTool"])
 def test_a_tool_without_a_rule_is_put_to_the_person(world, tool):
     decision, _r, asked = _hook(world, tool, {"prompt": "do it"}, answer=True)
     assert decision == "allow" and len(asked) == 1 and asked[0][0] == tool

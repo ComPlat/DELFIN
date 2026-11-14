@@ -22,8 +22,9 @@ CLI's tools, as a PreToolUse hook:
   (egress host decision, payload check), for an
   ``mcp__`` tool ``_mcp_call_refusal``. Every tool call gets a decision
   (``main``) except the program's own session tools (``_CLI_OWN_TOOLS``);
-  one the gate does not know is asked about where a person can be asked
-  and refused otherwise. Plan mode is refused here, as natively, instead
+  a sub-agent (Agent, Task) is allowed, its own calls coming through this
+  hook; one the gate does not know is asked about where a person can be
+  asked and refused otherwise. Plan mode is refused here, as natively, instead
   of being left to the program's version.
 * A question becomes a request in the approvals directory
   (``file_confirm``). The ``Relay`` in the DELFIN process picks it up and
@@ -91,12 +92,23 @@ _CLI_OWN_TOOLS = frozenset({
     "Skill", "SlashCommand", "AskUserQuestion", "ExitPlanMode",
     "EnterPlanMode",
 })
-#: Tools that start or steer another agent, or a later turn, inside the
-#: external CLI program. Decided like a tool the gate does not know
-#: (``_unknown_tool``); named so the refusal says what the tool does.
+#: Tools that start a sub-agent inside this turn of the external CLI
+#: program. Every tool call of the sub-agent reaches this same hook
+#: (measured with 2.1.322: the sub-agent's calls were logged by the hook),
+#: so the call itself is allowed outside plan mode (``_SUBAGENT_REASON``);
+#: in plan mode only a read-only sub-agent type (``_READ_ONLY_SUBAGENTS``).
+_SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
+#: Sub-agent types that only read (the program's search and planning
+#: agents), by ``subagent_type``, compared in lower case.
+_READ_ONLY_SUBAGENTS = frozenset({"explore", "plan"})
+_SUBAGENT_REASON = ("DELFIN's gate let this call through: every tool call "
+                    "of the sub-agent is decided by this same gate")
+#: Tools that start work outside this turn of the session -- a workflow,
+#: a message to another agent, a later turn. Decided like a tool the gate
+#: does not know (``_unknown_tool``); named so the refusal says what the
+#: tool does.
 _AGENT_TOOLS = frozenset({
-    "Agent", "Task", "Workflow", "SendMessage", "ScheduleWakeup",
-    "CronCreate", "CronDelete",
+    "Workflow", "SendMessage", "ScheduleWakeup", "CronCreate", "CronDelete",
 })
 
 
@@ -398,8 +410,10 @@ def decide_call(token: str, event: dict) -> tuple[str | None, str | None]:
     command through ``_decide_bash``; WebFetch / WebSearch through the
     native network gate (``_decide_web``); an ``mcp__`` tool through
     ``_mcp_call_refusal``, which applies the permission rules itself; the
-    program's own session tools (``_CLI_OWN_TOOLS``) unchecked; any other
-    tool through ``_unknown_tool``.
+    program's own session tools (``_CLI_OWN_TOOLS``) unchecked; a
+    sub-agent (``_SUBAGENT_TOOLS``) allowed outside plan mode, its own
+    calls decided here one by one; any other tool through
+    ``_unknown_tool``.
     """
     from . import api_client as ac
     with _locked(token) as path:
@@ -473,6 +487,12 @@ def decide_call(token: str, event: dict) -> tuple[str | None, str | None]:
         elif tool in _WEB_TOOLS:
             err = _decide_web(state, perms, native, native_args, ex)
         elif tool in _CLI_OWN_TOOLS:
+            pass
+        elif tool in _SUBAGENT_TOOLS:
+            # Allowed in every mode but plan (_plan_gate): the sub-agent's
+            # own tool calls come through this hook one by one, decided
+            # (and asked about) like the session's. Refusing the start
+            # would cost the feature and decide nothing more.
             pass
         else:
             err = _unknown_tool(perms, tool, args, ex)
@@ -774,7 +794,8 @@ def _plan_refusal(tool: str, what: str) -> str:
 
 
 def _what_unknown(tool: str) -> str:
-    return ("starts another agent inside the external CLI program"
+    return ("starts work outside this turn of the session (another agent, "
+            "a workflow or a later turn)"
             if tool in _AGENT_TOOLS else
             "is a tool of the external CLI program DELFIN's gate has no rule "
             "for")
@@ -806,6 +827,13 @@ def _plan_gate(tool: str, args: dict) -> str | None:
             "redirection or substitution)")
     if tool in _WEB_TOOLS:
         return _plan_refusal(tool, "sends a request out of this machine")
+    if tool in _SUBAGENT_TOOLS:
+        kind = str(args.get("subagent_type") or "").strip()
+        if kind.lower() in _READ_ONLY_SUBAGENTS:
+            return None
+        return _plan_refusal(
+            tool, f"starts a sub-agent of type '{kind or 'unnamed'}', and "
+            "plan mode starts only a read-only one (Explore, Plan)")
     return _plan_refusal(tool, _what_unknown(tool))
 
 
@@ -838,8 +866,8 @@ def _decide_web(state: dict, perms, native: str, native_args: dict,
 
 
 def _unknown_tool(perms, tool: str, args: dict, ex) -> str | None:
-    """A tool the gate has no rule for: an agent tool (``_AGENT_TOOLS``)
-    or any name it does not know.
+    """A tool the gate has no rule for: a tool that starts work outside
+    the turn (``_AGENT_TOOLS``) or any name it does not know.
 
     It may do anything the program lets it do, so it is not let through
     unchecked: refused in bypass (which asks nobody) and where nobody can
@@ -942,7 +970,9 @@ def main(argv: list[str]) -> int:
     elif tool not in _CLI_OWN_TOOLS:
         out = {"hookEventName": "PreToolUse",
                "permissionDecision": "allow",
-               "permissionDecisionReason": "DELFIN's gate let this call through"}
+               "permissionDecisionReason": (
+                   _SUBAGENT_REASON if tool in _SUBAGENT_TOOLS
+                   else "DELFIN's gate let this call through")}
         if caged is not None:
             # The command runs in DELFIN's cage: the CLI runs this text
             # instead of the model's (measured: the CLI runs a hook's
