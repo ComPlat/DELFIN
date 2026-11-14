@@ -76,7 +76,7 @@ def record(
     that created the chain — a warning is logged, the run goes on.
     Returns True when the entry was written.
 
-    Live-run A (operator, 2026-11-16): inside the agent sandbox HOME is
+    Live-run A (operator, 2026-11-14): inside the agent sandbox HOME is
     read-only, so this fails on EVERY chain started through bash — and
     a silent failure made the restart offer empty.  The exception's
     reason is therefore returned in the message of the raised

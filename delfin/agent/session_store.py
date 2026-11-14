@@ -737,11 +737,16 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
         note += "\n\n" + steps
     # JC2 target 3: the chain offer.  Best-effort like the step-journal
     # part — an error in the chain lookup appends nothing and never
-    # breaks the resume note.  The workspace is the process cwd: both
-    # callers (engine restore, CLI startup) run there, and the cwd IS
-    # the session workspace on the bash route (live-run A).
+    # breaks the resume note.  The scan workspace is the WORKSPACE OF
+    # THE SESSION RECORD (agent-service restore runs in a service
+    # process whose cwd is NOT the workspace; live-run A + operator A
+    # review of ee05dc9e1), falling back to the process cwd only when
+    # the record has no workspace (headless CLI route).
     try:
-        chains = _render_chain_offer(session_id, workspace=os.getcwd())
+        chains = _render_chain_offer(
+            session_id,
+            workspace=_session_record_workspace(session_id) or os.getcwd(),
+        )
     except Exception as exc:
         import logging as _logging
         _logging.getLogger(__name__).warning(
@@ -750,6 +755,22 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
     if chains:
         note += "\n\n" + chains
     return note
+
+
+def _session_record_workspace(session_id: str) -> str | None:
+    """The workspace the session record holds ("" / None when absent).
+
+    The agent-service restore runs in a service process whose cwd is
+    the service dir, not the workspace — the session file is the only
+    place the workspace survives the original process (live-run A,
+    operator A review of ee05dc9e1).
+    """
+    try:
+        rec = load_session(session_id) or {}
+    except Exception:
+        return None
+    ws = rec.get("workspace") or ""
+    return str(ws) or None
 
 
 def _render_chain_offer(session_id: str, workspace: str | Path | None = None) -> str | None:
@@ -765,7 +786,7 @@ def _render_chain_offer(session_id: str, workspace: str | Path | None = None) ->
     own chain_state.json.  A session with no unfinished chains gets no
     chain text at all.
 
-    Live-run A finding (operator, 2026-11-16): a chain started through
+    Live-run A finding (operator, 2026-11-14): a chain started through
     bash inside the agent sandbox cannot write the per-user index (HOME
     is read-only there), so the offer ALSO scans *workspace* — the
     workspace root and its DIRECT subdirectories only, never a tree
