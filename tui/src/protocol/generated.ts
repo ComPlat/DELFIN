@@ -695,6 +695,7 @@ export interface SessionDetachResult {
 export interface SessionHostResult {
   "hosted": boolean
   "keep": boolean
+  "history": boolean
 }
 export interface SessionSetKeepResult {
   "keep": boolean

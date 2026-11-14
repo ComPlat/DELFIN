@@ -769,9 +769,17 @@ class HostedSession(Session):
         self.released: dict | None = None
         self.chat_html = ""
         self.chat_v = 0
+        #: The session's event log: written here for a hosted session (a
+        #: worker writes its own), numbered here -- the kernel never writes
+        #: into the service's files.
+        self.log: eventlog.EventLog | None = None
 
     def on_event(self, message: dict, event: dict) -> None:
         kind = str(event.get("type") or "")
+        if kind in protocol.DURABLE_EVENTS:
+            event.pop("seq", None)
+            if self.log is not None:
+                self.log.stamp(event)
         if kind == "dashboard.chat":
             self._chat(message, event)
             return
@@ -1812,8 +1820,14 @@ class Supervisor:
             self.not_kept.pop(sid, None)
         else:
             self.not_kept.setdefault(sid, set())
+        try:
+            session.log = await asyncio.to_thread(eventlog.EventLog, eventlog.log_path(sid))
+        except Exception:
+            session.log = None
         await session.load_history()
-        client.send(protocol.result(msg_id, {"hosted": True, "keep": keep}))
+        client.send(protocol.result(msg_id, {
+            "hosted": True, "keep": keep,
+            "history": bool(session.log is not None and not session.log.empty)}))
         self._write_roster()
         asyncio.get_running_loop().call_soon(
             lambda: self.broadcast_summary(session, roster_now=True))
@@ -1829,6 +1843,8 @@ class Supervisor:
         next service."""
         sid = session.id
         self.hosts.discard(session.host_client)
+        if session.log is not None:
+            session.log.close()
         if not sid or self.sessions.get(sid) is not session:
             return
         self.sessions.pop(sid, None)

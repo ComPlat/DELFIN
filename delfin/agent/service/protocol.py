@@ -441,7 +441,9 @@ SERVICE_RESULTS: dict[str, dict[str, str]] = {
                        "summary": "object"},
     "session.pending": {"pending": "[object]"},
     "session.detach": {"detached": "boolean"},
-    "session.host": {"hosted": "boolean", "keep": "boolean"},
+    # history: the session's event log holds its earlier turns already
+    # (false: a session new to the service; its host sends its history).
+    "session.host": {"hosted": "boolean", "keep": "boolean", "history": "boolean"},
     "session.setKeep": {"keep": "boolean"},
     "session.message": {"sent": "boolean"},
     # sessionId, title, workspace, model, provider, updatedAt, running
