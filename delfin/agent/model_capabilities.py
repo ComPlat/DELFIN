@@ -148,7 +148,6 @@ class ModelCapabilities:
     model: str
     provider: str                       # "claude"|"openai"|"kit"|"ollama"|…
     context_window: int                 # real usable token window
-    max_output_tokens: int = 8_192
     supports_tools: bool = True
     supports_vision: bool = False
     is_reasoning: bool = False          # o-series / gpt-5 / deepseek-r1 / qwq …
@@ -758,10 +757,12 @@ def _load_disk_cache() -> None:
         return
     entries = raw.get("entries") or {}
     now = time.time()
+    _known_fields = set(ModelCapabilities.__dataclass_fields__)
     for key, rec in entries.items():
         try:
             if now - float(rec.get("discovered_at", 0)) > _CACHE_TTL_S:
                 continue
+            rec = {k: v for k, v in rec.items() if k in _known_fields}
             _CACHE.setdefault(key, ModelCapabilities(**rec))
         except Exception:
             continue
@@ -921,7 +922,6 @@ def resolve(
         model=model,
         provider=provider,
         context_window=int(spec.get("context_window") or _LEGACY_WINDOW),
-        max_output_tokens=int(spec.get("max_output_tokens") or 8_192),
         supports_tools=bool(spec.get("supports_tools", True)),
         supports_vision=bool(spec.get("supports_vision", False)),
         is_reasoning=bool(spec.get("is_reasoning", False)),
