@@ -12343,9 +12343,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "show_molecule",
             "description": (
-                "Show .xyz (multi-frame too) or .cube in 3D, .smi/.mol/.sdf "
-                "as a structural formula, in the chat; isovalue: cube "
-                "isosurface (default 0.02)."
+                "Show .xyz (multi-frame)/.cube in 3D, .smi/.mol/.sdf as "
+                "a structural formula: the only 3D view (answer HTML is "
+                "text); isovalue: cube isosurface."
             ),
             "parameters": {
                 "type": "object",
@@ -13627,8 +13627,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "Revert the AGENT's own recorded file changes. A file is "
                 "restored only while its content still matches the recorded "
                 "post-edit hash; anything changed since is reported as a "
-                "conflict and left untouched. Agent-created files are deleted"
-                " under the same check."
+                "conflict and left untouched. Agent-created files are "
+                "deleted under the same check."
             ),
             "parameters": {
                 "type": "object",
@@ -22112,9 +22112,21 @@ class _DocToolExecutor:
         title = (arguments.get("title") or "").strip() or None
         root = perms.workspace if perms is not None else self._repo_root()
         if memory_type in ("lesson", "finding"):
-            return self._execute_remember_layered(
-                memory_type, text, arguments, perms, root,
-                evidence=str(arguments.get("evidence") or "").strip())
+            # "finding" outside a swarm run is NOT an error: the model was
+            # told the default is "project", so a first "merk dir das" call
+            # that guessed "finding" must still succeed — degrade to a
+            # project memory instead of burning a turn on a refusal.
+            from . import swarm_memory as _sm
+            degraded = (memory_type == "finding"
+                        and not _sm.current_run_id(perms))
+            if degraded:
+                memory_type = "project"
+            else:
+                return self._execute_remember_layered(
+                    memory_type, text, arguments, perms, root,
+                    evidence=str(arguments.get("evidence") or "").strip())
+        else:
+            degraded = False
         read_before = ", ".join(
             str(t) for t in (getattr(perms, "turn_untrusted_sources", ())
                              or ())) or "nothing"
@@ -22164,7 +22176,9 @@ class _DocToolExecutor:
             "type": mtype,
             "slug": slug,
             "note": (f"Saved a '{mtype}' memory. It will be recalled "
-                     "automatically at the start of future sessions."),
+                     "automatically at the start of future sessions."
+                     + (" No swarm run is active, so the finding was stored "
+                        "as a project memory instead." if degraded else "")),
         })
 
     def _execute_remember_layered(self, memory_type: str, text: str,
