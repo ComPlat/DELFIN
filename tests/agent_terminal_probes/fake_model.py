@@ -93,7 +93,7 @@ def plan(messages: list[dict]) -> dict:
             return {"tool": "write_file",
                     "args": {"path": path, "content": (rest[0] if rest else "")
                              + "\n"}}
-        if s == "do-remember":
+        if s == "do-remember" or s.startswith("do-remember "):
             # The call the live failure showed: a person said "merk dir
             # das", the model chose type=finding outside a swarm run.
             return {"tool": "remember",

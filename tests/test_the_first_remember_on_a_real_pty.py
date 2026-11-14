@@ -26,7 +26,7 @@ pytest.importorskip("termios")
 from agent_terminal_probes import fake_model  # noqa: E402
 from agent_terminal_probes.pty_chat import Chat, close_all  # noqa: E402
 
-PHRASE = "geiler typ. merk dir das."
+PHRASE = "do-remember geiler typ. merk dir das."
 MEMTEXT = "Der Anwender ist ein schneller Kaffee-Trinker."
 
 
@@ -94,16 +94,19 @@ def test_the_first_remember_call_ends_the_turn_and_stores_the_memory(
         asked = [json.loads(line) for line
                  in session.model_log.read_text().splitlines()]
         rounds = [r for r in asked if PHRASE in (r.get("last_user") or "")]
-        assert len(rounds) == 1, (
-            "the phrase should cost ONE model request, got "
-            f"{len(rounds)}: "
-            + json.dumps([r["last_user"][:60] for r in asked]))
-        # The call itself went out; the tool result must NOT send the
-        # model back to make a second remember call.
-        assert rounds[0]["plan"] == {"tool": "remember",
-                                     "args": {"text": MEMTEXT,
-                                              "type": "finding"}}, (
-            json.dumps(rounds[0]["plan"]))
+        calls = [r for r in rounds if r.get("plan", {}).get("tool") == "remember"]
+        # ONE remember call: the first one succeeds, so the tool result does
+        # not send the model back for a second try (the request after it is
+        # the model's closing text).
+        assert len(calls) == 1, (
+            "expected one remember call, got "
+            + json.dumps([r.get("plan") for r in rounds]))
+        assert calls[0]["plan"] == {"tool": "remember",
+                                    "args": {"text": MEMTEXT,
+                                             "type": "finding"}}, (
+            json.dumps(calls[0]["plan"]))
+        assert all("tool" not in r.get("plan", {}) for r in rounds[1:]), (
+            json.dumps([r.get("plan") for r in rounds]))
         # One project memory under the redirected scratch state, whatever
         # slug the store derives from the scratch workspace.
         stores = [p for p in (tmp_path / "s" / "scratch" / ".delfin")
