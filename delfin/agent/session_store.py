@@ -596,6 +596,30 @@ def _turn_checkpoint_path(session_id: str) -> Path:
     return _SESSIONS_DIR / f"{session_id}.turn.json"
 
 
+#: The agent session the CURRENT process serves, set at the tool-dispatch
+#: boundary that already holds ``permissions.task_session_id`` (the same
+#: seam the step journal reads) and read by the one consumer that needs a
+#: session id across a process boundary (mcp_client's spawn of DELFIN's
+#: own builtin delfin-tools server, which injects it into the child env
+#: as DELFIN_AGENT_SESSION_ID).  NOT a global configuration: it is a
+#: per-process fact set by the process that owns the id.  Empty in a
+#: plain CLI run, in tests and in every other process — the empty value
+#: is the "no agent session" fact, never a discovery from the
+#: environment.
+current_agent_session_id: str = ""
+
+
+def note_agent_session_id(session_id: str) -> None:
+    """Record the session this process serves (best-effort, per call).
+
+    Called from the tool-dispatch boundary, which already holds
+    ``permissions.task_session_id``.  Never read from the environment:
+    the value travels holder -> spawn env -> handler, each hop named.
+    """
+    global current_agent_session_id
+    current_agent_session_id = str(session_id or "")
+
+
 def _redact_checkpoint(data: dict[str, Any]) -> dict[str, Any]:
     """Run the secret redactor over every string a checkpoint carries.
 
