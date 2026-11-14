@@ -362,6 +362,14 @@ def _user_scratch_name() -> str:
     return f"delfin_orca_scratch-{safe or 'user'}"
 
 
+def _make_run_dir(base_path: Path, run_label: str) -> Path:
+    """Create ``base_path/run_label``; OSError when the base cannot hold it."""
+    base_path.mkdir(parents=True, exist_ok=True)
+    scratch_dir = base_path / run_label
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    return scratch_dir
+
+
 def _ensure_orca_scratch_dir() -> Path:
     """Create (once) and return a run-specific scratch directory for ORCA."""
     global _RUN_SCRATCH_DIR
@@ -384,23 +392,30 @@ def _ensure_orca_scratch_dir() -> Path:
         slurm_fallback,
     ]
 
-    for candidate in base_candidates:
-        if candidate:
-            base_path = Path(candidate).expanduser()
-            break
-    else:
-        base_path = Path(tempfile.gettempdir()).joinpath(_user_scratch_name())
-
-    base_path.mkdir(parents=True, exist_ok=True)
-
     run_label = os.environ.get("DELFIN_RUN_TOKEN")
     if not run_label:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         cwd_name = Path.cwd().name or "delfin"
         run_label = f"{cwd_name}_{os.getpid()}_{timestamp}"
 
-    scratch_dir = base_path / run_label
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    # A base that cannot hold the run folder is passed over: an agent
+    # session's command sandbox mounts the job's tmp directory read-only,
+    # and every ORCA step started there failed before ORCA ran. The user's
+    # own directory under the system temp directory is the last resort;
+    # if that fails too, its error is raised as before.
+    scratch_dir = None
+    for candidate in base_candidates:
+        if not candidate:
+            continue
+        try:
+            scratch_dir = _make_run_dir(Path(candidate).expanduser(), run_label)
+            break
+        except OSError as exc:
+            logger.warning("ORCA scratch base %s is not writable here (%s); trying the next one",
+                           candidate, exc)
+    if scratch_dir is None:
+        scratch_dir = _make_run_dir(
+            Path(tempfile.gettempdir()).joinpath(_user_scratch_name()), run_label)
     _ensure_openmpi_subdir(scratch_dir)
     _RUN_SCRATCH_DIR = scratch_dir
     return scratch_dir
