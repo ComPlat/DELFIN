@@ -1,100 +1,84 @@
-"""Real run: one row of the admission matrix driven through the real entry
-path. The form `chat -p` actually runs for an ollama/API session is
-``OpenAIClient.stream_message`` (delfin/agent/api_client.py builds it in
-make_client for the ollama backend), so the driver here feeds a fake SDK
-endpoint (the tests/test_tc1_promise_endpoint.py shape: only
-``client.chat.completions.create`` is replaced; the chunk loop, the
-tool-call accumulator and the whole admission machinery are production
-code) and drives stream_message with plan-mode KitToolPermissions.
+"""Real run: one row of the admission matrix through the real entry point.
 
-Loopback TCP is not an option in the agent harness: its seccomp cage
-denies bind() and connect() outright (the pytest run is inside the same
-cage), so the pty/``chat -p`` subprocess form of this driver cannot run
-there. The SDK-level driver is the same admission path minus the CLI
-argparse shell.
+Input: ``python -P -m delfin.agent.cli chat --provider ollama --model
+fake-model --new --permission-mode plan -p "do-webfetch <url>"`` in a
+child process, against the scripted OpenAI-compatible endpoint
+(tests/agent_terminal_probes/fake_model.py, its ``do-webfetch`` marker)
+on 127.0.0.1. The endpoint answers the first round with one
+``web_fetch`` call of an outside URL and every later round with text.
 
-What the real session decides for web_fetch of an outside URL in plan
-mode must match the matrix row: deny (plan mode is read-only).
+Output pinned: what the session sent back to the model for that call is
+the plan-mode refusal -- the same decision the matrix records for
+``native`` / ``plan_*`` / ``web_fetch_outside``
+(tests/test_every_admission_path_decides_a_call_the_same_way.py) -- and
+the run ends with the exit code of a refused turn
+(turn_outcome.EXIT_CODES["refused"]).
+
+The child gets a private HOME and no credentials (conftest.child_env),
+and its interpreter runs with -P, so the delfin it imports is the one on
+PYTHONPATH (this checkout), not one found from the working directory.
+Nothing leaves the machine: the refusal comes before the URL is resolved.
 """
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace as NS
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "tests"))
 sys.path.insert(0, str(REPO))
 
-from delfin.agent.api_client import (  # noqa: E402
-    KitToolPermissions,
-    OpenAIClient,
-)
+from conftest import child_env  # noqa: E402
+from delfin.agent.turn_outcome import EXIT_CODES  # noqa: E402
+from tests.agent_terminal_probes import fake_model  # noqa: E402
 
 URL = "https://sink.example/collect"
 
 
-def text_chunk(t, finish=None):
-    return NS(choices=[NS(delta=NS(content=t, tool_calls=None,
-                                   reasoning_content=None),
-                          finish_reason=finish)], usage=None)
+def test_real_session_refuses_webfetch_in_plan_mode(tmp_path, monkeypatch):
+    seen: list = []
+    original = fake_model.plan
 
+    def recording_plan(messages):
+        seen.append(json.loads(json.dumps(messages)))
+        return original(messages)
 
-def tool_chunk(name, args, idx=0, finish=None, call_id="call_1"):
-    return NS(choices=[NS(delta=NS(
-        content=None,
-        tool_calls=[NS(index=idx, id=call_id,
-                       function=NS(name=name, arguments=args))],
-        reasoning_content=None), finish_reason=finish)], usage=None)
+    monkeypatch.setattr(fake_model, "plan", recording_plan)
+    server, port = fake_model.serve(log_path=str(tmp_path / "model.log"))
+    try:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        env = child_env(tmp_path)
+        env.update(PYTHONPATH=str(REPO),
+                   OLLAMA_HOST=f"http://127.0.0.1:{port}")
+        for var in ("NO_COLOR", "OLLAMA_BASE_URL", "DELFIN_LIFELINE_PID"):
+            env.pop(var, None)
+        done = subprocess.run(
+            [sys.executable, "-P", "-m", "delfin.agent.cli", "chat",
+             "--provider", "ollama", "--model", fake_model.MODEL, "--new",
+             "--permission-mode", "plan", "-p", f"do-webfetch {URL}"],
+            cwd=str(ws), env=env, capture_output=True, text=True,
+            timeout=300, stdin=subprocess.DEVNULL)
+    finally:
+        server.shutdown()
+        server.server_close()
+    out = done.stdout + done.stderr
 
-
-def _fake_endpoint(events_by_round):
-    """create(**kw) -> per-round generator of chunk objects."""
-    rounds = iter(events_by_round)
-    sent: list = []
-
-    def create(**kw):
-        sent.append(kw.get("messages"))
-        def gen():
-            for c in next(rounds):
-                yield c
-        return gen()
-    return NS(chat=NS(completions=NS(create=create))), sent
-
-
-def test_real_session_denies_webfetch_in_plan_mode(tmp_path):
-    ws = tmp_path / "ws"
-    perms = KitToolPermissions(workspace=ws, mode="plan")
-    client = OpenAIClient(api_key="sk-test", model="probe-model",
-                          base_url="http://probe.invalid/v1",
-                          provider="kit", permissions=perms)
-    fake, sent = _fake_endpoint([
-        [tool_chunk("web_fetch", json.dumps({"url": URL})),
-         text_chunk("", finish="tool_calls")],
-        [text_chunk("done", finish="stop")],
-    ])
-    client.client = fake
-
-    results = []
-    notices = []
-    for ev in client.stream_message("t", [{"role": "user",
-            "content": f"do-webfetch {URL}"}], max_tokens=16):
-        if ev.type == "tool_result":
-            results.append(ev.tool_output)
-        elif ev.type == "notice":
-            notices.append(ev.text)
-
-    assert len(sent) >= 2, "the endpoint never saw the follow-up round"
-    assert results, "the web_fetch call never produced a tool_result"
-    denial = results[0]
-    assert json.loads(denial).get("error", "").startswith(
-        "plan mode (read-only)"), denial[:200]
-    # The refusal names the reason the matrix row records: the tool is not
-    # on the plan-mode read-only list, refused before its arguments are read.
-    assert "not on the plan-mode read-only tool list" in denial
-    assert any("plan mode" in n.lower() and "refused" in n.lower()
-               for n in notices), notices
-    # The engine corrected itself afterwards: the follow-up round arrived
-    # (the model was told the call was refused), and nothing fetched.
-    assert any("web_fetch" in json.dumps(rounds) for rounds in sent[:1])
+    assert seen, "the endpoint was never asked:\n" + out[-2000:]
+    first_user = fake_model._text_of(fake_model._last(seen[0], "user"))
+    assert first_user.startswith(f"do-webfetch {URL}"), first_user[:200]
+    results = [m for msgs in seen[1:] for m in msgs
+               if m.get("role") == "tool"]
+    assert results, "no tool result reached the model:\n" + out[-2000:]
+    body = fake_model._text_of(results[0])
+    assert json.loads(body)["error"].startswith("plan mode (read-only)"), body
+    assert "'web_fetch' is not on the plan-mode read-only tool list" in body
+    assert done.returncode == EXIT_CODES["refused"], out[-2000:]
+    # The child's interpreter, environment and working directory import
+    # this checkout's delfin.
+    where = subprocess.run(
+        [sys.executable, "-P", "-c", "import delfin; print(delfin.__file__)"],
+        cwd=str(ws), env=env, capture_output=True, text=True, timeout=60)
+    assert Path(where.stdout.strip()).resolve() == (
+        REPO / "delfin" / "__init__.py").resolve(), where.stdout + where.stderr
