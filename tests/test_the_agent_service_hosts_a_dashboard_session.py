@@ -287,54 +287,31 @@ def test_a_window_that_lets_go_releases_its_hold(service):
         "its only holder let go: a session switched off ends"
 
 
-_CHILD = r"""
-import ctypes, sys
-# What process_guard.protect does in a dashboard kernel: its /proc
-# environment becomes unreadable to the user's other processes.
-assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0
-from delfin.agent.service.client import ServiceClient, ServiceError
-c = ServiceClient(sys.argv[1])
-try:
-    c.request("session.prompt", {"sessionId": "0" * 32, "text": "x"})
-except ServiceError as e:
-    print("code", e.code)
-"""
-
-_PARENT = r"""
-import subprocess, sys
-# argv names what started the child: a dashboard server is a Voila process.
-out = subprocess.run([sys.executable, "-c", sys.argv[1], sys.argv[2], "ipykernel_launcher"],
-                     capture_output=True, text=True, timeout=120)
-print(out.stdout.strip() or out.stderr[-500:])
-"""
-
-
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PR_SET_DUMPABLE is Linux")
-@pytest.mark.parametrize("server, marked, acts", [("voila", False, True),
-                                                  ("some-tool", False, False),
-                                                  ("voila", True, False)])
-def test_a_protected_dashboard_kernel_is_a_window(service, server, marked, acts):
+@pytest.mark.parametrize("kernel, server, server_env, acts", [
+    (b"python -m ipykernel_launcher -f k.json", b"python -m jupyter server --ServerApp.jpserver_extensions=voila", None, True),
+    (b"python -m ipykernel_launcher -f k.json", b"some-tool --serve", None, False),
+    (b"python -m ipykernel_launcher -f k.json", b"python -m jupyter server --ServerApp.jpserver_extensions=voila",
+     b"PATH=/bin\0DELFIN_AGENT_SESSION=1\0", False),
+    (b"python -m ipykernel_launcher -f k.json", b"python -m jupyter server --ServerApp.jpserver_extensions=voila",
+     b"PATH=/bin\0", True),
+    (b"python evil.py", b"python -m jupyter server --ServerApp.jpserver_extensions=voila", None, False),
+])
+def test_a_protected_dashboard_kernel_is_a_window(monkeypatch, kernel, server, server_env, acts):
     """A dashboard kernel makes itself unreadable (process_guard) before it
     connects for a session that gets its id later: unreadable is no reason
-    to refuse it when it is a kernel a Voila server started. Controls: the
-    same protected process under another parent stays watch-only, and so
-    does one under a server that carries the agent marker (a server an
-    agent's command started)."""
-    from conftest import child_env
-    from delfin.agent.approval_guard import ENV_MARKER
-    env = child_env(service.tmp)
-    env["PYTHONPATH"] = service.env["PYTHONPATH"]
-    env.pop("DELFIN_PROCESS_GUARD", None)
-    env.pop(ENV_MARKER, None)
-    if marked:
-        env[ENV_MARKER] = "1"
-    out = subprocess.run([sys.executable, "-c", _PARENT, _CHILD, str(service.socket), server],
-                         env=env, capture_output=True, text=True, timeout=180)
-    code = int(out.stdout.strip().split()[-1]) if "code" in out.stdout else None
-    if acts:
-        assert code == protocol.UNKNOWN_SESSION, out
-    else:
-        assert code == protocol.NOT_ALLOWED, out
+    to refuse it when it is a kernel a Voila server started. The dashboard
+    server protects itself too, so its unreadable environment is accepted.
+    Controls: the same kernel under another parent, a server whose
+    environment carries the agent marker (one an agent's command started),
+    and a process that is no kernel stay watch-only. The /proc readers are
+    stand-ins, so the rule is checked on every platform."""
+    from delfin.agent.service import supervisor as sup
+    kpid, spid = 4242, 4241
+    monkeypatch.setattr(sup, "LINUX", True)
+    monkeypatch.setattr(sup, "_cmdline_of", lambda pid: {kpid: kernel, spid: server}.get(pid, b""))
+    monkeypatch.setattr(sup, "_ppid", lambda pid: spid if pid == kpid else 1)
+    monkeypatch.setattr(sup, "_environ_of", lambda pid: server_env if pid == spid else None)
+    assert sup._a_dashboard_kernel(kpid) is acts
 
 
 @pytest.mark.parametrize("after", [0.0, 0.05, 0.15, 0.3])
