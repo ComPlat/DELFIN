@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from delfin.common.logging import get_logger
@@ -71,6 +72,51 @@ def _cmd_status(args) -> int:
             lines.append(f"    error: {step.error}")
         for line in lines:
             print(line)
+    return 0
+
+
+def _cmd_list(args) -> int:
+    """List the indexed chains with their CURRENT state (read-only).
+
+    The index is a pointer, never the truth: each entry's state is
+    re-read from that chain's own chain_state.json (JC2 target 2).  A
+    vanished chain is still listed (as gone) so the user sees what the
+    index remembers; an empty index prints one line, not nothing.
+    """
+    from delfin.tools import chain_index as _ci
+    from delfin.tools import chain_state as _cs
+
+    entries = _ci.load()
+    if not entries:
+        print("no chains recorded in the chain index")
+        return 0
+    for e in entries:
+        name = e.get("name", "?")
+        wd = e.get("work_dir", "?")
+        created = e.get("created_at")
+        created_s = (
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(created))
+            if isinstance(created, (int, float)) else "?"
+        )
+        state_path = Path(wd) / STATE_FILENAME if wd != "?" else None
+        if state_path is None or not state_path.is_file():
+            state = "gone (no chain state file)"
+            steps_line = ""
+        else:
+            try:
+                chain = _cs.ChainState.load(state_path)
+            except Exception as exc:  # noqa: BLE001 - report, don't die
+                state = f"unreadable ({exc})"
+                steps_line = ""
+            else:
+                states = [s.state for s in chain.steps]
+                if chain.steps and all(s == "finished" for s in states):
+                    state = "finished"
+                else:
+                    state = " / ".join(states) if states else "no steps"
+                steps_line = f" — steps: {', '.join(states)}"
+        print(f"chain '{name}' — work dir: {wd} — created: {created_s} "
+              f"— state: {state}{steps_line}")
     return 0
 
 
@@ -167,6 +213,11 @@ def main(argv=None) -> int:
     )
     p_status.add_argument("work_dir", help="the chain's work dir")
     p_status.set_defaults(func=_cmd_status)
+
+    p_list = sub.add_parser(
+        "list", help="list indexed chains with their current state (read-only)"
+    )
+    p_list.set_defaults(func=_cmd_list)
 
     p_resume = sub.add_parser(
         "resume", help="resume the chain (explicit; never automatic)"

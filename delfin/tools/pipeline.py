@@ -1040,6 +1040,7 @@ class Pipeline:
         resume_chain: bool = False,
         chain_state_obj: Optional[Any] = None,
         provenance: bool = False,
+        agent_session_id: Optional[str] = None,
     ) -> PipelineResult:
         """Execute the pipeline sequentially, then branches in parallel.
 
@@ -1060,6 +1061,14 @@ class Pipeline:
                        mechanism, target 4); created when None
         provenance : if True, write a ``provenance.json`` log to *work_dir*
                      after execution (all steps, timing, parameters)
+        agent_session_id : the agent session the run happens inside, when
+                     one does (JC2 target 2).  The CALLER fills it from
+                     the session id the agent process already exposes —
+                     the same dispatch boundary that feeds the step
+                     journal (``permissions.task_session_id``); the
+                     pipeline never reads the environment for it.  A
+                     run without an agent session (plain ``delfin`` CLI,
+                     a test) leaves it None and simply indexes nothing.
 
         Returns
         -------
@@ -1126,6 +1135,12 @@ class Pipeline:
                 chain = chain_state_obj
             else:
                 chain = _cs.ChainState.create(name=self.name, work_dir=base)
+                # JC2 target 2: a NEWLY CREATED chain is recorded in the
+                # per-user index (best-effort — a failure here never
+                # breaks the run).  A resume records nothing new: the
+                # entry already exists from the first run.
+                from delfin.tools import chain_index as _ci
+                _ci.record(self.name, base, agent_session_id=agent_session_id)
             for i, spec in enumerate(self._trunk):
                 if i >= len(chain.steps):
                     chain.add_step(spec.label or spec.step_name, spec.step_name,
@@ -1531,7 +1546,23 @@ class Pipeline:
                 # uninterrupted run derives them, so persisting them
                 # recorded one machine's absolute paths and made the
                 # params not the user's.  (JC1's live run #6 finding.)
-                cstep.params = _cs.json_safe(dict(spec.kwargs))
+                # The USER-SET keys are recorded alongside (JC2-R1): a
+                # wiring kwarg may share its name with a user's explicit
+                # choice (moread), and on load only the INJECTED ones
+                # are dropped — the user's explicit file choice
+                # survives, or the resume would silently point at a
+                # different file than the user chose.  A legacy (JC1-era)
+                # step has NO explicit set — unknown provenance: its
+                # stored params are MERGED UNDER the spec kwargs (spec
+                # wins on conflict), so a legacy user param is never
+                # silently lost on first resume (JC2-R2).
+                if cstep.explicit_params:
+                    cstep.params = _cs.json_safe(dict(spec.kwargs))
+                else:
+                    merged_user = dict(cstep.params)
+                    merged_user.update(_cs.json_safe(dict(spec.kwargs)))
+                    cstep.params = _cs.json_safe(merged_user)
+                cstep.explicit_params = sorted(spec.kwargs)
                 # The hash covers (tool, user params, input geometry
                 # CONTENT) — the geometry file's bytes, not its path —
                 # so two machines/directories running the same inputs

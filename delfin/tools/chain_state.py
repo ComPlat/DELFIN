@@ -80,6 +80,11 @@ class ChainStep:
     #: so a resume can rebuild a REAL run (L1: charge/method/basis/mult,
     #: ...) and the inputs_hash has inputs to hash (L3).
     params: Dict[str, Any] = field(default_factory=dict)
+    #: The param keys the USER set explicitly (JC2-R1).  A wiring-injected
+    #: kwarg may share its name with a user's explicit choice (moread):
+    #: on load only keys NOT in this list are re-derived — an explicit
+    #: choice survives, an injected one is dropped with the log line.
+    explicit_params: List[str] = field(default_factory=list)
     attempts: List[Dict[str, Any]] = field(default_factory=list)
 
     # -- transitions -------------------------------------------------------
@@ -198,12 +203,16 @@ class ChainStep:
             "evidence": self.evidence,
             "inputs_hash": self.inputs_hash,
             "params": self.params,
+            "explicit_params": list(self.explicit_params),
             "attempts": list(self.attempts),
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChainStep":
-        clean_params, _ = _drop_internal_params(data.get("params", {}))
+        clean_params, _ = _drop_internal_params(
+            data.get("params", {}),
+            explicit=set(data.get("explicit_params", [])),
+        )
         return cls(
             name=data["name"],
             tool=data["tool"],
@@ -216,6 +225,7 @@ class ChainStep:
             evidence=data.get("evidence"),
             inputs_hash=data.get("inputs_hash", ""),
             params=dict(clean_params),
+            explicit_params=list(data.get("explicit_params", [])),
             attempts=list(data.get("attempts", [])),
         )
 
@@ -243,16 +253,27 @@ _INTERNAL_PARAM_KEYS: frozenset = frozenset({
 
 def _drop_internal_params(
     params: Dict[str, Any],
+    explicit: Optional[set] = None,
 ) -> tuple[Dict[str, Any], list[str]]:
     """User params only: drop the pipeline-internal keys.
 
+    A key the USER set explicitly (in ``explicit`` — the persisted
+    ``explicit_params`` list, recorded at submission from ``spec.kwargs``,
+    where the explicit-vs-wired distinction is known) survives even when
+    its name matches an internal key (moread/hess_file): the user chose
+    that file, and re-deriving it from the upstream artifact would
+    silently point the resume at a DIFFERENT file than the user chose
+    (JC2-R1).  Only WIRING-INJECTED keys are dropped and re-derived on
+    resume from the finished upstream steps.
+
     Returns ``(clean_params, dropped_keys)`` so the caller (the load
-    path) can emit the ONE log line naming what was dropped; the
-    from_dict site discards the list when it cannot log per file.
+    path) can emit the ONE log line naming what was dropped.
     """
-    dropped = [k for k in params if k in _INTERNAL_PARAM_KEYS]
-    return {k: v for k, v in params.items() if k not in _INTERNAL_PARAM_KEYS}, \
-        dropped
+    explicit = explicit or set()
+    dropped = [k for k in params
+               if k in _INTERNAL_PARAM_KEYS and k not in explicit]
+    return {k: v for k, v in params.items()
+            if k not in _INTERNAL_PARAM_KEYS or k in explicit}, dropped
 
 
 def _geometry_content(geometry: Optional[str | Path]) -> Optional[str]:
