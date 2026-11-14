@@ -327,3 +327,23 @@ def test_a_protected_dashboard_kernel_is_a_window(service, server, acts):
         assert code == protocol.UNKNOWN_SESSION, out
     else:
         assert code == protocol.NOT_ALLOWED, out
+
+
+@pytest.mark.parametrize("after", [0.0, 0.05, 0.15, 0.3])
+def test_off_and_let_go_while_a_worker_takes_it_over_it_ends(service, after):
+    """Measured in the real run: the last window let go while the worker
+    that takes the session over was still starting; the wake then brought
+    it up held by nobody, listed as kept, and it ran on. Let go at several
+    moments of the take-over."""
+    host = _host(service, keep=False, fake=True)
+    tui = ServiceClient(service.socket, client="delfin-tui")
+    tui.request("session.attach", {"sessionId": SID, "turns": 0})
+    host.emit("host.released", end=False)
+    host.close()
+    time.sleep(after)
+    tui.close()
+    watcher = service.client()
+    assert _until(lambda: not _summary(watcher), 20)
+    time.sleep(4.0)                    # and it does not come back with the wake
+    assert not _summary(watcher), \
+        "let go by every window, a session switched off ends: " + str(_summary(watcher))
