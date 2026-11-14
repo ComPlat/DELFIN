@@ -482,6 +482,11 @@ class CLIClient(_BaseClient):
         effective_sid = session_id or self._session_id
 
         proc = self._ensure_proc(system, session_id=effective_sid)
+        # The URLs the person typed, for the gate hook's egress decision
+        # (cli_gate.note_user_message): a WebFetch of one proceeds.
+        from . import cli_gate as _cli_gate
+        _cli_gate.note_user_message(getattr(self, "_gate_token", ""),
+                                    prompt_text)
 
         # Build the stream-json input message
         user_msg = json.dumps({
@@ -504,6 +509,16 @@ class CLIClient(_BaseClient):
 
         # Read events until we get the "result" event (turn complete)
         yield from self._read_turn(proc)
+
+    def _note_tool_result(self, tool: str, text: str) -> None:
+        """The URLs a WebSearch / WebFetch result showed, for the gate
+        hook's egress decision (cli_gate.note_tool_result). Never raises."""
+        try:
+            from . import cli_gate as _cli_gate
+            _cli_gate.note_tool_result(getattr(self, "_gate_token", ""),
+                                       tool, text)
+        except Exception:
+            pass
 
     def _read_turn(self, proc: subprocess.Popen) -> Generator[StreamEvent, None, None]:
         """Read events from stdout until a ``result`` event marks turn end."""
@@ -587,6 +602,7 @@ class CLIClient(_BaseClient):
                             result_tool = _tool_id_to_name.get(
                                 _last_tool_use_id, ""
                             )
+                            self._note_tool_result(result_tool, result_text)
                             # Redacted where the EVENT is built, not where
                             # the model copy is made: the engine writes this
                             # event to the tool trace, and a bug report
@@ -658,6 +674,7 @@ class CLIClient(_BaseClient):
                         if content:
                             tid = block.get("tool_use_id", "")
                             result_tool = _tool_id_to_name.get(tid, "")
+                            self._note_tool_result(result_tool, str(content))
                             yield StreamEvent(
                                 type="tool_result",
                                 tool_name=result_tool,
