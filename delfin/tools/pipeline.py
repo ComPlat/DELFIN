@@ -1514,16 +1514,33 @@ class Pipeline:
                 # `pending`/None on disk and a redundant rerun on resume.
                 cstep.mark_submitted(job_id="local")
                 cstep.work_dir = str(step_dir)
-                # L1/L3: persist what run_step will actually receive, so a
-                # resume can rebuild a REAL run (validate_params passes) and
-                # the inputs hash hashes real inputs.  L7 reviewer note:
-                # only JSON types in the step — _prev_artifacts carries
-                # pathlib.Path values, converted here (the narrow fix),
-                # not only at the write site.
-                cstep.params = _cs.json_safe(dict(merged_kwargs))
+                # L1/L3: persist the step's parameters so a resume can
+                # rebuild a REAL run (validate_params passes) and the
+                # inputs hash hashes real inputs.  L7 reviewer note:
+                # only JSON types in the step.
+                #
+                # JC2 target 1: what is persisted is the USER's step
+                # parameters — what ``Pipeline.add(...)`` was given plus
+                # the pipeline defaults it applies (``spec.kwargs``) —
+                # never the pipeline-internal wiring.  ``merged_kwargs``
+                # at this point also carries the wiring autowire_kwargs
+                # injected (moread/hess_file/contract wires, from the
+                # upstream artifacts of THIS run) and ``_prev_artifacts``
+                # (pipeline.py above): both are re-derived on resume from
+                # the finished upstream steps, exactly as an
+                # uninterrupted run derives them, so persisting them
+                # recorded one machine's absolute paths and made the
+                # params not the user's.  (JC1's live run #6 finding.)
+                cstep.params = _cs.json_safe(dict(spec.kwargs))
+                # The hash covers (tool, user params, input geometry
+                # CONTENT) — the geometry file's bytes, not its path —
+                # so two machines/directories running the same inputs
+                # get the same hash.  The wiring keys are excluded with
+                # the params above.
                 cstep.inputs_hash = _cs.compute_inputs_hash(
-                    geometry=str(geom) if geom else None,
-                    **{"cores": cores, **cstep.params},
+                    tool=spec.step_name,
+                    geometry_content=_cs._geometry_content(geom),
+                    **_cs.json_safe(dict(spec.kwargs)),
                 )
                 chain.save()
             if cstep is not None and cstep.state == "failed":

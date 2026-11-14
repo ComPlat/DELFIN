@@ -203,6 +203,7 @@ class ChainStep:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChainStep":
+        clean_params, _ = _drop_internal_params(data.get("params", {}))
         return cls(
             name=data["name"],
             tool=data["tool"],
@@ -214,15 +215,87 @@ class ChainStep:
             error_kind=data.get("error_kind"),
             evidence=data.get("evidence"),
             inputs_hash=data.get("inputs_hash", ""),
-            params=dict(data.get("params", {})),
+            params=dict(clean_params),
             attempts=list(data.get("attempts", [])),
         )
 
 
-def compute_inputs_hash(geometry: Optional[str] = None, **params: Any) -> str:
-    """Stable hash over a step's inputs, so a resume can detect drift."""
+# -- Internal (non-user) persisted params ----------------------------------
+#
+# JC2 target 1: a step's persisted params are the USER's step parameters.
+# The pipeline-internal keys a JC1-era state file may carry are dropped on
+# load: the wiring is re-derived on resume from the finished upstream
+# steps (pipeline.py autowire_kwargs), never trusted from a record that
+# named one machine's absolute paths.
+
+#: Keys the pipeline itself injects into a step call, never set by the
+#: user: the run-internal artifact dict and the kwargs the wiring rules
+#: fill from upstream artifacts (_wiring.DEFAULT_RULES).  The contract
+#: ``wires`` (parser filepath ...) are declared capability ports — they
+#: are re-derived the same way but a user CAN legitimately pass them, so
+#: only the rule-injected kwargs are dropped here.
+_INTERNAL_PARAM_KEYS: frozenset = frozenset({
+    "_prev_artifacts",
+    "moread",       # gbw rule
+    "hess_file",    # hessian rule
+})
+
+
+def _drop_internal_params(
+    params: Dict[str, Any],
+) -> tuple[Dict[str, Any], list[str]]:
+    """User params only: drop the pipeline-internal keys.
+
+    Returns ``(clean_params, dropped_keys)`` so the caller (the load
+    path) can emit the ONE log line naming what was dropped; the
+    from_dict site discards the list when it cannot log per file.
+    """
+    dropped = [k for k in params if k in _INTERNAL_PARAM_KEYS]
+    return {k: v for k, v in params.items() if k not in _INTERNAL_PARAM_KEYS}, \
+        dropped
+
+
+def _geometry_content(geometry: Optional[str | Path]) -> Optional[str]:
+    """The geometry file's CONTENT, for the inputs hash.
+
+    Hashing the path (the JC1 behaviour) made ``inputs_hash`` depend on
+    the machine: the same inputs in two directories hashed differently.
+    Content is identical on every machine for the same inputs.  A
+    missing/unreadable file yields None with one log line — the hash is
+    still recorded over the user params; it is then simply weaker, and
+    never silently pretends two geometries were the same.
+    """
+    if geometry is None:
+        return None
+    path = Path(geometry)
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning(
+            "inputs hash: geometry %s could not be read (%s) — hashing "
+            "over the user params only", path, exc,
+        )
+        return None
+
+
+def compute_inputs_hash(
+    geometry_content: Optional[str] = None,
+    *,
+    tool: str = "",
+    **params: Any,
+) -> str:
+    """Stable hash over a step's inputs, so a resume can detect drift.
+
+    The payload is ``(tool, user params, input geometry CONTENT)`` —
+    never an absolute path (JC2 target 1: identical on two machines and
+    in two directories for the same inputs).
+    """
     payload = json.dumps(
-        {"geometry": str(geometry) if geometry else None, "params": params},
+        {
+            "tool": tool,
+            "geometry_content": geometry_content,
+            "params": params,
+        },
         sort_keys=True,
         default=str,
     )
@@ -270,6 +343,10 @@ class ChainState:
             name=data["name"],
             work_dir=Path(data["work_dir"]),
         )
+        # JC2 target 1: ONE log line for the whole file naming which
+        # steps lost which internal keys (a JC1-era state carries the
+        # wiring keys; they are re-derived on resume, never trusted).
+        _dropped_per_step: dict = {}
         for sd in data.get("steps", []):
             if sd.get("state") == "finished":
                 # Torn/unfinished check: a stored `finished` step must
@@ -289,7 +366,17 @@ class ChainState:
                         sd.get("name"),
                     )
                     sd = dict(sd, state="pending", evidence=None)
+            _, dropped = _drop_internal_params(sd.get("params", {}) or {})
+            if dropped:
+                _dropped_per_step[sd.get("name", "?")] = sorted(dropped)
             chain.steps.append(ChainStep.from_dict(sd))
+        if _dropped_per_step:
+            logger.info(
+                "chain %s: dropped pipeline-internal params on load "
+                "(re-derived on resume from the finished upstream steps): %s",
+                data["name"],
+                _dropped_per_step,
+            )
         return chain
 
     # -- steps -------------------------------------------------------------
