@@ -482,6 +482,11 @@ class CLIClient(_BaseClient):
         effective_sid = session_id or self._session_id
 
         proc = self._ensure_proc(system, session_id=effective_sid)
+        # The URLs the person typed, for the gate hook's egress decision
+        # (cli_gate.note_user_message): a WebFetch of one proceeds.
+        from . import cli_gate as _cli_gate
+        _cli_gate.note_user_message(getattr(self, "_gate_token", ""),
+                                    prompt_text)
 
         # Build the stream-json input message
         user_msg = json.dumps({
@@ -504,6 +509,16 @@ class CLIClient(_BaseClient):
 
         # Read events until we get the "result" event (turn complete)
         yield from self._read_turn(proc)
+
+    def _note_tool_result(self, tool: str, text: str) -> None:
+        """The URLs a WebSearch / WebFetch result showed, for the gate
+        hook's egress decision (cli_gate.note_tool_result). Never raises."""
+        try:
+            from . import cli_gate as _cli_gate
+            _cli_gate.note_tool_result(getattr(self, "_gate_token", ""),
+                                       tool, text)
+        except Exception:
+            pass
 
     def _read_turn(self, proc: subprocess.Popen) -> Generator[StreamEvent, None, None]:
         """Read events from stdout until a ``result`` event marks turn end."""
@@ -587,6 +602,7 @@ class CLIClient(_BaseClient):
                             result_tool = _tool_id_to_name.get(
                                 _last_tool_use_id, ""
                             )
+                            self._note_tool_result(result_tool, result_text)
                             # Redacted where the EVENT is built, not where
                             # the model copy is made: the engine writes this
                             # event to the tool trace, and a bug report
@@ -658,6 +674,7 @@ class CLIClient(_BaseClient):
                         if content:
                             tid = block.get("tool_use_id", "")
                             result_tool = _tool_id_to_name.get(tid, "")
+                            self._note_tool_result(result_tool, str(content))
                             yield StreamEvent(
                                 type="tool_result",
                                 tool_name=result_tool,
@@ -12343,9 +12360,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "show_molecule",
             "description": (
-                "Show .xyz (multi-frame too) or .cube in 3D, .smi/.mol/.sdf "
-                "as a structural formula, in the chat; isovalue: cube "
-                "isosurface (default 0.02)."
+                "Show .xyz (multi-frame)/.cube in 3D, .smi/.mol/.sdf as "
+                "a structural formula: the only 3D view (answer HTML is "
+                "text); isovalue: cube isosurface."
             ),
             "parameters": {
                 "type": "object",
@@ -13627,8 +13644,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "Revert the AGENT's own recorded file changes. A file is "
                 "restored only while its content still matches the recorded "
                 "post-edit hash; anything changed since is reported as a "
-                "conflict and left untouched. Agent-created files are deleted"
-                " under the same check."
+                "conflict and left untouched. Agent-created files are "
+                "deleted under the same check."
             ),
             "parameters": {
                 "type": "object",
@@ -22112,9 +22129,21 @@ class _DocToolExecutor:
         title = (arguments.get("title") or "").strip() or None
         root = perms.workspace if perms is not None else self._repo_root()
         if memory_type in ("lesson", "finding"):
-            return self._execute_remember_layered(
-                memory_type, text, arguments, perms, root,
-                evidence=str(arguments.get("evidence") or "").strip())
+            # "finding" outside a swarm run is NOT an error: the model was
+            # told the default is "project", so a first "merk dir das" call
+            # that guessed "finding" must still succeed — degrade to a
+            # project memory instead of burning a turn on a refusal.
+            from . import swarm_memory as _sm
+            degraded = (memory_type == "finding"
+                        and not _sm.current_run_id(perms))
+            if degraded:
+                memory_type = "project"
+            else:
+                return self._execute_remember_layered(
+                    memory_type, text, arguments, perms, root,
+                    evidence=str(arguments.get("evidence") or "").strip())
+        else:
+            degraded = False
         read_before = ", ".join(
             str(t) for t in (getattr(perms, "turn_untrusted_sources", ())
                              or ())) or "nothing"
@@ -22164,7 +22193,9 @@ class _DocToolExecutor:
             "type": mtype,
             "slug": slug,
             "note": (f"Saved a '{mtype}' memory. It will be recalled "
-                     "automatically at the start of future sessions."),
+                     "automatically at the start of future sessions."
+                     + (" No swarm run is active, so the finding was stored "
+                        "as a project memory instead." if degraded else "")),
         })
 
     def _execute_remember_layered(self, memory_type: str, text: str,

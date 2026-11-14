@@ -52,6 +52,10 @@ ALLOWED = {
     # mlp_tools/__init__.py migrated to scheduler_client.query (its sinfo
     # probe); removed from the list so the bloat check stays honest.
     "delfin/remote/slurm.py",
+    # A chain resume asks whether a step's job is still queued or running:
+    # one squeue -j <id> through the throttled scheduler_client.query
+    # (chain_state._job_state), like watch_checks; no polling loop.
+    "delfin/tools/chain_state.py",
     "delfin/slurm_submit.py",
 }
 
