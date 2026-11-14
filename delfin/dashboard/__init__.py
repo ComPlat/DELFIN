@@ -1152,8 +1152,18 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # worktree and server, judged and then thrown away -- keeping a
     # session there would save the preview, not the real dashboard.
     _session_strip = None
+    _dashboards = None
     if not _in_preview:
         _session_strip = _session.build_status_strip()
+        # The kept dashboards beside the switch that keeps one: Open, End,
+        # New dashboard (dashboards_menu). A preview has its own server and
+        # no kept dashboards of the real one.
+        try:
+            from delfin.dashboard import dashboards_menu as _dashboards_menu
+            _dashboards = _dashboards_menu.DashboardsMenu(
+                say=lambda text, level='info': header_toasts.show(text, level=level))
+        except Exception:
+            _dashboards = None
 
     # Landing while another session is still running.
     #
@@ -1181,6 +1191,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # the spacer, where its changing text cannot wrap the bar (top_bar).
     _status_group = widgets.HBox(
         [home_usage_label]
+        + ([_dashboards.wrap] if _dashboards is not None else [])
         + ([_session_strip] if _session_strip is not None else [])
         + [_logout])
     # Wrap rather than shrink: the session strip carries an address, and a
