@@ -340,10 +340,18 @@ class _OrcaBase(StepAdapter):
             if not moread_src.suffix:
                 moread_src = moread_src.with_suffix(".gbw")
             if moread_src.is_file():
-                dest = work_dir / moread_src.name
+                # The guess must not carry this job's own name: ORCA writes
+                # <calc_name>.gbw itself when it starts, so a guess copied in
+                # as calc.gbw (an upstream step's default name) is replaced
+                # before the guess is read -- "No orbitals were found in the
+                # gbw file", error termination in GUESS.
+                stem = moread_src.stem
+                if stem == calc_name:
+                    stem = f"{calc_name}_guess"
+                dest = work_dir / f"{stem}.gbw"
                 if not dest.exists():
                     shutil.copy2(moread_src, dest)
-                moread = moread_src.stem  # just the name without .gbw
+                moread = stem  # just the name without .gbw
 
         coords = _read_xyz_coords(geometry)
 
