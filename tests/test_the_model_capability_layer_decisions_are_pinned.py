@@ -106,3 +106,23 @@ def test_the_default_output_token_cap_is_pinned():
 def test_the_kit_endpoint_url_is_one_pinned_value():
     """The layer owns one KIT endpoint URL; pin it so all users agree."""
     assert mc._KIT_BASE_URL == _EXPECTED_KIT_BASE_URL
+
+
+def test_a_cache_entry_with_the_removed_field_still_loads(tmp_path, monkeypatch):
+    """A capability cache written before the field was removed carries
+    ``max_output_tokens``; it loads instead of being dropped by a TypeError."""
+    import dataclasses
+    import json
+    import time
+
+    rec = dataclasses.asdict(mc.ModelCapabilities(
+        model="m-old", provider="ollama", context_window=4096,
+        source="live", discovered_at=time.time()))
+    rec["max_output_tokens"] = 8192
+    path = tmp_path / "caps.json"
+    path.write_text(json.dumps({"_v": mc._CACHE_VERSION,
+                                "entries": {"ollama:m-old": rec}}))
+    monkeypatch.setattr(mc, "_CACHE_PATH", path)
+    monkeypatch.setattr(mc, "_CACHE", {})
+    mc._load_disk_cache()
+    assert mc._CACHE["ollama:m-old"].context_window == 4096
