@@ -93,6 +93,13 @@ def plan(messages: list[dict]) -> dict:
             return {"tool": "write_file",
                     "args": {"path": path, "content": (rest[0] if rest else "")
                              + "\n"}}
+        if s == "do-remember":
+            # The call the live failure showed: a person said "merk dir
+            # das", the model chose type=finding outside a swarm run.
+            return {"tool": "remember",
+                    "args": {"text": "Der Anwender ist ein schneller "
+                                     "Kaffee-Trinker.",
+                             "type": "finding"}}
         if s == "do-md":
             return {"text": "# Result\n\n- **first** point\n- second point\n\n"
                             "```python\nprint('hi')\n```\n"}
