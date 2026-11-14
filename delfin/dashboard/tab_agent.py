@@ -25658,6 +25658,79 @@ def create_tab(ctx):
         except Exception:
             pass
 
+    # -- hosted in the agent service (delfin/dashboard/hosted_sessions.py) --
+    # Another dashboard, the terminal and the phone reach this session
+    # through the agent service; what they send runs through the tab's own
+    # callbacks, as if done here. Nothing below changes how the tab works.
+    _host_send_lock = threading.Lock()
+
+    def _host_send(text: str) -> bool:
+        """A line from another window, run as if typed here -- slash
+        commands, queueing and steering included. What the person has in
+        the box stays there."""
+        with _host_send_lock:
+            draft = input_textarea.value
+            input_textarea.value = text
+            try:
+                _on_send(None)
+            finally:
+                if draft.strip() and not input_textarea.value.strip():
+                    input_textarea.value = draft
+        return True
+
+    def _host_answer_detected(text: str) -> bool:
+        if not state.get("_pending_question"):
+            return False
+        _host_send("Answer to your question: " + text)
+        return not state.get("_pending_question")
+
+    _HOST_APPROVAL = {"plan": "plan", "ask_all": "default", "repo_free": "acceptEdits",
+                      "all_free": "bypassPermissions"}
+
+    def _host_set_permission(profile: str, confirmed: bool) -> str:
+        """The permission selector, moved from another window. Bypass needs
+        the window's own confirmation (its second step), as here."""
+        if profile not in set(_dropdown_values(perm_dropdown.options)):
+            return str(perm_dropdown.value)
+        if profile == "all_free" and not confirmed:
+            return str(perm_dropdown.value)
+        if perm_dropdown.value != profile:
+            perm_dropdown.value = profile
+        return str(perm_dropdown.value)
+
+    def _host_choices(what: str) -> dict:
+        dd = {"model": model_dropdown, "effort": effort_dropdown,
+              "mode": mode_dropdown}.get(str(what or ""))
+        if dd is None:
+            return {"current": "", "choices": []}
+        return {"current": str(dd.value or ""),
+                "choices": [{"value": v} for v in _dropdown_values(dd.options)]}
+
+    def _host_info() -> dict:
+        profile = str(state.get("_perm_profile") or perm_dropdown.value or "ask_all")
+        return {"provider": str(provider_dropdown.value or ""),
+                "model": str(model_dropdown.value or ""),
+                "effort": str(effort_dropdown.value or ""),
+                "mode": str(mode_dropdown.value or ""),
+                "approval": _HOST_APPROVAL.get(profile, "default")}
+
+    def _host_status() -> dict:
+        engine = state.get("engine")
+        try:
+            return dict(engine.get_status()) if engine is not None else {}
+        except Exception:
+            return {}
+
+    def _host_adapter() -> dict:
+        return {"state": state, "send": _host_send, "stop": lambda: _on_stop(None),
+                "answer": _answer_ask_from_chat,
+                "plan": lambda yes: _handle_slash_command(
+                    "/plan approve" if yes else "/plan reject"),
+                "approval": lambda yes: _on_approve(None) if yes else _on_deny(None),
+                "question": _host_answer_detected, "set_permission": _host_set_permission,
+                "choices": _host_choices, "info": _host_info, "chat_html": chat_html,
+                "status": _host_status, "input": input_textarea}
+
     # The kernel ending is the session ending, and nothing it started may
     # outlive it. The server ends an unkept kernel with its last window and
     # a kept one once it is no longer kept; this is what makes that the end
@@ -25699,6 +25772,9 @@ def create_tab(ctx):
             state, tool_name, payload),
         "stop_delegate_card": lambda sa_id: _delegate_stop(
             state, sa_id, _agent_workspace_path()),
+        # The tab's own callbacks for a session hosted in the agent
+        # service (hosted_sessions.TabHost).
+        "host_adapter": _host_adapter,
     }
 
 
