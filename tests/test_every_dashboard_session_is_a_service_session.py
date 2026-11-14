@@ -178,7 +178,26 @@ def test_keep_session_is_the_services_switch(home, service, tui):
     assert _until(lambda: _summary(tui, SID_A))
     refs["set_keep"](rec["key"], True)
     assert _until(lambda: _summary(tui, SID_A).get("keep") is True)
-    assert K.records() == [], "the service decides; no kept record besides"
+    # The kept record stays as what the dashboard server reads (a kernel
+    # holding a kept session finishes its turn before it ends) and as the
+    # fallback without a service; the service has the session, so a
+    # hand-over resumes nothing a second time.
+    assert [r["session_id"] for r in K.records()] == [SID_A]
+    created = []
+
+    class _Service:
+        def sessions(self):
+            return tui.request("sessions.list")
+
+        def create(self, *a, **kw):
+            created.append(kw)
+
+        def close(self):
+            pass
+
+    assert K.hand_over(only=SID_A, connect=_Service)[0]["result"] == "resumed"
+    assert created == [], "the service runs it already"
+    refs["set_keep"](rec["key"], True)            # armed again (the hand-over took it)
     tui.request("session.setKeep", {"sessionId": SID_A, "keep": False})
     assert _until(lambda: (refs["refresh"]() or True) and rec["keep_switch"].value is False), \
         "switched off in the terminal, the switch here follows"
