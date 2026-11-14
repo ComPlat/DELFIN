@@ -255,9 +255,10 @@ def test_ended_from_the_terminal_it_is_saved_and_listed_as_not_running(home, ser
     tui.request("session.shutdown", {"sessionId": SID_A})
     assert _until(lambda: build.tabs[0]["closed"])
     assert _until(lambda: not _summary(tui, SID_A))
-    rows = refs["sessions"]()
-    assert rec not in rows
-    assert [r.get("dormant") for r in rows if r.get("session_id") == SID_A] == [True]
+    # The service lets go a moment before the row is put in the tab's place.
+    assert _until(lambda: [r.get("dormant") for r in refs["sessions"]()
+                           if r.get("session_id") == SID_A] == [True], 10)
+    assert rec not in refs["sessions"]()
     refs["stop_refresh"]()
 
 
