@@ -179,7 +179,7 @@ def test_a_turn_asks_again_while_the_window_is_still_a_guess(agent_tree,
     refreshed.clear()
     engine._active_capabilities = MC.ModelCapabilities(
         model="m", provider="kit", context_window=524_288,
-        max_output_tokens=8192, supports_tools=True, supports_vision=False,
+        supports_tools=True, supports_vision=False,
         is_reasoning=False, thinking_tagged=False,
         recommended_effort="medium", num_ctx_override=None,
         source="live", discovered_at=0.0, note="")
