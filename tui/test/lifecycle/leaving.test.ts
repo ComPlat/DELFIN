@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { keptOf, leaveWords, leavingNote, resumeCommand, startedHere } from "../../src/leaving"
+import { hostedOf, keptOf, leaveWords, leavingNote, resumeCommand, startedHere } from "../../src/leaving"
 
 const running = { id: "abc123def456", title: "relax Fe", state: "idle" as const, ended: null }
 
@@ -53,6 +53,27 @@ describe("what leaving the window prints", () => {
     expect(keptOf(undefined)).toBe(true)
     expect(leaveWords(true)).toBe("the session keeps running in the agent service")
     expect(leaveWords(false)).toBe("the session ends -- /keep on keeps it")
+  })
+
+  test("a session a dashboard runs goes on there, whatever this window does", () => {
+    // Hosted by a dashboard's kernel (summary host "dashboard"): leaving
+    // this window lets go of it; the dashboard still has it open.
+    expect(hostedOf({ host: "dashboard" })).toBe(true)
+    expect(hostedOf({})).toBe(false)
+    expect(hostedOf(undefined)).toBe(false)
+    expect(leaveWords(false, true)).toBe("the session goes on in the dashboard that runs it")
+    expect(leaveWords(true, true)).toBe("the session goes on in the dashboard that runs it")
+    const note = leavingNote({ session: { ...running, kept: false, hosted: true } })
+    expect(note).toContain("relax Fe goes on in the dashboard that runs it")
+    expect(note).not.toContain("ends with this window")
+    expect(note).toContain("resume with: delfin-agent tui --resume abc123def456")
+    // The leaving paths ask the summary whether a dashboard runs it.
+    const app = readFileSync(join(import.meta.dir, "../../src/app.tsx"), "utf8")
+    for (const call of app.split("leaveWords(").slice(1)) {
+      expect(call.startsWith("keptOf(session()?.summary), hostedOf(session()?.summary))")).toBe(true)
+    }
+    const main = readFileSync(join(import.meta.dir, "../../src/main.tsx"), "utf8")
+    expect(main).toContain("hosted: hostedOf(s.summary)")
   })
 
   test("a session this window starts is not kept: ctrl+c twice ends it", () => {
