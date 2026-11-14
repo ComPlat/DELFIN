@@ -5,10 +5,17 @@ Task s09, first batch: ``~/.delfin`` used to be written directly by about
 redirect state without patching HOME, and a missed patch wrote the real user
 store. This file pins the targets of the first conversion batch.
 
-Part 1 (this commit, green on base): with ``DELFIN_STATE`` unset and HOME
-pointed at a fixture root, each of the ten modules resolves a path under the
-state root through its own function or constant, and that path is *exactly*
-the base one: ``<home>/.delfin/<rel>``.
+Part 1 (green on base): with ``DELFIN_STATE`` unset and HOME pointed at a
+fixture root, each of the ten modules resolves a path under the state root
+through its own function or constant, and that path is *exactly* the base
+one: ``<home>/.delfin/<rel>``. This pins today's behaviour.
+
+Part 2 (RED on base, green once converted): with ``DELFIN_STATE`` set to
+another fixture root, the same modules resolve through it. On base they
+write ``Path.home()`` and ignore the variable, so this fails there.
+
+Part 3 (RED on base, green once converted): none of the ten modules
+contains the literal ``Path.home() / ".delfin"`` any more.
 
 Each probe reloads the module first so the value read is the module's own,
 freshly computed under the current environment -- an autouse fixture that
@@ -64,6 +71,21 @@ PROBES = (
     (MIN_SCHEDULES, ("attr", "_DEFAULT_PATH"), "schedules.json"),
 )
 
+# The ten modules under conversion, as source paths to grep for the missing
+# ``Path.home() / ".delfin"`` literal.
+TEN_MODULES = (
+    "delfin/agent/memory_store.py",
+    "delfin/agent/session_store.py",
+    "delfin/agent/subagents.py",
+    "delfin/agent/skills.py",
+    "delfin/agent/loops.py",
+    "delfin/agent/eval_loop.py",
+    "delfin/agent/bug_report.py",
+    "delfin/messenger/store.py",
+    "delfin/messenger/pairing.py",
+    "delfin/dashboard/schedules.py",
+)
+
 
 def _read_probe(module_name: str, how: tuple[str, str]) -> Path:
     mod = importlib.import_module(module_name)
@@ -103,3 +125,35 @@ def test_modules_resolve_under_home_when_state_unset(home_tmp):
         expected = Path(os.environ["HOME"]) / ".delfin" / rel
         assert got == expected, (
             f"{module_name} {how[1]} resolved to {got}; expected {expected}")
+
+
+def test_modules_resolve_under_delfin_state_when_set(tmp_path, monkeypatch):
+    """With DELFIN_STATE set to a fixture root, the converted modules use it.
+    Red on base (they write ``Path.home()``); green once converted."""
+    state = tmp_path / "state"
+    monkeypatch.delenv("DELFIN_STATE", raising=False)
+    monkeypatch.setenv("DELFIN_STATE", str(state))
+    monkeypatch.setenv("HOME", str(tmp_path / "home_ignored"))
+    os.environ.pop("DELFIN_MESSENGER_DIR", None)
+    for module_name, how, rel in PROBES:
+        importlib.reload(importlib.import_module(module_name))
+        got = _read_probe(module_name, how)
+        expected = state / rel
+        assert got == expected, (
+            f"{module_name} {how[1]} resolved to {got}; expected {expected} ("
+            "DELFIN_STATE is not honoured -- not yet converted to state_root())")
+
+
+def test_no_module_writes_path_home_delfin_literal():
+    """The conversion is source-visible: after it, none of the ten modules
+    contains the literal ``Path.home() / ".delfin"`` any more."""
+    import delfin.agent.state_paths as sp
+    repo_root = Path(sp.__file__).resolve().parent.parent.parent
+    missing = []
+    for rel in TEN_MODULES:
+        src = (repo_root / rel).read_text(encoding="utf-8")
+        if 'Path.home() / ".delfin"' in src:
+            missing.append(rel)
+    assert not missing, (
+        "these module(s) still write Path.home() / \".delfin\" directly; "
+        "convert them to state_root(): " + ", ".join(missing))
