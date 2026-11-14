@@ -218,8 +218,10 @@ _heartbeat: "threading.Event | None" = None
 
 
 def _beat(name: str, stop: "threading.Event") -> None:
+    # Refreshes, never re-creates: a record dropped from elsewhere -- End in
+    # another window's Dashboards menu -- stays dropped, and the beat stops.
     while not stop.wait(HEARTBEAT_S):
-        if not write_record(name):
+        if not refresh_record(name):
             return
 
 
@@ -299,6 +301,10 @@ SESSION_QUERY_KEY = "session"
 #: address -- that one renders and EXECUTES the full notebook, which
 #: against a live kernel would run all nineteen tabs a second time.
 RESUME_PATH_ENV = "DELFIN_RESUME_URL_PATH"
+
+#: Set by the launcher: the dashboard's own render path, which the header's
+#: "New dashboard" opens (dashboards_menu).
+DASHBOARD_PATH_ENV = "DELFIN_DASHBOARD_URL_PATH"
 
 
 def _request_url() -> str:
@@ -604,7 +610,7 @@ def announce(name: str = "") -> str:
     line = (
         f"[delfin] Session \"{who}\" is kept.\n"
         f"         Return:  {url or '(address unknown)'}\n"
-        f"         End:     in the dashboard, or Ctrl+C here"
+        f"         End:     in the dashboard (Dashboards, End), or delfin-voila stop"
     )
     # Only a kernel has to reach past its own captured stdout; anywhere
     # else -- a test, a CLI -- the parent is not the server, and print
@@ -751,6 +757,44 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
 
 
 _last_write_error = ""
+
+
+def refresh_record(name: str = "", *, root: str = "") -> bool:
+    """Renew the sign of life of an existing record; never create one.
+
+    Returns False when there is no record (it was dropped: disarmed, or
+    ended from another window) or it cannot be rewritten. Everything but
+    ``updated_at`` stays as written, ``started_at`` included.
+    """
+    import json
+    import tempfile
+
+    who = name or session_name()
+    if not who:
+        return False
+    directory = root or RECORD_DIR
+    path = record_path(who, root=directory)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    payload["updated_at"] = time.time()
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=f".{who}.", suffix=".tmp",
+                                   dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=1)
+        if not os.path.exists(path):
+            # Dropped while this was being written: leave it dropped.
+            os.unlink(tmp)
+            return False
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
 
 
 def last_write_error() -> str:

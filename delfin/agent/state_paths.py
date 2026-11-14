@@ -822,6 +822,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # and the launcher's atexit hook then deleted it on the way out --
     # leaving a dashboard that was still serving with no way back to it.
     ("delfin.agent.where", "record_path", "dashboard_here.json"),
+    # This host's dashboard server record (pid, port, token), its lock
+    # and a detached launcher's log. A run that drove the launcher must
+    # not leave its server where a real `delfin-voila` would open it, nor
+    # take the real one's lock.
+    ("delfin.dashboard.server_record", "_state_dir", "dashboard_server"),
     # The header's branch list (pins and hidden entries), the log of
     # deleted branches and worktrees with their undo commands, and the
     # records of running branch previews. A run that pinned a fixture

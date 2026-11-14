@@ -166,21 +166,15 @@ def run_case(case: case_defs.Case, *, tree: Path, base: Path,
     # Values the caller resolved itself (a credential from the person's
     # store): the child's HOME is private, so it could not find them.
     env.update(extra_env or {})
-    # The scripted model's plan is swapped for this case's and put back
-    # after the run: left in place, every later test in the same process
-    # that serves fake_model got the obedient "ok" planner instead of the
-    # module's own (test_real_run_webfetch_plan_mode failed whenever a CI
-    # shard ran it after test_a_tainted_turn_needs_the_users_words_to_send_out).
     restore_plan = None
     if provider == "scripted":
         from tests.agent_terminal_probes import fake_model
+        # Swapped for this case only: the module is shared by every test in
+        # the process, and a later test that wraps fake_model.plan must find
+        # the scripted endpoint's own plan, not this case's.
         restore_plan = fake_model.plan
         fake_model.plan = planner(case)
-        try:
-            server, port = fake_model.serve()
-        except BaseException:
-            fake_model.plan = restore_plan
-            raise
+        server, port = fake_model.serve()
         env["OLLAMA_HOST"] = f"http://127.0.0.1:{port}"
         cli_provider, cli_model = "ollama", fake_model.MODEL
     else:
@@ -203,7 +197,6 @@ def run_case(case: case_defs.Case, *, tree: Path, base: Path,
     finally:
         if server is not None:
             server.shutdown()
-            server.server_close()
         if restore_plan is not None:
             fake_model.plan = restore_plan
     seconds = time.monotonic() - t0
