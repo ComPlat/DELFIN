@@ -293,7 +293,6 @@ _BASELINE_TOKENS = 11_422
 # Rejected: a `propose` action on cluster_status (advertised only with a
 # cluster, the moment it is least needed) and a NEEDS YOU item the agent
 # words itself (the form's fields are what the person must check).
-_TOKEN_BUDGET = 11_675
 # 2026-11-12 (SW3): the swarm-lead preset (pack/agents/swarm-lead_subagent.md).
 # Its only schema text is its name in the subagent_type enum, as for the
 # method-reviewer above; measured +3 tokens, 11_675 -> 11_678.

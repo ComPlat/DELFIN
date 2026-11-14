@@ -12343,9 +12343,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "show_molecule",
             "description": (
-                "Show .xyz (multi-frame too) or .cube in 3D, .smi/.mol/.sdf "
-                "as a structural formula, in the chat; isovalue: cube "
-                "isosurface (default 0.02)."
+                "Show .xyz (multi-frame)/.cube in 3D, .smi/.mol/.sdf as "
+                "a structural formula: the only 3D view (answer HTML is "
+                "text); isovalue: cube isosurface."
             ),
             "parameters": {
                 "type": "object",
@@ -13627,8 +13627,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "Revert the AGENT's own recorded file changes. A file is "
                 "restored only while its content still matches the recorded "
                 "post-edit hash; anything changed since is reported as a "
-                "conflict and left untouched. Agent-created files are deleted"
-                " under the same check."
+                "conflict and left untouched. Agent-created files are "
+                "deleted under the same check."
             ),
             "parameters": {
                 "type": "object",

@@ -4765,6 +4765,24 @@ class AgentEngine:
                 if not _announced:
                     self._stall_progress()
 
+        # Show-molecule steering: a finished answer that embeds a
+        # hand-written 3D viewer (iframe / CDN viewer script) while the turn
+        # never called show_molecule gets one short hint naming the tool --
+        # the card it renders is the working alternative, the markup is not.
+        # Best-effort: the hint never breaks the turn, the answer text is
+        # kept, never rewritten.
+        try:
+            from delfin.agent.show_molecule_guard import caveat_for
+            _hint = caveat_for(
+                full_response,
+                show_molecule_called="show_molecule" in (
+                    getattr(self, "_last_turn_tools", None) or ()),
+            )
+            if _hint:
+                full_response = full_response.rstrip() + _hint
+        except Exception:
+            pass
+
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
         # Reports 20261005-135825 / 20261005-140408: four turns of "Let me
