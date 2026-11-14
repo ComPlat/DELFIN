@@ -699,54 +699,41 @@ def test_today_the_hook_puts_a_deny_listed_command_to_the_person(
     assert refusal is None and asked
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "intended: the hook refuses a deny-listed command as the native bash "
-    "gate does, unasked, in every mode. Today _run_permission_gate runs on "
-    "the hook only in bypass (cli_gate.py:353-354, :407); in default and "
-    "acceptEdits the command is put to the person and allowed on yes"))
 @pytest.mark.parametrize("mode", ["default", "acceptEdits"])
 @pytest.mark.parametrize("cmd", DENY_LISTED)
 def test_intended_the_hook_refuses_a_deny_listed_command(world, mode, cmd):
+    """The hook refuses a deny-listed command as the native bash gate
+    does, unasked, in every mode (cli_gate._decide_bash runs
+    _run_permission_gate before anybody is asked)."""
     refusal, asked = _hook_with_yes(world, mode, cmd)
     assert refusal and "deny-pattern" in refusal and not asked
 
 
 # ------------------------------------------------- intended (step 2)
 
-_HOOK_DECIDES_EVERY_TOOL = (
-    "intended once the CLI hook decides every tool (consolidation step 2): ")
-
-
-@pytest.mark.xfail(strict=True, reason=_HOOK_DECIDES_EVERY_TOOL + (
-    "WebFetch is decided by the hook as the native executor decides it. "
-    "Today WebFetch is not in _DECIDED_TOOLS (cli_gate.py:379), main "
-    "prints no decision, and under bypass (--dangerously-skip-permissions) "
-    "the external CLI asks nobody: an outside URL the native egress gate "
-    "refuses is left to the program"))
 @pytest.mark.parametrize("posture", ["bypass_unattended", "default_unattended",
                                      "plan_unattended"])
 def test_intended_clihook_decides_webfetch_like_native(matrix, posture):
+    """WebFetch is decided by the hook as the native executor decides it
+    (cli_gate._decide_web: _run_permission_gate), so under bypass an
+    outside URL the native egress gate refuses is refused, not left to
+    the program."""
     assert (matrix[(posture, "clihook", "web_fetch_outside")]
             == matrix[(posture, "native", "web_fetch_outside")])
 
 
-@pytest.mark.xfail(strict=True, reason=_HOOK_DECIDES_EVERY_TOOL + (
-    "an mcp__ call is decided by the hook as _mcp_call_refusal decides it. "
-    "Today mcp__ names are not in _DECIDED_TOOLS (cli_gate.py:379); the "
-    "hook prints nothing and the external CLI decides alone"))
 @pytest.mark.parametrize("posture", ["bypass_unattended", "default_unattended",
                                      "plan_unattended"])
 def test_intended_clihook_decides_mcp_like_mcp_path(matrix, posture):
+    """An mcp__ call is decided by the hook as _mcp_call_refusal decides
+    it (cli_gate.decide_call), not left to the program."""
     assert (matrix[(posture, "clihook", "mcp_send")]
             == matrix[(posture, "mcp", "mcp_send")])
 
 
-@pytest.mark.xfail(strict=True, reason=_HOOK_DECIDES_EVERY_TOOL + (
-    "in plan mode the hook refuses what the native plan gate refuses "
-    "instead of printing an explicit allow (_ask_for_command lets plan "
-    "pass, cli_gate.py:430; _gate_write_path has no plan check). Today the "
-    "refusal comes only from the external CLI's own plan mode (measured "
-    "2.1.322)"))
 @pytest.mark.parametrize("row", ["write_inside", "bash_rmrf_inside"])
 def test_intended_clihook_refuses_plan_mode_writes(matrix, row):
+    """In plan mode the hook refuses what the native plan gate refuses
+    instead of printing an explicit allow; the refusal no longer rests on
+    the external CLI's own plan mode."""
     assert matrix[("plan_unattended", "clihook", row)] == DENY
