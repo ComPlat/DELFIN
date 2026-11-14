@@ -29,7 +29,7 @@ def test_finding_outside_swarm_run_stores_project_memory(tmp_path):
     with patch.object(Path, "home", lambda: home), \
             patch.dict(os.environ, {"DELFIN_SWARM_RUN": ""}, clear=False):
         out = json.loads(A._doc_executor._execute_remember(
-            {"text": "geiler typ.", "type": "finding"}, _perms(ws)))
+            {"text": "Der Anwender trinkt viel Kaffee.", "type": "finding"}, _perms(ws)))
     assert out["status"] == "ok", out
     assert out["type"] == "project", out
     assert "swarm" in out.get("note", ""), out

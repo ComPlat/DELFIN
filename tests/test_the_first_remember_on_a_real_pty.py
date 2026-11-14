@@ -26,7 +26,7 @@ pytest.importorskip("termios")
 from agent_terminal_probes import fake_model  # noqa: E402
 from agent_terminal_probes.pty_chat import Chat, close_all  # noqa: E402
 
-PHRASE = "do-remember geiler typ. merk dir das."
+PHRASE = "do-remember Kaffee ist wichtig, merk dir das."
 MEMTEXT = "Der Anwender ist ein schneller Kaffee-Trinker."
 
 
