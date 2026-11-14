@@ -52,16 +52,89 @@ SRC = RM_RF + " build"          # the destructive command, inside the ws
 OUT_URL = "https://sink.example/c"   # a host no allow-list names
 MCP_TOOL = "mcp__srv__send_message"
 
-# The grid: name -> (tool, arguments). Outside paths are filled per-env.
+# The grid: name -> (tool, arguments). Paths are filled per-env as
+# ABSOLUTE paths (under env["ws"] for *_inside, env["far"] for
+# *_outside): the executor resolves a relative path against the process
+# cwd, not the workspace, so a relative "inside" row would really
+# measure a write outside -- that was review finding 1.
 GRID_IN = {
-    "read_inside": ("read_file", {"path": "notes.txt"}),
+    "read_inside": ("read_file", "notes.txt"),
     "write_inside": ("write_file", {"path": "new.txt", "content": "x\n"}),
     "bash_ls": ("bash", {"command": "ls"}),
     "bash_rmrf_inside": ("bash", {"command": SRC}),
     "web_fetch_outside": ("web_fetch", {"url": OUT_URL}),
     "mcp_send": (MCP_TOOL, {"message": "hi"}),
 }
-# CLI-hook spelling of the same calls (PreToolUse event names).
+#: a bare-string second element IS the value of the path key
+GRID_PATH_KEY = {
+    "read_inside": "path",
+    "write_inside": "path",
+    "read_outside": "path",
+    "write_outside": "path",
+}
+
+
+def _grid_args(env, row, unique=False):
+    """(tool, arguments) for one grid row, with absolute paths filled in.
+
+    *_inside rows get their file under env["ws"], *_outside rows under
+    env["far"] -- per finding 1, never a bare relative path. With
+    unique=True the file NAME is suffixed with a fresh counter so two
+    measurements of the same row in one workspace measure the same gate
+    decision and not a second-write overwrite refusal (a stateful
+    artefact, not an admission decision)."""
+    table = dict(GRID_IN)
+    if row == "read_outside":
+        return "read_file", {"path": str(env["far"] / "data.txt")}
+    if row == "write_outside":
+        return "write_file", {"path": str(env["far"] / "out.txt"),
+                              "content": "x\n"}
+    name, base = table[row]
+    args = dict(base) if isinstance(base, dict) else {}
+    if row in GRID_PATH_KEY:
+        # The bare string is the path value; it becomes an ABSOLUTE path
+        # under ws (inside) or far (outside) -- finding 1: never relative.
+        value = base if not isinstance(base, dict) else args.pop(
+            GRID_PATH_KEY[row], None)
+        args[GRID_PATH_KEY[row]] = str(
+            (env["ws"] if row.endswith("_inside") else env["far"]) / value)
+    if unique and row in ("write_inside", "write_outside"):
+        p = Path(args["path"])
+        args["path"] = str(p.with_name(
+            p.stem + "-" + str(next(_UNIQUE)) + p.suffix))
+    return name, args
+
+
+#: fresh suffix for each write measurement (see _grid_args)
+_UNIQUE = iter(__import__("itertools").count())
+
+
+#: markers of a GATE refusal, as the gates word them (file:line in
+#: delfin/agent/api_client.py): "blocked: " is approval_guard.refusal
+#: (approval_guard.py:369); "user denied" the permission-rule refusals
+#: (:8045, :20090, :23829); "refused by the managed policy" (:8979);
+#: "plan mode (read-only)" (:8354, :20191); "outside the allowed
+#: workspace roots" (:22513, :29553); "nobody can be asked" (:4767,
+#: :8048). Any other error means the tool RAN and failed (missing file,
+#: bad arguments) -- recorded as RAN, not DENY (finding 2).
+_GATE_MARKERS = (
+    "blocked: ",
+    "user denied",
+    "refused by the managed policy",
+    "plan mode (read-only)",
+    "outside the allowed workspace roots",
+    "nobody can be asked",
+    "command rejected by deny-pattern",
+)
+RAN = "ran"  # allowed; the tool ran and failed without a gate refusing
+
+
+def _is_gate_refusal(err: str) -> bool:
+    return bool(err) and any(m in err for m in _GATE_MARKERS)
+
+
+#: CLI-hook spelling of the same calls (PreToolUse event names). Paths
+#: are filled per-env as absolute paths, same rule as GRID_IN.
 CLI_GRID = {
     "read_inside": ("Read", {"file_path": "notes.txt"}),
     "write_inside": ("Write", {"file_path": "new.txt", "content": "x\n"}),
@@ -70,6 +143,24 @@ CLI_GRID = {
     "web_fetch_outside": ("WebFetch", {"url": OUT_URL}),
     "mcp_send": (MCP_TOOL, {"message": "hi"}),
 }
+
+
+def _cli_args(env, row):
+    """(tool, arguments) for the CLI-hook spelling of a grid row."""
+    table = {
+        "read_outside": ("Read", {"file_path": "data.txt"}),
+        "write_outside": ("Write", {"file_path": "out.txt",
+                                    "content": "x\n"}),
+    }
+    if row in table:
+        tool, args = table[row]
+        return tool, dict(args)
+    tool, args = dict(CLI_GRID)[row]
+    args = dict(args)
+    if row in GRID_PATH_KEY:
+        key = {"read_inside": "file_path", "write_inside": "file_path"}[row]
+        args[key] = str(env["ws"] / args[key].lstrip("/"))
+    return tool, args
 
 ASK = "ask"
 DENY = "deny"
@@ -166,12 +257,12 @@ def _perms(env, mode="default", answer=None):
 
 def _native_decide(env, row, mode, answer):
     """Path 1: _DocToolExecutor.execute -> _execute_pinned."""
-    name, args = dict(GRID_IN).get(row) or ("", {})
-    if row == "read_outside":
-        name, args = "read_file", {"path": str(env["far"] / "data.txt")}
-    if row == "write_outside":
-        name, args = "write_file", {"path": str(env["far"] / "out.txt"),
-                                    "content": "x\n"}
+    if row == "mcp_send":
+        # MCP calls skip the executor by design (_mcp_call_refusal's
+        # docstring); the executor answers only "Unknown tool" for them,
+        # which is not a gate decision of this path.
+        return None
+    name, args = _grid_args(env, row, unique=True)
     perms = _perms(env, mode, answer=answer)
     asker = perms.confirm_callback
     out = A._doc_executor.execute(name, dict(args), perms)
@@ -182,14 +273,16 @@ def _native_decide(env, row, mode, answer):
     err = data.get("error") if isinstance(data, dict) else None
     if asker is not None and asker.asked:
         return ASK
-    if err:
+    if _is_gate_refusal(err):
         return DENY
-    return ALLOW
+    if err:
+        return RAN  # the tool ran and failed, no gate refused it
+    return ALLOW    # incl. the plain non-error results the executors return
 
 
 def _mcp_decide(env, row, mode, answer):
     """Path 2: _mcp_call_refusal (only the MCP row)."""
-    _, args = dict(GRID_IN)[row]
+    _, args = _grid_args(env, row)
     perms = _perms(env, mode, answer=answer)
     refusal = A._mcp_call_refusal(MCP_TOOL, dict(args), perms)
     if perms.confirm_callback is not None and perms.confirm_callback.asked:
@@ -202,7 +295,7 @@ def _mcp_decide(env, row, mode, answer):
 def _docgate_decide(env, row, mode, answer):
     """Path 4: _gate_write_path as the document executors call it."""
     if row == "write_inside":
-        target = "doc_inside.txt"
+        target = str(env["ws"] / "doc_inside.txt")
     elif row == "write_outside":
         target = str(env["far"] / "doc_out.txt")
     else:
@@ -223,19 +316,18 @@ def _cli_decide(env, row, mode):
     test_an_approval_is_answered_by_the_human_only.py; here the record
     is what the hook refuses without anybody to ask.
     """
-    tool, args = dict(CLI_GRID).get(row) or ("", {})
-    if row == "write_outside":
-        tool, args = "Write", {"file_path": str(env["far"] / "out.txt"),
-                               "content": "x\n"}
-    elif row == "read_outside":
-        tool, args = "Read", {"file_path": str(env["far"] / "data.txt")}
+    tool, args = _cli_args(env, row)
     token = "char" + mode[:4] + "no"
     cli_gate.write_state(token, workspace=str(env["ws"]), mode=mode,
                          can_ask=False)
     refusal, _caged = cli_gate.decide_call(
         token, {"tool_name": tool, "tool_input": dict(args),
                 "cwd": str(env["ws"])})
-    return DENY if refusal else ALLOW
+    if _is_gate_refusal(refusal or ""):
+        return DENY
+    if refusal:
+        return RAN  # wording of the CLI backend, not of these gates
+    return ALLOW
 
 
 # ---------------------------------------------------------------- matrix
@@ -283,9 +375,13 @@ def _rows(env):
 
     # The CLI hook decides reads, writes and Bash; WebFetch/WebSearch/MCP
     # are left to the CLI (decide_call returns None -> main() answers
-    # nothing) -- today under -p the CLI then asks nobody.
+    # nothing) -- today under -p the CLI then asks nobody. The mcp_send
+    # row is not measured on the hook (it does not decide MCP tools),
+    # nor on the native path (the executor does not know mcp__* names).
     for posture, mode, _answer, can_ask in POSTURES:
         for row in (*CLI_GRID, "read_outside", "write_outside"):
+            if row == "mcp_send":
+                continue  # the hook does not decide MCP tools
             put("clihook", posture, row,
                 _cli_decide(env, row, mode))
 
@@ -323,68 +419,117 @@ def _cells(rows, posture, row):
 @pytest.mark.parametrize("posture,mode,answer,can_ask", POSTURES,
                          ids=[p[0] for p in POSTURES])
 def test_native_and_docgate_agree(matrix, posture, mode, answer, can_ask):
-    """The write gate inside the executor and called directly agree."""
+    """Characterization: each cell asserts today's value; where the two
+    write paths disagree, the MEASURED pair is asserted (no xfail here:
+    a characterization test states what is, finding 3)."""
     for row in ("write_inside", "write_outside"):
         n = matrix[("native", posture, row)]
         d = matrix[("docgate", posture, row)]
-        # Today they can differ: the executor adds plan mode and the
-        # confirm callback around the bare path gate.
-        if n != d:
-            pytest.xfail(
-                f"native={n} vs docgate={d} for {row} in {posture}: "
-                "the executor layers plan mode and the ask flow on the "
-                "bare _gate_write_path; the direct call sees only the "
-                "path check")
+        if n == d:
+            assert n == d
+        else:
+            # The executor layers plan mode and the ask flow around the
+            # bare path gate (api_client.py:_execute_pinned around
+            # :8354/:23550); the direct call sees only the path check.
+            # The measured pair is the assertion: a change in either
+            # path's decision flips this.
+            assert (n, d) in _MEASURED_DOCGATE_DIFFS[posture], \
+                f"{row}: native={n} docgate={d}"
+
+
+#: Measured native-vs-docgate disagreement pairs per posture (finding 4:
+#: the deciding code -- native layers plan mode at api_client.py:8354
+#: and the confirm-ask flow around _gate_write_path :23550; the bare
+#: gate knows neither).
+_MEASURED_DOCGATE_DIFFS = {
+    # native=ask vs docgate=deny: under default the executor first asks
+    # (confirm callback, api_client.py:_execute_pinned ask flow); the
+    # bare gate answers with its approval_guard refusal (:23559 --
+    # "blocked: ", nobody asked). The bare gate refuses BEFORE the
+    # executor's ask would happen, so they word the same containment
+    # differently.
+    "default_attended_no": {("ask", "deny")},
+    # native=deny vs docgate=allow: plan mode refuses the write on the
+    # native path (api_client.py:8354); the bare _gate_write_path has no
+    # plan check at all.
+    "plan_attended_yes": {("deny", "allow")},
+    "plan_unattended": {("deny", "allow")},
+    # native=allow (the tool ran, file created) vs docgate=allow -- equal
+    # only in value; the executor got there through no-ask bypass, the
+    # bare gate through no-ask-in-bypass. No disagreement pair, kept for
+    # reference: native measured ALLOW here (the cell was once 'ran'
+    # while the shorthand arg was broken -- regression pin).
+    "bypass_unattended": {("allow", "allow")},
+}
 
 
 @pytest.mark.parametrize("posture,mode,answer,can_ask", POSTURES,
                          ids=[p[0] for p in POSTURES])
 def test_mcp_path_for_mcp_calls(matrix, posture, mode, answer, can_ask):
     """Record the MCP path's decision for the MCP call."""
-    assert matrix[("mcp", posture, "mcp_send")] in (ALLOW, ASK, DENY)
+    assert matrix[("mcp", posture, "mcp_send")] in (ALLOW, ASK, DENY, RAN)
 
 
 def test_rule_postures_hold_on_every_path(matrix):
-    """A managed deny refuses on the native and the MCP path; an ask rule
-    asks on both."""
-    for row in ("read_inside", "write_inside", "bash_ls", "bash_rmrf_inside",
-                "web_fetch_outside", "mcp_send"):
+    """A managed deny refuses on the native path; an ask rule asks on it.
+    On the MCP path the rule postures name one TOOL: the mcp__ name is
+    denied/asked only for the mcp_send row, and the OTHER rows' tools
+    get the rule too (each row lays one rule on its own tool) -- the
+    mcp path asks for a denied read because _mcp_call_refusal asks for
+    every non-read-only MCP tool and the rule only denies the named
+    one. The docgate does not see rules at all."""
+    for row in ("read_inside", "write_inside", "bash_ls",
+                "bash_rmrf_inside", "web_fetch_outside"):
         assert matrix[("native", "managed_deny", row)] == DENY, row
         assert matrix[("native", "user_ask", row)] == ASK, row
-        if row == "mcp_send":
-            assert matrix[("mcp", "managed_deny", row)] == DENY
-            assert matrix[("mcp", "user_ask", row)] == ASK
+    assert matrix[("native", "managed_deny", "mcp_send")] is None, (
+        "the executor does not decide mcp__* names")
+    assert matrix[("native", "user_ask", "mcp_send")] is None, (
+        "the executor does not decide mcp__* names")
+    assert matrix[("mcp", "managed_deny", "mcp_send")] == DENY
+    assert matrix[("mcp", "user_ask", "mcp_send")] == ASK
 
 
 @pytest.mark.parametrize("posture,mode,answer,can_ask", POSTURES,
                          ids=[p[0] for p in POSTURES])
 def test_clihook_decided_tools_match_native(matrix, posture, mode, answer,
                                             can_ask):
-    """For the tools the CLI hook decides (Read/Write/Bash), today's
-    cli_gate.decide_call value against the native executor's -- recorded
-    as it is. A cell where they differ is asserted as today's value in the
-    matrix table and stated here as an xfail with the measured pair."""
-    diffs = []
+    """Characterization: for the tools the CLI hook decides
+    (Read/Write/Bash), every cell asserts today's measured value; where
+    the two paths disagree, the MEASURED pair is asserted (finding 3: no
+    imperative xfail here)."""
     for row in ("read_inside", "write_inside", "bash_ls",
                 "bash_rmrf_inside", "read_outside", "write_outside"):
         n = matrix[("native", posture, row)]
         c = matrix[("clihook", posture, row)]
-        if n != c:
-            diffs.append(f"{row}: native={n} clihook={c}")
-    if diffs:
-        pytest.xfail("today the paths disagree in " + posture + " -- "
-                     + "; ".join(diffs) + _DIFF_EXPLANATION)
+        if n == c:
+            assert n == c
+        else:
+            assert (n, c) in _MEASURED_CLIHOOK_DIFFS.get(posture, {}), \
+                f"{row}: native={n} clihook={c}"
 
 
-#: One explanation covers the measured disagreements: the CLI hook runs
-#: with can_ask=False here (nobody to ask -- with can_ask=True it waits
-#: on the relay), so where the native path would ask, the hook refuses;
-#: and the hook's plan mode does not refuse writes or commands the native
-#: plan mode refuses (plan is enforced by the CLI process itself).
-_DIFF_EXPLANATION = (
-    " -- the hook has nobody to ask (can_ask=False: an ask becomes a "
-    "refusal) and its plan mode does not refuse writes/commands the "
-    "native plan mode refuses")
+#: Measured native-vs-clihook disagreement pairs per posture (finding 4:
+#: the deciding code -- the hook decides only _DECIDED_TOOLS in
+#: cli_gate.py::decide_call and has nobody to ask with can_ask=False;
+#: plan mode on the CLI backend is enforced by the CLI program itself,
+#: not by the hook).
+_MEASURED_CLIHOOK_DIFFS = {
+    # The hook has nobody to ask (can_ask=False): where native asks, the
+    # hook refuses... measured today: native=ask vs hook=allow for the
+    # write-inside and read-outside rows (the hook's auto-allow rules
+    # hold and decide_call returns None, the CLI program then runs the
+    # tool without asking); where native denies (plan, outside), the
+    # hook answers nothing, so the CLI program decides.
+    "default_attended_no": {("ask", "allow"),
+                            ("ask", "deny"),
+                            ("deny", "allow")},
+    "default_unattended": {("deny", "allow")},
+    "plan_attended_yes": {("deny", "allow"),
+                          ("ask", "allow")},
+    "plan_unattended": {("deny", "allow")},
+    "bypass_unattended": {("deny", "allow")},
+}
 
 
 def test_matrix_table_printed(matrix, capsys=None):
@@ -414,9 +559,12 @@ def test_intended_clihook_webfetch_same_as_native(matrix):
             == matrix[("native", "bypass_unattended", "web_fetch_outside")])
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "intended: the CLI hook decides the mcp__ call the way the MCP path "
+    "does -- under bypass both allow, unattended both refuse. Today the "
+    "hook leaves MCP tools to the CLI entirely (decide_call returns "
+    "None: it is not in _DECIDED_TOOLS), so no hook decision exists to "
+    "compare; the MCP path allows under bypass"))
 def test_intended_clihook_mcp_same_as_mcp_path(matrix):
-    """Today they agree: under bypass both allow -- the hook leaves the
-    call to the CLI (which asks nothing), and the MCP path allows it too.
-    Recorded as a regular assertion; it pins the agreement."""
-    assert (matrix[("clihook", "bypass_unattended", "mcp_send")]
-            == matrix[("mcp", "bypass_unattended", "mcp_send")])
+    assert (matrix[("clihook", "bypass_unattended", "mcp_send")] is None
+            and matrix[("mcp", "bypass_unattended", "mcp_send")] == ALLOW)
