@@ -85,6 +85,10 @@ class ChainStep:
     #: on load only keys NOT in this list are re-derived — an explicit
     #: choice survives, an injected one is dropped with the log line.
     explicit_params: List[str] = field(default_factory=list)
+    #: The cores the step was submitted with (live-run plan Job B: a
+    #: resume must never silently change PAL — the resume default comes
+    #: from the recorded cores, an explicit --cores flag wins).
+    cores: Optional[int] = None
     attempts: List[Dict[str, Any]] = field(default_factory=list)
 
     # -- transitions -------------------------------------------------------
@@ -204,6 +208,7 @@ class ChainStep:
             "inputs_hash": self.inputs_hash,
             "params": self.params,
             "explicit_params": list(self.explicit_params),
+            "cores": self.cores,
             "attempts": list(self.attempts),
         }
 
@@ -226,6 +231,7 @@ class ChainStep:
             inputs_hash=data.get("inputs_hash", ""),
             params=dict(clean_params),
             explicit_params=list(data.get("explicit_params", [])),
+            cores=data.get("cores"),
             attempts=list(data.get("attempts", [])),
         )
 

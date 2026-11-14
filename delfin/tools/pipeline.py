@@ -1563,6 +1563,11 @@ class Pipeline:
                     merged_user.update(_cs.json_safe(dict(spec.kwargs)))
                     cstep.params = _cs.json_safe(merged_user)
                 cstep.explicit_params = sorted(spec.kwargs)
+                # Live-run plan Job B: the cores the step is submitted
+                # with are persisted so a resume defaults to the chain's
+                # own PAL (an explicit --cores flag wins) — never a
+                # silent 1.
+                cstep.cores = int(cores)
                 # The hash covers (tool, user params, input geometry
                 # CONTENT) — the geometry file's bytes, not its path —
                 # so two machines/directories running the same inputs

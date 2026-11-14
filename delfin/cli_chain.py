@@ -139,6 +139,22 @@ def _cmd_resume(args) -> int:
     from delfin.tools import pipeline as pipeline_mod
     from delfin.tools.pipeline import Pipeline
 
+    # Live-run plan Job B: a resume never silently changes PAL.  With no
+    # explicit --cores flag the resume uses the cores the chain's steps
+    # were submitted with (recorded per step); the flag wins when given.
+    recorded_cores = {s.cores for s in chain.steps if s.cores}
+    if getattr(args, "cores", None) is not None:
+        cores = args.cores
+    elif recorded_cores:
+        if len(recorded_cores) > 1:
+            # Mixed PALs across steps: the largest is the safe default —
+            # no step is silently downgraded mid-chain.
+            cores = max(recorded_cores)
+        else:
+            cores = recorded_cores.pop()
+    else:
+        cores = 1
+
     # Rebuild the pipeline from the chain's OWN step specs (L1: the
     # persisted params — charge, method, basis, mult, ... — so the
     # rebuilt run satisfies the real adapter's validate_params, not
@@ -158,7 +174,7 @@ def _cmd_resume(args) -> int:
                  for s in chain.steps}
     try:
         result = pipe.run(
-            cores=args.cores,
+            cores=cores,
             work_dir=Path(args.work_dir),
             resume_chain=True,
             chain_state_obj=chain,
@@ -224,8 +240,9 @@ def main(argv=None) -> int:
     )
     p_resume.add_argument("work_dir", help="the chain's work dir")
     p_resume.add_argument(
-        "--cores", type=int, default=1,
-        help="cores for the resumed steps (default 1)",
+        "--cores", type=int, default=None,
+        help="cores for the resumed steps (default: the cores the chain "
+             "was submitted with; never silently different)",
     )
     p_resume.set_defaults(func=_cmd_resume)
 
