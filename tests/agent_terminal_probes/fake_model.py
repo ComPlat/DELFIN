@@ -86,6 +86,8 @@ def plan(messages: list[dict]) -> dict:
             # keeps the tail, so this is where a narrow line still shows it.
             return {"tool": "bash", "args": {"command": (
                 'curl -sH "Authorization: Bearer ' + FAKE_SECRET + '" x')}}
+        if s.startswith("do-webfetch "):
+            return {"tool": "web_fetch", "args": {"url": s[12:].strip()}}
         if s.startswith("do-bash "):
             return {"tool": "bash", "args": {"command": s[8:]}}
         if s.startswith("do-write "):
