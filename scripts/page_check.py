@@ -1398,6 +1398,9 @@ def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict
     h["d_full_chat_s"] = _until(
         lambda: "kept-two" in _chat_text(page_d)
         and _visible(page_d, ".delfin-agent-input textarea") > 0, 120)
+    h["d_notice"] = _text(page_d, ".delfin-session-notice")[:400]
+    h["d_kept_in_service"] = [s for s in _service_sessions(runtime, args.tree)
+                              if s.get("sessionId") == kept_sid]
     _shot(page_d, args, "hosted_d", rec)
     h["page_errors_c"], h["page_errors_d"] = errors_c[:10], errors_d[:10]
     h["watched"] = watched()
