@@ -175,8 +175,8 @@ def test_node_access_appends_the_key_once_and_removes_nothing(tmp_path):
 def test_keep_inside_a_job_arms_the_sessions_without_tmux(monkeypatch):
     monkeypatch.setattr("delfin.hpc_guard.on_login_node", lambda env=None: False)
     monkeypatch.setattr(cli_voila.sys.stdin, "isatty", lambda: False, raising=False)
-    monkeypatch.setattr(cli_voila, "_reexec_under_tmux",
-                        lambda argv: pytest.fail("no tmux without a terminal"))
+    monkeypatch.setattr(cli_voila.subprocess, "run",
+                        lambda cmd, *a, **k: pytest.fail(f"no {cmd} in a job"))
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: False)
     monkeypatch.delenv("DELFIN_KEEP_SESSIONS", raising=False)
     with pytest.raises(SystemExit):

@@ -1622,6 +1622,13 @@ def pytest_configure(config):
     if "DELFIN_DASHBOARD_SESSIONS" in os.environ:
         _LIFELINE_SAVED["DELFIN_DASHBOARD_SESSIONS"] = os.environ["DELFIN_DASHBOARD_SESSIONS"]
     os.environ["DELFIN_DASHBOARD_SESSIONS"] = "kernel"
+    # A launcher a test drives stays in the foreground, also in a run with
+    # -s from a terminal (stdin is then a terminal, and delfin-voila typed
+    # at one starts its server detached). The tests of the detached start
+    # remove this themselves.
+    if "DELFIN_VOILA_FOREGROUND" in os.environ:
+        _LIFELINE_SAVED["DELFIN_VOILA_FOREGROUND"] = os.environ["DELFIN_VOILA_FOREGROUND"]
+    os.environ["DELFIN_VOILA_FOREGROUND"] = "1"
     _external_agent_guard.install(is_credential)
     _hypothesis_store_outside_the_checkout()
     _private_tmp_of_the_suite()
@@ -1631,6 +1638,7 @@ def pytest_unconfigure(config):
     import os
     _external_agent_guard.uninstall()
     os.environ.pop("DELFIN_DASHBOARD_SESSIONS", None)
+    os.environ.pop("DELFIN_VOILA_FOREGROUND", None)
     os.environ.update(_LIFELINE_SAVED)
     _LIFELINE_SAVED.clear()
     _hypothesis_store_removed()

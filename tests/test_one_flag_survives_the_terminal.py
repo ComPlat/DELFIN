@@ -1,22 +1,21 @@
-"""`delfin-voila --keep` is the whole recipe in one flag.
+"""`delfin-voila --keep`: the old recipe, now the default plus one thing.
 
-Surviving a closed terminal took three things done by hand, in order,
-every time: start tmux, start the dashboard inside it, then walk into
-each window and switch "Keep session" on. Miss the third and a session
-that pauses between turns is gone; miss the first and a dropped
-connection takes everything. A recipe that must be followed exactly is
-one that will be got wrong, and was.
+Surviving a closed terminal took tmux, the dashboard inside it, and the
+Keep switch in every window. ``delfin-voila`` alone now survives the
+terminal (it runs detached: test_the_dashboard_outlives_its_terminal.py),
+so ``--keep`` is that default and no longer starts tmux. What it still
+adds is the third step: every window the dashboard opens starts with
+Keep dashboard on.
 
-  the flag starts tmux         once, reusing a session of that name
-  already inside, carry on     no second wrapping
-  no tmux on this host         say so; do not pretend it will survive
+  no tmux                    the flag starts no tmux and needs none
+  said once                  one line says what the flag does now
   the sessions arm themselves  including the record the server reads
-  the switch still owns it     turning it off disarms, as always
+  the switch still owns it   turning it off disarms, as always
 """
 
 from __future__ import annotations
 
-import os
+import sys
 
 import pytest
 
@@ -24,54 +23,39 @@ from delfin import cli_voila
 from delfin.dashboard import session as S
 
 
-def test_inside_tmux_it_does_not_wrap_again(monkeypatch):
-    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
-    assert cli_voila._reexec_under_tmux([]) is None
+class _Tty:
+    def isatty(self):
+        return True
 
 
-def test_a_second_pass_does_not_wrap_again(monkeypatch):
-    monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.setenv(cli_voila._TMUX_MARKER, "1")
-    assert cli_voila._reexec_under_tmux([]) is None
+def test_keep_starts_no_tmux_and_says_what_it_does_now(monkeypatch, capsys):
+    for name in ("TMUX", "STY", "SLURM_JOB_ID", "DELFIN_VOILA_FOREGROUND",
+                 "DELFIN_VOILA_DETACHED"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("DELFIN_KEEP_SESSIONS", "DELFIN_LAUNCH_CWD"):
+        monkeypatch.setenv(name, "-")
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(sys, "stdin", _Tty())
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    from delfin.agent import process_guard
+    monkeypatch.setattr(process_guard, "protect",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("off")))
+    monkeypatch.setattr(cli_voila.subprocess, "run",
+                        lambda cmd, *a, **k: pytest.fail(f"started {cmd}"))
+    started = []
+    monkeypatch.setattr(cli_voila, "_start_detached",
+                        lambda args, argv: started.append(list(argv)) or 0)
+    assert cli_voila.main(["--keep", "--no-browser"]) == 0
+    assert started == [["--keep", "--no-browser"]]
+    err = capsys.readouterr().err
+    assert err.count("--keep") == 1
+    assert "tmux" in err and "Keep dashboard" in err
+    import os
+    assert os.environ.get("DELFIN_KEEP_SESSIONS") == "1"
 
 
-def test_without_tmux_it_says_so_and_runs_here(monkeypatch, capsys):
-    monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.delenv(cli_voila._TMUX_MARKER, raising=False)
-    monkeypatch.setattr(cli_voila.shutil, "which", lambda name: None,
-                        raising=False)
-    import shutil
-
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    assert cli_voila._reexec_under_tmux([]) is None
-    said = capsys.readouterr().err
-    assert "tmux is not installed" in said
-    assert "closing this terminal ends the dashboard" in said
-
-
-def test_it_starts_the_command_inside_tmux(monkeypatch):
-    monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.delenv(cli_voila._TMUX_MARKER, raising=False)
-    import shutil
-    import subprocess
-
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tmux")
-    seen = {}
-
-    class _Done:
-        returncode = 0
-
-    def _run(cmd, env=None, **kw):
-        seen["cmd"] = cmd
-        seen["marked"] = (env or {}).get(cli_voila._TMUX_MARKER)
-        return _Done()
-
-    monkeypatch.setattr(subprocess, "run", _run)
-    assert cli_voila._reexec_under_tmux(["--port", "8899"]) == 0
-    assert seen["cmd"][:5] == ["tmux", "new", "-A", "-s",
-                               cli_voila.TMUX_SESSION]
-    assert "--port" in seen["cmd"] and "8899" in seen["cmd"]
-    assert seen["marked"] == "1", "the child must not wrap itself again"
+def test_there_is_no_tmux_re_execution_left():
+    assert not hasattr(cli_voila, "_reexec_under_tmux")
 
 
 # -- the half that is easiest to forget -----------------------------------

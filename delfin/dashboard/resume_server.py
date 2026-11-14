@@ -119,15 +119,20 @@ def cull_config_args(grace: Optional[float] = None) -> list[str]:
         f"--MappingKernelManager.cull_interval={POLL_SECONDS}",
         "--MappingKernelManager.cull_connected=False",
     ]
-    if not stays_up():
+    from delfin.dashboard import server_record as _sr
+    idle = _sr.idle_exit_seconds()
+    if not stays_up() and idle > 0:
         # The server stopped itself only when a kernel ended -- and a kernel
         # exists only once somebody opens a window. A launcher that died
         # before anyone did left a server with no kernel serving nothing:
         # one ran for five days on port 8868 (2026-09-11 to -16). With no
         # kernel and no request for this long, the server ends. A kept
         # session has a live kernel, so it is never cut short by this.
+        # The same rule ends a detached server once its last kernel is
+        # gone (_delfin_stop_if_nothing_is_left); the grace is the setting
+        # server_record.IDLE_EXIT_ENV, ten minutes by default.
         args.append("--ServerApp.shutdown_no_activity_timeout="
-                    f"{int(NEVER_CONNECTED_SECONDS)}")
+                    f"{max(1, int(round(idle)))}")
     return args
 
 
@@ -529,6 +534,21 @@ def resume_kernel_manager_class(base: type) -> type:
             if self._delfin_kernels_alive() or kept_kernel_ids():
                 return
             log = getattr(self, "log", None)
+            from delfin.dashboard import server_record as _sr
+            if _sr.is_detached():
+                # No terminal holds a detached server, and closing its
+                # last window by mistake should find the same address
+                # again: it waits out the idle grace instead
+                # (shutdown_no_activity_timeout, cull_config_args).
+                if log:
+                    idle = _sr.idle_exit_seconds()
+                    log.warning(
+                        "[delfin] the last window closed and no session is "
+                        "kept: the server ends itself after %s without a "
+                        "window (%s).",
+                        f"{idle / 60:.0f} min" if idle > 0 else "never",
+                        _sr.IDLE_EXIT_ENV)
+                return
             if log:
                 log.warning(
                     "[delfin] the last window closed and no session is kept: "

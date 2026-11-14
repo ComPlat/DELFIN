@@ -905,43 +905,523 @@ def _forward_filtered_stderr(stream) -> None:
         pass
 
 
-#: Set on the child so the re-exec happens once, not for ever.
-_TMUX_MARKER = "DELFIN_VOILA_UNDER_TMUX"
+# -- a server that outlives its terminal --------------------------------------
+#
+# A launch typed at a terminal starts this same launcher again in a session
+# of its own (``_start_detached``): no terminal, so no SIGHUP when the
+# terminal closes or the SSH connection drops; stdin from /dev/null; its
+# output appended to an owner-only log. The detached launcher is the one
+# that runs the server and stops it -- the lifeline of everything the
+# dashboard starts, exactly as the foreground launcher was -- so
+# ``delfin-voila stop`` (SIGTERM) takes the same Ctrl+C path. The launch
+# itself waits until the server answers, prints where it is and returns.
+#
+# Rejected: tmux (what --keep did): one more program to have, and keys to
+# learn, for what a session of its own does. A systemd user unit: not on
+# every host (macOS, a container, a cluster without lingering), and the
+# Pi's system unit already runs the launcher in the foreground. A daemon
+# library (python-daemon): a dependency for one detached start the
+# standard library does in a few lines, the way the agent service starts
+# (agent/service/launcher.py).
 
-#: The tmux session a --keep dashboard lives in.
-TMUX_SESSION = "delfin"
+#: How long a detached start waits for its server to answer.
+DETACHED_START_TIMEOUT_S = 120.0
+
+#: How long ``delfin-voila stop`` waits for the launcher to end. The
+#: launcher gives its server 15 s, then the background processes 5 s.
+STOP_TIMEOUT_S = 60.0
+
+#: How long ``stop`` waits for kept agent sessions to reach the service.
+_HANDOVER_WAIT_S = 30.0
+
+#: ``DELFIN_VOILA_FOREGROUND=1`` keeps every launch in the foreground.
+FOREGROUND_ENV = "DELFIN_VOILA_FOREGROUND"
+
+#: What ``--keep`` says, once, now that it starts no tmux.
+KEEP_NOTE = ("--keep: no tmux any more -- the dashboard keeps running after "
+             "this terminal closes by default, and every window it opens "
+             "starts with Keep dashboard on.")
+
+#: The detached child imports DELFIN from where this process did, and never
+#: from the launch folder it runs in: ``python -c`` puts the working folder
+#: first on sys.path, and a json.py there would be imported in place of the
+#: standard one.
+_CHILD_BOOT = (
+    "import os, sys\n"
+    "sys.path[:] = [p for p in sys.path if p not in ('', '.')]\n"
+    "root = os.environ.pop('DELFIN_VOILA_IMPORT_ROOT', '')\n"
+    "if root:\n"
+    "    import importlib.util as u\n"
+    "    spec = u.find_spec('delfin')\n"
+    "    where = os.path.dirname(os.path.dirname(spec.origin)) if spec and spec.origin else ''\n"
+    "    if os.path.realpath(where or '/nonexistent') != os.path.realpath(root):\n"
+    "        sys.path.insert(0, root)\n"
+    "from delfin.cli_voila import main\n"
+    "raise SystemExit(main(sys.argv[1:]))\n"
+)
+
+_TRUTHY = ("1", "true", "yes", "on")
 
 
-def _reexec_under_tmux(argv) -> "int | None":
-    """Start this command again inside tmux. Returns an exit code, or None.
-
-    None means "carry on here": already inside tmux, already re-executed,
-    or no tmux on this machine -- in which case it says so rather than
-    pretending the dashboard will survive a closed terminal.
-    """
-    import shutil as _shutil
-    import subprocess as _subprocess
-
-    if os.environ.get("TMUX") or os.environ.get(_TMUX_MARKER):
-        return None
-    if not _shutil.which("tmux"):
-        print("--keep asked for a session that survives this terminal, and "
-              "tmux is not installed here. Running in the foreground "
-              "instead: closing this terminal ends the dashboard.",
-              file=sys.stderr)
-        return None
-    inner = [sys.argv[0]] + list(argv if argv is not None else sys.argv[1:])
-    env = dict(os.environ, **{_TMUX_MARKER: "1"})
-    # -A: attach to a session of this name if it exists, create otherwise.
-    # The dashboard keeps the terminal it is given; detaching is Ctrl-b d.
+def _stdin_is_a_terminal() -> bool:
     try:
-        proc = _subprocess.run(["tmux", "new", "-A", "-s", TMUX_SESSION, "--",
-                                *inner], env=env)
-    except OSError as exc:
-        print(f"--keep could not start tmux ({exc}); running here instead.",
+        return bool(sys.stdin is not None and sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def _single_server_applies(env) -> bool:
+    """One server per user and host, except a branch preview (its own
+    server beside the real one) and a SLURM job (``--job`` keeps its own
+    list, and a job on a node is no login of the user's)."""
+    return _announces_where(env) and not env.get("SLURM_JOB_ID")
+
+
+def _should_detach(args, env=None) -> tuple:
+    """(detach, why): whether this launch starts the server detached.
+
+    Only a launch a person typed at a terminal does. A caller that owns
+    the dashboard's lifetime -- a script, a service manager (systemd,
+    launchd: neither gives a terminal), a SLURM job, tmux or screen, a
+    branch preview -- keeps it in the foreground, as before.
+    """
+    from delfin.dashboard import server_record as _sr
+
+    e = os.environ if env is None else env
+    if getattr(args, "foreground", False):
+        return False, "--foreground"
+    if _sr.is_detached(e):
+        return False, "this is the detached launcher already"
+    if str(e.get(FOREGROUND_ENV, "")).strip().lower() in _TRUTHY:
+        return False, f"{FOREGROUND_ENV} is set"
+    if os.name == "nt":
+        return False, "Windows: the server runs in this window"
+    if not _announces_where(e):
+        return False, "a branch preview closes with its branch"
+    if e.get("SLURM_JOB_ID"):
+        return False, "inside a SLURM job, which owns its lifetime"
+    if e.get("TMUX"):
+        return False, "inside tmux, which outlives the terminal already"
+    if e.get("STY"):
+        return False, "inside screen, which outlives the terminal already"
+    if not _stdin_is_a_terminal():
+        return False, "no terminal: a script or a service manager owns it"
+    return True, "typed at a terminal"
+
+
+#: Options with a value whose value must not reach the child's command line.
+_SECRET_OPTIONS = ("--token",)
+#: Options the launch itself handles (the browser), not the child.
+_PARENT_OPTIONS = ("--open-browser", "--no-browser", "--foreground")
+
+
+def _detached_child_argv(argv) -> list:
+    """The detached launcher's arguments: these, without the token (it goes
+    in the environment: /proc/<pid>/cmdline is readable by every user)
+    and the browser switches (the launch opens the browser), plus
+    ``--foreground --no-browser``."""
+    out: list = []
+    skip = False
+    for arg in list(argv or []):
+        if skip:
+            skip = False
+            continue
+        if arg in _SECRET_OPTIONS:
+            skip = True
+            continue
+        if any(arg.startswith(opt + "=") for opt in _SECRET_OPTIONS):
+            continue
+        if arg in _PARENT_OPTIONS:
+            continue
+        out.append(arg)
+    return out + ["--foreground", "--no-browser"]
+
+
+def _detached_child_env(token: str) -> dict:
+    """The detached launcher's environment: this one, without the lifeline
+    of the terminal it was typed in (it is the lifeline of what it starts)
+    and without a server token it might have inherited (typed in a
+    dashboard's own terminal), with the token it is to use."""
+    import delfin
+    from delfin.dashboard import server_record as _sr
+
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("DELFIN_LIFELINE_PID", "DELFIN_LIFELINE_TICKS",
+                        "JUPYTER_TOKEN", "JPY_API_TOKEN", "DELFIN_VOILA_PORT")}
+    env["DELFIN_VOILA_TOKEN"] = token
+    env[_sr.DETACHED_ENV] = "1"
+    env["DELFIN_LAUNCH_CWD"] = os.getcwd()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["DELFIN_VOILA_IMPORT_ROOT"] = str(Path(delfin.__file__).resolve().parents[1])
+    return env
+
+
+def _detached_child_command(child_argv) -> list:
+    return [sys.executable, "-c", _CHILD_BOOT, *list(child_argv)]
+
+
+def _log_tail(path, lines: int = 15) -> str:
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def _launch_token(args) -> str:
+    """The token for a new detached server: --token, DELFIN_VOILA_TOKEN, or
+    a new one. Raises ValueError for a weak one."""
+    import secrets
+
+    given = args.token or os.environ.get("DELFIN_VOILA_TOKEN")
+    if given:
+        return _validate_access_token(given)
+    return secrets.token_urlsafe(32)
+
+
+def _start_detached(args, argv) -> int:
+    """Start the launcher again in a session of its own; return once its
+    server answers (0) or it gave up (its exit code, and its log)."""
+    from delfin.agent import state_paths
+    from delfin.dashboard import server_record as _sr
+
+    if args.no_token:
+        print(_refuse_insecure_no_token(args.ip or "127.0.0.1"), file=sys.stderr)
+        return 2
+    try:
+        token = _launch_token(args)
+    except ValueError as exc:
+        print(f"Error: insecure --token: {exc}.", file=sys.stderr)
+        return 2
+    # A login node keeps its limits: the load watcher samples every DELFIN
+    # process of the user there by its command line, a detached one too.
+    try:
+        from delfin import hpc_guard
+        if hpc_guard.on_login_node():
+            hpc_guard.ensure_watcher()
+    except Exception:
+        pass
+    log = _sr.log_file()
+    state_paths.ensure_dir(log.parent)
+    fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        state_paths.secure_file(log)
+        os.write(fd, (f"\n--- delfin-voila, detached, "
+                      f"{time.strftime('%Y-%m-%d %H:%M:%S')} ---\n").encode())
+        print("Starting the DELFIN dashboard in the background ...", flush=True)
+        child = subprocess.Popen(
+            _detached_child_command(_detached_child_argv(argv)),
+            stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
+            start_new_session=True, close_fds=True, cwd=os.getcwd(),
+            env=_detached_child_env(token))
+    finally:
+        os.close(fd)
+    record = _sr.wait_for_record(pid=int(getattr(child, "pid", 0) or 0),
+                                 timeout=DETACHED_START_TIMEOUT_S,
+                                 poll=child.poll)
+    if record is None:
+        code = child.poll()
+        if code == 0:
+            # It found a server another launch had started a moment
+            # earlier, and left: that one is the answer.
+            running = _sr.running()
+            if running is not None:
+                return _use_running(running, args, argv)
+        if code is None:
+            print(f"The dashboard server has not answered within "
+                  f"{DETACHED_START_TIMEOUT_S:.0f} s and is still starting; "
+                  f"`delfin-voila status` shows it once it does. Its log: "
+                  f"{log}\n{_log_tail(log)}", file=sys.stderr)
+            return 1
+        print(f"The dashboard server did not start (exit {code}). Its log: "
+              f"{log}\n{_log_tail(log)}", file=sys.stderr)
+        return int(code) or 1
+    _print_ready(record, fresh=True)
+    _open_for(args, record)
+    return 0
+
+
+def _open_for(args, record) -> None:
+    """Open the dashboard in a browser where the launch would have."""
+    if not _decide_open_browser(args):
+        return
+    env = _prepare_voila_env(open_browser=True)
+    _open_browser_url(_direct_url(record, with_token=True), env)
+
+
+def _direct_url(record, *, with_token: bool) -> str:
+    scheme = str(record.get("scheme") or "http")
+    ip = str(record.get("ip") or "127.0.0.1")
+    host = "localhost" if ip in ("127.0.0.1", "0.0.0.0", "localhost") else ip
+    url = f"{scheme}://{host}:{int(record.get('port') or 0)}{record.get('url') or '/'}"
+    if with_token and record.get("token"):
+        url += f"?token={record['token']}"
+    return url
+
+
+def _windows(n) -> str:
+    if n is None:
+        return "windows unknown"
+    return "no window" if n == 0 else f"{n} window{'s' * (n != 1)}"
+
+
+def _print_kept(record, kernel_list) -> None:
+    from delfin.dashboard import server_record as _sr
+
+    kept = _sr.kept_dashboards(record, kernel_list)
+    if not kept:
+        return
+    print(f"  Kept dashboards ({len(kept)}):")
+    for row in kept:
+        state = ("gone (its kernel ended)" if row["state"] == "gone" else
+                 f"last activity {_sr.ago(row['last_activity'])}, "
+                 f"{_windows(row['windows'])}")
+        print(f"    {row['name']}  {state}")
+        if row["url"] and row["state"] != "gone":
+            print(f"      {row['url']}")
+
+
+def _print_ready(record, *, fresh: bool = False) -> None:
+    """Where the dashboard is, what it holds, how to end it."""
+    from delfin.dashboard import server_record as _sr
+
+    if sys.stdout.isatty():
+        print(f"  🔗 Open (you are logged in directly): "
+              f"{_direct_url(record, with_token=True)}")
+    else:
+        # Stdout may be a log other users can read: no token in it.
+        print(f"  Open: {_direct_url(record, with_token=False)}")
+        print(f"  (the login token is in {_sr.record_file()}, readable only "
+              "by you)")
+    if record.get("detached"):
+        if fresh:
+            print("  It runs in the background: closing this terminal ends "
+                  "nothing.")
+        if record.get("log"):
+            print(f"  Log:    {record['log']}")
+    ssh = os.environ.get("SSH_CONNECTION", "")
+    if ssh and _is_loopback_bind(str(record.get("ip") or "127.0.0.1")):
+        node = _detect_login_node() or socket.gethostname()
+        user = os.environ.get("USER", os.environ.get("LOGNAME", "<user>"))
+        port = int(record.get("port") or 0)
+        print(f"  From your computer:  ssh -N -L {port}:localhost:{port} "
+              f"{user}@{node}")
+        print(f"  then open http://localhost:{port} there.")
+    _print_kept(record, _sr.kernels(record, timeout=3.0))
+    print("  Status: delfin-voila status    End it: delfin-voila stop\n")
+
+
+#: The options that only shape a NEW server.
+_NEW_SERVER_OPTIONS = ("--port", "--ip", "--dark", "--token", "--resume",
+                       "--agent-terminal", "--certfile", "--keyfile",
+                       "--allow-remote-bind", "--keep")
+
+
+def _new_server_options(argv, record) -> list:
+    """The options given that a running server cannot take any more."""
+    items = list(argv or [])
+    named = []
+    for arg in items:
+        name = arg.split("=", 1)[0]
+        if name in _NEW_SERVER_OPTIONS and name not in named:
+            named.append(name)
+    if "--port" in named:
+        wanted = None
+        for i, arg in enumerate(items):
+            try:
+                if arg == "--port" and i + 1 < len(items):
+                    wanted = int(items[i + 1])
+                elif arg.startswith("--port="):
+                    wanted = int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+        if wanted == int(record.get("port") or 0):
+            named.remove("--port")
+    return named
+
+
+def _use_running(record, args, argv) -> int:
+    """A server already runs on this host: open it, start nothing."""
+    port = int(record.get("port") or 0)
+    if getattr(args, "strict_port", False) and port != int(args.port):
+        print(f"Error: a dashboard server already runs on this host on port "
+              f"{port}; --strict-port asked for {args.port}. "
+              "`delfin-voila stop` ends it.", file=sys.stderr)
+        return 1
+    print(f"The DELFIN dashboard already runs on this host (port {port}).")
+    ignored = _new_server_options(argv, record)
+    if ignored:
+        print(f"  {', '.join(ignored)} shape a new server; this one keeps "
+              "its own (delfin-voila stop, then start again).")
+    _print_ready(record)
+    _open_for(args, record)
+    return 0
+
+
+def _await_hand_over(ids, timeout: float) -> tuple:
+    """(handed, pending): which of the kept agent sessions *ids* left their
+    record (resumed in the agent service) within *timeout*."""
+    from delfin.dashboard import kept_agent_sessions as _kas
+
+    wanted = list(ids)
+    deadline = time.monotonic() + timeout
+    while True:
+        left = {str(r.get("session_id")) for r in _kas.records()}
+        pending = [i for i in wanted if i in left]
+        if not pending or time.monotonic() >= deadline:
+            return [i for i in wanted if i not in pending], pending
+        time.sleep(0.25)
+
+
+def _status() -> int:
+    from delfin.dashboard import server_record as _sr
+
+    record = _sr.running()
+    if record is None:
+        print("No dashboard server runs on this host. Start one with: "
+              "delfin-voila")
+        return 1
+    try:
+        up = _sr.span(time.time() - float(record.get("started_at") or 0))
+    except (TypeError, ValueError):
+        up = "?"
+    how = "detached" if record.get("detached") else "in a terminal"
+    print(f"Dashboard server: running on {record.get('host')}, port "
+          f"{record.get('port')}, up {up} (pid {record.get('pid')}, {how})")
+    kernel_list = _sr.kernels(record)
+    if kernel_list is None:
+        print("  The server did not answer; its windows are not listed.")
+    else:
+        windows = sum(int(k.get("connections") or 0) for k in kernel_list
+                      if isinstance(k, dict))
+        n = len(kernel_list)
+        print(f"  {n} dashboard{'s' * (n != 1)} open, {_windows(windows)}")
+    if sys.stdout.isatty():
+        print(f"  🔗 Open: {_direct_url(record, with_token=True)}")
+    else:
+        print(f"  Open: {_direct_url(record, with_token=False)}  (the login "
+              f"token is in {_sr.record_file()}, readable only by you)")
+    if not _sr.kept_dashboards(record, kernel_list):
+        print("  No kept dashboard.")
+    _print_kept(record, kernel_list)
+    agents = _sr.kept_agent_sessions()
+    print(f"  {len(agents)} kept agent session{'s' * (len(agents) != 1)} "
+          "(they go on in the agent service when the server stops)")
+    if record.get("log"):
+        print(f"  Log: {record['log']}")
+    print("  End it: delfin-voila stop")
+    return 0
+
+
+def _stop() -> int:
+    """End this host's server the way Ctrl+C did, and say what ended."""
+    import signal
+
+    from delfin.dashboard import kept_agent_sessions as _kas
+    from delfin.dashboard import server_record as _sr
+
+    record = _sr.running()
+    if record is None:
+        print("No dashboard server runs on this host.")
+        return 0
+    pid = int(record["pid"])
+    kernel_list = _sr.kernels(record, timeout=5.0)
+    kept = [r["name"] for r in _sr.kept_dashboards(record, kernel_list)
+            if r["state"] != "gone"]
+    agents = [str(r["session_id"]) for r in _sr.kept_agent_sessions()
+              if not _kas.holder_gone(r)]
+    try:
+        up = _sr.span(time.time() - float(record.get("started_at") or 0))
+    except (TypeError, ValueError):
+        up = "?"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        print(f"Could not stop the dashboard server (pid {pid}): {exc}",
               file=sys.stderr)
-        return None
-    return int(proc.returncode or 0)
+        return 1
+    deadline = time.monotonic() + STOP_TIMEOUT_S
+    while _sr.alive(record) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if _sr.alive(record):
+        print(f"The dashboard server (pid {pid}) has not ended within "
+              f"{STOP_TIMEOUT_S:.0f} s; it may still be ending its kernels. "
+              f"Its log: {record.get('log') or '-'}", file=sys.stderr)
+        return 1
+    n = len(kernel_list) if kernel_list is not None else len(kept)
+    line = (f"Stopped the dashboard server (pid {pid}, port "
+            f"{record.get('port')}, up {up}): {n} dashboard{'s' * (n != 1)} "
+            "ended")
+    if kept:
+        line += f" (kept: {', '.join(kept)})"
+    print(line + ".")
+    if agents:
+        handed, pending = _await_hand_over(agents, _HANDOVER_WAIT_S)
+        if handed:
+            print(f"  {len(handed)} kept agent session"
+                  f"{'s' * (len(handed) != 1)} went on in the agent service "
+                  "(delfin-agent tui, or a new dashboard, opens them).")
+        if pending:
+            print(f"  {len(pending)} kept agent session"
+                  f"{'s' * (len(pending) != 1)} not handed to the agent "
+                  "service yet; saved, and tried again by the next dashboard "
+                  f"(log: {_kas.record_dir() / 'hand_over.log'}).")
+    return 0
+
+
+def _server_command(name: str, rest) -> int:
+    parser = argparse.ArgumentParser(
+        prog=f"delfin-voila {name}",
+        description=("Show this host's dashboard server, what it keeps and "
+                     "how to reach it." if name == "status" else
+                     "End this host's dashboard server the way Ctrl+C did: "
+                     "its dashboards end, kept agent sessions go on in the "
+                     "agent service."))
+    parser.parse_args(list(rest))
+    return _status() if name == "status" else _stop()
+
+
+def _record_when_ready(proc, args, *, token: str, url: str, scheme: str,
+                       resume_path: str):
+    """Write this host's server record once the server answers, from a
+    thread (the launcher waits for its server meanwhile); register its
+    removal for when the launcher ends. Returns the thread."""
+    from delfin.dashboard import server_record as _sr
+
+    path = _sr.record_file()
+    atexit.register(_sr.withdraw, path)
+    ip = str(args.ip or "127.0.0.1")
+    probe = "127.0.0.1" if ip in ("0.0.0.0", "127.0.0.1", "localhost") else ip
+
+    def _run():
+        if not _wait_for_port(probe, args.port, timeout=DETACHED_START_TIMEOUT_S):
+            return
+        try:
+            from delfin import __version__ as version
+        except Exception:
+            version = ""
+        record = _sr.own_record()
+        record.update({
+            "server_pid": int(getattr(proc, "pid", 0) or 0),
+            "port": int(args.port), "ip": ip, "scheme": scheme,
+            "url": url, "resume_path": resume_path, "token": token,
+            "log": str(_sr.log_file()) if _sr.is_detached() else "",
+            "detached": _sr.is_detached(), "started_at": time.time(),
+            "version": str(version),
+        })
+        try:
+            _sr.write(record)
+        except OSError as exc:
+            print(f"Note: the server record could not be written ({exc}); "
+                  "a second delfin-voila will not find this server.",
+                  file=sys.stderr)
+
+    thread = threading.Thread(target=_run, name="delfin-server-record",
+                              daemon=True)
+    thread.start()
+    return thread
 
 
 def _announces_where(env) -> bool:
@@ -951,10 +1431,15 @@ def _announces_where(env) -> bool:
     return not (env.get("DELFIN_PREVIEW_BRANCH") and env.get("DELFIN_PREVIEW_WORKTREE"))
 
 
-def main(argv=None):
+def _parse_args(argv):
+    """The launcher's options (``status`` and ``stop`` are read before)."""
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
-        description="Launch the DELFIN Dashboard with Voila.",
+        description=(
+            "Launch the DELFIN Dashboard with Voila. Typed at a terminal, "
+            "the server runs in the background and outlives the terminal; "
+            "a second delfin-voila opens the one that runs. "
+            "`delfin-voila status` shows it, `delfin-voila stop` ends it."),
     )
     from delfin import __version__ as _delfin_version
     parser.add_argument(
@@ -1059,10 +1544,20 @@ def main(argv=None):
         "--keep",
         action="store_true",
         help=(
-            "Survive a closed terminal: start inside a tmux session named "
-            "'delfin' (reusing one if it is there) and arm 'Keep dashboard' "
-            "for every window this dashboard opens, so a dropped "
-            "connection costs nothing. Prints how to come back."
+            "Arm 'Keep dashboard' for every window this dashboard opens, "
+            "so a closed window or a dropped connection costs nothing. "
+            "Surviving the terminal needs no flag any more (no tmux)."
+        ),
+    )
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help=(
+            "Run the server in this terminal, as before: Ctrl+C or closing "
+            "the terminal ends it. For debugging; a launch without a "
+            "terminal (a script, systemd, launchd, a SLURM job) and one "
+            "inside tmux or screen stays in the foreground anyway. "
+            "DELFIN_VOILA_FOREGROUND=1 makes it the default."
         ),
     )
     parser.add_argument(
@@ -1082,7 +1577,15 @@ def main(argv=None):
     parser.add_argument(
         "--new", action="store_true",
         help="With --job: start another dashboard job although one runs.")
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    if raw and raw[0] in ("status", "stop"):
+        return _server_command(raw[0], raw[1:])
+    args = _parse_args(raw)
+    from delfin.dashboard import server_record as _server_record
     if (args.job or args.list or args.attach is not None
             or args.stop is not None):
         # A dashboard in a SLURM job (issue #640): any number of agent
@@ -1091,17 +1594,14 @@ def main(argv=None):
         # agent session (agent_sessions.login_node_refusal) whose tests and
         # builds go to SLURM.
         from delfin import dashboard_job
-        return dashboard_job.main(
-            args, list(argv) if argv is not None else sys.argv[1:])
+        return dashboard_job.main(args, raw)
     if getattr(args, "keep", False):
-        # tmux keeps a TERMINAL's dashboard alive; a batch job has no
-        # terminal and outlives everything already.
-        if sys.stdin.isatty():
-            _rc = _reexec_under_tmux(argv)
-            if _rc is not None:
-                return _rc
-        # Inside tmux now (or tmux was unavailable and we said so, or a
-        # batch job): the sessions this dashboard opens arm themselves.
+        # It started tmux once; a dashboard outlives its terminal without
+        # it now. What stays is the arming: the sessions this dashboard
+        # opens start with Keep dashboard on. Said by the launch a person
+        # typed, not again by the detached launcher it starts.
+        if not _server_record.is_detached():
+            print(KEEP_NOTE, file=sys.stderr)
         os.environ["DELFIN_KEEP_SESSIONS"] = "1"
     # This process carries the user's environment, which may hold an
     # exported provider key; the commands the dashboard runs are processes
@@ -1149,6 +1649,31 @@ def main(argv=None):
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # One server per user and host: a running one is opened, not joined
+    # by a second (server_record). The detached launcher itself does not
+    # ask: the launch that started it just did, and the lock below
+    # settles a race between two.
+    _single = _single_server_applies(os.environ)
+    if _single and not _server_record.is_detached():
+        _running = _server_record.running()
+        if _running is not None and _server_record.port_answers(_running):
+            return _use_running(_running, args, raw)
+    _detach, _why_not = _should_detach(args)
+    if _detach:
+        return _start_detached(args, raw)
+    _server_lock = None
+    if _single:
+        _server_lock = _server_record.Lock()
+        if not _server_lock.acquire():
+            # Another launcher on this host holds it: starting, or running.
+            _other = _server_record.wait_for_record(timeout=60.0)
+            if _other is not None:
+                return _use_running(_other, args, raw)
+            print("Error: another dashboard launcher holds this host's lock "
+                  f"({_server_record.lock_file()}) and its server does not "
+                  "answer. `delfin-voila status` shows it.", file=sys.stderr)
+            return 1
 
     # Find a free port, starting from the requested one.
     try:
@@ -1309,6 +1834,10 @@ def main(argv=None):
     # agree on paths twice.
     if resume_url_path:
         env[_resume.RESUME_PATH_ENV] = resume_url_path
+    # ... and the dashboard's own address, for the header's "New
+    # dashboard" (dashboards_menu).
+    from delfin.dashboard.session import DASHBOARD_PATH_ENV as _dash_path_env
+    env[_dash_path_env] = dashboard_url
     # Voilà only needs the `voila` extension. Explicitly DISABLE the others that
     # auto-load from entry points (jupyterlab/notebook/lsp/terminals): each adds
     # HTTP endpoints = attack surface, boot time and log noise the dashboard
@@ -1580,7 +2109,10 @@ def main(argv=None):
             print("     From anywhere:     delfin-agent where\n")
     except Exception:
         pass
-    print("Press Ctrl+C to stop.\n")
+    if _server_record.is_detached():
+        print("Detached from the terminal; `delfin-voila stop` ends it.\n")
+    else:
+        print("Press Ctrl+C to stop.\n")
 
     # Pipe stderr so we can drop the few benign jupyter noise lines that survive
     # Python's warning filters; stdout stays inherited (banner is untouched).
@@ -1599,6 +2131,10 @@ def main(argv=None):
         preexec_fn=_lifeline.parent_death_signal if os.name == "posix" else None,
     )
     _previous_signals = _install_stop_signals()
+    if _single:
+        _record_when_ready(
+            proc, args, token=_token, url=dashboard_url, scheme=scheme,
+            resume_path=resume_url_path.split("?")[0] if resume_url_path else "")
     stderr_stream = getattr(proc, "stderr", None)
     stderr_thread = None
     if stderr_stream is not None:
@@ -1643,6 +2179,11 @@ def main(argv=None):
         print("Stopped.")
     finally:
         _restore_signals(_previous_signals)
+        if _single:
+            from delfin.dashboard import server_record as _sr_end
+            _sr_end.withdraw(_sr_end.record_file())
+            if _server_lock is not None:
+                _server_lock.release()
 
 
 if __name__ == "__main__":

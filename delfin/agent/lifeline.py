@@ -1,16 +1,19 @@
-"""Everything an agent starts ends with the terminal that started DELFIN.
+"""Everything an agent starts ends with the launcher that started DELFIN.
 
-Ctrl+C in the terminal running delfin-voila -- or that terminal closing, or
-its SSH session dropping -- is the one stop for everything: the dashboard
-server and its kernels (kept sessions included), the agent's background
-shells, its MCP servers and the daemons. Nothing an agent started may keep
-running on its own.
+The delfin-voila launcher stopping is the one stop for everything: the
+dashboard server and its kernels (kept dashboards included), the agent's
+background shells, its MCP servers and the daemons. It stops on Ctrl+C or
+a closed terminal when it runs in the foreground, and on ``delfin-voila
+stop`` or its idle end when it runs detached from the terminal (the
+default for a launch typed at one: cli_voila._start_detached). Nothing an
+agent started may keep running on its own.
 
 How it holds:
 
-* The root -- delfin-voila, or a CLI command run from a terminal -- names
-  itself the lifeline in the environment, by pid AND start time, so a reused
-  pid never passes for it. Everything started below inherits that.
+* The root -- the delfin-voila launcher, or a CLI command run from a
+  terminal -- names itself the lifeline in the environment, by pid AND
+  start time, so a reused pid never passes for it. Everything started
+  below inherits that.
 * A process started detached (a session or process group of its own, which
   no terminal signal reaches) is written to the lifeline's ledger. When the
   root stops, it ends every process on the ledger.
