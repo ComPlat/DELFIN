@@ -711,12 +711,15 @@ def _plan_segment_read_only(words: list, globbed: bool = False) -> bool:
     if sub == "branch":
         return all(w in _PLAN_GIT_BRANCH_FLAGS for w in sargs)
     if sub == "tag":
-        return not sargs or sargs[0] in ("-l", "--list")
+        # A pattern after --list, no other option (-d after -l deletes).
+        return not sargs or (sargs[0] in ("-l", "--list") and not any(
+            w.startswith("-") for w in sargs[1:]))
     if sub == "stash":
         return bool(sargs) and sargs[0] in ("list", "show")
     if sub == "remote":
-        from .sandbox import _read_only_form
-        return _read_only_form("git", "remote", sargs)
+        # Not `remote show`: it contacts the remote.
+        return (all(w in ("-v", "--verbose") for w in sargs)
+                or (sargs[:1] == ["get-url"] and len(sargs) == 2))
     return True
 
 

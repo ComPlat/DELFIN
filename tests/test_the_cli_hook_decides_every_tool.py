@@ -275,6 +275,7 @@ PLAN_REFUSED = (
     # an unquoted glob could expand to a planted option (--output=x,
     # --pre=./y, -delete) of a program that has one
     "rg NOTES *", "sort *", "git diff *", "find * -name x",
+    "git tag -l -d v1", "git remote show origin", "git remote add x y",
 )
 
 
@@ -293,7 +294,7 @@ PLAN_FREE = (
     "git diff HEAD", "cat notes.txt", "grep -n NOTES notes.txt | head -3",
     "find . -name '*.txt'", "wc -l notes.txt && pwd", "git branch -a",
     "sort notes.txt | uniq -c", "ls *.txt", "grep -n NOTES *",
-    "rg NOTES '*.txt'",
+    "rg NOTES '*.txt'", "git remote -v", "git tag",
 )
 
 
