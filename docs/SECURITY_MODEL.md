@@ -86,15 +86,28 @@ with status 2 instead of doing less than it was asked. Settings, hooks and
 MCP servers that come from a checked-out repository are ignored until the
 directory is trusted (`/trust`).
 
-The CLI backend runs its own shell, outside DELFIN's process. In
-`bypassPermissions` it is started with its own checks off, and DELFIN's gate
-hook (`cli_gate`) holds every Bash call: the call passes the whole native
-gate (deny list, push gate, egress scan, the action classifier), and the CLI
-then runs DELFIN's cage around it -- the hook hands back the caged command
-text (`updatedInput`), with isolation forced; with no layer the call is
-refused. The cage's network goes through the egress proxy of the DELFIN
-process that started the CLI (its socket and the session's token file are
-in the hook's state), so the same per-domain decisions hold.
+The CLI backend runs its own tools, outside DELFIN's process, and DELFIN's
+gate hook (`cli_gate`) decides every one of them before it runs. A Bash call
+passes the whole native bash gate in every mode (deny list, push gate,
+egress scan, the question where a person can be asked; what the native gate
+refuses unasked is refused unasked here too), then the read-path and
+write-target gates. In `bypassPermissions` the CLI is started with its own
+checks off, and it then runs DELFIN's cage around the command -- the hook
+hands back the caged command text (`updatedInput`), with isolation forced;
+with no layer the call is refused. The cage's network goes through the
+egress proxy of the DELFIN process that started the CLI (its socket and the
+session's token file are in the hook's state), so the same per-domain
+decisions hold. WebFetch and WebSearch get the native network decision
+(the egress host decision and the payload check; a URL the person typed or
+a web result showed proceeds), an `mcp__` tool the MCP path's decision
+(`_mcp_call_refusal`). The tainted-turn rule runs there too but has no
+input yet on this backend: the hook's state records no untrusted text the
+CLI's own tools read. Plan mode is
+refused by the hook itself: writes, and every command that is not one of
+its read-only forms. An agent tool (Agent, Task, Workflow, ...) and any tool
+the hook has no rule for are refused in bypass, in plan mode and where
+nobody can be asked, and put to the person otherwise; only the CLI's own
+session tools (its task list, ToolSearch, ExitPlanMode, ...) are left to it.
 
 When no filesystem layer holds a shell command (none works on the host, or
 `--no-isolate` / `agent.bash_isolation` = `off`),

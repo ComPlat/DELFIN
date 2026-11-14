@@ -272,6 +272,9 @@ PLAN_REFUSED = (
     "python3 -c 1", "git commit -m x", "cat notes.txt &", "uniq a b",
     "git diff --output=o.txt", "rg --pre ./x NOTES", "/bin/ls",
     "FOO=1 ls", "git stash", "git tag v1",
+    # an unquoted glob could expand to a planted option (--output=x,
+    # --pre=./y, -delete) of a program that has one
+    "rg NOTES *", "sort *", "git diff *", "find * -name x",
 )
 
 
@@ -289,7 +292,8 @@ PLAN_FREE = (
     "ls", "ls -la build", "git status", "git log --oneline -3",
     "git diff HEAD", "cat notes.txt", "grep -n NOTES notes.txt | head -3",
     "find . -name '*.txt'", "wc -l notes.txt && pwd", "git branch -a",
-    "sort notes.txt | uniq -c",
+    "sort notes.txt | uniq -c", "ls *.txt", "grep -n NOTES *",
+    "rg NOTES '*.txt'",
 )
 
 
@@ -306,6 +310,32 @@ def test_plan_mode_keeps_the_native_deny_tier_for_a_read(world):
     decision, reason, _ = _hook(world, "Bash", {"command": "cat .env"},
                                 mode="plan")
     assert decision == "deny" and "secret" in reason
+
+
+def test_plan_mode_refuses_before_an_ask_rule_is_asked(world):
+    """As in _execute_pinned: plan mode refuses before an ask rule's
+    question, so nobody is asked about a call that cannot run."""
+    world["settings"].write_text(json.dumps({"permissions": {
+        "ask": ["write_file", "bash"]}}))
+    PR._CACHE.clear()
+    for tool, tool_input in (("Write", {"file_path": "x.txt", "content": "x"}),
+                             ("Bash", {"command": "touch x.txt"})):
+        decision, reason, asked = _hook(world, tool, tool_input, mode="plan",
+                                        answer=True)
+        assert decision == "deny" and reason.startswith("plan mode")
+        assert asked == []
+
+
+def test_an_ask_rule_is_asked_once_for_a_command(world):
+    """An approved ask rule answers the bash gate's own question for the
+    call (_RULE_CALL 'asked'), as natively: one question, not two."""
+    world["settings"].write_text(json.dumps({"permissions": {
+        "ask": ["bash"]}}))
+    PR._CACHE.clear()
+    decision, _r, asked = _hook(world, "Bash",
+                                {"command": "some-unlisted-command -x"},
+                                answer=True)
+    assert decision == "allow" and len(asked) == 1
 
 
 def test_plan_mode_reads(world):
