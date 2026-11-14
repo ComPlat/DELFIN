@@ -8,8 +8,11 @@
 - the agent view takes the same screen and gives it back;
 - after a resize every row fits the new width and the composer is still
   at the bottom;
-- leaving gives the shell its lines back as they were, says the session
-  keeps running, and it does, and prints the command that comes back to it;
+- leaving gives the shell its lines back as they were and prints the
+  command that comes back to the session; with /keep on it says the session
+  keeps running, and it does; without, a window's session ends with it
+  (ctrl+c twice), and the window says so; a session nobody holds (started
+  headless, by a schedule's connection) runs on;
 - `--inline` prints that command too, and running it opens that session;
 - `--inline` draws under the shell's lines instead, as before.
 
@@ -138,9 +141,14 @@ def main() -> int:
         if not composer or composer[-1] < len(rows()) - 4:
             problems.append(f"after the resize the composer is not at the bottom: {composer} of {len(rows())}")
         # Leaving (at the first size, so the shell's lines fit): they come
-        # back, and a line says the session runs on.
+        # back, and -- Keep session switched on -- a line says the session
+        # runs on.
         tmux.run("resize-window", "-t", tmux.name, "-x", "100", "-y", "30")
         time.sleep(1.0)
+        tmux.type("/keep on")
+        tmux.key("Enter")
+        expect(r"Keep session: on", "/keep on", 30)
+        time.sleep(0.5)
         tmux.key("C-d")
         if expect(r"TUI_EXIT=(\d+)", "leaving", 30):
             after = tmux.screen()
@@ -155,6 +163,47 @@ def main() -> int:
         with ServiceClient(sock) as c:
             if not any(s.get("title") == "scan of benzene" for s in c.request("sessions.list")["sessions"]):
                 problems.append("the session did not keep running")
+        # Without /keep on: ctrl+c twice ends the window's session, saved,
+        # and the window says so as it goes.
+        tmux.type(f"clear; echo {MARK}")
+        tmux.key("Enter")
+        time.sleep(0.5)
+        tmux.type(command().replace("-n 'scan of benzene'", "-n 'not kept'"))
+        tmux.key("Enter")
+        if expect(r"ask DELFIN", "the window that is not kept", 60):
+            tmux.type("a turn to keep it")
+            tmux.key("Enter")
+            expect(r"\(re: a turn to keep it\)", "its turn", 30)
+            time.sleep(0.4)
+            tmux.key("C-c")
+            if not tmux.wait_for(r"the session ends -- /keep on keeps it", 10):
+                problems.append(f"ctrl+c did not say the session ends:\n{tmux.screen()}")
+            tmux.key("C-c")
+            if expect(r"TUI_EXIT=(\d+)", "ctrl+c twice", 30):
+                if "ends with this window (Keep session is off)" not in tmux.screen():
+                    problems.append(f"no line said the session ended:\n{tmux.screen()}")
+            gone_by = time.time() + 30
+            while time.time() < gone_by:
+                with ServiceClient(sock) as c:
+                    titles = [s.get("title") for s in c.request("sessions.list")["sessions"]]
+                if "not kept" not in titles:
+                    break
+                time.sleep(0.5)
+            else:
+                problems.append(f"the window's session ran on after ctrl+c twice: {titles}")
+        # A session nobody holds -- a schedule's, a swarm's, a headless start:
+        # its creator's connection goes, it runs on.
+        with ServiceClient(sock, client="delfin schedule") as c:
+            headless = c.request("session.create", {"cwd": str(ws), "fake": True,
+                                                    "title": "headless run"}, timeout=60)["sessionId"]
+            mark = len(c.events)
+            c.request("session.prompt", {"sessionId": headless, "text": "work unattended"})
+            c.wait_for(lambda e: e.get("type") == "turn.ended" and e.get("session") == headless,
+                       after=mark, timeout=30)
+        time.sleep(8)
+        with ServiceClient(sock) as c:
+            if headless not in {s["sessionId"] for s in c.request("sessions.list")["sessions"]}:
+                problems.append("a headless session ended with its creator's connection")
         # --inline: under the shell's lines, as before.
         tmux.type(f"clear; echo {MARK}")
         tmux.key("Enter")
@@ -173,6 +222,12 @@ def main() -> int:
             tmux.type("inline turn")
             tmux.key("Enter")
             expect(r"\(re: inline turn\)", "the inline window's turn", 30)
+            time.sleep(0.4)
+            # Kept, so the printed command finds it running (a scripted
+            # session is not saved, and one not kept ends with the window).
+            tmux.type("/keep on")
+            tmux.key("Enter")
+            expect(r"Keep session: on", "/keep on in the inline window", 30)
             time.sleep(0.4)
             tmux.key("C-d")
             if expect(r"TUI_EXIT=0", "leaving the inline window", 30):

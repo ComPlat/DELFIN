@@ -161,7 +161,7 @@ DORMANT_KEEP_S = 7 * 86400.0
 #: the brief went out already.
 RESUME_SETTINGS = ("cwd", "name", "title", "model", "provider", "effort", "mode", "permissionMode",
                    "addDirs", "readDirs", "isolate", "noIsolate", "fake", "fakeDelay", "fakeSave",
-                   "brief", "briefTitle", "untitled")
+                   "brief", "briefTitle", "untitled", "keep")
 
 #: How long a wake waits for the worker of a service that died to finish
 #: saving the session (it ends on its own when its pipe closes).
@@ -997,10 +997,14 @@ class Supervisor:
             self.not_kept.pop(sid, None)
         else:
             self.not_kept.setdefault(sid, set()).add(client)
+        # In its settings too: asleep, or carried over to a later service
+        # (a restart, a crash), it wakes not kept, held by whoever wakes it.
         session = self.sessions.get(sid)
         if session is not None:
+            session.settings["keep"] = bool(keep)
             self.broadcast_summary(session, roster_now=True)
         elif sid in self.dormant:
+            self.dormant[sid].setdefault("settings", {})["keep"] = bool(keep)
             self._make_dormant(self.dormant[sid])
 
     def _hold_if_not_kept(self, client: Client, sid: str) -> None:
@@ -1264,9 +1268,13 @@ class Supervisor:
         return {"sessions": rows}
 
     async def _m_session_create(self, client: Client, params: dict) -> dict:
+        # keep false is for the session this window starts. One that runs
+        # here, or sleeps here, already -- woken or continued by the window
+        # -- is attached as it is: a kept session stays kept.
+        known = set(self.sessions) | set(self.dormant) | set(self._waking)
         out = await self._create_session(client, params)
         sid = str(out.get("sessionId") or "")
-        if sid and params.get("keep") is False:
+        if sid and params.get("keep") is False and sid not in known:
             self.set_keep(client, sid, False)
         elif sid and params.get("attach", True):
             self._hold_if_not_kept(client, sid)
@@ -2109,6 +2117,12 @@ class Supervisor:
         session = self.sessions.get(sid)
         if session is None:
             raise _Refusal(UNKNOWN_SESSION, f"no session {sid!r} here")
+        if session.settings.get("keep") is False and sid not in self.not_kept \
+                and client is not None and client.may_act:
+            # Woken not kept -- asleep, or from a service before this one --
+            # it is held by the window that woke it, as it was by its own.
+            self.not_kept[sid] = {client}
+            self.broadcast_summary(session, roster_now=True)
         return session
 
     async def _wake(self, client: Client | None, sid: str) -> None:
