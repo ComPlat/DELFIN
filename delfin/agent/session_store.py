@@ -596,30 +596,6 @@ def _turn_checkpoint_path(session_id: str) -> Path:
     return _SESSIONS_DIR / f"{session_id}.turn.json"
 
 
-#: The agent session the CURRENT process serves, set at the tool-dispatch
-#: boundary that already holds ``permissions.task_session_id`` (the same
-#: seam the step journal reads) and read by the one consumer that needs a
-#: session id across a process boundary (mcp_client's spawn of DELFIN's
-#: own builtin delfin-tools server, which injects it into the child env
-#: as DELFIN_AGENT_SESSION_ID).  NOT a global configuration: it is a
-#: per-process fact set by the process that owns the id.  Empty in a
-#: plain CLI run, in tests and in every other process — the empty value
-#: is the "no agent session" fact, never a discovery from the
-#: environment.
-current_agent_session_id: str = ""
-
-
-def note_agent_session_id(session_id: str) -> None:
-    """Record the session this process serves (best-effort, per call).
-
-    Called from the tool-dispatch boundary, which already holds
-    ``permissions.task_session_id``.  Never read from the environment:
-    the value travels holder -> spawn env -> handler, each hop named.
-    """
-    global current_agent_session_id
-    current_agent_session_id = str(session_id or "")
-
-
 def _redact_checkpoint(data: dict[str, Any]) -> dict[str, Any]:
     """Run the secret redactor over every string a checkpoint carries.
 
@@ -759,7 +735,72 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
         steps = None
     if steps:
         note += "\n\n" + steps
+    # JC2 target 3: the chain offer.  Best-effort like the step-journal
+    # part — an error in the chain lookup appends nothing and never
+    # breaks the resume note.
+    try:
+        chains = _render_chain_offer(session_id)
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "chain offer for session %s skipped: %s", session_id, exc)
+        chains = None
+    if chains:
+        note += "\n\n" + chains
     return note
+
+
+def _render_chain_offer(session_id: str) -> str | None:
+    """The unfinished-chains offer for ONE agent session, or None.
+
+    Facts only (JC2 target 3): only chains the index records for THIS
+    session id (a chain started outside an agent session is never
+    offered to one); a chain whose state file is gone or fully finished
+    is not offered; per chain the name, work dir, one status line per
+    unfinished step and the exact resume command; the text says the
+    chain is NOT resumed automatically and the agent must ask the user
+    first.  The index is a pointer: every state comes from the chain's
+    own chain_state.json.  A session with no unfinished chains gets no
+    chain text at all.
+    """
+    from delfin.tools import chain_index
+
+    entries = chain_index.load(agent_session_id=session_id)
+    lines: list[str] = []
+    for e in entries:
+        wd = e.get("work_dir") or ""
+        state_file = Path(wd) / "chain_state.json" if wd else None
+        if not state_file or not state_file.is_file():
+            continue  # gone — a fact that offers nothing
+        try:
+            from delfin.tools import chain_state
+            chain = chain_state.ChainState.load(state_file)
+        except Exception as exc:  # noqa: BLE001 - a fact, reported small
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "chain offer: state file %s unreadable (%s)", state_file, exc)
+            continue
+        if chain.steps and all(s.state == "finished" for s in chain.steps):
+            continue  # fully finished — nothing to resume
+        unfinished = [s for s in chain.steps if s.state != "finished"]
+        if not unfinished:
+            continue
+        lines.append(f"  chain '{chain.name}' — work dir: {wd}")
+        for s in unfinished:
+            line = f"    step '{s.name}' ({s.tool}): {s.state}"
+            if s.error:
+                line += f" — {s.error}"
+            lines.append(line)
+        lines.append(
+            f"    resume with: delfin chain resume {wd}  (NOT resumed "
+            "automatically — ask the user first)")
+    if not lines:
+        return None
+    return (
+        "[unfinished chains] This session started calculation chains "
+        "that are not finished:"
+        "\n" + "\n".join(lines)
+    )
 
 
 def _transcript_archive_dir() -> Path:
