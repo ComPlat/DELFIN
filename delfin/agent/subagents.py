@@ -70,6 +70,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any, Optional, TYPE_CHECKING
 
 from . import german as _de
@@ -135,7 +136,7 @@ def _subagent_limits() -> dict:
         "max_output_tokens": _num("max_output_tokens", _MAX_OUTPUT_TOKENS, int),
     }
 
-_TELEMETRY_PATH = Path.home() / ".delfin" / "subagent_telemetry.jsonl"
+_TELEMETRY_PATH = state_root() / "subagent_telemetry.jsonl"
 _TELEMETRY_MAX_LINES = 5000
 
 # Context-inheritance budgets. A spawned child used to start with a bare
@@ -274,7 +275,7 @@ def _stream_text_only(sub_client, messages: list[dict], system_prompt: str,
 # read-modify-write would race-drop each other's entries (the panel would
 # flicker subagents in and out). One owner per file → no races. The normal
 # finally-cleanup removes a subagent's file when it finishes or errors.
-_RUNNING_DIR = Path.home() / ".delfin" / "subagent_running"
+_RUNNING_DIR = state_root() / "subagent_running"
 
 
 def _format_action(name: str, tool_input) -> str:
@@ -723,7 +724,7 @@ def reap_dead_running() -> list[str]:
 # completion announced twice is its own defect, and the claim has to
 # survive a restart. The claim IS the unlink -- on POSIX only one caller
 # can remove a given file -- so two drains racing cannot both report it.
-_PENDING_DIR = Path.home() / ".delfin" / "subagent_pending"
+_PENDING_DIR = state_root() / "subagent_pending"
 # A marker whose owning process is gone belongs to a session that can no
 # longer be told anything; kept only long enough to be reaped, like the
 # died-run records above.
@@ -926,7 +927,7 @@ def drain_finished_subagents(limit: int = _PENDING_DRAIN_LIMIT) -> list[dict]:
 # Finished-subagent sessions (resume-by-id): each run
 # persists its conversation so a later ``resume_id`` call can continue
 # the same subagent with its context intact.
-_SESSIONS_DIR = Path.home() / ".delfin" / "subagent_sessions"
+_SESSIONS_DIR = state_root() / "subagent_sessions"
 _SESSIONS_LIST_LIMIT = 20
 
 
@@ -1578,7 +1579,7 @@ def _md_preset_search_dirs() -> list[Path]:
     """Directories scanned for ``*_subagent.md`` user-extensible presets."""
     return [
         Path(__file__).resolve().parent / "pack" / "agents",
-        Path.home() / ".delfin" / "subagents",
+        state_root() / "subagents",
     ]
 
 
@@ -1651,7 +1652,7 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
     # Pack presets cannot override a built-in; user presets may.
     override_by_dir = {
         Path(__file__).resolve().parent / "pack" / "agents": False,
-        Path.home() / ".delfin" / "subagents": True,
+        state_root() / "subagents": True,
     }
     for d in _md_preset_search_dirs():
         allow_override = override_by_dir.get(d, True)
