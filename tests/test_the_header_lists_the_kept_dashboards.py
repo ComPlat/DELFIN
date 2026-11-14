@@ -87,7 +87,7 @@ def test_open_is_relative_in_a_new_tab_and_carries_no_token(kept):
     assert f'href="{DASH}"' in markup and "New dashboard" in markup
     assert "runs on" in markup and "elsewhere" in markup
     assert "this window" in markup
-    assert f'?session=node-bbbb"' not in markup, "no Open for this window"
+    assert '?session=node-bbbb"' not in markup, "no Open for this window"
 
 
 def test_end_asks_once_then_ends_that_dashboard(kept, monkeypatch):

@@ -212,3 +212,24 @@ def test_the_child_bootstrap_does_not_import_from_the_launch_folder():
     cmd = cli_voila._detached_child_command(["--foreground"])
     assert cmd[0] == sys.executable and cmd[1] == "-c"
     assert "sys.path[:] = [p for p in sys.path if p not in ('', '.')]" in cmd[2]
+
+
+def test_on_a_login_node_the_load_watcher_covers_the_detached_server(
+        monkeypatch):
+    """A login node keeps its limits: the detached server outlives the
+    terminal, so the host's load watcher (hpc_guard, which samples every
+    DELFIN process of the user by its command line) is made sure of."""
+    from delfin import hpc_guard
+
+    watched = []
+    monkeypatch.setattr(hpc_guard, "on_login_node", lambda env=None: True)
+    monkeypatch.setattr(hpc_guard, "ensure_watcher",
+                        lambda **kw: watched.append(kw) or True)
+
+    def _popen(cmd, **kwargs):
+        return _Child(999999, code=3)
+
+    monkeypatch.setattr(cli_voila.subprocess, "Popen", _popen)
+    cli_voila._start_detached(_args("--no-browser"), ["--no-browser"])
+    assert watched, "the watcher is started on a login node"
+    assert "delfin" in " ".join(cli_voila._detached_child_command(["--foreground"]))
