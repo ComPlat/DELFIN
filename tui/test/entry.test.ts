@@ -134,6 +134,12 @@ describe("offersRunningFirst", () => {
     expect(offersRunningFirst(entry, undefined as never)).toBe(false)
   })
 
+  test("a start that names its new session (-n NAME) goes straight to it", () => {
+    const start = { name: "scan of benzene" }
+    expect(offersRunningFirst(entryOf(start), [live], start)).toBe(false)
+    expect(offersRunningFirst(entryOf({}), [live], { name: "  " })).toBe(true)
+  })
+
   test("an explicit resume or continue never adds the picker", () => {
     expect(offersRunningFirst(entryOf({ resume: "abc" }), [live])).toBe(false)
     expect(offersRunningFirst(entryOf({ continue: true }), [live])).toBe(false)

@@ -710,7 +710,7 @@ const agentScreen = full || (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.en
 // run -- puts the picker first: what is picked is opened, esc starts a
 // new session as a plain start does.
 let pickedAtStart: (picked: { id: string; workspace: string } | null) => void = () => {}
-const startPick = entry.kind === "pick" || offersRunningFirst(entry, hello.sessions as { state?: string }[])
+const startPick = entry.kind === "pick" || offersRunningFirst(entry, hello.sessions as { state?: string }[], start)
   ? new Promise<{ id: string; workspace: string } | null>((resolve) => { pickedAtStart = resolve })
   : null
 const resumeAtStart = startPick ? {

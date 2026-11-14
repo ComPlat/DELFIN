@@ -61,8 +61,11 @@ export function settingsFor(start: Record<string, unknown>, entry: Entry): Recor
  *  running session is meant to be one step. A
  *  session only sleeping (kept, no worker) does not count; on esc the
  *  picker still starts a new one, so nothing is lost. */
-export function offersRunningFirst(entry: Entry, sessions: { state?: string }[]): boolean {
+export function offersRunningFirst(entry: Entry, sessions: { state?: string }[],
+                                   start: Record<string, unknown> = {}): boolean {
   if (entry.kind !== "new") return false
+  // A start that names its new session (`-n NAME`) asked for that session.
+  if (String(start.name ?? "").trim()) return false
   return Boolean((sessions ?? []).some((s) => String(s.state ?? "") !== "sleeping"))
 }
 
