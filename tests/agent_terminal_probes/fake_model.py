@@ -9,6 +9,7 @@ in the prompt it types:
     do-bash <command>      one ``bash`` tool call, then a text answer
     do-bash-secret         a ``bash`` call carrying FAKE_SECRET in a header
     do-write <path> <text> one ``write_file`` tool call, then a text answer
+    do-webfetch <url>      one ``web_fetch`` tool call, then a text answer
     do-md                  a markdown answer (heading, list, code block)
     do-slow                ~30 s of streamed text, for interrupt tests
     do-delay <s>           headers at once, then <s> seconds before the
