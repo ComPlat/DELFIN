@@ -957,8 +957,7 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         return 2
     # The start check cmd_chat runs too (isolation_posture), once per run
     # for both doors (`run` and chat -p; neither prepare path runs it):
-    # without a layer, bypass is confirmed when a terminal can answer,
-    # else the run continues in default and says so here. After the
+    # without a layer, the run continues in default and says so here. After the
     # session is opened, as in cmd_chat, so it judges the mode the run
     # will actually have.
     from .isolation_posture import apply_at_start
@@ -2268,8 +2267,8 @@ def _start_interactive_session(args: argparse.Namespace, report,
             engine.set_kit_permission_mode(posture)
     except Exception:
         pass          # a backend with no gate has no posture to set
-    # The same start check as cmd_run: bypass without isolation is
-    # confirmed once here, else the session starts in default.
+    # The same start check as cmd_run: bypass without isolation starts
+    # in default.
     from .isolation_posture import apply_at_start
     start_notes = tuple(_provider_notes(args))
     start_notes += tuple(apply_at_start(engine, can_ask=can_ask))
@@ -4768,6 +4767,35 @@ def cmd_compare_arms(args: argparse.Namespace) -> int:
     return _pc.exit_code(verdict)
 
 
+def cmd_friction(args: argparse.Namespace) -> int:
+    """Where real use lost turns and time since ``--since``, ranked, with a
+    proposed task per bucket (friction_report). Read only, except that
+    ``--save`` keeps the day's JSON under ~/.delfin/friction/ and shows the
+    change against the last saved day."""
+    import json as _json
+    import time as _time
+
+    from . import friction_report as _fr
+    from . import round_report as _rpt
+    try:
+        since_s = _rpt.parse_since(getattr(args, "since", "") or "24h")
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    data = _fr.collect(since_s=since_s)
+    if getattr(args, "json", False):
+        print(_json.dumps(data, indent=1))
+        return 0
+    save_dir = Path.home() / ".delfin" / "friction"
+    previous = _fr.previous_report(
+        save_dir,
+        _time.strftime("%Y-%m-%d", _time.gmtime(data["generated_s"])))
+    print(_fr.render_text(data, previous))
+    if getattr(args, "save", False):
+        print(f"\nsaved: {_fr.save(data, save_dir)}")
+    return 0
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """What one agent session actually did: tools, files, commands,
     tests, denials, cost. `--json` prints the SessionReport itself,
@@ -5816,6 +5844,21 @@ def build_parser() -> argparse.ArgumentParser:
                              "the terminal rendering")
     report.set_defaults(func=cmd_report)
 
+    # friction — ranked refusals, slow turns and silent exits, with tasks
+    fric = sub.add_parser(
+        "friction",
+        help="Where real use lost turns and time, ranked, with a proposed "
+             "task per bucket (read only)")
+    fric.add_argument("--since", default="24h",
+                      help="Window start: 24h / 3d / 2026-11-12 "
+                           "(default 24h)")
+    fric.add_argument("--json", action="store_true",
+                      help="Print the report as JSON")
+    fric.add_argument("--save", action="store_true",
+                      help="Keep the report under ~/.delfin/friction/ and "
+                           "compare with the last saved day")
+    fric.set_defaults(func=cmd_friction)
+
     # provenance / compare-arms -- a paired comparison of two runs that
     # refuses skewed pairs and null tests (paired_compare.py). Read only.
     prov = sub.add_parser(
@@ -6274,8 +6317,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     tui = sub.add_parser(
         "tui",
-        help="The terminal UI: one window over all your sessions, which keep "
-             "running when it closes (sessions live in `delfin-agent service`)",
+        help="The terminal UI: one window over your sessions (they live in "
+             "`delfin-agent service`). A session this window starts ends when it "
+             "closes (ctrl+c twice) unless Keep session is on: /keep on, or --keep",
     )
     tui.add_argument("--cwd", default="", help="Workspace of the first session")
     tui.add_argument("-n", "--name", dest="session_name", default="",
@@ -6295,6 +6339,9 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--no-isolate", action="store_true")
     tui.add_argument("-v", "--verbose", action="store_true",
                      help="Show the model's thinking, as chat --verbose does")
+    tui.add_argument("--keep", action="store_true",
+                     help="Start this window's sessions with Keep session on: they keep "
+                          "running in the agent service after the window closes")
     tui.add_argument("--inline", action="store_true",
                      help="Draw under the shell's last line, the conversation in the "
                           "terminal's own scrollback, instead of taking the whole terminal")

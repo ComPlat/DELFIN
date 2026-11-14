@@ -242,6 +242,12 @@ class ConfirmRequest:
     def is_outside_read(self) -> bool:
         return _OUTSIDE_MARKER in self.preview
 
+    @property
+    def is_irreversible(self) -> bool:
+        """The gate's statement says it cannot be undone (irreversible)."""
+        from . import irreversible
+        return irreversible.is_irreversible(self.preview)
+
 
 def _publish_pending(req: ConfirmRequest, session_id: str,
                      session_key: str) -> "Path | None":
@@ -628,6 +634,20 @@ def options_for(req: ConfirmRequest, *, suggestion: str = "") -> list[Option]:
             Option("n", "reject", "stay in plan and say why"),
         ]
 
+    if req.kind == CONFIRM and req.is_irreversible:
+        # What cannot be undone is approved one action at a time: no key
+        # here outlives this answer, and Enter is no.
+        opts = [Option("y", "yes", "this one action; it cannot be undone"),
+                Option("n", "no (Enter)",
+                       "refused, and the model is told not to retry")]
+        if req.is_shell and req.command:
+            opts.append(Option("c", "change the command",
+                               "your version runs instead, once, exactly as "
+                               "typed"))
+        opts.append(Option("a", "abort", "deny this and end the turn"))
+        opts.append(Option("?", "explain", "what each option does here"))
+        return opts
+
     opts = [Option("y", "yes", "this one action"),
             Option("n", "no", "refused, and the model is told not to retry")]
 
@@ -679,23 +699,44 @@ def render_request(req: ConfirmRequest, *, theme: rr.Theme | None = None,
     options = options if options is not None else options_for(req)
     name = rr.short_tool_name(req.tool) or req.tool or "?"
 
+    from . import irreversible as _irr
+    said, rest = _irr.split(req.preview or "")
+
     head = f"┌─ {theme.bold(name)}"
     if req.is_protected:
         head = theme.red(f"┌─ {name}  PROTECTED PATH")
+    elif said is not None and said.irreversible:
+        head = theme.red(f"┌─ {name}  CANNOT BE UNDONE")
     elif req.is_outside_read:
         head = theme.yellow(f"┌─ {name}  OUTSIDE the workspace")
 
-    lines = [head]
     # Masked before anything reaches the screen: this broker printed the
     # command whole, so a line carrying a token showed it to the terminal
     # and to the scrollback behind it. The value goes, the command stays
     # readable -- an approval you cannot read is one you cannot give.
-    try:
-        from .cli_approve import redact_preview as _redact_preview
-        _preview = _redact_preview(req.preview or "")
-    except Exception:
-        _preview = rr.strip_control(req.preview or "")
-    body = _preview.splitlines()
+    def _shown(text: str) -> str:
+        try:
+            from .cli_approve import redact_preview as _redact_preview
+            return _redact_preview(text)
+        except Exception:
+            return rr.strip_control(text)
+
+    lines = [head]
+    # What cannot be undone is said first and whole: wrapped, never cut,
+    # and above the command, so it is read before any key is pressed.
+    if said is not None:
+        import textwrap
+        room = max(20, width - 6)
+        colour = theme.red if said.irreversible else theme.yellow
+        lines.append("│  " + colour(theme.bold(said.head)))
+        for sentence in said.sentences():
+            wrapped = textwrap.wrap(_shown(sentence), room) or [""]
+            lines.append("│  " + _irr.BULLET + wrapped[0])
+            lines.extend("│    " + w for w in wrapped[1:])
+        if said.irreversible:
+            lines.append(theme.dim("│  Enter answers no."))
+        lines.append("│")
+    body = _shown(rest).splitlines()
     shown, hidden = body[:body_lines], max(0, len(body) - body_lines)
     for line in shown:
         lines.append("│  " + rr.truncate_middle(line, max(20, width - 4)))
@@ -755,6 +796,9 @@ def render_help(req: ConfirmRequest, options: list[Option]) -> str:
     if req.is_outside_read and not read_dir_for(req):
         out.append("  no 'always' here: a home, system or key directory is "
                    "approved one read at a time.")
+    if req.kind == CONFIRM and req.is_irreversible:
+        out.append("  no 'always' here: what cannot be undone is approved one "
+                   "action at a time, and Enter answers no.")
     return "\n".join(out)
 
 

@@ -177,7 +177,7 @@ export const KEY_HELP: readonly { action?: Action; keys?: string; does: string }
   { action: "historyNext", does: "On the prompt's last line: the next prompt, back to what you were typing." },
   { keys: "tab", does: "Complete a /command or an @path; with a list open, take the selected one." },
   { action: "historySearch", does: "Search the history backwards; again for the next older match; enter takes it." },
-  { action: "quit", does: "On an empty prompt: leave the window. The session keeps running in the agent service." },
+  { action: "quit", does: "On an empty prompt: leave the window. The session keeps running in the agent service, unless Keep session is off (/keep off): then it ends." },
   { action: "newline", does: "A new line in the prompt (so does a trailing \\ before enter)." },
   { action: "palette", does: "The command palette: commands, and pickers for model, posture, effort, mode, resume." },
   { keys: "ctrl+c", does: "End the turn; else clear what is typed; else, twice, leave the window." },

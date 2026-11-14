@@ -357,7 +357,12 @@ def test_a_spelling_the_gate_cannot_read_meets_the_second_layer(
     assert approval_guard.answer_command(cmd) is None    # the premise
     out = json.loads(A._doc_executor.execute("bash", {"command": cmd}, perms))
     assert not req.with_name(f"{rid}.answer.json").exists(), out
-    assert "blocked:" in str(out.get("stderr", "")) + str(out), out
+    if mode == "bypassPermissions":
+        # Bypass with isolation off no longer runs a command at all
+        # (2026-11-13): the run-time refusal comes before the CLI's.
+        assert "bypassPermissions" in str(out.get("stderr", "")), out
+    else:
+        assert "blocked:" in str(out.get("stderr", "")) + str(out), out
 
 
 def test_no_room_path_is_widened_inside_the_bwrap_cage(

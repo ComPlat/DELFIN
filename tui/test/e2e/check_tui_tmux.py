@@ -54,8 +54,11 @@ def main() -> int:
            # The snapshot has the braille dolphin, whatever this terminal draws.
            "DELFIN_TUI_LOGO": "mono",
            "PATH": f"{Path.home()}/.bun/bin:{os.environ.get('PATH', '')}"}
+    # Started with --keep: what is checked below is read from the agent
+    # service after the window has left, and a window's session ends with it
+    # unless kept (check_fullscreen_tmux checks that).
     command = (f"cd {REPO} && env {' '.join(f'{k}={v}' for k, v in env.items())} "
-               f"{PYTHON} -m delfin.agent.cli tui --fake --permission-mode default "
+               f"{PYTHON} -m delfin.agent.cli tui --fake --keep --permission-mode default "
                f"--cwd {ws}; echo TUI_EXIT=$?")
     problems: list[str] = []
     tmux = Tmux(100, 35)
@@ -159,7 +162,7 @@ def main() -> int:
         for p in problems:
             print(f"  - {p}")
         return 1
-    print("PASS: the live window shows the snapshot, ctrl+o its details and back, and the session runs on")
+    print("PASS: the live window shows the snapshot, ctrl+o its details and back, and the kept session runs on")
     return 0
 
 

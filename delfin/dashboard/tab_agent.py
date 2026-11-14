@@ -2892,7 +2892,7 @@ def resolve_office_workspace(configured) -> Path | None:
 # a directory "always", approve every staged diff, schedule autonomous
 # loops, delete memories or write a user-wide memory.
 _USER_ONLY_SLASH_COMMANDS = frozenset({
-    "/sync", "/perms", "/perm-cycle",
+    "/sync", "/pair", "/perms", "/perm-cycle",
     "/grant", "/hooks", "/mcp", "/approve", "/reject",
     "/loop", "/auto", "/forget", "/profile", "/session", "/init",
     "/undo", "/undo-file", "/git",
@@ -3569,6 +3569,14 @@ def _kernel_lost_its_lifeline() -> None:
     try:
         from delfin.dashboard import session as _kept
         _kept.drop_record(reason="kernel ended with its lifeline")
+    except Exception:
+        pass
+    # Sessions switched to Keep session go on in the agent service, which
+    # lives under no lifeline -- unless this is an emergency stop.
+    try:
+        from delfin.agent import lifeline as _lifeline
+        from delfin.dashboard import kept_agent_sessions as _kept_sessions
+        _kept_sessions.on_kernel_end(emergency=_lifeline._stopped())
     except Exception:
         pass
     os._exit(0)
@@ -8690,7 +8698,7 @@ def create_tab(ctx):
     stop_btn = widgets.Button(
         description="Stop",
         button_style="",
-        layout=widgets.Layout(width="80px"),
+        layout=widgets.Layout(width="auto", flex="0 0 auto"),
     )
     stop_btn.disabled = True
 
@@ -9131,7 +9139,7 @@ def create_tab(ctx):
     question_hint_html = widgets.HTML(value="")
     question_buttons_box = widgets.HBox(
         [],
-        layout=widgets.Layout(gap="4px", flex_wrap="wrap"),
+        layout=widgets.Layout(gap="4px", flex_flow="row wrap"),
     )
     question_row = widgets.HBox(
         [question_hint_html, question_buttons_box],
@@ -9585,24 +9593,14 @@ def create_tab(ctx):
 
     def _settle_isolation_posture(engine):
         """The CLI's start check (isolation_posture.apply_at_start) for
-        this tab: bypass without isolation is asked in the approval panel,
-        on a thread of its own, and the session runs in default until the
-        answer. Called after an engine is built and after a live switch of
-        its mode; a mode other than bypass, or an isolated host, is left
+        this tab: bypass without isolation runs in default, with a note.
+        Called after an engine is built and after a live switch of its
+        mode; a mode other than bypass, or an isolated host, is left
         alone. Never raises."""
         try:
             from delfin.agent.isolation_posture import apply_at_start
-            broker = _ensure_kit_broker()
-
-            def _ask_in_panel(question):
-                return broker.callback(
-                    "bypassPermissions", {"isolation": "none"},
-                    "[NO ISOLATION]\n" + question)
-
-            ask = _ask_in_panel if broker is not None else None
             notes = apply_at_start(
-                engine, can_ask=ask is not None, ask=ask, background=True,
-                on_confirmed=_refresh_kit_mode_chip)
+                engine, can_ask=_ensure_kit_broker() is not None)
             for note in notes:
                 _append_system_message(note)
             if notes:
@@ -11674,11 +11672,14 @@ def create_tab(ctx):
         _chat_area.add_class("delfin-agent-chat-row")
         ctx.add_init_js(_agent_term.init_js())
     # Connect a phone: the same as typing /pair; the code goes the same way.
+    # An icon like the report beetle beside it: with a word the row did not
+    # fit 1366 px and the beetle wrapped onto a line of its own. The tooltip
+    # is the button's title, its accessible name.
     messenger_phone_btn = widgets.Button(
-        description="Phone", icon="mobile",
+        description="", icon="mobile",
         tooltip=("Connect your phone (SimpleX): scan the code shown above the input, "
                  "then type the 6-digit code your phone gets."),
-        layout=widgets.Layout(width="auto", flex="0 0 auto"))
+        layout=widgets.Layout(width="44px", flex="0 0 auto"))
 
     def _messenger_send_code(_b=None):
         code = "".join(ch for ch in str(messenger_code_input.value or "") if ch.isdigit())
@@ -11691,7 +11692,13 @@ def create_tab(ctx):
     messenger_phone_btn.on_click(lambda _b: _handle_slash_command("/pair"))
     messenger_code_btn.on_click(_messenger_send_code)
     messenger_cancel_btn.on_click(lambda _b: _handle_slash_command("/pair cancel"))
-    git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
+    # Only where a phone can be paired from: a messenger bridge runs here or
+    # one is set up (stopped for now). On a host without one (an HPC login
+    # node) the button led to 30 s of waiting and "No answer"; /pair typed
+    # there says why at once (delfin.messenger.activation.UNAVAILABLE).
+    from delfin.messenger import activation as _messenger_activation
+    if _messenger_activation.messenger_here():
+        git_group.children = tuple(git_group.children) + (messenger_phone_btn,)
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, search_row,
          cycle_inspector_html, inspector_actions_row,
@@ -25647,6 +25654,10 @@ def create_tab(ctx):
 
     return tab_widget, {
         "state": state,
+        # The session list puts its Keep session switch into this row,
+        # right after the Stop button.
+        "control_row": _controls_hbox,
+        "stop_button": stop_btn,
         "shutdown": _shutdown_tab,
         "workspace": _agent_workspace_path,
         "load_session": _load_saved_session,
