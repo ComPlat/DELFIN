@@ -38,7 +38,9 @@ from delfin.agent.api_client import KitToolPermissions, _doc_executor
 
 def advertised_tools() -> set[str]:
     """Every name that appears as a tool schema the model is shown."""
-    src = Path(api_client.__file__).read_text(encoding="utf-8")
+    from delfin.agent import tool_catalog
+    src = (Path(api_client.__file__).read_text(encoding="utf-8")
+           + Path(tool_catalog.__file__).read_text(encoding="utf-8"))
     return set(re.findall(r'"name":\s*"([a-z_][a-z0-9_]*)"', src))
 
 
