@@ -139,3 +139,44 @@ def test_explicit_moread_is_dropped_on_load_finding(monkeypatch, tmp_path):
         "an EXPLICIT user moread must survive the round trip; dropping it "
         "unconditionally by key silently changes the user's calculation"
     )
+
+
+def test_legacy_state_without_explicit_set_still_loads(
+    monkeypatch, tmp_path
+):
+    """QS ruling on JC2-R1, requirement 2: a legacy JC1 chain_state.json
+    carries NO explicit-param set (the field does not exist yet). Load
+    must treat the absent set as 'unknown': keep everything except the
+    known internal keys (with the ONE log line the JC2 target already
+    demands), and still resume. If load refused or dropped more user
+    params on such a file, every JC1-written chain would lose data on
+    first resume."""
+    monkeypatch.setattr("delfin.tools._runner.run_step", _fake_run_step)
+    wd = tmp_path / "legacy-unknown"
+    wd.mkdir()
+    legacy = {
+        "name": "jc1-era",
+        "work_dir": str(wd),
+        "steps": [
+            {
+                "name": "orca_sp",
+                "tool": "orca_sp",
+                "state": "pending",
+                # A user param whose fate depends on the explicit set:
+                # with the set ABSENT (unknown provenance) it must stay.
+                "params": {"method": "B3LYP", "user_scalar": 42},
+            }
+        ],
+    }
+    (wd / "chain_state.json").write_text(
+        json.dumps(legacy), encoding="utf-8"
+    )
+    pipe = Pipeline(name="jc1-era")
+    pipe.add("orca_sp", charge=0)
+    pipe.run(work_dir=wd, resume_chain=True)
+    state = chain_state.ChainState.load(wd / "chain_state.json")
+    step = state.step("orca_sp")
+    assert step.params.get("user_scalar") == 42, (
+        "a legacy file without the explicit-param set keeps unknown-"
+        "provenance user params (drop only the known internal keys)"
+    )
