@@ -497,7 +497,8 @@ class TabHost:
             busy = "a turn is running" if streaming else ""
             if params.get("dryRun") or (params.get("ifIdle") and busy):
                 return {"closing": False, "busy": busy}
-            threading.Thread(target=self.on_end, daemon=True,
-                             name=f"tab-host-end-{self.sid[:8]}").start()
+            self.link.after_reply(lambda: threading.Thread(
+                target=self.on_end, daemon=True,
+                name=f"tab-host-end-{self.sid[:8]}").start())
             return {"closing": True}
         raise HostRefused(protocol.METHOD_NOT_FOUND, f"no {method} for a dashboard session")

@@ -1004,6 +1004,14 @@ KEEP_TIPS = {
     ("service", False): ("Keep session is off: this session ends (saved) when the last "
                          "window that has it open closes -- this dashboard included. "
                          "Click to keep it running."),
+    # Runs in this dashboard's kernel, held by the agent service: every
+    # dashboard, the terminal and the phone have it open alike.
+    ("hosted", True): ("Keep session is on: this session keeps running after every "
+                       "window closes -- when this dashboard closes it goes on in the "
+                       "agent service. Click to let it end with its last window."),
+    ("hosted", False): ("Keep session is off: this session ends (saved) when its last "
+                        "window closes -- this dashboard, another dashboard or the "
+                        "terminal that has it open. Click to keep it running."),
 }
 
 
@@ -1986,6 +1994,13 @@ def _service_connector(service: Any, explicit_build: bool):
     return lambda: live_sessions.connect(start=start)
 
 
+def _service_starter() -> Callable:
+    """What starts the person's agent service when none runs (the
+    terminal's own way, ``launcher.ensure_service``) and connects to it."""
+    from delfin.dashboard import live_sessions
+    return lambda: live_sessions.connect(start=True)
+
+
 _RUNNING_CSS = """<style>
 .delfin-running-head { align-items: center; justify-content: space-between; padding: 6px 2px 0 6px; }
 .delfin-running-count { font-size: 11px; color: #9a3412; font-weight: 600; }
@@ -2302,18 +2317,30 @@ class RunningPanel:
 # ---------------------------------------------------------------------------
 
 def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = None,
-               session_defaults: Optional[Callable[[], dict]] = None):
+               session_defaults: Optional[Callable[[], dict]] = None,
+               start_in: Optional[str] = None, hosting: Optional[dict] = None):
     """Build the session list and reopen the sessions that were open.
 
     ``build`` makes one in-kernel session's tab from its context
-    (``tab_agent.create_tab`` by default). ``service``: where sessions run
-    (see ``_service_connector``; by default the person's agent service,
-    started if needed, and the kernel when there is none -- said on the
-    page). ``session_defaults``: the create settings of a new service
-    session (``dashboard_session_settings`` by default). Returns
-    ``(widget, refs)``.
+    (``tab_agent.create_tab`` by default). ``service``: the agent service
+    (see ``_service_connector``; by default the person's, started if
+    needed). A session runs in this kernel, on the agent tab's own turn
+    code, and is hosted in the service once it has an id
+    (``hosted_sessions.TabHost``): every dashboard, the terminal and the
+    phone list it and open it. Without a service it runs here alone, said
+    on the page. ``start_in``: "kernel" or "service" (a worker of the
+    service and its view; the setting ``agent.dashboard_sessions``) --
+    by default the setting, and "service" for a stand-in service.
+    ``hosting``: extra settings for each host (tests: ``fake``, a worker
+    that takes a session over runs the scripted engine).
+    ``session_defaults``: the create settings of a new service session
+    (``dashboard_session_settings`` by default). Returns ``(widget, refs)``.
     """
     connector = _service_connector(service, explicit_build=build is not None)
+    # The person's own service, started when a session first needs it (its
+    # first message gives it an id to host): a dashboard nobody writes in
+    # starts nothing. None for a stand-in service, and for none at all.
+    starter = (_service_starter() if service is None and build is None else None)
     if build is None:
         from delfin.dashboard import tab_agent
         build = tab_agent.create_tab
@@ -2326,7 +2353,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                             # A stand-in service (tests, explicit callers) starts
                             # sessions there; the person's own only when set so.
                             "start_in_service": connector is not None and (
-                                service is not None or sessions_where() == "service")}
+                                start_in == "service" if start_in else (
+                                    service is not None or sessions_where() == "service"))}
     shared_status = getattr(ctx, "agent_status_html", None)
 
     def _classed(w, *names):
@@ -2394,6 +2422,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     live: dict[str, Any] = {"client": None, "why": "", "retry_at": 0.0, "scripts": False}
     running_panel = RunningPanel(None, on_open=lambda sid: open_from_list(sid),
                                  is_open=lambda sid: any(r.get("session_id") == sid
+                                                         or _session_id(r) == sid
                                                          for r in sessions))
     running_panel.widget.layout.display = "none"
     # The resume search: a field whose list pops over the page, as a
@@ -2568,7 +2597,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     def _keep_tip(rec: dict, on: bool) -> str:
         why = keep_session_refusal() if not rec.get("live") else ""
-        return why or KEEP_TIPS[("service" if rec.get("live") else "kernel", bool(on))]
+        where = "service" if rec.get("live") else ("hosted" if _hosted(rec) else "kernel")
+        return why or KEEP_TIPS[(where, bool(on))]
 
     def _show_keep(rec: dict, on: bool) -> None:
         """Set the switch without acting on it (it shows the state)."""
@@ -2628,6 +2658,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 running_panel.running.apply({"type": "session.summary",
                                              "session": rec["session_id"],
                                              "summary": {**summary, "keep": on}})
+        elif _hosted(rec):
+            # The service decides: on, it runs on after every window
+            # closes; off, it ends with its last one. Said over the host
+            # link, so this dashboard's own connection does not hold it.
+            import time as _time
+            rec["kept"] = on
+            rec["keep_sent"] = (on, _time.monotonic() + 5.0)
+            rec["host"].set_keep(on)
         else:
             from delfin.dashboard import kept_agent_sessions as K
             refusal = keep_session_refusal() if on else ""
@@ -2709,6 +2747,149 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             text = KEPT_PILL + text
         if rec["info"].value != text:
             rec["info"].value = text
+
+    # -- hosted in the agent service (hosted_sessions.TabHost) ----------------
+
+    def _hosted(rec: dict) -> bool:
+        host = rec.get("host")
+        return host is not None and host.hosted
+
+    def _host_rec(rec: dict) -> None:
+        """Host an in-kernel session in the agent service once it has an
+        id; keep the host's name current. Without a service (or one too old
+        to host) it runs here alone; tried again on a later tick."""
+        import time as _time
+        if rec.get("live") or rec.get("dormant"):
+            return
+        label = str(rec["title_btn"].description or "")
+        label = "" if label == "New session" else label
+        if _hosted(rec):
+            rec["host"].title = label
+            return
+        sid = _session_id(rec)
+        adapter = (rec.get("refs") or {}).get("host_adapter")
+        if not sid or not callable(adapter) \
+                or _time.monotonic() < rec.get("host_retry_at", 0.0):
+            return
+        if live["client"] is None and starter is not None \
+                and _time.monotonic() >= live.get("start_at", 0.0):
+            # The first session with something to share: the service is
+            # started now, as the terminal starts it (at most once a minute).
+            live["start_at"] = _time.monotonic() + 60.0
+            if _connect(starter):
+                _say("")
+                for other in [r for r in sessions if r.get("live")]:
+                    _rebuild_live(other)
+            else:
+                _say(_kernel_notice())
+        client = live["client"]
+        if client is None:
+            return
+        from delfin.agent.service.host import hosting_available
+        if not hosting_available(getattr(client, "hello", None) or {}):
+            return
+        from delfin.dashboard.hosted_sessions import TabHost
+        key = rec["key"]
+        host = TabHost(adapter(), sid=sid, cwd=rec["workspace"], title=label,
+                       keep=bool(rec.get("kept")), path=getattr(client, "path", None),
+                       on_title=lambda title, _key=key: rename_session(_key, title),
+                       on_keep=lambda on, _key=key: set_keep(_key, on),
+                       on_end=lambda _key=key: _ended_elsewhere(_key),
+                       on_lost=lambda _key=key: _host_lost(_key),
+                       **dict(hosting or {}))
+        if not host.start():
+            rec["host_why"] = host.why
+            rec["host_retry_at"] = _time.monotonic() + 30.0
+            return
+        rec["host"] = host
+        rec["host_why"] = ""
+        rec["keep_sent"] = (bool(rec.get("kept")), _time.monotonic() + 5.0)
+        if rec.get("kept"):
+            # The service hands it over now; a kept record besides would
+            # resume it a second time.
+            from delfin.dashboard import kept_agent_sessions as _K
+            for old in {rec.get("kept_id"), sid} - {None, ""}:
+                _K.disarm(old)
+            rec.pop("kept_id", None)
+        _show_keep(rec, bool(rec.get("kept")))
+
+    def _follow_service_keep(rec: dict) -> None:
+        """Keep session switched in another window (the terminal's /keep, a
+        view in another dashboard): the switch here follows what the
+        service says -- except while a switch made here is on its way (the
+        service's summary still says the old state for a moment)."""
+        import time as _time
+        summary = running_panel.running.summary(_session_id(rec)) or {}
+        if not summary or "keep" not in summary:
+            return
+        said = summary.get("keep") is not False
+        sent = rec.get("keep_sent")
+        if sent is not None:
+            if said != sent[0] and _time.monotonic() < sent[1]:
+                return                   # ours, not answered yet
+            rec.pop("keep_sent", None)
+        if said != bool(rec.get("kept")):
+            rec["kept"] = said
+            _show_keep(rec, said)
+            _refresh_row_info(rec)
+
+    def _host_lost(key: str) -> None:
+        """The service went away (a restart, a stop): the session runs on
+        here; hosted again once the service is back. A kept one gets its
+        kept record meanwhile, so it is not lost if this kernel ends."""
+        rec = _find(key)
+        if rec is None:
+            return
+        rec.pop("host", None)
+        if rec.get("kept"):
+            try:
+                _arm_kept(rec)
+            except Exception:
+                pass
+
+    def _ended_elsewhere(key: str) -> None:
+        """Ended from another window (End session in a view, the terminal):
+        the tab saves and closes, and its row stays, not running -- as a
+        session ended here with x would not: x takes it off the list."""
+        rec = _find(key)
+        if rec is None or rec.get("live") or rec.get("dormant"):
+            return
+        sid = _session_id(rec)
+        name = str(rec["title_btn"].description or "")
+        try:
+            shutdown = rec["refs"].get("shutdown")
+            if callable(shutdown):
+                shutdown()
+        except Exception:
+            pass
+        host = rec.pop("host", None)
+        if host is not None:
+            host.release(end=True)
+        from delfin.dashboard import kept_agent_sessions as _K
+        for old in {rec.get("kept_id"), sid} - {None, ""}:
+            _K.disarm(old)
+        at = sessions.index(rec) if rec in sessions else len(sessions)
+        shown = view["active"] == key
+        if rec in sessions:
+            sessions.remove(rec)
+        if not sid:
+            stage.children = tuple(r["tab"] for r in sessions)
+            _render_list()
+            return
+        row = open_dormant(sid, rec["workspace"],
+                           name if name and name != "New session" else "")
+        sessions.remove(row)
+        sessions.insert(min(at, len(sessions)), row)
+        stage.children = tuple(r["tab"] for r in sessions)
+        if shown:
+            # On screen, not woken: it says what happened, a click loads it.
+            view["active"] = row["key"]
+            for other in sessions:
+                other["tab"].layout.display = "" if other is row else "none"
+        _say(f"{row['title_btn'].description} was ended from another window; "
+             "it is saved -- click it to open it again.")
+        _render_list()
+        _persist()
 
     def _held_elsewhere(session_id: str, key: str) -> bool:
         return any(rec["key"] != key and _session_id(rec) == session_id
@@ -2867,16 +3048,18 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     # -- the agent service --------------------------------------------------
 
-    def _connect() -> bool:
-        """Reach the service (``connector``); True when there is a client.
-        A failure is said on the page, never swallowed."""
-        if connector is None:
+    def _connect(via: Optional[Callable] = None) -> bool:
+        """Reach the service (``connector``, or ``via``: the one that
+        starts it); True when there is a client. A failure is said on the
+        page, never swallowed."""
+        via = via or connector
+        if via is None:
             return False
         import time as _time
         from delfin.dashboard import live_sessions as LS
         live["retry_at"] = _time.monotonic() + _RECONNECT_S
         try:
-            client = connector()
+            client = via()
         except LS.ServiceUnavailable as exc:
             live["client"], live["why"] = None, str(exc)
             return False
@@ -3119,6 +3302,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 return rec
         summary = running_panel.running.summary(sid) or {}
         client = live["client"]
+        if summary.get("host") == "dashboard":
+            # Another dashboard's kernel runs it: never taken from there.
+            # Its view shows that dashboard's chat; it becomes the full chat
+            # here only once nobody hosts it (_into_chat_when_idle).
+            rec = open_live(sid)
+            if rec is not None:
+                rec["into_chat"] = True
+            return rec
         if view["start_in_service"] or client is None:
             return open_live(sid)
         if LS.state_word(summary) in ("working", "needs you"):
@@ -3232,7 +3423,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             return
         for rec in [r for r in sessions if r.get("live") and r.get("into_chat")]:
             summary = running_panel.running.summary(rec["session_id"]) or {}
-            if not summary or LS.state_word(summary) in ("working", "needs you"):
+            if not summary or summary.get("host") \
+                    or LS.state_word(summary) in ("working", "needs you"):
                 continue
             shown = view["active"] == rec["key"]
             rec["into_chat"] = False
@@ -3262,6 +3454,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 if _session_id(rec) == sid:
                     activate(rec["key"])
                     return rec
+            if not in_kernel and live["client"] is not None \
+                    and running_panel.running.summary(sid):
+                # It runs in the service (hosted by another dashboard, or a
+                # worker's): opened from there, never resumed a second time.
+                return open_from_list(sid)
         if len(sessions) >= _MAX_OPEN:
             _say(f"{_MAX_OPEN} sessions are open — close one first.")
             return None
@@ -3440,14 +3637,20 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             return "asked"
         sid = rec.get("session_id") if rec.get("live") else _session_id(rec)
         if how == "keep" and sid:
-            if not rec.get("live"):
+            if not rec.get("live") and not _hosted(rec):
                 _arm_kept(rec)
                 rec["_hand_over"] = sid
             return "kept"
         if rec.get("live"):
             if live["client"] is not None and rec.get("session_id"):
                 try:
-                    live["client"].stop(rec["session_id"])
+                    if how == "end":
+                        # "End it": for every window.
+                        live["client"].stop(rec["session_id"])
+                    else:
+                        # This view lets go; a session switched off ends
+                        # once nobody else has it open.
+                        live["client"].release(rec["session_id"])
                 except Exception:
                     pass
             return "ended"
@@ -3474,7 +3677,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         if rec.get("_hand_over"):
             from delfin.dashboard import kept_agent_sessions as _K
             _K.spawn_hand_over(only=rec["_hand_over"])     # its lock is free now
-        if rec.get("live") or done == "kept":
+        host = rec.pop("host", None)
+        if host is not None and host.hosted:
+            # Saved and its lock released (the shutdown above): the service
+            # takes it from here -- runs it on (kept, or another window has
+            # it open), or ends it ("End it": for every window).
+            host.release(end=(how == "end"))
+            if done == "ended":
+                done = "released"
+        if rec.get("live") or done in ("kept", "released"):
             # Only this view goes: the session runs on in the service, its
             # worktree and its presence record are the worker's.
             sessions.remove(rec)
@@ -3559,8 +3770,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             if sid != rec.get("remembered_id"):
                 rec["remembered_id"] = sid
                 changed = True
-            if rec.get("kept") and sid and (sid != rec.get("kept_id")
-                                            or label != rec.get("kept_title")):
+            try:
+                _host_rec(rec)
+            except Exception:
+                pass
+            if _hosted(rec):
+                _follow_service_keep(rec)
+            elif rec.get("kept") and sid and (sid != rec.get("kept_id")
+                                              or label != rec.get("kept_title")):
                 try:
                     _arm_kept(rec)
                 except Exception:
@@ -3570,7 +3787,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 from delfin.agent import session_presence as _presence
                 _presence.announce(rec["key"], session_id=sid,
                                    title=_session_title(state, sid),
-                                   workspace=rec["workspace"])
+                                   workspace=rec["workspace"], surface="dashboard")
             except Exception:
                 pass
             # Messages from other sessions, for every open session -- also
@@ -3914,8 +4131,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             # in the full chat (taken over, still kept), or -- mid-turn --
             # its view first and the full chat when the turn is over.
             try:
-                if view["start_in_service"]:
-                    open_live(row["session_id"], row["workspace"], show=False)
+                hosted = (running_panel.running.summary(row["session_id"]) or {}).get("host")
+                if view["start_in_service"] or hosted:
+                    rec = open_live(row["session_id"], row["workspace"], show=False)
+                    if rec is not None and hosted:
+                        rec["into_chat"] = True
                 else:
                     open_from_list(row["session_id"])
             except Exception:

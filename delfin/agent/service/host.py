@@ -76,6 +76,7 @@ class HostLink:
         self.on_close = on_close
         self.closed = False
         self._lock = threading.Lock()
+        self._local = threading.local()
         self._released = False
         self.redactor = Redactor()
         self.path = Path(path) if path is not None else rundir.socket_path()
@@ -154,6 +155,7 @@ class HostLink:
         msg_id = message.get("id")
         method = str(message.get("method") or "")
         params = message.get("params") or {}
+        self._local.after = []
         try:
             result = self.handle(method, params if isinstance(params, dict) else {})
             reply = protocol.result(msg_id, result)
@@ -166,6 +168,21 @@ class HostLink:
             self._send(reply)
         except OSError:
             pass
+        for fn in self._local.after:
+            try:
+                fn()
+            except Exception:
+                pass
+
+    def after_reply(self, fn: Callable[[], None]) -> None:
+        """Run ``fn`` once the answer to the request being handled is sent
+        (on this request's thread): what ends the link -- a shutdown --
+        must not cut its own answer off."""
+        after = getattr(self._local, "after", None)
+        if after is None:
+            fn()
+        else:
+            after.append(fn)
 
     def _gone(self) -> None:
         with self._lock:

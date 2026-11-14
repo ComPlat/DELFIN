@@ -851,10 +851,19 @@ def _elsewhere(ours: set[str]) -> list[dict]:
     leaving out ``ours`` (the sessions this service runs)."""
     out = []
     try:
+        import socket as _socket
+
         from .. import session_presence
+        here = _socket.gethostname()
         for record in session_presence.open_sessions():
             sid = str(record.get("session_id") or "")
             if sid and sid in ours:
+                continue
+            if record.get("surface") == "dashboard" and not sid \
+                    and str(record.get("host") or "") == here:
+                # An agent tab of this host without a conversation yet:
+                # nothing to watch or join. Once it has one, the tab hosts
+                # it here (session.host) and it is one of ``ours``.
                 continue
             out.append({"key": record.get("key", ""),
                         "sessionId": sid or None,

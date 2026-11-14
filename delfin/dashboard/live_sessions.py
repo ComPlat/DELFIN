@@ -128,6 +128,12 @@ class LiveClient(ServiceClient):
         if not self.closed:
             self.request("session.detach", {"sessionId": sid}, timeout=10)
 
+    def release(self, sid: str) -> None:
+        """Let go of the session (a view closed with x): one switched off
+        ends once no other window has it open."""
+        if not self.closed:
+            self.request("session.detach", {"sessionId": sid, "release": True}, timeout=10)
+
     def prompt(self, sid: str, text: str, how: str = "queue") -> dict:
         return self.request("session.prompt", {"sessionId": sid, "text": text, "how": how})
 
