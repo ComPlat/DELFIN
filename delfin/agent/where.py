@@ -260,6 +260,50 @@ def sessions() -> list[dict]:
         return []
 
 
+def session_name(row: dict) -> str:
+    """What the session is called — the title, the one name the dashboard
+    and the TUI both show; a host-mangled key only when nobody ever titled
+    it."""
+    return str(row.get("title") or row.get("key") or "?")
+
+
+def session_attach(row: dict) -> str:
+    """The exact one-line command that reattaches this running session
+    from a terminal, or ``""`` when it has no id to resume by."""
+    sid = str(row.get("session_id") or "")
+    if not sid:
+        return ""
+    return f"delfin-agent tui --resume {sid}"
+
+
+def session_dashboard_link(row: dict, record: dict) -> str:
+    """The dashboard URL that walks back into this session, or ``""``.
+
+    The dashboard's own kept sessions have such a link; a running session
+    that the dashboard does not keep has none, and printing a guess of
+    one would send the person to a page that is not theirs.
+    """
+    from urllib.parse import quote
+
+    port = int(record.get("port") or 0)
+    path = str(record.get("resume_path") or "")
+    name = str(row.get("title") or "").strip()
+    if not (port and path and name):
+        return ""
+    if not _is_kept(name):
+        return ""
+    return f"http://localhost:{port}{path}?session={quote(name)}"
+
+
+def _is_kept(name: str) -> bool:
+    """Does the running dashboard keep a session of this name?"""
+    for kept in kept_session_names():
+        if str(kept) == str(name):
+            return True
+    return False
+
+
+
 def _ago(ts: Any) -> str:
     try:
         seconds = time.time() - float(ts)
@@ -310,9 +354,15 @@ def format_text(record: dict, rows: list[dict]) -> str:
         out.append("")
         for row in rows:
             out.append(
-                f"session    {row.get('host', '?')}  {row.get('key', '?')!r}"
+                f"session    {row.get('host', '?')}  {session_name(row)!r}"
                 f"  branch {row.get('branch') or '-'}"
                 f"  seen {_ago(row.get('updated_at'))}")
+            attach = session_attach(row)
+            if attach:
+                out.append(f"  attach:  {attach}")
+            link = session_dashboard_link(row, record)
+            if link:
+                out.append(f"  dashboard:  {link}")
     elif record:
         out.append("")
         out.append("No agent session is currently announced.")
