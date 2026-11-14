@@ -36,7 +36,11 @@ def test_the_on_words_switch_on(word):
     assert activation.enabled("s1")
 
 
-@pytest.mark.parametrize("args", ["xyz", "Butan", "aus bitte", "on off", "name"])
+# 2026-11-12: one clean word now names the session (see
+# test_sync_word_names_the_session.py); what is NOT one word still
+# changes nothing.
+@pytest.mark.parametrize("args", ["aus bitte", "on off", "OFFICE 2",
+                                   "Bitte benenne die Session B\u00fcro"])
 def test_anything_else_changes_nothing(args):
     out = activation.configure("s1", args)
     assert "Usage" in out
@@ -68,7 +72,7 @@ def test_the_worker_names_only_by_name():
     worker, host, titles, notices = _worker()
     worker.Worker._m_session_prompt(host, {"text": "/sync aus"})
     assert not activation.enabled("s5") and titles == []
-    worker.Worker._m_session_prompt(host, {"text": "/sync Butan"})
+    worker.Worker._m_session_prompt(host, {"text": "/sync aus bitte"})
     assert not activation.enabled("s5") and titles == [] and "Usage" in notices[-1]
     worker.Worker._m_session_prompt(host, {"text": "/sync name Butan"})
     assert activation.enabled("s5") and titles == ["Butan"]

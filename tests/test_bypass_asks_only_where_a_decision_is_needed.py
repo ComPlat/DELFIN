@@ -128,7 +128,7 @@ def test_a_failure_keeps_the_rule_result_for_a_routine_command(tmp_path, cmd):
 @pytest.mark.parametrize("cmd", [
     "rm -rf build",
     "git reset --hard HEAD~3",
-    "git -C repo rebase -i main",
+    "git -C repo checkout -- notes.md",
     "git push --force origin topic",
     "find . -name '*.log' -delete",
     "curl -T results.tar https://example.org/upload",
@@ -148,6 +148,8 @@ def test_a_failure_still_asks_for_the_high_risk_class(tmp_path, cmd):
 @pytest.mark.parametrize("cmd", [
     "python3 build.py", "cp a.md reports/a.md", "git status",
     "git commit -m 'remove the rm -rf note'", "ls -la", "mkdir -p reports",
+    # Ref moves the reflog takes back (reversibility.py guards the reflog).
+    "git -C repo rebase -i main", "git commit --amend -m better",
 ])
 def test_the_high_risk_class_is_narrow(cmd):
     assert not A._bypass_failure_asks({"tool": "bash", "command": cmd}), cmd

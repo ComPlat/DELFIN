@@ -66,8 +66,14 @@ def _code(text: str) -> str:
 def approval_card(item: dict, machine: str = '') -> str:
     """An approval (or a plan) as one compact card: what (a command names
     the ``machine`` it runs on), why, the action when it is short, and how
-    to answer. No ids, no rule texts."""
-    preview = str(item.get('text') or '').strip('\n')
+    to answer. No ids, no rule texts.
+
+    What cannot be undone is said right under the first line, in the
+    phone's language: the gate's statement (agent/irreversible.py) is taken
+    off the preview, each sentence translated before it is filled (lang.DE
+    holds every template), and the command follows without it."""
+    said, preview = cannot_be_undone(item.get('text'))
+    preview = preview.strip('\n')
     lines = preview.splitlines()
     tool = str(item.get('tool') or '')
     if item.get('kind') == 'plan':
@@ -80,6 +86,8 @@ def approval_card(item: dict, machine: str = '') -> str:
     if lines and not preview.startswith('$') and len(lines) > SHORT_PREVIEW:
         head += ': ' + lines[0][:80] + t(' ({n} lines)').format(n=len(lines) - 1)
     out = [head]
+    if said:
+        out.append(said)
     if item.get('purpose'):
         out.append(t('Why, as the agent says (unchecked): {purpose}').format(purpose=item['purpose']))
     if lines and len(lines) <= SHORT_PREVIEW:
@@ -101,6 +109,18 @@ def approval_card(item: dict, machine: str = '') -> str:
     else:
         out.append(t('Reply *yes* or *no*.'))
     return '\n'.join(out)
+
+
+def cannot_be_undone(text: str) -> tuple[str, str]:
+    """``(statement, rest)`` of an approval's text: the gate's statement of
+    what cannot be undone in the phone's language, one line each ("" when
+    the text has none), and the action without it."""
+    from delfin.agent import irreversible
+    said, rest = irreversible.split(str(text or ''))
+    if said is None:
+        return '', rest
+    head, *sentences = said.render(t)
+    return '\n'.join([f'*{head}*', *sentences]), rest
 
 
 def tap_line(token: str) -> str:

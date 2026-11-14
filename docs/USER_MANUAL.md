@@ -49,6 +49,18 @@ installs the QM and analysis tools. It needs no root and no module system.
 ```bash
 git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
 bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools
+```
+
+These two commands are a complete first install. The installer checks first what it
+needs (curl or wget, tar, git, writable directories, about 6 GB free, a C compiler
+where OpenMPI has to be built) and stops before changing anything when something is
+missing. It keeps its output in `~/software/logs/`; a failed step is named, and the
+same command run again continues. It ends with how to start: `source ~/.delfin_env.sh`
+(new shells do it by themselves), `delfin-voila` for the dashboard,
+`cd ~/calc && delfin-agent` for the agent, and, on a cluster login node, the
+`ssh -L 8866:127.0.0.1:8866 ...` tunnel to reach the dashboard from your own computer.
+
+```bash
 bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks too (several GB)
 bash ~/software/delfin/install.sh --only crest,gxtb
 bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
@@ -363,6 +375,9 @@ Within OCCUPIER this is split once more: keys that only the stage frequency jobs
 | `global_opt_method` | (empty) | Method GOAT optimises with: empty = the `xTB_method`; `mlip:uma`, `mlip:mace`, `mlip:orb` or `mlip:aimnet2` = an orca-mlips machine-learned potential through ORCA's ExtOpt. Not with CREST |
 | `global_opt_mlip_model` | (empty) | Model name for the orca-mlips plugin (`--model`); empty = its default |
 | `global_opt_mlip_device` | `cuda` | `cuda` or `cpu`; `cuda` without a visible GPU stops the GOAT step |
+| `global_opt_mlip_provider` | `auto` | ExtOpt provider: `auto` takes orca-external-tools (one model server per job) when it is installed with the backend, else orca-mlips; `oet` or `orca-mlips` forces one |
+| `goat_max_workers` | (empty) | GOAT workers of an MLIP GOAT, a multiple of 4; empty = DELFIN's measured choice (docs/MLIP_GOAT_GPU.md) |
+| `mlip_fast_client` | `auto` | orca-external-tools client: `auto` (measured default, the documented `oet_client`), `yes` (the same request sent with curl), `no` |
 | `refuse_noncommercial_weights` | `no` | `yes` refuses MLIP weights under a non-commercial licence (`mlip:mace`) |
 
 With `global_opt_method=mlip:<plugin>` the GOAT step runs inside the

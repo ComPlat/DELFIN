@@ -101,13 +101,14 @@ def new_token() -> str:
 def write_state(token: str, *, workspace: str, mode: str, can_ask: bool,
                 extra_dirs=(), read_only_dirs=()) -> Path:
     """Create or refresh the state the hook reads. Keeps what earlier
-    clicks granted (session read dirs, refusals)."""
+    clicks granted (session read dirs, refusals). In bypass the egress
+    proxy of this process is attached (``_attach_proxy``)."""
     d = state_dir()
     d.mkdir(parents=True, exist_ok=True)
     os.chmod(d, 0o700)
     with _locked(token) as path:
         old = _read_state(path)
-        _write_json(path, {
+        state = {
             "workspace": str(workspace),
             "mode": str(mode or "default"),
             "can_ask": bool(can_ask),
@@ -115,8 +116,43 @@ def write_state(token: str, *, workspace: str, mode: str, can_ask: bool,
             "read_only_dirs": [str(p) for p in read_only_dirs or ()],
             "session_read_dirs": old.get("session_read_dirs", []),
             "denied_paths": old.get("denied_paths", []),
-        })
+        }
+        state.update(_attach_proxy(state, token))
+        _write_json(path, state)
     return path
+
+
+#: Permissions the egress proxy keys a CLI session's token on, kept alive
+#: here: the proxy forgets a token when its permissions object goes.
+_PROXY_PERMS: dict = {}
+
+
+def _attach_proxy(state: dict, token: str) -> dict:
+    """The proxy fields of the state: in bypass, where the hook cages each
+    command, the socket and token file of this process's egress proxy
+    (the hook's own process ends before the command runs). Empty in any
+    other mode, or when the network is not set to go through the proxy;
+    the cage then has the network the setting names, or none."""
+    if _native_mode(state.get("mode")) != "bypassPermissions":
+        return {}
+    try:
+        from . import egress_proxy as _ep
+        if _ep.network_mode() != "proxy":
+            return {}
+        perms = _PROXY_PERMS.get(token)
+        if perms is None:
+            perms = _PROXY_PERMS[token] = _permissions(state, token)
+        proxy = _ep.get_proxy()
+        return {"proxy_socket": proxy.socket_path,
+                "proxy_token_file": proxy.token_file_for(perms)}
+    except Exception:
+        return {}
+
+
+def _native_mode(mode) -> str:
+    """The native name of a CLI permission mode."""
+    from . import api_client as ac
+    return str(ac._map_kit_permission_mode(str(mode or "default")))
 
 
 def _read_state(path: Path) -> dict:
@@ -219,21 +255,32 @@ def _native_call(tool: str, args: dict, cwd: str, workspace: str) -> tuple:
 def decide(token: str, event: dict) -> str | None:
     """Why this tool call is refused, or None when it may run.
 
-    ``event`` is Claude Code's PreToolUse input: ``tool_name``,
+    ``event`` is the CLI's PreToolUse input: ``tool_name``,
     ``tool_input``, ``cwd``.
+    """
+    return decide_call(token, event)[0]
+
+
+def decide_call(token: str, event: dict) -> tuple[str | None, str | None]:
+    """``(refusal, caged command)`` for this tool call.
+
+    The refusal as ``decide``; the caged command is the shell text the CLI
+    runs instead of the model's, for a Bash call in bypass (``_bypass_cage``),
+    else None.
     """
     from . import api_client as ac
     with _locked(token) as path:
         state = _read_state(path)
     if not state.get("workspace"):
         return ("refused: DELFIN's gate state for this session is missing, "
-                "so this call cannot be checked. Restart the session.")
+                "so this call cannot be checked. Restart the session."), None
     perms = _permissions(state, token)
     ex = ac._doc_executor
     tool = str(event.get("tool_name") or "")
     args = event.get("tool_input") or {}
     cwd = str(event.get("cwd") or state["workspace"])
     err: str | None = None
+    caged: str | None = None
 
     # The permission rules (permission_rules.py) -- the administrator's
     # managed rules first, then the user's and the project's, one matcher
@@ -244,11 +291,11 @@ def decide(token: str, event: dict) -> str | None:
     native, native_args = _native_call(tool, args, cwd, state["workspace"])
     hit = ac._permission_rule_hit(perms, native, native_args)
     if hit is not None and hit[0] == "deny":
-        return ac._refuse_by_rule(native, hit[1])
+        return ac._refuse_by_rule(native, hit[1]), None
     if hit is not None:
         refusal = ex._ask_by_rule(perms, native, native_args, hit[1])
         if refusal is not None:
-            return refusal
+            return refusal, None
 
     if tool in _READ_TOOLS:
         raw = args.get(_READ_TOOLS[tool]) or cwd
@@ -271,12 +318,12 @@ def decide(token: str, event: dict) -> str | None:
         if _answers:
             ac._record_security_event("approval_self_answer", "Bash",
                                       cmd[:120], blocked=True)
-            return _approval_guard.refusal(_answers)
+            return _approval_guard.refusal(_answers), None
         _operator = _approval_guard.operator_command(ac._prose_blanked(cmd))
         if _operator:
             ac._record_security_event("operator_action_refused", "Bash",
                                       cmd[:120], blocked=True)
-            return _approval_guard.operator_refusal(_operator)
+            return _approval_guard.operator_refusal(_operator), None
         err = _unjson(ex._gate_bash_read_paths(cmd, perms, cwd))
         targets: list = []
         if err is None:
@@ -303,6 +350,8 @@ def decide(token: str, event: dict) -> str | None:
                     break
         if err is None:
             err = _ask_for_command(perms, cmd, ex)
+        if err is None and perms.mode == "bypassPermissions":
+            err, caged = _bypass_cage(state, perms, cmd, cwd, ex)
 
     # Keep what this call granted or refused for the next one.
     with _locked(token) as path:
@@ -321,7 +370,8 @@ def decide(token: str, event: dict) -> str | None:
                 set(fresh.get("denied_paths", []))
                 | set(getattr(perms, "denied_paths", set()) or ()))
             _write_json(path, fresh)
-    return _unjson(err)
+    err = _unjson(err)
+    return err, (caged if err is None else None)
 
 
 #: The tools whose call DELFIN's gate decides in full; what it lets through
@@ -329,13 +379,52 @@ def decide(token: str, event: dict) -> str | None:
 _DECIDED_TOOLS = frozenset((*_READ_TOOLS, *_WRITE_TOOLS, "Bash"))
 
 
+def _bypass_cage(state: dict, perms, cmd: str, cwd: str,
+                 ex) -> tuple[str | None, str | None]:
+    """``(refusal, caged command)`` for a Bash call in bypass.
+
+    Bypass asks nothing, so the command gets what a native bypass command
+    gets: the whole native gate (deny list, push gate, egress scan, the
+    action classifier's second look -- ``_run_permission_gate``), then
+    DELFIN's cage. The CLI runs its shell outside DELFIN's process, so the
+    cage reaches it as text: the command the CLI runs becomes the cage's
+    argv, joined for a shell (``updatedInput``). Isolation is forced
+    (``mode="bwrap"``: bubblewrap, else Landlock or Seatbelt); with no
+    layer the command is refused, as ``_bash_isolation_argv`` refuses a
+    native bypass command there. The network goes through the egress proxy
+    of the DELFIN process (``_attach_proxy``), the one decision point for
+    every route.
+
+    Rejected: refusing the CLI backend bypass outright -- a person who
+    picks it would get a session that asks for every command, the opposite
+    of what bypass is for, while a cage gives the same promise as on every
+    other backend. Rejected: the CLI's own sandbox -- a second policy with
+    its own rules and its own network helper (absent on this server), not
+    the one the security panel and the audit log describe.
+    """
+    import shlex
+    from . import api_client as ac
+    gate = ex._run_permission_gate("bash", {"command": cmd, "cwd": cwd},
+                                   perms)
+    if gate is not None:
+        return _unjson(gate), None
+    if state.get("proxy_socket") and state.get("proxy_token_file"):
+        from . import egress_proxy as _ep
+        _ep.use_external(state["proxy_socket"], state["proxy_token_file"])
+    argv = ac._bash_isolation_argv(cmd, cwd, perms, mode="bwrap")
+    if argv[:2] == ["/bin/sh", "-c"] and argv[3:4] == ["refused"]:
+        return str(argv[4]), None
+    return None, shlex.join(argv)
+
+
 def _ask_for_command(perms, cmd: str, ex) -> str | None:
     """The native bash gate's question, for a command the CLI would run.
 
     In default and acceptEdits a command off the auto-allow list is asked
     about, as on every other backend (the CLI's shell runs outside DELFIN's
-    cage, so no cage admits it unasked). Plan and bypass are the CLI's own
-    modes and pass. None when it may run, else the refusal.
+    cage, so no cage admits it unasked). Plan is the CLI's own mode and
+    passes; bypass passes here and is caged by ``_bypass_cage``. None when
+    it may run, else the refusal.
     """
     from . import api_client as ac
     if perms.mode not in ("default", "acceptEdits"):
@@ -372,13 +461,15 @@ def main(argv: list[str]) -> int:
     """
     token = argv[1] if len(argv) > 1 else ""
     tool = ""
+    event: dict = {}
+    caged: str | None = None
     try:
         event = json.loads(sys.stdin.read() or "{}")
         tool = str(event.get("tool_name") or "")
-        reason = decide(token, event)
+        reason, caged = decide_call(token, event)
     except Exception as exc:
-        reason = (f"refused: DELFIN's gate could not check this call "
-                  f"({type(exc).__name__}: {exc}).")
+        reason, caged = (f"refused: DELFIN's gate could not check this call "
+                         f"({type(exc).__name__}: {exc})."), None
     if reason:
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -386,11 +477,18 @@ def main(argv: list[str]) -> int:
             "permissionDecisionReason": reason,
         }}))
     elif tool in _DECIDED_TOOLS:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": "DELFIN's gate let this call through",
-        }}))
+        out = {"hookEventName": "PreToolUse",
+               "permissionDecision": "allow",
+               "permissionDecisionReason": "DELFIN's gate let this call through"}
+        if caged is not None:
+            # The command runs in DELFIN's cage: the CLI runs this text
+            # instead of the model's (measured: the CLI runs a hook's
+            # updatedInput with an allow).
+            out["updatedInput"] = {**(event.get("tool_input") or {}),
+                                   "command": caged}
+            out["permissionDecisionReason"] = ("DELFIN's gate let this call "
+                                               "through, in DELFIN's cage")
+        print(json.dumps({"hookSpecificOutput": out}))
     return 0
 
 

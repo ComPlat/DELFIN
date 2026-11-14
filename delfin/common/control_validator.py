@@ -1157,6 +1157,49 @@ def _as_global_opt_mlip_device(value: Any) -> str:
     raise ValueError("must be cuda or cpu")
 
 
+def _as_global_opt_mlip_provider(value: Any) -> str:
+    """Which ExtOpt provider runs an MLIP GOAT: auto (default), oet or orca-mlips.
+
+    auto takes orca-external-tools when it is installed with the backend
+    (one model server per job), else orca-mlips
+    (delfin/mlp_tools/mlip_goat.py).
+    """
+    text = str(value or "").strip().lower().replace("_", "-")
+    if not text:
+        return "auto"
+    if text in {"orca-external-tools", "oet"}:
+        return "oet"
+    if text in {"auto", "orca-mlips"}:
+        return text
+    raise ValueError("must be auto, oet (orca-external-tools) or orca-mlips")
+
+
+def _as_goat_max_workers(value: Any) -> "int | None":
+    """GOAT workers of an MLIP GOAT: empty = DELFIN's choice, else a positive multiple of 4."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        number = int(text)
+    except ValueError:
+        raise ValueError("must be a positive multiple of 4") from None
+    if number <= 0 or number % 4:
+        raise ValueError("must be a positive multiple of 4 (ORCA: one worker per GOAT temperature)")
+    return number
+
+
+def _as_mlip_fast_client(value: Any) -> "bool | None":
+    """orca-external-tools client: auto (DELFIN's measured default), yes (curl), no (oet_client)."""
+    text = str(value or "").strip().lower()
+    if text in {"", "auto"}:
+        return None
+    if text in {"yes", "true", "1", "on"}:
+        return True
+    if text in {"no", "false", "0", "off"}:
+        return False
+    raise ValueError("must be auto, yes or no")
+
+
 def _valid_global_opt_mlip(validated: Mapping[str, Any]) -> str:
     """``mlip:<plugin>`` when the value passed its field check, else ""."""
     try:
@@ -2336,6 +2379,19 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("global_opt_mlip_device", _as_global_opt_mlip_device, default="cuda",
               help="cuda (default) or cpu. cuda without a visible GPU stops "
                    "the GOAT step; there is no silent CPU fallback."),
+    FieldSpec("global_opt_mlip_provider", _as_global_opt_mlip_provider, default="auto",
+              help="auto (default): orca-external-tools when installed with the "
+                   "backend (one model server for the job), else orca-mlips; "
+                   "oet or orca-mlips forces one."),
+    FieldSpec("goat_max_workers", _as_goat_max_workers, default=None, allow_none=True,
+              help="GOAT workers of an MLIP GOAT (a multiple of 4). Empty: "
+                   "DELFIN's measured default -- orca-mlips capped at 8 (one "
+                   "model per worker), orca-external-tools W workers on one "
+                   "server with W model processes (%pal nprocs W)."),
+    FieldSpec("mlip_fast_client", _as_mlip_fast_client, default=None, allow_none=True,
+              help="orca-external-tools client of an MLIP GOAT: auto (DELFIN's "
+                   "measured default), yes (the same request sent with curl, no "
+                   "Python start-up per call) or no (the documented oet_client)."),
     FieldSpec("refuse_noncommercial_weights", _as_yes_no, default="no",
               help="yes refuses an MLIP whose weights are non-commercially "
                    "licensed (global_opt_method=mlip:mace)."),
@@ -2435,23 +2491,16 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
 def _metals_in_smiles(smiles: str) -> list[str]:
     """Transition-metal element symbols named in a SMILES string.
 
-    Uses the same element-token rule as delfin/utils.py:140-145 (a bare
-    1-2 letter element token, case-normalised).  Not a full SMILES parse:
-    bracket atoms like [Pd] and plain tokens both resolve, and a 2-letter
-    match requires the second letter to be lower-case, so ``C``/``Cl`` and
-    ``N``/``Na`` do not confuse it.  Good enough to answer "would the
-    auto-relativity policy apply to this system?" -- the exact question
-    delfin/utils.py:203-217 (_should_use_rel) answers from a geometry file.
+    delfin.utils.smiles_transition_metals: the element of every bracket
+    atom, so [Pd], [Pd+2], [Pd-2], [PdH], [Gd+3], [U] all resolve, while
+    out-of-bracket organic-subset text never does ("CSc1ccccc1" is
+    thioanisole, not scandium; "Cn1ccnc1" holds no copernicium).  Answers
+    "would the auto-relativity policy apply to this system?" -- the exact
+    question delfin/utils.py (_should_use_rel) answers from a geometry file.
     """
-    from delfin.utils import _TM_LIST
+    from delfin.utils import smiles_transition_metals
 
-    text = str(smiles or "")
-    found: list[str] = []
-    for match in re.finditer(r"[A-Z][a-z]?", text):
-        sym = match.group(0)
-        if sym in _TM_LIST and sym not in found:
-            found.append(sym)
-    return found
+    return smiles_transition_metals(smiles)
 
 
 def cross_key_consistency_notes(config: Mapping[str, Any]) -> list[str]:
@@ -2495,19 +2544,25 @@ def cross_key_consistency_notes(config: Mapping[str, Any]) -> list[str]:
             f"or clear solvent for an intentional gas-phase run."
         )
 
-    # 2. relativity contradicted by the system's metals.
+    # 2. relativity contradicted by the system's metals.  Only a SMILES in
+    # the CONTROL file is evidence: without one the structure lives in
+    # input_file (or the file is the define.py TEMPLATE, which
+    # config._load_template_defaults validates on every run with SMILES=
+    # empty and relativity=ZORA), and "no SMILES" is not "no metals" -- the
+    # run itself decides from the real geometry (cli.py, search_transition_metals).
     relativity = str(config.get("relativity", "") or "").strip().lower()
-    if relativity and relativity not in ("none", ""):
-        metals = _metals_in_smiles(config.get("SMILES", ""))
+    smiles = str(config.get("SMILES", "") or "").strip()
+    if relativity and relativity not in ("none", "") and smiles:
+        metals = _metals_in_smiles(smiles)
         if metals:
             from delfin.utils import classify_tm_presence
 
             tm_class = classify_tm_presence(metals)
             use_rel = tm_class in ("4d5d", "4f5f", "mixed")
         else:
-            # No transition metals at all: cli.py:1990-1994 forces
-            # relativity=none for every metal-free system, so an explicitly
-            # relativistic value is contradicted here too.
+            # No transition metals at all: cli.py forces relativity=none
+            # for every metal-free system, so an explicitly relativistic
+            # value is contradicted here too.
             use_rel = False
             tm_class = "none"
         if not use_rel:

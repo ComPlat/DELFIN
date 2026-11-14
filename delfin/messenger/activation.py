@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -101,14 +102,42 @@ def clean_name(text):
 #: What /sync understands (German matchers for what the user types).
 SYNC_ON = frozenset({'', 'on', 'an', 'ein', 'enable'})
 SYNC_OFF = frozenset({'off', 'aus', 'ausschalten', 'disable', 'stop'})
-SYNC_USAGE = ('Usage: /sync [on|off|status] or /sync name NAME; '
-              '/sync policy pull on|off for pulling from the phone. Anything else changes nothing.')
+SYNC_USAGE = ('Usage: /sync [on|off|status] or /sync NAME (one word names '
+              'the session); /sync policy pull on|off for pulling from the '
+              'phone. Anything else changes nothing.')
+
+
+#: Words a person types to stop, to answer or to ask for help (German
+#: matchers for what the user types). Never a session name: '/sync nein'
+#: or a typo like '/sync of' switching the phone ON would publish the
+#: session against the person's intent.
+_NOT_A_NAME = frozenset({
+    'of', 'no', 'nein', 'nicht', 'nie', 'never', 'ende', 'beenden',
+    'abschalten', 'stopp', 'halt', 'pause', 'exit', 'quit', 'cancel',
+    'abbrechen', 'help', 'hilfe', 'ja', 'yes', 'true', 'false', 'name',
+    'status', 'policy'})
+
+#: A name word: starts with a letter, then letters, digits, '_' or '-',
+#: 2 to 40 characters. Punctuation ('off!', 'status?') is no name.
+_NAME_WORD = re.compile(r"[^\W\d_][\w-]{1,39}")
+
+
+def _one_word(raw):
+    """One word that can name a session, or ''."""
+    text = str(raw or '').strip()
+    if (not text or not _NAME_WORD.fullmatch(text)
+            or text.lower() in _NOT_A_NAME):
+        return ''
+    return clean_name(text)
 
 
 def parse_sync(args):
     """``/sync`` arguments as (action, name): action on | off | status |
-    usage; a name only after ``name`` or in quotes. Anything else is
-    ``usage`` -- it changes nothing (an unknown word never switches on)."""
+    usage; a name after ``name``, in quotes, or as ONE word -- ``/sync
+    OFFICE`` means "on, named OFFICE" (the person's wording, seen
+    2026-11-12). What is not one clean word -- several words, a bare
+    ``name``, unknown ``policy`` arguments -- is ``usage``: it changes
+    nothing (the guard from review finding 2 stays for those)."""
     raw = str(args or '').strip()
     word = raw.lower()
     if word in SYNC_ON:
@@ -125,6 +154,9 @@ def parse_sync(args):
         return 'on', clean_name(rest)
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in '"\'' and clean_name(raw[1:-1]):
         return 'on', clean_name(raw[1:-1])
+    one = _one_word(raw)
+    if one and word not in SYNC_ON and word not in SYNC_OFF and word != 'name':
+        return 'on', one
     return 'usage', ''
 
 
@@ -136,18 +168,79 @@ NOT_RUNNING = (' But the messenger is not running on this machine (no bridge soc
                'nothing reaches the phone until it runs.')
 
 
-def messenger_running() -> bool:
-    """Whether a messenger bridge serves on this machine: its socket exists
-    (the explicit DELFIN_MESSENGER_SOCKET, the provisioned path, or the
-    per-user default). The unit removes the socket's directory when the
-    bridge stops, so a bridge that crashes or never started has none.
-    Never raises."""
+#: The bridge's unit of the root install (scripts/pi/pi_messenger.sh, UNIT_DIR).
+PROVISIONED_UNIT = '/etc/systemd/system/delfin-messenger-bridge.service'
+
+UNAVAILABLE = ('The phone messenger is not available on this machine: no SimpleX messenger '
+               '(bridge and gateway) is set up here, as on an HPC cluster. Pair your phone '
+               'on a machine where the messenger runs, or set it up here without root: '
+               'delfin-agent messenger setup --user --accept-loopback-risk')
+STOPPED = ('The phone messenger is set up on this machine but not running (no bridge socket), '
+           'so /pair cannot reach it. Start it again (systemctl status delfin-messenger-bridge '
+           'delfin-messenger-gateway; without root: delfin-agent messenger setup --user), '
+           'then /pair.')
+
+
+def _bridge_sockets() -> list:
+    """Every place a bridge socket of this host can be: the explicit
+    DELFIN_MESSENGER_SOCKET, the provisioned path, the per-user default and
+    the rootless setup's (its units set DELFIN_MESSENGER_SOCKET for
+    themselves only, so a session process does not see it)."""
     candidates = [os.environ.get('DELFIN_MESSENGER_SOCKET', ''), PROVISIONED_SOCKET]
     try:
         from delfin.messenger.bridge_client import default_socket_path
         candidates.append(str(default_socket_path()))
     except Exception:
         pass
+    try:
+        from delfin.messenger.rootless import state_dir
+        candidates.append(str(state_dir() / 'run' / 'bridge.sock'))
+    except Exception:
+        pass
+    return candidates
+
+
+def messenger_installed() -> bool:
+    """Whether a messenger is set up on this machine, running or not: the
+    root install's bridge unit, the rootless setup's state directory, or
+    its user units. Never raises."""
+    try:
+        from delfin.messenger.rootless import UNITS, state_dir, unit_dir
+        traces = [Path(PROVISIONED_UNIT), state_dir() / 'gateway'] + [unit_dir() / u for u in UNITS]
+    except Exception:
+        traces = [Path(PROVISIONED_UNIT)]
+    for path in traces:
+        try:
+            if path.exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def messenger_here() -> bool:
+    """Whether a phone can be paired from this machine at all: a bridge
+    runs, or a messenger is set up that is stopped for now. The agent tab
+    shows its Phone button only then; a host without one (an HPC login
+    node) has nothing a phone could reach."""
+    return messenger_running() or messenger_installed()
+
+
+def pairing_unavailable() -> str:
+    """Why /pair cannot reach a messenger from here, or '' when a bridge
+    runs. Checked before a pairing request is written: without a bridge
+    nobody collects it, and the person waited 30 s for 'No answer'."""
+    if messenger_running():
+        return ''
+    return STOPPED if messenger_installed() else UNAVAILABLE
+
+
+def messenger_running() -> bool:
+    """Whether a messenger bridge serves on this machine: its socket exists
+    (_bridge_sockets). The unit removes the socket's directory when the
+    bridge stops, so a bridge that crashes or never started has none.
+    Never raises."""
+    candidates = _bridge_sockets()
     import stat
     for path in filter(None, candidates):
         try:

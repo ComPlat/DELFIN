@@ -80,6 +80,9 @@ from typing import Any, Optional
 
 MAX_PRE_IMAGE_BYTES = 2 * 1024 * 1024   # 2 MB
 MAX_ENTRIES_PER_SESSION = 500
+#: Overlay records (``overlay_workspace``): the pre-image is in the
+#: workspace's trash, not in this store, so they have a cap of their own.
+MAX_OVERLAY_ENTRIES = 20_000
 
 # seq is read-then-appended; a background job's watcher thread records
 # while the turn's own tools record (shell_changes), so one writer at a
@@ -553,17 +556,35 @@ def _append_and_prune(
     Returns the seqs whose pre-image this append pushed out (empty in
     the ordinary case) so the caller can say so.
     """
+    return _append_many_and_prune(session_id, sdir, records, [rec])
+
+
+def _append_many_and_prune(
+    session_id: Any, sdir: Path, records: list[dict], recs: list[dict]
+) -> list[int]:
+    """:func:`_append_and_prune` for several records in one write.
+
+    Two caps: records whose pre-image is in this store count toward
+    ``MAX_ENTRIES_PER_SESSION``; overlay records (pre-image in the
+    workspace's trash, nothing stored here) toward
+    ``MAX_OVERLAY_ENTRIES``. A dropped overlay record's tombstone names
+    where the original still lies."""
     journal = _journal_path(session_id)
     with journal.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n"
+                         for r in recs))
     _set_file_perms(journal)
 
-    records.append(rec)
-    live = [r for r in records if not r.get("dropped")]
-    if len(live) <= MAX_ENTRIES_PER_SESSION:
+    records.extend(recs)
+    live = [r for r in records if not r.get("dropped")
+            and not r.get("overlay")]
+    live_ov = [r for r in records if not r.get("dropped") and r.get("overlay")]
+    if (len(live) <= MAX_ENTRIES_PER_SESSION
+            and len(live_ov) <= MAX_OVERLAY_ENTRIES):
         return []
 
-    drop = live[: len(live) - MAX_ENTRIES_PER_SESSION]
+    drop = (live[: max(0, len(live) - MAX_ENTRIES_PER_SESSION)]
+            + live_ov[: max(0, len(live_ov) - MAX_OVERLAY_ENTRIES)])
     dropped_seqs = {int(r["seq"]) for r in drop}
     rewritten: list[dict] = []
     for r in records:
@@ -578,7 +599,10 @@ def _append_and_prune(
                 "dropped": True,
                 "reason": (
                     f"pre-image dropped at the {MAX_ENTRIES_PER_SESSION}-entry "
-                    "session cap"),
+                    "session cap" if not r.get("overlay") else
+                    f"record dropped at the {MAX_OVERLAY_ENTRIES}-entry cap "
+                    "for shell changes; the original is still in the trash"
+                    + (f" at {r.get('trash')}" if r.get("trash") else "")),
             })
         else:
             rewritten.append(r)
@@ -590,6 +614,8 @@ def _append_and_prune(
     _atomic_write(journal, "".join(
         json.dumps(r, ensure_ascii=False) + "\n" for r in rewritten))
     for old in drop:
+        if not old.get("pre_file"):
+            continue
         try:
             (sdir / str(old.get("pre_file", ""))).unlink()
         except OSError:
@@ -678,6 +704,130 @@ def record_change_without_undo(
         )
     except Exception:
         return None
+
+
+def record_overlay_changes(session_id: Any, items: list[dict]) -> list[dict]:
+    """Journal what a shell command run over the workspace overlay changed.
+
+    Each item: ``tool, path, kind`` ("created" | "modified" | "deleted"),
+    ``entry`` (file | dir | symlink | other), ``root``, ``trash`` (where
+    the original now lies in the workspace's trash, "" for a creation),
+    ``post_hash``, ``post_sig`` ([size, mtime_ns, inode]), ``post_tree``
+    (a directory's fingerprint). Nothing is copied into this store:
+    :func:`revert` renames the original back from the trash. Returns the
+    records written (with their seqs); [] on any failure. Never raises."""
+    try:
+        if not items:
+            return []
+        sdir = _session_dir(session_id)
+        sdir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(sdir, 0o700)
+        except OSError:
+            pass
+        with _WRITE_LOCK:
+            records = _read_journal(session_id)
+            seq = (records[-1]["seq"] + 1) if records else 1
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+            recs = []
+            for it in items:
+                kind = str(it.get("kind", ""))
+                rec = {
+                    "seq": seq, "ts": stamp, "tool": str(it.get("tool", "")),
+                    "path": str(it.get("path", "")),
+                    "pre_hash": "", "post_hash": str(it.get("post_hash", "")),
+                    "pre_file": "", "created": kind == "created",
+                    "truncated": False, "raw": True, "overlay": True,
+                    "entry": str(it.get("entry", "file")),
+                    "root": str(it.get("root", "")),
+                    "trash": str(it.get("trash", "") or ""),
+                    "post_sig": list(it.get("post_sig") or []),
+                    "post_tree": str(it.get("post_tree", "") or ""),
+                }
+                if kind == "deleted":
+                    rec["deleted"] = True
+                if "undo_of" in it:
+                    rec["undo_of"] = it["undo_of"]
+                recs.append(rec)
+                seq += 1
+            _append_many_and_prune(session_id, sdir, records, recs)
+            return recs
+    except Exception:
+        return []
+
+
+def _overlay_matches_post(rec: dict, target: Path) -> bool:
+    """The path still holds what the command (or the undo) left there."""
+    from . import overlay_workspace as _ow
+    entry, ph, sig, tree = _ow.post_state(str(target))
+    if not entry or entry != rec.get("entry"):
+        return False
+    want = rec.get("post_hash") or ""
+    if want:
+        return ph == want
+    if entry == "dir" and rec.get("post_tree"):
+        return tree == rec.get("post_tree")
+    rec_sig = list(rec.get("post_sig") or [])
+    if entry == "dir":
+        return bool(rec_sig) and sig[2:3] == rec_sig[2:3]
+    return bool(rec_sig) and sig == rec_sig
+
+
+def _revert_overlay(rec: dict, target: Path, result: dict) -> Optional[dict]:
+    """Undo one overlay record by renames through the trash. Returns the
+    item that journals the undo itself, or None after filing why not.
+
+    What the undo replaces goes to the trash too (``undo-<time>-<seq>``),
+    so the undo is undoable the same way."""
+    from . import overlay_workspace as _ow
+    path_str = str(target)
+    trash = str(rec.get("trash", "") or "")
+    exists = os.path.lexists(target)
+    if trash and not os.path.lexists(trash):
+        result["conflicts"].append({
+            "path": path_str,
+            "reason": ("the original is no longer in the trash (it keeps "
+                       "files 7 days, then they are removed)")})
+        return None
+    if rec.get("deleted"):
+        if exists:
+            result["conflicts"].append({
+                "path": path_str,
+                "reason": ("the path exists again since the command "
+                           "deleted it — not overwriting")})
+            return None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(trash, target)
+        entry, ph, sig, tree = _ow.post_state(path_str)
+        return {"kind": "created", "entry": entry, "trash": "",
+                "post_hash": ph, "post_sig": sig, "post_tree": tree}
+    if not exists:
+        if rec.get("created"):
+            result["skipped"].append(
+                {"path": path_str, "reason": "created file already absent"})
+        else:
+            result["conflicts"].append(
+                {"path": path_str,
+                 "reason": "file missing since the command changed it"})
+        return None
+    if not _overlay_matches_post(rec, target):
+        result["conflicts"].append({
+            "path": path_str,
+            "reason": ("content changed since the command's change — not "
+                       "overwriting")})
+        return None
+    root = str(rec.get("root", "") or "") or str(target.parent)
+    away = os.path.join(_ow.undo_trash_dir(root, int(rec.get("seq", 0))),
+                        os.path.relpath(path_str, root))
+    os.makedirs(os.path.dirname(away), exist_ok=True)
+    os.rename(target, away)
+    if rec.get("created"):
+        return {"kind": "deleted", "entry": rec.get("entry", "file"),
+                "trash": away}
+    os.rename(trash, target)
+    entry, ph, sig, tree = _ow.post_state(path_str)
+    return {"kind": "modified", "entry": entry, "trash": away,
+            "post_hash": ph, "post_sig": sig, "post_tree": tree}
 
 
 def list_changes(session_id: Any, *, last_n: Optional[int] = None) -> list[dict]:
@@ -875,6 +1025,20 @@ def revert(
                                "change bytes the agent never touched; "
                                "revert refused"),
                 })
+                continue
+
+            if rec.get("overlay"):
+                undo = _revert_overlay(rec, target, result)
+                if undo is None:
+                    continue
+                result["reverted"].append(path_str)
+                undo.update({"tool": "undo", "path": path_str,
+                             "root": rec.get("root", ""),
+                             "undo_of": int(rec.get("seq", 0))})
+                out = record_overlay_changes(session_id, [undo])
+                if out:
+                    undone_now[int(rec.get("seq", 0))] = int(out[0]["seq"])
+                    result["undo_seqs"].append(int(out[0]["seq"]))
                 continue
 
             byte_exact = bool(rec.get("binary") or rec.get("raw"))

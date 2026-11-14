@@ -47,6 +47,9 @@ _KINDS = {
     "script_dir_unknown": ("📜", "Script in an unknown directory"),
     "self_mod":       ("🛡", "Self-modification guarded"),
     "memory_refused": ("🧠", "Instruction-shaped memory refused"),
+    # An outward call after untrusted text, the user's words not covering
+    # it (tainted_turn): asked, or refused with nobody to ask.
+    "tainted_outward": ("📤", "Outward call after untrusted text held"),
     "knowledge_write": ("🧠", "Write into shared lessons or memory asked"),
     "mcp_description_withheld": ("🔌", "MCP tool description withheld"),
     # Descriptions pinned on first use (mcp_client.pin_check): a first
@@ -81,9 +84,16 @@ _KINDS = {
     "permission_mode": ("⏵", "Bypass entered by the user"),
     # An agent's branch move in the checkout DELFIN runs from, refused.
     "shared_checkout_switch": ("⛔", "Branch switch in the shared checkout refused"),
+    # A git act the reflog cannot undo (reversibility.git_history_refusal).
+    "git_history_unrecoverable": ("⛔", "Git history change the reflog cannot undo"),
+    # scancel/qdel/bkill of a job this session did not submit.
+    "job_cancel_foreign": ("⛔", "Cancel of a job this session did not submit"),
     # A second approval of the same kind in a turn whose first one went
     # unanswered: not asked again, refused, and the panel says so.
     "approval_not_now": ("⌛", "Approval not asked again this turn (earlier one unanswered)"),
+    # A call that cannot be undone, put to the person although an allow
+    # pattern (a saved "always" included) or the cage would have answered.
+    "irreversible_asked": ("⛔", "Cannot be undone: asked, no saved always or cage answers it"),
     # AM1: an unattended session hit the three-refusal lock; it pauses and
     # leaves one message for the operator instead of waiting for nobody.
     "unattended_pause": ("⏸", "Unattended session paused after three refusals"),
@@ -102,6 +112,12 @@ _KINDS = {
     # A write to a known host with nobody to ask, refused because the
     # host is not named in agent.sandbox_network.upload_domains.
     "egress_upload_refused": ("📤", "Command upload refused (nobody to ask)"),
+    # A URL or search query carrying a run that looks like encoded data,
+    # with nobody to ask (web_tools.url_payload_reason).
+    "egress_payload_refused": ("📤", "URL carrying encoded data refused"),
+    # A session's bytes to one host crossed a reporting step
+    # (egress_proxy.note_sent): the first byte, 64 KiB, 1 MiB, ...
+    "egress_sent":    ("📤", "Bytes sent to a host this session"),
     # The audit log (audit_log.py): a write that failed, and a log that
     # was changed outside DELFIN between two writes.
     "audit_write_failed": ("📒", "Audit log could not be written"),
@@ -212,8 +228,13 @@ _KINDS = {
     "classifier_allow":  ("✅", "Action classifier allowed an unasked command (no isolation)"),
     "classifier_error":  ("⚠️", "Action classifier gave no verdict"),
     "classifier_held":   ("⏸️", "Held: watcher could not judge, nobody to ask"),
+    # Bypass with no classifier at all: a publish/upload/drop held.
+    "classifier_absent_hold": ("⏸️", "Held: no action classifier in this bypass session"),
     # Off the auto-allow list, no isolation layer, nobody to ask.
     "unisolated_refused": ("🧱", "Command refused: no isolation, nobody to ask"),
+    "unrestorable_change": ("🗑", "Command refused: it would destroy what nothing can restore"),
+    "undo_store_write": ("🗄", "Write refused: the undo store is DELFIN's"),
+    "trash_evicted": ("🧹", "Trash over its budget: oldest undo copies removed"),
     "classifier_down":   ("🔌", "Action watcher down"),
     "classifier_up":     ("🔁", "Action watcher answers again"),
     # The phone messenger (delfin/messenger/audit.py KINDS, pinned equal by

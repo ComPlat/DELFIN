@@ -26,7 +26,7 @@ from collections import deque
 from . import audit, eventlog, language, pairing, simplex, store
 from . import lang as _lang
 from .lang import command_word, t, yes_no
-from .render import cut, in_forum, more_hint, simplex_text, status_text
+from .render import cannot_be_undone, cut, in_forum, more_hint, simplex_text, status_text
 from .people import OWNER
 from .bridge_client import BridgeClient, BridgeDown, default_socket_path
 
@@ -1300,9 +1300,10 @@ class Rooms:
                     'read': '👁 Lesen'}.get(i.get('risk') or '', '')
             hint = t('ok {n} · zeige {n} · on the dashboard').format(n=i['n']) \
                 if i.get('approvable') else t('on the dashboard only')
+            said, action = cannot_be_undone(i.get('text'))
             lines.append(t('{n}. {tool}: {text}\n{risk}{sep}{hint}')
                          .format(n=i['n'], tool=i.get('tool') or '?',
-                                 text=i.get('text') or '',
+                                 text=(said + '\n' if said else '') + action,
                                  risk=risk, sep='\n' if risk else '', hint=hint))
         lines.append(t('Answer: ok <n> / nein <n> · zeige <n> for the whole request. Settled or changed '
                        'requests can no longer approve anything.'))
@@ -1323,8 +1324,10 @@ class Rooms:
                 return t('No open request with number {n}.').format(n=n)
             self._approval_check = reply.get('check') or self._approval_check
             self._approval_shown.add((item['sessionId'], item['requestId']))
+            said, action = cannot_be_undone(item.get('text'))
             return t('{n}. {tool}: {text}\nSession: {session}\nAnswer: ok {n} / nein {n}')\
-                .format(n=n, tool=item.get('tool') or '?', text=item.get('text') or '',
+                .format(n=n, tool=item.get('tool') or '?',
+                        text=(said + '\n' if said else '') + action,
                         session=item.get('session') or '?')
         reply = await self.ask({'cmd': 'answer', 'n': n, 'ok': word == 'ok',
                                 'check': self._approval_check})

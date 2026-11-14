@@ -181,6 +181,9 @@ def _global_opt_mlip_choice(config) -> dict | None:
         _as_global_opt_method,
         _as_global_opt_mlip_device,
         _as_global_opt_mlip_model,
+        _as_global_opt_mlip_provider,
+        _as_goat_max_workers,
+        _as_mlip_fast_client,
         _as_yes_no,
     )
 
@@ -194,6 +197,9 @@ def _global_opt_mlip_choice(config) -> dict | None:
         "backend": method.split(":", 1)[1],
         "model": _as_global_opt_mlip_model(config.get("global_opt_mlip_model")),
         "device": _as_global_opt_mlip_device(config.get("global_opt_mlip_device")),
+        "provider": _as_global_opt_mlip_provider(config.get("global_opt_mlip_provider")),
+        "max_workers": _as_goat_max_workers(config.get("goat_max_workers")),
+        "fast_client": _as_mlip_fast_client(config.get("mlip_fast_client")),
         "refuse_noncommercial_weights":
             _as_yes_no(config.get("refuse_noncommercial_weights", "no")) == "yes",
     }
@@ -234,7 +240,11 @@ def _replace_if_changed(src: Path, dst: Path) -> None:
 
 
 def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
-    """GOAT with an orca-mlips MLIP through ORCA's ExtOpt (global_opt_method=mlip:*).
+    """GOAT with an MLIP through ORCA's ExtOpt (global_opt_method=mlip:*).
+
+    The provider -- orca-external-tools with one model server for the job,
+    or orca-mlips with its GOAT workers capped -- and the worker count come
+    from :func:`delfin.mlp_tools.mlip_goat.plan_goat`.
 
     Same folder and file names as the xTB GOAT (``<xTB_method>_GOAT/
     XTB_GOAT.inp``, ``output_XTB_GOAT.out``, ``XTB_GOAT.globalminimum.xyz``),
@@ -245,9 +255,14 @@ def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
     device=cuda and no GPU is visible, or when the weights are
     non-commercial and refuse_noncommercial_weights=yes.
     """
+    from delfin.mlp_tools.mlip_goat import gpu_status, plan_goat
+    from delfin.mlp_tools.oet import client_wrapper as oet_client_wrapper
+    from delfin.mlp_tools.oet import detect_oet, oet_server
+    from delfin.mlp_tools.oet import ext_params as oet_ext_params
     from delfin.mlp_tools.orca_mlips import (
         build_orca_mlips_input,
         mlips_weight_licence,
+        resolve_progext,
     )
 
     backend = choice["backend"]
@@ -284,6 +299,26 @@ def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
     xyz = work / "XTB_GOAT.globalminimum.xyz"
 
     elements, coordinates = _read_start_geometry(work_input)
+    # Provider and workers (delfin/mlp_tools/mlip_goat.py): orca-external-tools
+    # (one model server per job) when installed with this backend, else
+    # orca-mlips with its workers capped -- it loads one model per worker.
+    plan = plan_goat(backend, int(cores_limit), forced=choice["provider"],
+                     max_workers=choice["max_workers"],
+                     fast_client=choice["fast_client"],
+                     gpu_gib=None if choice["device"] == "cuda" else 0.0)
+    print(f"GOAT provider: {plan.provider} ({plan.reason}).")
+    if choice["device"] == "cuda":
+        print(f"GOAT GPU before the run: {gpu_status() or 'not readable'}.")
+    goat_options = {"nworkers": plan.nworkers} if plan.nworkers else None
+    oet_info = None
+    if plan.provider == "oet":
+        oet_info = detect_oet()
+        progext = oet_client_wrapper(oet_info, fast=plan.fast_client)
+        provider_args = dict(wrapper_path=progext, ext_params_text=oet_ext_params(
+            backend, model=choice["model"] or None, device=choice["device"]))
+    else:
+        progext = resolve_progext(backend)
+        provider_args = {}
     # Built in a scratch folder and moved in only where the bytes differ:
     # the smart-recalc fingerprint holds the mtime of the *xyzfile
     # geometry, and a rewrite of an unchanged file would rerun a finished
@@ -294,20 +329,22 @@ def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
             "goat", elements=elements, coordinates=coordinates,
             charge=int(charge), mult=int(multiplicity), backend=backend,
             model=choice["model"] or None, device=choice["device"],
-            ncores=int(cores_limit), base_name="XTB_GOAT", work_dir=build_dir,
-            xyz_name="XTB_GOAT_start.xyz",
+            ncores=int(plan.nprocs or cores_limit), base_name="XTB_GOAT", work_dir=build_dir,
+            xyz_name="XTB_GOAT_start.xyz", goat_options=goat_options,
+            **provider_args,
         )
         for name in ("XTB_GOAT_start.xyz", "XTB_GOAT.inp"):
             _replace_if_changed(build_dir / name, work / name)
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
-    progext = f"orca-mlips-{backend}"
     _write_if_changed(work / "XTB_GOAT.method.json", json.dumps({
         "global_opt_method": choice["global_opt_method"],
-        "provider": "orca-mlips",
+        "provider": plan.provider,
         "progext": progext,
         "model": choice["model"],
         "device": choice["device"],
+        "goat_workers": plan.workers,
+        "server_processes": plan.server_processes if plan.provider == "oet" else None,
         "weight_licence": licence.get("name", ""),
         "energies": "mlip-screen",
     }, indent=2) + "\n")
@@ -318,6 +355,13 @@ def _xtb_goat_mlip(multiplicity, charge, config, choice: dict):
     # taken for it.
     if smart_recalc.should_skip(inp, out) and xyz.exists():
         logging.info("[smart_recalc] skipping MLIP GOAT; inp+deps unchanged and output complete.")
+    elif plan.provider == "oet":
+        # One server for every GOAT worker, started before ORCA and stopped
+        # with it, whatever ends the run.
+        with oet_server(backend, work, processes=plan.server_processes, info=oet_info):
+            run_orca(str(inp), str(out), working_dir=work)
+            # What the resident models held, measured before the server stops.
+            print(f"GOAT GPU after the run: {gpu_status() or 'not readable'}.")
     else:
         run_orca(str(inp), str(out), working_dir=work)
     if not xyz.exists():

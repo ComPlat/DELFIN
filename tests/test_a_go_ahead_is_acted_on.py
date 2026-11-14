@@ -90,6 +90,90 @@ def test_a_report_or_an_open_question_is_not(text):
     assert not G.is_choice_question(text)
 
 
+# -- an "ask me" request (wave54/a1, phone session 2026-11-12) --------------
+# "Stell mir mal eine Anfrage ja oder nein also approval" was answered
+# "Ja." -- the user had asked to be ASKED (a question card with options),
+# and the model answered the question itself instead of asking it.
+
+
+@pytest.mark.parametrize("text", [
+    "Stell mir mal eine Anfrage ja oder nein also approval",
+    "Nein eine Anfrage bitte per Tab stellen",
+    "frag mich einfach mit einer Rückfrage",
+    "Frag mich, welche Variante du nimmst",
+    "ask me with a question card, yes or no",
+    "Mach mir dafür eine Rückfrage mit Optionen",
+])
+def test_a_request_to_be_asked_is_recognised(text):
+    assert G.is_ask_request(text)
+
+
+@pytest.mark.parametrize("text", [
+    "warum machst du nicht einfach??",
+    "ja mach",
+    "Was ist der Stand?",
+    "Frag mich nicht, entscheide selbst",
+    "Erledigt.",
+    "",
+    # Words that only look like a request: each false match costs a round.
+    "mach das ohne Rückfrage",
+    "Die SQL-Anfrage an den Server schlägt fehl",
+    "Mein Chef fragt mich, ob das bis Freitag geht",
+    "people ask me why this fails",
+    "please don't ask me again, just do it",
+    "do it without asking",
+    "keine Rückfrage, einfach starten",
+])
+def test_an_order_a_no_thanks_a_report_is_not_an_ask_request(text):
+    assert not G.is_ask_request(text)
+
+
+def test_an_ask_request_with_no_question_card_is_sent_back_to_ask(client):
+    client._permissions.ask_user_callback = lambda q: {"answers": ["Ja"]}
+    sent, notices = _run(client,
+                         "Stell mir mal eine Anfrage ja oder nein also "
+                         "approval",
+                         ["Ja."])
+    assert len(sent) == 2
+    assert "ask request" in notices
+    assert "ask_user_question" in _rows(sent)
+
+
+def test_without_a_dialog_the_ask_note_does_not_name_it(client):
+    sent, _ = _run(client,
+                   "Stell mir mal eine Anfrage ja oder nein also approval",
+                   ["Ja."])
+    assert len(sent) == 2
+    assert "question card" in _rows(sent)
+    assert "with ask_user_question" not in _rows(sent)
+
+
+def test_an_ask_trigger_fires_once_per_turn(client):
+    sent, notices = _run(client,
+                         "Stell mir mal eine Anfrage ja oder nein",
+                         ["Ja.", "Ja, wirklich.", "Ja, jetzt aber."])
+    # one corrective round only: the trigger fires once per turn
+    assert len(sent) == 2
+    assert notices.count("ask request") == 1
+
+
+def test_the_asked_question_is_not_sent_back_as_a_prose_choice(client):
+    # Without a question card the ask note asks for the options as a
+    # numbered list; the choice trigger ("pick the default and act") must
+    # not then undo it -- the person asked to be asked.
+    numbered = ("Soll ich die Optimierung starten?\n1. Ja (empfohlen)\n"
+                "2. Nein\nIch warte auf deine Antwort.")
+    sent, notices = _run(client,
+                         "Stell mir mal eine Anfrage ja oder nein also "
+                         "approval",
+                         ["Ja.", numbered, "Ja."])
+    assert len(sent) == 2
+    assert "choice written as text" not in notices
+    sent, notices = _run(client, "Frag mich bitte, welche Variante",
+                         [numbered, "Ja."])
+    assert "choice written as text" not in notices
+
+
 # -- through the tool loop --------------------------------------------------
 
 class _Delta:
