@@ -32,8 +32,9 @@ def test_keep_starts_no_tmux_and_says_what_it_does_now(monkeypatch, capsys):
     for name in ("TMUX", "STY", "SLURM_JOB_ID", "DELFIN_VOILA_FOREGROUND",
                  "DELFIN_VOILA_DETACHED"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("DELFIN_KEEP_SESSIONS", "-")
-    monkeypatch.delenv("DELFIN_KEEP_SESSIONS")
+    for name in ("DELFIN_KEEP_SESSIONS", "DELFIN_LAUNCH_CWD"):
+        monkeypatch.setenv(name, "-")
+        monkeypatch.delenv(name)
     monkeypatch.setattr(sys, "stdin", _Tty())
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     from delfin.agent import process_guard

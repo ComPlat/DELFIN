@@ -191,6 +191,8 @@ def test_a_child_that_does_not_start_shows_its_log(monkeypatch, capsys):
 def test_main_at_a_terminal_hands_over_to_the_detached_start(
         plain_terminal, monkeypatch):
     calls = []
+    monkeypatch.setenv("DELFIN_LAUNCH_CWD", "-")
+    monkeypatch.delenv("DELFIN_LAUNCH_CWD")
     monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
     monkeypatch.setattr(cli_voila, "_start_detached",
                         lambda args, argv: calls.append(list(argv)) or 0)

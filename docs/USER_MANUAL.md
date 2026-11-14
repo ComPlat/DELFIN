@@ -853,20 +853,55 @@ delfin doctor --scratch /path/to/scratch
 ### delfin-voila
 
 ```bash
-delfin-voila                     # starts on 127.0.0.1:8866
+delfin-voila                     # starts on 127.0.0.1:8866, in the background
+delfin-voila status              # running? URL, uptime, kept dashboards, kept agent sessions
+delfin-voila stop                # end the server, as Ctrl+C did
 delfin-voila --port 9000         # custom port
 delfin-voila --dark              # dark theme
-delfin-voila --keep              # run inside a tmux session, survives a dropped terminal
+delfin-voila --keep              # every window starts with Keep dashboard on
 delfin-voila --resume SID        # reopen a previous agent session
+delfin-voila --foreground        # run in this terminal (debugging)
 
 # On HPC/login nodes, keep 127.0.0.1 and use an SSH tunnel.
 # Direct network binds require an explicit security override:
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
 
-Voila prints a URL containing an access token; token authentication is mandatory
-and cannot be switched off. If the port is taken, the next free one is used — read
-the printed URL rather than assuming 8866.
+`delfin-voila` prints a URL containing an access token; token authentication is
+mandatory and cannot be switched off. If the port is taken, the next free one is
+used — read the printed URL rather than assuming 8866.
+
+**The server outlives the terminal.** Typed at a terminal, `delfin-voila` starts
+the server detached from it (its own session, its output in
+`~/.delfin/dashboard_server/logs/<host>.log`), waits until it answers, prints
+the URL and, on a remote host, the `ssh -L` command for your computer, and
+returns the prompt. Closing the terminal or a dropped SSH connection ends
+nothing; no tmux is needed. `--keep` no longer starts tmux; it still switches
+Keep dashboard on in every window the dashboard opens.
+
+**One server per user and host.** A second `delfin-voila` finds the running
+server (its record is `~/.delfin/dashboard_server/run/<host>.json`, owner-only,
+judged by process id and start time) and opens it instead of starting another.
+`delfin-voila status` shows it: URL, uptime, the open dashboards, every kept
+dashboard with its return address and last activity, and the number of kept
+agent sessions. `delfin-voila stop` ends it the way Ctrl+C did: the dashboards
+end, and agent sessions with Keep session on go on in the agent service.
+
+**Several dashboards.** Each window is a dashboard of its own. The header's
+**Dashboards** menu lists the kept ones: **Open** brings one back in a new tab
+with its state, **End** ends it after one confirmation, **New dashboard** opens
+another.
+
+**When it ends by itself.** A server with no open window, no kept dashboard and
+no running kernel ends itself after 10 minutes, so a forgotten one does not hold
+a port and memory on a shared login node; within that time `delfin-voila` and
+the old address reach it again. `DELFIN_DASHBOARD_IDLE_EXIT_MINUTES` sets the
+grace (`0` keeps the server up).
+
+**Stays in the foreground** (as before, Ctrl+C ends it): a launch without a
+terminal (a script, systemd, launchd, the Pi's dashboard unit), inside a SLURM
+job (`--job`), inside tmux or screen (the Windows launcher), with
+`--foreground`, or with `DELFIN_VOILA_FOREGROUND=1`.
 
 ### delfin-build
 

@@ -277,15 +277,29 @@ Some tabs are hidden by default and are enabled in Settings.
 
 ```bash
 delfin-voila                 # 127.0.0.1:8866, prints a URL with an access token
+delfin-voila status          # is it running, its URL, the kept dashboards
+delfin-voila stop            # end it (kept agent sessions go on in the agent service)
 delfin-voila --port 9000     # custom port
 delfin-voila --dark          # dark theme
-delfin-voila --keep          # run inside a tmux session, survives a dropped terminal
+delfin-voila --keep          # every window starts with Keep dashboard on
 delfin-voila --resume SID    # reopen a previous agent session
+delfin-voila --foreground    # run in this terminal; Ctrl+C or closing it ends it
 
 # On HPC/login nodes keep the default 127.0.0.1 bind and use an SSH tunnel.
 # A direct network bind needs an explicit override:
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
+
+Typed at a terminal, `delfin-voila` starts the server in the background,
+prints its URL and returns the prompt: closing the terminal or a dropped SSH
+connection ends nothing. There is one server per user and host; a second
+`delfin-voila` opens the running one. Dashboards with **Keep dashboard** on
+are listed by `delfin-voila status` and in the header's **Dashboards** menu
+(Open, End, New dashboard). A server without a window, a kept dashboard or a
+running kernel ends itself after 10 minutes
+(`DELFIN_DASHBOARD_IDLE_EXIT_MINUTES`, `0` keeps it up). A launch without a
+terminal (a script, systemd, launchd, a SLURM job) and one inside tmux or
+screen stays in the foreground as before.
 
 Windows SSH desktop launcher (OTP, separate working terminal, tmux reconnect):
 [Setup and installation](tools/windows-launcher/README.md). Copy that folder to your Windows PC.
