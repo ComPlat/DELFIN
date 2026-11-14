@@ -2783,8 +2783,10 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         if not sid or not callable(adapter) \
                 or _time.monotonic() < rec.get("host_retry_at", 0.0):
             return
-        if live["client"] is None and starter is not None \
+        if live["client"] is None and starter is not None and not live.get("stopped") \
                 and _time.monotonic() >= live.get("start_at", 0.0):
+            # Never after a stop given on purpose (`service stop`, the
+            # emergency stop): the reconnect does not start it again either.
             # The first session with something to share: the service is
             # started now, as the terminal starts it (at most once a minute).
             live["start_at"] = _time.monotonic() + 60.0
