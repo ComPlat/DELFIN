@@ -1,0 +1,184 @@
+"""A chain says whether its open step is still being run.
+
+Input: a chain whose step is ``submitted`` and whose process is alive, has
+ended, ran on another machine (with or without a SLURM job), or was
+written by an older DELFIN without a runner record.
+
+Before: the state said ``submitted`` and nothing else. In JC2's live run 4
+(2026-11-15) the restarted agent found the ORCA temporary files of the
+killed optimisation and told the user the step was "actively running";
+it never relayed the resume offer.
+Now each submission records its runner (pid, start fingerprint, host,
+SLURM job). The resume offer and ``delfin chain status`` say "still
+running" / "not running, interrupted" / "cannot be checked from here",
+the offer says leftover files are no sign of life, and ``delfin chain
+resume`` refuses a chain whose step verifiably still runs.
+"""
+from __future__ import annotations
+
+import os
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from delfin.agent import proc_identity
+from delfin.tools import chain_state as cs
+
+
+@pytest.fixture()
+def home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.delenv("DELFIN_STATE", raising=False)
+    import delfin.agent.session_store as ss
+    monkeypatch.setattr(ss, "_SESSIONS_DIR", home / ".delfin" / "agent_sessions")
+    return home
+
+
+def _ended_runner() -> dict:
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
+    start = proc_identity.process_start(p.pid)
+    p.wait()
+    return {"pid": p.pid, "start": start, "host": socket.gethostname()}
+
+
+def _chain(wd: Path, runner) -> cs.ChainState:
+    chain = cs.ChainState.create(name="demo", work_dir=wd)
+    chain.add_step("xtb_opt", "xtb_opt", params={"charge": 0})
+    chain.add_step("orca_opt", "orca_opt", params={"charge": 0})
+    chain.steps[0].mark_submitted("local", runner=runner)
+    chain.save()
+    return chain
+
+
+def test_this_process_is_running():
+    step = cs.ChainStep(name="s", tool="t")
+    step.mark_submitted("local", runner=cs.this_runner())
+    assert cs.runner_liveness(step)[0] == cs.RUNNING
+
+
+def test_an_ended_process_is_gone():
+    step = cs.ChainStep(name="s", tool="t")
+    step.mark_submitted("local", runner=_ended_runner())
+    alive, why = cs.runner_liveness(step)
+    assert alive == cs.GONE and "interrupted" in why
+
+
+def test_an_old_state_without_a_runner_is_unknown():
+    step = cs.ChainStep.from_dict({"name": "s", "tool": "t", "state": "submitted"})
+    assert cs.runner_liveness(step)[0] == cs.UNKNOWN
+
+
+def test_another_host_without_a_job_is_unknown():
+    step = cs.ChainStep(name="s", tool="t")
+    step.mark_submitted("local", runner={"pid": 1, "start": "x",
+                                         "host": "some-other-node"})
+    alive, why = cs.runner_liveness(step)
+    assert alive == cs.UNKNOWN and "some-other-node" in why
+
+
+@pytest.mark.parametrize("stdout,rc,stderr,expected", [
+    ("RUNNING\n", 0, "", cs.RUNNING),
+    ("", 0, "", cs.GONE),
+    ("", 1, "slurm_load_jobs error: Invalid job id specified", cs.GONE),
+    ("", 1, "slurm_load_jobs error: Socket timed out", cs.UNKNOWN),
+])
+def test_another_host_asks_slurm_once(monkeypatch, stdout, rc, stderr, expected):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, rc, stdout, stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    step = cs.ChainStep(name="s", tool="t")
+    step.mark_submitted("local", runner={"pid": 1, "start": "x",
+                                         "host": "some-other-node",
+                                         "slurm_job": "123456"})
+    assert cs.runner_liveness(step)[0] == expected
+    assert calls == [["squeue", "-h", "-j", "123456", "-o", "%T"]]
+
+
+def test_finished_and_pending_steps_are_not_asked():
+    step = cs.ChainStep(name="s", tool="t")
+    assert cs.runner_liveness(step) == ("", "")
+
+
+def test_the_runner_is_persisted_and_cleared_on_retry(tmp_path):
+    chain = _chain(tmp_path / "c", cs.this_runner())
+    again = cs.ChainState.load(chain.state_path)
+    assert again.steps[0].runner["pid"] == os.getpid()
+    step = again.steps[0]
+    step.mark_failed("killed")
+    step.reset_for_retry()
+    assert step.runner is None
+
+
+def test_a_pipeline_run_records_its_runner(home, monkeypatch):
+    def fake_run_step(step_name, geometry=None, work_dir=None, cores=1, **kw):
+        from delfin.tools.pipeline import StepResult, StepStatus
+        out = Path(work_dir) / f"{step_name}.out"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("fake run output\n")
+        return StepResult(step_name=step_name, status=StepStatus.SUCCESS,
+                          work_dir=Path(work_dir))
+
+    monkeypatch.setattr("delfin.tools._runner.run_step", fake_run_step)
+    from delfin.tools.pipeline import Pipeline
+
+    wd = home / "runs" / "a"
+    geom = wd.parent / "start.xyz"
+    geom.parent.mkdir(parents=True, exist_ok=True)
+    geom.write_text("2\n\nH 0 0 0\nH 0 0 0.74\n", encoding="utf-8")
+    pipe = Pipeline(name="demo")
+    pipe.add("xtb_opt", charge=0)
+    pipe.run(work_dir=wd, geometry=geom, cores=1)
+    step = cs.ChainState.load(wd / "chain_state.json").steps[0]
+    assert step.runner and step.runner["pid"] == os.getpid()
+    assert step.runner["host"] == socket.gethostname()
+
+
+def test_the_offer_says_an_interrupted_step_is_not_running(home):
+    from delfin.agent import session_store as ss
+
+    ws = home / "ws"
+    _chain(ws / "chain1", _ended_runner())
+    text = ss._render_chain_offer("sess", workspace=ws)
+    assert "do not mean" in text and "temporary files" in text
+    assert "not running" in text and "interrupted" in text
+    assert "resume with: delfin chain resume" in text
+
+
+def test_the_offer_does_not_offer_a_resume_of_a_running_chain(home):
+    from delfin.agent import session_store as ss
+
+    ws = home / "ws"
+    _chain(ws / "chain1", cs.this_runner())
+    text = ss._render_chain_offer("sess", workspace=ws)
+    assert "still running" in text and "do NOT resume" in text
+    assert "resume with:" not in text
+
+
+def test_status_names_the_process(tmp_path, capsys):
+    from delfin.cli_chain import main
+
+    _chain(tmp_path / "c", _ended_runner())
+    assert main(["status", str(tmp_path / "c")]) == 0
+    assert "process: not running" in capsys.readouterr().out
+
+
+def test_resume_refuses_a_chain_that_still_runs(tmp_path, monkeypatch, capsys):
+    from delfin.cli_chain import main
+
+    chain = _chain(tmp_path / "c", cs.this_runner())
+    before = chain.state_path.read_bytes()
+    ran = []
+    monkeypatch.setattr("delfin.tools.pipeline.Pipeline.run",
+                        lambda self, **kw: ran.append(kw))
+    assert main(["resume", str(tmp_path / "c")]) == 1
+    assert not ran
+    assert chain.state_path.read_bytes() == before
+    assert "NOT resumed" in capsys.readouterr().out

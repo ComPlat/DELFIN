@@ -1539,7 +1539,7 @@ class Pipeline:
                 # so a resume can still find the output — previously the
                 # dir was only written after run_step returned, leaving
                 # `pending`/None on disk and a redundant rerun on resume.
-                cstep.mark_submitted(job_id="local")
+                cstep.mark_submitted(job_id="local", runner=_cs.this_runner())
                 cstep.work_dir = str(step_dir)
                 # L1/L3: persist the step's parameters so a resume can
                 # rebuild a REAL run (validate_params passes) and the
@@ -1612,7 +1612,7 @@ class Pipeline:
                 # run_step, else mark_finished/mark_failed are refused
                 # from 'pending' afterwards (a successful 11-minute run
                 # was thrown away in the live run #3).
-                cstep.mark_submitted(job_id="local")
+                cstep.mark_submitted(job_id="local", runner=_cs.this_runner())
                 chain.save()
                 # L5: the dir actually used is the NEW attempt dir (never
                 # overwrite the old calculation) — not the numbered dir of
