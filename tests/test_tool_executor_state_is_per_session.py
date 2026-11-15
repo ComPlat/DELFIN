@@ -303,24 +303,43 @@ def _drive_turn(client, prompt: str, sid: str,
 
 @pytest.mark.xfail(
     strict=True,
-    reason="same shared _turn_change_seqs/_turn_seqs_by_session on "
-           "_doc_executor as the state tests: with A and B running turns in "
-           "one process, B's turn start empties the shared flat list "
-           "(api_client.py:33336) and B's next write clears all of "
-           "_turn_seqs_by_session (api_client.py:16558-16559), so A's window "
-           "falls back to the flat list that holds B's seq and the two "
-           "windows overlap",
+    reason="with A and B running turns in one process, B's turn start empties "
+           "the shared flat list (api_client.py:33336) and B's next write "
+           "clears all of _turn_seqs_by_session (api_client.py:16558-16559), "
+           "so A's undo window collapses to the flat list holding B's seq "
+           "and A's turn-scope undo reverts a.txt while leaving a2.txt (A's "
+           "other write) standing",
 )
 def test_real_client_two_sessions_keep_their_own_turn_windows(
         tmp_path, monkeypatch, _pristine_executor):
-    """Real run: two real OpenAIClient sessions in one process, each driving
-    a ``do-write`` turn against the scripted endpoint. Session A writes, then
-    session B starts a turn while A's turn is still open (released by a
-    threading.Event in the endpoint, never by a sleep), and A's undo window
-    must still hold A's write.
+    """Real run: two real OpenAIClient sessions in one process against the
+    scripted endpoint (tests/agent_terminal_probes/fake_model.py, serve(port=
+    0)). Session A starts a turn and writes TWO files (a.txt, a2.txt) through
+    the same tool-execution entry the engine's round loop uses
+    (``client.execute("write_file", ...)``). Session B then starts a turn and
+    writes b.txt through a real ``stream_message`` round -- the turn-start
+    reset at the top of stream_message (api_client.py:33336) is what mixes
+    A's window into B's. After both turns A runs a turn-scoped undo through
+    the same real path (``client.execute("undo_changes", {"scope": "turn"},
+    A_perms)``). The behaviour a user expects: A's undo reverts A's whole
+    turn (BOTH a.txt and a2.txt) and never touches B's workspace.
+
+    Two writes are needed for the assertion to see the bug at all: the
+    change journal numbers seq per session (change_journal.py:521,
+    keyed by task_session_id), so a single write's seq 1 collides by number
+    with the other session's seq 1 and A's collapsed window would revive
+    A's own file by coincidence. With A's window at seqs [1, 2], B's turn
+    collapses it to the flat list [1] (B's seq), so A's undo reverts a.txt
+    only and a2.txt survives -- a real, observable difference.
+
+    Ordering is strict and needs no Event or sleep: every step runs on the
+    main thread in sequence -- A writes both files, then B runs its whole
+    turn, then A runs its undo. So A's two writes always land before B's
+    turn starts, and no session ever runs concurrently with its own undo.
 
     Skipped where the host holds loopback connects: there the endpoint cannot
-    be reached at all (see the module docstring)."""
+    be reached at all (see the module docstring), so no session can drive a
+    stream_message round."""
     fake_model = pytest.importorskip("tests.agent_terminal_probes.fake_model")
 
     server, port = fake_model.serve(port=0,
@@ -345,45 +364,43 @@ def test_real_client_two_sessions_keep_their_own_turn_windows(
                                 model=fake_model.MODEL, cwd=str(ws_a))
         cli_b = A.create_client(backend="api", provider="ollama",
                                 model=fake_model.MODEL, cwd=str(ws_b))
-        cli_a._permissions.task_session_id = "A"
-        cli_b._permissions.task_session_id = "B"
+        perms_a = cli_a._permissions
+        perms_b = cli_b._permissions
+        perms_a.task_session_id = "A"
+        perms_b.task_session_id = "B"
 
-        # A's turn runs while B's turn starts: A signals when it has been
-        # handed to the endpoint, B starts, then A finishes. The Event is set
-        # by A's thread the instant its request begins, so the order is
-        # deterministic without a sleep.
-        a_started = threading.Event()
-        errors: list = []
+        # Session A starts a turn: two real write_file executions (the same
+        # entry the engine's round loop calls). Both land in A's journal as
+        # seqs 1 and 2 and in ``_turn_seqs_by_session["A"]``.
+        for path in ("a.txt", "a2.txt"):
+            out = cli_a.execute("write_file", {
+                "path": path, "content": f"from-{path[0]}\n"}, perms_a)
+            assert '"error"' not in str(out), f"write {path} failed: {out}"
+        assert (ws_a / "a.txt").exists() and (ws_a / "a2.txt").exists()
 
-        def run_a():
-            try:
-                _drive_turn(cli_a, "do-write a.txt from-a", "A",
-                            started=a_started)
-            except BaseException as exc:        # noqa: BLE001 - reported
-                errors.append(("A", exc))
-
-        t = threading.Thread(target=run_a, daemon=True)
-        t.start()
-        assert a_started.wait(30), "session A's turn never started"
+        # Session B starts a turn while A's turn is still open and writes
+        # b.txt. B's stream_message turn start empties the shared flat list,
+        # and B's write wipes _turn_seqs_by_session, so A's window collapses.
         _drive_turn(cli_b, "do-write b.txt from-b", "B")
-        t.join(60)
-        assert not t.is_alive(), "session A's turn did not finish"
-        assert not errors, f"a session's turn raised: {errors!r}"
+        assert (ws_b / "b.txt").exists()
 
-        # A wrote a.txt and B wrote b.txt, in their own workspaces.
-        assert (ws_a / "a.txt").exists(), "session A's write did not land"
-        assert (ws_b / "b.txt").exists(), "session B's write did not land"
-
-        # Each session's undo window holds that session's own write seq and
-        # not the other session's. The two windows share no seq.
-        a_window = A._doc_executor._turn_seqs_for("A")
-        b_window = A._doc_executor._turn_seqs_for("B")
-        assert a_window, "session A's undo window is empty"
-        assert b_window, "session B's undo window is empty"
-        assert set(a_window).isdisjoint(set(b_window)), (
-            "session A and session B undo windows overlap: A="
-            f"{a_window} B={b_window}"
-        )
+        # Session A runs a turn-scoped undo through the real tool path. The
+        # behaviour a user expects: A's whole turn (a.txt AND a2.txt) reverts,
+        # and nothing in B's workspace is touched.
+        undone = json.loads(cli_a.execute(
+            "undo_changes", {"scope": "turn"}, perms_a))
+        assert (ws_a / "a.txt").exists() is False, (
+            "a.txt still present after session A's turn undo; reverted="
+            + repr(undone.get("reverted", [])))
+        assert (ws_a / "a2.txt").exists() is False, (
+            "a2.txt still present: A's turn-scope undo captured only the "
+            "shared flat list (B's seq) and not A's own [1, 2]; reverted="
+            + repr(undone.get("reverted", [])))
+        # B's workspace is untouched by A's undo, and B's window is B's own.
+        assert (ws_b / "b.txt").read_text() == "from-b\n", (
+            "session A's undo reached into session B's workspace")
+        assert A._doc_executor._turn_seqs_for("B") == [1], (
+            "session B's undo window no longer holds B's own write")
     finally:
         server.shutdown()
         server.server_close()
