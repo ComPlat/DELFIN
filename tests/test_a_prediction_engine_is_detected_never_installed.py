@@ -98,7 +98,7 @@ def test_the_command_names_the_input_and_the_output(tmp_path):
     env = _env(tmp_path)
     fasta = tmp_path / "query.fasta"
     fasta.write_text(FASTA, encoding="utf-8")
-    report = prediction_engines(env=env)
+    report = prediction_engines(env=env, fasta=str(fasta))
     command = {e["name"]: e for e in report}["boltz"]["command"]
     assert command
     assert str(fasta) in command

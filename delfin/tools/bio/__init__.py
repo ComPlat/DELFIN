@@ -82,6 +82,7 @@ from delfin.tools.bio._read import (
     read_structure,
 )
 from delfin.tools.bio._poses import Pose, PoseSet, read_pose_set
+from delfin.tools.bio._prediction import prediction_engines
 from delfin.tools.bio._complex import Complex, read_complex
 from delfin.tools.bio._site import (
     BindingBox,
@@ -140,6 +141,8 @@ __all__ = [
     "PLDDT_VERY_LOW",
     "PredictedAlignedError",
     "read_pae",
+    # prediction engines (detected, never run)
+    "prediction_engines",
     # pose sets
     "Pose",
     "PoseSet",
