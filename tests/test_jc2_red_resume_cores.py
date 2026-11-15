@@ -11,7 +11,6 @@ submitted with, the offer carries no --cores, and the resume default is
 
 from __future__ import annotations
 
-import pathlib
 from pathlib import Path
 
 import pytest
@@ -63,7 +62,6 @@ def test_chain_records_its_submitted_cores(home, monkeypatch):
 def test_resume_takes_cores_from_the_state(monkeypatch, tmp_path):
     """`delfin chain resume` with NO --cores flag uses the chain's
     recorded cores, never a silent 1."""
-    import json as _json
 
     from delfin.tools import chain_state
     from delfin.cli_chain import main

@@ -16,7 +16,6 @@ the fix itself:
 import json
 from pathlib import Path
 
-import pytest
 
 from delfin.tools import chain_state
 from delfin.tools.pipeline import Pipeline, StepResult, StepStatus

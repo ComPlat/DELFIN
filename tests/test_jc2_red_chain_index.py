@@ -11,7 +11,6 @@ subcommand, no agent_session_id kwarg).
 from __future__ import annotations
 
 import json
-import pathlib
 from pathlib import Path
 
 import pytest

@@ -16,7 +16,6 @@ would have been red against ca8b2f5ff (the holder existed then).
 from __future__ import annotations
 
 import ast
-import importlib
 
 _FORBIDDEN_HOLDER_NAMES = {
     "current_agent_session_id",

@@ -19,7 +19,6 @@ and test_jc2_adversarial_no_auto_resume.py.
 from __future__ import annotations
 
 import json
-import pathlib
 from pathlib import Path
 
 import pytest
@@ -98,7 +97,6 @@ def _run_chain(wd, monkeypatch, session_id, *, finish=False):
 
 def test_offer_lists_unfinished_chains_with_resume_command(
         home, monkeypatch):
-    from delfin.tools import chain_index
     import delfin.agent.session_store as ss
 
     session_id = "sess-crash"
@@ -164,7 +162,6 @@ def test_other_sessions_chains_are_not_offered(home, monkeypatch):
 
 def test_chain_error_never_breaks_the_note(home, monkeypatch):
     import delfin.agent.session_store as ss
-    from delfin.tools import chain_index
 
     session_id = "sess-err"
     _make_session_file(home, session_id)

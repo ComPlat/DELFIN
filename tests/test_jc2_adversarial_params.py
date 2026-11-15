@@ -14,7 +14,6 @@ still persists merged/autowired kwargs (pipeline.py:1523).
 
 from pathlib import Path
 
-import pytest
 
 from delfin.tools import chain_state
 
