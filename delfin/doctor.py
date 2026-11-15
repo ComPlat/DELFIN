@@ -31,6 +31,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from delfin.agent.model_capabilities import _KIT_BASE_URL
+
 __all__ = [
     "CheckResult",
     "check_orca",
@@ -55,6 +57,9 @@ BROKEN = "broken"
 
 # Keep version probes snappy: these must never hang the doctor.
 _PROBE_TIMEOUT_S = 15
+
+# The KIT Toolbox model list endpoint, from the one constant that owns the URL.
+_KIT_MODELS_URL = _KIT_BASE_URL + "/models"
 
 
 @dataclass
@@ -301,7 +306,7 @@ def check_kit_toolbox_key_live(timeout_s: float = 15.0) -> CheckResult:
             "no KIT_TOOLBOX_API_KEY to check",
             "delfin-agent credentials set KIT_TOOLBOX_API_KEY")
     request = urllib.request.Request(
-        "https://ki-toolbox.scc.kit.edu/api/v1/models",
+        _KIT_MODELS_URL,
         headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as answer:

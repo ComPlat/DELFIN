@@ -8415,7 +8415,8 @@ def create_tab(ctx):
                 key = _provider_key("KIT_TOOLBOX_API_KEY")
                 if not key:
                     return None
-                url = "https://ki-toolbox.scc.kit.edu/api/v1/models"
+                from delfin.agent.model_capabilities import _KIT_BASE_URL as _kit_base
+                url = _kit_base + "/models"
                 import urllib.request
                 req = urllib.request.Request(
                     url, headers={"Authorization": f"Bearer {key}"}

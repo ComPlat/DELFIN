@@ -15,9 +15,10 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from .state_paths import state_root
 
 
-_DEFAULT_PATH = Path.home() / ".delfin" / "outcome_history.jsonl"
+_DEFAULT_PATH = state_root() / "outcome_history.jsonl"
 _MAX_ENTRIES = 1000
 
 

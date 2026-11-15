@@ -436,13 +436,61 @@ _THINKING_TAG_NAME = _re.compile(
 )
 
 
+# The weak-model name heuristic, in one place. PromptLoader's
+# _is_weak_model is a one-line delegate to _is_weak here.
+# Moved from PromptLoader by scratch/move_weak_heuristic.py.
+
+# Models whose attention degrades quickly past 4 k of system prompt.
+# Auto-trigger ``compact_prompt`` for these + any explicit
+# ``agent.compact_prompt: true`` setting. The shape is family-
+# prefix + (\W.*?)? + size-suffix, so names with arbitrary middles
+# like "qwen2.5-coder:7b" still match. Conservative — only the
+# small / weak-tier; larger MoE models (qwen3.5-397b, gpt-oss-
+# 120b, etc.) handle the regular slim prompt fine.
+_WEAK_MODEL_PATTERNS = (
+    r"gemma.*?(?:^|[^0-9])(?:1|2|3|4|7|9)b\b",
+    r"llama.*?(?:^|[^0-9])(?:3|7|8)b\b",
+    r"qwen.*?(?:^|[^0-9])(?:1\.5|3|7|14)b\b",
+    r"phi.*?(?:^|[^0-9])(?:1\.5|2|3|4)b\b",
+    r"phi-?\d(?![0-9])",                   # phi-1 / phi-2 / phi-3 (bare)
+    r"mistral.*?(?:^|[^0-9])(?:3|7)b\b",
+    r"deepseek.*?(?:lite|(?:^|[^0-9])(?:6|7)b\b)",
+    r"codellama.*?(?:^|[^0-9])(?:7|13)b\b",
+    r"\bsmall[lm]?\b",                      # generic "small" marker
+)
+
+# Models at or below this parameter count (in billions) get the compact
+# prompt + core tool surface. 14b is the weak/strong boundary (qwen-14b is
+# weak; 32b/70b/120b/397b are strong) — matches _WEAK_MODEL_PATTERNS.
+_WEAK_MODEL_MAX_B = 14.0
+# An "<N>b" parameter-size token at a separator boundary (":4b", "-7b",
+# "397b"). A size glued to a letter (MoE "…-A17b" active-param suffix) is
+# deliberately NOT matched, so only the total parameter count is read.
+_PARAM_SIZE_RE = _re.compile(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)b(?![a-z0-9])")
+
+
+def _param_size_b(model: str):
+    """Largest parameter-size tag (in billions) in the model name, or None
+    when the name carries no explicit size. ``qwen3-vl:4b`` → 4.0,
+    ``kit.qwen3.5-397b-A17b`` → 397.0 (not 17)."""
+    sizes = [float(x) for x in _PARAM_SIZE_RE.findall(model.lower())]
+    return max(sizes) if sizes else None
+
+
 def _is_weak(model: str) -> bool:
-    """Reuse the PromptLoader weak-model name heuristic (single source)."""
-    try:
-        from .prompt_loader import PromptLoader
-        return PromptLoader()._is_weak_model(model)
-    except Exception:
+    """Heuristic — does the active model need the compact prompt?
+
+    An explicit parameter-size tag is authoritative (small => weak, large
+    => strong), so any ``:Nb`` Ollama tag is classified correctly without
+    enumerating every size in the family regex (e.g. ``qwen3-vl:4b`` is now
+    caught). Names without a size fall back to the family patterns."""
+    if not model:
         return False
+    m = model.lower()
+    size = _param_size_b(m)
+    if size is not None:
+        return size <= _WEAK_MODEL_MAX_B
+    return any(_re.search(p, m) for p in _WEAK_MODEL_PATTERNS)
 
 
 # ---------------------------------------------------------------------------
