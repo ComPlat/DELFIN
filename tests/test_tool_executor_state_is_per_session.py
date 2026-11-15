@@ -162,6 +162,7 @@ def test_two_sessions_a_window_is_correct_before_b_writes(
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="_turn_change_seqs/_turn_seqs_by_session are one flat field pair on "
            "the process-wide _doc_executor: B's turn start empties "
            "_turn_change_seqs (api_client.py:33336) and B's next "
@@ -229,6 +230,7 @@ def test_two_sessions_b_undo_window_is_its_own(tmp_path, _pristine_executor):
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="_pending_view_images is one flat list on the process-wide "
            "_doc_executor (appended at api_client.py:19301-19304, drained at "
            "35091-35093 with no session key): an image session A opened is "
@@ -303,6 +305,7 @@ def _drive_turn(client, prompt: str, sid: str,
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="with A and B running turns in one process, B's turn start empties "
            "the shared flat list (api_client.py:33336) and B's next write "
            "clears all of _turn_seqs_by_session (api_client.py:16558-16559), "
@@ -316,11 +319,12 @@ def test_real_client_two_sessions_keep_their_own_turn_windows(
     scripted endpoint (tests/agent_terminal_probes/fake_model.py, serve(port=
     0)). Session A starts a turn and writes TWO files (a.txt, a2.txt) through
     the same tool-execution entry the engine's round loop uses
-    (``client.execute("write_file", ...)``). Session B then starts a turn and
+    (``_doc_executor.execute("write_file", ..., permissions=...)``, the call
+    the client's round loop makes). Session B then starts a turn and
     writes b.txt through a real ``stream_message`` round -- the turn-start
     reset at the top of stream_message (api_client.py:33336) is what mixes
     A's window into B's. After both turns A runs a turn-scoped undo through
-    the same real path (``client.execute("undo_changes", {"scope": "turn"},
+    the same real path (``_doc_executor.execute("undo_changes", {"scope": "turn"},
     A_perms)``). The behaviour a user expects: A's undo reverts A's whole
     turn (BOTH a.txt and a2.txt) and never touches B's workspace.
 
@@ -373,8 +377,9 @@ def test_real_client_two_sessions_keep_their_own_turn_windows(
         # entry the engine's round loop calls). Both land in A's journal as
         # seqs 1 and 2 and in ``_turn_seqs_by_session["A"]``.
         for path in ("a.txt", "a2.txt"):
-            out = cli_a.execute("write_file", {
-                "path": path, "content": f"from-{path[0]}\n"}, perms_a)
+            out = A._doc_executor.execute("write_file", {
+                "path": path, "content": f"from-{path[0]}\n"},
+                permissions=perms_a)
             assert '"error"' not in str(out), f"write {path} failed: {out}"
         assert (ws_a / "a.txt").exists() and (ws_a / "a2.txt").exists()
 
@@ -387,8 +392,8 @@ def test_real_client_two_sessions_keep_their_own_turn_windows(
         # Session A runs a turn-scoped undo through the real tool path. The
         # behaviour a user expects: A's whole turn (a.txt AND a2.txt) reverts,
         # and nothing in B's workspace is touched.
-        undone = json.loads(cli_a.execute(
-            "undo_changes", {"scope": "turn"}, perms_a))
+        undone = json.loads(A._doc_executor.execute(
+            "undo_changes", {"scope": "turn"}, permissions=perms_a))
         assert (ws_a / "a.txt").exists() is False, (
             "a.txt still present after session A's turn undo; reverted="
             + repr(undone.get("reverted", [])))
