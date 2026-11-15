@@ -446,3 +446,53 @@ def test_an_observed_spend_counts_as_measured_even_unpriced():
     eng._note_turn_price_state(0.42)
     assert eng._measured_cost_turns == 1
     assert eng._unpriced_turns == 0
+
+
+def test_the_engine_budget_methods_keep_their_signatures():
+    """The hand-over script (scratch/apply_engine.py) rewrites these
+    methods into delegates; the def lines, parameter lists, return
+    annotations and decorators must survive it exactly.  Pinned here at
+    the ast level so a regenerated signature fails before the diff is
+    reviewed."""
+    import ast
+    import delfin.agent.engine
+    from pathlib import Path
+
+    engine_path = Path(delfin.agent.engine.__file__)
+    src = engine_path.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    cls = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "AgentEngine")
+    methods = {n.name: n for n in cls.body
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    names = ["_run_budget", "_run_ceiling_hit", "_run_budget_turns",
+             "_turns_taken", "_note_turn_price_state",
+             "_usd_budget_enforced", "_unmeasured_budget_block",
+             "_run_budget_status", "_run_budget_detail",
+             "_emit_budget_attention", "_build_budget_block",
+             "_cost_hard_cap", "delegate_spend", "_meter_delegate_spend",
+             "_book_delegate_spend"]
+    for name in names:
+        node = methods.get(name)
+        assert node is not None, name
+        # self is the first positional parameter of every method
+        assert node.args.args and node.args.args[0].arg == "self", name
+        # return annotations survive where they exist today
+        expected = {
+            "_run_budget": "tuple[float, float]",
+            "_run_budget_turns": "int",
+            "_run_budget_status": "tuple[float, bool]",
+            "_run_budget_detail": "tuple[float, bool, str]",
+            "_cost_hard_cap": "float",
+            "delegate_spend": "'_agent_metrics.DelegateLedger'",
+            "_meter_delegate_spend": "bool",
+            "_book_delegate_spend": "None",
+            "_note_turn_price_state": "None",
+            "_usd_budget_enforced": "bool",
+        }
+        got = ast.unparse(node.returns) if node.returns else ""
+        if name in expected:
+            assert got == expected[name], (name, got)
+        # keyword-only markers survive
+        if name == "_book_delegate_spend":
+            assert [x.arg for x in node.args.kwonlyargs] == ["started_turn"]
