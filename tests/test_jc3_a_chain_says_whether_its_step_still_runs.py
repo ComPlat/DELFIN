@@ -9,7 +9,12 @@ Before: the state said ``submitted`` and nothing else. In JC2's live run 4
 killed optimisation and told the user the step was "actively running";
 it never relayed the resume offer.
 Now each submission records its runner (pid, start fingerprint, host,
-SLURM job). The resume offer and ``delfin chain status`` say "still
+PID namespace, heartbeat file). A pid is asked only where it names the
+same process (same machine, same PID namespace, matching start): in live
+run 5 (2026-11-15) the agent's sandbox called the runner "pid 3", and
+from outside pid 3 is a kernel thread, so the killed step read "still
+running". Elsewhere the heartbeat the running step touches decides; a
+SLURM job is no sign (the agent's own job outlives its chains). The resume offer and ``delfin chain status`` say "still
 running" / "not running, interrupted" / "cannot be checked from here",
 the offer says leftover files are no sign of life, and ``delfin chain
 resume`` refuses a chain whose step verifiably still runs.
@@ -20,6 +25,8 @@ import os
 import socket
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -43,7 +50,8 @@ def _ended_runner() -> dict:
     p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
     start = proc_identity.process_start(p.pid)
     p.wait()
-    return {"pid": p.pid, "start": start, "host": socket.gethostname()}
+    return {"pid": p.pid, "start": start, "host": socket.gethostname(),
+            "pid_ns": cl._pid_namespace()}
 
 
 def _chain(wd: Path, runner) -> cs.ChainState:
@@ -81,26 +89,57 @@ def test_another_host_without_a_job_is_unknown():
     assert alive == cl.UNKNOWN and "some-other-node" in why
 
 
-@pytest.mark.parametrize("stdout,rc,stderr,expected", [
-    ("RUNNING\n", 0, "", cl.RUNNING),
-    ("", 0, "", cl.GONE),
-    ("", 1, "slurm_load_jobs error: Invalid job id specified", cl.GONE),
-    ("", 1, "slurm_load_jobs error: Socket timed out", cl.UNKNOWN),
-])
-def test_another_host_asks_slurm_once(monkeypatch, stdout, rc, stderr, expected):
-    calls = []
-
-    def fake_run(cmd, **kw):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, rc, stdout, stderr)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+def test_a_pid_from_another_pid_namespace_is_not_asked():
+    """Live run 5: the sandbox's "pid 3" is a root kernel thread outside."""
     step = cs.ChainStep(name="s", tool="t")
-    step.mark_submitted("local", runner={"pid": 1, "start": "x",
-                                         "host": "some-other-node",
-                                         "slurm_job": "123456"})
-    assert cl.runner_liveness(step)[0] == expected
-    assert calls == [["squeue", "-h", "-j", "123456", "-o", "%T"]]
+    step.mark_submitted("local", runner={
+        "pid": 1, "start": "221626440", "host": socket.gethostname(),
+        "pid_ns": "pid:[1]"})
+    assert cl.runner_liveness(step)[0] == cl.UNKNOWN
+
+
+def test_another_users_pid_is_never_running():
+    """kill(pid, 0) answers EPERM for a pid we cannot signal; that is not
+    our runner, whatever ``proc_identity.alive`` makes of it."""
+    step = cs.ChainStep(name="s", tool="t")
+    step.mark_submitted("local", runner={
+        "pid": 1, "start": "221626440", "host": socket.gethostname(),
+        "pid_ns": cl._pid_namespace()})
+    assert cl.runner_liveness(step)[0] != cl.RUNNING
+
+
+def _with_heartbeat(tmp_path, age_s):
+    beat = tmp_path / cl.HEARTBEAT_NAME
+    beat.touch()
+    t = time.time() - age_s
+    os.utime(beat, (t, t))
+    step = cs.ChainStep(name="s", tool="t")
+    step.mark_submitted("local", runner={
+        "pid": 3, "start": "x", "host": socket.gethostname(),
+        "pid_ns": "pid:[1]", "heartbeat": str(beat)})
+    return step
+
+
+def test_a_fresh_heartbeat_is_running(tmp_path):
+    assert cl.runner_liveness(_with_heartbeat(tmp_path, 5))[0] == cl.RUNNING
+
+
+def test_a_stale_heartbeat_is_gone(tmp_path):
+    alive, why = cl.runner_liveness(
+        _with_heartbeat(tmp_path, cl.STALE_SECONDS + 60))
+    assert alive == cl.GONE and "no sign of life" in why
+
+
+def test_the_heartbeat_beats_and_stops(tmp_path, monkeypatch):
+    monkeypatch.setattr(cl, "BEAT_SECONDS", 0.05)
+    beat = tmp_path / "hb"
+    with cl.beating(str(beat)):
+        first = beat.stat().st_mtime_ns
+        old = time.time() - 600
+        os.utime(beat, (old, old))
+        time.sleep(0.3)
+        assert beat.stat().st_mtime_ns >= first
+    assert not [t for t in threading.enumerate() if t.name == "chain-heartbeat"]
 
 
 def test_finished_and_pending_steps_are_not_asked():
@@ -140,6 +179,8 @@ def test_a_pipeline_run_records_its_runner(home, monkeypatch):
     step = cs.ChainState.load(wd / "chain_state.json").steps[0]
     assert step.runner and step.runner["pid"] == os.getpid()
     assert step.runner["host"] == socket.gethostname()
+    assert Path(step.runner["heartbeat"]).parent == wd
+    assert Path(step.runner["heartbeat"]).exists()
 
 
 def test_the_offer_says_an_interrupted_step_is_not_running(home):

@@ -6,26 +6,65 @@ was "actively running"; the chain state said "submitted" and nothing more.
 Each submission records its runner (:func:`this_runner`, stored on
 ``ChainStep.runner``); :func:`runner_liveness` answers from it.
 
+Two signs are asked, the strongest first:
+
+* the runner's process, by pid AND start fingerprint -- only where that pid
+  means the same process: on the same machine and in the same PID
+  namespace.  JC3's live run 5 (2026-11-15): the agent started the chain
+  inside its sandbox, which has a PID namespace of its own, so the runner
+  was "pid 3"; asked from outside, pid 3 is a kernel thread, and the
+  killed step read "still running".  A pid only ever answers RUNNING when
+  its start fingerprint matches the recorded one.
+* a heartbeat file the running step touches every :data:`BEAT_SECONDS`
+  (:func:`beating`), which any process on any node can read.  No touch for
+  :data:`STALE_SECONDS` means the step is gone.
+
+A SLURM job is no sign: the job an agent runs in outlives the chains it
+starts (live run 5's agent read its own job as the chain's).
+
 Kept apart from :mod:`delfin.tools.chain_state` on purpose: that module
-must never launch a process (it holds no resume trigger, pinned by test),
-and asking SLURM about a job that ran on another machine does.
+must never launch anything (it holds no resume trigger, pinned by test),
+and the heartbeat is a thread.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
-import re
 import socket
-import subprocess
-from typing import Any, Dict, Optional, Tuple
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 #: Liveness answers: the step's process still runs / has ended / cannot be
-#: checked from this machine.
+#: checked from here.
 RUNNING, GONE, UNKNOWN = "running", "gone", "unknown"
 
+#: The running step touches its heartbeat this often ...
+BEAT_SECONDS = 30
+#: ... and is taken as gone once the last touch is older than this.  Four
+#: beats: a slow shared filesystem may delay one or two.
+STALE_SECONDS = 120
 
-def this_runner() -> Dict[str, Any]:
-    """The identity of the current process, to record on a submitted step."""
+#: The heartbeat file in a chain's work dir.
+HEARTBEAT_NAME = ".chain_heartbeat"
+
+
+def _pid_namespace() -> str:
+    """This process's PID namespace ("pid:[4026531836]"), "" if unknown."""
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return ""
+
+
+def this_runner(chain_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """The identity of the current process, to record on a submitted step.
+
+    With *chain_dir* the record names the heartbeat file there, which
+    :func:`beating` keeps fresh while the step runs.
+    """
     from delfin.agent import proc_identity
 
     pid = os.getpid()
@@ -33,31 +72,83 @@ def this_runner() -> Dict[str, Any]:
         "pid": pid,
         "start": proc_identity.process_start(pid),
         "host": socket.gethostname(),
+        "pid_ns": _pid_namespace(),
     }
-    job = os.environ.get("SLURM_JOB_ID", "").strip()
-    if job:
-        runner["slurm_job"] = job
+    if chain_dir is not None:
+        runner["heartbeat"] = str(Path(chain_dir) / HEARTBEAT_NAME)
     return runner
 
 
-def _slurm_job_state(job: str) -> Optional[str]:
-    """The job's queue state, "" when it left the queue, None when unknown.
+@contextlib.contextmanager
+def beating(path: Optional[str]) -> Iterator[None]:
+    """Touch *path* now and every :data:`BEAT_SECONDS` until the block ends.
 
-    One ``squeue`` call; only asked when the step ran on another machine.
+    A failing touch is skipped, never raised: the heartbeat must not stop
+    the calculation it reports on.  Without *path* nothing happens.
     """
-    if not re.fullmatch(r"[0-9_]+", job or ""):
+    if not path:
+        yield
+        return
+    target = Path(path)
+
+    def _touch() -> None:
+        try:
+            target.touch()
+        except OSError:
+            pass
+
+    stop = threading.Event()
+
+    def _beat() -> None:
+        while not stop.wait(BEAT_SECONDS):
+            _touch()
+
+    _touch()
+    thread = threading.Thread(target=_beat, name="chain-heartbeat",
+                              daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
+def _process_answer(r: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """RUNNING/GONE from the recorded process, None when it cannot tell."""
+    host = str(r.get("host") or "")
+    ns = str(r.get("pid_ns") or "")
+    if host != socket.gethostname() or not ns or ns != _pid_namespace():
+        return None  # that pid names a different process here, or none
+    from delfin.agent import proc_identity
+
+    pid, start = r.get("pid"), str(r.get("start") or "")
+    alive = proc_identity.alive(pid, start, host)
+    if alive is False:
+        return GONE, (f"not running — its process {pid} has ended, the "
+                      "step was interrupted")
+    now = proc_identity.process_start(pid)
+    if start and now == start:
+        return RUNNING, f"still running (process {pid} on this machine)"
+    if start and now and now != start:
+        return GONE, (f"not running — its process {pid} has ended, the "
+                      "step was interrupted")
+    return None  # pid in use, but whose cannot be read (another user's)
+
+
+def _heartbeat_answer(r: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    path = r.get("heartbeat")
+    if not path:
         return None
     try:
-        out = subprocess.run(["squeue", "-h", "-j", job, "-o", "%T"],
-                             capture_output=True, text=True, timeout=15)
-    except Exception:
+        age = time.time() - Path(path).stat().st_mtime
+    except OSError:
         return None
-    if out.returncode == 0:
-        text = (out.stdout or "").strip()
-        return text.splitlines()[0] if text else ""
-    if "invalid job id" in (out.stderr or "").lower():
-        return ""  # slurm forgets finished jobs after a while
-    return None
+    if age <= STALE_SECONDS:
+        return RUNNING, f"still running (last sign of life {max(int(age), 0)} s ago)"
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() - age))
+    return GONE, (f"not running — no sign of life since {when}, the step "
+                  "was interrupted")
 
 
 def runner_liveness(step: Any) -> Tuple[str, str]:
@@ -77,26 +168,13 @@ def runner_liveness(step: Any) -> Tuple[str, str]:
         # tool server, a notebook kernel): the pid is alive, the step is not.
         return GONE, (f"not running — its run ended with {r['ended']} "
                       "before a result was recorded")
-    from delfin.agent import proc_identity
-
-    pid, host = r.get("pid"), str(r.get("host") or "")
-    alive = proc_identity.alive(pid, str(r.get("start") or ""), host)
-    if alive is True:
-        return RUNNING, f"still running (process {pid} on this machine)"
-    if alive is False:
-        return GONE, (f"not running — its process {pid} on "
-                      f"{host or 'this machine'} has ended, the step was "
-                      "interrupted")
-    job = str(r.get("slurm_job") or "")
-    if job:
-        q = _slurm_job_state(job)
-        if q:
-            return RUNNING, f"still running (SLURM job {job} is {q})"
-        if q == "":
-            return GONE, (f"not running — SLURM job {job} has left the "
-                          "queue, the step was interrupted")
+    answer = _process_answer(r) or _heartbeat_answer(r)
+    if answer is not None:
+        return answer
+    host = str(r.get("host") or "")
     return UNKNOWN, (f"ran on {host or 'another machine'}; whether it still "
                      "runs cannot be checked from here")
 
 
-__all__ = ["RUNNING", "GONE", "UNKNOWN", "this_runner", "runner_liveness"]
+__all__ = ["RUNNING", "GONE", "UNKNOWN", "BEAT_SECONDS", "STALE_SECONDS",
+           "HEARTBEAT_NAME", "this_runner", "beating", "runner_liveness"]

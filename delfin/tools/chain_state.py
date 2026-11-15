@@ -91,7 +91,8 @@ class ChainStep:
     cores: Optional[int] = None
     attempts: List[Dict[str, Any]] = field(default_factory=list)
     #: The process that runs the step, recorded at submission: pid, its
-    #: start fingerprint, host and SLURM job id (chain_liveness.this_runner).
+    #: start fingerprint, host, PID namespace and heartbeat file
+    #: (chain_liveness.this_runner).
     #: Lets a later reader tell "still running" from "interrupted" — files
     #: an interrupted ORCA run left behind look like a live one (JC3,
     #: read by :mod:`delfin.tools.chain_liveness`).
