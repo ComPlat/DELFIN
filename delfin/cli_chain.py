@@ -88,7 +88,7 @@ def _cmd_list(args) -> int:
     from delfin.tools import chain_state as _cs
 
     entries = _ci.load()
-    # Live run 2 (operator, 2026-11-16): a chain started by an agent
+    # Live run 2 (operator, 2026-11-15): a chain started by an agent
     # through bash is never in the index (HOME is read-only inside the
     # sandbox) — `chain list` would hide it.  The CURRENT directory is
     # scanned with the same bounded rule as the offer: root + direct

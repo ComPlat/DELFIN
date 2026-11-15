@@ -1,4 +1,4 @@
-"""Live run 2 (operator, 2026-11-16): the offer must not depend on the
+"""Live run 2 (operator, 2026-11-15): the offer must not depend on the
 turn checkpoint, and `delfin chain list` must show workspace chains.
 
 Run 2's crash happened BEFORE the first turn checkpoint was written, so
@@ -134,7 +134,7 @@ def test_finished_chain_second_resume_no_offer(home, monkeypatch):
 
 
 def test_second_resume_of_unfinished_session_offers_again(home, monkeypatch):
-    """Pinned contract (QS ruling 8, s8 2026-11-16): once per RESUME,
+    """Pinned contract (QS ruling 8, s8 2026-11-15): once per RESUME,
     not once per chain — no consumed-marker is stored, so a second
     resume of a still-unfinished session rebuilds the offer (the
     finished-chain filter stops stale repeats)."""

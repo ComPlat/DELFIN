@@ -1,4 +1,4 @@
-"""QS ruling 9, item 2 (nacht-s8, 2026-11-16): PIN that
+"""QS ruling 9, item 2 (nacht-s8, 2026-11-15): PIN that
 delfin.agent.session_store.consume_crash_recovery_note has exactly the
 two real restore callers — agent/engine.py (service restore during
 session resume, engine.py:9046) and agent/cli.py (headless resume,
