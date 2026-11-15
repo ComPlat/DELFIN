@@ -440,6 +440,13 @@ _THINKING_TAG_NAME = _re.compile(
 # _is_weak_model is a one-line delegate to _is_weak here.
 # Moved from PromptLoader by scratch/move_weak_heuristic.py.
 
+# Models whose attention degrades quickly past 4 k of system prompt.
+# Auto-trigger ``compact_prompt`` for these + any explicit
+# ``agent.compact_prompt: true`` setting. The shape is family-
+# prefix + (\W.*?)? + size-suffix, so names with arbitrary middles
+# like "qwen2.5-coder:7b" still match. Conservative — only the
+# small / weak-tier; larger MoE models (qwen3.5-397b, gpt-oss-
+# 120b, etc.) handle the regular slim prompt fine.
 _WEAK_MODEL_PATTERNS = (
     r"gemma.*?(?:^|[^0-9])(?:1|2|3|4|7|9)b\b",
     r"llama.*?(?:^|[^0-9])(?:3|7|8)b\b",
@@ -452,8 +459,13 @@ _WEAK_MODEL_PATTERNS = (
     r"\bsmall[lm]?\b",                      # generic "small" marker
 )
 
+# Models at or below this parameter count (in billions) get the compact
+# prompt + core tool surface. 14b is the weak/strong boundary (qwen-14b is
+# weak; 32b/70b/120b/397b are strong) — matches _WEAK_MODEL_PATTERNS.
 _WEAK_MODEL_MAX_B = 14.0
-
+# An "<N>b" parameter-size token at a separator boundary (":4b", "-7b",
+# "397b"). A size glued to a letter (MoE "…-A17b" active-param suffix) is
+# deliberately NOT matched, so only the total parameter count is read.
 _PARAM_SIZE_RE = _re.compile(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)b(?![a-z0-9])")
 
 
