@@ -39,6 +39,12 @@ new file and a new structure, which is also what makes the change reviewable.
 
 from delfin.tools.bio._errors import (StructureFormatError,
                                       StructureTooLargeError)
+from delfin.tools.bio._fasta import (
+    STANDARD_AMINO_ACIDS,
+    SequenceRecord,
+    parse_fasta,
+    read_fasta,
+)
 from delfin.tools.bio._ligand import parse_mol2, parse_sdf
 from delfin.tools.bio._mmcif import parse_mmcif
 from delfin.tools.bio._model import (
@@ -118,6 +124,11 @@ __all__ = [
     # complexes (descriptor files)
     "Complex",
     "read_complex",
+    # sequences (FASTA)
+    "STANDARD_AMINO_ACIDS",
+    "SequenceRecord",
+    "parse_fasta",
+    "read_fasta",
     # pose sets
     "Pose",
     "PoseSet",

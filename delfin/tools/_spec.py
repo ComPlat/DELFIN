@@ -64,6 +64,10 @@ so a block never has to agree with another on a parser:
     pose_set      — a multi-record SDF where each record is one placement of a
                     molecule and SD tags carry scores.  Read with
                     ``delfin.tools.bio.read_pose_set``.
+    sequence      — a protein sequence as a FASTA file: one identifier and one
+                    sequence per record, the 20 standard amino acids plus X.
+                    Read with ``delfin.tools.bio.read_fasta``.  A DNA or RNA
+                    record is recognised and refused for protein prediction.
 """
 
 from __future__ import annotations

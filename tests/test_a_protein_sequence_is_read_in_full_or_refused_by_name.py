@@ -67,8 +67,9 @@ def test_blank_lines_and_whitespace_inside_a_sequence_are_ignored():
 def test_a_record_without_an_id_is_refused():
     with pytest.raises(StructureFormatError) as excinfo:
         parse_fasta("KVFGRCELAA\n")
-    assert "record 1" in str(excinfo.value)
-    assert "identifier" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "record header" in message
+    assert "identifier" in message
 
 
 def test_a_letter_outside_the_alphabet_names_the_record_and_the_position():
@@ -76,7 +77,7 @@ def test_a_letter_outside_the_alphabet_names_the_record_and_the_position():
         parse_fasta(">good\nKVFGRCELAA\n>bad\nKVFGR1ELAA\n")
     message = str(excinfo.value)
     assert "bad" in message
-    assert "7" in message            # position of '1' inside the sequence
+    assert "position 6" in message   # position of '1' inside the sequence
     assert "'1'" in message          # the letter itself
 
 
