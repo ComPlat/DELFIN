@@ -18,8 +18,9 @@ import re
 import socket
 import time
 from pathlib import Path
+from .state_paths import state_root
 
-_DIR = Path.home() / ".delfin" / "session_presence"
+_DIR = state_root() / "session_presence"
 # A record not refreshed for this long belongs to a session that is gone.
 _STALE_S = 15 * 60.0
 # An unchanged record is rewritten at most this often (a heartbeat), so a
