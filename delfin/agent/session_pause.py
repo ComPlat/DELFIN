@@ -25,8 +25,9 @@ import json
 import os
 import time
 from pathlib import Path
+from .state_paths import state_root
 
-_DIR = Path.home() / ".delfin" / "session_pause"
+_DIR = state_root() / "session_pause"
 #: Characters of a reason kept. A reason is a note for whoever lists the
 #: pauses; the engine does not read it.
 REASON_MAX = 200
