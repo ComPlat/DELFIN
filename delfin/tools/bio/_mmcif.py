@@ -359,6 +359,44 @@ def _modified_residues(categories) -> Dict[Tuple[str, int, str], Tuple[str, str]
     return out
 
 
+def _qa_metric_local(categories, source) -> Tuple[Tuple[str, int, float], ...]:
+    """``_ma_qa_metric_local`` rows of a pLDDT metric → (chain, seq, value).
+
+    The category holds per-residue quality metrics for predicted models; the
+    metric's identity lives in ``_ma_qa_metric`` (type ``pLDDT``).  Rows of
+    the first metric declared with type pLDDT are kept; a category with no
+    pLDDT metric yields nothing, which is what an experimental file looks
+    like here too.  Auth numbering is used when present, because the
+    coordinates are keyed by auth numbering (see :func:`_build_models`).
+    """
+    plddt_ids = set()
+    for row in categories.get("_ma_qa_metric", []):
+        if _item(row, "_ma_qa_metric.type").lower() == "plddt":
+            metric_id = _item(row, "_ma_qa_metric.id")
+            if metric_id:
+                plddt_ids.add(metric_id)
+    if not plddt_ids:
+        return ()
+    out: List[Tuple[str, int, float]] = []
+    for row in categories.get("_ma_qa_metric_local", []):
+        if _item(row, "_ma_qa_metric_local.ma_qa_metric_id") not in plddt_ids:
+            continue
+        seq_text = _item(row, "_ma_qa_metric_local.auth_seq_id",
+                         "_ma_qa_metric_local.label_seq_id")
+        try:
+            seq_id = int(seq_text)
+        except ValueError:
+            continue
+        value = _item(row, "_ma_qa_metric_local.ma_qa_metric.value")
+        try:
+            value = float(value)
+        except ValueError:
+            continue
+        out.append((_item(row, "_ma_qa_metric_local.auth_asym_id",
+                          "_ma_qa_metric_local.label_asym_id"), seq_id, value))
+    return tuple(out)
+
+
 def parse_mmcif(text: str, *, source_name: str = "<mmcif>") -> MacromolecularStructure:
     """Read mmCIF *text* into a structure.  Raises :class:`StructureFormatError`."""
     categories = _categories(text, source_name)
@@ -378,6 +416,7 @@ def parse_mmcif(text: str, *, source_name: str = "<mmcif>") -> MacromolecularStr
         entry_id=entry[0].get("_entry.id", "") if entry else "",
         source_format="mmcif",
         source_name=source_name,
+        qa_metric_local=_qa_metric_local(categories, source_name),
     )
 
 

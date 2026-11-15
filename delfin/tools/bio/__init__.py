@@ -45,6 +45,12 @@ from delfin.tools.bio._fasta import (
     parse_fasta,
     read_fasta,
 )
+from delfin.tools.bio._confidence import (
+    PLDDT_LOW,
+    PLDDT_VERY_LOW,
+    PredictedAlignedError,
+    read_pae,
+)
 from delfin.tools.bio._ligand import parse_mol2, parse_sdf
 from delfin.tools.bio._mmcif import parse_mmcif
 from delfin.tools.bio._model import (
@@ -129,6 +135,11 @@ __all__ = [
     "SequenceRecord",
     "parse_fasta",
     "read_fasta",
+    # confidence of a predicted model
+    "PLDDT_LOW",
+    "PLDDT_VERY_LOW",
+    "PredictedAlignedError",
+    "read_pae",
     # pose sets
     "Pose",
     "PoseSet",

@@ -345,10 +345,25 @@ class MacromolecularStructure:
     entry_id: str = ""
     source_format: str = ""
     source_name: str = ""
+    # Per-residue quality metrics the file itself names (mmCIF
+    # ma_qa_metric_local): (chain_id, seq_id, value) rows of one metric.
+    qa_metric_local: Tuple[Tuple[str, int, float], ...] = ()
 
     @property
     def first_model(self) -> StructureModel:
         return self.models[0]
+
+    def plddt_per_residue(self, model_id: Optional[int] = None):
+        """Per-residue pLDDT the file carries, or ``()`` when it carries none.
+
+        Read through :mod:`delfin.tools.bio._confidence`: the mmCIF
+        ``ma_qa_metric_local`` category where the file names the metric, else
+        the B-factor column where a prediction wrote the per-residue value on
+        every atom.  An experimental structure yields ``()`` — its B-factors
+        are crystallographic, not confidence.
+        """
+        from delfin.tools.bio._confidence import confidence_residues
+        return confidence_residues(self, model_id)
 
     def model(self, model_id: int) -> StructureModel:
         """The model with this id.  Raises ``KeyError`` when the file has none."""

@@ -4,7 +4,7 @@ A predicted structure is only as useful as its confidence is known.  A
 predicted model carries two kinds of self-description: the per-residue pLDDT
 (0-100, stored in the B-factor column of an AlphaFold-style PDB and in the
 ``ma_qa_metric_local`` category of an mmCIF), and the predicted-aligned-error
-matrix (PAE, Ångström) that the AlphaFold Database publishes as a JSON file
+matrix (PAE, Angstrom) that the AlphaFold Database publishes as a JSON file
 beside the model, with the documented keys ``predicted_aligned_error`` and
 ``max_predicted_aligned_error`` (Váradi *et al.*, Nucleic Acids Research
 52:D1, 2024, doi:10.1093/nar/gkad1011).
@@ -168,20 +168,20 @@ def test_a_crystal_structure_says_it_carries_no_plddt(tmp_path):
     """B-factors that differ between the atoms of a residue are not pLDDT."""
     path = _write(tmp_path, "crystal.pdb", EXPERIMENTAL_PDB)
     structure = read_structure(path)
-    assert structure.plddt_per_residue() == []
+    assert structure.plddt_per_residue() == ()
 
 
 def test_an_nmr_structure_says_it_carries_no_plddt(tmp_path):
     """B-factors identical across the whole file describe no certainty."""
     path = _write(tmp_path, "nmr.pdb", NMR_PDB)
     structure = read_structure(path)
-    assert structure.plddt_per_residue() == []
+    assert structure.plddt_per_residue() == ()
 
 
 def test_a_structure_with_b_factors_outside_the_range_carries_no_plddt(tmp_path):
     path = _write(tmp_path, "big.pdb", PREDICTED_PDB.replace("90.50", "123.45"))
     structure = read_structure(path)
-    assert structure.plddt_per_residue() == []
+    assert structure.plddt_per_residue() == ()
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +277,7 @@ def test_an_experimental_structure_says_so_plainly(tmp_path):
     assert result.data["has_confidence"] is False
     assert result.data["plddt_source"] == "none"
     assert result.data["n_residues_scored"] == 0
-    assert "no confidence" in result.data["statement"]
+    assert "carries no per-residue confidence" in result.data["statement"]
     assert result.data["mean_plddt"] is None
     assert result.data["ranges_below_70"] == []
     assert result.data["ranges_below_50"] == []
