@@ -719,8 +719,10 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
         )
     except Exception as exc:
         import logging as _logging
+        # The session id is not logged: it is a credential-like handle
+        # (anyone holding it can resume the session).
         _logging.getLogger(__name__).warning(
-            "chain offer for session %s skipped: %s", session_id, exc)
+            "chain offer skipped on resume: %s", exc)
         chains = None
 
     if not ck:
