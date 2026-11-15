@@ -80,6 +80,17 @@ def run_step(
             error=str(exc),
         )
 
+    # A step whose declared products are not in its result is a wiring
+    # defect that otherwise surfaces only at the consumer (the consumer
+    # then fails with "missing input capability" and no hint that the
+    # producer is mis-keyed).  Report it here, where the producer is known.
+    if result.ok:
+        from delfin.tools._products import check_declared_products, report_result
+        missing = check_declared_products(
+            adapter.contract().produces, result,
+        )
+        report_result(result, step_name, missing)
+
     return result
 
 
