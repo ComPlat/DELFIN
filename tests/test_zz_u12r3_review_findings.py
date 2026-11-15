@@ -146,7 +146,7 @@ class _Registry:
     def discover_resources(self): return []
     def discover_prompts(self): return []
 
-    def call(self, name, args):
+    def call(self, name, args, agent_session_id=""):
         self.calls.append((name, args))
         return json.dumps({"status": "ok"})
 

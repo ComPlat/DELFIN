@@ -19,7 +19,9 @@ The state file lives next to the chain's work dir
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import time
 from pathlib import Path
 
 from delfin.common.logging import get_logger
@@ -74,6 +76,68 @@ def _cmd_status(args) -> int:
     return 0
 
 
+def _cmd_list(args) -> int:
+    """List the indexed chains with their CURRENT state (read-only).
+
+    The index is a pointer, never the truth: each entry's state is
+    re-read from that chain's own chain_state.json (JC2 target 2).  A
+    vanished chain is still listed (as gone) so the user sees what the
+    index remembers; an empty index prints one line, not nothing.
+    """
+    from delfin.tools import chain_index as _ci
+    from delfin.tools import chain_state as _cs
+
+    entries = _ci.load()
+    # Live run 2 (operator, 2026-11-15): a chain started by an agent
+    # through bash is never in the index (HOME is read-only inside the
+    # sandbox) — `chain list` would hide it.  The CURRENT directory is
+    # scanned with the same bounded rule as the offer: root + direct
+    # subdirectories only, no tree walk; deduped against the index by
+    # resolved work dir; marked as not indexed.
+    from delfin.agent.session_store import _scan_workspace_chains
+
+    seen_dirs = {str(Path(e.get("work_dir") or "").resolve())
+                 for e in entries if e.get("work_dir")}
+    for wd, ch in _scan_workspace_chains(os.getcwd()):
+        if str(Path(wd).resolve()) in seen_dirs:
+            continue
+        entries.append({"name": ch.name, "work_dir": str(wd),
+                        "found_in_this_directory": True})
+    if not entries:
+        print("no chains recorded in the chain index")
+        return 0
+    for e in entries:
+        name = e.get("name", "?")
+        wd = e.get("work_dir", "?")
+        created = e.get("created_at")
+        created_s = (
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(created))
+            if isinstance(created, (int, float)) else "?"
+        )
+        state_path = Path(wd) / STATE_FILENAME if wd != "?" else None
+        if state_path is None or not state_path.is_file():
+            state = "gone (no chain state file)"
+            steps_line = ""
+        else:
+            try:
+                chain = _cs.ChainState.load(state_path)
+            except Exception as exc:  # noqa: BLE001 - report, don't die
+                state = f"unreadable ({exc})"
+                steps_line = ""
+            else:
+                states = [s.state for s in chain.steps]
+                if chain.steps and all(s == "finished" for s in states):
+                    state = "finished"
+                else:
+                    state = " / ".join(states) if states else "no steps"
+                steps_line = f" — steps: {', '.join(states)}"
+        print(f"chain '{name}' — work dir: {wd} — created: {created_s} "
+              f"— state: {state}{steps_line}"
+              + (" — found in this directory (not indexed)"
+                 if e.get("found_in_this_directory") else ""))
+    return 0
+
+
 def _cmd_resume(args) -> int:
     """Resume the chain EXPLICITLY (target 5: never on its own)."""
     chain = _load_chain(args.work_dir)
@@ -92,6 +156,22 @@ def _cmd_resume(args) -> int:
 
     from delfin.tools import pipeline as pipeline_mod
     from delfin.tools.pipeline import Pipeline
+
+    # Live-run plan Job B: a resume never silently changes PAL.  With no
+    # explicit --cores flag the resume uses the cores the chain's steps
+    # were submitted with (recorded per step); the flag wins when given.
+    recorded_cores = {s.cores for s in chain.steps if s.cores}
+    if getattr(args, "cores", None) is not None:
+        cores = args.cores
+    elif recorded_cores:
+        if len(recorded_cores) > 1:
+            # Mixed PALs across steps: the largest is the safe default —
+            # no step is silently downgraded mid-chain.
+            cores = max(recorded_cores)
+        else:
+            cores = recorded_cores.pop()
+    else:
+        cores = 1
 
     # Rebuild the pipeline from the chain's OWN step specs (L1: the
     # persisted params — charge, method, basis, mult, ... — so the
@@ -112,7 +192,7 @@ def _cmd_resume(args) -> int:
                  for s in chain.steps}
     try:
         result = pipe.run(
-            cores=args.cores,
+            cores=cores,
             work_dir=Path(args.work_dir),
             resume_chain=True,
             chain_state_obj=chain,
@@ -168,13 +248,19 @@ def main(argv=None) -> int:
     p_status.add_argument("work_dir", help="the chain's work dir")
     p_status.set_defaults(func=_cmd_status)
 
+    p_list = sub.add_parser(
+        "list", help="list indexed chains with their current state (read-only)"
+    )
+    p_list.set_defaults(func=_cmd_list)
+
     p_resume = sub.add_parser(
         "resume", help="resume the chain (explicit; never automatic)"
     )
     p_resume.add_argument("work_dir", help="the chain's work dir")
     p_resume.add_argument(
-        "--cores", type=int, default=1,
-        help="cores for the resumed steps (default 1)",
+        "--cores", type=int, default=None,
+        help="cores for the resumed steps (default: the cores the chain "
+             "was submitted with; never silently different)",
     )
     p_resume.set_defaults(func=_cmd_resume)
 

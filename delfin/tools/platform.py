@@ -418,6 +418,7 @@ def run_application(
     geometry: Optional[str | Path] = None,
     work_dir: Optional[Path] = None,
     validate: bool = True,
+    agent_session_id: Optional[str] = None,
     **inputs: Any,
 ) -> ApplicationResult:
     """Run a named application with named inputs and return its named outputs.
@@ -425,6 +426,13 @@ def run_application(
     Fails fast (without executing) on an unknown application, missing required
     inputs, or — when ``validate=True`` — a pipeline that does not statically
     validate.
+
+    ``agent_session_id`` (JC2 target 2): the agent session the run happens
+    inside, when one does.  The CALLER fills it from the session id the
+    agent process already exposes — never from user/model input.  It is
+    forwarded to ``pipeline.run`` so a chain created by the run is
+    indexed under that session for the crash-recovery offer; a None
+    (plain CLI, a test) simply records no session id.
     """
     app = get_application(name)
     if app is None:
@@ -445,7 +453,10 @@ def run_application(
             error="application failed static validation; see validation report",
         )
 
-    result = pipeline.run(cores=cores, geometry=geometry, work_dir=work_dir)
+    result = pipeline.run(
+        cores=cores, geometry=geometry, work_dir=work_dir,
+        agent_session_id=agent_session_id,
+    )
     outputs = extract_outputs(app, pipeline, result)
     return ApplicationResult(
         name=name, ok=result.ok, outputs=outputs,
