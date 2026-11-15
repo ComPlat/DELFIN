@@ -58,7 +58,7 @@ def _cmd_status(args) -> int:
         if step.job_id is not None:
             lines.append(f"    job: {step.job_id}")
         # JC3: an open step says whether its process still runs.
-        from delfin.tools.chain_state import runner_liveness
+        from delfin.tools.chain_liveness import runner_liveness
 
         _alive, why = runner_liveness(step)
         if why:
@@ -156,7 +156,7 @@ def _cmd_resume(args) -> int:
 
     # JC3: a step whose process verifiably still runs is not resumed — a
     # second run of the same step would start next to the first one.
-    from delfin.tools.chain_state import RUNNING, runner_liveness
+    from delfin.tools.chain_liveness import RUNNING, runner_liveness
 
     running = [(st.name, why) for st in chain.steps
                for alive, why in [runner_liveness(st)] if alive == RUNNING]

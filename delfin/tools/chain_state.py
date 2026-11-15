@@ -91,9 +91,10 @@ class ChainStep:
     cores: Optional[int] = None
     attempts: List[Dict[str, Any]] = field(default_factory=list)
     #: The process that runs the step, recorded at submission: pid, its
-    #: start fingerprint, host and SLURM job id (see :func:`this_runner`).
+    #: start fingerprint, host and SLURM job id (chain_liveness.this_runner).
     #: Lets a later reader tell "still running" from "interrupted" — files
-    #: an interrupted ORCA run left behind look like a live one (JC3).
+    #: an interrupted ORCA run left behind look like a live one (JC3,
+    #: read by :mod:`delfin.tools.chain_liveness`).
     runner: Optional[Dict[str, Any]] = None
 
     # -- transitions -------------------------------------------------------
@@ -245,90 +246,6 @@ class ChainStep:
             runner=(dict(data["runner"])
                     if isinstance(data.get("runner"), dict) else None),
         )
-
-
-# -- Is the step still being run? (JC3) -------------------------------------
-#
-# Live run 4 of JC2 (15.11.2026): after a crash the restarted agent saw the
-# ORCA temporary files of the killed optimisation and told the user the step
-# was "actively running". The state said "submitted" and nothing more. The
-# runner recorded at submission settles it.
-
-#: Liveness answers: the step's process still runs / has ended / cannot be
-#: checked from this machine.
-RUNNING, GONE, UNKNOWN = "running", "gone", "unknown"
-
-
-def this_runner() -> Dict[str, Any]:
-    """The identity of the current process, to record on a submitted step."""
-    import socket
-
-    from delfin.agent import proc_identity
-
-    pid = os.getpid()
-    runner: Dict[str, Any] = {
-        "pid": pid,
-        "start": proc_identity.process_start(pid),
-        "host": socket.gethostname(),
-    }
-    job = os.environ.get("SLURM_JOB_ID", "").strip()
-    if job:
-        runner["slurm_job"] = job
-    return runner
-
-
-def _slurm_job_state(job: str) -> Optional[str]:
-    """The job's queue state, "" when it left the queue, None when unknown.
-
-    One ``squeue`` call; only asked when the step ran on another machine.
-    """
-    import subprocess
-
-    if not re.fullmatch(r"[0-9_]+", job or ""):
-        return None
-    try:
-        out = subprocess.run(["squeue", "-h", "-j", job, "-o", "%T"],
-                             capture_output=True, text=True, timeout=15)
-    except Exception:
-        return None
-    if out.returncode == 0:
-        return out.stdout.strip().splitlines()[0] if out.stdout.strip() else ""
-    if "invalid job id" in (out.stderr or "").lower():
-        return ""  # slurm forgets finished jobs after a while
-    return None
-
-
-def runner_liveness(step: "ChainStep") -> tuple:
-    """``(RUNNING | GONE | UNKNOWN, one-line reason)`` for an open step.
-
-    Only ``submitted``/``running`` steps have a runner to ask; any other
-    state answers ``("", "")``.
-    """
-    if step.state not in ("submitted", "running"):
-        return "", ""
-    r = step.runner or {}
-    if not r.get("pid"):
-        return UNKNOWN, ("no process recorded (state written by an older "
-                         "DELFIN) — check before resuming")
-    from delfin.agent import proc_identity
-
-    pid, host = r.get("pid"), str(r.get("host") or "")
-    alive = proc_identity.alive(pid, str(r.get("start") or ""), host)
-    if alive is True:
-        return RUNNING, f"still running (process {pid} on this machine)"
-    if alive is False:
-        return GONE, (f"not running — its process {pid} on {host or 'this machine'} "
-                      "has ended, the step was interrupted")
-    job = str(r.get("slurm_job") or "")
-    if job:
-        q = _slurm_job_state(job)
-        if q:
-            return RUNNING, f"still running (SLURM job {job} is {q})"
-        if q == "":
-            return GONE, (f"not running — SLURM job {job} has left the "
-                          "queue, the step was interrupted")
-    return UNKNOWN, (f"ran on {host or 'another machine'}; whether it still "
-                     "runs cannot be checked from here")
 
 
 # -- Internal (non-user) persisted params ----------------------------------

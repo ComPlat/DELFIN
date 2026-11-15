@@ -847,10 +847,12 @@ def _render_chain_offer(session_id: str, workspace: str | Path | None = None) ->
             # JC3: say whether the step's process still runs.  Live run 4
             # of JC2: the restarted agent read an interrupted ORCA run's
             # temporary files as "actively running".
-            alive, why = chain_state.runner_liveness(s)
+            from delfin.tools import chain_liveness
+
+            alive, why = chain_liveness.runner_liveness(s)
             if why:
                 line += f" — {why}"
-            still_running = still_running or alive == chain_state.RUNNING
+            still_running = still_running or alive == chain_liveness.RUNNING
             if s.error:
                 line += f" — {s.error}"
             lines.append(line)

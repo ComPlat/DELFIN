@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from delfin.agent import proc_identity
+from delfin.tools import chain_liveness as cl
 from delfin.tools import chain_state as cs
 
 
@@ -56,35 +57,35 @@ def _chain(wd: Path, runner) -> cs.ChainState:
 
 def test_this_process_is_running():
     step = cs.ChainStep(name="s", tool="t")
-    step.mark_submitted("local", runner=cs.this_runner())
-    assert cs.runner_liveness(step)[0] == cs.RUNNING
+    step.mark_submitted("local", runner=cl.this_runner())
+    assert cl.runner_liveness(step)[0] == cl.RUNNING
 
 
 def test_an_ended_process_is_gone():
     step = cs.ChainStep(name="s", tool="t")
     step.mark_submitted("local", runner=_ended_runner())
-    alive, why = cs.runner_liveness(step)
-    assert alive == cs.GONE and "interrupted" in why
+    alive, why = cl.runner_liveness(step)
+    assert alive == cl.GONE and "interrupted" in why
 
 
 def test_an_old_state_without_a_runner_is_unknown():
     step = cs.ChainStep.from_dict({"name": "s", "tool": "t", "state": "submitted"})
-    assert cs.runner_liveness(step)[0] == cs.UNKNOWN
+    assert cl.runner_liveness(step)[0] == cl.UNKNOWN
 
 
 def test_another_host_without_a_job_is_unknown():
     step = cs.ChainStep(name="s", tool="t")
     step.mark_submitted("local", runner={"pid": 1, "start": "x",
                                          "host": "some-other-node"})
-    alive, why = cs.runner_liveness(step)
-    assert alive == cs.UNKNOWN and "some-other-node" in why
+    alive, why = cl.runner_liveness(step)
+    assert alive == cl.UNKNOWN and "some-other-node" in why
 
 
 @pytest.mark.parametrize("stdout,rc,stderr,expected", [
-    ("RUNNING\n", 0, "", cs.RUNNING),
-    ("", 0, "", cs.GONE),
-    ("", 1, "slurm_load_jobs error: Invalid job id specified", cs.GONE),
-    ("", 1, "slurm_load_jobs error: Socket timed out", cs.UNKNOWN),
+    ("RUNNING\n", 0, "", cl.RUNNING),
+    ("", 0, "", cl.GONE),
+    ("", 1, "slurm_load_jobs error: Invalid job id specified", cl.GONE),
+    ("", 1, "slurm_load_jobs error: Socket timed out", cl.UNKNOWN),
 ])
 def test_another_host_asks_slurm_once(monkeypatch, stdout, rc, stderr, expected):
     calls = []
@@ -98,17 +99,17 @@ def test_another_host_asks_slurm_once(monkeypatch, stdout, rc, stderr, expected)
     step.mark_submitted("local", runner={"pid": 1, "start": "x",
                                          "host": "some-other-node",
                                          "slurm_job": "123456"})
-    assert cs.runner_liveness(step)[0] == expected
+    assert cl.runner_liveness(step)[0] == expected
     assert calls == [["squeue", "-h", "-j", "123456", "-o", "%T"]]
 
 
 def test_finished_and_pending_steps_are_not_asked():
     step = cs.ChainStep(name="s", tool="t")
-    assert cs.runner_liveness(step) == ("", "")
+    assert cl.runner_liveness(step) == ("", "")
 
 
 def test_the_runner_is_persisted_and_cleared_on_retry(tmp_path):
-    chain = _chain(tmp_path / "c", cs.this_runner())
+    chain = _chain(tmp_path / "c", cl.this_runner())
     again = cs.ChainState.load(chain.state_path)
     assert again.steps[0].runner["pid"] == os.getpid()
     step = again.steps[0]
@@ -156,7 +157,7 @@ def test_the_offer_does_not_offer_a_resume_of_a_running_chain(home):
     from delfin.agent import session_store as ss
 
     ws = home / "ws"
-    _chain(ws / "chain1", cs.this_runner())
+    _chain(ws / "chain1", cl.this_runner())
     text = ss._render_chain_offer("sess", workspace=ws)
     assert "still running" in text and "do NOT resume" in text
     assert "resume with:" not in text
@@ -173,7 +174,7 @@ def test_status_names_the_process(tmp_path, capsys):
 def test_resume_refuses_a_chain_that_still_runs(tmp_path, monkeypatch, capsys):
     from delfin.cli_chain import main
 
-    chain = _chain(tmp_path / "c", cs.this_runner())
+    chain = _chain(tmp_path / "c", cl.this_runner())
     before = chain.state_path.read_bytes()
     ran = []
     monkeypatch.setattr("delfin.tools.pipeline.Pipeline.run",
@@ -182,3 +183,28 @@ def test_resume_refuses_a_chain_that_still_runs(tmp_path, monkeypatch, capsys):
     assert not ran
     assert chain.state_path.read_bytes() == before
     assert "NOT resumed" in capsys.readouterr().out
+
+
+def test_a_run_that_raised_in_a_living_process_is_gone(home, monkeypatch):
+    """The process lives on (a service, the tool server, a kernel) after
+    the step's run raised: its pid answers, yet the step is not running —
+    otherwise the chain would read "still running" for ever and every
+    resume would be refused."""
+    def raising_run_step(step_name, **kw):
+        raise RuntimeError("simulated failure inside the step")
+
+    monkeypatch.setattr("delfin.tools._runner.run_step", raising_run_step)
+    from delfin.tools.pipeline import Pipeline
+
+    wd = home / "runs" / "b"
+    geom = wd.parent / "start.xyz"
+    geom.parent.mkdir(parents=True, exist_ok=True)
+    geom.write_text("2\n\nH 0 0 0\nH 0 0 0.74\n", encoding="utf-8")
+    pipe = Pipeline(name="demo")
+    pipe.add("xtb_opt", charge=0)
+    with pytest.raises(RuntimeError):
+        pipe.run(work_dir=wd, geometry=geom, cores=1)
+    step = cs.ChainState.load(wd / "chain_state.json").steps[0]
+    assert step.state == "submitted"          # JC1: a crash leaves it so
+    alive, why = cl.runner_liveness(step)
+    assert alive == cl.GONE and "RuntimeError" in why
