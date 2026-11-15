@@ -347,14 +347,14 @@ def test_the_budget_fields_round_trip_through_the_session_state():
 # 7. The delegated-spend surface moves with the ledger
 # ---------------------------------------------------------------------------
 
-def test_the_delegated_spend_ledger_is_reached_through_the_engine():
+def test_the_delegated_spend_ledger_is_reached_through_the_engine(monkeypatch):
     import threading
 
     from delfin.agent import agent_metrics as am
     eng = _engine_via_new()
     eng._lock = threading.Lock()
-    type(eng).kit_permissions = property(
-        lambda self: getattr(self, "_kit_perms_for_test", None))
+    monkeypatch.setattr(type(eng), "kit_permissions", property(
+        lambda self: getattr(self, "_kit_perms_for_test", None)))
     eng._kit_perms_for_test = None
     eng._delegate_spend = am.DelegateLedger()
     assert eng.delegate_spend() is eng._delegate_spend
@@ -384,7 +384,7 @@ def test_a_delegate_is_booked_to_the_turn_that_waited_for_it():
     assert eng.delegate_spend().session.count == 2
 
 
-def test_the_meter_wraps_the_runner_and_unwraps_itself():
+def test_the_meter_wraps_the_runner_and_unwraps_itself(monkeypatch):
     import threading
 
     from delfin.agent import agent_metrics as am
@@ -404,8 +404,8 @@ def test_the_meter_wraps_the_runner_and_unwraps_itself():
     eng._delegate_spend = am.DelegateLedger()
     eng._turn_in_flight = True
     eng._turn_id = 1
-    type(eng).kit_permissions = property(
-        lambda self: getattr(self, "_kit_perms_for_test", None))
+    monkeypatch.setattr(type(eng), "kit_permissions", property(
+        lambda self: getattr(self, "_kit_perms_for_test", None)))
     eng._kit_perms_for_test = _Perms()
     assert eng._meter_delegate_spend() is True
     eng.kit_permissions.subagent_runner(subagent_type="explore")
@@ -416,10 +416,11 @@ def test_the_meter_wraps_the_runner_and_unwraps_itself():
     assert eng.delegate_spend().turn.count == 2
     assert eng.delegate_spend().session.count == 2
 
-def test_a_backend_without_a_runner_has_no_meter():
+
+def test_a_backend_without_a_runner_has_no_meter(monkeypatch):
     eng = _engine_via_new()
-    type(eng).kit_permissions = property(
-        lambda self: getattr(self, "_kit_perms_for_test", None))
+    monkeypatch.setattr(type(eng), "kit_permissions", property(
+        lambda self: getattr(self, "_kit_perms_for_test", None)))
     eng._kit_perms_for_test = None
     assert eng._meter_delegate_spend() is False
 
