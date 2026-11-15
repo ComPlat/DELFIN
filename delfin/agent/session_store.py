@@ -707,7 +707,7 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
             saved_at = 0.0
 
     # The chain offer is NOT checkpoint-dependent (live run 2, operator,
-    # 2026-11-16): a crash before the first turn checkpoint, or a session
+    # 2026-11-15): a crash before the first turn checkpoint, or a session
     # closed normally whose chain a SLURM kill later hit, must still get
     # the offer on resume.  It is built once per resume, here — with or
     # without a crash note (never twice).
@@ -735,7 +735,11 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
     except (TypeError, ValueError):
         ck_ts = 0.0
     if ck_ts <= saved_at:
-        return None   # stale — a full save landed after this checkpoint
+        # Stale — a full save landed after this checkpoint: no
+        # "[recovered]" note, but the chain offer was already built and
+        # is checkpoint-independent (live run 2/3, operator 2026-11-15)
+        # — a stale checkpoint with an unfinished chain still offers.
+        return chains
     user_msg = str(ck.get("user_message", "") or "").strip()
     n_tools = int(ck.get("tool_calls", 0) or 0)
     partial = str(ck.get("partial_response", "") or "").strip()

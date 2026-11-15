@@ -169,6 +169,28 @@ def test_normal_turn_of_session_without_chains_no_chain_text(home, monkeypatch):
     assert "chain" not in note
 
 
+def test_stale_checkpoint_still_offers(home, monkeypatch):
+    """Operator run-3 review, defect 1: a stale checkpoint (a full save
+    landed after it) with an unfinished chain must return the OFFER —
+    not None — and without any "[recovered]" text."""
+    session_id = "sess-stale"
+    ws = home / "ws7"
+    _make_session(home, session_id, ws)
+    _unfinished_chain(monkeypatch, ws / "chain1")
+    # A checkpoint OLDER than the session's last save is stale.
+    import delfin.agent.session_store as ss
+
+    ss.save_turn_checkpoint(
+        session_id,
+        {"user_message": "run the chain", "tool_calls": 2,
+         "partial_response": "", "ts": 1.0},
+    )
+    note = _offer(home, monkeypatch, session_id, ws)
+    assert note is not None, "stale checkpoint dropped the offer"
+    assert "chain1" in note
+    assert "[recovered]" not in note
+
+
 def test_chain_list_shows_workspace_chain(home, monkeypatch, capsys):
     ws = home / "ws4"
     ws.mkdir()
