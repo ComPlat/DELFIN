@@ -76,6 +76,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any, Optional
 
 MAX_PRE_IMAGE_BYTES = 2 * 1024 * 1024   # 2 MB
@@ -180,7 +181,7 @@ def _safe_session_id(session_id: Any) -> str:
 
 
 def _undo_root() -> Path:
-    return Path.home() / ".delfin" / "undo"
+    return state_root() / "undo"
 
 
 def _session_dir(session_id: Any) -> Path:
