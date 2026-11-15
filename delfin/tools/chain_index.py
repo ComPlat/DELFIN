@@ -45,6 +45,14 @@ INDEX_FILENAME = "chain_index.jsonl"
 MAX_ENTRIES = 100
 
 
+class ChainIndexError(RuntimeError):
+    """The chain index could not be written (never fatal for the run).
+
+    Raised by :func:`record` so the caller can say, once and visibly,
+    why a chain is not indexed — the run itself continues.
+    """
+
+
 def index_path() -> Path:
     """The per-user chain index file, resolved per call.
 
@@ -67,6 +75,13 @@ def record(
     Best-effort by design: an index failure must never break the run
     that created the chain — a warning is logged, the run goes on.
     Returns True when the entry was written.
+
+    Live-run A (operator, 2026-11-14): inside the agent sandbox HOME is
+    read-only, so this fails on EVERY chain started through bash — and
+    a silent failure made the restart offer empty.  The exception's
+    reason is therefore returned in the message of the raised
+    :class:`ChainIndexError` so the caller (pipeline.run) can say, once,
+    why nothing was indexed.
     """
     entry = {
         "name": str(name),
@@ -81,7 +96,8 @@ def record(
         return True
     except OSError as exc:
         logger.warning("chain index: could not record %s (%s)", name, exc)
-        return False
+        raise ChainIndexError(
+            f"chain '{name}' not indexed: {exc}") from exc
 
 
 def load(*, agent_session_id: Optional[str] = None) -> List[Dict[str, Any]]:

@@ -1139,8 +1139,20 @@ class Pipeline:
                 # per-user index (best-effort — a failure here never
                 # breaks the run).  A resume records nothing new: the
                 # entry already exists from the first run.
+                # Live-run A: inside the agent sandbox HOME is read-only,
+                # so this fails on every bash-started chain.  The reason
+                # is said ONCE, visibly, on the run's own output — the
+                # restart offer still finds the chain through the
+                # session-store workspace scan.
                 from delfin.tools import chain_index as _ci
-                _ci.record(self.name, base, agent_session_id=agent_session_id)
+                try:
+                    _ci.record(self.name, base,
+                               agent_session_id=agent_session_id)
+                except _ci.ChainIndexError as exc:
+                    logger.warning(
+                        "[%s] %s (the restart offer will find the chain "
+                        "through the session workspace scan)",
+                        self.name, exc)
             for i, spec in enumerate(self._trunk):
                 if i >= len(chain.steps):
                     chain.add_step(spec.label or spec.step_name, spec.step_name,

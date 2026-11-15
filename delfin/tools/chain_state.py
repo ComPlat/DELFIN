@@ -398,7 +398,10 @@ class ChainState:
                 _dropped_per_step[sd.get("name", "?")] = sorted(dropped)
             chain.steps.append(ChainStep.from_dict(sd))
         if _dropped_per_step:
-            logger.info(
+            # WARNING, not INFO (live-run item 10): the CLI's default
+            # level hides INFO — a user loading a JC1 state must SEE
+            # which step params were rewritten by the load.
+            logger.warning(
                 "chain %s: dropped pipeline-internal params on load "
                 "(re-derived on resume from the finished upstream steps): %s",
                 data["name"],
