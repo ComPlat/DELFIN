@@ -19,6 +19,7 @@ The state file lives next to the chain's work dir
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -87,6 +88,21 @@ def _cmd_list(args) -> int:
     from delfin.tools import chain_state as _cs
 
     entries = _ci.load()
+    # Live run 2 (operator, 2026-11-16): a chain started by an agent
+    # through bash is never in the index (HOME is read-only inside the
+    # sandbox) — `chain list` would hide it.  The CURRENT directory is
+    # scanned with the same bounded rule as the offer: root + direct
+    # subdirectories only, no tree walk; deduped against the index by
+    # resolved work dir; marked as not indexed.
+    from delfin.agent.session_store import _scan_workspace_chains
+
+    seen_dirs = {str(Path(e.get("work_dir") or "").resolve())
+                 for e in entries if e.get("work_dir")}
+    for wd, ch in _scan_workspace_chains(os.getcwd()):
+        if str(Path(wd).resolve()) in seen_dirs:
+            continue
+        entries.append({"name": ch.name, "work_dir": str(wd),
+                        "found_in_this_directory": True})
     if not entries:
         print("no chains recorded in the chain index")
         return 0
@@ -116,7 +132,9 @@ def _cmd_list(args) -> int:
                     state = " / ".join(states) if states else "no steps"
                 steps_line = f" — steps: {', '.join(states)}"
         print(f"chain '{name}' — work dir: {wd} — created: {created_s} "
-              f"— state: {state}{steps_line}")
+              f"— state: {state}{steps_line}"
+              + (" — found in this directory (not indexed)"
+                 if e.get("found_in_this_directory") else ""))
     return 0
 
 

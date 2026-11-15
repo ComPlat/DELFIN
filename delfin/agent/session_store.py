@@ -698,9 +698,6 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
     recover.
     """
     ck = load_turn_checkpoint(session_id)
-    if not ck:
-        return None
-    clear_turn_checkpoint(session_id)
     saved_at = 0.0
     saved = load_session(session_id)
     if saved:
@@ -708,6 +705,31 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
             saved_at = float(saved.get("updated_at", 0) or 0)
         except (TypeError, ValueError):
             saved_at = 0.0
+
+    # The chain offer is NOT checkpoint-dependent (live run 2, operator,
+    # 2026-11-16): a crash before the first turn checkpoint, or a session
+    # closed normally whose chain a SLURM kill later hit, must still get
+    # the offer on resume.  It is built once per resume, here — with or
+    # without a crash note (never twice).
+    try:
+        chains = _render_chain_offer(
+            session_id,
+            workspace=_session_record_workspace(session_id) or os.getcwd(),
+        )
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "chain offer for session %s skipped: %s", session_id, exc)
+        chains = None
+
+    if not ck:
+        # Live run 2: no surviving checkpoint does NOT mean nothing to
+        # recover — the chain offer alone is the note (or None when the
+        # session has no unfinished chains: no chain text at all, JC2
+        # target 3).
+        return chains
+
+    clear_turn_checkpoint(session_id)
     try:
         ck_ts = float(ck.get("ts", 0) or 0)
     except (TypeError, ValueError):
@@ -735,23 +757,7 @@ def consume_crash_recovery_note(session_id: str) -> str | None:
         steps = None
     if steps:
         note += "\n\n" + steps
-    # JC2 target 3: the chain offer.  Best-effort like the step-journal
-    # part — an error in the chain lookup appends nothing and never
-    # breaks the resume note.  The scan workspace is the WORKSPACE OF
-    # THE SESSION RECORD (agent-service restore runs in a service
-    # process whose cwd is NOT the workspace; live-run A + operator A
-    # review of ee05dc9e1), falling back to the process cwd only when
-    # the record has no workspace (headless CLI route).
-    try:
-        chains = _render_chain_offer(
-            session_id,
-            workspace=_session_record_workspace(session_id) or os.getcwd(),
-        )
-    except Exception as exc:
-        import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "chain offer for session %s skipped: %s", session_id, exc)
-        chains = None
+    # The chain offer was already built above (checkpoint-independent).
     if chains:
         note += "\n\n" + chains
     return note
