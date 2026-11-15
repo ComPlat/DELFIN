@@ -102,13 +102,31 @@ def _read_probe(module_name: str, how: tuple[str, str]) -> Path:
     return value
 
 
+def _probe_fresh(module_name: str, how: tuple[str, str]) -> Path:
+    """Re-run the module's code under the current environment, read the probe,
+    then put the module's original namespace back.
+
+    ``importlib.reload`` re-executes the module in the same module object, so
+    without the restore every class and constant other modules already hold
+    (``SubagentResult``, a path constant) is replaced for the rest of the test
+    process, and a later ``isinstance`` check or write sees the probe's copy."""
+    mod = importlib.import_module(module_name)
+    saved = dict(vars(mod))
+    try:
+        importlib.reload(mod)
+        return _read_probe(module_name, how)
+    finally:
+        vars(mod).clear()
+        vars(mod).update(saved)
+
+
 @pytest.fixture
 def home_tmp(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("DELFIN_STATE", raising=False)
-    os.environ.pop("DELFIN_MESSENGER_DIR", None)
+    monkeypatch.delenv("DELFIN_MESSENGER_DIR", raising=False)
     return home
 
 
@@ -120,8 +138,7 @@ def test_modules_resolve_under_home_when_state_unset(home_tmp):
     freshly computed under the exhausted environment, not an autouse
     fixture's monkeypatch of the same attribute."""
     for module_name, how, rel in PROBES:
-        importlib.reload(importlib.import_module(module_name))
-        got = _read_probe(module_name, how)
+        got = _probe_fresh(module_name, how)
         expected = Path(os.environ["HOME"]) / ".delfin" / rel
         assert got == expected, (
             f"{module_name} {how[1]} resolved to {got}; expected {expected}")
@@ -134,10 +151,9 @@ def test_modules_resolve_under_delfin_state_when_set(tmp_path, monkeypatch):
     monkeypatch.delenv("DELFIN_STATE", raising=False)
     monkeypatch.setenv("DELFIN_STATE", str(state))
     monkeypatch.setenv("HOME", str(tmp_path / "home_ignored"))
-    os.environ.pop("DELFIN_MESSENGER_DIR", None)
+    monkeypatch.delenv("DELFIN_MESSENGER_DIR", raising=False)
     for module_name, how, rel in PROBES:
-        importlib.reload(importlib.import_module(module_name))
-        got = _read_probe(module_name, how)
+        got = _probe_fresh(module_name, how)
         expected = state / rel
         assert got == expected, (
             f"{module_name} {how[1]} resolved to {got}; expected {expected} ("
