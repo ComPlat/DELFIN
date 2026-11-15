@@ -168,18 +168,79 @@ NOT_RUNNING = (' But the messenger is not running on this machine (no bridge soc
                'nothing reaches the phone until it runs.')
 
 
-def messenger_running() -> bool:
-    """Whether a messenger bridge serves on this machine: its socket exists
-    (the explicit DELFIN_MESSENGER_SOCKET, the provisioned path, or the
-    per-user default). The unit removes the socket's directory when the
-    bridge stops, so a bridge that crashes or never started has none.
-    Never raises."""
+#: The bridge's unit of the root install (scripts/pi/pi_messenger.sh, UNIT_DIR).
+PROVISIONED_UNIT = '/etc/systemd/system/delfin-messenger-bridge.service'
+
+UNAVAILABLE = ('The phone messenger is not available on this machine: no SimpleX messenger '
+               '(bridge and gateway) is set up here, as on an HPC cluster. Pair your phone '
+               'on a machine where the messenger runs, or set it up here without root: '
+               'delfin-agent messenger setup --user --accept-loopback-risk')
+STOPPED = ('The phone messenger is set up on this machine but not running (no bridge socket), '
+           'so /pair cannot reach it. Start it again (systemctl status delfin-messenger-bridge '
+           'delfin-messenger-gateway; without root: delfin-agent messenger setup --user), '
+           'then /pair.')
+
+
+def _bridge_sockets() -> list:
+    """Every place a bridge socket of this host can be: the explicit
+    DELFIN_MESSENGER_SOCKET, the provisioned path, the per-user default and
+    the rootless setup's (its units set DELFIN_MESSENGER_SOCKET for
+    themselves only, so a session process does not see it)."""
     candidates = [os.environ.get('DELFIN_MESSENGER_SOCKET', ''), PROVISIONED_SOCKET]
     try:
         from delfin.messenger.bridge_client import default_socket_path
         candidates.append(str(default_socket_path()))
     except Exception:
         pass
+    try:
+        from delfin.messenger.rootless import state_dir
+        candidates.append(str(state_dir() / 'run' / 'bridge.sock'))
+    except Exception:
+        pass
+    return candidates
+
+
+def messenger_installed() -> bool:
+    """Whether a messenger is set up on this machine, running or not: the
+    root install's bridge unit, the rootless setup's state directory, or
+    its user units. Never raises."""
+    try:
+        from delfin.messenger.rootless import UNITS, state_dir, unit_dir
+        traces = [Path(PROVISIONED_UNIT), state_dir() / 'gateway'] + [unit_dir() / u for u in UNITS]
+    except Exception:
+        traces = [Path(PROVISIONED_UNIT)]
+    for path in traces:
+        try:
+            if path.exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def messenger_here() -> bool:
+    """Whether a phone can be paired from this machine at all: a bridge
+    runs, or a messenger is set up that is stopped for now. The agent tab
+    shows its Phone button only then; a host without one (an HPC login
+    node) has nothing a phone could reach."""
+    return messenger_running() or messenger_installed()
+
+
+def pairing_unavailable() -> str:
+    """Why /pair cannot reach a messenger from here, or '' when a bridge
+    runs. Checked before a pairing request is written: without a bridge
+    nobody collects it, and the person waited 30 s for 'No answer'."""
+    if messenger_running():
+        return ''
+    return STOPPED if messenger_installed() else UNAVAILABLE
+
+
+def messenger_running() -> bool:
+    """Whether a messenger bridge serves on this machine: its socket exists
+    (_bridge_sockets). The unit removes the socket's directory when the
+    bridge stops, so a bridge that crashes or never started has none.
+    Never raises."""
+    candidates = _bridge_sockets()
     import stat
     for path in filter(None, candidates):
         try:

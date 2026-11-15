@@ -448,8 +448,10 @@ def test_bypass_asks_nothing_because_that_is_what_it_says():
     asked: list[str] = []
     perms = _net_perms("bypassPermissions")
     perms.confirm_callback = lambda n, a, prev: (asked.append(n), True)[1]
+    # A host the egress proxy knows: an unknown one is refused in bypass by
+    # the host decision (web_fetch takes it like a command), not asked.
     assert _executor()._run_permission_gate(
-        "web_fetch", {"url": "https://x/y"}, perms) is None
+        "web_fetch", {"url": "https://github.com/y"}, perms) is None
     assert asked == []
 
 
@@ -476,6 +478,8 @@ def test_an_unlocked_session_never_asks_about_the_network():
     asked: list[str] = []
     perms = _perms(locked=False)
     perms.confirm_callback = lambda n, a, prev: (asked.append(n), True)[1]
+    # A known host: the folder lock's question is what is absent here; an
+    # unknown host is asked once by the egress host decision instead.
     assert _executor()._run_permission_gate(
-        "web_fetch", {"url": "https://x"}, perms) is None
+        "web_fetch", {"url": "https://github.com"}, perms) is None
     assert asked == []

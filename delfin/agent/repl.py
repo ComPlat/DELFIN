@@ -2337,6 +2337,12 @@ class TerminalAgent:
             options=options))
 
         allowed = {o.key for o in options}
+        # What cannot be undone has a default, and it is no: Enter refuses.
+        # Everywhere else Enter stays unclaimed (_read_key): a default yes
+        # would turn approval into a rhythm.
+        enter_refuses = req.kind == tc.CONFIRM and req.is_irreversible
+        if enter_refuses:
+            allowed |= {"\r", "\n"}
         while True:
             # Answered from outside (approvals approve/deny) while the
             # dialog was waiting: it is OVER. Reading on would take the
@@ -2351,7 +2357,7 @@ class TerminalAgent:
                                  stop=lambda: getattr(req, "resolved", False))
             if not key:
                 continue                # answered while waiting: see above
-            if key in ("\x1b", "n"):
+            if key in ("\x1b", "n") or (enter_refuses and key in ("\r", "\n")):
                 if self._apply(req, self._refuse(req)):
                     self.transcript.chrome(
                         self.transcript.theme.dim("  refused"))

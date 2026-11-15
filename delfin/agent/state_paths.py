@@ -45,6 +45,23 @@ FILE_MODE = 0o600
 # Bits that must never be set on anything in the state tree.
 _SHARED_BITS = 0o077
 
+
+def state_root() -> Path:
+    """The DELFIN state root shared temp directories live under.
+
+    ``~/.delfin`` by default, overridable via the ``DELFIN_STATE``
+    environment variable (used by tests and by callers that keep state
+    elsewhere). Resolution errors fall back to ``~/.delfin`` -- a
+    missing HOME must not turn a temp-path question into a crash.
+    """
+    env = os.environ.get("DELFIN_STATE", "").strip()
+    if env:
+        return Path(env).expanduser()
+    try:
+        return Path.home() / ".delfin"
+    except Exception:  # pragma: no cover - HOME unset
+        return Path("/.delfin")
+
 # A walk over a state tree is bounded so a pathological directory (a user
 # pointing the archive at their home, a runaway trace dir) cannot turn
 # start-up into a multi-minute stat storm.
@@ -822,6 +839,11 @@ USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
     # and the launcher's atexit hook then deleted it on the way out --
     # leaving a dashboard that was still serving with no way back to it.
     ("delfin.agent.where", "record_path", "dashboard_here.json"),
+    # This host's dashboard server record (pid, port, token), its lock
+    # and a detached launcher's log. A run that drove the launcher must
+    # not leave its server where a real `delfin-voila` would open it, nor
+    # take the real one's lock.
+    ("delfin.dashboard.server_record", "_state_dir", "dashboard_server"),
     # The header's branch list (pins and hidden entries), the log of
     # deleted branches and worktrees with their undo commands, and the
     # records of running branch previews. A run that pinned a fixture

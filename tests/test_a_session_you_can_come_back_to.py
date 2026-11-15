@@ -225,7 +225,7 @@ def test_two_sessions_started_together_do_not_collide():
 def test_an_unarmed_strip_is_a_dot_that_says_the_session_ends():
     html = S._strip_html(False, "", "")
     assert "delfin-session-dot" in html and "dot on" not in html
-    assert 'title="Session ends when the window closes"' in html
+    assert 'title="This dashboard ends when the browser closes"' in html
     assert re.sub(r"<[^>]+>", "", html).strip() == "", "the strip shows text beside the dot"
 
 
@@ -542,7 +542,7 @@ def test_the_strip_cannot_be_shrunk_by_the_header():
 
     strip = s.build_status_strip()
     toggle = next(w for w in strip.children
-                  if getattr(w, "description", "") == "Keep session")
+                  if getattr(w, "description", "") == "Keep dashboard")
     assert toggle.layout.flex == "0 0 auto"
     assert strip.layout.flex == "0 0 auto"
     assert "white-space:nowrap" in s._STRIP_CSS
@@ -637,12 +637,12 @@ def test_the_toggle_reports_a_failed_write_and_does_not_stay_armed(monkeypatch, 
     monkeypatch.setattr(S, "write_record", lambda name: "")
     monkeypatch.setattr(S, "last_write_error", lambda: "PermissionError: [Errno 13] (record dir /x)")
     strip = S.build_status_strip()
-    toggle = next(w for w in strip.children if getattr(w, "description", "") == "Keep session")
+    toggle = next(w for w in strip.children if getattr(w, "description", "") == "Keep dashboard")
     note = next(w for w in strip.children if w.__class__.__name__ == "HTML" and 'class="delfin-session-strip"' in (w.value or ""))
     toggle.value = True
     assert toggle.value is False, "the control stayed armed with nothing on disk"
     assert "delfin-session-dot failed" in note.value
-    assert "Could not keep the session" in note.value and "PermissionError" in note.value
+    assert "Could not keep the dashboard" in note.value and "PermissionError" in note.value
     assert not S.is_kept_alive()
     out = capsys.readouterr().out
     assert "could NOT be kept" in out and "PermissionError" in out

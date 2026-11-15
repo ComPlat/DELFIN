@@ -2491,23 +2491,16 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
 def _metals_in_smiles(smiles: str) -> list[str]:
     """Transition-metal element symbols named in a SMILES string.
 
-    Uses the same element-token rule as delfin/utils.py:140-145 (a bare
-    1-2 letter element token, case-normalised).  Not a full SMILES parse:
-    bracket atoms like [Pd] and plain tokens both resolve, and a 2-letter
-    match requires the second letter to be lower-case, so ``C``/``Cl`` and
-    ``N``/``Na`` do not confuse it.  Good enough to answer "would the
-    auto-relativity policy apply to this system?" -- the exact question
-    delfin/utils.py:203-217 (_should_use_rel) answers from a geometry file.
+    delfin.utils.smiles_transition_metals: the element of every bracket
+    atom, so [Pd], [Pd+2], [Pd-2], [PdH], [Gd+3], [U] all resolve, while
+    out-of-bracket organic-subset text never does ("CSc1ccccc1" is
+    thioanisole, not scandium; "Cn1ccnc1" holds no copernicium).  Answers
+    "would the auto-relativity policy apply to this system?" -- the exact
+    question delfin/utils.py (_should_use_rel) answers from a geometry file.
     """
-    from delfin.utils import _TM_LIST
+    from delfin.utils import smiles_transition_metals
 
-    text = str(smiles or "")
-    found: list[str] = []
-    for match in re.finditer(r"[A-Z][a-z]?", text):
-        sym = match.group(0)
-        if sym in _TM_LIST and sym not in found:
-            found.append(sym)
-    return found
+    return smiles_transition_metals(smiles)
 
 
 def cross_key_consistency_notes(config: Mapping[str, Any]) -> list[str]:
@@ -2551,19 +2544,25 @@ def cross_key_consistency_notes(config: Mapping[str, Any]) -> list[str]:
             f"or clear solvent for an intentional gas-phase run."
         )
 
-    # 2. relativity contradicted by the system's metals.
+    # 2. relativity contradicted by the system's metals.  Only a SMILES in
+    # the CONTROL file is evidence: without one the structure lives in
+    # input_file (or the file is the define.py TEMPLATE, which
+    # config._load_template_defaults validates on every run with SMILES=
+    # empty and relativity=ZORA), and "no SMILES" is not "no metals" -- the
+    # run itself decides from the real geometry (cli.py, search_transition_metals).
     relativity = str(config.get("relativity", "") or "").strip().lower()
-    if relativity and relativity not in ("none", ""):
-        metals = _metals_in_smiles(config.get("SMILES", ""))
+    smiles = str(config.get("SMILES", "") or "").strip()
+    if relativity and relativity not in ("none", "") and smiles:
+        metals = _metals_in_smiles(smiles)
         if metals:
             from delfin.utils import classify_tm_presence
 
             tm_class = classify_tm_presence(metals)
             use_rel = tm_class in ("4d5d", "4f5f", "mixed")
         else:
-            # No transition metals at all: cli.py:1990-1994 forces
-            # relativity=none for every metal-free system, so an explicitly
-            # relativistic value is contradicted here too.
+            # No transition metals at all: cli.py forces relativity=none
+            # for every metal-free system, so an explicitly relativistic
+            # value is contradicted here too.
             use_rel = False
             tm_class = "none"
         if not use_rel:

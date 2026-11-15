@@ -1351,7 +1351,7 @@ def create_tab(ctx):
         return widgets.HBox(
             [label, drawing['buttons'][which]],
             layout=widgets.Layout(gap='10px', align_items='center',
-                                  flex_wrap='wrap', max_width='100%'))
+                                  flex_flow='row wrap', max_width='100%'))
 
     def _safe_job_name(name_raw):
         return ''.join(c for c in name_raw if c.isalnum() or c in ('_', '-'))

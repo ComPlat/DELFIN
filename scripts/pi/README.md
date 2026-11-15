@@ -280,7 +280,7 @@ What only a person can do, in this order:
   everything in the account, credentials included. Put only neutral, project
   credentials (a project KIT key, the repository deploy key, a neutral git
   identity) into it; personal ones belong in personal accounts.
-- Keep session is this box's default for the Windows launcher
+- Keep dashboard is this box's default for the Windows launcher
   (`~/.config/delfin/launcher-keep.conf`, written by `pi_install.sh`;
   `DELFIN_PI_KEEP=0` leaves the choice to the app): a disconnect leaves the
   dashboard and its agent running, the next connection returns to it.

@@ -119,6 +119,48 @@ def _provider_notes(args: argparse.Namespace) -> list[str]:
     return [note] if note else []
 
 
+def _exit_when_no_model(args: argparse.Namespace, engine, backend: str,
+                        provider: str, model: str) -> None:
+    """Stop with how to connect a model when the settings' choice cannot run.
+
+    Input: a command that takes the settings-file defaults (``chat``) and
+    names no --backend, --provider or --model of its own, the engine just
+    built, and the backend, provider and model resolved from those
+    defaults. Output: nothing when model_setup finds the selection usable;
+    else the no-model message on stderr and exit status 2, before the
+    first turn. Asked of the client the engine really built (the CLI
+    backend's program, a keyed API client): a fresh install lands here --
+    the shipped default is the CLI backend, and with its program missing
+    or too old the turn used to fail with a backend error ("unknown option
+    '--include-hook-events'"). An engine without such a client (a
+    stand-in) is not asked about.
+
+    Rejected: checking every command -- ``run``, the scheduler and the
+    benchmark pass their selection explicitly and keep their own errors;
+    checking before the engine exists, which also stopped every caller
+    that supplies its own engine.
+    """
+    if not getattr(args, "settings_defaults", False):
+        return
+    if any(getattr(args, name, "") for name in ("backend", "provider", "model")):
+        return
+    from . import api_client, model_setup
+    client = getattr(engine, "client", None)
+    if engine is None:
+        # The engine could not be built: CLIClient found no program.
+        problem = (model_setup.cli_program_problem()
+                   if backend == "cli" and provider in ("", "claude", "anthropic") else "")
+    elif isinstance(client, api_client.CLIClient):
+        problem = model_setup.cli_program_problem(getattr(client, "claude_path", None))
+    elif isinstance(client, (api_client.OpenAIClient, api_client.APIClient)):
+        problem = model_setup.selection_problem(backend, provider, model)
+    else:
+        return
+    if problem:
+        print(model_setup.no_model_message(problem), file=sys.stderr)
+        raise SystemExit(2)
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
@@ -139,23 +181,29 @@ def _build_engine(args: argparse.Namespace):
     provider = _resolve_provider(args, fallback)
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
-    engine = AgentEngine(
-        repo_dir=Path(cwd).expanduser().resolve(),
-        backend=backend,
-        provider=provider,
-        model=model,
-        mode=mode,
-        # Declared on the parser since the first version of this file and
-        # never forwarded: --effort parsed fine and changed nothing.
-        effort=getattr(args, "effort", "") or fallback.get("effort", ""),
-        permission_mode=getattr(args, "permission_mode", "") or "",
-        extra_dirs=list(getattr(args, "extra_dirs", None) or []),
-        read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
-        # None, never []: CLIClient tests the parameter for ``is not None``
-        # and an empty list would build ``--allowedTools`` with nothing
-        # after it, which restricts the session to no tools at all.
-        allowed_tools=_allowed_tools(args) or None,
-    )
+    try:
+        engine = AgentEngine(
+            repo_dir=Path(cwd).expanduser().resolve(),
+            backend=backend,
+            provider=provider,
+            model=model,
+            mode=mode,
+            # Declared on the parser since the first version of this file and
+            # never forwarded: --effort parsed fine and changed nothing.
+            effort=getattr(args, "effort", "") or fallback.get("effort", ""),
+            permission_mode=getattr(args, "permission_mode", "") or "",
+            extra_dirs=list(getattr(args, "extra_dirs", None) or []),
+            read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
+            # None, never []: CLIClient tests the parameter for ``is not None``
+            # and an empty list would build ``--allowedTools`` with nothing
+            # after it, which restricts the session to no tools at all.
+            allowed_tools=_allowed_tools(args) or None,
+        )
+    except FileNotFoundError:
+        # CLIClient refuses to exist without its program.
+        _exit_when_no_model(args, None, backend, provider, model)
+        raise
+    _exit_when_no_model(args, engine, backend, provider, model)
     _apply_run_budget(engine, args)
     _apply_tool_surface(engine, args)
     # After the client exists, because two of the three switches live on
@@ -726,6 +774,135 @@ def _continue_announced(engine, prompt_sent: str, out: dict[str, Any], *,
     return out
 
 
+#: Default for ``run --job-wait``: how long a one-shot run stays up for the
+#: jobs its session watches before it ends (and stops its own shells).
+_JOB_WAIT_DEFAULT_S = 3600
+#: How often the waiting run looks. Shells are local; a watched SLURM job is
+#: one scheduler query per look, so the look stays well apart.
+_JOB_WAIT_POLL_S = 30.0
+#: At most this many wake turns in one run, as a bound on a job loop.
+_JOB_WAIT_MAX_WAKES = 5
+
+
+def _own_running_shells(session_id: str, registry: Any = None) -> list[str]:
+    """Ids of this session's background shells that are still running."""
+    try:
+        if registry is None:
+            from . import bash_jobs as _bj
+            registry = _bj.get_registry()
+        return [j.job_id for j in registry.list_jobs(include_finished=False)
+                if str(getattr(j, "session_id", "") or "") == session_id
+                and j.poll() is None]
+    except Exception:
+        return []
+
+
+def _wait_for_watched_jobs(engine, repo: Any, out: dict[str, Any], *,
+                           wait_s: int, max_tokens: int, emit: Any = None,
+                           poll_s: float = _JOB_WAIT_POLL_S,
+                           max_wakes: int = _JOB_WAIT_MAX_WAKES,
+                           sleep: Any = None, clock: Any = None,
+                           err: Any = None) -> dict[str, Any]:
+    """Keep a one-shot run up while its session waits for a watched job.
+
+    ``watch_job`` tells the model "you will be notified in a future turn --
+    end your turn", and the terminal and the dashboard keep that promise
+    (job_wake). A one-shot run did not: it ended with the answer, its
+    background shells were stopped at exit, and nobody woke anything.
+    Seen on 2026-11-14: an agent started a calculation chain with
+    bash_background, called watch_job, ended its turn -- and the chain was
+    killed seconds later with the run, while the answer said "I'll be
+    woken when it is done".
+
+    Now, while a background shell of this session is still running, or
+    ``job_monitor.session_is_watched`` says it waits for a job it watches
+    (a SLURM job), the run stays up (one look every ``poll_s``) and, when
+    a job finished, runs a wake turn with the same message the terminal
+    sends (``job_wake.wake_prompt``, marked as a system event, not the
+    user); the engine reads the watch file at the start of that turn as it
+    does in a session. Every own shell counts, watched or not, as a
+    background command in Claude Code reports back on its own: an agent
+    that forgot watch_job still hears of its job. It stops when nothing
+    runs or is watched any more, after ``max_wakes`` wake turns, at a run
+    ceiling, or after ``wait_s`` seconds -- then it says so on stderr, and
+    the exit stops the shells as before. ``wait_s <= 0`` (``--job-wait
+    0``) is the old behaviour.
+
+    Output: the LAST turn's dict, with the earlier answers' text in front,
+    so the printed answer reads as the run happened. Never raises.
+    """
+    import time as _time
+    sleep = sleep or _time.sleep
+    clock = clock or _time.monotonic
+    err = err or sys.stderr
+    sid = str(getattr(engine, "session_id", "") or "")
+    ws = str(repo or "")
+    if wait_s <= 0 or not sid or not ws or not isinstance(out, dict):
+        return out
+    try:
+        from . import job_wake
+        from .job_monitor import session_is_watched
+        if not job_wake.wake_enabled():
+            return out
+    except Exception:
+        return out
+    def _waiting() -> bool:
+        try:
+            if session_is_watched(ws, sid):
+                return True
+        except Exception:
+            pass
+        return bool(_own_running_shells(sid))
+
+    deadline = clock() + wait_s
+    seen: set = set()
+    wakes = 0
+    told = False
+    while wakes < max_wakes:
+        if not _waiting():
+            break
+        if clock() >= deadline:
+            print(f"[run] still waiting for a background job after {wait_s} s; "
+                  "the run ends now and stops its background shells "
+                  "(--job-wait sets the limit).", file=err)
+            break
+        if not told:
+            told = True
+            print(f"[run] a background job of this session is still running; "
+                  f"waiting for it (up to {wait_s} s, --job-wait 0 ends the "
+                  "run now).", file=err)
+        sleep(poll_s)
+        try:
+            done = job_wake.finished_shells(seen, session_id=sid)
+            done = done + job_wake.finished_watched_jobs(
+                ws, seen, session_id=sid)
+        except Exception:
+            done = []
+        uniq, ids = [], set()
+        for ev in done:
+            key = str(ev.get("job_id"))
+            if key not in ids:
+                ids.add(key)
+                uniq.append(ev)
+        prompt = job_wake.wake_prompt(uniq)
+        if not prompt:
+            continue
+        try:
+            from .run_limits import ceiling_reason
+            if ceiling_reason(engine):
+                break
+        except Exception:
+            pass
+        wakes += 1
+        before = str(out.get("text") or "")
+        out = _run_once(engine, prompt, max_tokens=max_tokens, emit=emit)
+        if before and isinstance(out, dict):
+            out["text"] = before + "\n\n" + str(out.get("text") or "")
+        if not isinstance(out, dict) or out.get("error"):
+            break
+    return out
+
+
 def _display_messages(engine, limit: int = 200) -> list[dict[str, str]]:
     """A plain role/content view of the conversation, for the session file.
 
@@ -957,8 +1134,7 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
         return 2
     # The start check cmd_chat runs too (isolation_posture), once per run
     # for both doors (`run` and chat -p; neither prepare path runs it):
-    # without a layer, bypass is confirmed when a terminal can answer,
-    # else the run continues in default and says so here. After the
+    # without a layer, the run continues in default and says so here. After the
     # session is opened, as in cmd_chat, so it judges the mode the run
     # will actually have.
     from .isolation_posture import apply_at_start
@@ -1040,6 +1216,13 @@ def cmd_run(args: argparse.Namespace, *, prepare: Any = None) -> int:
                               max_tokens=int(getattr(args, "max_tokens", 0)
                                              or 0),
                               emit=_emit.get("emit"))
+    # A watched job keeps the run up and wakes it when it finishes, as the
+    # terminal and the dashboard do (_wait_for_watched_jobs).
+    out = _wait_for_watched_jobs(
+        engine, repo, out,
+        wait_s=int(getattr(args, "job_wait", _JOB_WAIT_DEFAULT_S)),
+        max_tokens=int(getattr(args, "max_tokens", 0) or 0),
+        emit=_emit.get("emit"))
     sid = _save_session(engine, repo)
 
     _end_session(engine, sid, repo, task=prompt, failed=bool(out["error"]),
@@ -2268,8 +2451,8 @@ def _start_interactive_session(args: argparse.Namespace, report,
             engine.set_kit_permission_mode(posture)
     except Exception:
         pass          # a backend with no gate has no posture to set
-    # The same start check as cmd_run: bypass without isolation is
-    # confirmed once here, else the session starts in default.
+    # The same start check as cmd_run: bypass without isolation starts
+    # in default.
     from .isolation_posture import apply_at_start
     start_notes = tuple(_provider_notes(args))
     start_notes += tuple(apply_at_start(engine, can_ask=can_ask))
@@ -5166,6 +5349,12 @@ def build_parser() -> argparse.ArgumentParser:
                           "bypassPermissions, as on chat")
     run.add_argument("--json", action="store_true",
                      help="Emit JSON instead of plain text")
+    run.add_argument("--job-wait", type=int, default=_JOB_WAIT_DEFAULT_S,
+                     dest="job_wait", metavar="SECONDS",
+                     help="Stay up this long for jobs the session watches "
+                          "and wake the agent when they finish "
+                          f"(default {_JOB_WAIT_DEFAULT_S}; 0: end with the "
+                          "answer and stop them)")
     run.add_argument("-v", "--verbose", action="store_true")
     run.set_defaults(func=cmd_run)
 
@@ -6318,8 +6507,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     tui = sub.add_parser(
         "tui",
-        help="The terminal UI: one window over all your sessions, which keep "
-             "running when it closes (sessions live in `delfin-agent service`)",
+        help="The terminal UI: one window over your sessions (they live in "
+             "`delfin-agent service`). A session this window starts ends when it "
+             "closes (ctrl+c twice) unless Keep session is on: /keep on, or --keep",
     )
     tui.add_argument("--cwd", default="", help="Workspace of the first session")
     tui.add_argument("-n", "--name", dest="session_name", default="",
@@ -6339,6 +6529,9 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--no-isolate", action="store_true")
     tui.add_argument("-v", "--verbose", action="store_true",
                      help="Show the model's thinking, as chat --verbose does")
+    tui.add_argument("--keep", action="store_true",
+                     help="Start this window's sessions with Keep session on: they keep "
+                          "running in the agent service after the window closes")
     tui.add_argument("--inline", action="store_true",
                      help="Draw under the shell's last line, the conversation in the "
                           "terminal's own scrollback, instead of taking the whole terminal")

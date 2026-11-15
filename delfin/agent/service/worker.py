@@ -2005,8 +2005,11 @@ def guard_process(kind: str) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     from .. import repl as _repl
+    from .. import repl_commands as _commands
     from .. import state_paths
 
+    # /keep is the service's switch here (repl_commands._keep).
+    _commands.UNDER_SERVICE = True
     # Before anything imports a state sink, as cli.main does.
     state_paths.scratch_state_from_environment()
     args = parse_args(argv)

@@ -99,6 +99,9 @@ def test_the_session_on_screen_is_the_one_the_dashboard_sees(home):
 
 
 def test_the_sessions_that_were_open_come_back(home):
+    """Every open session comes back, where it worked; the one in front is
+    loaded at once, the others when clicked (2026-11-13: a session leaves
+    the list only by x, Keep session decides only whether it kept running)."""
     tmp, saved = home
     build = _Build()
     _widget, refs = AS.create_tab(_ctx(tmp), build=build)
@@ -110,9 +113,13 @@ def test_the_sessions_that_were_open_come_back(home):
 
     again = _Build()
     _widget, refs2 = AS.create_tab(_ctx(tmp), build=again)
-    assert [c.initial_session_id for c in again.contexts] == ["s-launch", "s-calc"]
-    assert [c.agent_workspace for c in again.contexts] == [
+    assert [r["workspace"] for r in refs2["sessions"]()] == [
         str(tmp / "launch"), str(tmp / "calc")]
+    assert [c.initial_session_id for c in again.contexts] == ["s-calc"]
+    refs2["sessions"]()[0]["title_btn"].click()
+    assert [c.initial_session_id for c in again.contexts] == ["s-calc", "s-launch"]
+    assert [c.agent_workspace for c in again.contexts] == [
+        str(tmp / "calc"), str(tmp / "launch")]
 
 
 def test_a_closed_session_stops_and_is_not_reopened(home):

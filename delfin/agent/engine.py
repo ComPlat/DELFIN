@@ -12,7 +12,14 @@ from typing import Any, Callable
 
 from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
-from .harness_rows import HARNESS_KEY, HarnessRow, HarnessText, is_harness_row
+from .harness_rows import (
+    HARNESS_KEY,
+    HarnessRow,
+    HarnessText,
+    SteeringBlock,
+    is_harness_row,
+    typed_text,
+)
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
@@ -955,6 +962,16 @@ class AgentEngine:
 
     # -- what a turn delegated ---------------------------------------------
 
+    def _budget_ledger(self):
+        """The BudgetLedger this engine delegates its budget methods to;
+        created on first use and kept on the engine."""
+        from .budget_ledger import BudgetLedger
+        led = getattr(self, "_budget_ledger_obj", None)
+        if led is None or led._engine is not self:
+            led = BudgetLedger(self)
+            self._budget_ledger_obj = led
+        return led
+
     def delegate_spend(self) -> "_agent_metrics.DelegateLedger":
         """This session's delegated spend: per turn, per session, and the
         background part that belongs to no turn.
@@ -962,11 +979,7 @@ class AgentEngine:
         Handed out as the ledger rather than as three numbers so a caller
         cannot read the per-turn bucket where it meant the session's.
         """
-        ledger = getattr(self, "_delegate_spend", None)
-        if not isinstance(ledger, _agent_metrics.DelegateLedger):
-            ledger = _agent_metrics.DelegateLedger()
-            self._delegate_spend = ledger
-        return ledger
+        return self._budget_ledger().delegate_spend()
 
     def _meter_delegate_spend(self) -> bool:
         """Route every delegated run through a counter that knows which
@@ -990,33 +1003,7 @@ class AgentEngine:
         Returns True when a meter is in place. False means this backend
         has no permissions object or no runner, i.e. it cannot delegate.
         """
-        perms = self.kit_permissions
-        if perms is None:
-            return False
-        runner = getattr(perms, "subagent_runner", None)
-        if runner is None:
-            return False
-        inner = getattr(runner, "_delegate_meter_inner", None) or runner
-
-        def _metered(*args, **kwargs):
-            # Read at ENTRY, not at return: a background delegate comes
-            # back long after the turn that started it, and the turn
-            # running by then is exactly the one it must NOT be charged
-            # to.
-            started = self._turn_id if self._turn_in_flight else 0
-            payload = inner(*args, **kwargs)
-            try:
-                self._book_delegate_spend(payload, started_turn=started)
-            except Exception:
-                pass
-            return payload
-
-        _metered._delegate_meter_inner = inner
-        try:
-            perms.subagent_runner = _metered
-        except Exception:
-            return False
-        return True
+        return self._budget_ledger()._meter_delegate_spend()
 
     def _book_delegate_spend(self, payload, *, started_turn: int) -> None:
         """Charge one finished delegate, to exactly one place.
@@ -1033,19 +1020,7 @@ class AgentEngine:
         one of the per-turn or the background bucket, so no delegate can
         be counted twice however often the numbers are read afterwards.
         """
-        ledger = self.delegate_spend()
-        one = _agent_metrics.DelegateSpend()
-        if not one.add_payload(payload,
-                               provider=str(getattr(self, "provider", "")
-                                            or "")):
-            return
-        with self._lock:
-            same_turn = bool(
-                started_turn
-                and getattr(self, "_turn_in_flight", False)
-                and getattr(self, "_turn_id", 0) == started_turn)
-            (ledger.turn if same_turn else ledger.background).merge(one)
-            ledger.session.merge(one)
+        return self._budget_ledger()._book_delegate_spend(payload, started_turn=started_turn)
 
     def set_kit_confirm_callback(self, callback) -> bool:
         """Bind/unbind the KIT-Toolbox confirmation callback at runtime.
@@ -1863,6 +1838,13 @@ class AgentEngine:
                 if tail:
                     tail = untrusted.wrap(f"bash_job:{stream}", tail)
                 submitted = ev.get("watched_slurm_jobs") or []
+                if submitted:
+                    from delfin.agent.api_client import (
+                        _record_submitted_jobs)
+                    _record_submitted_jobs(
+                        perms, str(ev.get("command") or ""),
+                        "".join(f"Submitted batch job {j}\n"
+                                for j in submitted))
                 events.append(
                     f"- bash job {ev.get('job_id')} [{state}, "
                     f"{ev.get('runtime_s', 0):.0f}s] "
@@ -4751,6 +4733,24 @@ class AgentEngine:
                 if not _announced:
                     self._stall_progress()
 
+        # Show-molecule steering: a finished answer that embeds a
+        # hand-written 3D viewer (iframe / CDN viewer script) while the turn
+        # never called show_molecule gets one short hint naming the tool --
+        # the card it renders is the working alternative, the markup is not.
+        # Best-effort: the hint never breaks the turn, the answer text is
+        # kept, never rewritten.
+        try:
+            from delfin.agent.show_molecule_guard import caveat_for
+            _hint = caveat_for(
+                full_response,
+                show_molecule_called="show_molecule" in (
+                    getattr(self, "_last_turn_tools", None) or ()),
+            )
+            if _hint:
+                full_response = full_response.rstrip() + _hint
+        except Exception:
+            pass
+
         # A turn that announced an action while plan mode refused its calls
         # says so in the ANSWER, not only in a notice that scrolls past.
         # Reports 20261005-135825 / 20261005-140408: four turns of "Let me
@@ -6455,11 +6455,16 @@ class AgentEngine:
 
     @staticmethod
     def _with_turn_tail(content: Any, tail: str) -> Any:
-        """``content`` with the tail appended, in the content's own shape."""
+        """``content`` with the tail appended, in the content's own shape.
+
+        The result carries where the user's part ends (harness_rows:
+        ``TypedText.typed``, a ``SteeringBlock``), with the same bytes on
+        the wire: a reader of the user's words (the tainted-turn gate)
+        takes the typed part, not "this session may use" in the tail."""
         if isinstance(content, list):
-            return list(content) + [{"type": "text", "text": tail}]
+            return list(content) + [SteeringBlock(type="text", text=tail)]
         base = "" if content is None else str(content)
-        return f"{base}\n\n{tail}" if base else tail
+        return typed_text(f"{base}\n\n{tail}" if base else tail, base)
 
     def _drop_stale_steering_tails(self) -> int:
         """Remove the tails of every message but the newest user message;
@@ -7845,19 +7850,7 @@ class AgentEngine:
         cost without this). 0 disables either dimension. An explicit
         ``self.run_budget_usd``/``self.run_budget_s`` attribute (set e.g. by
         the scheduler daemon per entry) overrides the settings values."""
-        usd = float(getattr(self, "run_budget_usd", 0.0) or 0.0)
-        secs = float(getattr(self, "run_budget_s", 0.0) or 0.0)
-        if usd <= 0 or secs <= 0:
-            try:
-                from delfin.user_settings import load_settings as _ls
-                ag = (_ls() or {}).get("agent", {}) or {}
-                if usd <= 0:
-                    usd = max(0.0, float(ag.get("run_budget_usd", 0.0) or 0.0))
-                if secs <= 0:
-                    secs = max(0.0, float(ag.get("run_budget_s", 0.0) or 0.0))
-            except Exception:
-                pass
-        return usd, secs
+        return self._budget_ledger()._run_budget()
 
     def _run_ceiling_hit(self, spent_this_turn: float = 0.0) -> str:
         """The run ceiling a RUNNING turn has reached, or "".
@@ -7872,35 +7865,7 @@ class AgentEngine:
         Consulted by the client between tool rounds (``run_ceiling``);
         the 110 % gate before a turn stays. Never raises.
         """
-        hit = ""
-        try:
-            usd, secs = self._run_budget()
-            if secs > 0:
-                import time as _t
-                started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
-                if started > 0 and _t.time() - started >= secs:
-                    hit = "run_budget_s"
-            if not hit and usd > 0:
-                spent = (float(getattr(self, "cost_usd", 0.0) or 0.0)
-                         + max(0.0, float(spent_this_turn or 0.0)))
-                if spent >= usd:
-                    hit = "run_budget_usd"
-        except Exception:
-            return ""
-        if hit:
-            # Once per run (the level dedups): the turn's own notice goes
-            # to the stream, this one to whoever is not watching it.
-            try:
-                from .run_limits import resume_hint
-                self._emit_budget_attention(
-                    "ceiling", "Run stopped: budget ceiling reached",
-                    f"agent.{hit} was reached inside a turn; the turn "
-                    "stopped between two tool rounds, its work is kept and "
-                    "the session is saved. To continue: "
-                    + resume_hint(self, hit))
-            except Exception:
-                pass
-        return hit
+        return self._budget_ledger()._run_ceiling_hit(spent_this_turn)
 
     def _run_budget_turns(self) -> int:
         """Turn ceiling for this run — 0 disables it.
@@ -7911,15 +7876,7 @@ class AgentEngine:
         :meth:`_usd_budget_enforced`). Same precedence as the other two:
         an explicit attribute set per scheduler entry beats the setting.
         """
-        turns = int(getattr(self, "run_budget_turns", 0) or 0)
-        if turns <= 0:
-            try:
-                from delfin.user_settings import load_settings as _ls
-                ag = (_ls() or {}).get("agent", {}) or {}
-                turns = int(ag.get("run_budget_turns", 0) or 0)
-            except Exception:
-                turns = 0
-        return max(0, turns)
+        return self._budget_ledger()._run_budget_turns()
 
     def _turns_taken(self) -> int:
         """Turns this run has actually run, priced or not.
@@ -7929,9 +7886,7 @@ class AgentEngine:
         switches to a priced one would otherwise stop spending its
         ceiling half way through.
         """
-        return (int(getattr(self, "_measured_cost_turns", 0) or 0)
-                + int(getattr(self, "_non_billing_turns", 0) or 0)
-                + int(getattr(self, "_unpriced_turns", 0) or 0))
+        return self._budget_ledger()._turns_taken()
 
     def _client_retry_count(self) -> int | None:
         """How often the client re-issued this turn's request, if it says.
@@ -7999,22 +7954,7 @@ class AgentEngine:
         Everything else is UNKNOWN: no rate, nothing observed, and a 0.0
         in ``self.cost_usd`` that every USD gate reads as thrift.
         """
-        from . import pricing as _pricing
-        state = _pricing.resolve(
-            str(getattr(self.client, "model", "") or ""),
-            str(getattr(self, "provider", "") or ""),
-        ).state
-        if state == _pricing.NON_BILLING:
-            self._non_billing_turns += 1
-            self._last_turn_price_state = "non_billing"
-        elif (state == _pricing.PRICED
-                or float(cost_delta or 0.0) > 0
-                or getattr(self, "backend", "") == "cli"):
-            self._measured_cost_turns += 1
-            self._last_turn_price_state = "measured"
-        else:
-            self._unpriced_turns += 1
-            self._last_turn_price_state = "unknown"
+        self._budget_ledger()._note_turn_price_state(cost_delta)
 
     def _usd_budget_enforced(self) -> bool:
         """Whether the configured USD ceiling actually bounds this run.
@@ -8032,8 +7972,7 @@ class AgentEngine:
         a measurement, its ceiling holds, and calling it unmeasured would
         be a false statement in the other direction.
         """
-        usd, _secs = self._run_budget()
-        return usd > 0 and int(getattr(self, "_unpriced_turns", 0) or 0) == 0
+        return self._budget_ledger()._usd_budget_enforced()
 
     def _unmeasured_budget_block(self) -> str:
         """Say ONCE that no monetary ceiling is in force, and what is.
@@ -8044,51 +7983,7 @@ class AgentEngine:
         Turn counts and token totals are always measured, so they are what
         this offers in place of the ceiling that cannot be enforced.
         """
-        usd, secs = self._run_budget()
-        unpriced = int(getattr(self, "_unpriced_turns", 0) or 0)
-        if (usd <= 0 or unpriced == 0
-                or getattr(self, "_unmeasured_budget_notice_shown", False)):
-            return ""
-        self._unmeasured_budget_notice_shown = True
-        turn_cap = self._run_budget_turns()
-        # The prompt reaches the model and nobody else. A run budget is
-        # what makes an unattended run deployable, so the one fact that
-        # it is not in force has to reach whoever is not watching.
-        self._emit_budget_attention(
-            "unenforceable",
-            "Run budget: the USD ceiling is not in force",
-            f"{unpriced} turn(s) ran on a model with no published rate, so "
-            f"the ${usd:.2f} ceiling cannot be enforced and neither can the "
-            f"per-turn cost breaker."
-            + (f" The {turn_cap}-turn ceiling IS in force."
-               if turn_cap > 0 else
-               " Set agent.run_budget_turns or agent.run_budget_s for a "
-               "ceiling that can be."))
-        turns = (unpriced + int(getattr(self, "_measured_cost_turns", 0) or 0)
-                 + int(getattr(self, "_non_billing_turns", 0) or 0))
-        tok_in = int(self.token_usage.get("input", 0) or 0)
-        tok_out = int(self.token_usage.get("output", 0) or 0)
-        lines = [
-            "# Run budget NOT enforceable in USD (auto-injected, once)",
-            f"- {unpriced} of {turns} turn(s) so far ran on a model with no "
-            f"published rate, so their cost was never measured. The "
-            f"${usd:.2f} ceiling is not in force, and neither is the "
-            f"per-turn cost breaker.",
-            f"- Measured instead: {turns} turn(s), {tok_in:,} input + "
-            f"{tok_out:,} output tokens. Judge the size of this run by "
-            f"those, not by a dollar figure.",
-        ]
-        if turn_cap > 0:
-            lines.append(f"- The {turn_cap} turn(s) ceiling IS measured and "
-                         "still ends this run.")
-        if secs > 0:
-            lines.append(f"- The {secs:.0f}s wall-clock ceiling IS measured "
-                         "and still ends this run.")
-        if turn_cap <= 0 and secs <= 0:
-            lines.append("- For a ceiling that can be enforced, set "
-                         "agent.run_budget_turns or agent.run_budget_s, or "
-                         "pick a model id with a published rate.")
-        return "\n".join(lines)
+        return self._budget_ledger()._unmeasured_budget_block()
 
     def _run_budget_status(self) -> tuple[float, bool]:
         """(worst fraction spent, exhausted). Fraction is max over the
@@ -8097,8 +7992,7 @@ class AgentEngine:
         The USD term is a sum over measurable turns only — see
         :meth:`_usd_budget_enforced` for what it cannot see.
         """
-        frac, exhausted, _dim = self._run_budget_detail()
-        return frac, exhausted
+        return self._budget_ledger()._run_budget_status()
 
     def _run_budget_detail(self) -> tuple[float, bool, str]:
         """As :meth:`_run_budget_status`, plus the setting that is worst.
@@ -8106,25 +8000,7 @@ class AgentEngine:
         A refusal that names ``run_budget_usd`` when the wall clock or the
         turn count stopped the run sends its reader to the wrong dial.
         """
-        usd, secs = self._run_budget()
-        turns_cap = self._run_budget_turns()
-        frac, dim = 0.0, ""
-        if usd > 0:
-            share = float(self.cost_usd) / usd
-            if share > frac:
-                frac, dim = share, "agent.run_budget_usd"
-        if secs > 0:
-            import time as _t
-            started = float(getattr(self, "_run_started_at", 0.0) or 0.0)
-            if started > 0:
-                share = (_t.time() - started) / secs
-                if share > frac:
-                    frac, dim = share, "agent.run_budget_s"
-        if turns_cap > 0:
-            share = float(self._turns_taken()) / turns_cap
-            if share > frac:
-                frac, dim = share, "agent.run_budget_turns"
-        return frac, frac >= 1.0, dim
+        return self._budget_ledger()._run_budget_detail()
 
     def _emit_budget_attention(self, level: str, title: str,
                                detail: str) -> None:
@@ -8139,20 +8015,7 @@ class AgentEngine:
         doctor. Best-effort: a notice must never break the turn it
         describes.
         """
-        try:
-            if level in self._budget_attention_levels:
-                return
-            self._budget_attention_levels.add(level)
-            from delfin.agent.attention import emit_attention
-            emit_attention(
-                "budget_warning",
-                session_id=str(getattr(self, "session_id", "") or ""),
-                title=title[:200],
-                detail=detail[:400],
-                workspace=str(getattr(self, "repo_dir", "") or ""),
-            )
-        except Exception:
-            pass
+        return self._budget_ledger()._emit_budget_attention(level, title, detail)
 
     def _build_budget_block(self) -> str:
         """Per-turn budget status for the prompt: silent when unconfigured
@@ -8163,67 +8026,14 @@ class AgentEngine:
         threshold, because the threshold is exactly what an unpriced run
         can never reach: its fraction stays at 0% however long it runs.
         """
-        parts: list[str] = []
-        try:
-            parts.append(self._unmeasured_budget_block())
-        except Exception:
-            pass
-        try:
-            frac, exhausted = self._run_budget_status()
-        except Exception:
-            frac, exhausted = 0.0, False
-        if frac >= 0.8:
-            pct = min(999, int(frac * 100))
-            usd, secs = self._run_budget()
-            turn_cap = self._run_budget_turns()
-            ceiling = ", ".join(
-                [p for p in (f"${usd:.2f}" if usd > 0 else "",
-                             f"{secs:.0f}s" if secs > 0 else "",
-                             f"{turn_cap} turns" if turn_cap > 0 else "")
-                 if p])
-            if exhausted:
-                parts.append(
-                    "# Run budget EXHAUSTED\n"
-                    f"- {pct}% of this run's budget is spent. Finish your "
-                    "CURRENT sentence of work only: save state, mark task "
-                    "statuses honestly, and summarise what remains. No new "
-                    "work."
-                )
-                self._emit_budget_attention(
-                    "exhausted",
-                    "Run budget exhausted — the agent is wrapping up",
-                    f"{pct}% of the run budget ({ceiling}) is spent. The "
-                    f"agent finishes the current step and starts no new "
-                    f"work. Raise agent.run_budget_usd / run_budget_s or "
-                    f"start a new run to continue.")
-            else:
-                parts.append(
-                    "# Run budget wind-down (auto-injected)\n"
-                    f"- {pct}% of this run's budget is spent. Start wrapping "
-                    "up NOW: complete or checkpoint the current step, "
-                    "commit/save state, mark tasks, and summarise open work. "
-                    "If a follow-up run makes sense, note exactly where to "
-                    "resume. Do not start new large work items."
-                )
-                self._emit_budget_attention(
-                    "wind_down",
-                    "Run budget at 80% — the agent is winding down",
-                    f"{pct}% of the run budget ({ceiling}) is spent. The "
-                    f"agent is checkpointing and will stop soon.")
-        return "\n\n".join(p for p in parts if p)
+        return self._budget_ledger()._build_budget_block()
 
     def _cost_hard_cap(self) -> float:
         """Per-turn hard cost ceiling in USD — a runaway circuit-breaker, NOT a
         cumulative session budget. The default is deliberately very high so it
         only ever trips on a loop gone wrong, never on normal use. 0 disables
         it. Configurable via settings ``agent.cost_hard_limit_usd``."""
-        try:
-            from delfin.user_settings import load_settings as _ls
-            v = ((_ls() or {}).get("agent", {}) or {}).get(
-                "cost_hard_limit_usd", 50.0)
-            return max(0.0, float(v))
-        except Exception:
-            return 50.0
+        return self._budget_ledger()._cost_hard_cap()
 
     def _open_task_count(self) -> int:
         """Open (pending / in-progress / blocked) tasks of this session's

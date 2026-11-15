@@ -120,10 +120,23 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 
 ### Install methods
 
-**Installer (any Linux workstation or cluster login node):**
+**Installer (any Linux workstation or cluster login node):** two commands are a complete first install.
 ```bash
 git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
-bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools, Ketcher
+bash ~/software/delfin/install.sh
+```
+
+Before it changes anything, the installer checks what it needs — curl or wget, tar, git, a writable `~/software` and `$HOME`, about 6 GB of free disk space for the default (3 GB with `--core`, 20 GB with `--all`), a C compiler where OpenMPI has to be built — and stops with what to install when something is missing. A run takes a few minutes plus the OpenMPI build where one is needed (about 25 minutes). Its whole output is kept in `~/software/logs/`; when a step fails, it names the step, and running the same command again continues from what is already in place. It ends with how to start:
+
+```bash
+source ~/.delfin_env.sh       # a new shell does this by itself
+delfin-voila                  # the dashboard: open the URL it prints
+cd ~/calc && delfin-agent     # the agent in a terminal, working in that folder
+```
+
+On a cluster login node the dashboard listens on 127.0.0.1 only; from your own computer, `ssh -L 8866:127.0.0.1:8866 USER@LOGIN-NODE`, then open the printed URL there. The agent needs a language model: store a key with `delfin-agent credentials set KIT_TOOLBOX_API_KEY` (or `OPENAI_API_KEY`), or run a local OpenAI-compatible server, then choose the provider and model in the dashboard's DELFIN Agent tab; until one is connected, that tab and `delfin-agent` say how. Where `$HOME` has a small quota, clone into a workspace and pass `--prefix` there; the tools of `~/.delfin` (about 1 GB for the default) and the pip cache in `~/.cache` stay in `$HOME`. An older DELFIN venv activated from `~/.bashrc` keeps the new one from being activated; the installer names such a line.
+
+```bash
 bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks included (several GB)
 bash ~/software/delfin/install.sh --only crest,gxtb
 bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
@@ -264,15 +277,29 @@ Some tabs are hidden by default and are enabled in Settings.
 
 ```bash
 delfin-voila                 # 127.0.0.1:8866, prints a URL with an access token
+delfin-voila status          # is it running, its URL, the kept dashboards
+delfin-voila stop            # end it (kept agent sessions go on in the agent service)
 delfin-voila --port 9000     # custom port
 delfin-voila --dark          # dark theme
-delfin-voila --keep          # run inside a tmux session, survives a dropped terminal
+delfin-voila --keep          # every window starts with Keep dashboard on
 delfin-voila --resume SID    # reopen a previous agent session
+delfin-voila --foreground    # run in this terminal; Ctrl+C or closing it ends it
 
 # On HPC/login nodes keep the default 127.0.0.1 bind and use an SSH tunnel.
 # A direct network bind needs an explicit override:
 delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
+
+Typed at a terminal, `delfin-voila` starts the server in the background,
+prints its URL and returns the prompt: closing the terminal or a dropped SSH
+connection ends nothing. There is one server per user and host; a second
+`delfin-voila` opens the running one. Dashboards with **Keep dashboard** on
+are listed by `delfin-voila status` and in the header's **Dashboards** menu
+(Open, End, New dashboard). A server without a window, a kept dashboard or a
+running kernel ends itself after 10 minutes
+(`DELFIN_DASHBOARD_IDLE_EXIT_MINUTES`, `0` keeps it up). A launch without a
+terminal (a script, systemd, launchd, a SLURM job) and one inside tmux or
+screen stays in the foreground as before.
 
 Windows SSH desktop launcher (OTP, separate working terminal, tmux reconnect):
 [Setup and installation](tools/windows-launcher/README.md). Copy that folder to your Windows PC.

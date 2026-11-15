@@ -42,8 +42,9 @@ import os
 import time
 import uuid
 from pathlib import Path
+from .state_paths import state_root
 
-_DIR = Path.home() / ".delfin" / "session_inbox"
+_DIR = state_root() / "session_inbox"
 _MAX_TEXT = 4000
 # At most this many messages reach one prompt; older ones are counted, not read.
 _MAX_TAKE = 20

@@ -17,13 +17,14 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any
 
 from . import german as _german
 from . import safe_git
 
 
-_DEFAULT_PATH = Path.home() / ".delfin" / "agent_memory.json"
+_DEFAULT_PATH = state_root() / "agent_memory.json"
 _STOPWORDS = {
     "the", "and", "for", "with", "this", "that", "from", "into", "your",
     "about", "task", "user", "agent", "project", "repo", "code", "file",
@@ -603,7 +604,7 @@ _office_ws_cache: set[str] | None = None
 
 
 def _office_ws_file() -> Path:
-    return Path.home() / ".delfin" / "office_workspaces.json"
+    return state_root() / "office_workspaces.json"
 
 
 def _load_office_workspaces() -> set[str]:
@@ -1026,7 +1027,7 @@ def _private_dir(path: Path) -> Path:
     caller's write fails on its own terms if the directory is unusable.
     """
     path = Path(path)
-    root = Path.home() / ".delfin"
+    root = state_root()
     try:
         inside = path == root or root in path.parents
     except Exception:
@@ -1077,7 +1078,7 @@ def _delfin_memory_dir(repo_root: Path) -> Path:
     memory`` (not ``~/.claude`` — a different tool's namespace). Migrates
     an existing store from the legacy ~/.claude location on first access."""
     slug = _project_slug(repo_root)
-    new = Path.home() / ".delfin" / "projects" / slug / "memory"
+    new = state_root() / "projects" / slug / "memory"
     _migrate_legacy_dir(
         Path.home() / ".claude" / "projects" / slug / "memory", new)
     return new
@@ -1087,10 +1088,10 @@ def _delfin_global_memory_dir() -> Path:
     """DELFIN's USER-WIDE memory store: ``~/.delfin/memory``. Same layout
     as the per-project store (typed files + MEMORY.md index) but holds
     facts that cross repos — user identity and standing feedback."""
-    return Path.home() / ".delfin" / "memory"
+    return state_root() / "memory"
 
 
-_MEMORY_WRITE_LOCK = Path.home() / ".delfin" / "memory_writes"
+_MEMORY_WRITE_LOCK = state_root() / "memory_writes"
 
 
 class MemoryRefused(ValueError):
@@ -1181,7 +1182,7 @@ def _delfin_plans_dir(repo_root: Path) -> Path:
     user can re-open them in a later session. Under DELFIN's own ~/.delfin
     (migrated from the legacy ~/.claude location)."""
     slug = _project_slug(repo_root)
-    new = Path.home() / ".delfin" / "projects" / slug / "plans"
+    new = state_root() / "projects" / slug / "plans"
     _migrate_legacy_dir(
         Path.home() / ".claude" / "projects" / slug / "plans", new)
     return new

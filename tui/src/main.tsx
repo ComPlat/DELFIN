@@ -24,12 +24,12 @@ import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
 import { worktreeRetryOf } from "./commands"
-import { START_HINT, entryOf, settingsFor } from "./entry"
+import { START_HINT, entryOf, offersRunningFirst, settingsFor } from "./entry"
 import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
 import { EmptySessions } from "./empty"
-import { leavingNote } from "./leaving"
+import { hostedOf, keptOf, leavingNote, startedHere } from "./leaving"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
@@ -257,6 +257,8 @@ function resumeSettings(): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   if (start.fake) out.fake = true
   if (start.fakeDelay !== undefined) out.fakeDelay = start.fakeDelay
+  // A window started with --keep starts what it resumes kept as well.
+  if (start.keep === true) out.keep = true
   return out
 }
 
@@ -290,7 +292,7 @@ async function openFirst(): Promise<string> {
   }
   const { verbose: _verbose, ...settings } = start
   const created = await withReplay(store,
-    () => connection.rpc.request("session.create", { ...settings, cwd: String(start.cwd ?? process.cwd()) }),
+    () => connection.rpc.request("session.create", startedHere({ ...settings, cwd: String(start.cwd ?? process.cwd()) })),
     (answer) => {
       const id = answer.sessionId as string
       // A new one -- not --continue nor --resume <id>: those open one that
@@ -346,8 +348,8 @@ async function switchTo(id: string, workspace: string, options: SwitchOptions = 
     if (!running) {
       // The id the resumed session runs under is the one to attach to.
       const created = await connection.rpc.request("session.create",
-                                                   { cwd: workspace || process.cwd(), resume: id, attach: false,
-                                                     ...(options.fork ? { fork: true } : {}), ...resumeSettings() })
+                                                   startedHere({ cwd: workspace || process.cwd(), resume: id, attach: false,
+                                                     ...(options.fork ? { fork: true } : {}), ...resumeSettings() }))
       target = String(created.sessionId)
     }
     if (mine !== wanted) return { shown: false }
@@ -479,9 +481,9 @@ async function startSession(options: NewOptions = {}): Promise<Started> {
   let shown = false
   try {
     await withReplay(store,
-      () => connection.rpc.request("session.create", { ...settings, ...brief, ...named,
+      () => connection.rpc.request("session.create", startedHere({ ...settings, ...brief, ...named,
                                                        ...(options.retry ? { initProject: true } : {}),
-                                                       cwd: options.cwd || String(start.cwd ?? process.cwd()) }),
+                                                       cwd: options.cwd || String(start.cwd ?? process.cwd()) })),
       (answer) => {
         id = answer.sessionId as string
         // A plain new one; one about an attention item carries what it is
@@ -604,7 +606,8 @@ async function openItem(item: AttentionItem): Promise<string | null> {
 let current = ""
 let quitting = false
 
-/** Leave the window; the sessions keep running in the agent service. A
+/** Leave the window. A session it started ends (saved) unless Keep session
+ *  was switched on (/keep on); a kept one keeps running in the service. A
  *  second ctrl+d while leaving (a service that does not answer) leaves at
  *  once. */
 function quit(): void {
@@ -643,7 +646,8 @@ function printWhenGone(): void {
   const note = leavingNote({
     problem: connection.problem || undefined,
     session: s ? { id: s.id, title: s.title || s.summary?.title || "", state: s.state, ended: s.ended,
-                   discarded: empties.wasEnded(s.id) } : undefined,
+                   discarded: empties.wasEnded(s.id), kept: keptOf(s.summary),
+                   hosted: hostedOf(s.summary) } : undefined,
   })
   if (!note) return
   process.once("exit", () => {
@@ -703,10 +707,11 @@ const pins = Pins.load()
 const agentScreen = full || (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.env.STY ? "footer" : "alternate")) === "footer"
   ? undefined : createAgentScreen(renderer, view.queue)
 
-// `--resume` without an id: the picker comes first; what is picked is
-// opened, esc starts a new session as a plain start does.
+// `--resume` without an id -- or a plain start while sessions already
+// run -- puts the picker first: what is picked is opened, esc starts a
+// new session as a plain start does.
 let pickedAtStart: (picked: { id: string; workspace: string } | null) => void = () => {}
-const startPick = entry.kind === "pick"
+const startPick = entry.kind === "pick" || offersRunningFirst(entry, hello.sessions as { state?: string }[], start)
   ? new Promise<{ id: string; workspace: string } | null>((resolve) => { pickedAtStart = resolve })
   : null
 const resumeAtStart = startPick ? {

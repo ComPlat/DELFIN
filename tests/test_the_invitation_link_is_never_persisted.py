@@ -51,6 +51,7 @@ def acct(tmp_path, monkeypatch):
     monkeypatch.setattr(audit_log, "_default_log_path", lambda: tmp_path / "audit.log")
     monkeypatch.setattr(session_store, "_SESSIONS_DIR", tmp_path / "sessions")
     monkeypatch.setattr(outcome_tracker, "_DEFAULT_PATH", tmp_path / "outcome_history.jsonl")
+    monkeypatch.setattr(pairing, "_unavailable", lambda: "")   # a messenger runs on this host
     account = Account(tmp_path, monkeypatch)
     account.tmp = tmp_path
     return account

@@ -379,6 +379,16 @@ export interface ContextEvent {
   "ts": number
   "seq": number
 }
+export interface DashboardChatEvent {
+  "v": number
+  "base"?: number | null
+  "keep"?: number | null
+  "tail"?: string | null
+  "html"?: string | null
+  "type": "dashboard.chat"
+  "session": string
+  "ts": number
+}
 export interface WorkerEvents {
   "worker.ready": WorkerReadyEvent
   "session.info": SessionInfoEvent
@@ -404,6 +414,7 @@ export interface WorkerEvents {
   "permission.asked": PermissionAskedEvent
   "permission.resolved": PermissionResolvedEvent
   "context": ContextEvent
+  "dashboard.chat": DashboardChatEvent
 }
 export interface HelloParams {
   "protocolVersion": number
@@ -435,6 +446,7 @@ export interface SessionCreateParams {
   "worktree"?: boolean | null
   "initProject"?: boolean | null
   "untitled"?: boolean | null
+  "keep"?: boolean | null
 }
 export interface SessionAttachParams {
   "sessionId": string
@@ -451,6 +463,19 @@ export interface SessionPendingParams {
 }
 export interface SessionDetachParams {
   "sessionId": string
+  "release"?: boolean | null
+}
+export interface SessionHostParams {
+  "sessionId": string
+  "cwd": string
+  "title"?: string | null
+  "keep"?: boolean | null
+  "info"?: Record<string, unknown> | null
+  "fake"?: boolean | null
+}
+export interface SessionSetKeepParams {
+  "sessionId": string
+  "keep": boolean
 }
 export interface SessionMessageParams {
   "key": string
@@ -587,6 +612,8 @@ export interface ServiceRequests {
   "session.merge": SessionMergeParams
   "session.pending": SessionPendingParams
   "session.detach": SessionDetachParams
+  "session.host": SessionHostParams
+  "session.setKeep": SessionSetKeepParams
   "session.message": SessionMessageParams
   "sessions.past": SessionsPastParams
   "service.status": ServiceStatusParams
@@ -664,6 +691,14 @@ export interface SessionPendingResult {
 }
 export interface SessionDetachResult {
   "detached": boolean
+}
+export interface SessionHostResult {
+  "hosted": boolean
+  "keep": boolean
+  "history": boolean
+}
+export interface SessionSetKeepResult {
+  "keep": boolean
 }
 export interface SessionMessageResult {
   "sent": boolean
@@ -817,6 +852,8 @@ export interface ServiceResults {
   "session.attach": SessionAttachResult
   "session.pending": SessionPendingResult
   "session.detach": SessionDetachResult
+  "session.host": SessionHostResult
+  "session.setKeep": SessionSetKeepResult
   "session.message": SessionMessageResult
   "sessions.past": SessionsPastResult
   "service.status": ServiceStatusResult
@@ -901,6 +938,8 @@ export interface SessionSummary {
   "answer"?: string | null
   "name"?: string | null
   "lastInput"?: number | null
+  "keep"?: boolean | null
+  "host"?: string | null
 }
 
 export interface AttentionItem {

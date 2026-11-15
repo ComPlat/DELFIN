@@ -461,7 +461,11 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             version = transcript.version
             if version != view["shown"]:
                 view["shown"] = version
-                value = render(transcript)
+                with transcript.lock:
+                    mirrored = transcript.chat_html
+                # A session another dashboard hosts: that dashboard's chat,
+                # as it shows it -- same markup, same page scripts.
+                value = mirrored or render(transcript)
                 if chat.value != value:
                     chat.value = value
             _sync_head()
@@ -675,5 +679,8 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             "change_cancel": change_cancel,
             "show": attach, "hide": hide, "attached": lambda: bool(view.get("attached")),
             "name": lambda: transcript.name, "busy": lambda: transcript.busy,
-            "needs": lambda: transcript.needs_you, "sid": sid}
+            "needs": lambda: transcript.needs_you, "sid": sid,
+            # The control row: the session list puts its Keep session
+            # switch here, as it does in the in-kernel tab's row.
+            "controls": controls}
     return root, refs

@@ -188,6 +188,7 @@ def test_pair_in_a_service_session_goes_to_a_live_notice(tmp_path, monkeypatch):
     monkeypatch.setattr(pairing, "_DIR", tmp_path / "pairing")
     _short_door_dir(monkeypatch)
     monkeypatch.setattr(pairing, "_spawn", lambda fn: None)
+    monkeypatch.setattr(pairing, "_unavailable", lambda: "")   # a messenger runs on this host
     durable, live = [], []
     host = type("W", (), {})()
     host.emitter = type("E", (), {"session_id": "s6",
@@ -203,6 +204,7 @@ def test_an_agent_process_cannot_pair(monkeypatch, tmp_path):
     from delfin.agent.approval_guard import ENV_MARKER
     monkeypatch.setattr(pairing, "_DIR", tmp_path / "pairing")
     _short_door_dir(monkeypatch)
+    monkeypatch.setattr(pairing, "_unavailable", lambda: "")   # a messenger runs on this host
     said = []
     monkeypatch.setenv(ENV_MARKER, "1")
     assert pairing.cli_main(["pair"], out=said.append, timeout=0) == 2

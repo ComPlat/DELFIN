@@ -661,3 +661,82 @@ DE = {
     'Empty task.': 'Leerer Auftrag.',
     'Unknown session command.': 'Unbekannter Sitzungsbefehl.',
 }
+
+
+def _cannot_be_undone() -> dict:
+    """German for the statement an approval opens with when it cannot be
+    undone (delfin/agent/irreversible.py), keyed by its English templates:
+    the gate writes the English, the phone card reads it back and says it
+    here (render.approval_card). Imported, not copied, so an English
+    sentence that changes cannot leave a stale key behind."""
+    from delfin.agent import irreversible as I
+    return {
+        I.HEAD_IRREVERSIBLE: '⛔ Das lässt sich nicht rückgängig machen.',
+        I.HEAD_RECOVERABLE: '↺ Das lässt sich nur mit Aufwand rückgängig machen.',
+        I.DELETE: 'Löscht {path} ({size}). Nichts behält eine Kopie: das Undo-Journal kann sie nicht '
+                  'aufnehmen, git hat sie nicht, und diese Sitzung hat sie nicht geschrieben.',
+        I.OVERWRITE: 'Überschreibt {path} ({size}). Nichts behält eine Kopie des jetzigen Inhalts: das '
+                     'Undo-Journal kann ihn nicht aufnehmen, git hat ihn nicht, und diese Sitzung hat ihn '
+                     'nicht geschrieben.',
+        I.MORE_FILES: 'Dazu {n} weitere Datei(en), von denen nichts eine Kopie behält.',
+        I.TRASH: 'Stattdessen: in den Papierkorb verschieben, der sie {days} Tage aufbewahrt: '
+                 'mv {path} {trash}/',
+        I.PUSH: 'Veröffentlicht den Branch {branch} auf {remote} ({where}): {n} Commit(s), die dort noch '
+                'fehlen. Wer ihn lesen kann, kann sie sofort holen; ein späteres Löschen nimmt bereits '
+                'geholte Kopien nicht zurück.',
+        I.PUSH_NEW: 'Veröffentlicht den neuen Branch {branch} auf {remote} ({where}). Wer ihn lesen kann, '
+                    'kann ihn sofort holen; ein späteres Löschen nimmt bereits geholte Kopien nicht zurück.',
+        I.FORCE: 'Ersetzt die Historie des Branches {branch} auf {remote} ({where}): {n} Commit(s) dort, '
+                 'die dein Branch nicht enthält, werden dort entfernt.',
+        I.FORCE_UNKNOWN: 'Ersetzt die Historie des Branches {branch} auf {remote} ({where}): Commits dort, '
+                         'die dein Branch nicht enthält, werden dort entfernt.',
+        I.NEW_BRANCH: 'Stattdessen: auf einen neuen Branch pushen und {branch} lassen, wie er ist: '
+                      'git push {remote} HEAD:{branch}-2',
+        I.REMOTE_DELETE: 'Löscht den Branch {branch} auf {remote} ({where}): seine Commits bleiben nur dort, '
+                         'wo jemand sie schon geholt hat.',
+        I.REMOTE_PRUNE: 'Löscht jeden Branch auf {remote} ({where}), den dieses Repository nicht hat: ihre '
+                        'Commits bleiben nur dort, wo jemand sie schon geholt hat.',
+        I.TAG_MOVE: 'Verschiebt das Tag {tag}: git merkt sich nicht, welchen Commit es vorher bezeichnete.',
+        I.NEW_TAG: 'Stattdessen: ein neues Tag anlegen und {tag} lassen, wie es ist: git tag {tag}-2',
+        I.HISTORY_DROP: 'Entfernt gits Aufzeichnung früherer Stände (das Reflog oder nicht erreichbare '
+                        'Commits): ein Commit, den nur diese Aufzeichnung noch erreicht, ist endgültig weg.',
+        I.PR_CREATE:'Öffnet einen Pull Request für den Branch {branch}: seine Commits und seine '
+                     'Beschreibung werden für alle sichtbar, die das Repository lesen können.',
+        I.PR_MERGE: 'Führt Pull Request {pr} auf der Forge in seinen Ziel-Branch zusammen.',
+        I.RELEASE: 'Veröffentlicht das Release {tag}: wer das Repository lesen kann, kann es sofort '
+                   'herunterladen.',
+        I.REPO_DELETE: 'Löscht das Repository {repo} auf der Forge, mit seinen Issues und Pull Requests.',
+        I.API_WRITE: 'Sendet eine {method}-Anfrage an die API der Forge ({path}): sie ändert dort Daten.',
+        I.HTTP_WRITE: 'Sendet eine {method}-Anfrage an {host}: was sie dort ändert oder löscht, lässt sich '
+                      'von hier nicht zurücknehmen.',
+        I.UPLOAD: 'Sendet {n} Datei(en), {size} ({files}), an {host}: die Daten verlassen diesen Rechner, '
+                  'und die Kopie dort liegt außerhalb von DELFINs Reichweite.',
+        I.UPLOAD_DATA: 'Sendet Daten an {host}: sie verlassen diesen Rechner, und die Kopie dort liegt '
+                       'außerhalb von DELFINs Reichweite.',
+        I.MAIL: 'Sendet eine E-Mail an {to}: einmal gesendet, lässt sie sich nicht zurückholen.',
+        I.MESSAGE: 'Sendet eine Nachricht an {to}: einmal zugestellt, lässt sie sich nicht zurückholen.',
+        I.NOTIFY: 'Sendet eine Benachrichtigung an das gekoppelte Handy: einmal zugestellt, lässt sie sich '
+                  'nicht zurückholen.',
+        I.WEBHOOK: 'Ruft {url} auf: was die Gegenseite mit der Anfrage tut, lässt sich nicht zurücknehmen.',
+        I.CANCEL: 'Bricht Job {jobs} ab: eine laufende Rechnung stoppt sofort, und ihre Arbeit seit dem '
+                  'letzten Checkpoint ist verloren.',
+        I.CANCEL_ON: 'Bricht Job {jobs} auf {cluster} ab: eine laufende Rechnung stoppt sofort, und ihre '
+                     'Arbeit seit dem letzten Checkpoint ist verloren.',
+        I.KILL: 'Beendet Prozess {pid} ({name}): was er im Speicher hält und noch nicht geschrieben hat, '
+                'ist verloren.',
+        I.KILL_MATCH: 'Beendet jeden Prozess, dessen Name auf {pattern} passt: was sie im Speicher halten '
+                      'und noch nicht geschrieben haben, ist verloren.',
+        I.DISCARD: 'Verwirft die nicht committeten Änderungen an {n} Datei(en) ({files}): git hat keine '
+                   'Kopie davon.',
+        I.SAVE_PATCH: 'Stattdessen: sie erst sichern: git diff > before-discard.patch',
+        I.CLEAN: 'Löscht {n} nicht versionierte Datei(en) ({files}): git hatte nie eine Kopie davon.',
+        I.MCP: 'Ruft {tool} des MCP-Servers {server} auf: was es dort sendet, anlegt oder löscht, liegt '
+               'außerhalb von DELFINs Reichweite.',
+        I.LAB: 'Setzt {device}.{channel} im Labor auf {value}: eine physische Handlung, die das '
+               'Zurücksetzen nicht ungeschehen macht.',
+        I.REFLOG: 'Schreibt die Historie des Branches {branch} um: die ersetzten Commits bleiben etwa 90 '
+                  'Tage im Reflog von git (git reflog listet sie, git reset holt einen zurück).',
+    }
+
+
+DE.update(_cannot_be_undone())
