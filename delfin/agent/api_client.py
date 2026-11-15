@@ -29507,6 +29507,16 @@ def _sandbox_network_args(perms=None, allow_slurm: bool = True) -> tuple[list[st
                 pass
         for hp in sorted(set(direct)):
             args += ["--allow-tcp", hp]
+        # The listening sockets of the session's own background jobs: the
+        # socket guard lets a direct loopback connect reach them, as it does
+        # a server of the command's own tree (socket_guard.owns_loopback).
+        try:
+            from .bash_jobs import own_listening_sockets
+            for inode in sorted(own_listening_sockets(
+                    str(getattr(perms, "task_session_id", "") or ""))):
+                args += ["--own-listener", inode]
+        except Exception:
+            pass
     return args, proxy_dir
 
 

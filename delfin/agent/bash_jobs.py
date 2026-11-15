@@ -2031,6 +2031,12 @@ def _descendants(root: int) -> set:
 
 def _listening_ports_of(pids: set) -> set:
     """The TCP ports the processes ``pids`` listen on (Linux /proc)."""
+    return set(_listening_of(pids).values())
+
+
+def _listening_of(pids: set) -> dict:
+    """``{inode: port}`` of the listening TCP sockets the processes
+    ``pids`` hold (Linux /proc)."""
     inodes: set[str] = set()
     for pid in pids:
         try:
@@ -2043,9 +2049,9 @@ def _listening_ports_of(pids: set) -> set:
                     inodes.add(link[8:-1])
         except OSError:
             continue
-    ports: set[int] = set()
+    found: dict[str, int] = {}
     if not inodes:
-        return ports
+        return found
     for table in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
             with open(table, encoding="latin-1") as fh:
@@ -2054,10 +2060,10 @@ def _listening_ports_of(pids: set) -> set:
                     cols = line.split()
                     # local_address, state 0A = LISTEN, inode at index 9
                     if len(cols) > 9 and cols[3] == "0A" and cols[9] in inodes:
-                        ports.add(int(cols[1].rsplit(":", 1)[1], 16))
+                        found[cols[9]] = int(cols[1].rsplit(":", 1)[1], 16)
         except (OSError, ValueError):
             continue
-    return ports
+    return found
 
 
 def job_listening_ports(job) -> set:
@@ -2094,16 +2100,21 @@ def open_ports(session_id: str = "") -> list[dict]:
     return out
 
 
-def own_listening_ports(session_id: str) -> set:
-    """The ports this session's running background jobs listen on.
+def own_listening_sockets(session_id: str) -> set:
+    """Inodes of the listening TCP sockets this session's running
+    background jobs hold: what a caged command and the egress proxy treat
+    as the session's own servers on the loopback
+    (``socket_guard.owns_loopback``). Empty off Linux, for a job of another
+    session and when nothing is read. Never raises."""
+    try:
+        return set(_listening_of(_own_job_pids(session_id)))
+    except Exception:
+        return set()
 
-    What the egress proxy lets a caged command reach on the loopback:
-    the agent checking the server it started (python -m http.server,
-    vite, flask, node) and nothing else on this machine. Measured
-    2026-10-19: `curl http://127.0.0.1:8324/` from the cage was refused
-    ("port 8324 is not allowed") -- the agent could not see its own game.
-    Read from /proc, so it holds whatever the server is; empty off Linux,
-    for a job of another session, and when nothing is read. Never raises."""
+
+def _own_job_pids(session_id: str) -> set:
+    """``session_id``'s running background jobs and every process below
+    them; empty without a session id or a readable registry."""
     sid = str(session_id or "")
     if not sid:
         return set()
@@ -2121,8 +2132,21 @@ def own_listening_ports(session_id: str) -> set:
             pid = 0
         if pid > 0:
             pids |= _descendants(pid)
+    return pids
+
+
+def own_listening_ports(session_id: str) -> set:
+    """The ports this session's running background jobs listen on.
+
+    What the egress proxy lets a caged command reach on the loopback:
+    the agent checking the server it started (python -m http.server,
+    vite, flask, node) and nothing else on this machine. Measured
+    2026-10-19: `curl http://127.0.0.1:8324/` from the cage was refused
+    ("port 8324 is not allowed") -- the agent could not see its own game.
+    Read from /proc, so it holds whatever the server is; empty off Linux,
+    for a job of another session, and when nothing is read. Never raises."""
     try:
-        return _listening_ports_of(pids)
+        return _listening_ports_of(_own_job_pids(session_id))
     except Exception:
         return set()
 
