@@ -14258,8 +14258,9 @@ def _bypass_screened_action(
     a write whose target resolves inside the session workspace or the
     configured agent workspace, the action with the instructing-file
     question answered on the path RELATIVE to that root; for a shell
-    command that runs caged and stays in the workspace, the action itself;
-    None for everything else, which goes to the model.
+    command that runs caged and stays in the workspace, and for a
+    run_tests whose pytest runs in that cage, the action itself; None for
+    everything else, which goes to the model.
 
     Relative, because a DELFIN worktree lives under ``.delfin/worktrees``
     and the absolute path of every file in it matched the ``/.delfin/``
@@ -14273,6 +14274,19 @@ def _bypass_screened_action(
     tool = str(action.get("tool") or "")
     if tool in _BYPASS_SCREENED_TOOLS:
         return action
+    if tool == "run_tests":
+        # run_tests starts pytest in the cage the shell runs in
+        # (_test_run_argv, and the whole-suite job): it is the caged
+        # workspace command `python -m pytest ...`, which passes unasked as
+        # bash. As run_tests it went to the model, and one refusal ended a
+        # test run the task asked for (measured 2026-11-15: s03 "Running
+        # existing tests does not match the task", s12 "Testing unrelated
+        # modules", both runs the brief named). Groups that are not pytest
+        # go through the bash gate themselves (_run_stack_tests).
+        try:
+            return action if _bash_runs_caged(perms) else None
+        except Exception:
+            return None
     if tool in ("bash", "bash_background"):
         # A command that runs inside the cage and does not leave the
         # workspace by the deterministic rules (_leaves_workspace: not the
@@ -21592,7 +21606,7 @@ class _DocToolExecutor:
             # everything: there a shell command keeps the model.
             screened = (_bypass_screened_action(perms, action)
                         if bypass and not (cfg.get("broad") and base in (
-                            "bash", "bash_background")) else None)
+                            "bash", "bash_background", "run_tests")) else None)
             if screened is not None:
                 # A message to a sibling session, a web search, a write in
                 # the session or agent workspace: the user's rules and the
@@ -26007,13 +26021,18 @@ class _DocToolExecutor:
             return json.dumps({"error": f"could not build the run: {exc}"})
         import shlex as _shlex
         line = " ".join(_shlex.quote(c) for c in cmd)
+        _job_sid = str(getattr(perms, "task_session_id", "") or "")
         try:
             job = _bj.get_registry().start(
                 line, cwd=str(perms.workspace), env=env,
                 timeout_s=max(timeout, ceiling),
                 workspace=perms.workspace,
                 description=f"pytest {target or 'tests'} (background)",
-                argv=cmd)
+                # In the cage the foreground run uses (_test_run_argv): the
+                # suite runs the workspace's code. It ran uncaged before,
+                # with the user's rights, from a session in any mode.
+                argv=_bash_isolation_argv(line, perms.workspace, perms),
+                **({"session_id": _job_sid} if _job_sid else {}))
         except Exception as exc:
             return json.dumps({"error": f"could not start the run: {exc}"})
         job_id = str(getattr(job, "job_id", "") or "")
