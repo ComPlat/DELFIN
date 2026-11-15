@@ -70,6 +70,14 @@ from delfin.tools.bio._read import (
     read_structure,
 )
 from delfin.tools.bio._poses import Pose, PoseSet, read_pose_set
+from delfin.tools.bio._prepare import (
+    EMBED_METHOD,
+    EMBED_SEED,
+    PreparedLigand,
+    prepare_ligand,
+    write_sdf,
+)
+from delfin.tools.bio._rmsd import heavy_atom_pairs, pose_rmsd
 from delfin.tools.bio._complex import Complex, read_complex
 from delfin.tools.bio._site import (
     BindingBox,
@@ -122,6 +130,15 @@ __all__ = [
     "Pose",
     "PoseSet",
     "read_pose_set",
+    # ligand preparation
+    "PreparedLigand",
+    "prepare_ligand",
+    "write_sdf",
+    "EMBED_METHOD",
+    "EMBED_SEED",
+    # pose RMSD
+    "heavy_atom_pairs",
+    "pose_rmsd",
     # binding sites
     "BindingBox",
     "BindingSite",
