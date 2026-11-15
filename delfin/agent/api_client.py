@@ -36415,13 +36415,14 @@ def create_client(
         raise BackendRefused(_refused)
     if provider == "kit":
         from .credentials import load_credential as _load_cred
+        from .model_capabilities import _KIT_BASE_URL as _kit_base_url
         kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")
         kit_perms = _kit_sandbox(
             cwd, permission_mode, kit_confirm_callback, extra_dirs,
             read_only_dirs, confirm_write_dirs)
         return OpenAIClient(
             api_key=kit_key, model=model,
-            base_url="https://ki-toolbox.scc.kit.edu/api/v1",
+            base_url=_kit_base_url,
             key_env_var="KIT_TOOLBOX_API_KEY",
             permissions=kit_perms,
             provider="kit",
