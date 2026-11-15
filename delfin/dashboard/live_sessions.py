@@ -128,6 +128,12 @@ class LiveClient(ServiceClient):
         if not self.closed:
             self.request("session.detach", {"sessionId": sid}, timeout=10)
 
+    def release(self, sid: str) -> None:
+        """Let go of the session (a view closed with x): one switched off
+        ends once no other window has it open."""
+        if not self.closed:
+            self.request("session.detach", {"sessionId": sid, "release": True}, timeout=10)
+
     def prompt(self, sid: str, text: str, how: str = "queue") -> dict:
         return self.request("session.prompt", {"sessionId": sid, "text": text, "how": how})
 
@@ -387,6 +393,11 @@ class Transcript:
         self._parts: dict[str, dict] = {}
         self._ended_parts: set[str] = set()
         self._tools: dict[str, dict] = {}
+        #: The chat as the dashboard that hosts the session shows it
+        #: (dashboard.chat), and its version: what a view shows instead of
+        #: rendering the events itself. "" for a session a worker runs.
+        self.chat_html = ""
+        self.chat_v = 0
         #: Live events that came before the attach's answer was loaded: the
         #: reader thread hands them over while the attaching thread is still
         #: waking up. Applied after the replay (durable ones once, by seq).
@@ -448,6 +459,25 @@ class Transcript:
         self.entries.append(entry)
         return entry
 
+    def _chat(self, event: dict) -> bool:
+        """The hosting dashboard's chat: whole (``html``), or the one of
+        version ``base`` cut to ``keep`` characters plus ``tail``. A diff
+        on another version than the one held is dropped (the next whole
+        one brings it back)."""
+        try:
+            version = int(event.get("v") or 0)
+            if "html" in event:
+                html = str(event.get("html") or "")
+            elif int(event.get("base") or 0) == self.chat_v and self.chat_v:
+                html = self.chat_html[:max(0, int(event.get("keep") or 0))] + \
+                    str(event.get("tail") or "")
+            else:
+                return False
+        except (TypeError, ValueError):
+            return False
+        self.chat_html, self.chat_v = html, version
+        return True
+
     def _apply(self, event: dict, *, replay: bool) -> bool:
         kind = str(event.get("type") or "")
         seq = event.get("seq")
@@ -456,6 +486,12 @@ class Transcript:
                 return False                      # in the replay already
             self.last_seq = seq
         extra = {"seq": seq} if isinstance(seq, int) and seq > 0 else {}
+        if kind == "dashboard.chat":
+            return self._chat(event)
+        if kind == "session.info":
+            # A session (re)starts here: a worker that took it over, or a
+            # new host -- which sends its chat whole right after this.
+            self.chat_html, self.chat_v = "", 0
         if kind in ("session.info", "session.updated"):
             self.info.update({k: v for k, v in event.items()
                               if k not in ("type", "session", "seq", "ts")})

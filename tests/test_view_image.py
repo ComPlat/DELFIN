@@ -58,9 +58,10 @@ def test_read_file_redirects_images_to_view_image(tmp_path):
 
 
 def test_view_image_wired_end_to_end():
-    src = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
-           / "api_client.py").read_text(encoding="utf-8")
-    assert '"name": "view_image"' in src          # advertised tool
+    agent = Path(__file__).resolve().parent.parent / "delfin" / "agent"
+    src = (agent / "api_client.py").read_text(encoding="utf-8")
+    schema = (agent / "tool_catalog.py").read_text(encoding="utf-8")
+    assert '"name": "view_image"' in schema       # advertised tool
     assert 'name == "view_image"' in src          # dispatch route
     assert "_pending_view_images" in src          # loop injection
     assert "image_url" in src                       # injected as visual content

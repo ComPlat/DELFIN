@@ -18,8 +18,9 @@ import re
 import socket
 import time
 from pathlib import Path
+from .state_paths import state_root
 
-_DIR = Path.home() / ".delfin" / "session_presence"
+_DIR = state_root() / "session_presence"
 # A record not refreshed for this long belongs to a session that is gone.
 _STALE_S = 15 * 60.0
 # An unchanged record is rewritten at most this often (a heartbeat), so a
@@ -73,8 +74,10 @@ def _path(key: str) -> Path:
 
 
 def announce(key: str, *, session_id: str = "", title: str = "",
-             workspace: str = "") -> None:
-    """Say that session ``key`` is open and where it works. Never raises."""
+             workspace: str = "", surface: str = "") -> None:
+    """Say that session ``key`` is open and where it works. Never raises.
+    ``surface``: what has it open ("dashboard" for an agent tab), when
+    that matters to a reader (the agent service's elsewhere list)."""
     key = str(key or "").strip()
     if not key:
         return
@@ -94,6 +97,8 @@ def announce(key: str, *, session_id: str = "", title: str = "",
         # stale window. proc_identity tells one life of a pid from the next.
         "proc_start": _process_start(os.getpid()),
     }
+    if surface:
+        record["surface"] = str(surface)
     if record["session_id"]:
         _remember_alias(key, record["session_id"])
     body = json.dumps(record, sort_keys=True)

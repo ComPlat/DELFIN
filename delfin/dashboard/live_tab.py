@@ -461,7 +461,11 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             version = transcript.version
             if version != view["shown"]:
                 view["shown"] = version
-                value = render(transcript)
+                with transcript.lock:
+                    mirrored = transcript.chat_html
+                # A session another dashboard hosts: that dashboard's chat,
+                # as it shows it -- same markup, same page scripts.
+                value = mirrored or render(transcript)
                 if chat.value != value:
                     chat.value = value
             _sync_head()

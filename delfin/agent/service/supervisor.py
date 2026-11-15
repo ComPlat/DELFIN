@@ -65,7 +65,10 @@ from . import attention_feed, clusters_feed, eventlog, protocol, rundir
 #: 6: cluster.detail and job.detail (what Space on an entry shows).
 #: 7: clusters.presets, cluster.add/hostkey/pin/remove (the window's add
 #: form, delfin.remote.setup), and ORCA's place in a logged-in row.
-SERVICE_VERSION = 7
+#: 8: session.host (a dashboard kernel hosts its agent tab's session here;
+#: summaries say ``host``), dashboard.chat to dashboard windows, and
+#: session.detach's ``release``.
+SERVICE_VERSION = 8
 
 #: Requests a window sends to the service itself (the one definition is
 #: protocol.SERVICE_REQUESTS, which the TUI's types are generated from).
@@ -84,7 +87,7 @@ FORWARDED = frozenset({"session.prompt", "session.cancel", "session.setMode",
 
 #: What a watch-only connection may not do.
 ACTING = frozenset({"session.create", "session.merge", "session.prompt",
-                    "session.cancel",
+                    "session.cancel", "session.host",
                     "session.setMode", "session.shutdown", "permission.reply",
                     "session.message", "service.shutdown", "session.toggleTasks",
                     "session.setTitle", "session.setKeep",
@@ -221,8 +224,54 @@ def _on_a_daemon_thread(fn, /, *args, **kwargs) -> "asyncio.Future":
 #: posture, name, a question -- is written at once.
 ACTIVITY_EVENTS = frozenset({"turn.started", "tool.started", "text.started"})
 
+#: How long, after a host link closed without saying it let go, the
+#: service waits for the hosting kernel's process to be gone before a
+#: worker takes the session over: the kernel holds the session's writer
+#: lock and may still be saving (kept_agent_sessions.WAIT_PID_S).
+HOST_GONE_WAIT_S = 120.0
+
+#: The largest chat (dashboard.chat) put whole into an attach answer; a
+#: replay has to stay well under protocol.MAX_LINE_BYTES.
+CHAT_SNAPSHOT_MAX = 8 * 1024 * 1024
+
+#: The hello names of dashboard windows: the only ones sent a hosted
+#: session's chat HTML (live_sessions.CLIENT_NAME).
+DASHBOARD_CLIENTS = ("delfin-dashboard",)
+
 
 LINUX = sys.platform.startswith("linux")
+
+
+def _start_ticks(pid: int) -> int | None:
+    try:
+        from .. import proc_identity
+        return proc_identity.start_ticks(pid)
+    except Exception:
+        return None
+
+
+def _same_process(pid: int, ticks: int | None) -> bool:
+    """Whether ``pid`` still runs as the process that had start time
+    ``ticks`` (None: any process of that number counts)."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass
+    if LINUX:
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                if fh.read().rsplit(b") ", 1)[1][:1] == b"Z":
+                    return False          # ended; not reaped yet
+        except (OSError, IndexError):
+            return False
+    if ticks is None:
+        return True
+    now = _start_ticks(pid)
+    return now is None or now == ticks
 
 
 def _ppid(pid: int) -> int:
@@ -311,6 +360,36 @@ def _asked_gist(asked: dict) -> str:
             target = line[4:].removeprefix("b/").strip()
             break
     return f"{asked.get('tool') or 'a tool'} {target or _gist(preview.lstrip('$ '), 70)}".strip()
+
+
+def _cmdline_of(pid: int) -> bytes:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return b""
+
+
+def _a_dashboard_kernel(pid: int) -> bool:
+    """Whether ``pid`` is a dashboard's kernel: an IPython kernel that a
+    Voila server started. Recognised by what it runs and by its parent,
+    both readable for a protected process (its command line is; its
+    environment is not). An agent's command runs below a kernel, never as
+    the server's own child, and cannot make the server its parent; one
+    that names itself a kernel under another parent stays watch-only. A
+    server whose environment carries the agent marker was started by an
+    agent's command; its kernels stay watch-only. The dashboard's own
+    server protects itself (server_guard), so an unreadable server
+    environment is the normal case and is not refused."""
+    if not LINUX or pid <= 1:
+        return False
+    if b"ipykernel" not in _cmdline_of(pid):
+        return False
+    server = _ppid(pid)
+    if b"voila" not in _cmdline_of(server):
+        return False
+    from ..approval_guard import ENV_MARKER
+    environ = _environ_of(server)
+    return environ is None or f"{ENV_MARKER}=".encode() not in environ
 
 
 def _environ_of(pid: int) -> bytes | None:
@@ -657,6 +736,135 @@ class Session:
             self.last_input = max(typed, default=0.0)
 
 
+class _HostPipe:
+    """A host link's writing side, in the shape of a worker's stdin."""
+
+    def __init__(self, writer: asyncio.StreamWriter) -> None:
+        self.writer = writer
+
+    def write(self, data: bytes) -> None:
+        self.writer.write(data)
+
+    async def drain(self) -> None:
+        await self.writer.drain()
+
+
+class _HostProc:
+    """A host link (session.host) in the shape Session expects of its
+    worker process: requests are written to the link, answers and events
+    read from it; the process is the hosting kernel (its pid, from the
+    socket's peer credentials). Ending it closes the link -- never a
+    signal to the kernel, which runs the person's other sessions too."""
+
+    def __init__(self, client: "Client") -> None:
+        self.client = client
+        self.pid = client.peer_pid
+        self.stdin = _HostPipe(client.writer)
+        self.stdout = client.reader
+        self.returncode: int | None = None
+
+    async def wait(self) -> int:
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+    def send_signal(self, _signum: int) -> None:
+        self.client.close()
+
+    def kill(self) -> None:
+        self.client.close()
+
+
+class HostedSession(Session):
+    """A session a dashboard's kernel drives (session.host), held here.
+
+    The kernel runs the turns -- the agent tab's own turn code, slash
+    commands, uploads and dashboard mode stay where they work -- and this
+    service holds what every window shares: the name, the replay, the
+    state and open questions, Keep session. Requests from any window are
+    forwarded to the kernel over the link as they would be to a worker.
+
+    Differences from a worker's session: the chat HTML (``dashboard.chat``)
+    is kept whole and passed on to dashboard windows only; ``host.*``
+    events are the service's own; it is never put to sleep or ended as
+    unused (its kernel is its window); what follows its host going away
+    is ``Supervisor._host_gone``'s to decide.
+    """
+
+    def __init__(self, supervisor: "Supervisor", client: "Client", settings: dict):
+        super().__init__(supervisor, _HostProc(client), settings)  # type: ignore[arg-type]
+        self.host_client = client
+        self.host_ticks = _start_ticks(client.peer_pid)
+        #: The host said it let go on purpose (host.released): {"end": bool}.
+        self.released: dict | None = None
+        self.chat_html = ""
+        self.chat_v = 0
+        #: The session's event log: written here for a hosted session (a
+        #: worker writes its own), numbered here -- the kernel never writes
+        #: into the service's files.
+        self.log: eventlog.EventLog | None = None
+
+    def on_event(self, message: dict, event: dict) -> None:
+        kind = str(event.get("type") or "")
+        if kind in protocol.DURABLE_EVENTS:
+            event.pop("seq", None)
+            if self.log is not None:
+                self.log.stamp(event)
+        if kind == "dashboard.chat":
+            self._chat(message, event)
+            return
+        if kind == "host.released":
+            self.released = {"end": bool(event.get("end"))}
+            return
+        if kind == "host.keep":
+            if self.id:
+                self.supervisor.set_keep(None, self.id, bool(event.get("keep")))
+            return
+        super().on_event(message, event)
+
+    def _chat(self, message: dict, event: dict) -> None:
+        try:
+            version = int(event.get("v") or 0)
+            if "html" in event:
+                html = str(event.get("html") or "")
+            else:
+                if int(event.get("base") or 0) != self.chat_v:
+                    return               # out of step; the host sends a whole one next
+                keep = max(0, int(event.get("keep") or 0))
+                html = self.chat_html[:keep] + str(event.get("tail") or "")
+        except (TypeError, ValueError):
+            return
+        self.chat_html, self.chat_v = html, version
+        data = protocol.encode(message)
+        for client in list(self.subscribers):
+            if client.name in DASHBOARD_CLIENTS:
+                client.send_bytes(data)
+
+    def chat_snapshot(self) -> list[dict]:
+        """The chat as it is now, whole, for an attach answer; [] when
+        there is none yet or it is too large to send in one."""
+        if not self.chat_html or len(self.chat_html) > CHAT_SNAPSHOT_MAX:
+            return []
+        return [{"type": "dashboard.chat", "session": self.id, "ts": round(time.time(), 3),
+                 "v": self.chat_v, "html": self.chat_html}]
+
+    def summary(self) -> dict:
+        out = super().summary()
+        out["host"] = "dashboard"
+        return out
+
+    def never_used(self) -> bool:
+        return False                     # its kernel is its window
+
+    def resume_settings(self) -> dict:
+        out = super().resume_settings()
+        if out.get("mode") == "dashboard":
+            # Dashboard mode drives a dashboard's own tabs; a worker has
+            # none. The session goes on in its default mode there.
+            out.pop("mode", None)
+        return out
+
+
 def _named(summary: dict) -> dict:
     """A copy of a summary with its display name (a dormant record a
     service before SERVICE_VERSION 4 wrote has none)."""
@@ -673,10 +881,19 @@ def _elsewhere(ours: set[str]) -> list[dict]:
     leaving out ``ours`` (the sessions this service runs)."""
     out = []
     try:
+        import socket as _socket
+
         from .. import session_presence
+        here = _socket.gethostname()
         for record in session_presence.open_sessions():
             sid = str(record.get("session_id") or "")
             if sid and sid in ours:
+                continue
+            if record.get("surface") == "dashboard" and not sid \
+                    and str(record.get("host") or "") == here:
+                # An agent tab of this host without a conversation yet:
+                # nothing to watch or join. Once it has one, the tab hosts
+                # it here (session.host) and it is one of ``ours``.
                 continue
             out.append({"key": record.get("key", ""),
                         "sessionId": sid or None,
@@ -703,6 +920,11 @@ class Client:
         self.closed = False
         self.name = ""                    # what it said it is, in its hello
         self._stuck_check: asyncio.TimerHandle | None = None
+        #: The session this connection hosts (session.host): from then on
+        #: it is that session's pipe, not a window.
+        self.hosting: "HostedSession | None" = None
+        #: Its requests still being answered (a session.host waits for them).
+        self.inflight: set[asyncio.Task] = set()
 
     def send(self, message: dict) -> None:
         self.send_bytes(protocol.encode(message))
@@ -759,6 +981,9 @@ class Supervisor:
         self.sessions: dict[str, Session] = {}
         self.starting: set[Session] = set()
         self.clients: set[Client] = set()
+        #: Connections that host a session (session.host): no window, so
+        #: never sent what windows are sent.
+        self.hosts: set[Client] = set()
         #: Sessions without a worker that wake when used: asleep, or left by
         #: a service that stopped or died. id -> {"summary", "settings",
         #: "since", "why", "oldPid"}; kept in the roster for a later service.
@@ -865,7 +1090,8 @@ class Supervisor:
             # first -- they reconnect to the next service, and the end of
             # a session that only sleeps across it is not theirs to show.
             for record in [self._dormant_record(s, "the agent service stopped")
-                           for s in self.sessions.values() if s.id]:
+                           for s in self.sessions.values()
+                           if s.id and not isinstance(s, HostedSession)]:
                 self.dormant[record["summary"]["sessionId"]] = record
             if self.restart:
                 for session in self.sessions.values():
@@ -902,7 +1128,7 @@ class Supervisor:
         if uid is not None and uid != os.getuid():
             writer.close()
             return
-        if len(self.clients) >= MAX_CLIENTS:
+        if len(self.clients) + len(self.hosts) >= MAX_CLIENTS:
             # A runaway process opening connections must not take the
             # service -- and the sessions in it -- down with it.
             writer.close()
@@ -934,10 +1160,21 @@ class Supervisor:
                     client.send(protocol.error(None, protocol.PARSE_ERROR,
                                                "not a JSON object"))
                     continue
+                if message.get("method") == "session.host":
+                    # Answered here, in line: from its answer on this
+                    # connection's lines are the hosted session's, read by
+                    # the session itself until the link closes.
+                    hosted = await self._host(client, message)
+                    if hosted is not None:
+                        await hosted.read()
+                        break
+                    continue
                 # Each request runs on its own, so a slow session never holds
                 # a window's other requests; requests to one session still
                 # reach it in the order they came (request() writes first).
-                self.spawn(self._dispatch(client, message))
+                task = self.spawn(self._dispatch(client, message))
+                client.inflight.add(task)
+                task.add_done_callback(client.inflight.discard)
         finally:
             client.close()
 
@@ -961,10 +1198,14 @@ class Supervisor:
         like the tmux and screen sockets."""
         if pid <= 0:
             return True                       # who it is cannot be told: watch only
-        workers = {s.proc.pid for s in [*self.sessions.values(), *self.starting]}
+        workers = {s.proc.pid for s in [*self.sessions.values(), *self.starting]
+                   if not isinstance(s, HostedSession)}
+        # A hosting kernel is a window (the person's dashboard); what runs
+        # below it -- an agent's shell, a job it detached -- is not.
+        hosts = {s.proc.pid for s in self.sessions.values() if isinstance(s, HostedSession)}
         p, hops = pid, 0
         while p > 1 and hops < 64:
-            if p in workers:
+            if p in workers or (hops > 0 and p in hosts):
                 return True
             p, hops = _ppid(p), hops + 1
         try:
@@ -973,11 +1214,16 @@ class Supervisor:
             return False
         environ = _environ_of(pid)
         if environ is None:
-            return True                       # unreadable: fail closed
+            # Unreadable: fail closed -- except for a dashboard kernel, which
+            # makes itself unreadable (process_guard) once its agent tab is
+            # built and still connects later (a session that gets its id,
+            # the service restarted).
+            return not _a_dashboard_kernel(pid)
         return f"{ENV_MARKER}=".encode() in environ
 
     def client_gone(self, client: Client) -> None:
         self.clients.discard(client)
+        self.hosts.discard(client)
         for session in list(self.sessions.values()):
             if session.subscribers.pop(client, None) is not None:
                 self._end_if_unused(session)
@@ -990,13 +1236,17 @@ class Supervisor:
             self.quiet_since = time.monotonic()
 
     # -- keep session -----------------------------------------------------------------
-    def set_keep(self, client: Client, sid: str, keep: bool) -> None:
+    def set_keep(self, client: Client | None, sid: str, keep: bool) -> None:
         """Switch Keep session for ``sid``. Off: ``client`` holds it (with
-        any window that already does). On: nobody holds it any more."""
+        any window that already does; None: nobody new -- the switch in a
+        hosting tab, whose kernel holds the session through its host
+        link). On: nobody holds it any more."""
         if keep:
             self.not_kept.pop(sid, None)
         else:
-            self.not_kept.setdefault(sid, set()).add(client)
+            holders = self.not_kept.setdefault(sid, set())
+            if client is not None:
+                holders.add(client)
         # In its settings too: asleep, or carried over to a later service
         # (a restart, a crash), it wakes not kept, held by whoever wakes it.
         session = self.sessions.get(sid)
@@ -1016,6 +1266,24 @@ class Supervisor:
     def _end_not_kept(self, sid: str) -> None:
         """The last window that held a session not kept has closed: it ends,
         saved -- not asleep, not woken again by this service."""
+        hosted = self.sessions.get(sid)
+        if isinstance(hosted, HostedSession) and not hosted.done.done():
+            return                       # its host holds it; _host_gone decides
+        waking = self._waking.get(sid)
+        if waking is not None:
+            # Being woken (a worker takes it over): forgotten now, the wake
+            # would bring it up held by nobody. Ended once it is up, if
+            # nobody has taken hold of it meanwhile.
+            async def once_awake() -> None:
+                try:
+                    await asyncio.shield(waking)
+                except Exception:
+                    return
+                holders = self.not_kept.get(sid)
+                if holders is not None and not holders:
+                    self._end_not_kept(sid)
+            self.spawn(once_awake())
+            return
         self.not_kept.pop(sid, None)
         if self.closing:
             return                       # the service stops: it ends with the rest
@@ -1228,7 +1496,8 @@ class Supervisor:
             problem = protocol.params_problem(protocol.REQUESTS[method], rest)
             if problem:
                 raise _Refusal(protocol.INVALID_PARAMS, problem)
-            return {"events": session.replay(int(rest.get("turns") or 0))}
+            return {"events": self._with_chat(client, session,
+                                              session.replay(int(rest.get("turns") or 0)))}
         try:
             return await session.request(method, rest, timeout=FORWARD_TIMEOUT_S)
         except asyncio.TimeoutError:
@@ -1508,7 +1777,7 @@ class Supervisor:
         # there, in the same step of the loop: every later event arrives
         # live, none twice, and what the answer says agrees with what it
         # shows.
-        events = session.replay(int(params.get("turns", 0) or 0))
+        events = self._with_chat(client, session, session.replay(int(params.get("turns", 0) or 0)))
         session.subscribers[client] = session.seen_seq
         self._hold_if_not_kept(client, session.id)
         return {"session": session.info, "state": session.state,
@@ -1521,10 +1790,168 @@ class Supervisor:
         return {"pending": list(session.pending.values()) if session else []}
 
     async def _m_session_detach(self, client: Client, params: dict) -> dict:
-        session = self.sessions.get(str(params["sessionId"]))
+        sid = str(params["sessionId"])
+        session = self.sessions.get(sid)
         if session is not None and session.subscribers.pop(client, None) is not None:
             self._end_if_unused(session)
+        if params.get("release") and client.may_act:
+            # Let go as a closed connection would: the last holder of a
+            # session switched off ends it.
+            holders = self.not_kept.get(sid)
+            if holders is not None and client in holders:
+                holders.discard(client)
+                if not holders:
+                    self._end_not_kept(sid)
         return {"detached": True}
+
+    def _with_chat(self, client: Client, session: Session, events: list[dict]) -> list[dict]:
+        """A hosted session's chat, whole, after its replay -- for a
+        dashboard window only."""
+        if isinstance(session, HostedSession) and client.name in DASHBOARD_CLIENTS:
+            return events + session.chat_snapshot()
+        return events
+
+    # -- hosted sessions (session.host) -------------------------------------------------
+    async def _host(self, client: Client, message: dict) -> "HostedSession | None":
+        """``session.host`` on ``client``: the session it names is hosted by
+        that connection from the answer on. Returns the session, or None
+        (refused, said in the answer)."""
+        msg_id = message.get("id")
+        params = message.get("params")
+        params = {} if params is None else params
+
+        def fail(code: int, text: str) -> None:
+            if msg_id is not None:
+                client.send(protocol.error(msg_id, code, text))
+            return None
+
+        if client.inflight:
+            # Its hello (and anything before) answered first, in order.
+            await asyncio.gather(*list(client.inflight), return_exceptions=True)
+        if not isinstance(params, dict):
+            return fail(protocol.INVALID_PARAMS, "params must be an object")
+        if not client.greeted:
+            return fail(protocol.NOT_ALLOWED, "hello first")
+        if not client.may_act:
+            return fail(protocol.NOT_ALLOWED,
+                        "this connection comes from an agent session's own process: "
+                        "it may not host a session")
+        if self.closing:
+            return fail(protocol.NOT_ALLOWED, "the agent service is stopping")
+        problem = protocol.params_problem(SERVICE_REQUESTS["session.host"], params)
+        if problem:
+            return fail(protocol.INVALID_PARAMS, problem)
+        sid = str(params["sessionId"]).strip()
+        try:
+            eventlog.log_path(sid)
+        except ValueError:
+            return fail(protocol.INVALID_PARAMS, f"not a usable session id: {sid!r}")
+        cwd = Path(str(params["cwd"])).expanduser()
+        if not cwd.is_absolute() or not cwd.is_dir():
+            return fail(protocol.INVALID_PARAMS, f"not an absolute folder: {cwd}")
+        if sid in self.sessions or sid in self._waking \
+                or any(s.id == sid for s in self.starting):
+            return fail(protocol.NOT_ALLOWED,
+                        f"session {sid[:8]} runs here already; it is opened, not hosted twice")
+        if self.dormant.pop(sid, None) is not None:
+            self._write_roster()             # the kernel has it now; nothing to wake
+        info = {k: v for k, v in (params.get("info") or {}).items()
+                if k in ("provider", "model", "effort", "mode", "approval", "title",
+                         "banner", "notices", "tasks", "auto", "background")}
+        keep = params.get("keep") is not False
+        settings: dict[str, Any] = {"cwd": str(cwd), "keep": keep}
+        title = protocol.clean_title(params.get("title") or info.get("title") or "")
+        if title:
+            settings["title"] = title
+            info["title"] = title
+        if params.get("fake"):
+            settings["fake"] = True
+        session = HostedSession(self, client, settings)
+        session.id = sid
+        session.state = "idle"
+        session.info.update({"sessionId": sid, "workspace": str(cwd), **info})
+        self.sessions[sid] = session
+        self.clients.discard(client)
+        self.hosts.add(client)
+        client.hosting = session
+        if keep:
+            self.not_kept.pop(sid, None)
+        else:
+            self.not_kept.setdefault(sid, set())
+        try:
+            session.log = await asyncio.to_thread(eventlog.EventLog, eventlog.log_path(sid))
+        except Exception:
+            session.log = None
+        await session.load_history()
+        client.send(protocol.result(msg_id, {
+            "hosted": True, "keep": keep,
+            "history": bool(session.log is not None and not session.log.empty)}))
+        self._write_roster()
+        asyncio.get_running_loop().call_soon(
+            lambda: self.broadcast_summary(session, roster_now=True))
+        return session
+
+    def _host_gone(self, session: HostedSession) -> None:
+        """A host link closed: the kernel ended, was killed, or let go of
+        the session (host.released). Keep session on, or held by another
+        window: it runs on, in a worker, once the kernel is out of its way;
+        the windows attached to it stay attached. Off and held by nobody,
+        or ended in its dashboard ("End it"): it ends, saved by its kernel.
+        The service stopping: neither -- the kernel hosts it again on the
+        next service."""
+        sid = session.id
+        self.hosts.discard(session.host_client)
+        if session.log is not None:
+            session.log.close()
+        if not sid or self.sessions.get(sid) is not session:
+            return
+        self.sessions.pop(sid, None)
+        if self.closing:
+            return
+        released = session.released or {}
+        keep = sid not in self.not_kept
+        held = bool(self.not_kept.get(sid))
+        if not released.get("end") and (keep or held):
+            record = self._dormant_record(session, "its dashboard let go of it")
+            record["summary"].pop("host", None)
+            self._make_dormant(record)
+            subscribers = {c: seq for c, seq in session.subscribers.items() if not c.closed}
+            wait = 0 if released else session.proc.pid
+            self.spawn(self._wake_after_host(sid, subscribers, wait, session.host_ticks))
+            return
+        self.not_kept.pop(sid, None)
+        reason = ("ended in its dashboard" if released.get("end")
+                  else "not kept: its last window closed")
+        data = protocol.encode(protocol.event({"type": "session.removed", "session": sid,
+                                               "ts": round(time.time(), 3),
+                                               "reason": reason, "exitCode": 0}))
+        for client in list(self.clients):
+            if client.greeted:
+                client.send_bytes(data)
+        self._write_roster()
+        if not self.sessions:
+            self.quiet_since = time.monotonic()
+
+    async def _wake_after_host(self, sid: str, subscribers: dict, wait_pid: int,
+                               ticks: int | None) -> None:
+        deadline = time.monotonic() + HOST_GONE_WAIT_S
+        while wait_pid and _same_process(wait_pid, ticks) and time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+        if self.closing or sid not in self.dormant:
+            return                       # let go of meanwhile, or the service stops
+        try:
+            session = await self._awake(None, sid)
+        except Exception as exc:        # noqa: BLE001 -- said in the log; the record stays or went
+            print(f"supervisor: {sid[:8]} not taken over after its dashboard: {exc}",
+                  file=sys.stderr, flush=True)
+            return
+        for client, seq in subscribers.items():
+            if client.closed or client in session.subscribers:
+                continue
+            for event in session.recent.events():
+                if int(event.get("seq", 0) or 0) > seq:
+                    client.send(protocol.event(event))
+            session.subscribers[client] = session.seen_seq
 
     async def _m_session_message(self, _client: Client, params: dict) -> dict:
         from .. import session_messages
@@ -1816,6 +2243,9 @@ class Supervisor:
                 client.send_bytes(data)
 
     def session_ended(self, session: Session) -> None:
+        if isinstance(session, HostedSession):
+            self._host_gone(session)
+            return
         self.starting.discard(session)
         if session.id and session.sleeping and not self.closing \
                 and self.sessions.get(session.id) is session:
@@ -1863,6 +2293,11 @@ class Supervisor:
 
     async def _end(self, sessions: list[Session]) -> None:
         async def ask(session: Session) -> None:
+            if isinstance(session, HostedSession):
+                # Not ended: its kernel goes on and hosts it again on the
+                # next service. Only the link closes.
+                session.host_client.close()
+                return
             if not session.id:
                 # Still starting (its initialize not answered): nothing of
                 # it to save, and it may not read its stdin before its
@@ -1929,7 +2364,9 @@ class Supervisor:
             state_paths.write_text_atomic(path, json.dumps(
                 {"pid": os.getpid() if live else 0, "socket": str(rundir.socket_path()),
                  "updatedAt": round(time.time(), 3),
-                 "sessions": [{**s.summary(), "settings": s.resume_settings()}
+                 "sessions": [{**s.summary(), "settings": s.resume_settings(),
+                               **({"hostPid": s.proc.pid, "hostTicks": s.host_ticks}
+                                  if isinstance(s, HostedSession) else {})}
                               for s in self.sessions.values() if s.id],
                  "dormant": list(self.dormant.values())},
                 indent=2))
@@ -1969,6 +2406,8 @@ class Supervisor:
             return
         now = time.time()
         for session in list(self.sessions.values()):
+            if isinstance(session, HostedSession):
+                continue                 # its kernel is its window
             if (session.state == "idle" and not session.pending and not session.subscribers
                     and not session.sleeping and now >= session.sleep_not_before
                     and now - session.last_activity >= self.sleep_after_s):
@@ -2064,6 +2503,14 @@ class Supervisor:
                     continue
                 entry = dict(entry)
                 settings = entry.pop("settings")
+                host_pid = int(entry.pop("hostPid", 0) or 0)
+                host_ticks = entry.pop("hostTicks", None)
+                entry.pop("host", None)
+                if host_pid and (_same_process(host_pid, host_ticks)
+                                 or settings.get("keep") is False):
+                    # A dashboard's session: its kernel runs on and hosts it
+                    # again here -- or it was not kept and ended with it.
+                    continue
                 record = {"summary": {**entry, "state": "sleeping", "pending": 0, "pid": 0,
                                       "activity": None, "waiting": None},
                           "settings": settings, "since": round(now, 3),

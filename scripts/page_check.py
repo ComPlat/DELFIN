@@ -45,6 +45,19 @@ Scenarios:
                      end with it. On a tree without the switches the
                      same steps run as the control, and the record says
                      which switch was missing
+    hosted           one session, every surface: started in page A, it is
+                     listed and joined by a window of the agent service
+                     (the TUI's hello name) and opened by page B with
+                     A's chat; a turn sent from B, and one from the
+                     terminal, shows in A; B streams a long answer and
+                     stops it, answers an approval whose write draws a 3D
+                     card in both pages; a file attached in A and a slash
+                     command typed in B show in both; A and B at six
+                     sizes. Keep session off, every window closed: it
+                     ends. On: it runs on, and page D lists it running and
+                     opens it in the full chat. Run on a tree without
+                     hosting it is the control: the record says which
+                     step had nothing to show
 
 Isolation, each point measured as a failure before it was encoded here:
   * The dashboard's environment is built from nothing (no VSCODE_*,
@@ -88,7 +101,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-SCENARIOS = ("composer", "service-session", "sidebar", "keep", "sync")
+SCENARIOS = ("composer", "service-session", "sidebar", "keep", "sync", "hosted")
 
 #: The viewports the sidebar scenario photographs: a laptop and a wide
 #: screen.
@@ -287,6 +300,9 @@ class Cleanup:
         self.work: Path | None = None
         self.model_server = None
         self.tree: Path | None = None
+        #: Where the agent service's own logs are copied before the work
+        #: folder goes (they are the evidence when a step fails).
+        self.out: Path | None = None
         self.report: dict = {}
         self._done = False
 
@@ -358,6 +374,15 @@ class Cleanup:
         if self.model_server is not None:
             self.model_server.shutdown()
         if self.work is not None:
+            service = self.work / "home" / ".delfin" / "agent_service"
+            if self.out is not None and service.is_dir():
+                for part in ("logs", "run"):
+                    try:
+                        shutil.copytree(service / part,
+                                        self.out / "logs" / "agent_service" / part,
+                                        dirs_exist_ok=True)
+                    except OSError:
+                        pass
             shutil.rmtree(self.work, ignore_errors=True)
         return rep
 
@@ -536,6 +561,9 @@ def _drive_page(args, url: str, rec: dict, model_name: str, env: dict,
                 return
             if args.scenario == "sync":
                 _sync_check(browser, args, url, rec, model_name, env)
+                return
+            if args.scenario == "hosted":
+                _hosted_check(browser, args, url, rec, model_name, env, cleanup)
                 return
             viewport = VIEWPORTS[0] if args.scenario == "sidebar" else (1400, 1000)
             page, errors = _open_agent_tab(browser, args, url, rec, viewport=viewport)
@@ -771,6 +799,25 @@ def _service_sessions(runtime: Path, tree: Path) -> list[dict]:
                  "keep": s.get("keep"), "title": s.get("title")} for s in rows]
     except Exception as exc:
         return [{"error": f"{type(exc).__name__}: {exc}"[:200]}]
+
+
+def _service_status(runtime: Path, tree: Path) -> dict:
+    """service.status: its pid and the dormant sessions with why each one
+    sleeps -- what tells a woken session from one a new service found."""
+    sock = service_socket(runtime)
+    if not sock.exists():
+        return {}
+    try:
+        if str(tree) not in sys.path:
+            sys.path.insert(0, str(tree))
+        from delfin.agent.service.client import ServiceClient
+        with ServiceClient(sock, timeout=10.0, client="page-check") as c:
+            got = c.request("service.status", timeout=30)
+        return {"pid": got.get("pid"), "startedAt": got.get("startedAt"),
+                "dormant": [r.get("sessionId") for r in got.get("dormant") or []],
+                "running": [r.get("sessionId") for r in got.get("sessions") or []]}
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"[:200]}
 
 
 def _kept_records(env: dict) -> dict:
@@ -1077,6 +1124,303 @@ def _sync_check(browser, args, url: str, rec: dict, model_name: str, env: dict) 
         tui.close()
 
 
+# -- the hosted check --------------------------------------------------------
+
+#: The chat on screen: the agent tab's own (an in-kernel session) or a
+#: view's (a session another dashboard runs).
+_CHAT_SEL = (".delfin-agent-root:not(.delfin-live-root) .delfin-agent-chat-host, "
+             ".delfin-live-root .delfin-agent-chat-host")
+
+
+def _chat_text(page) -> str:
+    return page.evaluate("(sel) => ((" + _VISIBLE_JS + ")(sel)[0] || {}).innerText || ''",
+                         _CHAT_SEL) or ""
+
+
+def _chat_has(page, selector: str) -> int:
+    """How many *selector* elements the visible chat holds."""
+    return page.evaluate(
+        "([chat, sel]) => { const c = (" + _VISIBLE_JS + ")(chat)[0];"
+        " return c ? c.querySelectorAll(sel).length : 0; }", [_CHAT_SEL, selector])
+
+
+def _chat_session_mark(page) -> str:
+    """The data-delfin-session of the visible chat: which tab rendered it."""
+    return page.evaluate(
+        "(sel) => { const c = (" + _VISIBLE_JS + ")(sel)[0];"
+        " const t = c && c.querySelector('.delfin-agent-chat');"
+        " return t ? (t.getAttribute('data-delfin-session') || '') : ''; }", _CHAT_SEL) or ""
+
+
+def _live_send(page, text: str) -> bool:
+    """Type *text* into the visible view's composer and send it."""
+    return bool(page.evaluate(
+        "(text) => { const ta = (" + _VISIBLE_JS + ")('.delfin-live-input textarea')[0];"
+        " if (!ta) return false; ta.focus(); ta.value = text;"
+        " ta.dispatchEvent(new Event('input', {bubbles: true}));"
+        " const b = (" + _VISIBLE_JS + ")('.delfin-live-send')[0];"
+        " if (!b) return false; setTimeout(() => b.click(), 800); return true; }", text))
+
+
+def _click_visible_button(page, root: str, words: tuple) -> str:
+    """Click the first visible button under *root* whose text has one of
+    *words*; its text, or ""."""
+    return page.evaluate(
+        "([root, words]) => { const bs = (" + _VISIBLE_JS + ")(root + ' button');"
+        " const b = bs.find(b => words.some(w => b.innerText.includes(w)));"
+        " if (!b) return ''; b.click(); return b.innerText.trim(); }",
+        [root, list(words)]) or ""
+
+
+def _layout_at_sizes(page, args, rec: dict, tag: str) -> dict:
+    """The page at every viewport: whole-page scroll, overlaps."""
+    out = {}
+    for width, height in VIEWPORTS:
+        page.set_viewport_size({"width": width, "height": height})
+        time.sleep(3)
+        _shot(page, args, f"hosted_{tag}_{width}x{height}", rec)
+        out[f"{width}x{height}"] = page.evaluate(_LAYOUT_JS)
+    page.set_viewport_size({"width": 1400, "height": 1000})
+    time.sleep(2)
+    return out
+
+
+def _sizes_ok(sizes: dict) -> bool:
+    return bool(sizes) and all(
+        not s.get("page_scroll_y") and not s.get("page_scroll_x") and not s.get("overlaps")
+        for s in sizes.values())
+
+
+def _hosted_check(browser, args, url: str, rec: dict, model_name: str, env: dict,
+                  cleanup: "Cleanup") -> None:
+    """The hosted scenario (module docstring). What the service says is
+    read from the service; what a page shows, from the page."""
+    from delfin.agent.service.client import ServiceClient
+    h = rec.setdefault("hosted", {})
+    runtime = Path(env["DELFIN_RUNTIME_DIR"])
+    sock = service_socket(runtime)
+
+    # -- (a) a session started in dashboard A ---------------------------------
+    page_a, errors_a = _open_agent_tab(browser, args, url, rec, name="_a")
+    kernels_a = _kernel_pids(url, watched=True)
+    h["picked_a"] = _pick_visible_model(page_a, model_name)
+    # Code mode: under Ask All it asks before it writes a file.
+    h["picked_a"]["Mode"] = page_a.evaluate(
+        "() => { const b = Array.from(document.querySelectorAll('.widget-dropdown'))"
+        " .find(b => b.offsetParent !== null && b.innerText.includes('Mode:'));"
+        " const s = b && b.querySelector('select'); if (!s) return null;"
+        " const o = Array.from(s.options).find(o => o.text.includes('Code'));"
+        " if (!o) return null; s.value = o.value;"
+        " s.dispatchEvent(new Event('change', {bubbles: true})); return o.text; }")
+    time.sleep(3)
+    h["reply_a"] = _send_visible(page_a, "hosted-one: hello")
+    h["service_up_s"] = _until(sock.exists, 120)
+    tui = ServiceClient(sock, client="delfin-tui", timeout=30.0) if sock.exists() else None
+    # A watcher held open through every step: what the service says when
+    # a session leaves it, and why it stops, if it does.
+    watch = ServiceClient(sock, client="page-check-watch", timeout=30.0) \
+        if sock.exists() else None
+
+    def watched() -> list:
+        if watch is None:
+            return []
+        return [{k: e.get(k) for k in ("type", "session", "reason", "restart")}
+                for e in list(watch.events)
+                if e.get("type") in ("session.removed", "service.stopping")]
+
+    def summaries() -> list:
+        if tui is None:
+            return []
+        return tui.request("sessions.list", timeout=30)["sessions"]
+
+    sid = ""
+    for s in _saved_sessions(args, env):
+        if "hosted-one" in str(s.get("title")):
+            sid = str(s["session_id"])
+    h["sid"] = sid
+
+    def summary(of: str = "") -> dict:
+        of = of or sid
+        return next((s for s in summaries() if s.get("sessionId") == of), {})
+
+    h["tui_lists_it_s"] = _until(lambda: bool(summary()), 60)
+    h["summary"] = {k: summary().get(k) for k in ("name", "state", "host", "keep")}
+    h["elsewhere_rows"] = [e for e in ((tui.request("sessions.list")["elsewhere"]
+                                        if tui else []))
+                           if e.get("sessionId") == sid or not e.get("sessionId")]
+    replay = []
+    if tui is not None and summary():
+        try:
+            replay = tui.request("session.attach", {"sessionId": sid, "turns": 0},
+                                 timeout=60)["events"]
+        except Exception as exc:
+            h["tui_attach_error"] = str(exc)[:200]
+    h["tui_joined_with_turn"] = any(e.get("type") == "user.message"
+                                    and "hosted-one" in str(e.get("text")) for e in replay) \
+        and any(e.get("type") == "text.ended" for e in replay)
+    _shot(page_a, args, "hosted_a", rec)
+
+    # -- dashboard B lists it running and opens it with the chat --------------
+    page_b, errors_b = _open_agent_tab(browser, args, url, rec, name="_b")
+    kernels_b = {k: v for k, v in _kernel_pids(url, watched=True).items() if k not in kernels_a}
+    h["b_lists_running_s"] = _until(
+        lambda: "delfin-state-running" in _row_of(page_b, "hosted-one").get("classes", []), 60)
+    h["b_row"] = _row_of(page_b, "hosted-one")
+    h["b_opened"] = _click_row(page_b, "hosted-one")
+    h["b_shows_chat_s"] = _until(lambda: "hosted-one: hello" in _chat_text(page_b), 60)
+    h["b_view"] = _visible(page_b, ".delfin-live-root") > 0
+    mark_a, mark_b = _chat_session_mark(page_a), _chat_session_mark(page_b)
+    h["b_chat_is_as_rendered_by_a"] = bool(mark_a) and mark_a == mark_b
+    _shot(page_b, args, "hosted_b_view", rec)
+    h["still_hosted_by_a"] = summary().get("host") == "dashboard"
+
+    # -- (b) a turn sent from B shows in A (and in the terminal) --------------
+    start = len(tui.events) if tui else 0
+    h["b_sent"] = _live_send(page_b, "from-B: hi")
+    h["b_turn_in_a_s"] = _until(lambda: "from-B: hi" in _chat_text(page_a), 90)
+    h["b_turn_answer_in_b_s"] = _until(
+        lambda: _chat_text(page_b).count("received") >= 2, 120)
+    h["b_turn_in_tui"] = bool(tui) and any(
+        e.get("type") == "user.message" and e.get("text") == "from-B: hi"
+        for e in tui.events[start:])
+    # The terminal joins in: its message shows in both pages.
+    if tui is not None and summary():
+        tui.request("session.prompt", {"sessionId": sid, "text": "from-tui: hi"})
+    h["tui_turn_in_a_s"] = _until(lambda: "from-tui: hi" in _chat_text(page_a), 90)
+    h["tui_turn_in_b_s"] = _until(lambda: "from-tui: hi" in _chat_text(page_b), 90)
+    time.sleep(5)
+
+    # -- (e) streaming, Stop from B -------------------------------------------
+    _live_send(page_b, "do-slow")
+    lengths = []
+    for _ in range(12):
+        time.sleep(1)
+        lengths.append(len(_chat_text(page_b)))
+    h["b_stream_lengths"] = lengths
+    h["b_streams"] = len(set(lengths)) >= 4 and lengths[-1] > lengths[0]
+    h["b_stop"] = _click_visible_button(page_b, ".delfin-live-root .delfin-live-send-row",
+                                        ("Stop",))
+    h["a_turn_ended_after_b_stop_s"] = _until(
+        lambda: summary().get("state") in ("idle", "needs_input"), 60)
+    time.sleep(4)
+
+    # -- (e) an approval answered in B, a tool row and a 3D card --------------
+    _live_send(page_b, "do-xyz water.xyz")
+    h["b_asked_s"] = _until(lambda: _visible(page_b, ".delfin-live-asked") > 0, 90)
+    h["a_asked_buttons"] = page_a.evaluate(
+        "() => (" + _VISIBLE_JS + ")('.delfin-agent-root button')"
+        ".map(b => b.innerText.trim()).filter(t => /Allow|Approve|Grant|Deny/.test(t))")
+    h["pending_in_service"] = summary().get("pending")
+    _shot(page_b, args, "hosted_b_asked", rec)
+    h["b_answered"] = _click_visible_button(page_b, ".delfin-live-asked",
+                                            ("Allow", "Approve", "Grant"))
+    h["a_card_s"] = _until(lambda: _chat_has(page_a, ".delfin-chat-mol3d") > 0, 120)
+    h["b_card_s"] = _until(lambda: _chat_has(page_b, ".delfin-chat-mol3d") > 0, 60)
+    h["a_tool_rows"] = _chat_has(page_a, ".delfin-chat-tool")
+    h["b_tool_rows"] = _chat_has(page_b, ".delfin-chat-tool")
+    time.sleep(5)
+    h["b_card_drawn"] = _chat_has(page_b, ".delfin-mol3d-stage canvas") > 0
+    h["a_card_drawn"] = _chat_has(page_a, ".delfin-mol3d-stage canvas") > 0
+    _shot(page_a, args, "hosted_a_card", rec)
+    _shot(page_b, args, "hosted_b_card", rec)
+
+    # -- (e) a file attached in A shows in both -------------------------------
+    note = Path(cleanup.work) / "attached-notes.txt"
+    note.write_text("line one\nline two\n")
+    try:
+        # The browser's own file picker, opened by the tab's Files button.
+        with page_a.expect_file_chooser(timeout=30_000) as chooser:
+            page_a.evaluate("() => (" + _VISIBLE_JS + ")('.delfin-agent-upload')[0].click()")
+        chooser.value.set_files(str(note))
+        time.sleep(4)
+        _send_visible(page_a, "see the attached notes")
+        h["a_file_s"] = _until(lambda: "attached-notes" in _chat_text(page_a), 60)
+        h["b_file_s"] = _until(lambda: "attached-notes" in _chat_text(page_b), 60)
+    except Exception as exc:
+        h["file_error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+    # -- (e) a slash command typed in B runs in A -----------------------------
+    _live_send(page_b, "/cost")
+    h["b_slash_in_a_s"] = _until(lambda: "/cost" in _chat_text(page_a), 60)
+    h["b_slash_answer_in_b_s"] = _until(
+        lambda: _chat_text(page_b).lower().count("cost") >= 2, 60)
+
+    # -- (d) six sizes, A and B -----------------------------------------------
+    h["sizes_a"] = _layout_at_sizes(page_a, args, rec, "a")
+    h["sizes_b"] = _layout_at_sizes(page_b, args, rec, "b")
+    h["page_errors_a"], h["page_errors_b"] = errors_a[:10], errors_b[:10]
+
+    # -- (c) Keep session off: every window closes, it ends -------------------
+    h["switch_a"] = _switches(page_a)
+    if tui is not None:
+        tui.close()
+    _close_page(page_b)
+    _close_page(page_a)
+    pid_a = next(iter(kernels_a.values()), 0)
+    pid_b = next(iter(kernels_b.values()), 0)
+    h["kernel_a_ended_after_s"] = _wait_pid_gone(pid_a, WAIT_KERNEL_END)
+    h["kernel_b_ended_after_s"] = _wait_pid_gone(pid_b, WAIT_KERNEL_END)
+    h["off_ended_s"] = _until(lambda: not any(
+        s.get("sessionId") == sid for s in _service_sessions(runtime, args.tree)), 120)
+    h["status_after_off"] = _service_status(runtime, args.tree)
+
+    # -- (c) Keep session on: it runs on, and is there in a new dashboard -----
+    page_c, errors_c, url = _reopen(browser, args, url, rec, env, cleanup, h, "_c")
+    kernels_c = {k: v for k, v in _kernel_pids(url, watched=True).items()
+                 if k not in kernels_a and k not in kernels_b}
+    h["reply_kept"] = _new_session(page_c, env, "wskept", "kept-two: hello", model_name)
+    time.sleep(5)
+    h["switch_c"] = _toggle_keep(page_c)
+    kept_sid = ""
+    for s in _saved_sessions(args, env):
+        if "kept-two" in str(s.get("title")):
+            kept_sid = str(s["session_id"])
+    h["kept_sid"] = kept_sid
+    h["kept_hosted_s"] = _until(lambda: any(
+        s.get("sessionId") == kept_sid and s.get("keep") is True
+        for s in _service_sessions(runtime, args.tree)), 60)
+    _close_page(page_c)
+    pid_c = next(iter(kernels_c.values()), 0)
+    h["kernel_c_ended_after_s"] = _wait_pid_gone(pid_c, WAIT_KERNEL_END)
+    h["kept_runs_after_close_s"] = _until(lambda: any(
+        s.get("sessionId") == kept_sid for s in _service_sessions(runtime, args.tree)),
+        WAIT_HANDOVER)
+    h["service_after_c"] = _service_sessions(runtime, args.tree)
+    h["status_after_c"] = _service_status(runtime, args.tree)
+    h["watched_after_c"] = watched()
+    page_d, errors_d, url = _reopen(browser, args, url, rec, env, cleanup, h, "_d")
+    h["status_at_d"] = _service_status(runtime, args.tree)
+    h["watched_at_d"] = watched()
+    h["d_lists_running_s"] = _until(
+        lambda: "delfin-state-running" in _row_of(page_d, "kept-two").get("classes", []), 60)
+    h["d_rows"] = _sidebar_rows(page_d)
+    _click_row(page_d, "kept-two")
+    h["d_full_chat_s"] = _until(
+        lambda: "kept-two" in _chat_text(page_d)
+        and _visible(page_d, ".delfin-agent-input textarea") > 0, 120)
+    h["d_notice"] = _text(page_d, ".delfin-session-notice")[:400]
+    h["d_kept_in_service"] = [s for s in _service_sessions(runtime, args.tree)
+                              if s.get("sessionId") == kept_sid]
+    _shot(page_d, args, "hosted_d", rec)
+    h["page_errors_c"], h["page_errors_d"] = errors_c[:10], errors_d[:10]
+    h["watched"] = watched()
+    if watch is not None:
+        watch.close()
+
+    def done(key):
+        return h.get(key) is not None and h.get(key) is not False
+
+    rec["ok"] = all(done(k) for k in (
+        "tui_lists_it_s", "tui_joined_with_turn", "b_lists_running_s", "b_shows_chat_s",
+        "b_chat_is_as_rendered_by_a", "still_hosted_by_a", "b_turn_in_a_s",
+        "b_turn_in_tui", "tui_turn_in_a_s", "tui_turn_in_b_s", "b_streams",
+        "b_asked_s", "a_card_s", "b_card_s", "a_file_s", "b_file_s",
+        "b_slash_in_a_s", "off_ended_s", "kept_runs_after_close_s",
+        "d_lists_running_s", "d_full_chat_s")) \
+        and h["summary"].get("host") == "dashboard" and not h["elsewhere_rows"] \
+        and _sizes_ok(h["sizes_a"]) and _sizes_ok(h["sizes_b"])
+
+
 def _send_prompt(page, args, rec, model_name: str, t0: float) -> None:
     picked = rec.setdefault("picked", {})
     for label, want in (("Provider:", "ollama"), ("Model:", model_name)):
@@ -1167,11 +1511,14 @@ def run_check(args: argparse.Namespace) -> dict:
                  "timings_s": {}, "screenshots": []}
     cleanup = Cleanup()
     cleanup.tree = args.tree
+    cleanup.out = args.out
     t0 = time.time()
     previous = install_deadline(args.timeout)
     try:
-        sys.path.insert(0, str(args.tree / "tests"))
-        sys.path.insert(0, str(args.tree))
+        # The scripted model is the harness's own, not the tree's under
+        # test: a control run on an older tree answers the same markers.
+        sys.path.insert(0, str(default_tree() / "tests"))
+        sys.path.insert(1, str(args.tree))
         from agent_terminal_probes import fake_model
         work = Path(tempfile.mkdtemp(prefix="work-", dir=str(args.out)))
         cleanup.work = work
@@ -1182,7 +1529,10 @@ def run_check(args: argparse.Namespace) -> dict:
         ws.mkdir()
         (home / ".delfin_settings.json").write_text(json.dumps({"agent": {
             "provider": "ollama", "model": fake_model.MODEL,
-            "permission_profile": "all_free", "probe_endpoint": False}}))
+            # The hosted scenario answers an approval from another page:
+            # its sessions ask before a file is written.
+            "permission_profile": "ask_all" if args.scenario == "hosted" else "all_free",
+            "probe_endpoint": False}}))
         srv, model_port = fake_model.serve(
             log_path=str(args.out / "logs" / "model.log"))
         cleanup.model_server = srv
@@ -1193,7 +1543,7 @@ def run_check(args: argparse.Namespace) -> dict:
         env = server_env(server_python=args.server_python, tree=args.tree,
                          home=home, scratch=home, runtime=cleanup.runtime,
                          workspace=ws, model_port=model_port)
-        if args.scenario == "keep":
+        if args.scenario in ("keep", "hosted"):
             env["DELFIN_SESSION_GRACE_SECONDS"] = str(KEEP_GRACE_S)
         if args.scenario == "service-session":
             _start_service(args, env, work, cleanup, rec, fake_model.MODEL)

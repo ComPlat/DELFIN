@@ -165,7 +165,8 @@ def test_the_result_tells_the_model_not_to_poll():
 # ---------------------------------------------------------------------------
 
 def test_a_wake_up_can_span_a_long_calculation():
-    source = pathlib.Path(A.__file__).read_text(encoding="utf-8")
+    from delfin.agent import tool_catalog
+    source = pathlib.Path(tool_catalog.__file__).read_text(encoding="utf-8")
     # The comment explaining the change sits between the key and the value,
     # so a 400-char window landed inside the prose rather than on the number.
     block = source[source.index('"delay_seconds": {'):]

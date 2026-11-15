@@ -13,6 +13,7 @@ import re
 import time
 import zipfile
 from pathlib import Path
+from .state_paths import state_root
 from typing import Any
 
 from . import proc_identity
@@ -166,7 +167,7 @@ def _migrate_mode(mode: str) -> str:
     return _LEGACY_MODE_MAP.get(mode, mode)
 
 
-_SESSIONS_DIR = Path.home() / ".delfin" / "agent_sessions"
+_SESSIONS_DIR = state_root() / "agent_sessions"
 
 
 # The three directories below stay resolved per call, through
@@ -179,15 +180,15 @@ _SESSIONS_DIR = Path.home() / ".delfin" / "agent_sessions"
 # something went looking for one.
 
 def _transcript_archive_path() -> Path:
-    return Path.home() / ".delfin" / "transcript_archive"
+    return state_root() / "transcript_archive"
 
 
 def _handoffs_path() -> Path:
-    return Path.home() / ".delfin" / "handoffs"
+    return state_root() / "handoffs"
 
 
 def _bundles_path() -> Path:
-    return Path.home() / ".delfin" / "bundles"
+    return state_root() / "bundles"
 
 
 def _ensure_dir() -> Path:

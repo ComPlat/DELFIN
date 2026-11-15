@@ -24,12 +24,12 @@ import { createAgentScreen } from "./agents/screen"
 import { App } from "./app"
 import { History } from "./composer/history"
 import { worktreeRetryOf } from "./commands"
-import { START_HINT, entryOf, settingsFor } from "./entry"
+import { START_HINT, entryOf, offersRunningFirst, settingsFor } from "./entry"
 import { loadConfig, mouseOn, screenModeOf } from "./config/config"
 import { Keymap } from "./keymap/keymap"
 import type { AnyEvent, AttentionItem } from "./protocol/generated"
 import { EmptySessions } from "./empty"
-import { keptOf, leavingNote, startedHere } from "./leaving"
+import { hostedOf, keptOf, leavingNote, startedHere } from "./leaving"
 import { startSessionView } from "./session"
 import { ensureSession, type Asked } from "./store/state"
 import { createAppStore, eventsOf, eventsOfUnknown, listed, withReplay } from "./store/store"
@@ -646,7 +646,8 @@ function printWhenGone(): void {
   const note = leavingNote({
     problem: connection.problem || undefined,
     session: s ? { id: s.id, title: s.title || s.summary?.title || "", state: s.state, ended: s.ended,
-                   discarded: empties.wasEnded(s.id), kept: keptOf(s.summary) } : undefined,
+                   discarded: empties.wasEnded(s.id), kept: keptOf(s.summary),
+                   hosted: hostedOf(s.summary) } : undefined,
   })
   if (!note) return
   process.once("exit", () => {
@@ -706,10 +707,11 @@ const pins = Pins.load()
 const agentScreen = full || (process.env.DELFIN_TUI_AGENTS_SCREEN ?? (process.env.STY ? "footer" : "alternate")) === "footer"
   ? undefined : createAgentScreen(renderer, view.queue)
 
-// `--resume` without an id: the picker comes first; what is picked is
-// opened, esc starts a new session as a plain start does.
+// `--resume` without an id -- or a plain start while sessions already
+// run -- puts the picker first: what is picked is opened, esc starts a
+// new session as a plain start does.
 let pickedAtStart: (picked: { id: string; workspace: string } | null) => void = () => {}
-const startPick = entry.kind === "pick"
+const startPick = entry.kind === "pick" || offersRunningFirst(entry, hello.sessions as { state?: string }[], start)
   ? new Promise<{ id: string; workspace: string } | null>((resolve) => { pickedAtStart = resolve })
   : null
 const resumeAtStart = startPick ? {
