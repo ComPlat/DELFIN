@@ -58,9 +58,12 @@ def index_path() -> Path:
 
     Resolved per call (wave-15a rule: a store path is never an
     import-time constant) so a redirected home — a test, a benchmark
-    run — moves it with the home.
+    run — moves it with the home.  It lives under the agent's state
+    root, so ``DELFIN_STATE`` moves it like every other state file.
     """
-    return Path.home() / ".delfin" / INDEX_FILENAME
+    from delfin.agent.state_paths import state_root
+
+    return state_root() / INDEX_FILENAME
 
 
 def record(
@@ -91,7 +94,11 @@ def record(
     }
     try:
         path = index_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only like every state writer (state_paths.ensure_dir
+        # never raises; a read-only home then fails at the write below).
+        from delfin.agent.state_paths import ensure_dir
+
+        ensure_dir(path.parent)
         _rewrite(path, [entry])
         return True
     except OSError as exc:
