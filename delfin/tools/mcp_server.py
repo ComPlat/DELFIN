@@ -150,6 +150,10 @@ def h_validate_application(
 #: run still completes and the chain records with no session id.
 SESSION_ID_META_KEY = "delfin/agent_session_id"
 
+#: The MCP SDK's per-request Context class, bound by run_server() before
+#: the tools are registered (see there).  None until then.
+_McpContext: Any = None
+
 
 def h_run_application(
     name: str, inputs: Optional[Dict[str, Any]] = None, cores: int = 1,
@@ -268,7 +272,16 @@ def run_server(argv: Optional[list[str]] = None) -> None:
     """Start the MCP server on stdio."""
     argparse.ArgumentParser(prog="delfin-tools-server").parse_args(argv)
 
-    from ..mcp_compat import load_server_class
+    from ..mcp_compat import load_context_class, load_server_class, request_meta
+
+    # The SDK injects a tool's request context into the parameter annotated
+    # with its Context class.  This module never imports mcp at the top and
+    # its annotations are strings (``from __future__ import annotations``),
+    # which the SDK resolves in this module's globals -- so the name is
+    # bound here, before any tool is registered.  mcp 2.x removed
+    # ``server.get_context()``; this injection is the route both lines share.
+    global _McpContext
+    _McpContext = load_context_class()
 
     mcp = load_server_class()(
         "delfin-tools",
@@ -369,40 +382,22 @@ def run_server(argv: Optional[list[str]] = None) -> None:
         return h_validate_application(name, inputs, geometry)
 
     @mcp.tool()
-    def run_application(name: str, inputs: dict | None = None, cores: int = 1) -> str:
+    def run_application(name: str, inputs: dict | None = None, cores: int = 1,
+                        ctx: _McpContext = None) -> str:
         """Run a named application with named inputs; returns named outputs.
 
         Note: this can be long-running (it executes real QM jobs).
         """
         # JC2 target 2: the dispatching session's id arrives in the
-        # request's `_meta` (see SESSION_ID_META_KEY).  Read it from the
-        # FastMCP request context, best-effort: a caller that sends no
-        # meta (plain CLI, tests, another client) means "no agent
-        # session" and the handler records the chain with no id.  A
-        # caller whose SDK lacks the API also means that — the run still
-        # completes.  The context is request-scoped: it is NOT part of
-        # the tool's schema, so the model cannot supply identity
-        # through it.
-        meta_id = None
-        try:
-            ctx = mcp.get_context()
-            rc = ctx.request_context if ctx is not None else None
-            meta = getattr(rc, "meta", None)
-            # The installed SDK (mcp 1.27.0) delivers the request's
-            # `_meta` as a pydantic RequestParams.Meta (model_config
-            # extra="allow"), NOT a dict: unknown keys live in
-            # model_extra.  Read both shapes; neither present (an older
-            # SDK, another client) means "no agent session".
-            if isinstance(meta, dict):
-                extra = meta
-            else:
-                extra = getattr(meta, "model_extra", None)
-                if not isinstance(extra, dict):
-                    extra = {}
-            value = extra.get(SESSION_ID_META_KEY)
-            meta_id = str(value) if value else None
-        except Exception:
-            meta_id = None
+        # request's `_meta` (see SESSION_ID_META_KEY).  The SDK injects the
+        # request context into `ctx` (annotated with its own Context class,
+        # see _McpContext; both SDK lines leave that parameter out of the
+        # tool's schema, so the model cannot supply identity through it).
+        # No context or no meta (plain CLI, tests, another client) means
+        # "no agent session": the chain is recorded with no id and the run
+        # still completes.
+        value = request_meta(ctx).get(SESSION_ID_META_KEY)
+        meta_id = str(value) if value else None
         return h_run_application(name, inputs, cores, agent_session_id=meta_id)
 
     @mcp.tool()
