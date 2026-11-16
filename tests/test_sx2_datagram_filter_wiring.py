@@ -38,8 +38,9 @@ def _first(program, code, k):
 
 def _type_check(program, entry):
     """From a family comparison, the type comparison the branch reaches:
-    LD 24; AND 15; JEQ <type>."""
-    t = entry + program[entry][1]        # the branch lands on LD 24
+    LD 24; AND 15; JEQ <type>. The true edge lands LD 24 directly
+    (jt counts from entry+1)."""
+    t = entry + 1 + program[entry][1]
     assert program[t] == (_LD, 0, 0, 24), program[t]
     assert program[t + 1] == (_AND, 0, 0, 15), program[t + 1]
     return t + 2
@@ -56,18 +57,25 @@ def _type_jump(program, entry):
 
 # -- the measured defect -----------------------------------------------------
 
-def test_restricted_inet_datagram_creation_is_denied_in_kernel_today():
-    """The defect, pinned: under a restricted network the AF_INET[6] type
-    check sends SOCK_DGRAM to an in-kernel EACCES -- the measured errno-13
-    death of OpenMPI's opal_ifinit. This test turns green only when the
-    datagram branch is judged by the supervisor instead."""
+def test_restricted_inet_datagram_creation_is_handed_to_the_supervisor():
+    """The target state the wiring must reach: under a restricted network
+    the AF_INET[6] SOCK_DGRAM branch is NOTIFIED (the supervisor judges
+    creation) instead of an in-kernel EACCES -- today (before the wiring
+    commit) the filter ends it in EACCES, the measured errno-13 death of
+    OpenMPI's opal_ifinit, so this test is RED on the unfixed tree and
+    green only when creation is judged. The inet families' dispatch lands
+    on the inet branch's own JEQ DGRAM (LD 24; AND 15; JEQ), NOT on the
+    shared UNIX-branch JEQ whose true edge must stay EACCES."""
     p = SG._program(block_inet_datagrams=True)
     for family in (AF_INET, AF_INET6):
-        type_idx, type_jump = _type_jump(p, _first(p, _JEQ, family))
-        assert type_jump[0] == _JEQ and type_jump[3] == DGRAM, type_jump
-        assert _target(p, type_idx, True)[3] == RET_EACCES, (
-            f"{family!r} datagram creation denied in-kernel -- opal_ifinit "
-            "dies with errno 13 before any supervisor decision")
+        entry = _first(p, _JEQ, family)
+        j = _type_check(p, entry)
+        assert p[j][0] == _JEQ and p[j][3] == DGRAM, p[j]
+        assert _target(p, j, True)[3] == RET_NOTIFY, (
+            f"{family!r} datagram creation denied in-kernel "
+            f"({_target(p, j, True)[3]:#x}) -- opal_ifinit dies with "
+            "errno 13 before any supervisor decision")
+        assert _target(p, j, False)[3] == RET_EACCES, _target(p, j, False)
 
 
 # -- the invariants that must survive ----------------------------------------

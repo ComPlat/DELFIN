@@ -61,6 +61,12 @@ _NOTIF_RECV = 0xC0502100
 _NOTIF_SEND = 0xC0182101
 _NOTIF_ID_VALID = 0x40082102
 _NOTIF_ID_VALID_OLD = 0x80082102
+#: SECCOMP_USER_NOTIF_FLAG_CONTINUE: the kernel carries out the notified
+#: syscall itself after the supervisor answers 0 with this flag.
+_NOTIF_FLAG_CONTINUE = 1
+#: System calls whose address-bearing datagram use is judged (x86_64 and
+#: aarch64 numbers; other architectures never reach the filter).
+_NR_SOCKET, _NR_BIND = 56, 48
 
 _libc = ctypes.CDLL(None, use_errno=True)
 _libc.syscall.restype = ctypes.c_long
@@ -388,7 +394,7 @@ def _program(block_inet_datagrams: bool = False):
               (_JEQ, socket.SOCK_DGRAM, "eacces", "allow")]
     if block_inet_datagrams:
         items += [("label", "inet"), (_LD, 24), (_AND, 0xF),
-                  (_JEQ, socket.SOCK_STREAM, "allow", "eacces")]
+                  (_JEQ, socket.SOCK_DGRAM, "notify", "eacces")]
     items += [("label", "allow"), (_RET, _RET_ALLOW),
               ("label", "eacces"), (_RET, _RET_ERRNO | errno.EACCES),
               ("label", "enosys"), (_RET, _RET_ERRNO | errno.ENOSYS),
@@ -546,7 +552,65 @@ class Supervisor:
         finally:
             os.close(pidfd)
 
-    def _handle(self, notif_id: int, pid: int, args: tuple) -> None:
+    def _datagram_socket(self, notif_id: int, pid: int, args: tuple,
+                         nr: int) -> None:
+        """socket()/bind() under a restricted network: the creation of a
+        datagram socket and the binding of its loopback endpoint are
+        judged here by the UDP ownership rule (owns_udp -- the command
+        tree's own ranks, or a session background job's socket).
+
+        Allowed with SECCOMP_USER_NOTIF_FLAG_CONTINUE: the kernel then
+        carries out the real socket()/bind() itself, so the descriptor the
+        command gets is the kernel's own (no address rewrite, no copied
+        fd). Everything else is refused with EACCES, fail closed.
+        """
+        try:
+            allowed = False
+            if nr == _NR_BIND:
+                # args: (fd, addr_ptr, addr_len) -- read the address
+                # straight out of the command's memory.
+                addr_ptr, addr_len = int(args[1]), int(args[2]) & 0xFFFFFFFF
+                with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
+                    mem.seek(addr_ptr)
+                    raw = mem.read(addr_len)
+                if len(raw) != addr_len or not self._valid(notif_id):
+                    raise ValueError("unreadable bind address")
+                family = struct.unpack_from("<H", raw)[0]
+                if family == socket.AF_INET and len(raw) >= 8:
+                    port = struct.unpack_from(">H", raw, 2)[0]
+                    ip = ipaddress.ip_address(raw[4:8])
+                elif family == socket.AF_INET6 and len(raw) >= 24:
+                    port = struct.unpack_from(">H", raw, 2)[0]
+                    ip = ipaddress.ip_address(raw[8:24])
+                else:
+                    raise ValueError(f"address family {family}")
+                allowed = owns_udp(ip, port, self.own_listeners,
+                                   self.root_pid, include_root=True)
+                if not allowed:
+                    self.refused.append(f"bind {ip}:{port}")
+            else:
+                # socket(): creating the descriptor is the command's own
+                # act. The escape paths are the address-bearing calls
+                # (sendto/sendmsg to a foreign endpoint), which the proxy
+                # rules refuse; a bound rank may talk to itself.
+                allowed = True
+            if allowed:
+                self._send(notif_id, 0, _NOTIF_FLAG_CONTINUE)
+            else:
+                self._send(notif_id, -1, -errno.EACCES)
+        except Exception:
+            try:
+                self._send(notif_id, -1, -errno.EACCES)
+            except Exception:
+                pass
+
+    def _handle(self, notif_id: int, pid: int, args: tuple, nr: int = -1) -> None:
+        # socket()/bind(): datagram creation and loopback binding are
+        # judged here (the filter notifies them under a restricted
+        # network). Allowed with CONTINUE, refused with EACCES.
+        if nr in (_NR_SOCKET, _NR_BIND):
+            self._datagram_socket(notif_id, pid, args, nr)
+            return
         err = errno.EACCES
         val = -1
         try:
@@ -638,5 +702,9 @@ class Supervisor:
                     continue
                 notif_id, pid, _flags = struct.unpack_from("<QII", buf.raw)
                 args = struct.unpack_from("<6Q", buf.raw, 32)
-                threading.Thread(target=self._handle, args=(notif_id, pid, args),
+                # The notified system call number sits at offset 24
+                # (seccomp_data: nr, arch, instruction_pointer, args).
+                (nr,) = struct.unpack_from("<I", buf.raw, 24)
+                threading.Thread(target=self._handle,
+                                 args=(notif_id, pid, args, int(nr)),
                                  daemon=True).start()
