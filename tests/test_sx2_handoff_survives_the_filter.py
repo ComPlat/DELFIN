@@ -123,10 +123,21 @@ def test_the_handoff_protocol_is_synchronised():
 def test_a_caged_true_returns_quickly():
     """The real landlock_exec path with a restricted network: a caged
     `true` returns within seconds -- the handoff no longer notifies
-    itself. Skipped where the cage cannot be nested (login node)."""
+    itself. Skipped where the cage cannot be nested (login node):
+    a nested seccomp filter fails with EPERM/EACCES at install."""
     import os
     if os.environ.get("DELFIN_AGENT_SESSION"):
         pytest.skip("nested cage on this login node")
+    try:
+        import delfin.agent.socket_guard as SG
+        SG.install_filter(block_inet_datagrams=True)
+        raise RuntimeError("install_filter unexpectedly succeeded")
+    except (PermissionError, OSError) as exc:
+        if exc.errno in (errno.EACCES, errno.EPERM, errno.EBUSY):
+            pytest.skip(f"nested seccomp not possible here ({exc})")
+        raise
+    except RuntimeError:
+        pass
     import delfin.agent.landlock_exec as LE
     start = time.monotonic()
     rc = LE._run_guarded(write=[], hide=[], allowed=[],
