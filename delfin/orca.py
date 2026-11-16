@@ -384,10 +384,25 @@ def _ensure_orca_scratch_dir() -> Path:
         if candidate.exists():
             slurm_fallback = str(candidate)
 
+    # Inside an agent session's command cage the session's scratch
+    # directory is exported as DELFIN_SESSION_SCRATCH (the cage also
+    # points TMPDIR at it) and bound read-write into the cage
+    # (api_client._session_scratch_dir), while the SLURM job's node-local
+    # tmp directory is mounted read-only. A calculation started from a
+    # command of such a session therefore puts its scratch on the
+    # session's scratch -- node-local storage that is writable there --
+    # instead of failing over to the final fallback after every SLURM
+    # candidate. Outside the cage the variable does not exist and nothing
+    # changes. An explicitly writable DELFIN_SCRATCH still keeps its
+    # place above it.
+    cage_marker = os.environ.get("DELFIN_AGENT_SESSION", "").strip()
+    session_scratch = os.environ.get("DELFIN_SESSION_SCRATCH") if cage_marker else None
+
     base_candidates = [
         os.environ.get("ORCA_SCRDIR"),
         os.environ.get("ORCA_TMPDIR"),
         os.environ.get("DELFIN_SCRATCH"),
+        session_scratch,
         slurm_tmp,
         slurm_fallback,
     ]
