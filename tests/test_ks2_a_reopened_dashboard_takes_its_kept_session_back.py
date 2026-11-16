@@ -319,6 +319,7 @@ def _until(cond, timeout: float = 30.0):
 
 @pytest.fixture
 def svc(tmp_path):
+    (tmp_path / "svcroot").mkdir()
     service = ServiceProcess(tmp_path / "svcroot")
     try:
         yield service
