@@ -5,7 +5,7 @@ window.DELFIN_CONTENT = {
     eyebrow: 'COMPUTATIONAL CHEMISTRY / AGENTIC SCIENCE',
     title: 'Molecular insight.',
     accent: 'Scientific impact.',
-    description: 'From molecular structure to reproducible predictions. DELFIN connects quantum chemistry, molecular design and AI agents in one open research platform.'
+    description: 'From SMILES to reproducible predictions. DELFIN connects quantum chemistry, molecular design and AI agents in one open research platform.'
   },
   workflow: [
     { title: 'Start with an idea.', label: 'Molecular input', tag: '01 / DEFINE',
