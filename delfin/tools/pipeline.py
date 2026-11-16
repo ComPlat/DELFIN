@@ -1539,7 +1539,10 @@ class Pipeline:
                 # so a resume can still find the output — previously the
                 # dir was only written after run_step returned, leaving
                 # `pending`/None on disk and a redundant rerun on resume.
-                cstep.mark_submitted(job_id="local")
+                from delfin.tools import chain_liveness as _cl
+
+                cstep.mark_submitted(job_id="local",
+                                      runner=_cl.this_runner(chain.state_path.parent))
                 cstep.work_dir = str(step_dir)
                 # L1/L3: persist the step's parameters so a resume can
                 # rebuild a REAL run (validate_params passes) and the
@@ -1612,7 +1615,10 @@ class Pipeline:
                 # run_step, else mark_finished/mark_failed are refused
                 # from 'pending' afterwards (a successful 11-minute run
                 # was thrown away in the live run #3).
-                cstep.mark_submitted(job_id="local")
+                from delfin.tools import chain_liveness as _cl
+
+                cstep.mark_submitted(job_id="local",
+                                      runner=_cl.this_runner(chain.state_path.parent))
                 chain.save()
                 # L5: the dir actually used is the NEW attempt dir (never
                 # overwrite the old calculation) — not the numbered dir of
@@ -1629,13 +1635,34 @@ class Pipeline:
                         import time as _time
                         _time.sleep(spec.retry_delay)
 
-                result = run_step(
-                    spec.step_name,
-                    geometry=geom,
-                    cores=cores,
-                    work_dir=attempt_dir,
-                    **merged_kwargs,
-                )
+                # JC3: the heartbeat tells any process on any node that
+                # this step still runs (a pid does not: live run 5).
+                _beat = (cstep.runner or {}).get("heartbeat") if cstep is not None else None
+                from delfin.tools import chain_liveness as _cl
+
+                try:
+                    with _cl.beating(_beat):
+                        result = run_step(
+                            spec.step_name,
+                            geometry=geom,
+                            cores=cores,
+                            work_dir=attempt_dir,
+                            **merged_kwargs,
+                        )
+                except BaseException as exc:
+                    # JC3: the run raised and this process may live on (an
+                    # agent service, the tool server, a notebook kernel).
+                    # Its pid then still answers, so the step must say its
+                    # run ended, or it would read as "still running" for
+                    # ever and a resume would be refused.  The state stays
+                    # as it was (JC1: a crash leaves the step submitted).
+                    if cstep is not None and chain is not None and cstep.runner:
+                        cstep.runner["ended"] = type(exc).__name__
+                        try:
+                            chain.save()
+                        except Exception:  # noqa: BLE001 - re-raise the run's error
+                            pass
+                    raise
                 if result.ok:
                     break
 
