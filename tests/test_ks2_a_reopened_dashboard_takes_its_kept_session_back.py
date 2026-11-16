@@ -308,3 +308,22 @@ def test_a_kept_session_working_there_is_still_followed_live(home, old_kernel):
         assert rec is None or not rec.get("handing_over")
     finally:
         refs["stop_refresh"]()
+
+
+def test_a_chat_still_loading_its_session_is_one_row_not_two(home):
+    """A tab asked to open a conversation has its id only once loaded;
+    meanwhile the service's row of the same session was listed beside it."""
+    class _Loading(_Build):
+        def __call__(self, ctx):
+            tab, refs = super().__call__(ctx)
+            refs["state"]["active_session_id"] = ""         # not loaded yet
+            return tab, refs
+
+    _w, refs = AS.create_tab(_ctx(home), build=_Loading(), service=False)
+    try:
+        assert not refs["running_panel"].is_open(SID)
+        refs["open"](str(home / "launch"), SID, in_kernel=True)
+        assert refs["running_panel"].is_open(SID)
+        assert not refs["running_panel"].is_open("")
+    finally:
+        refs["stop_refresh"]()

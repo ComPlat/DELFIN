@@ -2425,10 +2425,19 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     # The agent service: every session started here runs in it, and the
     # session list shows every session it holds. Without one, the kernel.
     live: dict[str, Any] = {"client": None, "why": "", "retry_at": 0.0, "scripts": False}
+    def _is_open_here(sid: str) -> bool:
+        """Whether a session of the service is open in this list -- also
+        while its chat is still loading it: a tab asked to open a
+        conversation has its id only once it is loaded, and until then the
+        service's row of the same session stood beside it (two rows,
+        2026-11-16)."""
+        return bool(sid) and any(
+            r.get("session_id") == sid or _session_id(r) == sid
+            or str(getattr(r.get("ctx"), "initial_session_id", "") or "") == sid
+            for r in sessions)
+
     running_panel = RunningPanel(None, on_open=lambda sid: open_from_list(sid),
-                                 is_open=lambda sid: any(r.get("session_id") == sid
-                                                         or _session_id(r) == sid
-                                                         for r in sessions))
+                                 is_open=_is_open_here)
     running_panel.widget.layout.display = "none"
     # The resume search: a field whose list pops over the page, as a
     # command palette does (_RESUME_KEYS_JS: Up/Down, Enter, Esc). Typing
