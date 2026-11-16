@@ -3323,6 +3323,21 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 return rec
         summary = running_panel.running.summary(sid) or {}
         client = live["client"]
+        if summary.get("host") == "dashboard" and not view["start_in_service"] \
+                and sid not in view.setdefault("kept_elsewhere", set()) \
+                and LS.state_word(summary) not in ("working", "needs you"):
+            from delfin.dashboard import kept_agent_sessions as _K
+            if _K.where_kept(sid):
+                # Kept by a dashboard kernel of this host that is still
+                # there -- most often the one whose window just closed (its
+                # grace): its row says it is being handed over and the full
+                # chat comes in its place (_step_hand_over), not that
+                # kernel's view first.
+                rec = open_dormant(sid, str(summary.get("workspace") or ""),
+                                   str(summary.get("name") or "") or session_label("", sid),
+                                   handing_over=True)
+                activate(rec["key"])
+                return rec
         if summary.get("host") == "dashboard":
             # Another dashboard's kernel runs it: never taken from there.
             # Its view shows that dashboard's chat; it becomes the full chat
@@ -3512,6 +3527,10 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             _not_handing_over(rec, f"{rec['title_btn'].description} is open in "
                                    "another dashboard; close it there to have it here.")
             return
+        if where == "held":
+            # Working there, or held past a closed window's grace (a
+            # dashboard still open has it): its view, as a click gives it.
+            view.setdefault("kept_elsewhere", set()).add(sid)
         if where:
             rec["settle_until"] = now + _HAND_OVER_SETTLE_S
             if where == "moving" or not summary:

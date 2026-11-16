@@ -272,3 +272,39 @@ def test_a_stop_given_after_keeping_starts_nothing(home, old_kernel, monkeypatch
         assert SID not in build.opened()
     finally:
         refs["stop_refresh"]()
+
+
+def test_picked_from_the_list_while_held_it_is_handed_over_not_viewed(home, old_kernel):
+    """Not among the remembered open sessions (another dashboard rewrote
+    that list; seen 2026-11-16): picked from the session list while the
+    closed window's kernel still hosts it, it is handed over as well."""
+    K.arm(SID, str(home / "launch"), pid=old_kernel.pid, title="kept job")
+    build = _Build()
+    _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
+    try:
+        refs["running"].summary = lambda sid: ({"name": "kept job", "host": "dashboard",
+                                                "state": "idle", "keep": True,
+                                                "workspace": str(home / "launch")}
+                                               if sid == SID else None)
+        rec = refs["open_from_list"](SID)
+        assert rec.get("handing_over") and not rec.get("live")
+        assert refs["active"]() is rec
+        _end(old_kernel)
+        refs["refresh"]()
+        mine = [r for r in refs["sessions"]() if r["ctx"].initial_session_id == SID]
+        assert mine and not mine[0].get("dormant") and not mine[0].get("live")
+        assert refs["active"]() is mine[0] and mine[0]["kept"]
+    finally:
+        refs["stop_refresh"]()
+
+
+def test_a_kept_session_working_there_is_still_followed_live(home, old_kernel):
+    K.arm(SID, str(home / "launch"), pid=old_kernel.pid)
+    _w, refs = AS.create_tab(_ctx(home), build=_Build(), service=False)
+    try:
+        refs["running"].summary = lambda sid: ({"host": "dashboard", "state": "working"}
+                                               if sid == SID else None)
+        rec = refs["open_from_list"](SID)
+        assert rec is None or not rec.get("handing_over")
+    finally:
+        refs["stop_refresh"]()
