@@ -31,7 +31,7 @@
       <div class="hero-copy">
         <p class="eyebrow" data-content="hero.eyebrow">COMPUTATIONAL CHEMISTRY / AGENTIC SCIENCE</p>
         <h1 id="hero-title"><span data-content="hero.title">Molecular insight.</span><span class="serif blue" data-content="hero.accent">Scientific impact.</span></h1>
-        <p class="hero-description" data-content="hero.description">From SMILES to reproducible predictions. DELFIN connects quantum chemistry, molecular design and AI agents in one open research platform.</p>
+        <p class="hero-description" data-content="hero.description">From SMILES to reproducible predictions. DELFIN connects structure generation, molecular mutation, quantum chemistry and AI agents in one open research platform.</p>
         <div class="actions"><a class="button primary" href="#science">Explore DELFIN <span aria-hidden="true">↘</span></a><a class="text-link" href="https://github.com/ComPlat/DELFIN">Find us on GitHub <span aria-hidden="true">↗</span></a></div>
         <div class="hero-meta"><span>Structure generation</span><span>Quantum chemistry</span><span>AI orchestration</span></div>
       </div>
@@ -57,34 +57,39 @@
     </section>
     <section class="stack section-shell section-pad" id="stack" aria-labelledby="stack-title">
       <div class="section-heading reveal"><p class="eyebrow">02 / THE WHOLE QM STACK</p><h2 id="stack-title">SMILES in.<br><span class="serif">Properties out.</span></h2><p>One pipeline from a line of text to reported properties.<br>The agent plans, runs, repairs and verifies every stage.</p></div>
-      <div class="stack-diagram reveal">
-        <div class="stack-agent">
-          <div class="stack-agent-name"><img src="assets/delfin.png" alt="" width="46" height="46"><div><b>DELFIN Agent</b><span>orchestration layer</span></div></div>
-          <ol class="stack-agent-steps">
+      <figure class="qm reveal" aria-label="The DELFIN pipeline: SMILES in, properties out, orchestrated by the DELFIN agent">
+        <div class="qm-agent">
+          <div class="qm-agent-name"><img src="assets/delfin.png" alt="" width="52" height="52"><div><b>DELFIN Agent</b><span>orchestration layer</span></div></div>
+          <ol class="qm-agent-steps">
             <li><b>Plan</b><span>plan before acting</span></li>
             <li><b>Decompose</b><span>one step at a time</span></li>
             <li><b>Subagents</b><span>isolated context</span></li>
             <li><b>Verify</b><span>check and recover</span></li>
           </ol>
         </div>
-        <p class="stack-note" aria-hidden="true">plans, runs, repairs and verifies ↓</p>
-        <ol class="stack-flow" aria-label="The pipeline">
-          <li class="stack-io"><span class="eyebrow">INPUT</span><h3>SMILES</h3><code>c1ccc(-c2ccccn2)nc1</code><span class="stack-sub">or an .xyz file</span></li>
-          <li><span class="stack-icon" aria-hidden="true">⌬</span><h3>Structure generation</h3><p class="stack-tools">MANTA · Architector<br>RDKit · Open Babel</p></li>
-          <li><span class="stack-icon" aria-hidden="true">≋</span><h3>Conformer ensemble</h3><p class="stack-tools">CREST · GOAT<br>GUPPY · CENSO</p></li>
-          <li><span class="stack-icon" aria-hidden="true">ψ</span><h3>Quantum chemistry</h3><p class="stack-tools">ORCA · Turbomole<br>xTB · MOPAC</p></li>
-          <li class="stack-out"><span class="eyebrow">OUTPUT</span><h3>Properties</h3>
-            <dl>
-              <div><dt>Redox potentials E½</dt><dd>V</dd></div>
-              <div><dt>ΔE(S–T), k(RISC)</dt><dd>eV, 1/s</dd></div>
-              <div><dt>UV–Vis · IR · NMR</dt><dd>nm, ppm</dd></div>
-              <div><dt>Free energy, log K</dt><dd>kJ/mol</dd></div>
-              <div><dt>NLO β tensors</dt><dd>a.u.</dd></div>
-            </dl>
-            <span class="stack-sub">DOCX report + provenance</span></li>
-        </ol>
-        <div class="stack-loop"><b>inverse design</b><span>The computed property becomes the fitness criterion. ChemDarwin proposes variants; the chemist chooses the next seeds.</span></div>
-      </div>
+        <p class="qm-note">plans, runs, repairs and verifies</p>
+        <span class="qm-drop qm-drop-1" aria-hidden="true"></span><span class="qm-drop qm-drop-2" aria-hidden="true"></span><span class="qm-drop qm-drop-3" aria-hidden="true"></span><span class="qm-drop qm-drop-out" aria-hidden="true"></span>
+        <div class="qm-box qm-in"><span class="qm-label">INPUT</span><h3>SMILES</h3><code>c1ccc(-c2ccccn2)nc1</code><span class="qm-sub">or an .xyz file</span></div>
+        <span class="qm-arrow qm-a1" aria-hidden="true"></span>
+        <div class="qm-box qm-s1"><span class="qm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2.4"/><circle cx="18" cy="5" r="2.4"/><circle cx="12" cy="19" r="2.4"/><path d="M7.6 6.8 11 16.6M16.4 6.8 13 16.6"/></svg></span><h3>Structure generation</h3><p>MANTA · Architector<br>RDKit · Open Babel</p></div>
+        <span class="qm-arrow qm-a2" aria-hidden="true"></span>
+        <div class="qm-box qm-s2"><span class="qm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12 7 5l5 7 5-7 4.5 7"/><path d="M2.5 19 7 12l5 7 5-7 4.5 7" opacity=".55"/></svg></span><h3>Conformer ensemble</h3><p>CREST · GOAT<br>CENSO</p></div>
+        <span class="qm-arrow qm-a3" aria-hidden="true"></span>
+        <div class="qm-box qm-s3"><span class="qm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5v19"/><path d="M5 5.5c0 6.8 2.6 9.6 7 9.6s7-2.8 7-9.6"/></svg></span><h3>Quantum chemistry</h3><p>ORCA · Turbomole<br>xTB · MOPAC</p></div>
+        <span class="qm-arrow qm-a4" aria-hidden="true"></span>
+        <div class="qm-box qm-out"><div class="qm-out-head"><span class="qm-label">OUTPUT</span><span class="qm-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19h4c3 0 3-14 5-14s2 14 5 14h4"/></svg></span></div><h3>Properties</h3>
+          <dl>
+            <div><dt>Redox potentials E½</dt><dd>V</dd></div>
+            <div><dt>ΔE(S–T), k(RISC)</dt><dd>eV, 1/s</dd></div>
+            <div><dt>UV–Vis · IR · NMR</dt><dd>nm, ppm</dd></div>
+            <div><dt>Free energy, log K</dt><dd>kJ/mol</dd></div>
+            <div><dt>NLO β tensors</dt><dd>a.u.</dd></div>
+          </dl>
+          <span class="qm-sub">DOCX report + provenance</span></div>
+        <div class="qm-loop" aria-hidden="true"><span class="qm-loop-l"></span><span class="qm-loop-m"></span><span class="qm-loop-r"></span></div>
+        <figcaption class="qm-loop-text"><b>inverse design</b><span>the computed property is the fitness criterion; the chemist picks the next seeds</span></figcaption>
+        <div class="qm-foot"><span>SMILES in, properties out — the whole QM stack, AI-orchestrated.</span><a href="https://github.com/ComPlat/DELFIN">github.com/ComPlat/DELFIN</a></div>
+      </figure>
     </section>
     <section class="research section-shell section-pad" aria-labelledby="research-title">
       <div class="section-heading reveal"><p class="eyebrow">03 / QUESTIONS WORTH ASKING</p><h2 id="research-title">What will you<br><span class="serif">look into?</span></h2></div>
