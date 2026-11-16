@@ -8410,6 +8410,36 @@ def _installed_program_test(perms, cwd: Path):
     return _test
 
 
+def _calculation_needs_foreground(perms, cmd: str, run_cwd,
+                                  wall_limit_s) -> bool:
+    """Whether a bash command is a local calculation whose admission is
+    bound to the foreground wall time (BG2 demote exception).
+
+    The login-node calculation rule (calc_policy, issue #640) admits a
+    local run for at most LOGIN_LOCAL_SECONDS, checked against the
+    foreground tool's wall-time limit at the gate (api_client.py:8429
+    passes tool_wall_s=wall_limit_s). Demoting such a command to the
+    background would let it run past exactly that admission: compute
+    belongs on compute nodes. It keeps today's behaviour -- ended at
+    the timeout, with the message that says so.
+
+    The verdict comes from the SAME helper the gate used on the pre-run
+    path, with the SAME wall_limit_s -- no recomputation with a
+    different number that would silently widen the rule. Best-effort:
+    on any failure it answers False (the move proceeds), never True --
+    a false True would end work the move exists to keep.
+    """
+    try:
+        from . import calc_policy as _cp
+        if _cp.host_kind() != "login_node":
+            return False
+        verdict = _calculation_verdict(
+            perms, cmd, {"cwd": str(run_cwd)}, wall_limit_s)
+        return bool(verdict is not None and verdict.calculation)
+    except Exception:
+        return False
+
+
 def _calculation_verdict(perms, cmd: str, args: dict,
                          wall_limit_s: Optional[float]):
     """calc_policy's verdict for a bash command, or None on any failure.
@@ -25049,6 +25079,85 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+    def _adopt_demoted_command(
+        self, *, cmd: str, description: str,
+        perms: "KitToolPermissions", run_cwd, demoted, argv,
+        env: dict, timeout: int, stdout_so_far: str = "",
+        stderr_so_far: str = "",
+    ) -> str:
+        """BG2: a foreground bash command that reached its timeout keeps
+        running -- move it to the background instead of ending it.
+
+        The live process (with the argv, environment and cwd the gate
+        approved -- the move adds nothing) is registered with
+        ``bash_jobs.adopt`` exactly like a ``bash_background`` job: same
+        registry, same deadline cap, same core accounting, same
+        completion event. The demote's pipe readers are attached to the
+        job's output files, so what the command printed before the
+        timeout and everything it prints afterwards both land there.
+        """
+        try:
+            from . import bash_jobs as _bj
+            from .bash_jobs import PipeCapture
+
+            _job_sid = str(getattr(perms, "task_session_id", "") or "")
+            capture = PipeCapture(
+                demoted, stdout_so_far=stdout_so_far,
+                stderr_so_far=stderr_so_far)
+            job = _bj.get_registry().adopt(
+                command=cmd,
+                cwd=str(run_cwd),
+                proc=demoted.proc,
+                description=description,
+                timeout_s=_bj._DEFAULT_BG_TIMEOUT_S,
+                workspace=str(perms.workspace),
+                argv=list(argv) if argv is not None else None,
+                capture=capture,
+                foreground_elapsed_s=timeout,
+                **({"session_id": _job_sid} if _job_sid else {}),
+            )
+        except ValueError as exc:
+            # The process already exited between the timeout and here:
+            # today's message is the truth, and the only one there is.
+            return json.dumps({
+                "error": (
+                    f"command timed out after {timeout}s and was ended, "
+                    "with everything it started. Nothing about its work "
+                    f"follows from this. ({exc})"),
+                "command": cmd[:200],
+                "requested_timeout_s": timeout,
+                "description": description,
+            })
+        except Exception as exc:
+            return json.dumps({
+                "error": (
+                    f"command timed out after {timeout}s; moving it to "
+                    f"the background failed: {exc}"),
+                "command": cmd[:200],
+                "description": description,
+            })
+        _watch_started_job(perms, job.job_id,
+                           f"moved from foreground: {cmd[:80]}")
+        return json.dumps({
+            "status": "moved_to_background",
+            "moved_after_s": timeout,
+            "job_id": job.job_id,
+            "pid": job.proc.pid,
+            "command": cmd[:200],
+            "description": description,
+            "cwd": self._display_path(run_cwd, perms) or ".",
+            "output_file": str(job.stdout_path),
+            "hint": (
+                f"moved to the background after {timeout}s; the command "
+                "keeps running as job "
+                f"{job.job_id}. bash_status('{job.job_id}', "
+                "wait_seconds=300) waits for it; bash_output("
+                f"'{job.job_id}') reads the output file "
+                f"({job.stdout_path}), which already holds what it "
+                "printed before the timeout. You are told when it ends. "
+                "Do not repeat the command unchanged."),
+        }, ensure_ascii=False)
+
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions",
         caged_unasked: bool = False, approved: bool = False,
@@ -25252,6 +25361,19 @@ class _DocToolExecutor:
                     timeout=timeout,
                     should_stop=_probe,
                     budget=True,
+                    # BG2: a foreground command that reaches its timeout
+                    # is MOVED to the background, not ended -- unless an
+                    # exception below keeps today's behaviour. The move
+                    # changes where the wait happens, nothing else: the
+                    # same argv, env and cwd the gate approved.
+                    # Not in a workspace overlay: its changes are taken
+                    # back when the command ends here, and a moved
+                    # command would leave them behind.
+                    demote_on_timeout=(not _is_push
+                                       and _pr is None
+                                       and _ov is None
+                                       and not _calculation_needs_foreground(
+                                           perms, cmd, run_cwd, timeout)),
                 )
                 if _ov is not None and _ow.setup_failed(_ov):
                     # The mount failed before the command ran: nothing has
@@ -25278,10 +25400,22 @@ class _DocToolExecutor:
                         should_stop=_probe,
                         budget=True,
                     )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as _exc:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
             self._note_timed_out(cmd, perms, timeout)
+            # BG2: a demoted command is alive -- move it to the background
+            # instead of reporting it dead. The exceptions below (push,
+            # PR publish, a login-node calculation) deliberately keep
+            # today's behaviour: ended, with the message that says so.
+            _demoted = getattr(_exc, "demoted", None)
+            if _demoted is not None:
+                return self._adopt_demoted_command(
+                    cmd=cmd, description=description, perms=perms,
+                    run_cwd=run_cwd, demoted=_demoted, argv=_run_argv,
+                    env=env, timeout=timeout,
+                    stdout_so_far=str(_exc.output or ""),
+                    stderr_so_far=str(_exc.stderr or ""))
             if _pr is not None:
                 return json.dumps({
                     "error": "GitHub publishing timed out. The push or PR creation "
