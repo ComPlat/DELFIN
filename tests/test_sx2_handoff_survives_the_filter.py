@@ -108,8 +108,10 @@ def test_a_caged_true_returns_quickly():
         pytest.skip("nested cage on this login node")
     import delfin.agent.landlock_exec as LE
     start = time.monotonic()
-    rc = LE.cage_run(["/bin/true"], net_mode="proxy", allow_tcp=[],
-                     allowed=[], write=[], hide=[], read_only=[],
-                     read=[], env_updates={}, blocked_write=[])
+    rc = LE._run_guarded(write=[], hide=[], allowed=[],
+                         command=["/bin/true"], strict=True,
+                         use_fs=False, net_mode="proxy",
+                         proxy_socket="", allow_tcp=[],
+                         deny_socket=[], read_only=[], read=[])
     assert rc == 0, f"caged true returned {rc}"
     assert time.monotonic() - start < 10, "the cage handoff still blocks"
