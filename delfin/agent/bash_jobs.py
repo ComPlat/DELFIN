@@ -1366,6 +1366,110 @@ class _Registry:
             text=True,
         ))
 
+        return self._register(
+            command=command, description=description, cwd=cwd,
+            timeout_s=timeout_s, workspace=workspace,
+            session_id=session_id, cpu_set=cpu_set, argv=argv,
+            on_finish=on_finish, proc=proc,
+            sout=sout, serr=serr,
+            stdout_path=Path(stdout_path), stderr_path=Path(stderr_path))
+
+    def adopt(
+        self,
+        command: str,
+        cwd: str,
+        proc: subprocess.Popen,
+        description: str = "",
+        timeout_s: int = _DEFAULT_BG_TIMEOUT_S,
+        workspace: str | Path | None = None,
+        session_id: str = "",
+        argv: Optional[list[str]] = None,
+        on_finish: Optional[Callable[[], Optional[list]]] = None,
+        capture=None,
+        foreground_elapsed_s: Optional[float] = None,
+    ) -> BashJob:
+        """Register an ALREADY-RUNNING process as a background job.
+
+        This is the demote path: a foreground ``bash`` command that
+        reached its timeout keeps running instead of being ended, and
+        joins the registry exactly like a ``bash_background`` job -- same
+        record fields, same deadline cap, same completion event. The
+        process is NOT restarted and NOT re-forked: ``proc`` is the live
+        child the foreground call started, with the argv, environment and
+        cwd the gate approved.
+
+        ``capture``: the foreground run's pipe readers. On adoption the
+        caller attaches them to this job's stdout/stderr files
+        (``capture.attach(sout, serr)``), which first writes what the
+        command already printed and then keeps the readers appending to
+        the same files, so ``bash_output`` sees output from before and
+        after the move.
+
+        Unlike :meth:`start`, adoption never refuses on the job or core
+        caps: the process already runs, and refusing to register it
+        cannot undo it -- it would leave long-running work nobody can
+        name, watch or stop, the exact failure this path exists to rule
+        out. The moved job still counts toward both caps through its
+        registry record, and ``timeout_s`` is capped like any background
+        job's.
+        """
+        if not command.strip():
+            raise ValueError("command must be non-empty")
+        if proc.poll() is not None:
+            raise ValueError(
+                "the process has already exited; nothing to adopt "
+                f"(exit code {proc.returncode})")
+        timeout_s = min(timeout_s, _DEFAULT_BG_TIMEOUT_S)
+
+        stdout_fd, stdout_path = tempfile.mkstemp(
+            prefix="kit_bg_", suffix=".stdout")
+        stderr_fd, stderr_path = tempfile.mkstemp(
+            prefix="kit_bg_", suffix=".stderr")
+        os.close(stdout_fd)
+        os.close(stderr_fd)
+        sout = open(stdout_path, "w", buffering=1)   # line-buffered
+        serr = open(stderr_path, "w", buffering=1)
+        if capture is not None:
+            # The so-far content goes in FIRST, before the watchdog's
+            # first tail read; the readers keep appending afterwards.
+            capture.attach(sout, serr)
+
+        return self._register(
+            command=command, description=description, cwd=cwd,
+            timeout_s=timeout_s, workspace=workspace,
+            session_id=session_id, cpu_set=None, argv=argv,
+            on_finish=on_finish, proc=proc,
+            sout=sout, serr=serr,
+            stdout_path=Path(stdout_path), stderr_path=Path(stderr_path),
+            capture=capture, foreground_elapsed_s=foreground_elapsed_s)
+
+    def _register(
+        self,
+        command: str,
+        cwd: str,
+        proc: subprocess.Popen,
+        description: str = "",
+        timeout_s: int = _DEFAULT_BG_TIMEOUT_S,
+        workspace: str | Path | None = None,
+        session_id: str = "",
+        argv: Optional[list[str]] = None,
+        on_finish: Optional[Callable[[], Optional[list]]] = None,
+        cpu_set: Optional[list[int]] = None,
+        sout=None,
+        serr=None,
+        stdout_path: Optional[Path] = None,
+        stderr_path: Optional[Path] = None,
+        capture=None,
+        foreground_elapsed_s: Optional[float] = None,
+    ) -> BashJob:
+        """Bookkeeping shared by :meth:`start` and :meth:`adopt`: registry
+        entry, lifeline record, persistent record, budget guard and the
+        watchdog thread that records the exit and serves the completion
+        event. The caller owns the process and the output files."""
+        wanted = _requested_cores(command)
+        # Its own session keeps a restart from taking it down; the lifeline
+        # ledger is what still ends it with delfin-voila's terminal.
+        from . import lifeline as _lifeline
         with self._lock:
             jid = self._new_job_id()
             job = BashJob(
@@ -1387,6 +1491,10 @@ class _Registry:
             _lifeline.record_child(proc.pid, "shell")
         except Exception:
             pass
+        # An adopted (demoted) command started BEFORE this call: the
+        # runtime it reports counts the foreground part too.
+        if foreground_elapsed_s:
+            job.started_at = time.monotonic() - float(foreground_elapsed_s)
 
         # Persist the job BEFORE the watchdog starts, so its exit update can
         # never race the initial write. After a restart this record is the
@@ -1414,6 +1522,14 @@ class _Registry:
             "exit_code": None,
             "finished_at": None,
             "acknowledged": False,
+            # How the job came into the registry: started (a
+            # bash_background call) or adopted (a foreground command that
+            # reached its timeout and was moved here, BG2). Downstream
+            # consumers (bash_status, the completion notice) say which.
+            "origin": "adopted" if foreground_elapsed_s is not None
+                      else "started",
+            **({"foreground_s": round(float(foreground_elapsed_s), 3)}
+               if foreground_elapsed_s else {}),
             # The conversation that started it: several sessions can share
             # a workspace, and each lists and stops only its own shells.
             **({"session_id": session_id} if session_id else {}),
@@ -1574,6 +1690,19 @@ class _Registry:
         t = threading.Thread(target=_watch, daemon=True, name=f"bashjob-{jid}")
         t.start()
         job._watchdog = t
+        # BG2: an adopted job's pipe readers finish on their own once the
+        # command ends; the watchdog's sout/serr close above is the
+        # durable side. `capture.join` waits for the readers (bounded by
+        # the capture object itself) and drops the pipe handles.
+        if capture is not None:
+            def _drain_capture():
+                try:
+                    capture.join()
+                except Exception:
+                    pass
+            threading.Thread(
+                target=_drain_capture, daemon=True,
+                name=f"bashjob-capture-{jid}").start()
         return job
 
     def get(
