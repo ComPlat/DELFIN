@@ -396,7 +396,8 @@ def test_reopened_while_held_it_looks_like_the_chat_says_so_takes_input_then_is_
         chat = mine[0]
         assert not chat.get("live") and not chat.get("dormant")
         assert build.opened() == [HSID] and refs["active"]() is chat
-        assert chat["kept"] and _record()["pid"] == os.getpid()
+        assert chat["kept"]
+        assert json.loads(K._path(HSID).read_text())["pid"] == os.getpid()
         assert build.inputs[-1].value == "a draft not sent yet", "the draft came along"
         assert not K.wanted_here(HSID)
     finally:
@@ -424,7 +425,8 @@ def test_picked_from_the_list_while_held_it_is_the_same_view_and_then_the_chat(
         refs["refresh"]()
         mine, listed = _rows_for(refs, HSID)
         assert len(mine) == 1 and not mine[0].get("live") and not listed
-        assert build.opened() == [HSID] and mine[0]["kept"]
+        # (the empty first session of a dashboard opened with nothing to restore)
+        assert build.opened().count(HSID) == 1 and mine[0]["kept"]
     finally:
         refs["stop_refresh"]()
         host.close()
