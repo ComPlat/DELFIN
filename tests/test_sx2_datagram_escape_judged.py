@@ -44,10 +44,13 @@ def test_handle_dispatches_on_the_archs_own_numbers():
 
 
 def test_arch_reports_socket_and_bind():
-    """The architecture table now carries nr_bind next to nr_socket."""
+    """The architecture tables carry the datagram surface: socket() next
+    to connect in _ARCHES, bind/sendto/sendmsg/sendmmsg in _ARCH_DGRAM."""
     for machine, entry in SG._ARCHES.items():
         assert entry[3] == {"x86_64": 41, "aarch64": 198}[machine], entry
-        assert entry[7] == {"x86_64": 49, "aarch64": 200}[machine], entry
+        d = SG._ARCH_DGRAM[machine]
+        assert d == {"x86_64": (49, 44, 45, 46),
+                     "aarch64": (200, 205, 211, 212)}[machine], (entry, d)
 
 
 # -- finding 2: no dead bind branch ------------------------------------------
@@ -70,9 +73,9 @@ def test_sendto_with_a_destination_is_notified():
     p = SG._program(block_inet_datagrams=True)
     # the three send syscalls must each have a JEQ in the restricted program
     jeqs = {i[3] for i in p if i[0] == SG._JEQ}
-    from delfin.agent.socket_guard import _ARCHES
-    x86 = _ARCHES["x86_64"]
-    for nr in (x86[8], x86[9], x86[10]):           # sendto, sendmsg, sendmmsg
+    from delfin.agent.socket_guard import _ARCH_DGRAM
+    x86 = _ARCH_DGRAM["x86_64"]
+    for nr in x86[1:]:                             # sendto, sendmsg, sendmmsg
         assert nr in jeqs, f"send syscall {nr} not notified"
 
 

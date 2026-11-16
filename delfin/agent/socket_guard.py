@@ -47,10 +47,23 @@ import threading
 
 _ARCHES = {
     # machine: (AUDIT_ARCH, seccomp, connect, socket, io_uring_setup,
-    #           pidfd_open, pidfd_getfd, bind, sendto, sendmsg, sendmmsg)
-    "x86_64": (0xC000003E, 317, 42, 41, 425, 434, 438, 49, 44, 45, 46),
-    "aarch64": (0xC00000B7, 277, 203, 198, 425, 434, 438, 200, 205, 211, 212),
+    #           pidfd_open, pidfd_getfd)
+    # The datagram surface (bind, sendto, sendmsg, sendmmsg) lives in
+    # _ARCH_DGRAM: _arch() keeps its original 7-tuple contract, which a
+    # main-line test unpacks by position.
+    "x86_64": (0xC000003E, 317, 42, 41, 425, 434, 438),
+    "aarch64": (0xC00000B7, 277, 203, 198, 425, 434, 438),
 }
+
+#: machine: (bind, sendto, sendmsg, sendmmsg)
+_ARCH_DGRAM = {
+    "x86_64": (49, 44, 45, 46),
+    "aarch64": (200, 205, 211, 212),
+}
+
+
+def _arch_dgram():
+    return _ARCH_DGRAM.get(platform.machine())
 
 _SECCOMP_SET_MODE_FILTER = 1
 _SECCOMP_GET_NOTIF_SIZES = 3
@@ -379,8 +392,8 @@ def _program(block_inet_datagrams: bool = False):
     datagram otherwise leaves without connect(), past the supervisor.
     A foreign architecture (32-bit entry points use other numbers)
     runs nothing."""
-    (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg,
-     _nb, nr_sendto, nr_sendmsg, nr_sendmmsg) = _arch()
+    (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg) = _arch()
+    (nr_bind, nr_sendto, nr_sendmsg, nr_sendmmsg) = _arch_dgram()
     items, tail = _head(audit)
     items += [
         (_JEQ, nr_connect, "notify", None),
@@ -625,8 +638,8 @@ class Supervisor:
         # is the command's own creation; the address-bearing sends are
         # judged by the UDP ownership rule. bind() is not notified (the
         # filter allows it in-kernel; the escape is judged at sendto).
-        (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg,
-         _nb, nr_sendto, nr_sendmsg, nr_sendmmsg) = _arch()
+        (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg) = _arch()
+        (nr_bind, nr_sendto, nr_sendmsg, nr_sendmmsg) = _arch_dgram()
         if nr == nr_socket:
             self._datagram_socket(notif_id, pid, args, nr)
             return
