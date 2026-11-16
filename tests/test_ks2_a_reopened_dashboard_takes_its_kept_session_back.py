@@ -80,9 +80,11 @@ def home(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def old_kernel():
+def old_kernel(tmp_path):
     """The closed window's kernel: a process of its own that holds the record."""
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    from conftest import child_env
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                            env=child_env(tmp_path / "oldkernel"))
     try:
         yield proc
     finally:
@@ -457,7 +459,9 @@ def test_a_conversation_another_process_writes_is_not_opened_until_it_lets_go(
     build = _Build()
     _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
     # Another live process holds the writer lock (as a service worker does).
-    writer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    from conftest import child_env
+    writer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                              env=child_env(tmp_path / "writer"))
     lock = session_store._lock_path(SID)
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(json.dumps({"pid": writer.pid, "ts": time.time(),
