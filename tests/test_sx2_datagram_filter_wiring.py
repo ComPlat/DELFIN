@@ -117,7 +117,7 @@ def test_connect_and_uring_rules_unchanged():
     """connect() is still handed to the supervisor; io_uring is still
     refused with ENOSYS (it connects without the system call)."""
     p = SG._program(block_inet_datagrams=True)
-    audit, _sc, nr_connect, _ns, nr_uring, _st, _sm = SG._arch()
+    audit, _sc, nr_connect, _ns, nr_uring, _st, _sm, *_x = SG._arch()
     assert _target(p, _first(p, _JEQ, nr_connect), True)[3] == RET_NOTIFY
     assert _target(p, _first(p, _JEQ, nr_uring), True)[3] == RET_ENOSYS
 
