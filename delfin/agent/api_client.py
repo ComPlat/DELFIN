@@ -1834,44 +1834,6 @@ def _read_exempt(path: str) -> bool:
             or text.startswith("/proc/self/"))
 
 
-def _shell_segments(cmd: str) -> list[str]:
-    """``cmd`` split at ``;``, ``&``, ``|`` and newlines OUTSIDE quotes.
-
-    Splitting inside quotes cut `sh -c "a; b"` into pieces with a stray
-    quote each, and the stray quote then became part of a "path"."""
-    out: list[str] = []
-    cur: list[str] = []
-    quote = ""
-    i = 0
-    text = cmd or ""
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            if ch == "\\" and quote == '"' and i + 1 < len(text):
-                cur.append(ch + text[i + 1])
-                i += 2
-                continue
-            if ch == quote:
-                quote = ""
-            cur.append(ch)
-        elif ch in "'\"":
-            quote = ch
-            cur.append(ch)
-        elif ch == "\\" and i + 1 < len(text):
-            cur.append(ch + text[i + 1])
-            i += 2
-            continue
-        elif ch == "&" and ((i > 0 and text[i - 1] in "<>")
-                            or (i + 1 < len(text) and text[i + 1] == ">")):
-            cur.append(ch)          # 2>&1, &>file: a redirection, not a split
-        elif ch in ";&|\n":
-            out.append("".join(cur))
-            cur = []
-        else:
-            cur.append(ch)
-        i += 1
-    out.append("".join(cur))
-    return [seg for seg in out if seg.strip()]
 
 
 _SHELL_PROGRAMS: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
@@ -4851,17 +4813,8 @@ def _push_targets(cmd: str, cwd: Any) -> set[str]:
 
 # A command a shell is handed as a string: `sh -c 'git push'`, `bash -c "..."`,
 # `eval "..."`. The body is a command line of its own; `grep 'git push'` is not.
-_SHELL_BODY_RE = re.compile(
-    r"(?:\b(?:sh|bash|zsh|dash|ksh)\s+(?:-\w+\s+)*-[A-Za-z]*c\s+|\beval\s+)"
-    r"(['\"])(.*?)\1", re.DOTALL)
 
 
-def _with_shell_bodies(cmd: str) -> str:
-    """``cmd`` plus every command line it hands to a shell as a string."""
-    parts = [cmd or ""]
-    for m in _SHELL_BODY_RE.finditer(cmd or ""):
-        parts.append(m.group(2))
-    return "\n".join(parts)
 
 
 def _steer_label(text: str) -> str:
@@ -6121,38 +6074,15 @@ def _is_gh_pr_merge(cmd: str) -> bool:
 # agent.bash_isolation "off". Matching is generous, like a deny rule: a
 # false positive costs a refusal, never a write.
 
-_GH_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[;\n|&()`]")
 # `xargs`/`eval` build the command from what follows, so the program the
 # gate must read sits after them exactly as after `env`/`timeout`. Reading
 # through them is generous (xargs also appends stdin), which for a deny rule
 # costs a refusal, never a write.
-_COMMAND_WRAPPERS = frozenset({"sudo", "command", "exec", "env", "nohup",
-                               "time", "nice", "stdbuf", "timeout",
-                               "xargs", "eval"})
 # gh's own options can precede the subcommand (`gh --hostname h auth token`
 # prints the login, `gh --hostname h api -X PUT` writes); these carry a
 # value, so the value is stepped over too when reaching the subcommand.
-_GH_OPTS_WITH_VALUE = frozenset({"--hostname", "--repo", "-R"})
 
 
-def _command_words(cmd: str) -> list:
-    """Each simple command of *cmd*, and of every shell body it hands on,
-    as words: leading assignments and wrappers dropped, the program as its
-    base name. A part that does not parse is split on white space."""
-    out = []
-    for part in _GH_SEGMENT_SPLIT_RE.split(_with_shell_bodies(cmd or "")):
-        try:
-            words = shlex.split(part)
-        except ValueError:
-            words = part.split()
-        while words and (words[0] in _COMMAND_WRAPPERS
-                         or words[0].startswith("-")
-                         or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
-                         or re.match(r"^\d+(?:\.\d+)?[smhd]?$", words[0])):
-            words = words[1:]
-        if words:
-            out.append([os.path.basename(words[0])] + words[1:])
-    return out
 
 
 def _gh_subcommand_args(w: list) -> list:
@@ -8410,6 +8340,36 @@ def _installed_program_test(perms, cwd: Path):
     return _test
 
 
+def _calculation_needs_foreground(perms, cmd: str, run_cwd,
+                                  wall_limit_s) -> bool:
+    """Whether a bash command is a local calculation whose admission is
+    bound to the foreground wall time (BG2 demote exception).
+
+    The login-node calculation rule (calc_policy, issue #640) admits a
+    local run for at most LOGIN_LOCAL_SECONDS, checked against the
+    foreground tool's wall-time limit at the gate (api_client.py:8429
+    passes tool_wall_s=wall_limit_s). Demoting such a command to the
+    background would let it run past exactly that admission: compute
+    belongs on compute nodes. It keeps today's behaviour -- ended at
+    the timeout, with the message that says so.
+
+    The verdict comes from the SAME helper the gate used on the pre-run
+    path, with the SAME wall_limit_s -- no recomputation with a
+    different number that would silently widen the rule. Best-effort:
+    on any failure it answers False (the move proceeds), never True --
+    a false True would end work the move exists to keep.
+    """
+    try:
+        from . import calc_policy as _cp
+        if _cp.host_kind() != "login_node":
+            return False
+        verdict = _calculation_verdict(
+            perms, cmd, {"cwd": str(run_cwd)}, wall_limit_s)
+        return bool(verdict is not None and verdict.calculation)
+    except Exception:
+        return False
+
+
 def _calculation_verdict(perms, cmd: str, args: dict,
                          wall_limit_s: Optional[float]):
     """calc_policy's verdict for a bash command, or None on any failure.
@@ -9632,85 +9592,6 @@ _REDIRECT_TARGET_RE = re.compile(
     r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
 
 
-def _split_shell_segments(cmd: str) -> list[str]:
-    """Split a shell command into the segments chained by ``||``, ``&&``,
-    ``;``, ``|`` or newline, ignoring operators inside single/double quotes.
-
-    Used so the auto-allow check can require EVERY segment to be safe rather
-    than trusting a compound by its first segment. Redirect ``&`` (``2>&1``,
-    ``>&``) is preserved — only ``&&`` splits, not a lone ``&`` — so common
-    redirects don't fragment a segment. Quoted operators (``grep 'a|b'``) are
-    left intact. Empty/whitespace-only segments are dropped.
-    """
-    segs: list[str] = []
-    buf: list[str] = []
-    q: str | None = None
-    i, n = 0, len(cmd)
-    while i < n:
-        c = cmd[i]
-        # A backslash takes the next character literally, outside quotes
-        # and inside double ones (not inside single quotes, where bash
-        # keeps it as a plain backslash). Without this `"not\":\|x"`
-        # closed its quote at the escaped `\"` and the `\|` after it split
-        # a grep pattern into a pseudo-command (asked, 2026-09-25).
-        if c == "\\" and q != "'" and i + 1 < n:
-            buf.append(cmd[i:i + 2])
-            i += 2
-            continue
-        if q is not None:
-            buf.append(c)
-            if c == q:
-                q = None
-            i += 1
-            continue
-        if c in ("'", '"'):
-            q = c
-            buf.append(c)
-            i += 1
-            continue
-        if cmd[i:i + 3] == "<<<":
-            # A here-STRING, not a here-document: no terminator line, and
-            # the operator has to be stepped over whole or the `<<` that
-            # follows is read as the start of a heredoc named "hi".
-            buf.append(cmd[i:i + 3])
-            i += 3
-            continue
-        if cmd[i:i + 2] == "<<":
-            # A here-document body is DATA, not a chain of commands.
-            #
-            # Splitting on newlines turned `python3 - <<'EOF' … EOF` into
-            # one pseudo-segment per line of the program: `import os`,
-            # `x = 1`, `os.system("rm -rf /tmp/x")`. The auto-allow check
-            # then refused it because those are not commands — right by
-            # accident, and wrong the other way round as soon as the
-            # lines happen to READ as commands. With a user grant of
-            # `^\s*python3\b`, which is exactly what the refusal tells
-            # the model to ask for, a body of `ls` / `cat` was allowed
-            # through without one line of it being read as Python.
-            #
-            # Consumed here so the body stays with its command: the
-            # segment is then a single opaque unit that the payload
-            # analyser can be asked about, and nothing inside it is ever
-            # mistaken for a shell command.
-            consumed = _consume_heredoc(cmd, i)
-            if consumed is not None:
-                body, i = consumed
-                buf.append(body)
-                continue
-        if cmd[i:i + 2] in ("||", "&&"):
-            segs.append("".join(buf))
-            buf = []
-            i += 2
-            continue
-        if c in (";", "|", "\n"):
-            segs.append("".join(buf))
-            buf = []
-            i += 1
-            continue
-        buf.append(c)
-        i += 1
-    segs.append("".join(buf))
-    return [s.strip() for s in segs if s.strip()]
 
 
 def _blank_quoted(cmd: str, quotes: str = "'\"") -> str:
@@ -9758,115 +9639,12 @@ def _shell_visible(cmd: str) -> str:
     return _blank_quoted(cmd)
 
 
-_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])([\w.-]+)\2|([\w.-]+))")
 
 
-def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
-    """From ``<<`` at *i*, return (the whole redirect + body, next index).
-
-    None when it does not look like a here-document at all (``<<<`` is a
-    here-STRING and needs no terminator, and a bare ``<<`` with nothing
-    after it is a syntax error the shell would reject).
-
-    An unterminated body runs to the end of the string: that is what the
-    shell would read, and stopping early would hand the caller a segment
-    the shell never sees.
-    """
-    if cmd[i:i + 3] == "<<<":
-        return None
-    m = _HEREDOC_START_RE.match(cmd, i)
-    if m is None:
-        return None
-    tag = m.group(3) or m.group(4)
-    if not tag:
-        return None
-    strip_tabs = bool(m.group(1))
-    rest = cmd[m.end():]
-    # The body starts after the rest of the redirect's own line.
-    nl = rest.find("\n")
-    if nl == -1:
-        return cmd[i:], len(cmd)
-    body_start = m.end() + nl + 1
-    for line_start, line in _lines_from(cmd, body_start):
-        candidate = line.lstrip("\t") if strip_tabs else line
-        if candidate.strip() == tag:
-            # The newline AFTER the terminator is left behind on purpose:
-            # it is the separator between this command and the next, and
-            # swallowing it hid `echo done` in `cat <<'X' … X\necho done`
-            # inside the heredoc's own segment.
-            end = line_start + len(line)
-            return cmd[i:end], end
-    return cmd[i:], len(cmd)
 
 
-def _strip_heredoc_bodies(cmd: str) -> str:
-    """``cmd`` with every here-document body (and its ``<<tag`` token) gone.
-
-    A heredoc body is DATA -- the program the interpreter runs, or file
-    content delivered to cat/tee -- never a shell argument of the outer
-    command. When the read scan shlex-split it together with the command
-    line, a string in the body was asked about as an outside-workspace
-    read: ``python - <<'PY' … '/agent' … PY`` asked about the nonexistent
-    /agent, and a body carrying ``'/'`` asked about the filesystem root --
-    approving the second would have opened the whole filesystem for the
-    session (2026-10-29). Blanked so the read scan never sees it.
-
-    Only the body lines and the ``<<tag`` token are removed. The REST of
-    the redirect's own line is kept verbatim: ``cat <<EOF > /outside/x``
-    must still let the write gate see ``/outside/x``, and
-    ``python - <<'PY'; cat /outside/secret`` must still let the read scan
-    see ``/outside/secret``. Blanking the whole ``<<tag … tag`` span would
-    hide both -- a new hole. When there is no newline at all the body is
-    empty (``cat <<EOF > /outside/x`` in one line), so only the token is
-    removed and ``/outside/x`` stays. Position is preserved so upstream
-    offset-based annotations keep their meaning. Here-strings (``<<<``)
-    need no terminator and are left as they are.
-    """
-    out: list[str] = []
-    i, n = 0, len(cmd)
-    while i < n:
-        if cmd[i:i + 3] == "<<<":
-            # A here-STRING needs no terminator and is ordinary text here;
-            # stepping one or two of its three `<<` would let the rest be
-            # re-read as a heredoc named after the string's first word.
-            out.append(cmd[i:i + 3])
-            i += 3
-            continue
-        if cmd[i:i + 2] == "<<":
-            consumed = _consume_heredoc(cmd, i)
-            if consumed is None:
-                out.append(cmd[i])
-                i += 1
-                continue
-            _, end = consumed
-            m = _HEREDOC_START_RE.match(cmd, i)
-            token_end = m.end() if m is not None else i + 2
-            nl = cmd.find("\n", token_end, end)
-            out.append(" " * (token_end - i))      # the <<TAG token
-            if nl == -1:
-                out.append(cmd[token_end:end])     # one line, no body: keep it all
-            else:
-                out.append(cmd[token_end:nl + 1])  # the redirect line's own words
-                out.append(" " * (end - (nl + 1))) # blank the body lines
-            i = end
-            continue
-        out.append(cmd[i])
-        i += 1
-    return "".join(out)
 
 
-def _lines_from(text: str, start: int):
-    """(offset, line) for each line of *text* from *start*, no newlines."""
-    pos = start
-    n = len(text)
-    while pos <= n:
-        nl = text.find("\n", pos)
-        if nl == -1:
-            if pos < n:
-                yield pos, text[pos:]
-            return
-        yield pos, text[pos:nl]
-        pos = nl + 1
 
 
 
@@ -13666,22 +13444,6 @@ def _write_in_scope(path: Path, perms: "KitToolPermissions") -> bool:
     return any(_write_glob_regex(str(g)).fullmatch(rel) for g in globs)
 
 
-def _record_security_event(kind: str, tool: str, detail: str,
-                           *, blocked: bool = True) -> None:
-    """Surface a containment decision to the visible security-event panel.
-    Lazy + best-effort: never affects the gate's behaviour. Also counted
-    as the channel ``security:<kind>`` (channels.py), so a benchmark
-    attempt records which gate decisions it reached."""
-    try:
-        from . import channels as _channels
-        _channels.fire(f"security:{kind}")
-    except Exception:
-        pass
-    try:
-        from . import security_events
-        security_events.record(kind, tool, detail, blocked=blocked)
-    except Exception:
-        pass
 
 
 def _report_file_changed(path) -> None:
@@ -25049,6 +24811,85 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+    def _adopt_demoted_command(
+        self, *, cmd: str, description: str,
+        perms: "KitToolPermissions", run_cwd, demoted, argv,
+        env: dict, timeout: int, stdout_so_far: str = "",
+        stderr_so_far: str = "",
+    ) -> str:
+        """BG2: a foreground bash command that reached its timeout keeps
+        running -- move it to the background instead of ending it.
+
+        The live process (with the argv, environment and cwd the gate
+        approved -- the move adds nothing) is registered with
+        ``bash_jobs.adopt`` exactly like a ``bash_background`` job: same
+        registry, same deadline cap, same core accounting, same
+        completion event. The demote's pipe readers are attached to the
+        job's output files, so what the command printed before the
+        timeout and everything it prints afterwards both land there.
+        """
+        try:
+            from . import bash_jobs as _bj
+            from .bash_jobs import PipeCapture
+
+            _job_sid = str(getattr(perms, "task_session_id", "") or "")
+            capture = PipeCapture(
+                demoted, stdout_so_far=stdout_so_far,
+                stderr_so_far=stderr_so_far)
+            job = _bj.get_registry().adopt(
+                command=cmd,
+                cwd=str(run_cwd),
+                proc=demoted.proc,
+                description=description,
+                timeout_s=_bj._DEFAULT_BG_TIMEOUT_S,
+                workspace=str(perms.workspace),
+                argv=list(argv) if argv is not None else None,
+                capture=capture,
+                foreground_elapsed_s=timeout,
+                **({"session_id": _job_sid} if _job_sid else {}),
+            )
+        except ValueError as exc:
+            # The process already exited between the timeout and here:
+            # today's message is the truth, and the only one there is.
+            return json.dumps({
+                "error": (
+                    f"command timed out after {timeout}s and was ended, "
+                    "with everything it started. Nothing about its work "
+                    f"follows from this. ({exc})"),
+                "command": cmd[:200],
+                "requested_timeout_s": timeout,
+                "description": description,
+            })
+        except Exception as exc:
+            return json.dumps({
+                "error": (
+                    f"command timed out after {timeout}s; moving it to "
+                    f"the background failed: {exc}"),
+                "command": cmd[:200],
+                "description": description,
+            })
+        _watch_started_job(perms, job.job_id,
+                           f"moved from foreground: {cmd[:80]}")
+        return json.dumps({
+            "status": "moved_to_background",
+            "moved_after_s": timeout,
+            "job_id": job.job_id,
+            "pid": job.proc.pid,
+            "command": cmd[:200],
+            "description": description,
+            "cwd": self._display_path(run_cwd, perms) or ".",
+            "output_file": str(job.stdout_path),
+            "hint": (
+                f"moved to the background after {timeout}s; the command "
+                "keeps running as job "
+                f"{job.job_id}. bash_status('{job.job_id}', "
+                "wait_seconds=300) waits for it; bash_output("
+                f"'{job.job_id}') reads the output file "
+                f"({job.stdout_path}), which already holds what it "
+                "printed before the timeout. You are told when it ends. "
+                "Do not repeat the command unchanged."),
+        }, ensure_ascii=False)
+
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions",
         caged_unasked: bool = False, approved: bool = False,
@@ -25252,6 +25093,19 @@ class _DocToolExecutor:
                     timeout=timeout,
                     should_stop=_probe,
                     budget=True,
+                    # BG2: a foreground command that reaches its timeout
+                    # is MOVED to the background, not ended -- unless an
+                    # exception below keeps today's behaviour. The move
+                    # changes where the wait happens, nothing else: the
+                    # same argv, env and cwd the gate approved.
+                    # Not in a workspace overlay: its changes are taken
+                    # back when the command ends here, and a moved
+                    # command would leave them behind.
+                    demote_on_timeout=(not _is_push
+                                       and _pr is None
+                                       and _ov is None
+                                       and not _calculation_needs_foreground(
+                                           perms, cmd, run_cwd, timeout)),
                 )
                 if _ov is not None and _ow.setup_failed(_ov):
                     # The mount failed before the command ran: nothing has
@@ -25278,10 +25132,22 @@ class _DocToolExecutor:
                         should_stop=_probe,
                         budget=True,
                     )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as _exc:
             # What it wrote before it was ended is still its work.
             self._journal_shell_changes("bash", _snap, perms)
             self._note_timed_out(cmd, perms, timeout)
+            # BG2: a demoted command is alive -- move it to the background
+            # instead of reporting it dead. The exceptions below (push,
+            # PR publish, a login-node calculation) deliberately keep
+            # today's behaviour: ended, with the message that says so.
+            _demoted = getattr(_exc, "demoted", None)
+            if _demoted is not None:
+                return self._adopt_demoted_command(
+                    cmd=cmd, description=description, perms=perms,
+                    run_cwd=run_cwd, demoted=_demoted, argv=_run_argv,
+                    env=env, timeout=timeout,
+                    stdout_so_far=str(_exc.output or ""),
+                    stderr_so_far=str(_exc.stderr or ""))
             if _pr is not None:
                 return json.dumps({
                     "error": "GitHub publishing timed out. The push or PR creation "
@@ -34763,9 +34629,24 @@ class OpenAIClient(_BaseClient):
                             try:
                                 from . import mcp_client as _mcp
                                 _ws = _hook_workspace(self._permissions)
+                                # JC2 target 2 (operator route): the agent
+                                # session id travels WITH EACH tools/call
+                                # request, not with the spawn — the server
+                                # is spawned during tool-list assembly,
+                                # before any dispatch, so a spawn-time id
+                                # is empty in a fresh process and, in the
+                                # agent service, another session's.  The
+                                # id this dispatch holds (same seam the
+                                # step journal reads) rides in the
+                                # request's `_meta`, read only by
+                                # DELFIN's own delfin-tools handler.
+                                _sid_mcp = str(
+                                    getattr(self._permissions,
+                                            "task_session_id", "") or "")
                                 result = _wrap_untrusted(
                                     _mcp.get_registry(_ws).call(
-                                        fn_name, fn_args))
+                                        fn_name, fn_args,
+                                        agent_session_id=_sid_mcp))
                             except Exception as exc:
                                 result = json.dumps({
                                     "error": f"MCP dispatch failed: {exc}"
@@ -36519,3 +36400,23 @@ def create_client(
                      effort=effort,
                      read_only_dirs=read_only_dirs,
                      confirm_callback=kit_confirm_callback)
+
+# Shell-word parsing lives in delfin.agent.shell_words (a leaf module); re-exported
+from .shell_words import (
+    _split_shell_segments,
+    _shell_segments,
+    _with_shell_bodies,
+    _command_words,
+    _consume_heredoc,
+    _strip_heredoc_bodies,
+    _lines_from,
+    _HEREDOC_START_RE,
+    _SHELL_BODY_RE,
+    _GH_SEGMENT_SPLIT_RE,
+    _COMMAND_WRAPPERS,
+    _GH_OPTS_WITH_VALUE,
+)
+
+# The containment-decision recorder lives in delfin.agent.security_events;
+# re-exported so api_client._record_security_event stays the same name.
+from .security_events import _record_security_event

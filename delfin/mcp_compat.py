@@ -44,6 +44,47 @@ _SERVER_CLASSES: tuple[tuple[str, str], ...] = (
 )
 
 
+# The per-request context class, under the same two names. A tool function
+# that declares a parameter annotated with this class gets the request's
+# context injected by the SDK (both lines exclude that parameter from the
+# tool's input schema, so a model cannot fill it). 1.x also offered
+# ``server.get_context()``; 2.x removed it, and a call to it there fails
+# with AttributeError -- the injected parameter is the one route both share.
+_CONTEXT_CLASSES: tuple[tuple[str, str], ...] = (
+    ("mcp.server.fastmcp", "Context"),
+    ("mcp.server.mcpserver", "Context"),
+)
+
+
+def load_context_class() -> Any:
+    """The SDK's per-request Context class, or None when none imports."""
+    for module, attr in _CONTEXT_CLASSES:
+        try:
+            return getattr(importlib.import_module(module), attr)
+        except (ImportError, AttributeError):
+            continue
+    return None
+
+
+def request_meta(ctx: Any) -> dict:
+    """The inbound request's ``_meta`` as a plain dict ({} when absent).
+
+    1.x delivers it as a pydantic model (``RequestParams.Meta``,
+    extra="allow": unknown keys live in ``model_extra``); 2.x as a
+    TypedDict, i.e. a dict. Never raises: no context, no request context
+    or no meta all mean "no metadata".
+    """
+    try:
+        rc = getattr(ctx, "request_context", None)
+    except Exception:  # 2.x raises when the context has no request
+        return {}
+    meta = getattr(rc, "meta", None)
+    if isinstance(meta, dict):
+        return dict(meta)
+    extra = getattr(meta, "model_extra", None)
+    return dict(extra) if isinstance(extra, dict) else {}
+
+
 def _installed_version() -> str:
     """The MCP SDK version actually present, for the failure message."""
     try:
