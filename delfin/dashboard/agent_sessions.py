@@ -3198,7 +3198,8 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         refs["state"] = rec["refs"]["state"]
         refs["shutdown"] = refs["close"]
         rec["tab"], rec["refs"] = tab, refs
-        _add_keep_switch(rec, row=refs.get("controls"), on=_rec_kept(rec))
+        _add_keep_switch(rec, row=refs.get("controls"), after=refs.get("cancel_btn"),
+                         on=_rec_kept(rec))
         shown = view["active"] == rec["key"]
         tab.layout.display = "" if shown else "none"
         stage.children = tuple(r["tab"] for r in sessions)
@@ -3257,7 +3258,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         title_btn.on_click(lambda _b, _key=key: activate(_key))
         close_btn.on_click(lambda _b, _key=key: close_session(_key))
         _add_close_ask(rec)
-        _add_keep_switch(rec, row=refs.get("controls"),
+        _add_keep_switch(rec, row=refs.get("controls"), after=refs.get("cancel_btn"),
                          on=running_panel.keep_of(sid) if summary else True)
         sessions.append(rec)
         stage.children = tuple(r["tab"] for r in sessions)
@@ -3448,6 +3449,15 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             text = "Moving into this dashboard; a moment."
         transit(text)
 
+    def _held_by_another_process(sid: str) -> bool:
+        """Whether a live process (a service worker, another kernel) holds
+        the writer lock of ``sid`` -- opened here, its chat would refuse it."""
+        try:
+            from delfin.agent.session_store import session_lock_holder
+            return session_lock_holder(sid) is not None
+        except Exception:
+            return False
+
     def _replace_with_chat(rec: dict, how: str) -> Optional[dict]:
         """The view ``rec`` becomes the full chat, in its place, its draft
         kept. ``how``: ``"claim"`` -- taken from its kept record (its old
@@ -3476,11 +3486,26 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         elif how == "service":
             summary = running_panel.running.summary(sid) or {}
             kept = summary.get("keep") is not False
+        # The service may have the session by now: the view woke it there
+        # once the closed window's kernel was gone (seen 2026-11-16). It
+        # lets go first; this dashboard never opens a conversation another
+        # process writes (its chat would stay empty: "held by a live
+        # session").
+        summary = (running_panel.running.summary(sid)
+                   if live["client"] is not None else None) or {}
+        if how == "service" or (summary and not summary.get("host")):
             if callable(refs.get("transit")):
                 refs["transit"]("Moving into this dashboard; a moment.")
             if not _take_over_from_service(sid, name):
+                if record is not None:
+                    _K.put_back(record)
                 _transit_line(rec)
                 return None                     # tried again on the next tick
+        if _held_by_another_process(sid):
+            if record is not None:
+                _K.put_back(record)
+            _transit_line(rec)
+            return None                         # its writer lets go first
         shown, before = view["active"] == rec["key"], view["active"]
         draft = ""
         try:
@@ -3620,6 +3645,17 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             if why:
                 _not_handing_over(rec, f"{rec['title_btn'].description} was not "
                                        f"resumed: {why}. A click loads it.")
+            return None
+        summary = (running_panel.running.summary(sid)
+                   if live["client"] is not None else None) or {}
+        if summary and not summary.get("host"):
+            # The service has it by now: it lets go first.
+            name = str(rec["title_btn"].description or "") or session_label("", sid)
+            if not _take_over_from_service(sid, name):
+                _K.put_back(record)
+                return None
+        if _held_by_another_process(sid):
+            _K.put_back(record)               # its writer lets go first
             return None
         shown, before = view["active"] == rec["key"], view["active"]
         rec.pop("handing_over", None)

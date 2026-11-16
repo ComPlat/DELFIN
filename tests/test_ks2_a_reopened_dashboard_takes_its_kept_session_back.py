@@ -378,6 +378,15 @@ def test_reopened_while_held_it_looks_like_the_chat_says_so_takes_input_then_is_
         for cls in ("delfin-agent-root", "delfin-agent-composer", "delfin-agent-input",
                     "delfin-agent-chip-perm", "delfin-agent-send", "delfin-agent-submit"):
             assert cls in classes, cls
+        # The header as the full chat's: Mode, Provider, Auto, Stop, then
+        # Keep session right after Stop; the beetle; "Details" at the foot.
+        row = view["refs"]["controls"].children
+        words = [getattr(w, "description", "") for w in row]
+        assert words[:2] == ["Mode:", "Provider:"] and "Auto: off" in words
+        stop = view["refs"]["cancel_btn"]
+        assert "delfin-keep-session" in _classes_of(row[list(row).index(stop) + 1])
+        assert "🐞" in words
+        assert view["refs"]["details"].get_title(0) == "Details"
         refs["activate"](view["key"])
         line = view["refs"]["transit_html"].value
         assert "Coming over" in line and "type" in line, line
@@ -430,3 +439,39 @@ def test_picked_from_the_list_while_held_it_is_the_same_view_and_then_the_chat(
     finally:
         refs["stop_refresh"]()
         host.close()
+
+
+def test_a_conversation_another_process_writes_is_not_opened_until_it_lets_go(
+        home, old_kernel, tmp_path):
+    """Seen 2026-11-16: the service woke the session once the closed
+    window's kernel was gone, and the dashboard opened it as well -- its
+    chat stayed empty ("held by a live session"). Now it waits for the
+    writer to let go, keeps the record, then opens it."""
+    from delfin.agent import session_store
+    _kept_by(home, old_kernel)
+    build = _Build()
+    _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
+    writer = subprocess.Popen([sys.executable, "-c", (
+        "import sys, time; from delfin.agent import session_store as S; "
+        "assert S.acquire_session_lock(sys.argv[1]); print('held', flush=True); "
+        "time.sleep(120)"), SID], stdout=subprocess.PIPE, text=True,
+        env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)))
+    try:
+        assert writer.stdout.readline().strip() == "held"
+        assert session_store.session_lock_holder(SID) is not None
+        _end(old_kernel)
+        refs["refresh"]()
+        assert build.opened() == [], "not opened while another process writes it"
+        assert K.is_armed(SID), "its record is kept for the next try"
+        (row,) = refs["sessions"]()
+        assert row.get("handing_over")
+        writer.kill()
+        writer.wait(timeout=30)
+        refs["refresh"]()
+        (rec,) = refs["sessions"]()
+        assert build.opened() == [SID] and not rec.get("dormant") and rec["kept"]
+    finally:
+        if writer.poll() is None:
+            writer.kill()
+            writer.wait(timeout=30)
+        refs["stop_refresh"]()
