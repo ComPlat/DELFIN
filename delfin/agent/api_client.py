@@ -33808,13 +33808,35 @@ class OpenAIClient(_BaseClient):
                 try:
                     from .endpoint_gate import (for_client as _gslot_for,
                                                 SlotWaitTimeout
-                                                as _SlotWaitTimeout)
+                                                as _SlotWaitTimeout,
+                                                SlotWaitCancelled
+                                                as _SlotWaitCancelled)
                     _gslot.gate = _gslot_for(self._base_url, self.model)
                 except Exception:
                     _gslot.gate = None
                     _SlotWaitTimeout = None
+                    _SlotWaitCancelled = None
                 if _gslot.gate is not None:
-                    _gslot.gate.acquire()
+                    # Stop ends the wait for a slot too: a request still
+                    # queued for the endpoint is not one the person waits
+                    # out after pressing Stop (2026-11-16).
+                    try:
+                        _gslot.gate.acquire(should_stop=lambda: bool(
+                            self._stop_was_requested()
+                            or getattr(self, "_stop_requested", False)))
+                    except Exception as _gate_exc:
+                        if _SlotWaitCancelled is None or not isinstance(
+                                _gate_exc, _SlotWaitCancelled):
+                            raise
+                        yield StreamEvent(
+                            type="message_delta",
+                            input_tokens=_total_in,
+                            output_tokens=_total_out,
+                            cost_usd=self._estimate_cost(
+                                _total_in, _total_out),
+                            cached_tokens=_total_cached,
+                            stop_reason="stopped")
+                        return
                 if _gslot.gate is not None and _gslot.gate.wait_notice:
                     yield StreamEvent(type="notice", text=(
                         f"⚠️ {_gslot.gate.wait_notice}\n"))
