@@ -98,7 +98,7 @@ def test_a_timeout_moves_the_command_to_the_background(tmp_path):
 
 def _tail(job) -> str:
     from delfin.agent import bash_jobs
-    return bash_jobs.read_output(job, tail_lines=20).get("stdout_tail", "")
+    return bash_jobs.read_output(job, tail_lines=20).get("stdout", "")
 
 
 def test_the_move_starts_nothing_twice(tmp_path):
