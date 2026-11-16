@@ -80,7 +80,7 @@ def _run(cmd, timeout_s=2, tmp_path=None, **extra):
 
 def test_a_timeout_moves_the_command_to_the_background(tmp_path):
     """The command survives its foreground timeout as a registered job."""
-    res = _run(f"echo started; echo $! > {tmp_path / 'pid'}; sleep 60",
+    res = _run(f"echo started; echo $$ > {tmp_path / 'pid'}; sleep 60",
                timeout_s=2, tmp_path=tmp_path)
     assert res.get("status") == "moved_to_background", res
     job_id = res.get("job_id")

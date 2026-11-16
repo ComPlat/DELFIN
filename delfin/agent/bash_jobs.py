@@ -750,49 +750,32 @@ class PipeCapture:
         self._drained = threading.Event()
 
     def attach(self, sout, serr) -> None:
-        """Write the so-far output into the job's files, then keep the
-        reader threads appending to them until the command ends."""
-        for handle, pre in ((sout, self._so_far[0]),
-                            (serr, self._so_far[1])):
-            if pre:
+        """Send what the command printed before the timeout and everything
+        it prints afterwards into the job's files, in order.
+
+        The command's own reader threads (contained_run) keep reading the
+        pipes; their sinks are redirected to the files in one locked step
+        each, so nothing is lost or written twice and no second reader
+        competes for the pipe. A demoted run without sinks (an older
+        handover) falls back to writing the so-far output it was given."""
+        def _writer(handle):
+            def _write(chunk: bytes) -> None:
                 try:
-                    handle.write(pre.decode("utf-8", errors="replace"))
+                    handle.write(chunk.decode("utf-8", errors="replace"))
                     handle.flush()
                 except (OSError, ValueError):
                     pass
-        proc = self._demoted.proc
-        out, err = [], []
+            return _write
 
-        def _pump(stream, handle, sink):
-            try:
-                while True:
-                    chunk = stream.read(65536)
-                    if not chunk:
-                        break
-                    sink.append(chunk)
-                    try:
-                        handle.write(
-                            chunk.decode("utf-8", errors="replace"))
-                        handle.flush()
-                    except (OSError, ValueError):
-                        pass
-            except (OSError, ValueError):
-                pass
-            finally:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-
-        t_out = threading.Thread(
-            target=_pump, args=(proc.stdout, sout, out),
-            daemon=True, name="bg2-pipe-stdout")
-        t_err = threading.Thread(
-            target=_pump, args=(proc.stderr, serr, err),
-            daemon=True, name="bg2-pipe-stderr")
-        t_out.start()
-        t_err.start()
-        self._threads = (t_out, t_err)
+        sinks = (getattr(self._demoted, "out_sink", None),
+                 getattr(self._demoted, "err_sink", None))
+        for handle, sink, pre in ((sout, sinks[0], self._so_far[0]),
+                                  (serr, sinks[1], self._so_far[1])):
+            if sink is not None and hasattr(sink, "redirect"):
+                sink.redirect(_writer(handle))
+            elif pre:
+                _writer(handle)(pre)
+        self._threads = tuple(getattr(self._demoted, "readers", ()) or ())
 
     def join(self, timeout: float = 60.0) -> None:
         """Wait (bounded) for the readers; they end when the command's

@@ -56,10 +56,43 @@ def end_group(pgid: int, grace_s: float = _GRACE_S) -> None:
             time.sleep(0.02)
 
 
+class _Sink(list):
+    """Where a reader puts what a pipe delivers: kept in memory, until a
+    demoted command's caller redirects it to a file (BG2). The switch is
+    one locked step -- what arrived so far is handed over first, then
+    every later chunk goes straight there -- so nothing is lost, doubled
+    or reordered, and no second reader ever touches the pipe."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._to: Optional[Callable[[bytes], None]] = None
+
+    def append(self, chunk: bytes) -> None:  # type: ignore[override]
+        with self._lock:
+            if self._to is None:
+                super().append(chunk)
+                return
+            to = self._to
+        to(chunk)
+
+    def redirect(self, to: Callable[[bytes], None]) -> None:
+        with self._lock:
+            so_far = b"".join(self)
+            self.clear()
+            if so_far:
+                to(so_far)
+            self._to = to
+
+
 def _reader(stream, sink: list) -> None:
+    # read1: what the pipe has now. read(n) waits for n bytes or the end,
+    # so a quiet command's output arrived only when it ended -- and a
+    # command handed back alive (BG2) had none to hand over.
+    read = getattr(stream, "read1", None) or stream.read
     try:
         while True:
-            chunk = stream.read(65536)
+            chunk = read(65536)
             if not chunk:
                 break
             sink.append(chunk)
@@ -208,8 +241,8 @@ def _supervise(
                 guard = BudgetGuard(proc.pid).start()
         except Exception:
             guard = None
-    out: list[bytes] = []
-    err: list[bytes] = []
+    out: list[bytes] = _Sink()
+    err: list[bytes] = _Sink()
     readers = [threading.Thread(target=_reader, args=(proc.stdout, out), daemon=True),
                threading.Thread(target=_reader, args=(proc.stderr, err), daemon=True)]
     for t in readers:
@@ -279,7 +312,7 @@ def _supervise(
                 demoted = Demoted(
                     proc=proc, pgid=pgid, guard=guard,
                     out_so_far=b"".join(out), err_so_far=b"".join(err),
-                    readers=readers)
+                    readers=readers, out_sink=out, err_sink=err)
             else:
                 timed_out = True
     except BaseException:
@@ -360,8 +393,12 @@ class Demoted:
     """
 
     def __init__(self, *, proc, pgid: int, guard, out_so_far: bytes,
-                 err_so_far: bytes, readers: list):
+                 err_so_far: bytes, readers: list, out_sink=None, err_sink=None):
         self.proc = proc
+        #: The readers' sinks: ``redirect(fn)`` sends what arrived so far
+        #: and everything after it to ``fn`` (the job's output files).
+        self.out_sink = out_sink
+        self.err_sink = err_sink
         self.pgid = pgid
         self.guard = guard
         self.out_so_far = out_so_far
