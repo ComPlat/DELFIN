@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from conftest import child_env
+
 # The helpers other modules import from api_client that this PR moves to
 # delfin.agent.shell_words.py (a leaf importing only stdlib).
 SHELL_NAMES = [
@@ -44,7 +46,7 @@ def test_shell_word_helpers_are_the_same_object_from_old_and_new():
         assert getattr(A, name) is getattr(W, name), name
 
 
-def test_importing_the_leaf_does_not_pull_api_client():
+def test_importing_the_leaf_does_not_pull_api_client(tmp_path):
     # A fresh interpreter: this test process may already hold api_client.
     code = (
         "import sys;"
@@ -60,7 +62,10 @@ def test_importing_the_leaf_does_not_pull_api_client():
         "'api_client imported via security_events'"
     )
     root = Path(__file__).resolve().parents[1]
-    env = dict(os.environ)
+    # The child records a security event, which resolves its ~/.delfin sink
+    # at import time against its own environment: a private HOME, not the
+    # operator's (conftest.child_env).
+    env = child_env(tmp_path)
     env["PYTHONPATH"] = str(root) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["PYTHONNOUSERSITE"] = "1"
