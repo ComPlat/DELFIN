@@ -2431,9 +2431,13 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         conversation has its id only once it is loaded, and until then the
         service's row of the same session stood beside it (two rows,
         2026-11-16)."""
+        # The conversation a tab was asked to open counts only until the tab
+        # has an id of its own: a tab that could not open it and became a
+        # new conversation is not it (it hid the session it refused, 2026-11-16).
         return bool(sid) and any(
             r.get("session_id") == sid or _session_id(r) == sid
-            or str(getattr(r.get("ctx"), "initial_session_id", "") or "") == sid
+            or (not _session_id(r) and not r.get("session_id")
+                and str(getattr(r.get("ctx"), "initial_session_id", "") or "") == sid)
             for r in sessions)
 
     running_panel = RunningPanel(None, on_open=lambda sid: open_from_list(sid),

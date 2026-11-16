@@ -293,6 +293,11 @@ def test_a_chat_still_loading_its_session_is_one_row_not_two(home):
         refs["open"](str(home / "launch"), SID, in_kernel=True)
         assert refs["running_panel"].is_open(SID)
         assert not refs["running_panel"].is_open("")
+        # A tab that did not open it and became a conversation of its own
+        # does not hide it any more.
+        rec = [r for r in refs["sessions"]() if r["ctx"].initial_session_id == SID][0]
+        rec["refs"]["state"]["active_session_id"] = "another0000000001"
+        assert not refs["running_panel"].is_open(SID)
     finally:
         refs["stop_refresh"]()
 
