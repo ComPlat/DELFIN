@@ -31,7 +31,20 @@ before.
 """
 from __future__ import annotations
 
+import contextvars as _contextvars
 from typing import Optional
+
+# The ToolContext set active for the duration of ONE execute() call. When a
+# client passes its own context it is authoritative for that call; methods that
+# run outside any execute() call (a direct `_note_change_seq` or
+# `_turn_seqs_for`, the round-loop drain) read through the executor's per-session
+# registry instead (_ctx_for). A ContextVar keeps a nested subagent stream on the
+# same thread from leaking one session's context into another -- the same
+# mechanism _MODE_PIN in api_client.py uses.
+ACTIVE_TOOL_CONTEXT: "_contextvars.ContextVar[Optional[object]]" = (
+    _contextvars.ContextVar("delfin_active_tool_context", default=None))
+
+_ACTIVE_TOOL_CONTEXT = ACTIVE_TOOL_CONTEXT
 
 
 class ToolContext:
