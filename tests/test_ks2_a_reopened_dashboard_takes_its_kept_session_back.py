@@ -40,6 +40,7 @@ class _Build:
 
     def __init__(self):
         self.contexts = []
+        self.inputs = []
 
     def __call__(self, ctx):
         state = {"active_session_id": ctx.initial_session_id or "",
@@ -48,8 +49,11 @@ class _Build:
         self.contexts.append(ctx)
         stop = widgets.Button(description="Stop")
         row = widgets.HBox([stop])
+        box = widgets.Textarea()
+        self.inputs.append(box)
         return widgets.VBox([row]), {"state": state, "shutdown": lambda: None,
-                                     "control_row": row, "stop_button": stop}
+                                     "control_row": row, "stop_button": stop,
+                                     "host_adapter": lambda: {"input": box}}
 
     def opened(self):
         return [c.initial_session_id for c in self.contexts]
@@ -274,46 +278,6 @@ def test_a_stop_given_after_keeping_starts_nothing(home, old_kernel, monkeypatch
         refs["stop_refresh"]()
 
 
-def test_picked_from_the_list_while_held_it_is_handed_over_not_viewed(home, old_kernel):
-    """Not among the remembered open sessions (another dashboard rewrote
-    that list; seen 2026-11-16): picked from the session list while the
-    closed window's kernel still hosts it, it is handed over as well."""
-    K.arm(SID, str(home / "launch"), pid=old_kernel.pid, title="kept job")
-    build = _Build()
-    _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
-    try:
-        refs["running"].summary = lambda sid: ({"name": "kept job", "host": "dashboard",
-                                                "state": "idle", "keep": True,
-                                                "workspace": str(home / "launch")}
-                                               if sid == SID else None)
-        rec = refs["open_from_list"](SID)
-        assert rec.get("handing_over") and not rec.get("live")
-        assert refs["active"]() is rec
-        _end(old_kernel)
-        refs["refresh"]()
-        mine = [r for r in refs["sessions"]() if r["ctx"].initial_session_id == SID]
-        assert mine and not mine[0].get("dormant") and not mine[0].get("live")
-        assert refs["active"]() is mine[0] and mine[0]["kept"]
-    finally:
-        refs["stop_refresh"]()
-
-
-def test_a_kept_session_working_there_waits_with_a_message_no_second_view(
-        home, old_kernel):
-    """The person (2026-11-16): a message and waiting rather than a view
-    that turns into the chat and leaves duplicates -- also mid-step."""
-    K.arm(SID, str(home / "launch"), pid=old_kernel.pid)
-    _w, refs = AS.create_tab(_ctx(home), build=_Build(), service=False)
-    try:
-        refs["running"].summary = lambda sid: ({"host": "dashboard", "state": "working"}
-                                               if sid == SID else None)
-        rec = refs["open_from_list"](SID)
-        assert rec.get("handing_over") and not rec.get("live")
-        assert not [r for r in refs["sessions"]() if r.get("live")]
-    finally:
-        refs["stop_refresh"]()
-
-
 def test_a_chat_still_loading_its_session_is_one_row_not_two(home):
     """A tab asked to open a conversation has its id only once loaded;
     meanwhile the service's row of the same session was listed beside it."""
@@ -331,3 +295,135 @@ def test_a_chat_still_loading_its_session_is_one_row_not_two(home):
         assert not refs["running_panel"].is_open("")
     finally:
         refs["stop_refresh"]()
+
+
+# -- with the agent service: the closed window's kernel still hosts it ------------------
+
+from fake_host import FakeHost                                   # noqa: E402
+from tui_service import ServiceProcess                           # noqa: E402
+
+HSID = "ks2c0ffee0000000000000000000003"
+CHAT = ('<template class="delfin-chat-src"><div class="delfin-agent-chat">'
+        '<div class="delfin-chat-msg delfin-chat-user">hi</div></div></template>')
+
+
+def _until(cond, timeout: float = 30.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        got = cond()
+        if got:
+            return got
+        time.sleep(0.05)
+    return cond()
+
+
+@pytest.fixture
+def svc(tmp_path):
+    service = ServiceProcess(tmp_path / "svcroot")
+    try:
+        yield service
+    finally:
+        service.stop()
+
+
+@pytest.fixture
+def kernel_mode(home, svc, monkeypatch):
+    from delfin.dashboard import live_sessions as LS
+    dash = LS.LiveClient(svc.socket)
+    svc.clients.append(dash)
+    monkeypatch.setattr(LS, "connect", lambda **kw: dash)
+    monkeypatch.delenv(AS.SESSIONS_ENV, raising=False)
+    return dash
+
+
+def _rows_for(refs, sid):
+    mine = [r for r in refs["sessions"]() if r.get("session_id") == sid
+            or r["ctx"].initial_session_id == sid]
+    listed = [r for r in refs["running_panel"].ordered() if r["sid"] == sid]
+    return mine, listed
+
+
+def _classes_of(w):
+    return tuple(getattr(w, "_dom_classes", ()))
+
+
+def _all(w):
+    yield w
+    for child in getattr(w, "children", ()):
+        yield from _all(child)
+
+
+def test_reopened_while_held_it_looks_like_the_chat_says_so_takes_input_then_is_the_chat(
+        home, svc, kernel_mode, old_kernel):
+    host = FakeHost(svc.socket, HSID, str(home / "launch"), keep=True)
+    host.emit("dashboard.chat", v=1, html=CHAT)
+    host.emit("turn.started", turnId="t1", source="user")      # mid-step there
+    K.arm(HSID, str(home / "launch"), pid=old_kernel.pid, title="kept job")
+    AS.save_open_sessions([{"session_id": HSID, "workspace": str(home / "launch"),
+                            "front": True}])
+    build = _Build()
+    _w, refs = AS.create_tab(_ctx(home), build=build, service=lambda: kernel_mode,
+                              start_in="kernel")
+    try:
+        assert _until(lambda: refs["running"].summary(HSID))
+        refs["refresh"]()
+        mine, listed = _rows_for(refs, HSID)
+        assert len(mine) == 1 and not listed, "one row for it, never two"
+        view = mine[0]
+        assert view.get("live") and view.get("into_chat") and view.get("kept_here")
+        assert K.wanted_here(HSID)
+        # Laid out as the full chat: its root, its composer, its chips.
+        classes = {c for w in _all(view["tab"]) for c in _classes_of(w)}
+        for cls in ("delfin-agent-root", "delfin-agent-composer", "delfin-agent-input",
+                    "delfin-agent-chip-perm", "delfin-agent-send", "delfin-agent-submit"):
+            assert cls in classes, cls
+        refs["activate"](view["key"])
+        line = view["refs"]["transit_html"].value
+        assert "Coming over" in line and "type" in line, line
+        # Typing works meanwhile: sent to where it runs.
+        view["refs"]["submit"].value = '{"seq": 1, "text": "from the reopened window"}'
+        assert host.wait_asked("session.prompt")["text"] == "from the reopened window"
+        view["refs"]["input"].value = "a draft not sent yet"
+        # The closed window's kernel finishes and ends.
+        host.emit("turn.ended", turnId="t1", durationMs=5, inputTokens=1, outputTokens=1,
+                  stopReason="end_turn")
+        host.close()
+        _end(old_kernel)
+        refs["refresh"]()
+        mine, listed = _rows_for(refs, HSID)
+        assert len(mine) == 1 and not listed
+        chat = mine[0]
+        assert not chat.get("live") and not chat.get("dormant")
+        assert build.opened() == [HSID] and refs["active"]() is chat
+        assert chat["kept"] and _record()["pid"] == os.getpid()
+        assert build.inputs[-1].value == "a draft not sent yet", "the draft came along"
+        assert not K.wanted_here(HSID)
+    finally:
+        refs["stop_refresh"]()
+        host.close()
+
+
+def test_picked_from_the_list_while_held_it_is_the_same_view_and_then_the_chat(
+        home, svc, kernel_mode, old_kernel):
+    host = FakeHost(svc.socket, HSID, str(home / "launch"), keep=True)
+    host.emit("dashboard.chat", v=1, html=CHAT)
+    K.arm(HSID, str(home / "launch"), pid=old_kernel.pid, title="kept job")
+    build = _Build()
+    _w, refs = AS.create_tab(_ctx(home), build=build, service=lambda: kernel_mode,
+                              start_in="kernel")
+    try:
+        assert _until(lambda: refs["running"].summary(HSID))
+        view = refs["open_from_list"](HSID)
+        assert view.get("live") and view.get("kept_here")
+        assert "Coming over" in view["refs"]["transit_html"].value
+        mine, listed = _rows_for(refs, HSID)
+        assert len(mine) == 1 and not listed
+        host.close()
+        _end(old_kernel)
+        refs["refresh"]()
+        mine, listed = _rows_for(refs, HSID)
+        assert len(mine) == 1 and not mine[0].get("live") and not listed
+        assert build.opened() == [HSID] and mine[0]["kept"]
+    finally:
+        refs["stop_refresh"]()
+        host.close()

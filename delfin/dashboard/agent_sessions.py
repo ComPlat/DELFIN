@@ -3324,7 +3324,6 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         session here while the service still holds it (two writers on one
         session file).
         """
-        import time as _time
         from delfin.dashboard import live_sessions as LS
         for rec in sessions:
             if rec.get("session_id") == sid or _session_id(rec) == sid:
@@ -3332,27 +3331,16 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 return rec
         summary = running_panel.running.summary(sid) or {}
         client = live["client"]
-        if summary.get("host") == "dashboard" and not view["start_in_service"] \
-                and sid not in view.setdefault("kept_elsewhere", set()):
-            from delfin.dashboard import kept_agent_sessions as _K
-            if _K.where_kept(sid):
-                # Kept by a dashboard kernel of this host that is still
-                # there -- most often the one whose window just closed (its
-                # grace): its row says it is being handed over and the full
-                # chat comes in its place (_step_hand_over), not that
-                # kernel's view first.
-                rec = open_dormant(sid, str(summary.get("workspace") or ""),
-                                   str(summary.get("name") or "") or session_label("", sid),
-                                   handing_over=True)
-                activate(rec["key"])
-                return rec
         if summary.get("host") == "dashboard":
-            # Another dashboard's kernel runs it: never taken from there.
-            # Its view shows that dashboard's chat; it becomes the full chat
-            # here only once nobody hosts it (_into_chat_when_idle).
+            # Another dashboard's kernel runs it -- most often the one whose
+            # window just closed (its grace, or a turn it finishes): never
+            # taken from there. Its view (laid out as the full chat, with a
+            # line saying it is being handed over, typing works) until
+            # nobody hosts it; then the full chat in its place
+            # (_into_chat_when_idle).
             rec = open_live(sid)
             if rec is not None:
-                rec["into_chat"] = True
+                _await_chat(rec)
             return rec
         if view["start_in_service"] or client is None:
             return open_live(sid)
@@ -3361,26 +3349,14 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             # once the turn is over (_into_chat_when_idle, on the tick).
             rec = open_live(sid)
             if rec is not None:
-                rec["into_chat"] = True
+                _await_chat(rec)
             return rec
         name = str(summary.get("name") or sid[:8])
         where = str(summary.get("workspace") or "")
-        try:
-            client.stop(sid)
-        except (LS.ServiceError, TimeoutError, OSError) as exc:
-            _say(f"{name} could not be moved here ({getattr(exc, 'message', exc)}); "
-                 "it opens in the service's view.")
+        got = _take_over_from_service(sid, name)
+        if got is None:
             return open_live(sid)
-        # The service lets go once its worker has saved and exited: the
-        # session leaves the running list (session.removed / ended).
-        # Both conditions, polled: the running list drops it on the
-        # service's event, and the saved file may be written a moment later.
-        deadline = _time.monotonic() + _TAKE_OVER_WAIT_S
-        while _time.monotonic() < deadline and (
-                running_panel.running.summary(sid) or not _saved_session(sid)):
-            _time.sleep(0.2)
-        if running_panel.running.summary(sid) or not _saved_session(sid):
-            _say(f"{name} did not finish saving in time; open it again in a moment.")
+        if not got:
             return None
         kept = summary.get("keep") is not False
         rec = open_session(where, sid, in_kernel=True)
@@ -3396,6 +3372,160 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 _say(f"{name} now runs in this dashboard's chat; the terminal and "
                      "the phone no longer have it.")
         return rec
+
+    def _take_over_from_service(sid: str, name: str) -> Optional[bool]:
+        """Ask the service to save and let go of ``sid`` and wait for it.
+        True: let go and saved; False: not saved in time (said); None: the
+        service refused the stop (said)."""
+        import time as _time
+        from delfin.dashboard import live_sessions as LS
+        client = live["client"]
+        try:
+            client.stop(sid)
+        except (LS.ServiceError, TimeoutError, OSError, AttributeError) as exc:
+            _say(f"{name} could not be moved here ({getattr(exc, 'message', exc)}); "
+                 "it opens in the service's view.")
+            return None
+        # The service lets go once its worker has saved and exited: the
+        # session leaves the running list (session.removed / ended).
+        # Both conditions, polled: the running list drops it on the
+        # service's event, and the saved file may be written a moment later.
+        deadline = _time.monotonic() + _TAKE_OVER_WAIT_S
+        while _time.monotonic() < deadline and (
+                running_panel.running.summary(sid) or not _saved_session(sid)):
+            _time.sleep(0.2)
+        if running_panel.running.summary(sid) or not _saved_session(sid):
+            _say(f"{name} did not finish saving in time; it is tried again in a moment.")
+            return False
+        return True
+
+    def _await_chat(rec: dict) -> None:
+        """A view that becomes the full chat once its session is free
+        (_into_chat_when_idle). Kept by a dashboard kernel of this host
+        (a closed window's): this dashboard waits for it, so the hand-over
+        leaves it here rather than putting it into the service first."""
+        from delfin.dashboard import kept_agent_sessions as _K
+        rec["into_chat"] = True
+        rec.setdefault("await_since", __import__("time").monotonic())
+        if not rec.get("kept_here") and _K.where_kept(rec["session_id"]) in ("held", "free"):
+            rec["kept_here"] = True
+            _K.want(rec["session_id"])
+            if not view.get("exit_hook"):
+                import atexit
+                atexit.register(_K.on_kernel_end)
+                view["exit_hook"] = True
+        _transit_line(rec)
+
+    def _transit_line(rec: dict, summary: Optional[dict] = None) -> None:
+        """The line in a view on its way into the full chat: what happens
+        and that typing works -- a wait never reads as a hang."""
+        from delfin.dashboard import live_sessions as LS
+        transit = (rec.get("refs") or {}).get("transit")
+        if not callable(transit):
+            return
+        if not rec.get("into_chat"):
+            transit("")
+            return
+        if summary is None:
+            summary = running_panel.running.summary(rec["session_id"]) or {}
+        busy = bool(summary) and LS.state_word(summary) in ("working", "needs you")
+        import time as _time
+        held_long = (_time.monotonic() - rec.get("await_since", _time.monotonic())
+                     > _held_grace())
+        if summary.get("host") == "dashboard" and held_long and not busy:
+            text = ("Open in another dashboard; it moves here once that one is "
+                    "closed. You can type meanwhile.")
+        elif summary.get("host") == "dashboard":
+            text = ("Coming over from the dashboard that was closed: it finishes "
+                    "its step there, then continues here. You can type meanwhile."
+                    if busy else
+                    "Coming over from the dashboard that was closed; it continues "
+                    "here in a moment. You can type meanwhile.")
+        elif busy:
+            text = ("Finishing a step in the agent service; it continues in this "
+                    "dashboard right after. You can type meanwhile.")
+        else:
+            text = "Moving into this dashboard; a moment."
+        transit(text)
+
+    def _replace_with_chat(rec: dict, how: str) -> Optional[dict]:
+        """The view ``rec`` becomes the full chat, in its place, its draft
+        kept. ``how``: ``"claim"`` -- taken from its kept record (its old
+        kernel is gone); ``"service"`` -- taken over from the service (idle
+        there); ``"record"`` -- loaded from its saved record (it ended where
+        it ran). The view stays listed until the chat is there: never two
+        rows, never none."""
+        from delfin.dashboard import kept_agent_sessions as _K
+        sid = rec["session_id"]
+        name = str(rec["title_btn"].description or "") or session_label("", sid)
+        workspace = rec.get("workspace") or ""
+        refs = rec.get("refs") or {}
+        record = None
+        kept = False
+        if how == "claim":
+            record, why = _K.claim_here(sid)
+            if record is None:
+                if why:
+                    rec["into_chat"] = False
+                    rec.pop("kept_here", None)
+                    _transit_line(rec)
+                    refs.get("say", _say)(f"{name} was not resumed: {why}.")
+                return None
+            kept = True
+            workspace = workspace or str(record.get("workspace") or "")
+        elif how == "service":
+            summary = running_panel.running.summary(sid) or {}
+            kept = summary.get("keep") is not False
+            if callable(refs.get("transit")):
+                refs["transit"]("Moving into this dashboard; a moment.")
+            if not _take_over_from_service(sid, name):
+                _transit_line(rec)
+                return None                     # tried again on the next tick
+        shown, before = view["active"] == rec["key"], view["active"]
+        draft = ""
+        try:
+            draft = str(refs.get("draft", lambda: "")() or "")
+        except Exception:
+            pass
+        at = sessions.index(rec) if rec in sessions else len(sessions)
+        try:
+            refs["close"]()
+        except Exception:
+            pass
+        if rec in sessions:
+            sessions.remove(rec)
+        _K.unwant(sid)
+        if how == "record" and not shown:
+            new = open_dormant(sid, workspace, name)
+        else:
+            new = open_session(workspace, sid, in_kernel=True)
+        if new is None:
+            if record is not None:
+                _K.put_back(record)
+            new = open_dormant(sid, workspace, name)
+        if new in sessions:
+            sessions.remove(new)
+            sessions.insert(min(at, len(sessions)), new)
+            stage.children = tuple(r["tab"] for r in sessions)
+        new["known_title"] = name
+        if new["title_btn"].description == "New session":
+            new["title_btn"].description = name
+        if kept and not new.get("dormant") and not keep_session_refusal():
+            set_keep(new["key"], True)
+        if draft.strip() and not new.get("dormant"):
+            try:
+                box = (new["refs"]["host_adapter"]() or {}).get("input")
+                if box is not None and not str(box.value or "").strip():
+                    box.value = draft
+            except Exception:
+                pass
+        if shown:
+            activate(new["key"])
+        elif before and before != rec["key"] and _find(before) is not None:
+            activate(before)
+        _render_list()
+        _persist()
+        return new
 
     def open_dormant(sid: str, workspace: str, title: str = "", *,
                      handing_over: bool = False) -> dict:
@@ -3612,32 +3742,40 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         return new
 
     def _into_chat_when_idle() -> None:
-        """A view waiting for its turn to end (``into_chat``) becomes the
-        full chat as soon as the service has the session idle: the view
-        goes (the session runs on meanwhile), the take-over follows, and
-        the chat is on screen if the view was."""
+        """A view waiting to become the full chat (``into_chat``) does so as
+        soon as its session is free: its kept record taken once the closed
+        window's kernel is gone; taken over once the service has it idle;
+        loaded from its record once it ended where it ran (not kept). Until
+        then its line says what happens (_transit_line)."""
+        import time as _time
+        from delfin.dashboard import kept_agent_sessions as _K
         from delfin.dashboard import live_sessions as LS
-        if live["client"] is None:
-            return
         for rec in [r for r in sessions if r.get("live") and r.get("into_chat")]:
-            summary = running_panel.running.summary(rec["session_id"]) or {}
-            if not summary or summary.get("host") \
-                    or LS.state_word(summary) in ("working", "needs you"):
+            sid = rec["session_id"]
+            where = _K.where_kept(sid)
+            if not rec.get("kept_here") and where in ("held", "free"):
+                _await_chat(rec)
+            if rec.get("kept_here") and where == "free":
+                _replace_with_chat(rec, "claim")
                 continue
-            shown = view["active"] == rec["key"]
-            rec["into_chat"] = False
-            try:
-                rec["refs"]["close"]()
-            except Exception:
-                pass
-            sessions.remove(rec)
-            stage.children = tuple(r["tab"] for r in sessions)
-            new = open_from_list(rec["session_id"])
-            if new is None:
+            summary = (running_panel.running.summary(sid)
+                       if live["client"] is not None else None) or {}
+            _transit_line(rec, summary)
+            if not summary:
+                if where in ("held", "moving"):
+                    rec["gone_since"] = None
+                    continue
+                since = rec.get("gone_since") or _time.monotonic()
+                rec["gone_since"] = since
+                if _time.monotonic() - since >= _HAND_OVER_SETTLE_S:
+                    _replace_with_chat(rec, "record")
                 continue
-            if shown:
-                activate(new["key"])
-            _persist()
+            rec["gone_since"] = None
+            if summary.get("host") or LS.state_word(summary) in ("working", "needs you"):
+                continue
+            if live["client"] is None:
+                continue
+            _replace_with_chat(rec, "service")
 
     # -- open, close ----------------------------------------------------------
 
@@ -3955,10 +4093,10 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         _reconnect()
         if live["client"] is not None:
             running_panel.render()        # the ages; the rows follow events
-            try:
-                _into_chat_when_idle()
-            except Exception:
-                pass
+        try:
+            _into_chat_when_idle()
+        except Exception:
+            pass
         for rec in list(sessions):
             if rec.get("handing_over"):
                 try:
@@ -4325,25 +4463,20 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                           names="value")
 
     def _back_from_closed_window(row: dict) -> bool:
-        """A session this dashboard had open when it closed, kept, and on
-        its way back -- its old kernel still holds it (the window grace), a
-        hand-over is moving it, or it is in the middle of a step in the
-        service: its row now, saying so, and the full chat in its place once
-        it is free (_step_hand_over), never another view of it first. Idle
-        in the service it is left to the caller (the take-over at once).
-        True when the row was made."""
+        """A session this dashboard had open when it closed, kept, whose old
+        kernel has just ended (taken into the full chat at once), or that a
+        hand-over is moving (its row says so, the chat follows), or that its
+        old kernel holds without the service listing it. Held and listed,
+        or in the service, it is left to the caller: the view laid out as
+        the full chat, then the chat in its place. True when a row was made."""
         from delfin.dashboard import kept_agent_sessions as _K
-        from delfin.dashboard import live_sessions as LS
         if view["start_in_service"]:
             return False                # those stay in the service's view
         sid = row["session_id"]
         where = _K.where_kept(sid)
         summary = (running_panel.running.summary(sid)
                    if live["client"] is not None else None) or {}
-        busy = bool(summary) and LS.state_word(summary) in ("working", "needs you")
-        # In the middle of a step in the service (kept, handed over before):
-        # it waits too, and becomes the full chat once the step is done.
-        if not where and not (busy and not summary.get("host")):
+        if not where or (where == "held" and summary):
             return False
         data = _saved_session(sid) or {}
         name = str(summary.get("name") or "") or session_display_name(data.get("title"), sid)
@@ -4387,7 +4520,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                 if view["start_in_service"] or hosted:
                     rec = open_live(row["session_id"], row["workspace"], show=False)
                     if rec is not None and hosted:
-                        rec["into_chat"] = True
+                        _await_chat(rec)
                 elif open_from_list(row["session_id"]) is None:
                     # Not saved in time: its row, and the take-over again
                     # on the next ticks -- not gone from the list.
