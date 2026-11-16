@@ -146,3 +146,25 @@ def test_the_cage_survives_the_move(tmp_path):
         assert Path(job.cwd) == tmp_path or job.cwd == str(tmp_path)
     finally:
         BJ.get_registry().kill(res["job_id"])
+
+
+def test_output_before_and_after_the_timeout_reaches_the_job_file(tmp_path):
+    """The s4 finding: the move must keep output from BOTH sides of the
+    timeout in the job's output file, not just the so-far part."""
+    res = _run(f"echo before; echo after-later; sleep 60 & wait",
+               timeout_s=2, tmp_path=tmp_path)
+    jid = res.get("job_id")
+    assert res.get("status") == "moved_to_background" and jid, res
+    job = BJ.get_registry().get(jid)
+    try:
+        deadline = time.monotonic() + 8
+        text = ""
+        while time.monotonic() < deadline:
+            text = Path(job.stdout_path).read_text()
+            if "after-later" in text:
+                break
+            time.sleep(0.2)
+        assert "before" in text, text
+        assert "after-later" in text, text
+    finally:
+        BJ.get_registry().kill(jid)
