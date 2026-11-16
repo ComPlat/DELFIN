@@ -1857,7 +1857,8 @@ class Supervisor:
             self._write_roster()             # the kernel has it now; nothing to wake
         info = {k: v for k, v in (params.get("info") or {}).items()
                 if k in ("provider", "model", "effort", "mode", "approval", "title",
-                         "banner", "notices", "tasks", "auto", "background")}
+                         "banner", "notices", "tasks", "auto", "background",
+                         "suggestions")}
         keep = params.get("keep") is not False
         settings: dict[str, Any] = {"cwd": str(cwd), "keep": keep}
         title = protocol.clean_title(params.get("title") or info.get("title") or "")
