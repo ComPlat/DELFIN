@@ -404,9 +404,19 @@ def _program(block_inet_datagrams: bool = False):
         # socket() comparison: sendto(nr) never matches nr_socket, so a
         # JEQ after socket()'s false edge was unreachable -- and with a
         # false edge to allow it was an open escape (reviewer walk).
-        items += [(_JEQ, nr_sendto, "notify", None),
-                  (_JEQ, nr_sendmsg, "notify", None),
-                  (_JEQ, nr_sendmmsg, "notify", None)]
+        # sendto is judged only when the destination pointer (args[4],
+        # seccomp_data args[1] of sendto) is non-NULL: a NULL
+        # destination uses the connected peer, which connect() already
+        # judged -- the supervisor stays out of the no-destination hot
+        # path. sendmsg/sendmmsg carry the destination inside the
+        # msghdr, invisible to BPF: they are refused in-kernel (the
+        # measured OpenMPI path needs socket+ioctl and TCP connect
+        # only; adding them back needs the pidfd_getfd handoff first).
+        items += [(_JEQ, nr_sendto, None, "after_sends"),
+                  (_LD, 40),                          # args[1]: dest ptr
+                  (_JEQ, 0, "allow", "notify")]       # NULL -> peer judged, allow;
+        # dest non-NULL -> notified and judged by _datagram_send.
+        items += [("label", "after_sends")]
     # socket(): its false edge falls THROUGH to the family dispatch, it
     # must not terminate in allow (that would skip the sends above).
     items += [(_JEQ, nr_socket, None, None)]
@@ -595,17 +605,21 @@ class Supervisor:
         self._send(notif_id, 0, _NOTIF_FLAG_CONTINUE)
 
     def _datagram_send(self, notif_id: int, pid: int, args: tuple) -> None:
-        """sendto()/sendmsg()/sendmmsg() with a destination address: the
-        destination is judged by the UDP ownership rule (owns_udp -- the
-        command tree's own ranks, or a session background job's socket,
-        loopback only). Without a destination the kernel uses the
-        connected peer, which connect() already judged -- allowed with
-        CONTINUE. Everything else is refused with EACCES, fail closed."""
+        """sendto() with a destination address: the destination is judged
+        by the UDP ownership rule (owns_udp -- the command tree's own
+        ranks, or a session background job's socket, loopback only). The
+        filter notifies sendto only when the destination pointer is
+        non-NULL (a NULL destination uses the connected peer, which
+        connect() already judged, and is allowed in-kernel);
+        sendmsg/sendmmsg are refused in-kernel (the destination is
+        inside the msghdr, invisible to BPF). Everything else is refused
+        with EACCES, fail closed."""
         try:
             addr_ptr, addr_len = int(args[1]), int(args[2]) & 0xFFFFFFFF
             if addr_len < 2:
-                # no destination: the connected peer, already judged
-                self._send(notif_id, 0, _NOTIF_FLAG_CONTINUE)
+                # no destination reached the judge: the filter only
+                # notifies sendto with a non-NULL pointer
+                self._send(notif_id, -1, -errno.EACCES)
                 return
             with open(f"/proc/{pid}/mem", "rb", buffering=0) as mem:
                 mem.seek(addr_ptr)
@@ -635,15 +649,18 @@ class Supervisor:
 
     def _handle(self, notif_id: int, pid: int, args: tuple, nr: int = -1) -> None:
         # The datagram surface, by the architecture's own numbers: socket()
-        # is the command's own creation; the address-bearing sends are
+        # is the command's own creation; sendto with a destination is
         # judged by the UDP ownership rule. bind() is not notified (the
         # filter allows it in-kernel; the escape is judged at sendto).
+        # sendmsg/sendmmsg never arrive: the filter refuses them
+        # in-kernel (the destination sits inside the msghdr, invisible
+        # to BPF).
         (audit, _sc, nr_connect, nr_socket, nr_uring, _po, _pg) = _arch()
-        (nr_bind, nr_sendto, nr_sendmsg, nr_sendmmsg) = _arch_dgram()
+        (_nr_bind, nr_sendto, _nsm, _nsmm) = _arch_dgram()
         if nr == nr_socket:
             self._datagram_socket(notif_id, pid, args, nr)
             return
-        if nr in (nr_sendto, nr_sendmsg, nr_sendmmsg):
+        if nr == nr_sendto:
             self._datagram_send(notif_id, pid, args)
             return
         err = errno.EACCES

@@ -67,16 +67,17 @@ def test_the_bind_judge_branch_is_not_dead_code():
 # -- finding 3: the address-bearing datagram sends are judged ----------------
 
 def test_sendto_with_a_destination_is_notified():
-    """sendto/sendmsg/sendmmsg with a destination address are handed to
-    the supervisor under a restricted network -- a UDP datagram otherwise
-    leaves past the supervisor (the proxy sees only connect())."""
+    """sendto with a destination address is handed to the supervisor
+    under a restricted network -- a UDP datagram otherwise leaves past
+    the supervisor (the proxy sees only connect()). sendmsg/sendmmsg
+    are refused in-kernel since the deadlock fix (the destination is
+    inside the msghdr, invisible to BPF); only sendto is notified."""
     p = SG._program(block_inet_datagrams=True)
-    # the three send syscalls must each have a JEQ in the restricted program
+    # sendto must have a JEQ in the restricted program
     jeqs = {i[3] for i in p if i[0] == SG._JEQ}
     from delfin.agent.socket_guard import _ARCH_DGRAM
     x86 = _ARCH_DGRAM["x86_64"]
-    for nr in x86[1:]:                             # sendto, sendmsg, sendmmsg
-        assert nr in jeqs, f"send syscall {nr} not notified"
+    assert x86[1] in jeqs, "sendto not notified"
 
 
 def test_a_send_without_the_arch_numbers_is_not_dispatched():
