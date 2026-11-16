@@ -48,10 +48,11 @@ def _type_check(program, entry):
 
 def _type_jump(program, entry):
     """The JEQ <type> instruction of a family's branch, and its index.
-    The branch lands directly on the JEQ SOCK_DGRAM (the type is loaded and
-    masked before the family dispatch; the two inet families share the
-    JEQ's two return instructions after it)."""
-    t = entry + program[entry][1]
+    The branch is LD 24; AND 15; JEQ <type> (a jump's offset counts from
+    entry+1 in BPF), so this is the walk of _type_check plus two.
+    (An earlier version walked entry + jt and asserted a layout that does
+    not exist; the corrected walk exposed the reordered-dispatch defect.)"""
+    t = _type_check(program, entry)
     return t, program[t]
 
 
@@ -75,7 +76,10 @@ def test_restricted_inet_datagram_creation_is_handed_to_the_supervisor():
             f"{family!r} datagram creation denied in-kernel "
             f"({_target(p, j, True)[3]:#x}) -- opal_ifinit dies with "
             "errno 13 before any supervisor decision")
-        assert _target(p, j, False)[3] == RET_EACCES, _target(p, j, False)
+        # The false edge (non-datagram: TCP streams, the proxy path)
+        # falls through to the allow return -- EACCES there was the
+        # reviewer's F-B finding (stream creation refused).
+        assert _target(p, j, False)[3] == RET_ALLOW, _target(p, j, False)
 
 
 # -- the invariants that must survive ----------------------------------------
@@ -91,26 +95,13 @@ def test_restricted_inet_stream_creation_stays_allowed_in_kernel():
 
 def test_datagram_unix_sockets_stay_denied_in_kernel():
     """The pre-existing rule survives: datagram UNIX sockets stay EACCES in
-    the kernel (sendto carries its own address, past the supervisor)."""
+    the kernel (sendto carries its own address, past the supervisor).
+    The UNIX branch is its own LD 24; AND 15; JEQ DGRAM whose true edge is
+    the EACCES return and whose false edge is the allow return."""
     p = SG._program(block_inet_datagrams=True)
-    # In the restricted program the UNIX branch shares the JEQ DGRAM with
-    # the inet families (9 -> 14, 10 -> 14). The JEQ's two edges are the
-    # two return instructions after it; the EACCES denial is one of them.
     idx = _type_jump(p, _first(p, _JEQ, AF_UNIX))[0]
-    edges = (idx + 1 + p[idx][1], idx + 1 + p[idx][2])
-    # Each edge reloads args[1], ANDs it, and jumps on SOCK_DGRAM again;
-    # that jump's two ends are the RET instructions: one is the EACCES
-    # denial that keeps the rule in the kernel today, one allows the
-    # stream side. Both must stay reachable after the change.
-    ends = set()
-    for x in edges:
-        j = x + 2
-        ends.add(j + 1 + p[j][1])
-        ends.add(j + 1 + p[j][2])
-    assert any(p[o][0] == _RET and p[o][3] == RET_EACCES for o in ends), (
-        [p[o] for o in ends])
-    assert any(p[o][0] == _RET and p[o][3] == RET_ALLOW for o in ends), (
-        [p[o] for o in ends])
+    assert _target(p, idx, True)[3] == RET_EACCES, _target(p, idx, True)
+    assert _target(p, idx, False)[3] == RET_ALLOW, _target(p, idx, False)
 
 
 def test_connect_and_uring_rules_unchanged():

@@ -385,12 +385,18 @@ def _program(block_inet_datagrams: bool = False):
     items += [
         (_JEQ, nr_connect, "notify", None),
         (_JEQ, nr_uring, "enosys", None),
-        (_JEQ, nr_socket, None, "allow"),
     ]
     if block_inet_datagrams:
+        # The address-bearing datagram sends are judged BEFORE the
+        # socket() comparison: sendto(nr) never matches nr_socket, so a
+        # JEQ after socket()'s false edge was unreachable -- and with a
+        # false edge to allow it was an open escape (reviewer walk).
         items += [(_JEQ, nr_sendto, "notify", None),
                   (_JEQ, nr_sendmsg, "notify", None),
                   (_JEQ, nr_sendmmsg, "notify", None)]
+    # socket(): its false edge falls THROUGH to the family dispatch, it
+    # must not terminate in allow (that would skip the sends above).
+    items += [(_JEQ, nr_socket, None, None)]
     items += [
         (_LD, 16),
         (_JEQ, socket.AF_UNIX, "unix", None),
@@ -402,8 +408,10 @@ def _program(block_inet_datagrams: bool = False):
               ("label", "unix"), (_LD, 24), (_AND, 0xF),
               (_JEQ, socket.SOCK_DGRAM, "eacces", "allow")]
     if block_inet_datagrams:
+        # Datagram creation is notified; anything else (streams, the
+        # proxy's TCP path) falls through to the allow label.
         items += [("label", "inet"), (_LD, 24), (_AND, 0xF),
-                  (_JEQ, socket.SOCK_DGRAM, "notify", "eacces")]
+                  (_JEQ, socket.SOCK_DGRAM, "notify", None)]
     items += [("label", "allow"), (_RET, _RET_ALLOW),
               ("label", "eacces"), (_RET, _RET_ERRNO | errno.EACCES),
               ("label", "enosys"), (_RET, _RET_ERRNO | errno.ENOSYS),
