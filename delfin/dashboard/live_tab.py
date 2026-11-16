@@ -42,6 +42,36 @@ RENDER_DELAY_S = 0.12
 #: Agent modes a service session cannot run: they need this kernel's page.
 _KERNEL_ONLY_MODES = frozenset({"dashboard"})
 
+#: The mode picker's words, as the full chat names its modes.
+_MODE_LABELS = {"dashboard": "Dashboard", "solo": "Code", "office": "Office",
+                "research": "Research"}
+
+#: The provider's name, as the full chat's Provider picker says it.
+_PROVIDER_LABELS = {"kit": "KIT Toolbox", "claude": "Anthropic", "anthropic": "Anthropic",
+                    "openai": "OpenAI"}
+
+_MODEL_PREFIXES = {"kit": "KIT", "azure": "Azure", "google": "Google"}
+
+
+def _model_label(value: str) -> str:
+    """A model as the full chat's picker shows it: "kit.mistral-…" reads
+    "KIT mistral-…"."""
+    head, dot, rest = str(value or "").partition(".")
+    if dot and head in _MODEL_PREFIXES and rest:
+        return f"{_MODEL_PREFIXES[head]} {rest}"
+    return str(value or "")
+
+
+def _label(what: str, value: str) -> str:
+    if what == "mode":
+        return _MODE_LABELS.get(value, value)
+    if what == "model":
+        return _model_label(value)
+    if what == "effort":
+        return _EFFORT_LABELS.get(value, value)
+    return value
+
+
 #: The effort picker's words (the in-kernel tab's labels).
 _EFFORT_LABELS = {"": "Default", "low": "Low", "medium": "Medium", "high": "High",
                   "xhigh": "Extra High"}
@@ -281,8 +311,8 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
     bug_btn = widgets.Button(description="🐞", layout=widgets.Layout(width="44px", flex="0 0 auto"),
                              tooltip=("A bug report is sent from the chat that runs this "
                                       "session -- here once it has moved into this dashboard."))
-    controls = _classed(widgets.HBox([mode_dd, provider_dd, auto_btn, cancel_btn, stop_btn,
-                                      rename_btn, rename_box, bug_btn, name_html],
+    controls = _classed(widgets.HBox([mode_dd, provider_dd, auto_btn, cancel_btn, bug_btn,
+                                      name_html],
                                      layout=widgets.Layout(flex_flow="row wrap")),
                         "delfin-live-controls")
     head = _classed(widgets.VBox([controls], layout=widgets.Layout(margin="0 0 6px 0")),
@@ -352,7 +382,11 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
 
     # The folded "Details" at the foot, as in the full chat: where the
     # session works, its model and state, what runs in the background.
-    details_body = _classed(widgets.VBox([where_html, provider_html]),
+    # Renaming and ending it for every window: here, not in the header
+    # (the full chat's header has neither).
+    session_row = widgets.HBox([stop_btn, rename_btn, rename_box],
+                               layout=widgets.Layout(flex_flow="row wrap", gap="4px"))
+    details_body = _classed(widgets.VBox([where_html, provider_html, session_row]),
                             "delfin-agent-below-body")
     details = _classed(widgets.Accordion(children=[details_body], titles=("Details",),
                                          selected_index=None), "delfin-agent-below")
@@ -384,7 +418,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 value = str(info.get(key) or "")
                 values = [v for _, v in dd.options]
                 if value not in values:
-                    dd.options = [*dd.options, (value or "Default", value)]
+                    dd.options = [*dd.options, (_label(key, value) or "Default", value)]
                 if dd.value != value:
                     dd.value = value
             approval = str(info.get("approval") or "default")
@@ -394,7 +428,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             provider_html.value = (f"provider {html.escape(provider)} (set when it started)"
                                    if provider else "")
             if provider and provider_dd.value != provider:
-                provider_dd.options = [(provider, provider)]
+                provider_dd.options = [(_PROVIDER_LABELS.get(provider, provider), provider)]
                 provider_dd.value = provider
             provider_dd.tooltip = "Set when the session started"
         finally:
@@ -712,10 +746,8 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
                 got = client.choices(sid, what)
             except Exception:
                 continue
-            labels = _EFFORT_LABELS if what == "effort" else {}
-            options = [(labels.get(str(c.get("value") or ""), str(c.get("value") or "")),
-                        str(c.get("value") or "")) for c in got.get("choices") or []
-                       if c.get("value") or what == "effort"]
+            options = [(_label(what, str(c.get("value") or "")), str(c.get("value") or ""))
+                       for c in got.get("choices") or [] if c.get("value") or what == "effort"]
             if what == "mode":
                 # Dashboard mode drives a dashboard's own tabs, which a
                 # session in the agent service does not have: not offered.
@@ -724,7 +756,7 @@ def build_live_tab(client: LS.LiveClient, sid: str, *, attached: Optional[dict] 
             # picker says is current.
             current = str(transcript.info.get(what) or got.get("current") or "")
             if current and current not in {v for _, v in options}:
-                options.insert(0, (current, current))
+                options.insert(0, (_label(what, current), current))
             if not options:
                 continue
             view["syncing"] = True

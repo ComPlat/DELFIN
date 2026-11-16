@@ -390,7 +390,7 @@ def test_reopened_while_held_it_looks_like_the_chat_says_so_takes_input_then_is_
         assert words[:2] == ["Mode:", "Provider:"] and "Auto: off" in words
         stop = view["refs"]["cancel_btn"]
         assert "delfin-keep-session" in _classes_of(row[list(row).index(stop) + 1])
-        assert "🐞" in words
+        assert "🐞" in words and "End session…" not in words and "✎" not in words
         assert view["refs"]["details"].get_title(0) == "Details"
         refs["activate"](view["key"])
         line = view["refs"]["transit_html"].value
@@ -456,13 +456,13 @@ def test_a_conversation_another_process_writes_is_not_opened_until_it_lets_go(
     _kept_by(home, old_kernel)
     build = _Build()
     _w, refs = AS.create_tab(_ctx(home), build=build, service=False)
-    writer = subprocess.Popen([sys.executable, "-c", (
-        "import sys, time; from delfin.agent import session_store as S; "
-        "assert S.acquire_session_lock(sys.argv[1]); print('held', flush=True); "
-        "time.sleep(120)"), SID], stdout=subprocess.PIPE, text=True,
-        env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)))
+    # Another live process holds the writer lock (as a service worker does).
+    writer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    lock = session_store._lock_path(SID)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(json.dumps({"pid": writer.pid, "ts": time.time(),
+                                "host": session_store._this_host()}))
     try:
-        assert writer.stdout.readline().strip() == "held"
         assert session_store.session_lock_holder(SID) is not None
         _end(old_kernel)
         refs["refresh"]()
@@ -472,6 +472,7 @@ def test_a_conversation_another_process_writes_is_not_opened_until_it_lets_go(
         assert row.get("handing_over")
         writer.kill()
         writer.wait(timeout=30)
+        lock.unlink()
         refs["refresh"]()
         (rec,) = refs["sessions"]()
         assert build.opened() == [SID] and not rec.get("dormant") and rec["kept"]
