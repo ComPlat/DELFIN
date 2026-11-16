@@ -80,7 +80,23 @@ class ChainStep:
     #: so a resume can rebuild a REAL run (L1: charge/method/basis/mult,
     #: ...) and the inputs_hash has inputs to hash (L3).
     params: Dict[str, Any] = field(default_factory=dict)
+    #: The param keys the USER set explicitly (JC2-R1).  A wiring-injected
+    #: kwarg may share its name with a user's explicit choice (moread):
+    #: on load only keys NOT in this list are re-derived — an explicit
+    #: choice survives, an injected one is dropped with the log line.
+    explicit_params: List[str] = field(default_factory=list)
+    #: The cores the step was submitted with (live-run plan Job B: a
+    #: resume must never silently change PAL — the resume default comes
+    #: from the recorded cores, an explicit --cores flag wins).
+    cores: Optional[int] = None
     attempts: List[Dict[str, Any]] = field(default_factory=list)
+    #: The process that runs the step, recorded at submission: pid, its
+    #: start fingerprint, host, PID namespace and heartbeat file
+    #: (chain_liveness.this_runner).
+    #: Lets a later reader tell "still running" from "interrupted" — files
+    #: an interrupted ORCA run left behind look like a live one (JC3,
+    #: read by :mod:`delfin.tools.chain_liveness`).
+    runner: Optional[Dict[str, Any]] = None
 
     # -- transitions -------------------------------------------------------
 
@@ -92,10 +108,12 @@ class ChainStep:
             )
 
     def mark_submitted(self, job_id: str, inputs_hash: Optional[str] = None,
-                       attempt_no: Optional[int] = None) -> None:
+                       attempt_no: Optional[int] = None,
+                       runner: Optional[Dict[str, Any]] = None) -> None:
         self._require("pending", "mark_submitted")
         self.state = "submitted"
         self.job_id = job_id
+        self.runner = dict(runner) if runner else None
         # The attempt number comes from whoever owns the attempt lifecycle:
         # a fresh step counts up on its first submission (attempt 1); a
         # retry's number was already advanced by reset_for_retry (L5/L6 —
@@ -177,6 +195,7 @@ class ChainStep:
         self.attempt += 1
         self.state = "pending"
         self.job_id = None
+        self.runner = None
         self.error = None
         self.error_kind = None
         self.evidence = None
@@ -198,11 +217,18 @@ class ChainStep:
             "evidence": self.evidence,
             "inputs_hash": self.inputs_hash,
             "params": self.params,
+            "explicit_params": list(self.explicit_params),
+            "cores": self.cores,
             "attempts": list(self.attempts),
+            "runner": dict(self.runner) if self.runner else None,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChainStep":
+        clean_params, _ = _drop_internal_params(
+            data.get("params", {}),
+            explicit=set(data.get("explicit_params", [])),
+        )
         return cls(
             name=data["name"],
             tool=data["tool"],
@@ -214,15 +240,102 @@ class ChainStep:
             error_kind=data.get("error_kind"),
             evidence=data.get("evidence"),
             inputs_hash=data.get("inputs_hash", ""),
-            params=dict(data.get("params", {})),
+            params=dict(clean_params),
+            explicit_params=list(data.get("explicit_params", [])),
+            cores=data.get("cores"),
             attempts=list(data.get("attempts", [])),
+            runner=(dict(data["runner"])
+                    if isinstance(data.get("runner"), dict) else None),
         )
 
 
-def compute_inputs_hash(geometry: Optional[str] = None, **params: Any) -> str:
-    """Stable hash over a step's inputs, so a resume can detect drift."""
+# -- Internal (non-user) persisted params ----------------------------------
+#
+# JC2 target 1: a step's persisted params are the USER's step parameters.
+# The pipeline-internal keys a JC1-era state file may carry are dropped on
+# load: the wiring is re-derived on resume from the finished upstream
+# steps (pipeline.py autowire_kwargs), never trusted from a record that
+# named one machine's absolute paths.
+
+#: Keys the pipeline itself injects into a step call, never set by the
+#: user: the run-internal artifact dict and the kwargs the wiring rules
+#: fill from upstream artifacts (_wiring.DEFAULT_RULES).  The contract
+#: ``wires`` (parser filepath ...) are declared capability ports — they
+#: are re-derived the same way but a user CAN legitimately pass them, so
+#: only the rule-injected kwargs are dropped here.
+_INTERNAL_PARAM_KEYS: frozenset = frozenset({
+    "_prev_artifacts",
+    "moread",       # gbw rule
+    "hess_file",    # hessian rule
+})
+
+
+def _drop_internal_params(
+    params: Dict[str, Any],
+    explicit: Optional[set] = None,
+) -> tuple[Dict[str, Any], list[str]]:
+    """User params only: drop the pipeline-internal keys.
+
+    A key the USER set explicitly (in ``explicit`` — the persisted
+    ``explicit_params`` list, recorded at submission from ``spec.kwargs``,
+    where the explicit-vs-wired distinction is known) survives even when
+    its name matches an internal key (moread/hess_file): the user chose
+    that file, and re-deriving it from the upstream artifact would
+    silently point the resume at a DIFFERENT file than the user chose
+    (JC2-R1).  Only WIRING-INJECTED keys are dropped and re-derived on
+    resume from the finished upstream steps.
+
+    Returns ``(clean_params, dropped_keys)`` so the caller (the load
+    path) can emit the ONE log line naming what was dropped.
+    """
+    explicit = explicit or set()
+    dropped = [k for k in params
+               if k in _INTERNAL_PARAM_KEYS and k not in explicit]
+    return {k: v for k, v in params.items()
+            if k not in _INTERNAL_PARAM_KEYS or k in explicit}, dropped
+
+
+def _geometry_content(geometry: Optional[str | Path]) -> Optional[str]:
+    """The geometry file's CONTENT, for the inputs hash.
+
+    Hashing the path (the JC1 behaviour) made ``inputs_hash`` depend on
+    the machine: the same inputs in two directories hashed differently.
+    Content is identical on every machine for the same inputs.  A
+    missing/unreadable file yields None with one log line — the hash is
+    still recorded over the user params; it is then simply weaker, and
+    never silently pretends two geometries were the same.
+    """
+    if geometry is None:
+        return None
+    path = Path(geometry)
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning(
+            "inputs hash: geometry %s could not be read (%s) — hashing "
+            "over the user params only", path, exc,
+        )
+        return None
+
+
+def compute_inputs_hash(
+    geometry_content: Optional[str] = None,
+    *,
+    tool: str = "",
+    **params: Any,
+) -> str:
+    """Stable hash over a step's inputs, so a resume can detect drift.
+
+    The payload is ``(tool, user params, input geometry CONTENT)`` —
+    never an absolute path (JC2 target 1: identical on two machines and
+    in two directories for the same inputs).
+    """
     payload = json.dumps(
-        {"geometry": str(geometry) if geometry else None, "params": params},
+        {
+            "tool": tool,
+            "geometry_content": geometry_content,
+            "params": params,
+        },
         sort_keys=True,
         default=str,
     )
@@ -270,6 +383,10 @@ class ChainState:
             name=data["name"],
             work_dir=Path(data["work_dir"]),
         )
+        # JC2 target 1: ONE log line for the whole file naming which
+        # steps lost which internal keys (a JC1-era state carries the
+        # wiring keys; they are re-derived on resume, never trusted).
+        _dropped_per_step: dict = {}
         for sd in data.get("steps", []):
             if sd.get("state") == "finished":
                 # Torn/unfinished check: a stored `finished` step must
@@ -289,7 +406,20 @@ class ChainState:
                         sd.get("name"),
                     )
                     sd = dict(sd, state="pending", evidence=None)
+            _, dropped = _drop_internal_params(sd.get("params", {}) or {})
+            if dropped:
+                _dropped_per_step[sd.get("name", "?")] = sorted(dropped)
             chain.steps.append(ChainStep.from_dict(sd))
+        if _dropped_per_step:
+            # WARNING, not INFO (live-run item 10): the CLI's default
+            # level hides INFO — a user loading a JC1 state must SEE
+            # which step params were rewritten by the load.
+            logger.warning(
+                "chain %s: dropped pipeline-internal params on load "
+                "(re-derived on resume from the finished upstream steps): %s",
+                data["name"],
+                _dropped_per_step,
+            )
         return chain
 
     # -- steps -------------------------------------------------------------

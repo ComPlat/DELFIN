@@ -1040,6 +1040,7 @@ class Pipeline:
         resume_chain: bool = False,
         chain_state_obj: Optional[Any] = None,
         provenance: bool = False,
+        agent_session_id: Optional[str] = None,
     ) -> PipelineResult:
         """Execute the pipeline sequentially, then branches in parallel.
 
@@ -1060,6 +1061,14 @@ class Pipeline:
                        mechanism, target 4); created when None
         provenance : if True, write a ``provenance.json`` log to *work_dir*
                      after execution (all steps, timing, parameters)
+        agent_session_id : the agent session the run happens inside, when
+                     one does (JC2 target 2).  The CALLER fills it from
+                     the session id the agent process already exposes —
+                     the same dispatch boundary that feeds the step
+                     journal (``permissions.task_session_id``); the
+                     pipeline never reads the environment for it.  A
+                     run without an agent session (plain ``delfin`` CLI,
+                     a test) leaves it None and simply indexes nothing.
 
         Returns
         -------
@@ -1126,6 +1135,24 @@ class Pipeline:
                 chain = chain_state_obj
             else:
                 chain = _cs.ChainState.create(name=self.name, work_dir=base)
+                # JC2 target 2: a NEWLY CREATED chain is recorded in the
+                # per-user index (best-effort — a failure here never
+                # breaks the run).  A resume records nothing new: the
+                # entry already exists from the first run.
+                # Live-run A: inside the agent sandbox HOME is read-only,
+                # so this fails on every bash-started chain.  The reason
+                # is said ONCE, visibly, on the run's own output — the
+                # restart offer still finds the chain through the
+                # session-store workspace scan.
+                from delfin.tools import chain_index as _ci
+                try:
+                    _ci.record(self.name, base,
+                               agent_session_id=agent_session_id)
+                except _ci.ChainIndexError as exc:
+                    logger.warning(
+                        "[%s] %s (the restart offer will find the chain "
+                        "through the session workspace scan)",
+                        self.name, exc)
             for i, spec in enumerate(self._trunk):
                 if i >= len(chain.steps):
                     chain.add_step(spec.label or spec.step_name, spec.step_name,
@@ -1512,18 +1539,59 @@ class Pipeline:
                 # so a resume can still find the output — previously the
                 # dir was only written after run_step returned, leaving
                 # `pending`/None on disk and a redundant rerun on resume.
-                cstep.mark_submitted(job_id="local")
+                from delfin.tools import chain_liveness as _cl
+
+                cstep.mark_submitted(job_id="local",
+                                      runner=_cl.this_runner(chain.state_path.parent))
                 cstep.work_dir = str(step_dir)
-                # L1/L3: persist what run_step will actually receive, so a
-                # resume can rebuild a REAL run (validate_params passes) and
-                # the inputs hash hashes real inputs.  L7 reviewer note:
-                # only JSON types in the step — _prev_artifacts carries
-                # pathlib.Path values, converted here (the narrow fix),
-                # not only at the write site.
-                cstep.params = _cs.json_safe(dict(merged_kwargs))
+                # L1/L3: persist the step's parameters so a resume can
+                # rebuild a REAL run (validate_params passes) and the
+                # inputs hash hashes real inputs.  L7 reviewer note:
+                # only JSON types in the step.
+                #
+                # JC2 target 1: what is persisted is the USER's step
+                # parameters — what ``Pipeline.add(...)`` was given plus
+                # the pipeline defaults it applies (``spec.kwargs``) —
+                # never the pipeline-internal wiring.  ``merged_kwargs``
+                # at this point also carries the wiring autowire_kwargs
+                # injected (moread/hess_file/contract wires, from the
+                # upstream artifacts of THIS run) and ``_prev_artifacts``
+                # (pipeline.py above): both are re-derived on resume from
+                # the finished upstream steps, exactly as an
+                # uninterrupted run derives them, so persisting them
+                # recorded one machine's absolute paths and made the
+                # params not the user's.  (JC1's live run #6 finding.)
+                # The USER-SET keys are recorded alongside (JC2-R1): a
+                # wiring kwarg may share its name with a user's explicit
+                # choice (moread), and on load only the INJECTED ones
+                # are dropped — the user's explicit file choice
+                # survives, or the resume would silently point at a
+                # different file than the user chose.  A legacy (JC1-era)
+                # step has NO explicit set — unknown provenance: its
+                # stored params are MERGED UNDER the spec kwargs (spec
+                # wins on conflict), so a legacy user param is never
+                # silently lost on first resume (JC2-R2).
+                if cstep.explicit_params:
+                    cstep.params = _cs.json_safe(dict(spec.kwargs))
+                else:
+                    merged_user = dict(cstep.params)
+                    merged_user.update(_cs.json_safe(dict(spec.kwargs)))
+                    cstep.params = _cs.json_safe(merged_user)
+                cstep.explicit_params = sorted(spec.kwargs)
+                # Live-run plan Job B: the cores the step is submitted
+                # with are persisted so a resume defaults to the chain's
+                # own PAL (an explicit --cores flag wins) — never a
+                # silent 1.
+                cstep.cores = int(cores)
+                # The hash covers (tool, user params, input geometry
+                # CONTENT) — the geometry file's bytes, not its path —
+                # so two machines/directories running the same inputs
+                # get the same hash.  The wiring keys are excluded with
+                # the params above.
                 cstep.inputs_hash = _cs.compute_inputs_hash(
-                    geometry=str(geom) if geom else None,
-                    **{"cores": cores, **cstep.params},
+                    tool=spec.step_name,
+                    geometry_content=_cs._geometry_content(geom),
+                    **_cs.json_safe(dict(spec.kwargs)),
                 )
                 chain.save()
             if cstep is not None and cstep.state == "failed":
@@ -1547,7 +1615,10 @@ class Pipeline:
                 # run_step, else mark_finished/mark_failed are refused
                 # from 'pending' afterwards (a successful 11-minute run
                 # was thrown away in the live run #3).
-                cstep.mark_submitted(job_id="local")
+                from delfin.tools import chain_liveness as _cl
+
+                cstep.mark_submitted(job_id="local",
+                                      runner=_cl.this_runner(chain.state_path.parent))
                 chain.save()
                 # L5: the dir actually used is the NEW attempt dir (never
                 # overwrite the old calculation) — not the numbered dir of
@@ -1564,13 +1635,34 @@ class Pipeline:
                         import time as _time
                         _time.sleep(spec.retry_delay)
 
-                result = run_step(
-                    spec.step_name,
-                    geometry=geom,
-                    cores=cores,
-                    work_dir=attempt_dir,
-                    **merged_kwargs,
-                )
+                # JC3: the heartbeat tells any process on any node that
+                # this step still runs (a pid does not: live run 5).
+                _beat = (cstep.runner or {}).get("heartbeat") if cstep is not None else None
+                from delfin.tools import chain_liveness as _cl
+
+                try:
+                    with _cl.beating(_beat):
+                        result = run_step(
+                            spec.step_name,
+                            geometry=geom,
+                            cores=cores,
+                            work_dir=attempt_dir,
+                            **merged_kwargs,
+                        )
+                except BaseException as exc:
+                    # JC3: the run raised and this process may live on (an
+                    # agent service, the tool server, a notebook kernel).
+                    # Its pid then still answers, so the step must say its
+                    # run ended, or it would read as "still running" for
+                    # ever and a resume would be refused.  The state stays
+                    # as it was (JC1: a crash leaves the step submitted).
+                    if cstep is not None and chain is not None and cstep.runner:
+                        cstep.runner["ended"] = type(exc).__name__
+                        try:
+                            chain.save()
+                        except Exception:  # noqa: BLE001 - re-raise the run's error
+                            pass
+                    raise
                 if result.ok:
                     break
 
