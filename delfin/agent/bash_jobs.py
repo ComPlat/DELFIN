@@ -2034,15 +2034,19 @@ def _listening_ports_of(pids: set) -> set:
     return set(_listening_of(pids).values())
 
 
+#: Read through one name so a test can drive these from a recorded tree.
+_PROC = "/proc"
+
+
 def _listening_of(pids: set) -> dict:
     """``{inode: port}`` of the listening TCP sockets the processes
     ``pids`` hold (Linux /proc)."""
     inodes: set[str] = set()
     for pid in pids:
         try:
-            for fd in os.listdir(f"/proc/{pid}/fd"):
+            for fd in os.listdir(f"{_PROC}/{pid}/fd"):
                 try:
-                    link = os.readlink(f"/proc/{pid}/fd/{fd}")
+                    link = os.readlink(f"{_PROC}/{pid}/fd/{fd}")
                 except OSError:
                     continue
                 if link.startswith("socket:["):
@@ -2052,7 +2056,7 @@ def _listening_of(pids: set) -> dict:
     found: dict[str, int] = {}
     if not inodes:
         return found
-    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    for table in (f"{_PROC}/net/tcp", f"{_PROC}/net/tcp6"):
         try:
             with open(table, encoding="latin-1") as fh:
                 next(fh, None)

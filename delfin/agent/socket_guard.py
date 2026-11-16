@@ -118,6 +118,11 @@ _METADATA = {ipaddress.ip_address(a) for a in (
     "169.254.169.254", "100.100.100.200", "168.63.129.16", "fd00:ec2::254")}
 
 
+#: Where the process and socket tables are read. A test points it at a
+#: recorded tree, so the ownership rule is checked on every machine.
+_PROC = "/proc"
+
+
 def _proc_net_address(field: str):
     """``(ip_address, port)`` of a ``local_address`` in /proc/net/tcp{,6}.
 
@@ -136,7 +141,7 @@ def loopback_listeners(ip, port: int) -> set:
     /proc/net, which shows every user's sockets in this network namespace;
     empty when nothing listens there or the tables cannot be read."""
     out: set = set()
-    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    for table in (f"{_PROC}/net/tcp", f"{_PROC}/net/tcp6"):
         try:
             with open(table, encoding="latin-1") as fh:
                 next(fh, None)
@@ -167,14 +172,14 @@ def socket_inodes_below(root: int, include_root: bool = True) -> set:
     tree = {root}
     parent_of: dict = {}
     try:
-        names = os.listdir("/proc")
+        names = os.listdir(_PROC)
     except OSError:
         names = []
     for name in names:
         if not name.isdigit():
             continue
         try:
-            with open(f"/proc/{name}/stat", encoding="latin-1") as fh:
+            with open(f"{_PROC}/{name}/stat", encoding="latin-1") as fh:
                 stat = fh.read()
             parent_of[int(name)] = int(stat.rsplit(")", 1)[1].split()[1])
         except (OSError, ValueError, IndexError):
@@ -191,12 +196,12 @@ def socket_inodes_below(root: int, include_root: bool = True) -> set:
     inodes: set = set()
     for pid in tree:
         try:
-            fds = os.listdir(f"/proc/{pid}/fd")
+            fds = os.listdir(f"{_PROC}/{pid}/fd")
         except OSError:
             continue
         for fd in fds:
             try:
-                link = os.readlink(f"/proc/{pid}/fd/{fd}")
+                link = os.readlink(f"{_PROC}/{pid}/fd/{fd}")
             except OSError:
                 continue
             if link.startswith("socket:["):
