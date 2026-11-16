@@ -64,37 +64,58 @@ def test_sendto_notified_only_with_a_destination_pointer():
     assert p[to_dest] == (SG._RET, 0, 0, SG._RET_USER_NOTIF), p[to_dest]
 
 
-def test_sendmsg_sendmmsg_back_in_kernel():
+def test_sendmsg_sendmmsg_refused_in_kernel():
     """The msghdr destination is invisible to BPF; sendmsg/sendmmsg are
     in-kernel EACCES under a restricted network (s2's pin; the measured
-    OpenMPI path needs socket+ioctl and TCP connect only)."""
+    OpenMPI path needs socket+ioctl and TCP connect only). Walk-asserted
+    on the REAL program: an unheld nr must END at EACCES, not merely
+    lack a JEQ (QS lesson: assert the walk result, not the absence)."""
     p = SG._program(block_inet_datagrams=True)
-    jeq_targets = {x[3] for x in p if x[0] == SG._JEQ}
     nr_sendmsg = SG._ARCH_DGRAM["x86_64"][2]
     nr_sendmmsg = SG._ARCH_DGRAM["x86_64"][3]
-    assert nr_sendmsg not in jeq_targets
-    assert nr_sendmmsg not in jeq_targets
-    # and their JEQs are gone from the program entirely
     for nr in (nr_sendmsg, nr_sendmmsg):
-        assert not any(x[0] == SG._JEQ and x[3] == nr for x in p), nr
+        jeq = next((i for i, x in enumerate(p)
+                    if x[0] == SG._JEQ and x[3] == nr), None)
+        assert jeq is not None, (
+            f"nr {nr} has no JEQ: with no JEQ it cannot be refused in-kernel"
+            " (the socket JEQ's false edge falls through to the family"
+            " dispatch and ends in ALLOW -- the reopened escape s2 walked)")
+        end_true = jeq + 1 + p[jeq][1]
+        # the TRUE edge (nr matches) must end in EACCES. The false edge
+        # continues into the socket/connect family dispatch -- normal
+        # routing for other nrs, asserted by the wiring tests.
+        assert p[end_true][3] == SG._RET_ERRNO | errno.EACCES, (nr, p[end_true])
+        # and the nr is really reachable: it sits after the sendto
+        # block, before socket()'s fall-through JEQ
+        socket_idx = next(i for i, x in enumerate(p)
+                          if x[0] == SG._JEQ and x[3] == 41)
+        assert jeq < socket_idx, (nr, jeq, socket_idx)
 
 
 # -- target 2: the handoff survives its own filter ----------------------------
 
-def test_the_handoff_path_no_longer_sends_fds():
-    """landlock_exec's child branch hands the listener without sendmsg:
-    no send_fds call in the source, and the parent fetches the fd with
-    pidfd_getfd."""
+def test_the_handoff_protocol_is_synchronised():
+    """The operator's live-run deadlock (pidfd_getfd(-1) before the child
+    has installed its filter): the handoff must (1) tell the parent the
+    listener's fd NUMBER, (2) wait for the parent's go before exec --
+    both through a plain pipe or the socketpair, never a filtered
+    syscall. Asserted on the real child/parent source."""
     import inspect
     import delfin.agent.landlock_exec as LE
-    src = inspect.getsource(LE)
-    # the comment names the removed mechanism; assert it is gone from
-    # CODE, not prose: no call site remains
-    assert "send_fds(" not in src, (
-        "the child still hands the listener via sendmsg -- it notifies "
-        "itself to nobody and deadlocks")
-    assert "pidfd_getfd" in src or "PIDFD_GETFD" in src, (
-        "the parent must fetch the listener itself")
+    src = inspect.getsource(LE._run_guarded)
+    child = src.split("if pid == 0:")[1].split("child_end.close()")[0]
+    # the child sends the listener NUMBER (an int, not just a marker)
+    assert "listener" in child and (".send(" in child or "os.write" in child), (
+        "the child does not report the listener fd number")
+    # the child waits for the parent's go AFTER reporting
+    assert child.find(".send(") < child.find(".recv(") or (
+        child.find("os.write") < child.find("os.read")), (
+        "the child does not wait for the parent's go")
+    # the parent gets the number from the child, not an init value
+    parent = src.split("child_end.close()", 2)[2].split("if go:")[0]
+    assert "recv" in parent or "os.read" in parent, (
+        "the parent fetches nothing from the child -- pidfd_getfd(-1) "
+        "again")
 
 
 # -- target 3: end to end, the cage still opens -------------------------------

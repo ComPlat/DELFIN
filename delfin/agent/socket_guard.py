@@ -416,7 +416,13 @@ def _program(block_inet_datagrams: bool = False):
                   (_LD, 40),                          # args[1]: dest ptr
                   (_JEQ, 0, "allow", "notify")]       # NULL -> peer judged, allow;
         # dest non-NULL -> notified and judged by _datagram_send.
-        items += [("label", "after_sends")]
+        items += [("label", "after_sends"),
+                  # sendmsg/sendmmsg: destination inside the msghdr,
+                  # invisible to BPF -- refused in-kernel, type-agnostic
+                  # (a datagram could leave past the proxy otherwise,
+                  # reviewer walk on 9ab3816e9).
+                  (_JEQ, nr_sendmsg, "eacces", None),
+                  (_JEQ, nr_sendmmsg, "eacces", None)]
     # socket(): its false edge falls THROUGH to the family dispatch, it
     # must not terminate in allow (that would skip the sends above).
     items += [(_JEQ, nr_socket, None, None)]
