@@ -108,6 +108,46 @@ def test_adopt_attaches_the_capture_so_early_output_is_kept(tmp_path):
         child.wait()
 
 
+def test_adopt_records_where_the_environment_came_from(tmp_path):
+    """F1(a): the record names the provenance of the running process's
+    environment (the registry cannot read a process's environ)."""
+    child = subprocess.Popen(
+        ["/bin/bash", "-c", "sleep 60"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True, text=True)
+    try:
+        job = BJ.get_registry().adopt(
+            command="sleep 60", cwd=str(tmp_path), proc=child,
+            workspace=str(tmp_path), timeout_s=120, env_source="gate")
+        rec = _record(tmp_path, job.job_id)
+        assert rec["env_source"] == "gate"
+        assert rec["cores"] == 1  # started-record parity
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_adopt_records_the_affinity_the_process_runs_under(tmp_path):
+    """F1(b): an adopted job's cpu_set is NOT applied post-hoc (the
+    process already runs; re-binding the leader would not reach its
+    children) -- the record describes the affinity the kernel already
+    holds, so it stays honest."""
+    child = subprocess.Popen(
+        ["/bin/bash", "-c", "sleep 60"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True, text=True)
+    try:
+        job = BJ.get_registry().adopt(
+            command="sleep 60", cwd=str(tmp_path), proc=child,
+            workspace=str(tmp_path), timeout_s=120, cpu_set=[0, 1])
+        rec = _record(tmp_path, job.job_id)
+        assert rec["cores"] == 1
+        assert job.proc.poll() is None
+    finally:
+        child.kill()
+        child.wait()
+
+
 def test_adopt_is_not_refused_when_the_caps_are_full(tmp_path, monkeypatch):
     """Refusing to register a running process leaves work nobody can
     name, watch or stop -- worse than an over-cap registry."""

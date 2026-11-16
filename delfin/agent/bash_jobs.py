@@ -721,6 +721,90 @@ def _unlink_job_outputs(rec: dict) -> None:
             pass
 
 
+class PipeCapture:
+    """A demoted foreground command's pipe readers, reattached to a
+    background job's output files (BG2).
+
+    ``contained_run`` runs the command with pipes and drains them with
+    two reader threads. On the demote path those threads stay alive and
+    keep filling in-memory lists; this adapter moves them to the job's
+    files: :meth:`attach` first writes what the command printed before
+    the timeout, then keeps the reader threads going until the command
+    ends, appending to the same open file handles the registry job
+    holds. After :meth:`join` the pipes are closed.
+
+    A demoted process was NOT started with its stdout/stderr on files:
+    the redirection a ``bash_background`` job gets does not exist here,
+    and this adapter is what makes ``bash_output`` see output from both
+    sides of the move.
+    """
+
+    def __init__(self, demoted, *, stdout_so_far: bytes | str = b"",
+                 stderr_so_far: bytes | str = b""):
+        self._demoted = demoted
+        if isinstance(stdout_so_far, str):
+            stdout_so_far = stdout_so_far.encode("utf-8", errors="replace")
+        if isinstance(stderr_so_far, str):
+            stderr_so_far = stderr_so_far.encode("utf-8", errors="replace")
+        self._so_far = (stdout_so_far, stderr_so_far)
+        self._drained = threading.Event()
+
+    def attach(self, sout, serr) -> None:
+        """Write the so-far output into the job's files, then keep the
+        reader threads appending to them until the command ends."""
+        for handle, pre in ((sout, self._so_far[0]),
+                            (serr, self._so_far[1])):
+            if pre:
+                try:
+                    handle.write(pre.decode("utf-8", errors="replace"))
+                    handle.flush()
+                except (OSError, ValueError):
+                    pass
+        proc = self._demoted.proc
+        out, err = [], []
+
+        def _pump(stream, handle, sink):
+            try:
+                while True:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        break
+                    sink.append(chunk)
+                    try:
+                        handle.write(
+                            chunk.decode("utf-8", errors="replace"))
+                        handle.flush()
+                    except (OSError, ValueError):
+                        pass
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        t_out = threading.Thread(
+            target=_pump, args=(proc.stdout, sout, out),
+            daemon=True, name="bg2-pipe-stdout")
+        t_err = threading.Thread(
+            target=_pump, args=(proc.stderr, serr, err),
+            daemon=True, name="bg2-pipe-stderr")
+        t_out.start()
+        t_err.start()
+        self._threads = (t_out, t_err)
+
+    def join(self, timeout: float = 60.0) -> None:
+        """Wait (bounded) for the readers; they end when the command's
+        pipes close."""
+        if getattr(self, "_joined", False):
+            return
+        self._joined = True
+        for t in getattr(self, "_threads", ()):
+            t.join(timeout=timeout)
+        self._drained.set()
+
+
 def _record_deadline(rec: dict) -> float:
     """Absolute epoch moment this job's wall-clock cap expires.
 
@@ -1387,6 +1471,8 @@ class _Registry:
         on_finish: Optional[Callable[[], Optional[list]]] = None,
         capture=None,
         foreground_elapsed_s: Optional[float] = None,
+        env_source: str = "",
+        cpu_set: Optional[list[int]] = None,
     ) -> BashJob:
         """Register an ALREADY-RUNNING process as a background job.
 
@@ -1404,6 +1490,21 @@ class _Registry:
         command already printed and then keeps the readers appending to
         the same files, so ``bash_output`` sees output from before and
         after the move.
+
+        ``env_source``: how the running process got its environment, for
+        the record -- the caller names it ("gate" when the gate built
+        it). The registry cannot see a process's environ; what it can do
+        is record where it came from so a later reader can trace it.
+
+        ``cpu_set`` is accepted but NOT applied, and the caller passes
+        None: the process already runs, and its CPU affinity cannot be
+        changed from outside reliably post-hoc (a re-bind of the leader
+        would not reach the children it spawned). The affinity the
+        foreground command was started with -- ``_unasked_share`` bound
+        the argv before Popen -- is still in force in the kernel; only
+        the RECORD says so. Recording the caller's cpu_set keeps that
+        honest: it describes the affinity the process runs under, not
+        one this registry set.
 
         Unlike :meth:`start`, adoption never refuses on the job or core
         caps: the process already runs, and refusing to register it
@@ -1437,11 +1538,12 @@ class _Registry:
         return self._register(
             command=command, description=description, cwd=cwd,
             timeout_s=timeout_s, workspace=workspace,
-            session_id=session_id, cpu_set=None, argv=argv,
+            session_id=session_id, cpu_set=cpu_set, argv=argv,
             on_finish=on_finish, proc=proc,
             sout=sout, serr=serr,
             stdout_path=Path(stdout_path), stderr_path=Path(stderr_path),
-            capture=capture, foreground_elapsed_s=foreground_elapsed_s)
+            capture=capture, foreground_elapsed_s=foreground_elapsed_s,
+            env_source=env_source)
 
     def _register(
         self,
@@ -1461,6 +1563,7 @@ class _Registry:
         stderr_path: Optional[Path] = None,
         capture=None,
         foreground_elapsed_s: Optional[float] = None,
+        env_source: str = "",
     ) -> BashJob:
         """Bookkeeping shared by :meth:`start` and :meth:`adopt`: registry
         entry, lifeline record, persistent record, budget guard and the
@@ -1530,6 +1633,10 @@ class _Registry:
                       else "started",
             **({"foreground_s": round(float(foreground_elapsed_s), 3)}
                if foreground_elapsed_s else {}),
+            # Where the running process's environment came from (the
+            # caller names it, e.g. "gate"). The registry cannot read a
+            # process's environ; it records the provenance instead.
+            **({"env_source": env_source} if env_source else {}),
             # The conversation that started it: several sessions can share
             # a workspace, and each lists and stops only its own shells.
             **({"session_id": session_id} if session_id else {}),
@@ -1698,8 +1805,13 @@ class _Registry:
             def _drain_capture():
                 try:
                     capture.join()
-                except Exception:
-                    pass
+                except (OSError, ValueError) as exc:
+                    try:
+                        serr.write(
+                            f"[pipe capture] reader drain failed: {exc}\n")
+                        serr.flush()
+                    except Exception:
+                        pass
             threading.Thread(
                 target=_drain_capture, daemon=True,
                 name=f"bashjob-capture-{jid}").start()
