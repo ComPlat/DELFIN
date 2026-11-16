@@ -3333,8 +3333,7 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         summary = running_panel.running.summary(sid) or {}
         client = live["client"]
         if summary.get("host") == "dashboard" and not view["start_in_service"] \
-                and sid not in view.setdefault("kept_elsewhere", set()) \
-                and LS.state_word(summary) not in ("working", "needs you"):
+                and sid not in view.setdefault("kept_elsewhere", set()):
             from delfin.dashboard import kept_agent_sessions as _K
             if _K.where_kept(sid):
                 # Kept by a dashboard kernel of this host that is still
@@ -3436,14 +3435,12 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
                                       agent_status_html=widgets.HTML(""))}
         if handing_over:
             from delfin.dashboard import kept_agent_sessions as _K
-            from delfin.dashboard.resume_server import grace_seconds
             now = _time.monotonic()
             rec["handing_over"] = True
             rec["notice_html"] = tab.children[0]
             # Held longer than a closed window's grace (and not working):
-            # a dashboard that is still open has it -- its view, as a click
-            # in the running list gives it.
-            rec["held_until"] = now + grace_seconds() + 60.0
+            # a dashboard that is still open has it.
+            rec["held_until"] = now + _held_grace()
             rec["settle_until"] = now + _HAND_OVER_SETTLE_S
             _K.want(sid)
             if not view.get("exit_hook"):
@@ -3512,10 +3509,12 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
     def _step_hand_over(rec: dict) -> None:
         """One tick of a kept session on its way back (open_dormant with
         ``handing_over``): taken from its record once its old kernel is
-        gone; taken over from the service if a hand-over put it there; the
-        service's view while it is in the middle of a turn (the full chat
-        follows when the turn is over); an ordinary not-running row when
-        it turns out to be nowhere."""
+        gone; taken over from the service if a hand-over put it there. In
+        the middle of a turn it waits, saying so -- no second view of it in
+        the meantime (the person, 2026-11-16: a message and waiting, rather
+        than a view that turns into the chat and leaves duplicates). An
+        ordinary not-running row when it turns out to be nowhere, or open in
+        a dashboard that is still open."""
         import time as _time
         from delfin.dashboard import kept_agent_sessions as _K
         from delfin.dashboard import live_sessions as LS
@@ -3528,23 +3527,26 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         summary = (running_panel.running.summary(sid)
                    if live["client"] is not None else None) or {}
         busy = bool(summary) and LS.state_word(summary) in ("working", "needs you")
-        if where == "held" and not busy and now < rec["held_until"]:
-            return                        # its old kernel still has it
-        if where == "held" and not summary:
-            # Still held long after a closed window's grace, and the service
-            # does not list it: a dashboard that is still open has it.
-            _not_handing_over(rec, f"{rec['title_btn'].description} is open in "
-                                   "another dashboard; close it there to have it here.")
-            return
+        _hand_over_notice(rec, busy)
         if where == "held":
-            # Working there, or held past a closed window's grace (a
-            # dashboard still open has it): its view, as a click gives it.
+            if busy:
+                rec["held_until"] = now + _held_grace()   # the grace follows the turn
+            if busy or now < rec["held_until"]:
+                return                    # its old kernel still has it
+            # Held long past a closed window's grace: a dashboard that is
+            # still open has it. A click shows that dashboard's view.
             view.setdefault("kept_elsewhere", set()).add(sid)
+            _not_handing_over(rec, f"{rec['title_btn'].description} is open in "
+                                   "another dashboard; close it there to have it here, "
+                                   "or click to follow it there.")
+            return
         if where:
             rec["settle_until"] = now + _HAND_OVER_SETTLE_S
-            if where == "moving" or not summary:
-                return
-        elif not summary:
+            return                        # a hand-over is moving it
+        if busy:
+            rec["settle_until"] = now + _HAND_OVER_SETTLE_S
+            return                        # working in the service: after the step
+        if not summary:
             if now < rec["settle_until"]:
                 return                    # the service may list it any moment
             # Nowhere: not kept any more (switched off, a stop). Loaded when
@@ -3562,6 +3564,23 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
             _K.want(sid)
             return
         _arrived(rec, new, shown, before)
+
+    def _held_grace() -> float:
+        from delfin.dashboard.resume_server import grace_seconds
+        return grace_seconds() + 60.0
+
+    def _hand_over_notice(rec: dict, busy: bool) -> None:
+        notice_html = rec.get("notice_html")
+        if notice_html is None:
+            return
+        name = str(rec["title_btn"].description or "")
+        text = (f"{name} is finishing a step; its chat opens here as soon as the "
+                "step is done." if busy else
+                f"{name} is being handed over to this dashboard; its chat opens "
+                "here in a moment.")
+        value = html.escape(text)
+        if notice_html.value != value:
+            notice_html.value = value
 
     def _wake(rec: dict, *, show: bool = True, in_kernel: bool = False) -> Optional[dict]:
         """A not-running row becomes the session: from the agent service
@@ -4307,11 +4326,11 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
 
     def _back_from_closed_window(row: dict) -> bool:
         """A session this dashboard had open when it closed, kept, and on
-        its way back -- its old kernel still holds it (the window grace) or
-        a hand-over is moving it: its row now, saying so, and the full chat
-        in its place in a moment (_step_hand_over), never the service's
-        view first. In the middle of a turn, or already in the service, it
-        is left to the caller (the view then the full chat; the take-over).
+        its way back -- its old kernel still holds it (the window grace), a
+        hand-over is moving it, or it is in the middle of a step in the
+        service: its row now, saying so, and the full chat in its place once
+        it is free (_step_hand_over), never another view of it first. Idle
+        in the service it is left to the caller (the take-over at once).
         True when the row was made."""
         from delfin.dashboard import kept_agent_sessions as _K
         from delfin.dashboard import live_sessions as LS
@@ -4321,9 +4340,10 @@ def create_tab(ctx: Any, *, build: Optional[Callable] = None, service: Any = Non
         where = _K.where_kept(sid)
         summary = (running_panel.running.summary(sid)
                    if live["client"] is not None else None) or {}
-        if summary and LS.state_word(summary) in ("working", "needs you"):
-            return False
-        if not where:
+        busy = bool(summary) and LS.state_word(summary) in ("working", "needs you")
+        # In the middle of a step in the service (kept, handed over before):
+        # it waits too, and becomes the full chat once the step is done.
+        if not where and not (busy and not summary.get("host")):
             return False
         data = _saved_session(sid) or {}
         name = str(summary.get("name") or "") or session_display_name(data.get("title"), sid)

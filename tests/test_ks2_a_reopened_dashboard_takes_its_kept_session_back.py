@@ -298,14 +298,18 @@ def test_picked_from_the_list_while_held_it_is_handed_over_not_viewed(home, old_
         refs["stop_refresh"]()
 
 
-def test_a_kept_session_working_there_is_still_followed_live(home, old_kernel):
+def test_a_kept_session_working_there_waits_with_a_message_no_second_view(
+        home, old_kernel):
+    """The person (2026-11-16): a message and waiting rather than a view
+    that turns into the chat and leaves duplicates -- also mid-step."""
     K.arm(SID, str(home / "launch"), pid=old_kernel.pid)
     _w, refs = AS.create_tab(_ctx(home), build=_Build(), service=False)
     try:
         refs["running"].summary = lambda sid: ({"host": "dashboard", "state": "working"}
                                                if sid == SID else None)
         rec = refs["open_from_list"](SID)
-        assert rec is None or not rec.get("handing_over")
+        assert rec.get("handing_over") and not rec.get("live")
+        assert not [r for r in refs["sessions"]() if r.get("live")]
     finally:
         refs["stop_refresh"]()
 
