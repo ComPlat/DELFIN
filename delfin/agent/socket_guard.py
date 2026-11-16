@@ -236,6 +236,72 @@ def owns_loopback(ip, port: int, own_inodes=(), root_pid: int = 0,
         return False
 
 
+def _udp_datagram_rows():
+    """The bound endpoint rows of the kernel's UDP tables.
+
+    State 07 is UDP's bound entry (an unconnected socket's resting state,
+    which is how OpenMPI holds its discovery and rank-to-rank sockets)."""
+    out: set = set()
+    for table in (f"{_PROC}/net/udp", f"{_PROC}/net/udp6"):
+        try:
+            with open(table, encoding="latin-1") as fh:
+                next(fh, None)
+                for line in fh:
+                    cols = line.split()
+                    # local_address, state 07 = the bound endpoint,
+                    # inode at index 9
+                    if len(cols) < 10 or cols[3] != "07":
+                        continue
+                    try:
+                        addr, lport = _proc_net_address(cols[1])
+                    except ValueError:
+                        continue
+                    if getattr(addr, "ipv4_mapped", None) is not None:
+                        addr = addr.ipv4_mapped
+                    out.add((addr, lport, cols[9]))
+        except OSError:
+            continue
+    return out
+
+
+def udp_datagram_ends(ip, port: int) -> set:
+    """Inodes of the bound UDP endpoints a datagram to ``ip:port`` can
+    reach: bound to that address or to a wildcard, IPv4 and IPv6 (an IPv6
+    socket that also serves IPv4 shows its address as mapped). Read from
+    /proc/net, which shows every user's sockets in this network namespace;
+    empty when nothing is bound there or the tables cannot be read."""
+    return {(inode) for (addr, lport, inode) in _udp_datagram_rows()
+            if lport == port
+            and (addr == ip or addr.is_unspecified)}
+
+
+def owns_udp(ip, port: int, own_inodes=(), root_pid: int = 0,
+             include_root: bool = True) -> bool:
+    """Whether every UDP endpoint a datagram to ``ip:port`` can reach is
+    the caller's own: one of ``own_inodes`` (the session's background
+    jobs' sockets) or held by ``root_pid``'s process tree.
+
+    Same rule as :func:`owns_loopback`, on the UDP tables: on a shared
+    host the loopback carries other users' ranks and the user's own
+    unsandboxed senders; those are in neither and stay refused. False
+    when nothing is bound there, for a non-loopback address (a datagram
+    bound to a real interface is what the filter must refuse at
+    creation) and on any error."""
+    try:
+        if not ip.is_loopback:
+            return False
+        reach = udp_datagram_ends(ip, port)
+        if not reach:
+            return False
+        own = {str(i) for i in own_inodes}
+        if reach <= own:
+            return True
+        return bool(root_pid) and reach <= (
+            own | socket_inodes_below(int(root_pid), include_root))
+    except Exception:
+        return False
+
+
 def _arch():
     return _ARCHES.get(platform.machine())
 
